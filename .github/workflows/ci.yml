@@ -19,10 +19,82 @@ env:
   CI_CARGO_CONFIG: profile.dev.package."*".opt-level=0
 
 jobs:
+  # Decides which of the jobs below a change needs, so a docs-only or relay-only
+  # change does not pay for two Rust builds on 8-CPU runners. The jobs are still
+  # required checks: a job skipped by its `if` counts as passed, while a
+  # workflow-level `paths` filter would leave the checks pending forever.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+      relay: ${{ steps.diff.outputs.relay }}
+    steps:
+      - name: Sort the changed files
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          everything() {
+            echo "::notice::$1, so every job runs"
+            { echo rust=true; echo relay=true; } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # A rename counts at both paths: moving a file out of src/ changes the build.
+          if [ "$EVENT" = pull_request ]; then
+            files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" \
+              --jq '.[] | .filename, (.previous_filename // empty)') || everything "Could not list the changed files"
+            limit=3000
+          elif [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
+            everything "No previous commit to compare with"
+          else
+            files=$(gh api "repos/$GH_REPO/compare/$BEFORE...$AFTER" \
+              --jq '.files[] | .filename, (.previous_filename // empty)') || everything "Could not list the changed files"
+            limit=300
+          fi
+          # The API stops listing at the limit, so the list may be incomplete.
+          [ "$(grep -c . <<< "$files")" -lt "$limit" ] || everything "Too many changed files to list"
+
+          rust=false
+          relay=false
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              # How CI itself runs: test everything with it.
+              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true ;;
+              # The relay job also runs the phone tests.
+              relay/*) relay=true ;;
+              # The app embeds phone/ (rust_embed) and tests against its vectors.
+              phone/*) rust=true relay=true ;;
+              # Nothing the Rust build or its tests read. Anything not listed
+              # here, such as a new top-level folder, runs the Rust jobs.
+              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore) ;;
+              */*) rust=true ;;
+              *.md) ;;
+              *) rust=true ;;
+            esac
+          done <<< "$files"
+
+          echo "rust=$rust relay=$relay"
+          { echo "rust=$rust"; echo "relay=$relay"; } >> "$GITHUB_OUTPUT"
+
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
   clippy:
     name: Clippy (no warnings)
+    needs: changes
+    # Runs unless `changes` said no: if it failed, its outputs are empty and
+    # the job runs, because a skipped required check would count as passed.
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     runs-on: depot-ubuntu-24.04-8
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +126,8 @@ jobs:
 
   test:
     name: Tests (Linux, no browser)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     runs-on: depot-ubuntu-24.04-8
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +158,8 @@ jobs:
   # tests run the real Worker inside workerd, no account needed.
   relay:
     name: Relay (types and tests)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.relay != 'false' }}
     runs-on: depot-ubuntu-24.04
     defaults:
       run:

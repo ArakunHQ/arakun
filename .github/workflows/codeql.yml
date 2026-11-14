@@ -1,0 +1,69 @@
+name: CodeQL
+
+# Static analysis for security problems. Alerts show in the repository's
+# Security tab, and on a pull request as review annotations on the lines it
+# changes.
+#
+# Every language uses build-mode none: CodeQL reads the sources without
+# building them, so the Rust job needs neither the GPUI system libraries nor
+# a cargo build, and the TypeScript job needs no npm ci.
+#
+# This is the "advanced setup". GitHub's "default setup" (Settings > Code
+# security) must stay off: with both on, uploads from this workflow are
+# rejected.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # New queries ship with CodeQL releases, so main is checked weekly even when
+  # nothing changes.
+  schedule:
+    - cron: "23 5 * * 2"
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      security-events: write # upload the results
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The app, its examples and build.rs.
+          - language: rust
+            runner: depot-ubuntu-24.04-8
+          # relay/ (Cloudflare Worker) and phone/ (the web app).
+          - language: javascript-typescript
+            runner: depot-ubuntu-24.04
+          # The scripts in tools/.
+          - language: python
+            runner: depot-ubuntu-24.04
+          # The workflows in .github/, for injection and permission problems.
+          - language: actions
+            runner: depot-ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
+
+      # Pinned: this job can write security results.
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}

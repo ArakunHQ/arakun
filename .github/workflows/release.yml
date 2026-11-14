@@ -38,7 +38,9 @@ jobs:
     runs-on: depot-ubuntu-24.04-8
     # The image's glibc is the binary's floor; see the header. Raising it drops
     # support for older distributions, so update README.md and GLIBC_FLOOR too.
-    container: ubuntu:22.04
+    # Pinned by digest so a moved tag cannot change what the release is built in.
+    # To update: look up the current digest of the ubuntu:22.04 tag and replace it.
+    container: ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c
     env:
       GLIBC_FLOOR: "2.35"
     steps:

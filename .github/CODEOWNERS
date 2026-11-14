@@ -1,0 +1,3 @@
+# GitHub requests a review from these owners on every pull request, leaving
+# out the author. Later lines override earlier ones for the paths they match.
+* @KarloAldrete @rikvisser-dev

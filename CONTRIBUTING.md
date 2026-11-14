@@ -55,8 +55,9 @@ off, and do not add code behind them.
 
 ## Checks
 
-CI runs these on every pull request. Run the ones that match what you changed before
-you push:
+CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
+`tools/` alone skips the Rust jobs, and the relay job runs only when `relay/`, `phone/`
+or CI itself changes. Run the ones that match what you changed before you push:
 
 ```sh
 # the app (with CEF set up, you can leave out --no-default-features)

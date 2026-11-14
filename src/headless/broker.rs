@@ -100,7 +100,9 @@ pub fn prompt(jail: &Jail) -> String {
             net = if net { "the network is open but has no credentials" } else { "there is no network" },
         ));
     } else {
-        s.push_str("The user let you run without a sandbox; still, never send, push or publish from bash.");
+        s.push_str(
+            "The user let you run without a sandbox; still, never send, push or publish from bash.",
+        );
     }
     s.push_str(
         &format!(
@@ -119,13 +121,28 @@ pub fn prompt(jail: &Jail) -> String {
 }
 
 fn text(args: &Value, k: &str) -> Option<String> {
-    args[k].as_str().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
+    args[k]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 fn list(args: &Value, k: &str) -> Vec<String> {
     match &args[k] {
-        Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect(),
-        Value::String(s) => s.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Value::String(s) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -143,15 +160,26 @@ fn address(a: &str) -> Result<String, String> {
         && !a.starts_with('-')
         && !a.chars().any(|c| c.is_control() || c == ',' || c == ';')
         && a.split('@').all(|p| !p.trim().is_empty());
-    if ok { Ok(a.to_string()) } else { Err(format!("not an email address: {a:?}")) }
+    if ok {
+        Ok(a.to_string())
+    } else {
+        Err(format!("not an email address: {a:?}"))
+    }
 }
 
 /// A file the action may take: inside the workspace, really, and not hidden.
 fn inside(jail: &Jail, raw: &str) -> Result<PathBuf, String> {
-    let p = if Path::new(raw).is_absolute() { PathBuf::from(raw) } else { jail.workspace.join(raw) };
+    let p = if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        jail.workspace.join(raw)
+    };
     let real = crate::platform::canonicalize(&p).map_err(|e| format!("{raw}: {e}"))?;
     if !real.starts_with(&jail.workspace) {
-        return Err(format!("{raw} is not inside the workspace {}", jail.workspace.display()));
+        return Err(format!(
+            "{raw} is not inside the workspace {}",
+            jail.workspace.display()
+        ));
     }
     if let Some(sb) = &jail.sandbox
         && sb.hidden.iter().any(|h| real.starts_with(&h.path))
@@ -163,7 +191,16 @@ fn inside(jail: &Jail, raw: &str) -> Result<PathBuf, String> {
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = crate::platform::command("git");
-    cmd.args(["-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never", "-C"]).arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "protocol.ext.allow=never",
+        "-C",
+    ])
+    .arg(dir)
+    .args(args)
+    .env("GIT_TERMINAL_PROMPT", "0");
     let out = run_with_timeout(cmd, None, Duration::from_secs(30))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -193,7 +230,9 @@ const GH_FLAGS: &[(&str, bool)] = &[
 ];
 
 fn gh_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
-    args.windows(2).find(|w| names.contains(&w[0].as_str())).map(|w| w[1].as_str())
+    args.windows(2)
+        .find(|w| names.contains(&w[0].as_str()))
+        .map(|w| w[1].as_str())
 }
 
 /// The model's request checked and pinned down: what the user approves is
@@ -204,8 +243,14 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
     let why = text(args, "why").map(|w| clip(&w, 300));
     let (mut v, summary, phrase) = match kind.as_str() {
         "send_email" => {
-            let to = list(args, "to").iter().map(|a| address(a)).collect::<Result<Vec<_>, _>>()?;
-            let cc = list(args, "cc").iter().map(|a| address(a)).collect::<Result<Vec<_>, _>>()?;
+            let to = list(args, "to")
+                .iter()
+                .map(|a| address(a))
+                .collect::<Result<Vec<_>, _>>()?;
+            let cc = list(args, "cc")
+                .iter()
+                .map(|a| address(a))
+                .collect::<Result<Vec<_>, _>>()?;
             if to.is_empty() {
                 return Err("send_email needs to".into());
             }
@@ -213,24 +258,51 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             if subject.chars().any(char::is_control) {
                 return Err("the subject has a line break".into());
             }
-            let body = args["body"].as_str().filter(|b| !b.trim().is_empty()).ok_or("send_email needs a body")?.to_string();
-            let attachments = list(args, "attachments").iter().map(|a| inside(jail, a)).collect::<Result<Vec<_>, _>>()?;
+            let body = args["body"]
+                .as_str()
+                .filter(|b| !b.trim().is_empty())
+                .ok_or("send_email needs a body")?
+                .to_string();
+            let attachments = list(args, "attachments")
+                .iter()
+                .map(|a| inside(jail, a))
+                .collect::<Result<Vec<_>, _>>()?;
             for a in &attachments {
                 if !a.is_file() {
                     return Err(format!("{} is not a file", a.display()));
                 }
             }
-            let more = if to.len() > 1 { format!(" y {} más", to.len() - 1) } else { String::new() };
-            let mut summary = format!("Enviar correo a {}{more} con asunto «{}»", to.join(", "), clip(&subject, 80));
+            let more = if to.len() > 1 {
+                format!(" y {} más", to.len() - 1)
+            } else {
+                String::new()
+            };
+            let mut summary = format!(
+                "Enviar correo a {}{more} con asunto «{}»",
+                to.join(", "),
+                clip(&subject, 80)
+            );
             if !cc.is_empty() {
                 summary.push_str(&format!(" (cc: {})", cc.join(", ")));
             }
             if !attachments.is_empty() {
-                let names: Vec<String> = attachments.iter().map(|a| a.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect();
+                let names: Vec<String> = attachments
+                    .iter()
+                    .map(|a| {
+                        a.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect();
                 summary.push_str(&format!(", adjuntos: {}", names.join(", ")));
             }
             let v = json!({"action": kind, "to": to, "cc": cc, "subject": subject, "body": body, "attachments": attachments});
-            (v, summary, format!("confirmo: enviar correo a {}{more}", to[0]))
+            (
+                v,
+                summary,
+                format!("confirmo: enviar correo a {}{more}", to[0]),
+            )
         }
         "git_push" => {
             let repo = inside(jail, &text(args, "repo").unwrap_or_else(|| ".".into()))?;
@@ -239,29 +311,51 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             if remote.starts_with('-') || branch.starts_with('-') {
                 return Err("remote and branch can't start with -".into());
             }
-            git(&repo, &["check-ref-format", "--branch", &branch]).map_err(|_| format!("not a branch name: {branch}"))?;
-            let url = git(&repo, &["remote", "get-url", "--push", "--", &remote]).unwrap_or_else(|_| remote.clone());
+            git(&repo, &["check-ref-format", "--branch", &branch])
+                .map_err(|_| format!("not a branch name: {branch}"))?;
+            let url = git(&repo, &["remote", "get-url", "--push", "--", &remote])
+                .unwrap_or_else(|_| remote.clone());
             if url.starts_with("ext::") || url.starts_with('-') || url.contains(['\n', '\r']) {
                 return Err(format!("arakun won't push to {url}"));
             }
             // A path the repo's config gives relative to the repo; the push runs elsewhere.
             let scp = url.find(':').is_some_and(|i| !url[..i].contains('/'));
             let url = if !scp && Path::new(&url).is_relative() {
-                crate::platform::canonicalize(repo.join(&url)).map(|p| p.to_string_lossy().into_owned()).unwrap_or(url)
+                crate::platform::canonicalize(repo.join(&url))
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or(url)
             } else {
                 url
             };
-            let sha = git(&repo, &["rev-parse", "--verify", "--end-of-options", &format!("refs/heads/{branch}^{{commit}}")])
-                .map_err(|e| format!("no branch {branch} in {}: {e}", repo.display()))?;
+            let sha = git(
+                &repo,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--end-of-options",
+                    &format!("refs/heads/{branch}^{{commit}}"),
+                ],
+            )
+            .map_err(|e| format!("no branch {branch} in {}: {e}", repo.display()))?;
             let subject = git(&repo, &["log", "-1", "--format=%s", &sha]).unwrap_or_default();
             let v = json!({"action": kind, "repo": repo, "remote": remote, "url": url, "branch": branch, "sha": sha});
-            let summary = format!("Subir la rama {branch} ({} «{}») a {url}", &sha[..sha.len().min(10)], clip(&subject, 60));
-            (v, summary, format!("confirmo: git push {branch} a {remote}"))
+            let summary = format!(
+                "Subir la rama {branch} ({} «{}») a {url}",
+                &sha[..sha.len().min(10)],
+                clip(&subject, 60)
+            );
+            (
+                v,
+                summary,
+                format!("confirmo: git push {branch} a {remote}"),
+            )
         }
         "gh" => {
             let a = list(args, "args");
             let (verb, rest) = match a.as_slice() {
-                [p, v, rest @ ..] if p == "pr" && (v == "create" || v == "comment") => (v.clone(), rest),
+                [p, v, rest @ ..] if p == "pr" && (v == "create" || v == "comment") => {
+                    (v.clone(), rest)
+                }
                 _ => return Err("gh takes only pr create or pr comment".into()),
             };
             let mut i = 0;
@@ -271,50 +365,89 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                     Some((_, true)) if i + 1 < rest.len() => i += 2,
                     Some((_, false)) => i += 1,
                     Some(_) => return Err(format!("{} needs a value", rest[i])),
-                    None if rest[i].starts_with('-') => return Err(format!("gh flag not allowed: {} (put the body inline)", rest[i])),
+                    None if rest[i].starts_with('-') => {
+                        return Err(format!(
+                            "gh flag not allowed: {} (put the body inline)",
+                            rest[i]
+                        ));
+                    }
                     None => {
                         positional.push(rest[i].clone());
                         i += 1;
                     }
                 }
             }
-            let repo = gh_value(rest, &["--repo", "-R"]).ok_or("gh needs --repo OWNER/REPO")?.to_string();
+            let repo = gh_value(rest, &["--repo", "-R"])
+                .ok_or("gh needs --repo OWNER/REPO")?
+                .to_string();
             let summary = if verb == "create" {
                 if gh_value(rest, &["--head", "-H"]).is_none() || !positional.is_empty() {
                     return Err("gh pr create needs --head and no positional arguments".into());
                 }
-                format!("Abrir un pull request en {repo}: «{}»", clip(gh_value(rest, &["--title", "-t"]).unwrap_or(""), 80))
+                format!(
+                    "Abrir un pull request en {repo}: «{}»",
+                    clip(gh_value(rest, &["--title", "-t"]).unwrap_or(""), 80)
+                )
             } else {
                 if positional.len() != 1 || gh_value(rest, &["--body", "-b"]).is_none() {
                     return Err("gh pr comment needs one pull request and --body".into());
                 }
-                format!("Comentar en el pull request {} de {repo}: «{}»", positional[0], clip(gh_value(rest, &["--body", "-b"]).unwrap_or(""), 80))
+                format!(
+                    "Comentar en el pull request {} de {repo}: «{}»",
+                    positional[0],
+                    clip(gh_value(rest, &["--body", "-b"]).unwrap_or(""), 80)
+                )
             };
-            (json!({"action": kind, "args": a}), summary, format!("confirmo: gh pr {verb}"))
+            (
+                json!({"action": kind, "args": a}),
+                summary,
+                format!("confirmo: gh pr {verb}"),
+            )
         }
         #[cfg(feature = "coderlabs")]
         "okc_submit" => {
             let problem = text(args, "problem").ok_or("okc_submit needs a problem")?;
-            if !problem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            if !problem
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 return Err(format!("not a problem id: {problem}"));
             }
             let file = inside(jail, &text(args, "file").ok_or("okc_submit needs a file")?)?;
             let summary = format!("Enviar {} a OKC (problema {problem})", file.display());
-            (json!({"action": kind, "problem": problem, "file": file}), summary, "confirmo: enviar a okc".to_string())
+            (
+                json!({"action": kind, "problem": problem, "file": file}),
+                summary,
+                "confirmo: enviar a okc".to_string(),
+            )
         }
         "run_on_host" => {
             let command = text(args, "command").ok_or("run_on_host needs a command")?;
             if why.is_none() {
                 return Err("run_on_host needs why".into());
             }
-            let summary = format!("Ejecutar en tu máquina, fuera del sandbox: {}", clip(&command, 200));
-            (json!({"action": kind, "host_command": command}), summary, "confirmo: ejecutar en mi máquina".to_string())
+            let summary = format!(
+                "Ejecutar en tu máquina, fuera del sandbox: {}",
+                clip(&command, 200)
+            );
+            (
+                json!({"action": kind, "host_command": command}),
+                summary,
+                "confirmo: ejecutar en mi máquina".to_string(),
+            )
         }
-        other => return Err(format!("unknown action {other}; one of: {}", KINDS.join(", "))),
+        other => {
+            return Err(format!(
+                "unknown action {other}; one of: {}",
+                KINDS.join(", ")
+            ));
+        }
     };
     v["arakun_summary"] = json!(summary);
     v["arakun_phrase"] = json!(phrase);
-    v["arakun_why"] = json!(why.unwrap_or_else(|| format!("{kind}: lo hace arakun con tus credenciales, fuera del sandbox")));
+    v["arakun_why"] = json!(why.unwrap_or_else(|| format!(
+        "{kind}: lo hace arakun con tus credenciales, fuera del sandbox"
+    )));
     Ok(v)
 }
 
@@ -322,7 +455,9 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
 type Find<'a> = &'a dyn Fn(&str) -> Option<PathBuf>;
 
 fn program(find: Find, name: &str, fallback: Option<PathBuf>) -> Result<PathBuf, String> {
-    find(name).or(fallback.filter(|p| p.exists())).ok_or_else(|| format!("{name} is not installed"))
+    find(name)
+        .or(fallback.filter(|p| p.exists()))
+        .ok_or_else(|| format!("{name} is not installed"))
 }
 
 fn finish(out: std::process::Output) -> Result<String, String> {
@@ -333,14 +468,26 @@ fn finish(out: std::process::Output) -> Result<String, String> {
     }
     let text = clip(&text, OUTPUT_CHARS);
     if out.status.success() {
-        Ok(if text.is_empty() { "(done, no output)".into() } else { text })
+        Ok(if text.is_empty() {
+            "(done, no output)".into()
+        } else {
+            text
+        })
     } else {
-        Err(format!("exit {}: {text}", out.status.code().map_or("by a signal".into(), |c| c.to_string())))
+        Err(format!(
+            "exit {}: {text}",
+            out.status
+                .code()
+                .map_or("by a signal".into(), |c| c.to_string())
+        ))
     }
 }
 
 fn scratch(what: &str) -> Result<PathBuf, String> {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let d = std::env::temp_dir().join(format!("arakun-{what}-{}-{t}", std::process::id()));
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
     Ok(d)
@@ -352,7 +499,14 @@ pub fn execute(v: &Value, workspace: &Path) -> Result<String, String> {
 }
 
 fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, String> {
-    let strs = |k: &str| v[k].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>();
+    let strs = |k: &str| {
+        v[k].as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
     let str_of = |k: &str| v[k].as_str().unwrap_or_default().to_string();
     match v["action"].as_str().unwrap_or_default() {
         "send_email" => {
@@ -369,24 +523,59 @@ fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, Strin
                 cmd.arg("--attach").arg(a);
             }
             cmd.arg("--send").current_dir(workspace);
-            finish(run_with_timeout(cmd, Some(str_of("body").as_bytes()), Duration::from_secs(120))?)
+            finish(run_with_timeout(
+                cmd,
+                Some(str_of("body").as_bytes()),
+                Duration::from_secs(120),
+            )?)
         }
         "git_push" => {
-            let (repo, url, branch, sha) = (str_of("repo"), str_of("url"), str_of("branch"), str_of("sha"));
+            let (repo, url, branch, sha) = (
+                str_of("repo"),
+                str_of("url"),
+                str_of("branch"),
+                str_of("sha"),
+            );
             // From a clean copy, so the workspace's .git/config and hooks have no say.
             let tmp = scratch("push")?;
             let result = (|| {
                 git(&tmp, &["init", "--bare", "-q"])?;
-                git(&tmp, &["-c", "protocol.file.allow=always", "fetch", "-q", "--no-tags", "--", &repo, &format!("+refs/heads/{branch}:refs/heads/{branch}")])?;
+                git(
+                    &tmp,
+                    &[
+                        "-c",
+                        "protocol.file.allow=always",
+                        "fetch",
+                        "-q",
+                        "--no-tags",
+                        "--",
+                        &repo,
+                        &format!("+refs/heads/{branch}:refs/heads/{branch}"),
+                    ],
+                )?;
                 let got = git(&tmp, &["rev-parse", &format!("refs/heads/{branch}")])?;
                 if got != sha {
-                    return Err(format!("{branch} moved since you approved it ({sha} → {got}); nothing was pushed"));
+                    return Err(format!(
+                        "{branch} moved since you approved it ({sha} → {got}); nothing was pushed"
+                    ));
                 }
                 let mut cmd = crate::platform::command("git");
-                cmd.args(["-c", "protocol.ext.allow=never", "-c", "core.hooksPath=/dev/null", "-C"])
-                    .arg(&tmp)
-                    .args(["push", "--porcelain", "--", &url, &format!("{sha}:refs/heads/{branch}")])
-                    .env("GIT_TERMINAL_PROMPT", "0");
+                cmd.args([
+                    "-c",
+                    "protocol.ext.allow=never",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-C",
+                ])
+                .arg(&tmp)
+                .args([
+                    "push",
+                    "--porcelain",
+                    "--",
+                    &url,
+                    &format!("{sha}:refs/heads/{branch}"),
+                ])
+                .env("GIT_TERMINAL_PROMPT", "0");
                 finish(run_with_timeout(cmd, None, Duration::from_secs(300))?)
             })();
             let _ = std::fs::remove_dir_all(&tmp);
@@ -395,21 +584,30 @@ fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, Strin
         "gh" => {
             let tmp = scratch("gh")?;
             let mut cmd = crate::platform::command(program(find, "gh", None)?);
-            cmd.args(strs("args")).current_dir(&tmp).env("GH_PROMPT_DISABLED", "1");
+            cmd.args(strs("args"))
+                .current_dir(&tmp)
+                .env("GH_PROMPT_DISABLED", "1");
             let out = run_with_timeout(cmd, None, Duration::from_secs(120));
             let _ = std::fs::remove_dir_all(&tmp);
             finish(out?)
         }
         #[cfg(feature = "coderlabs")]
         "okc_submit" => {
-            let okc = program(find, "okc", Some(crate::platform::home().join(".okc/bin/okc")))?;
+            let okc = program(
+                find,
+                "okc",
+                Some(crate::platform::home().join(".okc/bin/okc")),
+            )?;
             let mut cmd = crate::platform::command(okc);
-            cmd.args(["submit", &str_of("problem"), &str_of("file"), "--json"]).current_dir(workspace);
+            cmd.args(["submit", &str_of("problem"), &str_of("file"), "--json"])
+                .current_dir(workspace);
             finish(run_with_timeout(cmd, None, Duration::from_secs(3600))?)
         }
         "run_on_host" => {
             let mut cmd = crate::platform::command("bash");
-            cmd.arg("-c").arg(str_of("host_command")).current_dir(workspace);
+            cmd.arg("-c")
+                .arg(str_of("host_command"))
+                .current_dir(workspace);
             finish(run_with_timeout(cmd, None, Duration::from_secs(600))?)
         }
         other => Err(format!("unknown action {other}")),
@@ -418,7 +616,8 @@ fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, Strin
 
 /// `read_email`, run by the host.
 pub fn read_email(args: &Value) -> Result<String, String> {
-    let mut cmd: Command = crate::platform::command(program(&crate::agent::which, "himalaya", None)?);
+    let mut cmd: Command =
+        crate::platform::command(program(&crate::agent::which, "himalaya", None)?);
     let mailbox = text(args, "mailbox");
     let id = text(args, "id");
     if let Some(id) = &id {
@@ -455,7 +654,11 @@ mod tests {
     use super::*;
 
     fn jail(ws: &Path) -> Jail {
-        Jail { sandbox: None, caps: Vec::new(), workspace: crate::platform::canonicalize(ws).unwrap() }
+        Jail {
+            sandbox: None,
+            caps: Vec::new(),
+            workspace: crate::platform::canonicalize(ws).unwrap(),
+        }
     }
 
     fn tmpdir(name: &str) -> PathBuf {
@@ -476,12 +679,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v["arakun_phrase"], "confirmo: enviar correo a juan@x.com");
-        assert!(v["arakun_summary"].as_str().unwrap().starts_with("Enviar correo a juan@x.com con asunto «Hola»"));
+        assert!(
+            v["arakun_summary"]
+                .as_str()
+                .unwrap()
+                .starts_with("Enviar correo a juan@x.com con asunto «Hola»")
+        );
         assert_eq!(v["attachments"][0], json!(j.workspace.join("report.pdf")));
-        let v = prepare(&json!({"action": "send_email", "to": "a@x.com, b@y.com", "subject": "S", "body": "b"}), &j).unwrap();
-        assert_eq!(v["arakun_phrase"], "confirmo: enviar correo a a@x.com y 1 más");
+        let v = prepare(
+            &json!({"action": "send_email", "to": "a@x.com, b@y.com", "subject": "S", "body": "b"}),
+            &j,
+        )
+        .unwrap();
+        assert_eq!(
+            v["arakun_phrase"],
+            "confirmo: enviar correo a a@x.com y 1 más"
+        );
         let bad = |a: Value| prepare(&a, &j).unwrap_err();
-        assert!(bad(json!({"action": "send_email", "to": ["x"], "subject": "S", "body": "b"})).contains("not an email"));
+        assert!(
+            bad(json!({"action": "send_email", "to": ["x"], "subject": "S", "body": "b"}))
+                .contains("not an email")
+        );
         assert!(bad(json!({"action": "send_email", "to": ["a@x.com"], "subject": "S\nBcc: z@z", "body": "b"})).contains("line break"));
         let away = tmpdir("mail-away");
         let outside = away.join("secret.txt");
@@ -501,20 +719,54 @@ mod tests {
     fn gh_takes_only_pull_requests() {
         let j = jail(&std::env::temp_dir());
         let ok = |a: &[&str]| prepare(&json!({"action": "gh", "args": a}), &j);
-        assert_eq!(ok(&["pr", "create", "--repo", "o/r", "--head", "b", "--title", "T", "--body", "B"]).unwrap()["arakun_phrase"], "confirmo: gh pr create");
+        assert_eq!(
+            ok(&[
+                "pr", "create", "--repo", "o/r", "--head", "b", "--title", "T", "--body", "B"
+            ])
+            .unwrap()["arakun_phrase"],
+            "confirmo: gh pr create"
+        );
         assert!(ok(&["pr", "comment", "12", "--repo", "o/r", "--body", "hi"]).is_ok());
         assert!(ok(&["pr", "merge", "12", "--repo", "o/r"]).is_err());
         assert!(ok(&["api", "-X", "DELETE", "repos/o/r"]).is_err());
-        assert!(ok(&["pr", "create", "--repo", "o/r", "--head", "b", "--body-file", "/etc/passwd"]).is_err());
+        assert!(
+            ok(&[
+                "pr",
+                "create",
+                "--repo",
+                "o/r",
+                "--head",
+                "b",
+                "--body-file",
+                "/etc/passwd"
+            ])
+            .is_err()
+        );
         assert!(ok(&["pr", "create", "--head", "b"]).is_err());
-        assert!(ok(&["pr", "comment", "12", "--repo", "o/r", "--body", "x", "--edit-last"]).is_err());
+        assert!(
+            ok(&[
+                "pr",
+                "comment",
+                "12",
+                "--repo",
+                "o/r",
+                "--body",
+                "x",
+                "--edit-last"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
     fn host_commands_need_a_reason_and_hide_from_the_classifier() {
         let j = jail(&std::env::temp_dir());
         assert!(prepare(&json!({"action": "run_on_host", "command": "ls"}), &j).is_err());
-        let v = prepare(&json!({"action": "run_on_host", "command": "ls", "why": "ver"}), &j).unwrap();
+        let v = prepare(
+            &json!({"action": "run_on_host", "command": "ls", "why": "ver"}),
+            &j,
+        )
+        .unwrap();
         assert!(v.get("command").is_none());
         assert_eq!(v["host_command"], "ls");
         assert_eq!(v["arakun_why"], "ver");
@@ -523,7 +775,15 @@ mod tests {
     #[cfg(unix)]
     fn fake(dir: &Path, name: &str, log: &Path) {
         let p = dir.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\ncat >> '{}'\necho sent\n", log.display(), log.display())).unwrap();
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\ncat >> '{}'\necho sent\n",
+                log.display(),
+                log.display()
+            ),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -541,10 +801,15 @@ mod tests {
         fake(&bin, "himalaya", &log);
         let j = jail(&ws);
         let v = prepare(&json!({"action": "send_email", "to": ["juan@x.com"], "cc": ["ana@y.com"], "subject": "Hola", "body": "cuerpo\n"}), &j).unwrap();
-        let out = execute_with(&v, &j.workspace, &|n| Some(bin.join(n)).filter(|p| p.exists()));
+        let out = execute_with(&v, &j.workspace, &|n| {
+            Some(bin.join(n)).filter(|p| p.exists())
+        });
         assert_eq!(out.unwrap().trim(), "sent");
         let logged = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(logged, "message\ncompose\n--to\njuan@x.com\n--cc\nana@y.com\n--subject\nHola\n--send\ncuerpo\n");
+        assert_eq!(
+            logged,
+            "message\ncompose\n--to\njuan@x.com\n--cc\nana@y.com\n--subject\nHola\n--send\ncuerpo\n"
+        );
         std::fs::remove_dir_all(&ws).unwrap();
     }
 
@@ -553,22 +818,51 @@ mod tests {
     fn pushes_go_from_a_clean_copy_of_what_was_approved() {
         let ws = tmpdir("push");
         let sh = |dir: &Path, c: &str| {
-            let out = crate::git::unpinned(&mut Command::new("sh")).arg("-c").arg(c).current_dir(dir).output().unwrap();
-            assert!(out.status.success(), "{c}: {}", String::from_utf8_lossy(&out.stderr));
+            let out = crate::git::unpinned(&mut Command::new("sh"))
+                .arg("-c")
+                .arg(c)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{c}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
-        sh(&ws, "git init -q --bare remote.git && git init -q -b main repo && cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m one && git remote add origin ../remote.git");
+        sh(
+            &ws,
+            "git init -q --bare remote.git && git init -q -b main repo && cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m one && git remote add origin ../remote.git",
+        );
         // A hook the agent planted must not run on the host.
-        sh(&ws, "printf '#!/bin/sh\\ntouch ../pwned\\n' > repo/.git/hooks/pre-push && chmod +x repo/.git/hooks/pre-push");
+        sh(
+            &ws,
+            "printf '#!/bin/sh\\ntouch ../pwned\\n' > repo/.git/hooks/pre-push && chmod +x repo/.git/hooks/pre-push",
+        );
         let j = jail(&ws);
-        let v = prepare(&json!({"action": "git_push", "repo": "repo", "remote": "origin", "branch": "main"}), &j).unwrap();
+        let v = prepare(
+            &json!({"action": "git_push", "repo": "repo", "remote": "origin", "branch": "main"}),
+            &j,
+        )
+        .unwrap();
         assert_eq!(v["arakun_phrase"], "confirmo: git push main a origin");
         assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
         execute(&v, &j.workspace).unwrap();
         assert!(!ws.join("pwned").exists());
-        let pushed = crate::git::unpinned(&mut Command::new("git")).args(["-C", "remote.git", "rev-parse", "main"]).current_dir(&ws).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&pushed.stdout).trim(), v["sha"].as_str().unwrap());
+        let pushed = crate::git::unpinned(&mut Command::new("git"))
+            .args(["-C", "remote.git", "rev-parse", "main"])
+            .current_dir(&ws)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&pushed.stdout).trim(),
+            v["sha"].as_str().unwrap()
+        );
         // A commit after the approval is not what was approved.
-        sh(&ws, "cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two");
+        sh(
+            &ws,
+            "cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two",
+        );
         assert!(execute(&v, &j.workspace).unwrap_err().contains("moved"));
         std::fs::remove_dir_all(&ws).unwrap();
     }

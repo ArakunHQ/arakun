@@ -49,7 +49,10 @@ fn http() -> &'static ureq::Agent {
 }
 
 fn env(key: &str) -> Option<String> {
-    std::env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// The lab's web service, when this runs in Arakun Lab.
@@ -62,13 +65,17 @@ fn blocklist() -> Vec<String> {
 }
 
 fn parse_blocklist(raw: &str) -> Vec<String> {
-    raw.split(',').map(|d| d.trim().trim_start_matches('.').to_ascii_lowercase()).filter(|d| !d.is_empty()).collect()
+    raw.split(',')
+        .map(|d| d.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|d| !d.is_empty())
+        .collect()
 }
 
 /// `host` is one of the blocked domains or under one.
 fn blocked(host: &str, list: &[String]) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    list.iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+    list.iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
 /// The host of an http(s) URL.
@@ -116,7 +123,10 @@ fn decode(s: &str) -> String {
     while i < b.len() {
         match b[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() && b[i + 1].is_ascii_hexdigit() && b[i + 2].is_ascii_hexdigit() => {
+            b'%' if i + 2 < b.len()
+                && b[i + 1].is_ascii_hexdigit()
+                && b[i + 2].is_ascii_hexdigit() =>
+            {
                 let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8;
                 out.push(hex(b[i + 1]) * 16 + hex(b[i + 2]));
                 i += 3;
@@ -140,11 +150,25 @@ fn lab_search_url(base: &str, query: &str, n: usize) -> String {
 /// A GET; the final URL after redirects, the status, the content type and the body.
 fn get(url: &str, accept: &str) -> Result<(String, u16, String, String), String> {
     use ureq::ResponseExt as _;
-    let mut r = http().get(url).header("Accept", accept).call().map_err(|e| format!("{url}: {e}"))?;
+    let mut r = http()
+        .get(url)
+        .header("Accept", accept)
+        .call()
+        .map_err(|e| format!("{url}: {e}"))?;
     let status = r.status().as_u16();
-    let ty = r.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    let ty = r
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let last = r.get_uri().to_string();
-    let body = r.body_mut().with_config().limit(PAGE_BYTES).read_to_string().map_err(|e| format!("{url}: {e}"))?;
+    let body = r
+        .body_mut()
+        .with_config()
+        .limit(PAGE_BYTES)
+        .read_to_string()
+        .map_err(|e| format!("{url}: {e}"))?;
     Ok((last, status, ty, body))
 }
 
@@ -153,7 +177,10 @@ fn lab_get(url: &str) -> Result<Value, String> {
     let (_, status, _, body) = get(url, "application/json")?;
     let v: Option<Value> = serde_json::from_str(&body).ok();
     if !(200..300).contains(&status) {
-        let why = v.as_ref().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_else(|| body.trim().chars().take(500).collect());
+        let why = v
+            .as_ref()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| body.trim().chars().take(500).collect());
         return Err(format!("the lab's web service answered {status}: {why}"));
     }
     v.ok_or_else(|| "the lab's web service did not answer JSON".into())
@@ -164,9 +191,9 @@ fn lab_get(url: &str) -> Result<Value, String> {
 fn net_allowed() -> Result<(), String> {
     use crate::headless::sandbox::{self, Cap};
     match sandbox::current() {
-        Some(j) if j.sandbox.is_some() && !j.caps.contains(&Cap::Net) => {
-            Err("this sandboxed run has no network; start it with --allow net to read the web".into())
-        }
+        Some(j) if j.sandbox.is_some() && !j.caps.contains(&Cap::Net) => Err(
+            "this sandboxed run has no network; start it with --allow net to read the web".into(),
+        ),
         _ => Ok(()),
     }
 }
@@ -175,8 +202,16 @@ fn net_allowed() -> Result<(), String> {
 
 pub fn fetch(args: &Value) -> Result<String, String> {
     net_allowed()?;
-    let raw = args["url"].as_str().map(str::trim).filter(|u| !u.is_empty()).ok_or("url is missing")?;
-    let url = if raw.contains("://") { raw.to_string() } else { format!("https://{raw}") };
+    let raw = args["url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .ok_or("url is missing")?;
+    let url = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    };
     let markdown = match args["format"].as_str().unwrap_or("markdown") {
         "markdown" | "" => true,
         "text" => false,
@@ -187,15 +222,34 @@ pub fn fetch(args: &Value) -> Result<String, String> {
     let (last, content, note) = if let Some(base) = lab() {
         let v = lab_get(&lab_fetch_url(&base, &url))?;
         let last = v["url"].as_str().unwrap_or(&url).to_string();
-        let content = v["content"].as_str().ok_or("the lab's web service answered no content")?.to_string();
-        (last, if markdown { content } else { markdown_to_text(&content) }, None)
+        let content = v["content"]
+            .as_str()
+            .ok_or("the lab's web service answered no content")?
+            .to_string();
+        (
+            last,
+            if markdown {
+                content
+            } else {
+                markdown_to_text(&content)
+            },
+            None,
+        )
     } else if crate::fetch::available() {
-        let page = if markdown { crate::fetch::page("markdown", &url) } else { crate::fetch::page("content", &url).map(|h| html_to_text(&h, false)) };
+        let page = if markdown {
+            crate::fetch::page("markdown", &url)
+        } else {
+            crate::fetch::page("content", &url).map(|h| html_to_text(&h, false))
+        };
         match page {
             Ok(content) => (url.clone(), content, None),
             Err(e) => {
                 let (last, content) = direct(&url, markdown)?;
-                (last, content, Some(format!("(Browser Run failed: {e}; fetched directly)")))
+                (
+                    last,
+                    content,
+                    Some(format!("(Browser Run failed: {e}; fetched directly)")),
+                )
             }
         }
     } else {
@@ -210,18 +264,28 @@ pub fn fetch(args: &Value) -> Result<String, String> {
         out.push('\n');
     }
     out.push('\n');
-    out.push_str(if content.is_empty() { "(the page has no text)" } else { content });
+    out.push_str(if content.is_empty() {
+        "(the page has no text)"
+    } else {
+        content
+    });
     Ok(out)
 }
 
 /// A page with a plain GET: the final URL and its text.
 fn direct(url: &str, markdown: bool) -> Result<(String, String), String> {
-    let (last, status, ty, body) = get(url, "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5")?;
+    let (last, status, ty, body) = get(
+        url,
+        "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+    )?;
     if status >= 400 {
         return Err(format!("{last} answered {status}"));
     }
     let html = ty.contains("html") || (ty.is_empty() && body.trim_start().starts_with('<'));
-    let text = ty.starts_with("text/") || ["json", "xml", "javascript", "yaml", "toml"].iter().any(|t| ty.contains(t));
+    let text = ty.starts_with("text/")
+        || ["json", "xml", "javascript", "yaml", "toml"]
+            .iter()
+            .any(|t| ty.contains(t));
     if html {
         Ok((last, html_to_text(&body, markdown)))
     } else if text || ty.is_empty() {
@@ -235,7 +299,11 @@ fn direct(url: &str, markdown: bool) -> Result<(String, String), String> {
 
 pub fn search(args: &Value) -> Result<String, String> {
     net_allowed()?;
-    let query = args["query"].as_str().map(str::trim).filter(|q| !q.is_empty()).ok_or("query is missing")?;
+    let query = args["query"]
+        .as_str()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .ok_or("query is missing")?;
     let n = args["max_results"].as_u64().unwrap_or(8).clamp(1, 20) as usize;
     let list = blocklist();
     let (from, hits) = if let Some(base) = lab() {
@@ -246,20 +314,33 @@ pub fn search(args: &Value) -> Result<String, String> {
             .iter()
             .map(|r| {
                 let s = |k: &str| r[k].as_str().unwrap_or("").trim().to_string();
-                Hit { title: s("title"), url: s("url"), snippet: s("snippet") }
+                Hit {
+                    title: s("title"),
+                    url: s("url"),
+                    snippet: s("snippet"),
+                }
             })
             .collect();
         ("the lab's search", hits)
     } else {
         ("DuckDuckGo", duckduckgo(query)?)
     };
-    let hits: Vec<Hit> = hits.into_iter().filter(|h| host(&h.url).is_some_and(|host| !blocked(&host, &list))).take(n).collect();
+    let hits: Vec<Hit> = hits
+        .into_iter()
+        .filter(|h| host(&h.url).is_some_and(|host| !blocked(&host, &list)))
+        .take(n)
+        .collect();
     if hits.is_empty() {
         return Ok(format!("No results from {from} for \"{query}\"."));
     }
     let mut out = format!("Results from {from} for \"{query}\":\n");
     for (i, h) in hits.iter().enumerate() {
-        out.push_str(&format!("\n{}. {}\n   {}\n", i + 1, if h.title.is_empty() { &h.url } else { &h.title }, h.url));
+        out.push_str(&format!(
+            "\n{}. {}\n   {}\n",
+            i + 1,
+            if h.title.is_empty() { &h.url } else { &h.title },
+            h.url
+        ));
         if !h.snippet.is_empty() {
             out.push_str(&format!("   {}\n", h.snippet));
         }
@@ -274,7 +355,8 @@ fn refused(status: u16, html: &str) -> bool {
 
 fn duckduckgo(query: &str) -> Result<Vec<Hit>, String> {
     let url = format!("{DDG}{}", encode(query));
-    let (_, status, _, html) = get(&url, "text/html").map_err(|e| format!("DuckDuckGo could not be reached: {e}"))?;
+    let (_, status, _, html) =
+        get(&url, "text/html").map_err(|e| format!("DuckDuckGo could not be reached: {e}"))?;
     if !refused(status, &html) && status < 400 {
         return Ok(parse_duckduckgo(&html));
     }
@@ -297,7 +379,9 @@ fn parse_duckduckgo(html: &str) -> Vec<Hit> {
     for i in 1..parts.len() {
         let (before, part) = (parts[i - 1], parts[i]);
         // The result's own block, from its opening div to this link.
-        let block = before.rfind("class=\"result ").map_or("", |at| &before[at..]);
+        let block = before
+            .rfind("class=\"result ")
+            .map_or("", |at| &before[at..]);
         let open = &before[before.rfind('<').unwrap_or(before.len())..];
         let Some(gt) = part.find('>') else { continue };
         let tag = format!("{open} {}", &part[..gt]);
@@ -305,7 +389,9 @@ fn parse_duckduckgo(html: &str) -> Vec<Hit> {
         if block.contains("result--ad") || href.contains("/y.js") || href.contains("ad_domain=") {
             continue;
         }
-        let Some(url) = result_url(&href) else { continue };
+        let Some(url) = result_url(&href) else {
+            continue;
+        };
         let body = &part[gt + 1..];
         let title = strip_tags(&body[..body.find("</a>").unwrap_or(body.len())]);
         let snippet = body
@@ -313,14 +399,22 @@ fn parse_duckduckgo(html: &str) -> Vec<Hit> {
             .and_then(|at| {
                 let rest = &body[at..];
                 let rest = &rest[rest.find('>')? + 1..];
-                let end = ["</a>", "</td>", "</div>"].iter().filter_map(|t| rest.find(t)).min().unwrap_or(rest.len());
+                let end = ["</a>", "</td>", "</div>"]
+                    .iter()
+                    .filter_map(|t| rest.find(t))
+                    .min()
+                    .unwrap_or(rest.len());
                 Some(strip_tags(&rest[..end]))
             })
             .unwrap_or_default();
         if hits.iter().any(|h| h.url == url) {
             continue;
         }
-        hits.push(Hit { title, url, snippet });
+        hits.push(Hit {
+            title,
+            url,
+            snippet,
+        });
     }
     hits
 }
@@ -356,7 +450,11 @@ fn attr(tag: &str, name: &str) -> Option<String> {
         let value = tag[start..].trim_start();
         return Some(match value.chars().next() {
             Some(q @ ('"' | '\'')) => value[1..].split(q).next().unwrap_or("").to_string(),
-            _ => value.split(|c: char| c.is_whitespace() || c == '>').next().unwrap_or("").to_string(),
+            _ => value
+                .split(|c: char| c.is_whitespace() || c == '>')
+                .next()
+                .unwrap_or("")
+                .to_string(),
         });
     }
     None
@@ -371,7 +469,9 @@ fn decode_entities(s: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let end = rest[1..].find(|c: char| !c.is_ascii_alphanumeric() && c != '#').map(|i| i + 1);
+        let end = rest[1..]
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '#')
+            .map(|i| i + 1);
         let (name, len) = match end {
             Some(e) if rest[e..].starts_with(';') => (&rest[1..e], e + 1),
             _ => ("", 0),
@@ -386,7 +486,9 @@ fn decode_entities(s: &str) -> String {
             "mdash" => Some('—'),
             "ndash" => Some('–'),
             "hellip" => Some('…'),
-            n if n.starts_with("#x") || n.starts_with("#X") => u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32),
+            n if n.starts_with("#x") || n.starts_with("#X") => u32::from_str_radix(&n[2..], 16)
+                .ok()
+                .and_then(char::from_u32),
             n if n.starts_with('#') => n[1..].parse().ok().and_then(char::from_u32),
             _ => None,
         };
@@ -417,16 +519,44 @@ fn strip_tags(html: &str) -> String {
             _ => {}
         }
     }
-    decode_entities(&out).split_whitespace().collect::<Vec<_>>().join(" ")
+    decode_entities(&out)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A page's readable text; with `markdown`, headings, list items and links
 /// keep their Markdown form.
 fn html_to_text(html: &str, markdown: bool) -> String {
-    const SKIP: &[&str] = &["script", "style", "noscript", "svg", "head", "template", "iframe"];
+    const SKIP: &[&str] = &[
+        "script", "style", "noscript", "svg", "head", "template", "iframe",
+    ];
     const BLOCK: &[&str] = &[
-        "p", "div", "br", "tr", "ul", "ol", "table", "section", "article", "header", "footer", "nav", "main", "aside", "form",
-        "blockquote", "pre", "hr", "dl", "dt", "dd", "figure", "figcaption", "title", "body",
+        "p",
+        "div",
+        "br",
+        "tr",
+        "ul",
+        "ol",
+        "table",
+        "section",
+        "article",
+        "header",
+        "footer",
+        "nav",
+        "main",
+        "aside",
+        "form",
+        "blockquote",
+        "pre",
+        "hr",
+        "dl",
+        "dt",
+        "dd",
+        "figure",
+        "figcaption",
+        "title",
+        "body",
     ];
     let mut out = String::new();
     let mut links: Vec<Option<(usize, String)>> = Vec::new();
@@ -451,10 +581,18 @@ fn html_to_text(html: &str, markdown: bool) -> String {
         let tag = &rest[1..gt];
         rest = &rest[gt + 1..];
         let closing = tag.starts_with('/');
-        let name: String = tag.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let name: String = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
         if !closing && SKIP.contains(&name.as_str()) {
             let close = format!("</{name}");
-            rest = rest.to_ascii_lowercase().find(&close).map_or("", |e| &rest[e..]);
+            rest = rest
+                .to_ascii_lowercase()
+                .find(&close)
+                .map_or("", |e| &rest[e..]);
             continue;
         }
         match name.as_str() {
@@ -467,7 +605,9 @@ fn html_to_text(html: &str, markdown: bool) -> String {
             }
             "li" if !closing => out.push_str(if markdown { "\n- " } else { "\n" }),
             "a" if markdown && !closing => {
-                let href = attr(tag, "href").map(|h| decode_entities(&h)).filter(|h| h.starts_with("http"));
+                let href = attr(tag, "href")
+                    .map(|h| decode_entities(&h))
+                    .filter(|h| h.starts_with("http"));
                 if let Some(h) = &href {
                     links.push(Some((out.len(), h.clone())));
                     out.push('[');
@@ -530,7 +670,11 @@ fn markdown_to_text(md: &str) -> String {
     let mut rest = md;
     while let Some(open) = rest.find('[') {
         let after = &rest[open + 1..];
-        match after.find("](").and_then(|mid| after[mid + 2..].find(')').map(|close| (mid, mid + 2 + close))) {
+        match after.find("](").and_then(|mid| {
+            after[mid + 2..]
+                .find(')')
+                .map(|close| (mid, mid + 2 + close))
+        }) {
             Some((mid, close)) if !after[..mid].contains('\n') => {
                 out.push_str(rest[..open].trim_end_matches('!'));
                 out.push_str(&after[..mid]);
@@ -543,7 +687,10 @@ fn markdown_to_text(md: &str) -> String {
         }
     }
     out.push_str(rest);
-    out.lines().map(|l| l.trim_start_matches('#').trim_start().replace("**", "")).collect::<Vec<_>>().join("\n")
+    out.lines()
+        .map(|l| l.trim_start_matches('#').trim_start().replace("**", ""))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -593,7 +740,9 @@ mod tests {
                 Hit {
                     title: "Bun — A fast all-in-one JavaScript runtime".into(),
                     url: "https://bun.sh/".into(),
-                    snippet: "NEW Bun v1.4.4 released → Bun is a fast JavaScript runtime & toolkit.".into(),
+                    snippet:
+                        "NEW Bun v1.4.4 released → Bun is a fast JavaScript runtime & toolkit."
+                            .into(),
                 },
                 Hit {
                     title: "Releases · oven-sh/bun · GitHub".into(),
@@ -629,15 +778,25 @@ mod tests {
             lab_fetch_url("http://lab.internal/web", "https://bun.sh/blog?a=1&b=2#x"),
             "http://lab.internal/web/fetch?url=https%3A%2F%2Fbun.sh%2Fblog%3Fa%3D1%26b%3D2%23x"
         );
-        assert_eq!(lab_search_url("http://lab.internal/web", "última versión de bun", 5), "http://lab.internal/web/search?q=%C3%BAltima%20versi%C3%B3n%20de%20bun&n=5");
+        assert_eq!(
+            lab_search_url("http://lab.internal/web", "última versión de bun", 5),
+            "http://lab.internal/web/search?q=%C3%BAltima%20versi%C3%B3n%20de%20bun&n=5"
+        );
         assert_eq!(decode("%C3%BAltima+versi%C3%B3n%2"), "última versión%2");
     }
 
     #[test]
     fn missing_arguments_are_tool_errors() {
         assert_eq!(fetch(&json!({})), Err("url is missing".into()));
-        assert!(fetch(&json!({"url": "https://example.com", "format": "pdf"})).unwrap_err().contains("format"));
-        assert_eq!(search(&json!({"query": "  "})), Err("query is missing".into()));
+        assert!(
+            fetch(&json!({"url": "https://example.com", "format": "pdf"}))
+                .unwrap_err()
+                .contains("format")
+        );
+        assert_eq!(
+            search(&json!({"query": "  "})),
+            Err("query is missing".into())
+        );
     }
 
     #[test]
@@ -646,8 +805,17 @@ mod tests {
             <h1>Bun&nbsp;1.4</h1><script>var x = "<p>no</p>";</script>
             <p>Read the <a href="https://bun.sh/blog">release notes</a>, or <a href="/rel">these</a>.</p>
             <ul><li>fast</li><li>small &amp; sharp</li></ul><!-- gone --></body></html>"#;
-        assert_eq!(html_to_text(html, true), "# Bun 1.4\n\nRead the [release notes](https://bun.sh/blog), or these.\n\n- fast\n- small & sharp");
-        assert_eq!(html_to_text(html, false), "Bun 1.4\n\nRead the release notes, or these.\n\nfast\nsmall & sharp");
-        assert_eq!(markdown_to_text("# Hi\nSee [the **docs**](https://x.y/z) and ![img](a.png)."), "Hi\nSee the docs and img.");
+        assert_eq!(
+            html_to_text(html, true),
+            "# Bun 1.4\n\nRead the [release notes](https://bun.sh/blog), or these.\n\n- fast\n- small & sharp"
+        );
+        assert_eq!(
+            html_to_text(html, false),
+            "Bun 1.4\n\nRead the release notes, or these.\n\nfast\nsmall & sharp"
+        );
+        assert_eq!(
+            markdown_to_text("# Hi\nSee [the **docs**](https://x.y/z) and ![img](a.png)."),
+            "Hi\nSee the docs and img."
+        );
     }
 }

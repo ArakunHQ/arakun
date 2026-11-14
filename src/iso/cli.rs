@@ -42,18 +42,47 @@ struct Opts {
 }
 
 fn parse(args: &[String], cwd: &Path) -> Result<Opts, String> {
-    let mut o = Opts { file: PathBuf::new(), at: 0., frames: 0, look: None, width: 1600, out: None, tau: None, fps: 240., still: None, px: 0.1 };
+    let mut o = Opts {
+        file: PathBuf::new(),
+        at: 0.,
+        frames: 0,
+        look: None,
+        width: 1600,
+        out: None,
+        tau: None,
+        fps: 240.,
+        still: None,
+        px: 0.1,
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match a.as_str() {
-            "--at" => o.at = val("--at")?.parse().map_err(|_| "--at takes a number 0..1")?,
-            "--frames" => o.frames = val("--frames")?.parse().map_err(|_| "--frames takes a count")?,
+            "--at" => {
+                o.at = val("--at")?
+                    .parse()
+                    .map_err(|_| "--at takes a number 0..1")?
+            }
+            "--frames" => {
+                o.frames = val("--frames")?
+                    .parse()
+                    .map_err(|_| "--frames takes a count")?
+            }
             "--look" => o.look = Some(val("--look")?),
-            "--width" => o.width = val("--width")?.parse().map_err(|_| "--width takes pixels")?,
+            "--width" => {
+                o.width = val("--width")?
+                    .parse()
+                    .map_err(|_| "--width takes pixels")?
+            }
             "--out" => o.out = Some(cwd.join(val("--out")?)),
             "--px" => o.px = val("--px")?.parse().map_err(|_| "--px takes pixels")?,
-            "--still" => o.still = Some(val("--still")?.parse().map_err(|_| "--still takes a number 0..1")?),
+            "--still" => {
+                o.still = Some(
+                    val("--still")?
+                        .parse()
+                        .map_err(|_| "--still takes a number 0..1")?,
+                )
+            }
             "--fps" => o.fps = val("--fps")?.parse().map_err(|_| "--fps takes a number")?,
             "--tau" => o.tau = Some(val("--tau")?.parse().map_err(|_| "--tau takes seconds")?),
             f if !f.starts_with("--") && o.file.as_os_str().is_empty() => o.file = cwd.join(f),
@@ -79,14 +108,27 @@ fn palette(look: &str) -> Palette {
             dark: true,
             soft: false,
         },
-        _ => Palette { ink: [0.165; 3], ground: [1.; 3], accent: [0.114, 0.686, 0.612], dark: false, soft: false },
+        _ => Palette {
+            ink: [0.165; 3],
+            ground: [1.; 3],
+            accent: [0.114, 0.686, 0.612],
+            dark: false,
+            soft: false,
+        },
     }
 }
 
 fn out_path(o: &Opts, ext: &str, tag: &str) -> PathBuf {
     o.out.clone().unwrap_or_else(|| {
-        let stem = o.file.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        std::env::temp_dir().join("arakun-iso").join(format!("{stem}-{tag}.{ext}"))
+        let stem = o
+            .file
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        std::env::temp_dir()
+            .join("arakun-iso")
+            .join(format!("{stem}-{tag}.{ext}"))
     })
 }
 
@@ -99,13 +141,21 @@ fn extent(scene: &ScriptScene) -> Result<Rect, String> {
 }
 
 /// One frame `w` px wide, as tall as the scene needs.
-fn frame_pixmap(scene: &ScriptScene, ext: Rect, t: f32, tau: f32, pal: &Palette, w: u32) -> Result<Pixmap, String> {
+fn frame_pixmap(
+    scene: &ScriptScene,
+    ext: Rect,
+    t: f32,
+    tau: f32,
+    pal: &Palette,
+    w: u32,
+) -> Result<Pixmap, String> {
     let pad = w as f32 * 0.04;
     let aspect = (ext[3] - ext[1]) / (ext[2] - ext[0]).max(1.);
     let h = ((w as f32 - 2. * pad) * aspect + 2. * pad).ceil() as u32;
     let fit = Fit::new(ext, w as f32, h as f32, pad).ok_or("the scene has no size")?;
     let items = super::shoot(&scene.frame_at(t, tau)?, ext);
-    raster::frame(&items, pal, w, h, fit, (w as f32 / 1000.).max(1.) * 1.25).ok_or_else(|| "could not draw".into())
+    raster::frame(&items, pal, w, h, fit, (w as f32 / 1000.).max(1.) * 1.25)
+        .ok_or_else(|| "could not draw".into())
 }
 
 /// Writes `text` small in the corner of a sheet cell.
@@ -121,15 +171,30 @@ fn stamp(pm: &mut Pixmap, text: &str, x: f32, y: f32, color: Rgb) {
         }
     }
     if let Some(path) = pb.finish() {
-        let mut paint = Paint { anti_alias: true, ..Paint::default() };
-        paint.set_color(Color::from_rgba(color[0], color[1], color[2], 0.6).unwrap_or(Color::BLACK));
-        pm.fill_path(&path, &paint, FillRule::EvenOdd, Transform::identity(), None);
+        let mut paint = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        paint
+            .set_color(Color::from_rgba(color[0], color[1], color[2], 0.6).unwrap_or(Color::BLACK));
+        pm.fill_path(
+            &path,
+            &paint,
+            FillRule::EvenOdd,
+            Transform::identity(),
+            None,
+        );
     }
 }
 
 fn render(o: &Opts) -> Result<String, String> {
     let scene = ScriptScene::load(&o.file)?;
-    let mut pal = palette(o.look.as_deref().or(scene.meta.look.as_deref()).unwrap_or("paper"));
+    let mut pal = palette(
+        o.look
+            .as_deref()
+            .or(scene.meta.look.as_deref())
+            .unwrap_or("paper"),
+    );
     pal.soft = scene.meta.soft;
     let ext = extent(&scene)?;
     let path = if o.frames > 1 {
@@ -152,19 +217,43 @@ fn render(o: &Opts) -> Result<String, String> {
             .collect::<Result<_, _>>()?;
         let cell_h = cells[0].height();
         let gap = 2;
-        let mut sheet = Pixmap::new(cols * (cell_w + gap), rows * (cell_h + gap)).ok_or("sheet too large")?;
+        let mut sheet =
+            Pixmap::new(cols * (cell_w + gap), rows * (cell_h + gap)).ok_or("sheet too large")?;
         sheet.fill(Color::from_rgba8(128, 128, 128, 255));
         for (i, cell) in cells.iter().enumerate() {
-            let (cx, cy) = ((i as u32 % cols) * (cell_w + gap), (i as u32 / cols) * (cell_h + gap));
-            sheet.draw_pixmap(cx as i32, cy as i32, cell.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            let (cx, cy) = (
+                (i as u32 % cols) * (cell_w + gap),
+                (i as u32 / cols) * (cell_h + gap),
+            );
+            sheet.draw_pixmap(
+                cx as i32,
+                cy as i32,
+                cell.as_ref(),
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
             let (t, tau) = at(i);
-            stamp(&mut sheet, &format!("t {t:.3}  tau {tau:.2}s"), cx as f32 + 10., cy as f32 + 14., pal.ink);
+            stamp(
+                &mut sheet,
+                &format!("t {t:.3}  tau {tau:.2}s"),
+                cx as f32 + 10.,
+                cy as f32 + 14.,
+                pal.ink,
+            );
         }
         let p = out_path(o, "png", &format!("sheet{}", o.frames));
         save(&sheet, &p)?;
         p
     } else {
-        let pm = frame_pixmap(&scene, ext, o.at, o.tau.unwrap_or(o.at * scene.meta.seconds), &pal, o.width)?;
+        let pm = frame_pixmap(
+            &scene,
+            ext,
+            o.at,
+            o.tau.unwrap_or(o.at * scene.meta.seconds),
+            &pal,
+            o.width,
+        )?;
         let p = out_path(o, "png", &format!("{:03}", (o.at * 1000.).round() as u32));
         save(&pm, &p)?;
         p
@@ -176,12 +265,18 @@ fn save(pm: &Pixmap, path: &Path) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    pm.save_png(path).map_err(|e| format!("{}: {e}", path.display()))
+    pm.save_png(path)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn svg(o: &Opts) -> Result<String, String> {
     let scene = ScriptScene::load(&o.file)?;
-    let mut pal = palette(o.look.as_deref().or(scene.meta.look.as_deref()).unwrap_or("paper"));
+    let mut pal = palette(
+        o.look
+            .as_deref()
+            .or(scene.meta.look.as_deref())
+            .unwrap_or("paper"),
+    );
     pal.soft = scene.meta.soft;
     let ext = extent(&scene)?;
     let items = super::shoot(&scene.frame(o.at)?, ext);
@@ -189,13 +284,19 @@ fn svg(o: &Opts) -> Result<String, String> {
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    std::fs::write(&p, super::svg::frame(&scene.meta.name, &items, &pal, 16.)).map_err(|e| e.to_string())?;
+    std::fs::write(&p, super::svg::frame(&scene.meta.name, &items, &pal, 16.))
+        .map_err(|e| e.to_string())?;
     Ok(p.display().to_string())
 }
 
 fn anim(o: &Opts) -> Result<String, String> {
     let scene = ScriptScene::load(&o.file)?;
-    let mut pal = palette(o.look.as_deref().or(scene.meta.look.as_deref()).unwrap_or("paper"));
+    let mut pal = palette(
+        o.look
+            .as_deref()
+            .or(scene.meta.look.as_deref())
+            .unwrap_or("paper"),
+    );
     pal.soft = scene.meta.soft;
     let ext = extent(&scene)?;
     let secs = scene.meta.seconds;
@@ -204,7 +305,9 @@ fn anim(o: &Opts) -> Result<String, String> {
     let mut cams = Vec::with_capacity(n);
     for i in 0..n {
         let t = i as f32 / n as f32;
-        let nodes = scene.frame_at(t, t * secs).map_err(|e| format!("at t {t:.3}: {e}"))?;
+        let nodes = scene
+            .frame_at(t, t * secs)
+            .map_err(|e| format!("at t {t:.3}: {e}"))?;
         cams.push(super::lens(&nodes, ext));
         frames.push(super::shoot(&nodes, ext));
     }
@@ -217,12 +320,25 @@ fn anim(o: &Opts) -> Result<String, String> {
         Some(t) => {
             let nodes = scene.frame_at(t, t * secs)?;
             let one = [super::shoot(&nodes, ext)];
-            super::anim::loop_in(&scene.meta.name, &one, &[super::lens(&nodes, ext)], secs, &pal, 16., super::anim::view(&frames), o.px)
+            super::anim::loop_in(
+                &scene.meta.name,
+                &one,
+                &[super::lens(&nodes, ext)],
+                secs,
+                &pal,
+                16.,
+                super::anim::view(&frames),
+                o.px,
+            )
         }
         None => super::anim::loop_svg(&scene.meta.name, &frames, &cams, secs, &pal, 16., o.px),
     };
     std::fs::write(&p, &svg).map_err(|e| e.to_string())?;
-    Ok(format!("{} ({} KB, {n} samples)", p.display(), svg.len() / 1024))
+    Ok(format!(
+        "{} ({} KB, {n} samples)",
+        p.display(),
+        svg.len() / 1024
+    ))
 }
 
 fn check(o: &Opts) -> Result<String, String> {
@@ -244,11 +360,17 @@ fn check(o: &Opts) -> Result<String, String> {
     let first = super::render(&scene.frame(0.)?);
     let last = super::render(&scene.frame(1.)?);
     let m = &scene.meta;
-    report.push(format!("{}: {:.1}s loop, up to {most} paths a frame, {per:.2} ms a frame to build", m.name, m.seconds));
+    report.push(format!(
+        "{}: {:.1}s loop, up to {most} paths a frame, {per:.2} ms a frame to build",
+        m.name, m.seconds
+    ));
     if same_frame(&first, &last) {
         report.push("loop: seamless (the last frame is the first)".into());
     } else {
-        report.push("loop: JUMPS — the frame at t 1 differs from t 0; end every motion where it began".into());
+        report.push(
+            "loop: JUMPS — the frame at t 1 differs from t 0; end every motion where it began"
+                .into(),
+        );
     }
     if !empty.is_empty() {
         report.push(format!("empty frames at t {}", empty.join(", ")));
@@ -262,13 +384,21 @@ fn check(o: &Opts) -> Result<String, String> {
 /// Whether two frames draw the same, to a thousandth of a unit: periodic
 /// motion (sin, cos) comes back to its start only up to rounding.
 fn same_frame(a: &[super::Item], b: &[super::Item]) -> bool {
-    let close = |p: super::P2, q: super::P2| (p[0] - q[0]).abs() < 1e-3 && (p[1] - q[1]).abs() < 1e-3;
+    let close =
+        |p: super::P2, q: super::P2| (p[0] - q[0]).abs() < 1e-3 && (p[1] - q[1]).abs() < 1e-3;
     let flow = |p: &super::Paint| match *p {
         super::Paint::Stroke { flow, .. } => flow,
         _ => 0.,
     };
     let same_paint = |p: &super::Paint, q: &super::Paint| match (*p, *q) {
-        (super::Paint::Stroke { ink: i, dashed: d, .. }, super::Paint::Stroke { ink: j, dashed: e, .. }) => {
+        (
+            super::Paint::Stroke {
+                ink: i, dashed: d, ..
+            },
+            super::Paint::Stroke {
+                ink: j, dashed: e, ..
+            },
+        ) => {
             // Dash phases are on a circle: 0.9999 and 0 are the same place.
             let df = (flow(p) - flow(q)).abs();
             i == j && d == e && (df < 1e-3 || df > 1. - 1e-3)
@@ -283,10 +413,25 @@ fn same_frame(a: &[super::Item], b: &[super::Item]) -> bool {
                 && x.path.len() == y.path.len()
                 && x.path.iter().zip(&y.path).all(|(s, t)| match (*s, *t) {
                     (Seg::M(p), Seg::M(q)) | (Seg::L(p), Seg::L(q)) => close(p, q),
-                    (Seg::C(a1, b1, c1), Seg::C(a2, b2, c2)) => close(a1, a2) && close(b1, b2) && close(c1, c2),
-                    (Seg::A { r: r1, to: t1, large: l1, sweep: s1, .. }, Seg::A { r: r2, to: t2, large: l2, sweep: s2, .. }) => {
-                        close(r1, r2) && close(t1, t2) && l1 == l2 && s1 == s2
+                    (Seg::C(a1, b1, c1), Seg::C(a2, b2, c2)) => {
+                        close(a1, a2) && close(b1, b2) && close(c1, c2)
                     }
+                    (
+                        Seg::A {
+                            r: r1,
+                            to: t1,
+                            large: l1,
+                            sweep: s1,
+                            ..
+                        },
+                        Seg::A {
+                            r: r2,
+                            to: t2,
+                            large: l2,
+                            sweep: s2,
+                            ..
+                        },
+                    ) => close(r1, r2) && close(t1, t2) && l1 == l2 && s1 == s2,
                     (Seg::Z, Seg::Z) => true,
                     _ => false,
                 })

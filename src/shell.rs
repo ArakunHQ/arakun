@@ -11,43 +11,44 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
-    Subscription, Task, TextLayout, UTF16Selection, UnderlineStyle, UniformListScrollHandle, Window, WindowControlArea, canvas, div, fill, img,
-    point, px, relative, size, uniform_list,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task, TextLayout,
+    UTF16Selection, UnderlineStyle, UniformListScrollHandle, Window, WindowControlArea, canvas,
+    div, fill, img, point, px, relative, size, uniform_list,
 };
 
 pub(crate) mod agent_cli;
-mod browsers;
 mod automations;
-mod checks;
 mod branches;
+mod browsers;
+mod checks;
 mod cloudflare;
 mod commands;
 mod composer;
 mod dock;
-mod extensions;
 mod documents;
 mod drag;
+mod extensions;
 mod git_actions;
 mod headless;
 mod home;
 mod island;
 mod limits;
 mod menus;
-mod panel;
-mod panes;
 mod notes;
 pub(crate) mod pages;
+mod panel;
+mod panes;
 mod paste;
 mod phone;
 mod posthog;
 mod rail;
 mod rail_blocks;
-mod sidebar_builder;
 mod runs;
 mod session_actions;
 mod sessions;
+mod sidebar_builder;
 #[cfg(feature = "coderlabs")]
 mod site;
 mod subagents;
@@ -63,42 +64,42 @@ use panel::*;
 use rail::*;
 use titlebar::*;
 
-use composer::Completion;
 use crate::account::Account;
-use crate::ci::{self, Ci};
-#[cfg(feature = "coderlabs")]
-use crate::coderspace::CoderSpace;
-use crate::memory_view::{MemoryEvent, MemoryView};
-use crate::usage_view::UsageView;
-use crate::gallery_view::GalleryView;
+use crate::account_view::{self, AccountDialog, AccountDialogEvent};
+use crate::attach_picker::{AttachEvent, AttachPicker};
 use crate::branches_view::BranchesView;
+use crate::ci::{self, Ci};
 use crate::cloudflare_view::CloudflareView;
 #[cfg(feature = "coderlabs")]
-use crate::site_view::SiteView;
-#[cfg(feature = "team")]
-use crate::team_view::{TeamEvent, TeamView};
-use crate::posthog_view::PostHogView;
-use crate::runs_view::RunsView;
-#[cfg(feature = "coderlabs")]
-use crate::tasks_view::TasksView;
-use crate::account_view::{self, AccountDialog, AccountDialogEvent};
+use crate::coderspace::CoderSpace;
 use crate::dialogs::{CreateEnvDialog, DeleteEnvDialog, DialogEvent};
 use crate::explorer;
 use crate::extensions_view::ExtensionsView;
+use crate::gallery_view::GalleryView;
 use crate::git;
 use crate::highlight;
+use crate::input::{InputEvent, TextInput};
+use crate::memory_view::{MemoryEvent, MemoryView};
 use crate::model::{
     self, Agent, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
 };
-use crate::terminal::{Terminal, TerminalEvent, TerminalView};
-use crate::attach_picker::{AttachEvent, AttachPicker};
 use crate::picker::{FolderPicker, PickerEvent};
-use crate::input::{InputEvent, TextInput};
+use crate::posthog_view::PostHogView;
+use crate::runs_view::RunsView;
 use crate::settings_view::{SettingsDialog, SettingsEvent};
+#[cfg(feature = "coderlabs")]
+use crate::site_view::SiteView;
 use crate::state;
 use crate::switcher::{self, Switcher, SwitcherEvent};
+#[cfg(feature = "coderlabs")]
+use crate::tasks_view::TasksView;
+#[cfg(feature = "team")]
+use crate::team_view::{TeamEvent, TeamView};
+use crate::terminal::{Terminal, TerminalEvent, TerminalView};
 use crate::theme;
 use crate::ui::{self, hover_icon, icon, icon_button};
+use crate::usage_view::UsageView;
+use composer::Completion;
 
 gpui::actions!(
     arakun,
@@ -420,9 +421,9 @@ struct InboxItem {
 
 const DOCK_MIN_H: f32 = 120.;
 /// How narrow and wide the side cards can be dragged.
-const RAIL_W_RANGE: std::ops::Range<f32> = 160. .. 320.;
-const PANEL_W_RANGE: std::ops::Range<f32> = 200. .. 480.;
-const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. .. 640.;
+const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
+const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
+const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
 /// Air around and between the window's floating cards.
 const GAP: f32 = 8.;
 /// The dock card's collapsed height: the status chips live in its header.
@@ -450,8 +451,10 @@ impl Shell {
                 this.refresh_visible(cx);
             }
             #[cfg(feature = "coderlabs")]
-            this.coderspace.update(cx, |cs, cx| cs.set_window_active(active, cx));
-            this.ci.update(cx, |ci, cx| ci.set_window_active(active, cx));
+            this.coderspace
+                .update(cx, |cs, cx| cs.set_window_active(active, cx));
+            this.ci
+                .update(cx, |ci, cx| ci.set_window_active(active, cx));
         });
         let focus = cx.focus_handle();
         let composer_focus = cx.focus_handle();
@@ -459,7 +462,9 @@ impl Shell {
             this.claim_composer_tab(window, cx);
             this.sync_blink(window, cx)
         });
-        let composer_blur = cx.on_blur(&composer_focus, window, |this, window, cx| this.spy_from_composer(window, cx));
+        let composer_blur = cx.on_blur(&composer_focus, window, |this, window, cx| {
+            this.spy_from_composer(window, cx)
+        });
         let (mut projects, active_project, layout) = state::restore(state::load());
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
@@ -484,11 +489,12 @@ impl Shell {
             this.phone_usage_changed(cx);
         });
         let session_query = cx.new(|cx| TextInput::new("Search conversations...", cx));
-        let session_query_sub = cx.subscribe(&session_query, |_, input, ev: &InputEvent, cx| match ev {
-            InputEvent::Changed => cx.notify(),
-            InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
-            _ => {}
-        });
+        let session_query_sub =
+            cx.subscribe(&session_query, |_, input, ev: &InputEvent, cx| match ev {
+                InputEvent::Changed => cx.notify(),
+                InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
+                _ => {}
+            });
         let notes_input = cx.new(|cx| TextInput::new("Add a note and press Enter...", cx));
         let notes_input_sub = cx.subscribe(&notes_input, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
@@ -508,65 +514,100 @@ impl Shell {
         #[cfg(feature = "coderlabs")]
         let tasks_subs = [
             cx.observe(&coderspace, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&tasks_view, window, |this, _, ev, window, cx| this.on_tasks_event(ev, window, cx)),
-            cx.subscribe_in(&coderspace, window, |this, _, ev, window, cx| this.on_coderspace_event(ev, window, cx)),
+            cx.subscribe_in(&tasks_view, window, |this, _, ev, window, cx| {
+                this.on_tasks_event(ev, window, cx)
+            }),
+            cx.subscribe_in(&coderspace, window, |this, _, ev, window, cx| {
+                this.on_coderspace_event(ev, window, cx)
+            }),
         ];
         let ci = cx.new(Ci::new);
         let runs_view = cx.new(|cx| RunsView::new(ci.clone(), cx));
         let runs_subs = [
             cx.observe(&ci, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&runs_view, window, |this, _, ev, window, cx| this.on_runs_event(ev, window, cx)),
-            cx.subscribe_in(&ci, window, |this, _, ev, window, cx| this.on_ci_event(ev, window, cx)),
+            cx.subscribe_in(&runs_view, window, |this, _, ev, window, cx| {
+                this.on_runs_event(ev, window, cx)
+            }),
+            cx.subscribe_in(&ci, window, |this, _, ev, window, cx| {
+                this.on_ci_event(ev, window, cx)
+            }),
         ];
         let memory_view = cx.new(MemoryView::new);
-        let memory_sub = cx.subscribe_in(&memory_view, window, |this, _, ev: &MemoryEvent, window, cx| match ev {
-            MemoryEvent::Edit(path) => this.edit_in_terminal(path, None, window, cx),
-        });
+        let memory_sub = cx.subscribe_in(
+            &memory_view,
+            window,
+            |this, _, ev: &MemoryEvent, window, cx| match ev {
+                MemoryEvent::Edit(path) => this.edit_in_terminal(path, None, window, cx),
+            },
+        );
         let usage_view = cx.new(UsageView::new);
         let gallery_view = cx.new(GalleryView::new);
         let iso_view = cx.new(crate::iso_view::IsoView::new);
         #[cfg(feature = "coderlabs")]
         let canvas_view = cx.new(crate::canvas_view::CanvasView::new);
-        let gallery_sub = cx.subscribe(&gallery_view, |this, _, _: &crate::gallery_view::GalleryChanged, cx| {
-            this.save(cx);
-            cx.refresh_windows();
-        });
-        let usage_sub = cx.subscribe_in(&usage_view, window, |this, _, ev: &crate::usage_view::UsageEvent, window, cx| match ev {
-            crate::usage_view::UsageEvent::OpenAccount => this.open_account(window, cx),
-            crate::usage_view::UsageEvent::ClaudeSignIn => {
-                if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude) {
-                    this.spawn_terminal_command(Some(cmd), true, window, cx);
+        let gallery_sub = cx.subscribe(
+            &gallery_view,
+            |this, _, _: &crate::gallery_view::GalleryChanged, cx| {
+                this.save(cx);
+                cx.refresh_windows();
+            },
+        );
+        let usage_sub = cx.subscribe_in(
+            &usage_view,
+            window,
+            |this, _, ev: &crate::usage_view::UsageEvent, window, cx| match ev {
+                crate::usage_view::UsageEvent::OpenAccount => this.open_account(window, cx),
+                crate::usage_view::UsageEvent::ClaudeSignIn => {
+                    if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude)
+                    {
+                        this.spawn_terminal_command(Some(cmd), true, window, cx);
+                    }
                 }
-            }
-            crate::usage_view::UsageEvent::PlanUpdated => {
-                this.check_limit_alerts(cx);
-                this.phone_usage_changed(cx);
-            }
-        });
+                crate::usage_view::UsageEvent::PlanUpdated => {
+                    this.check_limit_alerts(cx);
+                    this.phone_usage_changed(cx);
+                }
+            },
+        );
         let cloudflare_view = cx.new(CloudflareView::new);
         let cloudflare_sub =
-            cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| this.on_cloudflare_event(ev, window, cx));
+            cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| {
+                this.on_cloudflare_event(ev, window, cx)
+            });
         #[cfg(feature = "coderlabs")]
         let site_view = cx.new(SiteView::new);
         #[cfg(feature = "coderlabs")]
-        let site_sub = cx.subscribe_in(&site_view, window, |this, _, ev, window, cx| this.on_site_event(ev, window, cx));
+        let site_sub = cx.subscribe_in(&site_view, window, |this, _, ev, window, cx| {
+            this.on_site_event(ev, window, cx)
+        });
         #[cfg(feature = "team")]
         let team_view = cx.new(TeamView::new);
         #[cfg(feature = "team")]
-        let team_sub = cx.subscribe_in(&team_view, window, |this, _, ev: &TeamEvent, window, cx| match ev {
-            TeamEvent::Open(url) => this.open_url(url.clone(), window, cx),
-            TeamEvent::Reload => this.sync_team(window, cx),
-        });
+        let team_sub = cx.subscribe_in(
+            &team_view,
+            window,
+            |this, _, ev: &TeamEvent, window, cx| match ev {
+                TeamEvent::Open(url) => this.open_url(url.clone(), window, cx),
+                TeamEvent::Reload => this.sync_team(window, cx),
+            },
+        );
         let posthog_view = cx.new(PostHogView::new);
-        let posthog_sub = cx.subscribe_in(&posthog_view, window, |this, _, ev, window, cx| this.on_posthog_event(ev, window, cx));
+        let posthog_sub = cx.subscribe_in(&posthog_view, window, |this, _, ev, window, cx| {
+            this.on_posthog_event(ev, window, cx)
+        });
         let branches_view = cx.new(BranchesView::new);
         let extensions_view = cx.new(ExtensionsView::new);
         let extensions_sub =
-            cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| this.on_extensions_event(ev, window, cx));
-        let branches_sub =
-            cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| this.on_branches_event(ev, window, cx));
+            cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| {
+                this.on_extensions_event(ev, window, cx)
+            });
+        let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
+            this.on_branches_event(ev, window, cx)
+        });
         let phone_view = cx.new(crate::phone_view::PhoneView::new);
-        let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| this.on_phone_event(ev, window, cx));
+        let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
+            this.on_phone_event(ev, window, cx)
+        });
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
@@ -642,7 +683,9 @@ impl Shell {
             rail_w: layout.rail_w,
             panel_w: layout.panel_w,
             subagents_open: layout.subagents_open,
-            subagents_w: layout.subagents_w.clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end),
+            subagents_w: layout
+                .subagents_w
+                .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end),
             subagents_dismissed: false,
             subagent_view: None,
             subagent_tick: None,
@@ -765,7 +808,6 @@ impl Shell {
         let p = &mut self.projects[self.active_project];
         &mut p.environments[p.active_env]
     }
-
 
     // -----------------------------------------------------------------------
     // Persistence and git refresh
@@ -906,7 +948,8 @@ impl Shell {
                 for kind in reloads {
                     this.reload_doc(path.clone(), kind, cx);
                 }
-                this.stale_diffs.extend(stale.into_iter().map(|f| (path.clone(), f)));
+                this.stale_diffs
+                    .extend(stale.into_iter().map(|f| (path.clone(), f)));
                 if let Some(dirs) = dirs {
                     this.reload_dirs(path.clone(), dirs, cx);
                 }
@@ -941,7 +984,9 @@ impl Shell {
             loop {
                 cx.background_executor().timer(POLL).await;
                 let Some(path) = this
-                    .update(cx, |this, _| this.has_projects().then(|| this.env().path.clone()))
+                    .update(cx, |this, _| {
+                        this.has_projects().then(|| this.env().path.clone())
+                    })
                     .ok()
                 else {
                     break;
@@ -994,21 +1039,28 @@ impl Shell {
         self.env_menu_open = false;
         let existing = self.projects.iter().map(|p| p.path.clone()).collect();
         let picker = cx.new(|cx| FolderPicker::new(existing, window, cx));
-        let sub = cx.subscribe_in(&picker, window, |this, _, ev: &PickerEvent, window, cx| {
-            match ev {
+        let sub = cx.subscribe_in(
+            &picker,
+            window,
+            |this, _, ev: &PickerEvent, window, cx| match ev {
                 PickerEvent::Picked(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
                     this.add_project(path, window, cx);
                 }
                 PickerEvent::Dismissed => this.close_modal(window, cx),
-            }
-        });
+            },
+        );
         self.modal = Some((Modal::Picker(picker), sub));
         cx.notify();
     }
 
-    fn add_project(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_project(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let index = match self.projects.iter().position(|p| p.path == path) {
             Some(i) => i,
             None => {
@@ -1035,7 +1087,9 @@ impl Shell {
         if self.active_project >= pi && self.active_project > 0 {
             self.active_project -= 1;
         }
-        self.active_project = self.active_project.min(self.projects.len().saturating_sub(1));
+        self.active_project = self
+            .active_project
+            .min(self.projects.len().saturating_sub(1));
         self.sync_ci_roots(cx);
         self.save(cx);
         self.sync_poll(window, cx);
@@ -1051,16 +1105,18 @@ impl Shell {
         let (repo, name) = (project.path.clone(), project.name.clone());
         let setup = project.setup.clone();
         let dialog = cx.new(|cx| CreateEnvDialog::new(repo, name, setup, window, cx));
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, ev: &DialogEvent, window, cx| {
-            match ev {
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &DialogEvent, window, cx| match ev {
                 DialogEvent::Created(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
                     this.environment_created(pi, path, window, cx);
                 }
                 _ => this.close_modal(window, cx),
-            }
-        });
+            },
+        );
         self.modal = Some((Modal::CreateEnv(dialog), sub));
         cx.notify();
     }
@@ -1106,7 +1162,13 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
-        let current = suggested.or_else(|| if check { project.check.clone() } else { project.setup.clone() });
+        let current = suggested.or_else(|| {
+            if check {
+                project.check.clone()
+            } else {
+                project.setup.clone()
+            }
+        });
         let dialog = cx.new(|cx| {
             if check {
                 crate::dialogs::CommandDialog::check(current.as_deref(), window, cx)
@@ -1114,19 +1176,23 @@ impl Shell {
                 crate::dialogs::CommandDialog::setup(current.as_deref(), window, cx)
             }
         });
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, ev: &DialogEvent, window, cx| {
-            if let DialogEvent::Command(command) = ev {
-                if let Some(project) = this.projects.get_mut(pi) {
-                    if check {
-                        project.check = command.clone();
-                    } else {
-                        project.setup = command.clone();
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &DialogEvent, window, cx| {
+                if let DialogEvent::Command(command) = ev {
+                    if let Some(project) = this.projects.get_mut(pi) {
+                        if check {
+                            project.check = command.clone();
+                        } else {
+                            project.setup = command.clone();
+                        }
                     }
+                    this.save(cx);
                 }
-                this.save(cx);
-            }
-            this.close_modal(window, cx);
-        });
+                this.close_modal(window, cx);
+            },
+        );
         self.modal = Some((Modal::Command(dialog), sub));
         cx.notify();
     }
@@ -1134,7 +1200,12 @@ impl Shell {
     /// Shows the visible environment's `kind` tab, opening it when missing. A view
     /// opened from the rail is a preview: the next view takes its place unless
     /// this one was used (a click inside it, or a double click on its title).
-    pub(super) fn show_view_tab(&mut self, title: &'static str, kind: TabKind, is: impl Fn(&TabKind) -> bool) {
+    pub(super) fn show_view_tab(
+        &mut self,
+        title: &'static str,
+        kind: TabKind,
+        is: impl Fn(&TabKind) -> bool,
+    ) {
         let env = self.env_mut();
         let index = match env.tabs.iter().position(|t| is(&t.kind)) {
             Some(i) => i,
@@ -1228,7 +1299,9 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        self.show_view_tab("Design system", TabKind::Gallery, |k| matches!(k, TabKind::Gallery));
+        self.show_view_tab("Design system", TabKind::Gallery, |k| {
+            matches!(k, TabKind::Gallery)
+        });
         self.note_active_tab();
         self.gallery_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -1240,7 +1313,9 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        self.show_view_tab("Isometric", TabKind::Isometric, |k| matches!(k, TabKind::Isometric));
+        self.show_view_tab("Isometric", TabKind::Isometric, |k| {
+            matches!(k, TabKind::Isometric)
+        });
         self.note_active_tab();
         let root = self.env().path.clone();
         self.iso_view.update(cx, |v, cx| {
@@ -1253,7 +1328,12 @@ impl Shell {
     /// Opens (or focuses) the Canvas tab of the visible environment, reading `source`
     /// (a canvas JSON, a folder or a Doop URL) when given.
     #[cfg(feature = "coderlabs")]
-    pub(super) fn open_canvas_tab(&mut self, source: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_canvas_tab(
+        &mut self,
+        source: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             self.open_picker(window, cx);
             return;
@@ -1274,12 +1354,20 @@ impl Shell {
         let mut titles = std::collections::HashMap::new();
         let mut places = Vec::new();
         for p in &self.projects {
-            let name = p.path.file_name().map_or_else(|| p.path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let name = p.path.file_name().map_or_else(
+                || p.path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             for e in &p.environments {
                 places.push((e.path.clone(), name.clone()));
                 for s in &e.sessions {
-                    let id = s.live.as_ref().and_then(|l| l.thread.read(cx).session_id().map(str::to_string));
-                    if let Some(id) = id.or_else(|| s.meta.as_ref().and_then(|m| m.session_id.clone())) {
+                    let id = s
+                        .live
+                        .as_ref()
+                        .and_then(|l| l.thread.read(cx).session_id().map(str::to_string));
+                    if let Some(id) =
+                        id.or_else(|| s.meta.as_ref().and_then(|m| m.session_id.clone()))
+                    {
                         titles.insert(id, s.title.to_string());
                     }
                 }
@@ -1292,7 +1380,13 @@ impl Shell {
         });
     }
 
-    fn open_delete_env(&mut self, pi: usize, ei: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_delete_env(
+        &mut self,
+        pi: usize,
+        ei: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         let Some(project) = self.projects.get(pi) else {
             return;
@@ -1308,14 +1402,19 @@ impl Shell {
         let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
         let dirty = env.changes.len();
         let dialog = cx.new(|cx| DeleteEnvDialog::new(repo, path, branch, dirty, window, cx));
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, ev: &DialogEvent, window, cx| {
-            match ev {
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &DialogEvent, window, cx| match ev {
                 DialogEvent::Deleted(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
                     if let Some(env) = this.find_env_mut(&path) {
-                        let views: Vec<_> =
-                            env.tabs.iter().filter_map(|t| t.browser.as_ref().map(|b| b.view.clone())).collect();
+                        let views: Vec<_> = env
+                            .tabs
+                            .iter()
+                            .filter_map(|t| t.browser.as_ref().map(|b| b.view.clone()))
+                            .collect();
                         for view in views {
                             view.update(cx, |v, cx| v.close(cx));
                         }
@@ -1332,8 +1431,8 @@ impl Shell {
                     cx.notify();
                 }
                 _ => this.close_modal(window, cx),
-            }
-        });
+            },
+        );
         self.modal = Some((Modal::DeleteEnv(dialog), sub));
         cx.notify();
     }
@@ -1343,16 +1442,18 @@ impl Shell {
         self.env_menu_open = false;
         let account = self.account.clone();
         let dialog = cx.new(|cx| AccountDialog::new(account, window, cx));
-        let sub = cx.subscribe_in(&dialog, window, |this, _, ev: &AccountDialogEvent, window, cx| {
-            match ev {
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, ev: &AccountDialogEvent, window, cx| match ev {
                 AccountDialogEvent::OpenUrl(url) => {
                     let url = url.clone();
                     this.close_modal(window, cx);
                     this.open_url(url, window, cx);
                 }
                 AccountDialogEvent::Dismissed => this.close_modal(window, cx),
-            }
-        });
+            },
+        );
         self.modal = Some((Modal::Account(dialog), sub));
         cx.notify();
     }
@@ -1373,7 +1474,13 @@ impl Shell {
         #[cfg(feature = "coderlabs")]
         let coderspace = {
             let cs = self.coderspace.read(cx);
-            cs.connected().then(|| if cs.my_name.is_empty() { "Connected".to_string() } else { cs.my_name.clone() })
+            cs.connected().then(|| {
+                if cs.my_name.is_empty() {
+                    "Connected".to_string()
+                } else {
+                    cs.my_name.clone()
+                }
+            })
         };
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
@@ -1384,96 +1491,106 @@ impl Shell {
                 cx,
             )
         });
-        let sub = cx.subscribe_in(&dialog, window, |this, _, ev: &SettingsEvent, window, cx| match ev {
-            SettingsEvent::Arcade(on) => {
-                this.arcade = *on;
-                crate::mascot::set_animated(*on);
-                this.save(cx);
-                cx.refresh_windows();
-            }
-            SettingsEvent::DiffPalette(p) => {
-                theme::set_diff_palette(*p);
-                this.save(cx);
-                cx.refresh_windows();
-            }
-            SettingsEvent::RailUsage(agent, on) => {
-                account_view::set_rail_shows(*agent, *on);
-                this.save(cx);
-                cx.notify();
-            }
-            SettingsEvent::Grays(g) => {
-                theme::set_grays(*g);
-                this.save(cx);
-                cx.refresh_windows();
-            }
-            SettingsEvent::TypeScale(t) => {
-                crate::ui::set_type_scale(*t);
-                this.save(cx);
-                cx.refresh_windows();
-            }
-            SettingsEvent::Glass(on) => {
-                theme::set_glass(*on);
-                window.set_background_appearance(theme::window_background());
-                this.save(cx);
-                cx.refresh_windows();
-            }
-            SettingsEvent::Island(on) => {
-                crate::island::set_enabled(*on);
-                this.sync_island(window, cx);
-                this.save(cx);
-            }
-            SettingsEvent::OpenAccount => {
-                this.close_modal(window, cx);
-                this.open_account(window, cx);
-            }
-            SettingsEvent::OpenExtensions => {
-                this.close_modal(window, cx);
-                this.open_extensions_tab(window, cx);
-            }
-            #[cfg(feature = "coderlabs")]
-            SettingsEvent::OpenTasks => {
-                this.close_modal(window, cx);
-                this.open_tasks_tab(window, cx);
-            }
-            SettingsEvent::OpenUsage => {
-                this.close_modal(window, cx);
-                this.open_usage_tab(window, cx);
-            }
-            SettingsEvent::OpenGallery => {
-                this.close_modal(window, cx);
-                this.open_gallery_tab(window, cx);
-            }
-            SettingsEvent::ClaudeSignIn => {
-                this.close_modal(window, cx);
-                if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude) {
-                    this.spawn_terminal_command(Some(cmd), true, window, cx);
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, ev: &SettingsEvent, window, cx| match ev {
+                SettingsEvent::Arcade(on) => {
+                    this.arcade = *on;
+                    crate::mascot::set_animated(*on);
+                    this.save(cx);
+                    cx.refresh_windows();
                 }
-            }
-            SettingsEvent::ClaudeSignOut => {
-                this.close_modal(window, cx);
-                if let Some(cmd) = crate::agent::logout_command(crate::agent::AgentKind::Claude) {
-                    this.spawn_terminal_command(Some(cmd), true, window, cx);
+                SettingsEvent::DiffPalette(p) => {
+                    theme::set_diff_palette(*p);
+                    this.save(cx);
+                    cx.refresh_windows();
                 }
-            }
-            SettingsEvent::OpenCodeSignIn | SettingsEvent::OpenCodeGoSignIn | SettingsEvent::OpenCodeSignOut => {
-                this.close_modal(window, cx);
-                let kind = crate::agent::AgentKind::OpenCode;
-                let cmd = match ev {
-                    SettingsEvent::OpenCodeSignIn => crate::agent::login_command(kind),
-                    SettingsEvent::OpenCodeGoSignIn => crate::agent::opencode_go_login_command(),
-                    _ => crate::agent::logout_command(kind),
-                };
-                if let Some(cmd) = cmd {
-                    this.spawn_terminal_command(Some(cmd), true, window, cx);
+                SettingsEvent::RailUsage(agent, on) => {
+                    account_view::set_rail_shows(*agent, *on);
+                    this.save(cx);
+                    cx.notify();
                 }
-            }
-            #[cfg(feature = "coderlabs")]
-            SettingsEvent::DisconnectCoderSpace => {
-                this.coderspace.update(cx, |cs, cx| cs.disconnect(cx));
-                cx.notify();
-            }
-            SettingsEvent::Dismissed => this.close_modal(window, cx),
-        });
+                SettingsEvent::Grays(g) => {
+                    theme::set_grays(*g);
+                    this.save(cx);
+                    cx.refresh_windows();
+                }
+                SettingsEvent::TypeScale(t) => {
+                    crate::ui::set_type_scale(*t);
+                    this.save(cx);
+                    cx.refresh_windows();
+                }
+                SettingsEvent::Glass(on) => {
+                    theme::set_glass(*on);
+                    window.set_background_appearance(theme::window_background());
+                    this.save(cx);
+                    cx.refresh_windows();
+                }
+                SettingsEvent::Island(on) => {
+                    crate::island::set_enabled(*on);
+                    this.sync_island(window, cx);
+                    this.save(cx);
+                }
+                SettingsEvent::OpenAccount => {
+                    this.close_modal(window, cx);
+                    this.open_account(window, cx);
+                }
+                SettingsEvent::OpenExtensions => {
+                    this.close_modal(window, cx);
+                    this.open_extensions_tab(window, cx);
+                }
+                #[cfg(feature = "coderlabs")]
+                SettingsEvent::OpenTasks => {
+                    this.close_modal(window, cx);
+                    this.open_tasks_tab(window, cx);
+                }
+                SettingsEvent::OpenUsage => {
+                    this.close_modal(window, cx);
+                    this.open_usage_tab(window, cx);
+                }
+                SettingsEvent::OpenGallery => {
+                    this.close_modal(window, cx);
+                    this.open_gallery_tab(window, cx);
+                }
+                SettingsEvent::ClaudeSignIn => {
+                    this.close_modal(window, cx);
+                    if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude)
+                    {
+                        this.spawn_terminal_command(Some(cmd), true, window, cx);
+                    }
+                }
+                SettingsEvent::ClaudeSignOut => {
+                    this.close_modal(window, cx);
+                    if let Some(cmd) = crate::agent::logout_command(crate::agent::AgentKind::Claude)
+                    {
+                        this.spawn_terminal_command(Some(cmd), true, window, cx);
+                    }
+                }
+                SettingsEvent::OpenCodeSignIn
+                | SettingsEvent::OpenCodeGoSignIn
+                | SettingsEvent::OpenCodeSignOut => {
+                    this.close_modal(window, cx);
+                    let kind = crate::agent::AgentKind::OpenCode;
+                    let cmd = match ev {
+                        SettingsEvent::OpenCodeSignIn => crate::agent::login_command(kind),
+                        SettingsEvent::OpenCodeGoSignIn => {
+                            crate::agent::opencode_go_login_command()
+                        }
+                        _ => crate::agent::logout_command(kind),
+                    };
+                    if let Some(cmd) = cmd {
+                        this.spawn_terminal_command(Some(cmd), true, window, cx);
+                    }
+                }
+                #[cfg(feature = "coderlabs")]
+                SettingsEvent::DisconnectCoderSpace => {
+                    this.coderspace.update(cx, |cs, cx| cs.disconnect(cx));
+                    cx.notify();
+                }
+                SettingsEvent::Dismissed => this.close_modal(window, cx),
+            },
+        );
         self.modal = Some((Modal::Settings(dialog), sub));
         cx.notify();
     }
@@ -1500,7 +1617,8 @@ impl Shell {
             self.rail_open = false;
             self.panel_open = false;
         } else {
-            (self.rail_open, self.panel_open) = self.left_before_hide.take().unwrap_or((true, true));
+            (self.rail_open, self.panel_open) =
+                self.left_before_hide.take().unwrap_or((true, true));
         }
         self.save(cx);
         cx.notify();
@@ -1510,14 +1628,23 @@ impl Shell {
     /// Narrowed to icons it still shows, and some rails never close.
     fn rail_shown(&self) -> bool {
         use crate::sidebar::Collapse;
-        self.rail_open || !self.has_projects() || matches!(self.sidebar.style.collapse, Collapse::Icons | Collapse::Never)
+        self.rail_open
+            || !self.has_projects()
+            || matches!(
+                self.sidebar.style.collapse,
+                Collapse::Icons | Collapse::Never
+            )
     }
 
     /// Where the title bar starts, from the window's left edge: past the rail
     /// when it shows on the left.
     fn titlebar_x(&self) -> f32 {
         if self.rail_shown() && self.sidebar.style.side == crate::sidebar::Side::Left {
-            let w = if self.rail_narrow() { rail_blocks::RAIL_ICONS_W } else { self.rail_w };
+            let w = if self.rail_narrow() {
+                rail_blocks::RAIL_ICONS_W
+            } else {
+                self.rail_w
+            };
             GAP + w + GAP
         } else {
             GAP
@@ -1557,16 +1684,18 @@ impl Shell {
         self.env_menu_open = false;
         let items = self.switcher_items(cx);
         let switcher = cx.new(|cx| Switcher::new(items, window, cx));
-        let sub = cx.subscribe_in(&switcher, window, |this, _, ev: &SwitcherEvent, window, cx| {
-            match ev {
+        let sub = cx.subscribe_in(
+            &switcher,
+            window,
+            |this, _, ev: &SwitcherEvent, window, cx| match ev {
                 SwitcherEvent::Picked(target) => {
                     let target = target.clone();
                     this.close_modal(window, cx);
                     this.switch_to(target, window, cx);
                 }
                 SwitcherEvent::Dismissed => this.close_modal(window, cx),
-            }
-        });
+            },
+        );
         self.modal = Some((Modal::Switcher(switcher), sub));
         cx.notify();
     }
@@ -1587,7 +1716,11 @@ impl Shell {
             for (ei, e) in p.environments.iter().enumerate() {
                 let visible = pi == self.active_project && ei == p.active_env;
                 envs.push(Item {
-                    icon: if e.is_checkout { "folder01" } else { "git-branch" },
+                    icon: if e.is_checkout {
+                        "folder01"
+                    } else {
+                        "git-branch"
+                    },
                     label: format!("{} / {}", p.name, e.name).into(),
                     detail: "Environment".into(),
                     target: Target::Env(pi, ei),
@@ -1596,10 +1729,21 @@ impl Shell {
                     let item = Item {
                         icon: "message01",
                         label: sess.title.clone(),
-                        detail: format!("{} · {}/{} · {}", sess.agent.label(), p.name, e.name, model::age(sess.updated)).into(),
+                        detail: format!(
+                            "{} · {}/{} · {}",
+                            sess.agent.label(),
+                            p.name,
+                            e.name,
+                            model::age(sess.updated)
+                        )
+                        .into(),
                         target: Target::Session(pi, ei, sess.id.clone()),
                     };
-                    if visible { here.push(item) } else { elsewhere.push(item) }
+                    if visible {
+                        here.push(item)
+                    } else {
+                        elsewhere.push(item)
+                    }
                 }
             }
         }
@@ -1614,26 +1758,66 @@ impl Shell {
         items.extend(elsewhere);
         if self.has_projects() {
             items.push(command("comment-add01", "New session", Target::NewSession));
-            items.push(command("git-branch", "New environment", Target::NewEnvironment));
-            items.push(command("computer-terminal01", "New terminal", Target::NewTerminal));
+            items.push(command(
+                "git-branch",
+                "New environment",
+                Target::NewEnvironment,
+            ));
+            items.push(command(
+                "computer-terminal01",
+                "New terminal",
+                Target::NewTerminal,
+            ));
             items.push(command("globe", "New browser tab", Target::NewBrowserTab));
-            items.push(command("layout-bottom", "Toggle terminal dock", Target::ToggleDock));
-            items.push(command("sidebar-left", "Toggle sidebar", Target::ToggleSidebar));
-            items.push(command("layout-align-right", "Toggle workspace panel", Target::TogglePanel));
-            items.push(command("bot", "Toggle subagents panel", Target::ToggleSubagents));
+            items.push(command(
+                "layout-bottom",
+                "Toggle terminal dock",
+                Target::ToggleDock,
+            ));
+            items.push(command(
+                "sidebar-left",
+                "Toggle sidebar",
+                Target::ToggleSidebar,
+            ));
+            items.push(command(
+                "layout-align-right",
+                "Toggle workspace panel",
+                Target::TogglePanel,
+            ));
+            items.push(command(
+                "bot",
+                "Toggle subagents panel",
+                Target::ToggleSubagents,
+            ));
         }
         items.push(command("folder-add", "Add project", Target::AddProject));
         #[cfg(feature = "coderlabs")]
-        items.push(command("checkmark-circle02", "CoderSpace tasks", Target::Tasks));
+        items.push(command(
+            "checkmark-circle02",
+            "CoderSpace tasks",
+            Target::Tasks,
+        ));
         if self.has_projects() {
             items.push(command("activity01", "Runs: CI and deploys", Target::Runs));
-            items.push(command("git-branch", "Branches: map of branches and PRs", Target::Branches));
+            items.push(command(
+                "git-branch",
+                "Branches: map of branches and PRs",
+                Target::Branches,
+            ));
             #[cfg(feature = "coderlabs")]
-            items.push(command("artboard", "Canvas: design frames, drawn natively", Target::Canvas));
+            items.push(command(
+                "artboard",
+                "Canvas: design frames, drawn natively",
+                Target::Canvas,
+            ));
             // The branches the Branches tab last read, with their PR, by name or number.
             for (name, pr) in self.branches_view.read(cx).branch_list() {
                 items.push(Item {
-                    icon: if pr.is_some() { "git-pull-request" } else { "git-branch" },
+                    icon: if pr.is_some() {
+                        "git-pull-request"
+                    } else {
+                        "git-branch"
+                    },
                     label: match &pr {
                         Some((n, title)) => format!("#{n} {title}").into(),
                         None => name.clone().into(),
@@ -1653,18 +1837,42 @@ impl Shell {
                 items.push(Item {
                     icon: "checkmark-circle02",
                     label: format!("{} {}", t.key, t.title).trim().to_string().into(),
-                    detail: format!("Task · {} · {}", cs.project_name(&t.project).unwrap_or("CoderSpace"), t.status.label())
-                        .into(),
+                    detail: format!(
+                        "Task · {} · {}",
+                        cs.project_name(&t.project).unwrap_or("CoderSpace"),
+                        t.status.label()
+                    )
+                    .into(),
                     target: Target::Task(t.id.clone()),
                 });
             }
         }
-        items.push(command("gauge", "Factory account and usage", Target::Account));
+        items.push(command(
+            "gauge",
+            "Factory account and usage",
+            Target::Account,
+        ));
         items.push(command("settings01", "Settings", Target::Settings));
-        items.push(command("sparkles", "Extensions: plugins, skills & MCP", Target::Extensions));
-        items.push(command("square-lock02", "Sign in to Claude Code", Target::SignIn(crate::agent::AgentKind::Claude)));
-        items.push(command("square-lock02", "Sign in to Droid", Target::SignIn(crate::agent::AgentKind::Droid)));
-        items.push(command("square-lock02", "Sign in to OpenCode", Target::SignIn(crate::agent::AgentKind::OpenCode)));
+        items.push(command(
+            "sparkles",
+            "Extensions: plugins, skills & MCP",
+            Target::Extensions,
+        ));
+        items.push(command(
+            "square-lock02",
+            "Sign in to Claude Code",
+            Target::SignIn(crate::agent::AgentKind::Claude),
+        ));
+        items.push(command(
+            "square-lock02",
+            "Sign in to Droid",
+            Target::SignIn(crate::agent::AgentKind::Droid),
+        ));
+        items.push(command(
+            "square-lock02",
+            "Sign in to OpenCode",
+            Target::SignIn(crate::agent::AgentKind::OpenCode),
+        ));
         items
     }
 
@@ -1707,7 +1915,14 @@ impl Shell {
         }
     }
 
-    fn open_session_at(&mut self, pi: usize, ei: usize, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_session_at(
+        &mut self,
+        pi: usize,
+        ei: usize,
+        id: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let exists = self
             .projects
             .get(pi)
@@ -1746,7 +1961,11 @@ impl Shell {
             Status::Error => 1,
             _ => 2,
         };
-        items.sort_by(|a, b| rank(a.status).cmp(&rank(b.status)).then(b.updated.cmp(&a.updated)));
+        items.sort_by(|a, b| {
+            rank(a.status)
+                .cmp(&rank(b.status))
+                .then(b.updated.cmp(&a.updated))
+        });
         items
     }
 
@@ -1799,8 +2018,20 @@ impl Shell {
                             .items_center()
                             .gap(px(6.))
                             .child(status_dot(item.status))
-                            .child(div().flex_1().min_w_0().truncate().text_size(px(ui::TEXT_MD)).child(item.title))
-                            .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(label)),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .child(item.title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_subtle())
+                                    .child(label),
+                            ),
                     )
                     .child(
                         div()
@@ -1948,7 +2179,9 @@ impl Shell {
 
     fn can_go_forward(&self) -> bool {
         let env = self.env();
-        env.tab_fwd.iter().any(|id| env.tabs.iter().any(|t| t.id == *id))
+        env.tab_fwd
+            .iter()
+            .any(|id| env.tabs.iter().any(|t| t.id == *id))
     }
 
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -2020,7 +2253,13 @@ impl Shell {
 
     /// One tab's content. The composer goes under the session it writes to
     /// (`composer_tab`).
-    fn render_pane(&self, index: usize, focused: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(
+        &self,
+        index: usize,
+        focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let body = self.render_pane_body(index, focused, window, cx);
         if !self.env().tabs.get(index).is_some_and(|t| t.preview) {
             return body;
@@ -2033,7 +2272,13 @@ impl Shell {
             .into_any_element()
     }
 
-    fn render_pane_body(&self, index: usize, focused: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane_body(
+        &self,
+        index: usize,
+        focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let env = self.env();
         let tab = env.tabs.get(index);
         match tab.map(|t| t.kind.clone()) {
@@ -2069,7 +2314,9 @@ impl Shell {
                                 .when_some(live, |d, live| {
                                     let mascot = live.view.read(cx).mascot();
                                     let top = mascot.read(cx).ledge();
-                                    d.child(div().absolute().top(px(-top)).right(px(40.)).child(mascot))
+                                    d.child(
+                                        div().absolute().top(px(-top)).right(px(40.)).child(mascot),
+                                    )
                                 })
                                 .child(self.render_composer(false, window, cx)),
                         )
@@ -2107,7 +2354,8 @@ impl Shell {
             Some(TabKind::PostHog) => {
                 // Follows the visible project, also when it changes under an open tab.
                 let root = self.project().path.clone();
-                self.posthog_view.update(cx, |v, cx| v.set_project(&root, cx));
+                self.posthog_view
+                    .update(cx, |v, cx| v.set_project(&root, cx));
                 self.posthog_view.clone().into_any_element()
             }
             Some(TabKind::Branches) => {
@@ -2180,7 +2428,9 @@ impl Render for Shell {
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
         if has_projects {
             if self.browsers_out_of_date() {
-                cx.defer_in(window, |this, window, cx| this.ensure_active_browser(false, window, cx));
+                cx.defer_in(window, |this, window, cx| {
+                    this.ensure_active_browser(false, window, cx)
+                });
             }
         } else if !self.shown_browsers.is_empty() {
             cx.defer_in(window, |this, _, cx| this.sync_browsers(cx));
@@ -2237,10 +2487,17 @@ impl Render for Shell {
         let context_menu = self.menu.as_ref().map(|m| {
             let above = matches!(
                 m.target,
-                MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::AgentMenu | MenuTarget::RailUsage
+                MenuTarget::ModelMenu
+                    | MenuTarget::PermissionMenu
+                    | MenuTarget::AgentMenu
+                    | MenuTarget::RailUsage
             );
             // The room between the anchor and the window edge the menu opens toward.
-            let room = if above { m.at.y.as_f32() - 24. } else { viewport_h - m.at.y.as_f32() - 8. };
+            let room = if above {
+                m.at.y.as_f32() - 24.
+            } else {
+                viewport_h - m.at.y.as_f32() - 8.
+            };
             let menu = div()
                 .flex()
                 .flex_col()
@@ -2259,8 +2516,9 @@ impl Render for Shell {
                         // The dock card's bottom edge is one GAP above the window's edge.
                         let bottom = window.viewport_size().height.as_f32() - GAP;
                         let max = (bottom - 160.).max(DOCK_MIN_H);
-                        this.dock_height =
-                            (bottom - ev.position.y.as_f32()).clamp(DOCK_MIN_H, max).round();
+                        this.dock_height = (bottom - ev.position.y.as_f32())
+                            .clamp(DOCK_MIN_H, max)
+                            .round();
                         cx.notify();
                     }))
                     .on_mouse_up(
@@ -2279,7 +2537,11 @@ impl Render for Shell {
                         match this.side_drag {
                             Some(SideDrag::Rail) => {
                                 let x = ev.position.x.as_f32();
-                                let w = if this.sidebar.style.side == crate::sidebar::Side::Right { window_w - GAP - x } else { x - GAP };
+                                let w = if this.sidebar.style.side == crate::sidebar::Side::Right {
+                                    window_w - GAP - x
+                                } else {
+                                    x - GAP
+                                };
                                 this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
@@ -2288,11 +2550,20 @@ impl Render for Shell {
                             }
                             Some(SideDrag::Subagents) => {
                                 // Its right edge is where the Workspace panel starts.
-                                let rail = this.rail_shown() && this.sidebar.style.side == crate::sidebar::Side::Right;
-                                let rail_w = if this.rail_narrow() { rail_blocks::RAIL_ICONS_W } else { this.rail_w };
+                                let rail = this.rail_shown()
+                                    && this.sidebar.style.side == crate::sidebar::Side::Right;
+                                let rail_w = if this.rail_narrow() {
+                                    rail_blocks::RAIL_ICONS_W
+                                } else {
+                                    this.rail_w
+                                };
                                 let right = window_w
                                     - GAP
-                                    - if this.panel_open { this.panel_w + GAP } else { 0. }
+                                    - if this.panel_open {
+                                        this.panel_w + GAP
+                                    } else {
+                                        0.
+                                    }
                                     - if rail { rail_w + GAP } else { 0. };
                                 this.subagents_w = (right - ev.position.x.as_f32())
                                     .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end)
@@ -2311,9 +2582,13 @@ impl Render for Shell {
                     )
             })
             // Clicks that reach the root landed on a gap between cards: drag the window.
-            .on_mouse_down(MouseButton::Left, |ev, window, _| crate::ui::drag_window(ev, window))
+            .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                crate::ui::drag_window(ev, window)
+            })
             .on_action(cx.listener(|this, _: &ToggleDock, window, cx| this.toggle_dock(window, cx)))
-            .on_action(cx.listener(|this, _: &CustomizeSidebar, window, cx| this.open_sidebar_builder(window, cx)))
+            .on_action(cx.listener(|this, _: &CustomizeSidebar, window, cx| {
+                this.open_sidebar_builder(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ZoomIn, window, cx| {
                 this.zoom_to(crate::ui_zoom::next(crate::ui_zoom::pct(), 1), window, cx)
             }))
@@ -2326,19 +2601,27 @@ impl Render for Shell {
                     view.update(cx, |v, cx| v.open_search(window, cx));
                 }
             }))
-            .on_action(cx.listener(|this, link: &crate::agent::markdown::OpenLink, window, cx| {
-                this.open_url(link.url.clone(), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NewTerminal, window, cx| this.new_terminal(window, cx)))
+            .on_action(cx.listener(
+                |this, link: &crate::agent::markdown::OpenLink, window, cx| {
+                    this.open_url(link.url.clone(), window, cx)
+                },
+            ))
+            .on_action(
+                cx.listener(|this, _: &NewTerminal, window, cx| this.new_terminal(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &NewBrowserTab, window, cx| {
                 this.open_browser_tab(String::new(), window, cx)
             }))
             .on_action(cx.listener(|this, _: &AddProject, window, cx| this.open_picker(window, cx)))
-            .on_action(cx.listener(|this, _: &QuickSwitch, window, cx| this.open_switcher(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &QuickSwitch, window, cx| this.open_switcher(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, _, cx| this.toggle_panel(cx)))
             .on_action(cx.listener(|this, _: &ToggleSubagents, _, cx| this.toggle_subagents(cx)))
-            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
+            )
             .on_action(cx.listener(|_, _: &ToggleDance, _, cx| {
                 crate::mascot::toggle_dancing();
                 cx.notify();
@@ -2361,12 +2644,14 @@ impl Render for Shell {
                 cx.listener(|this, _: &PrevEnvironment, window, cx| this.cycle_env(-1, window, cx)),
             )
             .on_action(cx.listener(|this, _: &NewSession, window, cx| this.new_session(window, cx)))
-            .on_action(cx.listener(|this, _: &GoBackTab, window, cx| {
-                this.tab_history(true, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &GoForwardTab, window, cx| {
-                this.tab_history(false, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &GoBackTab, window, cx| this.tab_history(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &GoForwardTab, window, cx| {
+                    this.tab_history(false, window, cx)
+                }),
+            )
             .map(|d| self.pane_handlers(d, cx))
             .capture_key_down(|ev: &gpui::KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && crate::agent::markdown::close_preview(window) {
@@ -2375,7 +2660,12 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
-                if this.menu.is_some() && !k.modifiers.control && !k.modifiers.alt && !k.modifiers.platform && this.menu_key(&k.key, window, cx) {
+                if this.menu.is_some()
+                    && !k.modifiers.control
+                    && !k.modifiers.alt
+                    && !k.modifiers.platform
+                    && this.menu_key(&k.key, window, cx)
+                {
                     cx.stop_propagation();
                     return;
                 }
@@ -2457,7 +2747,11 @@ impl Render for Shell {
                     gpui::anchored()
                         .when(above, |a| a.anchor(gpui::Anchor::BottomLeft))
                         // Composer chips open their menu just above the chip row, not over it.
-                        .position(if above { point(at.x - px(12.), at.y - px(16.)) } else { at })
+                        .position(if above {
+                            point(at.x - px(12.), at.y - px(16.))
+                        } else {
+                            at
+                        })
                         .snap_to_window_with_margin(px(8.))
                         .child(menu),
                 ))
@@ -2531,7 +2825,6 @@ pub(crate) fn agent_icon(agent: Agent, size: f32) -> AnyElement {
 }
 
 impl Shell {
-
     /// The Notes tab: the active project's scratch list.
     fn render_notes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let notes = &self.project().notes;
@@ -2545,9 +2838,12 @@ impl Shell {
             .p(px(16.))
             .gap(px(6.));
         if notes.is_empty() {
-            list = list.child(
-                ui::empty_state("note01", "No notes yet", "Ideas, links, things to check later. Type one above and press Enter.", None),
-            );
+            list = list.child(ui::empty_state(
+                "note01",
+                "No notes yet",
+                "Ideas, links, things to check later. Type one above and press Enter.",
+                None,
+            ));
         }
         for (ni, note) in notes.iter().enumerate() {
             let group: SharedString = format!("note-{ni}").into();
@@ -2613,19 +2909,24 @@ impl Shell {
                     ),
             )
             .child(
-                div().flex_none().p(px(10.)).border_b_1().border_color(theme::stroke()).child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .h(px(34.))
-                        .px(px(10.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::background())
-                        .text_size(px(ui::TEXT_MD))
-                        .child(self.notes_input.clone()),
-                ),
+                div()
+                    .flex_none()
+                    .p(px(10.))
+                    .border_b_1()
+                    .border_color(theme::stroke())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .h(px(34.))
+                            .px(px(10.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(theme::border())
+                            .bg(theme::background())
+                            .text_size(px(ui::TEXT_MD))
+                            .child(self.notes_input.clone()),
+                    ),
             )
             .child(list)
     }
@@ -2656,13 +2957,25 @@ fn chip(
             d.cursor_pointer()
                 .hover(|s| s.bg(theme::selection_hover()).text_color(theme::content()))
         })
-        .when_some(leading, |d, l| d.child(div().flex_none().flex().items_center().child(l)))
+        .when_some(leading, |d, l| {
+            d.child(div().flex_none().flex().items_center().child(l))
+        })
         .child(div().flex_none().child(label))
         .when_some(dim, |d, dim| {
-            d.child(div().min_w_0().truncate().text_color(theme::text_subtle()).child(dim))
+            d.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme::text_subtle())
+                    .child(dim),
+            )
         })
         .when(enabled, |d| {
-            d.child(icon("arrow-down01", 11.).flex_none().text_color(theme::text_faint()))
+            d.child(
+                icon("arrow-down01", 11.)
+                    .flex_none()
+                    .text_color(theme::text_faint()),
+            )
         })
 }
 

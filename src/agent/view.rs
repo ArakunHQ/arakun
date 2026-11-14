@@ -14,13 +14,13 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, FollowMode, FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, StyledText, Subscription, Task, TextRun, Transformation, Window, div, font,
-    linear_color_stop, linear_gradient, list, px, radians, Anchor, Pixels, Point, anchored,
-    deferred, point, ScrollHandle, ScrollWheelEvent,
+    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, FollowMode, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, StyledText,
+    Subscription, Task, TextRun, Transformation, Window, anchored, deferred, div, font,
+    linear_color_stop, linear_gradient, list, point, px, radians,
 };
 
 use super::diff::{self, LineKind};
@@ -28,12 +28,12 @@ use super::markdown::{self, Block, Doc, Fade, MdStyle};
 use super::search::{self, Find, Spot};
 use super::selection::{SelText, TextMap};
 use super::shell_diff::ShellChange;
-use crate::highlight::LineSpans;
 use super::thread::{
-    AskUserRequest, CheckAnswer, Entry, NoticeMark, NoticePlace, PermissionRequest, PlanEntry, RewindPlan, Thread, ThreadEvent,
-    ThreadStatus, ToolCall, ToolContent, ToolStatus,
+    AskUserRequest, CheckAnswer, Entry, NoticeMark, NoticePlace, PermissionRequest, PlanEntry,
+    RewindPlan, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus,
 };
 use super::{AgentKind, launch};
+use crate::highlight::LineSpans;
 use crate::input::{InputEvent, TextInput};
 use crate::mascot::{Mascot, Mood};
 use crate::theme;
@@ -155,7 +155,12 @@ pub enum ThreadViewEvent {
     /// pointed at (`src/a.rs:42`).
     OpenFile(PathBuf, Option<usize>),
     /// Selected text was added to the chat with a note (maybe empty).
-    AddNote { surface: usize, range: Range<usize>, quote: String, note: String },
+    AddNote {
+        surface: usize,
+        range: Range<usize>,
+        quote: String,
+        note: String,
+    },
     /// An Agent call's subagent was asked for, by its id; `None` asks for the list.
     OpenSubagent(Option<String>),
 }
@@ -387,7 +392,8 @@ impl ThreadView {
                 self.list.set_follow_mode(FollowMode::Tail);
             }
             ThreadEvent::StatusChanged => {
-                self.list.remeasure_items(self.turns.len()..self.turns.len() + 1);
+                self.list
+                    .remeasure_items(self.turns.len()..self.turns.len() + 1);
                 if let Some(last) = self.turns.len().checked_sub(1) {
                     self.list.remeasure_items(last..last + 1);
                 }
@@ -510,7 +516,10 @@ impl ThreadView {
     fn fade_for(&mut self, ix: usize, len: usize) -> Option<Fade> {
         let now = Instant::now();
         let settled = now.checked_sub(FADE).unwrap_or(now);
-        let rec = self.arrivals.entry(ix).or_insert_with(|| vec![(len, settled)]);
+        let rec = self
+            .arrivals
+            .entry(ix)
+            .or_insert_with(|| vec![(len, settled)]);
         let last = rec.last().map_or(0, |r| r.0);
         if len > last {
             rec.push((len, now));
@@ -537,11 +546,24 @@ impl ThreadView {
         Some(Fade(spans))
     }
 
-    fn surface_of(&self, ix: usize, blocks: &[Block], st: MdStyle, cx: &Context<Self>) -> AnyElement {
+    fn surface_of(
+        &self,
+        ix: usize,
+        blocks: &[Block],
+        st: MdStyle,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         self.surface_faded(ix, blocks, st, None, cx)
     }
 
-    fn surface_faded(&self, ix: usize, blocks: &[Block], st: MdStyle, fade: Option<&Fade>, cx: &Context<Self>) -> AnyElement {
+    fn surface_faded(
+        &self,
+        ix: usize,
+        blocks: &[Block],
+        st: MdStyle,
+        fade: Option<&Fade>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let map = self.maps.borrow_mut().entry(ix).or_default().clone();
         let selection = self
             .selection
@@ -572,7 +594,13 @@ impl ThreadView {
             .into_any_element()
     }
 
-    fn select_start(&mut self, surface: usize, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_start(
+        &mut self,
+        surface: usize,
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(map) = self.maps.borrow().get(&surface).cloned() else {
             return;
         };
@@ -628,7 +656,11 @@ impl ThreadView {
             }
             return;
         }
-        let file = self.maps.borrow().get(&sel.surface).and_then(|m| m.file_at(sel.head));
+        let file = self
+            .maps
+            .borrow()
+            .get(&sel.surface)
+            .and_then(|m| m.file_at(sel.head));
         if let Some(file) = file
             && let Some(path) = self.resolve_file(&file, cx)
         {
@@ -637,11 +669,21 @@ impl ThreadView {
     }
 
     /// What a notice points at (a failing check's errors), each opening its file at the line.
-    fn notice_places(&self, ix: usize, places: &[NoticePlace], cx: &Context<Self>) -> Option<AnyElement> {
+    fn notice_places(
+        &self,
+        ix: usize,
+        places: &[NoticePlace],
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         if places.is_empty() {
             return None;
         }
-        let mut col = div().flex().flex_col().pl(px(14.)).pt(px(2.)).text_size(px(crate::ui::TEXT_SM));
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .pl(px(14.))
+            .pt(px(2.))
+            .text_size(px(crate::ui::TEXT_SM));
         for (k, place) in places.iter().take(NOTICE_PLACES).enumerate() {
             let target = self.resolve_file(&place.path, cx);
             let row = div()
@@ -656,23 +698,41 @@ impl ThreadView {
                     div()
                         .flex_none()
                         .font_family(theme::FONT_MONO)
-                        .text_color(if target.is_some() { markdown::link_color() } else { theme::mix(0.5) })
+                        .text_color(if target.is_some() {
+                            markdown::link_color()
+                        } else {
+                            theme::mix(0.5)
+                        })
                         .child(format!("{}:{}", place.path, place.line)),
                 )
-                .child(div().flex_1().min_w_0().truncate().text_color(theme::text_subtle()).child(place.message.clone()));
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme::text_subtle())
+                        .child(place.message.clone()),
+                );
             col = col.child(match target {
                 Some(path) => {
                     let line = place.line as usize;
-                    row.cursor_pointer().hover(|s| s.bg(theme::fill_selected())).on_click(cx.listener(
-                        move |_, _, _, cx| cx.emit(ThreadViewEvent::OpenFile(path.clone(), Some(line))),
-                    ))
+                    row.cursor_pointer()
+                        .hover(|s| s.bg(theme::fill_selected()))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(ThreadViewEvent::OpenFile(path.clone(), Some(line)))
+                        }))
                 }
                 None => row,
             });
         }
         if places.len() > NOTICE_PLACES {
             let more = places.len() - NOTICE_PLACES;
-            col = col.child(div().px(px(6.)).text_color(theme::text_faint()).child(format!("and {more} more")));
+            col = col.child(
+                div()
+                    .px(px(6.))
+                    .text_color(theme::text_faint())
+                    .child(format!("and {more} more")),
+            );
         }
         Some(col.into_any_element())
     }
@@ -863,7 +923,8 @@ impl ThreadView {
                     return;
                 };
                 let id = opt.id.clone();
-                self.thread.update(cx, |t, cx| t.respond_permission(&id, cx));
+                self.thread
+                    .update(cx, |t, cx| t.respond_permission(&id, cx));
             }
             _ => return,
         }
@@ -873,7 +934,12 @@ impl ThreadView {
 
     // ---- rendering -------------------------------------------------------
 
-    fn render_item(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_item(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let cx: &Context<Self> = cx;
         let body = if ix < self.turns.len() {
             self.render_turn(ix, window, cx)
@@ -919,7 +985,13 @@ impl ThreadView {
             .flex_col()
             .pb(px(8.));
 
-        let TurnParts { body_start, trailing_notices, reply, plan, work } = turn_parts(entries, live);
+        let TurnParts {
+            body_start,
+            trailing_notices,
+            reply,
+            plan,
+            work,
+        } = turn_parts(entries, live);
         let mut elapsed_ms = None;
         if let Some(Entry::User {
             text,
@@ -984,7 +1056,11 @@ impl ThreadView {
                         div()
                             .text_size(px(crate::ui::TEXT_SM))
                             .text_color(theme::text_subtle())
-                            .child(if n == 1 { "1 file".to_string() } else { format!("{n} files") }),
+                            .child(if n == 1 {
+                                "1 file".to_string()
+                            } else {
+                                format!("{n} files")
+                            }),
                     )
                     .child(diff_counts(edits.added, edits.removed))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1002,42 +1078,35 @@ impl ThreadView {
                     .px(px(16.))
                     .py(px(4.))
                     .cursor_pointer()
-                    .child(
-                        div()
-                            .relative()
-                            .size(px(14.))
-                            .flex_none()
-                            .map(|d| {
-                                if show_work {
-                                    d.child(
-                                        icon("arrow-right01", 14.)
-                                            .text_color(theme::text_subtle())
-                                            .with_transformation(Transformation::rotate(
-                                                radians(std::f32::consts::FRAC_PI_2),
-                                            )),
-                                    )
-                                } else {
-                                    d.child(
-                                        div()
-                                            .absolute()
-                                            .size_full()
-                                            .group_hover(group.clone(), |s| s.opacity(0.))
-                                            .child(kind.icon(14.)),
-                                    )
+                    .child(div().relative().size(px(14.)).flex_none().map(|d| {
+                        if show_work {
+                            d.child(
+                                icon("arrow-right01", 14.)
+                                    .text_color(theme::text_subtle())
+                                    .with_transformation(Transformation::rotate(radians(
+                                        std::f32::consts::FRAC_PI_2,
+                                    ))),
+                            )
+                        } else {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .size_full()
+                                    .group_hover(group.clone(), |s| s.opacity(0.))
+                                    .child(kind.icon(14.)),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .size_full()
+                                    .opacity(0.)
+                                    .group_hover(group.clone(), |s| s.opacity(1.))
                                     .child(
-                                        div()
-                                            .absolute()
-                                            .size_full()
-                                            .opacity(0.)
-                                            .group_hover(group.clone(), |s| s.opacity(1.))
-                                            .child(
-                                                icon("arrow-right01", 14.)
-                                                    .text_color(theme::text_subtle()),
-                                            ),
-                                    )
-                                }
-                            }),
-                    )
+                                        icon("arrow-right01", 14.).text_color(theme::text_subtle()),
+                                    ),
+                            )
+                        }
+                    }))
                     .child(
                         div()
                             .flex_1()
@@ -1125,9 +1194,7 @@ impl ThreadView {
             }
         }
 
-        if !live
-            && let Some(Entry::User { at, tokens, .. }) = entries.first()
-        {
+        if !live && let Some(Entry::User { at, tokens, .. }) = entries.first() {
             let reply = content[reply.clone()]
                 .iter()
                 .filter_map(|e| match e {
@@ -1147,9 +1214,15 @@ impl ThreadView {
         // A permission for a tool this turn never announced still needs a card.
         if let Some(p) = &permission
             && live
-            && !entries.iter().any(|e| matches!(e, Entry::Tool(tc) if tc.id == p.tool_call_id))
+            && !entries
+                .iter()
+                .any(|e| matches!(e, Entry::Tool(tc) if tc.id == p.tool_call_id))
         {
-            col = col.child(div().px(px(16.)).child(self.permission_card(p, None, &cwd, window, cx)));
+            col = col.child(
+                div()
+                    .px(px(16.))
+                    .child(self.permission_card(p, None, &cwd, window, cx)),
+            );
         }
 
         if live && let Some(q) = &question {
@@ -1159,17 +1232,32 @@ impl ThreadView {
         let notices_from = body.len() - trailing_notices;
         for (k, e) in body[notices_from..].iter().enumerate() {
             match e {
-                Entry::Notice { text, error, .. } if !*error && legacy_compaction(text).is_some() => {
-                    col = col.child(compaction_divider(legacy_compaction(text).unwrap_or(0), None, None));
+                Entry::Notice { text, error, .. }
+                    if !*error && legacy_compaction(text).is_some() =>
+                {
+                    col = col.child(compaction_divider(
+                        legacy_compaction(text).unwrap_or(0),
+                        None,
+                        None,
+                    ));
                 }
-                Entry::Notice { text, error, mark, places } => {
+                Entry::Notice {
+                    text,
+                    error,
+                    mark,
+                    places,
+                } => {
                     let ix = base + notices_from + k;
                     col = col.child(notice_row(ix, text, *error, *mark));
                     if let Some(places) = self.notice_places(ix, places, cx) {
                         col = col.child(div().px(px(16.)).pb(px(4.)).child(places));
                     }
                 }
-                Entry::Compacted { removed, before, after } => {
+                Entry::Compacted {
+                    removed,
+                    before,
+                    after,
+                } => {
                     col = col.child(compaction_divider(*removed, *before, *after));
                 }
                 _ => {}
@@ -1178,7 +1266,14 @@ impl ThreadView {
         col.into_any_element()
     }
 
-    fn user_bubble(&self, ix: usize, full: &str, at: u64, rewind: bool, cx: &Context<Self>) -> AnyElement {
+    fn user_bubble(
+        &self,
+        ix: usize,
+        full: &str,
+        at: u64,
+        rewind: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let group: SharedString = format!("user-{ix}").into();
         let (typed, pastes) = super::attach::split_pastes(full);
         let (typed, images) = super::attach::split_images(&typed, self.thread.read(cx).cwd());
@@ -1196,7 +1291,10 @@ impl ThreadView {
         } else {
             text.to_string()
         };
-        let single = !text.contains('\n') && text.chars().count() < 70 && pastes.is_empty() && images.is_empty();
+        let single = !text.contains('\n')
+            && text.chars().count() < 70
+            && pastes.is_empty()
+            && images.is_empty();
         let copy = full.to_string();
         div()
             .id(("user", ix))
@@ -1234,37 +1332,46 @@ impl ThreadView {
                                         .justify_end()
                                         .gap(px(6.))
                                         .when(!text.is_empty(), |d| d.mt(px(8.)))
-                                        .children(images.into_iter().enumerate().map(|(n, path)| {
-                                            let open = path.clone();
-                                            div()
-                                                .id(("user-image", ix * 64 + n))
-                                                .h(px(if single_image { 220. } else { 120. }))
-                                                .max_w(px(if single_image { 400. } else { 200. }))
-                                                .min_w(px(48.))
-                                                .rounded(px(12.))
-                                                .overflow_hidden()
-                                                .border_1()
-                                                .border_color(theme::border_strong())
-                                                .bg(theme::fill_hover())
-                                                .cursor_pointer()
-                                                .child(
-                                                    gpui::img(path)
-                                                        .object_fit(gpui::ObjectFit::Contain)
-                                                        .h_full()
-                                                        .max_w_full()
-                                                        .with_fallback(|| {
-                                                            div()
+                                        .children(images.into_iter().enumerate().map(
+                                            |(n, path)| {
+                                                let open = path.clone();
+                                                div()
+                                                    .id(("user-image", ix * 64 + n))
+                                                    .h(px(if single_image { 220. } else { 120. }))
+                                                    .max_w(px(if single_image {
+                                                        400.
+                                                    } else {
+                                                        200.
+                                                    }))
+                                                    .min_w(px(48.))
+                                                    .rounded(px(12.))
+                                                    .overflow_hidden()
+                                                    .border_1()
+                                                    .border_color(theme::border_strong())
+                                                    .bg(theme::fill_hover())
+                                                    .cursor_pointer()
+                                                    .child(
+                                                        gpui::img(path)
+                                                            .object_fit(gpui::ObjectFit::Contain)
+                                                            .h_full()
+                                                            .max_w_full()
+                                                            .with_fallback(|| {
+                                                                div()
                                                                 .p(px(8.))
                                                                 .text_size(px(crate::ui::TEXT_SM))
                                                                 .text_color(theme::text_subtle())
                                                                 .child("Image not found")
                                                                 .into_any_element()
-                                                        }),
-                                                )
-                                                .on_click(cx.listener(move |_, _, _, cx| {
-                                                    cx.emit(ThreadViewEvent::OpenFile(open.clone(), None))
-                                                }))
-                                        })),
+                                                            }),
+                                                    )
+                                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                                        cx.emit(ThreadViewEvent::OpenFile(
+                                                            open.clone(),
+                                                            None,
+                                                        ))
+                                                    }))
+                                            },
+                                        )),
                                 )
                             })
                             .when(!pastes.is_empty(), |d| {
@@ -1291,15 +1398,26 @@ impl ThreadView {
                                                 .cursor_pointer()
                                                 .hover(|s| s.bg(theme::mix(0.14)))
                                                 .child(
-                                                    icon(if copied { "tick02" } else { "file01" }, 12.)
-                                                        .text_color(theme::text_subtle()),
+                                                    icon(
+                                                        if copied { "tick02" } else { "file01" },
+                                                        12.,
+                                                    )
+                                                    .text_color(theme::text_subtle()),
                                                 )
-                                                .child(div().text_color(theme::text_muted()).child("Pasted text"))
-                                                .child(div().text_color(theme::text_subtle()).child(if copied {
-                                                    "copied".to_string()
-                                                } else {
-                                                    format!("{lines} lines")
-                                                }))
+                                                .child(
+                                                    div()
+                                                        .text_color(theme::text_muted())
+                                                        .child("Pasted text"),
+                                                )
+                                                .child(
+                                                    div().text_color(theme::text_subtle()).child(
+                                                        if copied {
+                                                            "copied".to_string()
+                                                        } else {
+                                                            format!("{lines} lines")
+                                                        },
+                                                    ),
+                                                )
                                                 .on_click(move |_, window, cx| {
                                                     markdown::copy_with_feedback(&p, window, cx)
                                                 })
@@ -1317,9 +1435,14 @@ impl ThreadView {
                                         .text_size(px(crate::ui::TEXT_SM))
                                         .text_color(theme::text_subtle())
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                                        .hover(|s| {
+                                            s.bg(theme::fill_selected())
+                                                .text_color(theme::content())
+                                        })
                                         .child(if expanded { "Show less" } else { "Show more" })
-                                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_open(ix, cx))),
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.toggle_open(ix, cx)
+                                        })),
                                 )
                             }),
                     )
@@ -1335,7 +1458,12 @@ impl ThreadView {
                             .pt(px(2.))
                             .opacity(0.)
                             .group_hover(group, |s| s.opacity(1.))
-                            .child(markdown::copy_button_sized(("user-copy", ix), copy, 20., 12.))
+                            .child(markdown::copy_button_sized(
+                                ("user-copy", ix),
+                                copy,
+                                20.,
+                                12.,
+                            ))
                             .when(rewind, |d| {
                                 d.child(
                                     div()
@@ -1403,7 +1531,9 @@ impl ThreadView {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .when(*status == ThreadStatus::NeedsInput, |d| d.text_color(amber()))
+                    .when(*status == ThreadStatus::NeedsInput, |d| {
+                        d.text_color(amber())
+                    })
                     .map(|d| {
                         if animate {
                             d.child(shimmer(&label, self.phase, 0.5, 0.92))
@@ -1440,13 +1570,12 @@ impl ThreadView {
         if let Some(h) = phase.head
             && let Entry::Agent { text } = &content[h]
         {
-            col = col.child(
-                div()
-                    .min_w_0()
-                    .pt(px(8.))
-                    .pb(px(4.))
-                    .child(self.surface(base + h, text, MdStyle::reply(), cx)),
-            );
+            col = col.child(div().min_w_0().pt(px(8.)).pb(px(4.)).child(self.surface(
+                base + h,
+                text,
+                MdStyle::reply(),
+                cx,
+            )));
         }
         if phase.steps.is_empty() {
             return col.into_any_element();
@@ -1560,19 +1689,13 @@ impl ThreadView {
                             .child(rail),
                     )
                     .when(hidden_above, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .h(px(32.))
-                                .bg(linear_gradient(
-                                    180.,
-                                    linear_color_stop(theme::background(), 0.),
-                                    linear_color_stop(theme::background().opacity(0.), 1.),
-                                )),
-                        )
+                        d.child(div().absolute().top_0().left_0().right_0().h(px(32.)).bg(
+                            linear_gradient(
+                                180.,
+                                linear_color_stop(theme::background(), 0.),
+                                linear_color_stop(theme::background().opacity(0.), 1.),
+                            ),
+                        ))
                     }),
             )
             .into_any_element()
@@ -1580,7 +1703,6 @@ impl ThreadView {
             col.child(rail).into_any_element()
         }
     }
-
 }
 
 impl ThreadView {
@@ -1607,7 +1729,11 @@ impl ThreadView {
             return row;
         }
         let running = live && matches!(agent.status, ToolStatus::Pending | ToolStatus::InProgress);
-        let asking = permission.is_some_and(|p| calls.iter().any(|&c| matches!(&content[c], Entry::Tool(t) if t.id == p.tool_call_id)));
+        let asking = permission.is_some_and(|p| {
+            calls
+                .iter()
+                .any(|&c| matches!(&content[c], Entry::Tool(t) if t.id == p.tool_call_id))
+        });
         if !(running || asking || self.open.contains(&(base + i))) {
             return row;
         }
@@ -1617,7 +1743,13 @@ impl ThreadView {
             let child = self.activity_row(base + c, &content[c], cwd, live, permission, window, cx);
             rail = rail.child(rail_step(k + 1 == n, child));
         }
-        div().flex().flex_col().min_w_0().child(row).child(rail).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(row)
+            .child(rail)
+            .into_any_element()
     }
 }
 
@@ -1692,7 +1824,13 @@ fn turn_parts(entries: &[Entry], live: bool) -> TurnParts {
     let work = (0..content.len())
         .filter(|&i| !reply.contains(&i) && Some(i) != plan && !nested(content, i))
         .collect();
-    TurnParts { body_start, trailing_notices, reply, plan, work }
+    TurnParts {
+        body_start,
+        trailing_notices,
+        reply,
+        plan,
+        work,
+    }
 }
 
 /// A turn split into phases: prose starts one, thoughts and tool calls join the current one.
@@ -1728,9 +1866,11 @@ fn nested(content: &[Entry], i: usize) -> bool {
     let Entry::Tool(t) = &content[i] else {
         return false;
     };
-    t.parent
-        .as_deref()
-        .is_some_and(|p| content.iter().any(|e| matches!(e, Entry::Tool(o) if o.id == p)))
+    t.parent.as_deref().is_some_and(|p| {
+        content
+            .iter()
+            .any(|e| matches!(e, Entry::Tool(o) if o.id == p))
+    })
 }
 
 /// The icon of a phase's main kind of work and a line of what it did:
@@ -1763,10 +1903,20 @@ fn phase_summary(steps: &[&Entry]) -> (&'static str, String) {
             _ => {}
         }
     }
-    let plural = |n: usize, one: &str, many: &str| if n == 1 { one.to_string() } else { many.replace('#', &n.to_string()) };
+    let plural = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            one.to_string()
+        } else {
+            many.replace('#', &n.to_string())
+        }
+    };
     let mut parts = Vec::new();
     if edits > 0 {
-        parts.push(plural(files.len().max(1), "Edited a file", "Edited # files"));
+        parts.push(plural(
+            files.len().max(1),
+            "Edited a file",
+            "Edited # files",
+        ));
     }
     if reads > 0 && searches == 0 {
         parts.push(plural(reads, "Read a file", "Read # files"));
@@ -1798,7 +1948,10 @@ fn phase_summary(steps: &[&Entry]) -> (&'static str, String) {
     ];
     let glyph = kinds
         .iter()
-        .fold((0, "ai-idea"), |best, &(n, g)| if n > best.0 { (n, g) } else { best })
+        .fold(
+            (0, "ai-idea"),
+            |best, &(n, g)| if n > best.0 { (n, g) } else { best },
+        )
         .1;
     (glyph, parts.join(" · "))
 }
@@ -1924,14 +2077,18 @@ fn compaction_divider(removed: u64, before: Option<u64>, after: Option<u64>) -> 
 
 fn notice_row(ix: usize, text: &str, error: bool, mark: Option<NoticeMark>) -> AnyElement {
     let glyph = match (error, mark) {
-        (true, _) => icon("alert-circle", 14.).text_color(red().opacity(0.85)).into_any_element(),
+        (true, _) => icon("alert-circle", 14.)
+            .text_color(red().opacity(0.85))
+            .into_any_element(),
         (false, Some(NoticeMark::Busy)) => {
             crate::ui::spinner(("notice-busy", ix), 14., theme::mix(0.45)).into_any_element()
         }
-        (false, Some(NoticeMark::Passed)) => {
-            icon("checkmark-circle02", 14.).text_color(theme::success()).into_any_element()
-        }
-        (false, None) => icon("pause", 14.).text_color(theme::text_faint()).into_any_element(),
+        (false, Some(NoticeMark::Passed)) => icon("checkmark-circle02", 14.)
+            .text_color(theme::success())
+            .into_any_element(),
+        (false, None) => icon("pause", 14.)
+            .text_color(theme::text_faint())
+            .into_any_element(),
     };
     div()
         .flex()
@@ -1940,7 +2097,11 @@ fn notice_row(ix: usize, text: &str, error: bool, mark: Option<NoticeMark>) -> A
         .px(px(16.))
         .py(px(6.))
         .text_size(px(crate::ui::TEXT_MD))
-        .text_color(if error { red().opacity(0.85) } else { theme::mix(0.45) })
+        .text_color(if error {
+            red().opacity(0.85)
+        } else {
+            theme::mix(0.45)
+        })
         .child(glyph)
         .child(div().flex_1().min_w_0().child(text.to_string()))
         .into_any_element()
@@ -1998,10 +2159,7 @@ impl Render for ThreadView {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .child(
-                        list(self.list.clone(), cx.processor(Self::render_item))
-                            .size_full(),
-                    )
+                    .child(list(self.list.clone(), cx.processor(Self::render_item)).size_full())
                     .when_some(search_bar, |d, bar| d.child(bar))
                     .when(scrolled_away, |d| {
                         d.child(
@@ -2026,8 +2184,12 @@ impl Render for ThreadView {
                                         .shadow_md()
                                         .cursor_pointer()
                                         .hover(|s| s.bg(theme::fill_hover()))
-                                        .child(icon("arrow-down01", 16.).text_color(theme::content()))
-                                        .on_click(cx.listener(|this, _, _, cx| this.jump_to_bottom(cx))),
+                                        .child(
+                                            icon("arrow-down01", 16.).text_color(theme::content()),
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.jump_to_bottom(cx)),
+                                        ),
                                 ),
                         )
                     }),
@@ -2055,14 +2217,26 @@ mod tests {
 
     #[test]
     fn reply_is_the_agent_messages_a_turn_ends_with() {
-        let content = [tool("Read"), agent("looking"), tool("Grep"), agent("summary"), agent("more")];
+        let content = [
+            tool("Read"),
+            agent("looking"),
+            tool("Grep"),
+            agent("summary"),
+            agent("more"),
+        ];
         assert_eq!(reply_span(&content, true), 3..5);
         assert_eq!(reply_span(&content, false), 3..5);
     }
 
     #[test]
     fn settled_reply_survives_tool_calls_after_it() {
-        let content = [tool("Read"), agent("summary"), agent("more"), tool("TodoWrite"), agent("  ")];
+        let content = [
+            tool("Read"),
+            agent("summary"),
+            agent("more"),
+            tool("TodoWrite"),
+            agent("  "),
+        ];
         assert_eq!(reply_span(&content, false), 4..5);
         assert_eq!(reply_span(&content, true), 1..3);
         let content = &content[..4];
@@ -2095,10 +2269,23 @@ mod tests {
             edit("a.rs", Some("y"), "y\nz", 1, "completed"),
             edit("c.rs", None, "nope", 9, "failed"),
         ];
-        let shell = [ShellChange { path: "/w/gen.rs".into(), old: Some("a".into()), new: "b".into(), added: 1, removed: 1 }];
+        let shell = [ShellChange {
+            path: "/w/gen.rs".into(),
+            old: Some("a".into()),
+            new: "b".into(),
+            added: 1,
+            removed: 1,
+        }];
         let edits = turn_edits(&shell, &content);
         let files: Vec<(&Path, usize)> = edits.files.iter().map(|(p, d)| (*p, d.len())).collect();
-        assert_eq!(files, [(Path::new("a.rs"), 2), (Path::new("b.rs"), 1), (Path::new("/w/gen.rs"), 1)]);
+        assert_eq!(
+            files,
+            [
+                (Path::new("a.rs"), 2),
+                (Path::new("b.rs"), 1),
+                (Path::new("/w/gen.rs"), 1)
+            ]
+        );
         assert_eq!(edits.files[0].1[1].at, DiffAt::Tool(3, 0));
         assert_eq!(edits.files[2].1[0].at, DiffAt::Shell(0));
         assert_eq!((edits.added, edits.removed), (4, 1));
@@ -2107,7 +2294,10 @@ mod tests {
     #[test]
     fn changed_line_finds_the_snippet_in_the_file() {
         let file = "a\nb\nfn main() {\n    hola();\n}\n";
-        assert_eq!(changed_line(file, Some("fn main() {\n}"), "fn main() {\n    hola();\n}"), Some(4));
+        assert_eq!(
+            changed_line(file, Some("fn main() {\n}"), "fn main() {\n    hola();\n}"),
+            Some(4)
+        );
         assert_eq!(changed_line(file, None, "a\nb"), Some(1));
         assert_eq!(changed_line(file, Some("x"), "gone"), None);
     }

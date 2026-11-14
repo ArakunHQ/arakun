@@ -15,12 +15,21 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// gets its own temp file, so two saves of the same file can't interleave.
 /// Creates the parent directory.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
-    let name = path.file_name().ok_or_else(|| io::Error::other(format!("{} has no file name", path.display())))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other(format!("{} has no file name", path.display())))?;
     let mut tmp = OsString::from(".");
     tmp.push(name);
-    tmp.push(format!(".{}-{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+    tmp.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = dir.join(tmp);
     let replaced = File::create(&tmp)
         .and_then(|mut f| {
@@ -41,14 +50,17 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("arakun-durable-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("arakun-durable-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
 
     fn entries(dir: &std::path::Path) -> Vec<String> {
-        let mut names: Vec<_> =
-            std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         names.sort();
         names
     }

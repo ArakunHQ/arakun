@@ -66,7 +66,9 @@ impl TerminalView {
         let focus = cx.focus_handle();
         let subscriptions = vec![
             cx.observe(&terminal, |_, _, cx| cx.notify()),
-            cx.on_focus_in(&focus, window, |this, window, cx| this.focus_changed(true, window, cx)),
+            cx.on_focus_in(&focus, window, |this, window, cx| {
+                this.focus_changed(true, window, cx)
+            }),
             cx.on_focus_out(&focus, window, |this, _, window, cx| {
                 this.focus_changed(false, window, cx)
             }),
@@ -394,10 +396,7 @@ impl TerminalView {
     }
 
     fn grid_point(&self, line: usize, col: usize, g: &Geometry) -> AlacPoint {
-        AlacPoint::new(
-            Line(line as i32 - g.display_offset as i32),
-            Column(col),
-        )
+        AlacPoint::new(Line(line as i32 - g.display_offset as i32), Column(col))
     }
 
     fn mouse_reporting(&self, shift: bool) -> Option<Geometry> {
@@ -430,7 +429,11 @@ impl TerminalView {
         }
 
         let point = self.grid_point(line, col, &g);
-        let side = if right { Direction::Right } else { Direction::Left };
+        let side = if right {
+            Direction::Right
+        } else {
+            Direction::Left
+        };
         match e.button {
             MouseButton::Left => {
                 if (e.modifiers.control || cfg!(target_os = "macos") && e.modifiers.platform)
@@ -461,7 +464,9 @@ impl TerminalView {
         let Some(g) = self.geometry else {
             return;
         };
-        if self.reported_button.is_some() || (hovered && self.mouse_reporting(e.modifiers.shift).is_some()) {
+        if self.reported_button.is_some()
+            || (hovered && self.mouse_reporting(e.modifiers.shift).is_some())
+        {
             if !mouse::wants_motion(g.mode, e.pressed_button) {
                 return;
             }
@@ -491,12 +496,21 @@ impl TerminalView {
         let offset = terminal.display_offset();
         let (line, col, right) = g.cell_at(e.position);
         let point = AlacPoint::new(Line(line as i32 - offset as i32), Column(col));
-        let side = if right { Direction::Right } else { Direction::Left };
+        let side = if right {
+            Direction::Right
+        } else {
+            Direction::Left
+        };
         terminal.update_selection(point, side);
         cx.notify();
     }
 
-    pub(crate) fn mouse_up(&mut self, e: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn mouse_up(
+        &mut self,
+        e: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(button) = self.reported_button
             && button == e.button
         {
@@ -527,7 +541,8 @@ impl TerminalView {
         let reporting = self.mouse_reporting(e.modifiers.shift).is_some();
         let alt_scroll = !reporting
             && !e.modifiers.shift
-            && g.mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL);
+            && g.mode
+                .contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL);
         let multiplier = match e.delta {
             ScrollDelta::Lines(_) if reporting => 1. / LINES_PER_NOTCH,
             _ => 1.,
@@ -554,7 +569,10 @@ impl TerminalView {
                 }
             }
         } else if alt_scroll {
-            terminal.write_input(&mouse::alt_scroll(lines, g.mode.contains(TermMode::APP_CURSOR)));
+            terminal.write_input(&mouse::alt_scroll(
+                lines,
+                g.mode.contains(TermMode::APP_CURSOR),
+            ));
         } else {
             terminal.scroll(Scroll::Delta(lines));
             cx.notify();
@@ -598,7 +616,11 @@ fn find_url(text: &str, index: usize) -> Option<String> {
         return None;
     }
     let is_url_char = |c: char| {
-        !c.is_whitespace() && !matches!(c, '"' | '\'' | '<' | '>' | '`' | '{' | '}' | '|' | '\\' | '^')
+        !c.is_whitespace()
+            && !matches!(
+                c,
+                '"' | '\'' | '<' | '>' | '`' | '{' | '}' | '|' | '\\' | '^'
+            )
     };
     if !is_url_char(chars[index]) {
         return None;
@@ -756,7 +778,10 @@ mod tests {
     fn urls() {
         let t = "see https://example.com/a(b) now";
         assert_eq!(find_url(t, 8).as_deref(), Some("https://example.com/a(b)"));
-        assert_eq!(find_url("x http://a.io/x.", 4).as_deref(), Some("http://a.io/x"));
+        assert_eq!(
+            find_url("x http://a.io/x.", 4).as_deref(),
+            Some("http://a.io/x")
+        );
         assert_eq!(find_url("nothing here", 2), None);
     }
 }

@@ -24,15 +24,26 @@ pub struct Identity {
 impl Identity {
     pub fn generate() -> Identity {
         let rng = rand::SystemRandom::new();
-        let doc = signature::EcdsaKeyPair::generate_pkcs8(&signature::ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
-            .expect("ring can make a P-256 key");
+        let doc = signature::EcdsaKeyPair::generate_pkcs8(
+            &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &rng,
+        )
+        .expect("ring can make a P-256 key");
         Identity::from_pkcs8(doc.as_ref()).expect("a key ring just made parses")
     }
 
     pub fn from_pkcs8(pkcs8: &[u8]) -> Option<Identity> {
         let rng = rand::SystemRandom::new();
-        let pair = signature::EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8, &rng).ok()?;
-        Some(Identity { pair, pkcs8: pkcs8.to_vec() })
+        let pair = signature::EcdsaKeyPair::from_pkcs8(
+            &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            pkcs8,
+            &rng,
+        )
+        .ok()?;
+        Some(Identity {
+            pair,
+            pkcs8: pkcs8.to_vec(),
+        })
     }
 
     /// The pair as the settings keep it.
@@ -52,7 +63,11 @@ impl Identity {
     /// An ECDSA signature over `data`: r then s, 32 bytes each, as WebCrypto makes and checks them.
     #[cfg_attr(not(test), allow(dead_code))] // the relay client claims the label with it
     pub fn sign(&self, data: &[u8]) -> Vec<u8> {
-        self.pair.sign(&rand::SystemRandom::new(), data).expect("signing does not fail").as_ref().to_vec()
+        self.pair
+            .sign(&rand::SystemRandom::new(), data)
+            .expect("signing does not fail")
+            .as_ref()
+            .to_vec()
     }
 }
 
@@ -94,7 +109,10 @@ mod tests {
     const VECTOR: &str = include_str!("../../phone/test/vectors/label.json");
 
     fn unhex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]
@@ -102,7 +120,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(VECTOR).unwrap();
         let public = unhex(v["public_key_hex"].as_str().unwrap());
         assert_eq!(public.len(), 65);
-        assert_eq!(format!("{:x}", sha2::Sha256::digest(&public)), v["sha256_hex"].as_str().unwrap());
+        assert_eq!(
+            format!("{:x}", sha2::Sha256::digest(&public)),
+            v["sha256_hex"].as_str().unwrap()
+        );
         assert_eq!(label_of(&public), v["label"].as_str().unwrap());
     }
 
@@ -123,7 +144,8 @@ mod tests {
 
         let sig = me.sign(b"nonce and label");
         assert_eq!(sig.len(), 64, "fixed r||s, as WebCrypto expects");
-        let public = signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, me.public_raw());
+        let public =
+            signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, me.public_raw());
         assert!(public.verify(b"nonce and label", &sig).is_ok());
         assert!(public.verify(b"something else", &sig).is_err());
     }

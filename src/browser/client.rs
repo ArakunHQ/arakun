@@ -82,7 +82,11 @@ pub enum Update {
     Closed,
     Title(String),
     Url(String),
-    Loading { loading: bool, back: bool, forward: bool },
+    Loading {
+        loading: bool,
+        back: bool,
+        forward: bool,
+    },
     Progress(f64),
     Cursor(gpui::CursorStyle),
     Status(String),
@@ -178,13 +182,20 @@ impl TabState {
         if buffer.is_null() || width <= 0 || height <= 0 {
             return false;
         }
-        let Some(atlas) = self.atlas.borrow().clone() else { return false };
-        let Some(image) = self.live.borrow().clone() else { return false };
+        let Some(atlas) = self.atlas.borrow().clone() else {
+            return false;
+        };
+        let Some(image) = self.live.borrow().clone() else {
+            return false;
+        };
         let s = image.size(0);
         if (s.width.0, s.height.0) != (width, height) {
             return false;
         }
-        let key = gpui::AtlasKey::from(gpui::RenderImageParams { image_id: image.id, frame_index: 0 });
+        let key = gpui::AtlasKey::from(gpui::RenderImageParams {
+            image_id: image.id,
+            frame_index: 0,
+        });
         let stride = width as usize * 4;
         let pixels = unsafe { std::slice::from_raw_parts(buffer, stride * height as usize) };
         for r in dirty {
@@ -204,7 +215,8 @@ impl TabState {
                 return false;
             }
         }
-        self.edge.set(edge_color(pixels, width as usize, height as usize));
+        self.edge
+            .set(edge_color(pixels, width as usize, height as usize));
         true
     }
 
@@ -212,8 +224,13 @@ impl TabState {
     /// image first when the size changed. False when it could not, so nothing changed.
     #[cfg(target_os = "linux")]
     fn copy_gpu_frame(&self, info: &AcceleratedPaintInfo) -> bool {
-        let Some(atlas) = self.atlas.borrow().clone() else { return false };
-        let (width, height) = (info.extra.visible_rect.width, info.extra.visible_rect.height);
+        let Some(atlas) = self.atlas.borrow().clone() else {
+            return false;
+        };
+        let (width, height) = (
+            info.extra.visible_rect.width,
+            info.extra.visible_rect.height,
+        );
         if width <= 0 || height <= 0 || info.plane_count <= 0 {
             return false;
         }
@@ -229,13 +246,23 @@ impl TabState {
             modifier: info.modifier,
             planes: info.planes[..info.plane_count.min(4) as usize]
                 .iter()
-                .map(|p| gpui::DmaBufPlane { fd: p.fd, offset: p.offset, stride: p.stride })
+                .map(|p| gpui::DmaBufPlane {
+                    fd: p.fd,
+                    offset: p.offset,
+                    stride: p.stride,
+                })
                 .collect(),
         };
         if runtime::timing() && self.paints.get().is_multiple_of(600) {
             eprintln!(
                 "arakun-browser: gpu frame {}x{} coded {}x{} planes {} modifier {:#x} format {:?}",
-                width, height, frame.width, frame.height, info.plane_count, info.modifier, info.format
+                width,
+                height,
+                frame.width,
+                frame.height,
+                info.plane_count,
+                info.modifier,
+                info.format
             );
         }
         let current = self.live.borrow().clone().filter(|image| {
@@ -247,7 +274,10 @@ impl TabState {
             None => {
                 let blank = image::RgbaImage::new(width as u32, height as u32);
                 let image = Arc::new(gpui::RenderImage::new(vec![image::Frame::new(blank)]));
-                let key = gpui::AtlasKey::from(gpui::RenderImageParams { image_id: image.id, frame_index: 0 });
+                let key = gpui::AtlasKey::from(gpui::RenderImageParams {
+                    image_id: image.id,
+                    frame_index: 0,
+                });
                 let bytes = image.as_bytes(0).unwrap_or_default();
                 let made = atlas.get_or_insert_with(key, &mut || {
                     Ok(Some((image.size(0), std::borrow::Cow::Borrowed(bytes))))
@@ -260,7 +290,10 @@ impl TabState {
                 image
             }
         };
-        let key = gpui::AtlasKey::from(gpui::RenderImageParams { image_id: image.id, frame_index: 0 });
+        let key = gpui::AtlasKey::from(gpui::RenderImageParams {
+            image_id: image.id,
+            frame_index: 0,
+        });
         atlas.copy_dmabuf_into_tile(&key, &frame)
     }
 
@@ -286,12 +319,21 @@ impl TabState {
         };
         let seq = self.console_seq.get() + 1;
         self.console_seq.set(seq);
-        let source = if line > 0 && !source.is_empty() { format!("{source}:{line}") } else { source };
+        let source = if line > 0 && !source.is_empty() {
+            format!("{source}:{line}")
+        } else {
+            source
+        };
         let mut console = self.console.borrow_mut();
         if console.len() >= MAX_CONSOLE {
             console.pop_front();
         }
-        console.push_back(ConsoleLine { seq, level, text, source });
+        console.push_back(ConsoleLine {
+            seq,
+            level,
+            text,
+            source,
+        });
     }
 
     /// Sends a DevTools Protocol command to the page. The answer comes back through
@@ -304,7 +346,8 @@ impl TabState {
         };
         let id = self.last_call.get() + 1;
         self.last_call.set(id);
-        let message = serde_json::json!({ "id": id, "method": method, "params": params }).to_string();
+        let message =
+            serde_json::json!({ "id": id, "method": method, "params": params }).to_string();
         self.calls.borrow_mut().insert(id, tx);
         if host.send_dev_tools_message(Some(message.as_bytes())) == 0
             && let Some(tx) = self.calls.borrow_mut().remove(&id)
@@ -331,7 +374,14 @@ pub(super) fn edge_color(bgra: &[u8], w: usize, h: usize) -> Option<[u8; 3]> {
     }
     let x = w.saturating_sub(24).max(w / 2);
     let y = h.saturating_sub(24).max(h / 2);
-    let points = [(x, h / 4), (x, h / 2), (x, h * 3 / 4), (w / 4, y), (w / 2, y), (w * 3 / 4, y)];
+    let points = [
+        (x, h / 4),
+        (x, h / 2),
+        (x, h * 3 / 4),
+        (w / 4, y),
+        (w / 2, y),
+        (w * 3 / 4, y),
+    ];
     let pixels: Vec<[u8; 3]> = points
         .iter()
         .map(|&(x, y)| {
@@ -339,7 +389,10 @@ pub(super) fn edge_color(bgra: &[u8], w: usize, h: usize) -> Option<[u8; 3]> {
             [bgra[i + 2], bgra[i + 1], bgra[i]]
         })
         .collect();
-    pixels.iter().max_by_key(|p| pixels.iter().filter(|q| q == p).count()).copied()
+    pixels
+        .iter()
+        .max_by_key(|p| pixels.iter().filter(|q| q == p).count())
+        .copied()
 }
 
 fn copy_bitmap(buffer: *const u8, width: i32, height: i32) -> Option<Bitmap> {
@@ -348,7 +401,11 @@ fn copy_bitmap(buffer: *const u8, width: i32, height: i32) -> Option<Bitmap> {
     }
     let len = width as usize * height as usize * 4;
     let bgra = unsafe { std::slice::from_raw_parts(buffer, len) }.to_vec();
-    Some(Bitmap { bgra, width: width as u32, height: height as u32 })
+    Some(Bitmap {
+        bgra,
+        width: width as u32,
+        height: height as u32,
+    })
 }
 
 // --- App / browser process -----------------------------------------------------------------
@@ -1065,9 +1122,15 @@ wrap_dev_tools_message_observer! {
 
 fn devtools_result(mut message: Value) -> DevToolsResult {
     let Some(error) = message.get("error") else {
-        return Ok(message.get_mut("result").map(Value::take).unwrap_or(Value::Null));
+        return Ok(message
+            .get_mut("result")
+            .map(Value::take)
+            .unwrap_or(Value::Null));
     };
-    let text = error.get("message").and_then(Value::as_str).unwrap_or("DevTools error");
+    let text = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("DevTools error");
     Err(match error.get("data").and_then(Value::as_str) {
         Some(data) => format!("{text}: {data}"),
         None => text.to_string(),

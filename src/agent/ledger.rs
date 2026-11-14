@@ -42,7 +42,8 @@ pub struct Turn {
 
 impl Turn {
     pub fn is_empty(&self) -> bool {
-        self.input + self.output + self.cache_read + self.cache_write + self.credits == 0 && self.cost <= 0.
+        self.input + self.output + self.cache_read + self.cache_write + self.credits == 0
+            && self.cost <= 0.
     }
 }
 
@@ -60,7 +61,11 @@ pub fn append(turn: &Turn) -> Result<()> {
     let mut line = serde_json::to_vec(turn)?;
     line.push(b'\n');
     // One write per line, so lines from two sessions never interleave.
-    std::fs::OpenOptions::new().create(true).append(true).open(&path)?.write_all(&line)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?
+        .write_all(&line)?;
     Ok(())
 }
 
@@ -99,8 +104,14 @@ mod tests {
         };
         let line = serde_json::to_string(&t).unwrap();
         assert_eq!(serde_json::from_str::<Turn>(&line).unwrap(), t);
-        let bare: Turn = serde_json::from_str(r#"{"at":2,"agent":"droid","session":"x","cwd":"/q","credits":7}"#).unwrap();
-        assert_eq!((bare.credits, bare.cost, bare.model.as_deref()), (7, 0., None));
+        let bare: Turn = serde_json::from_str(
+            r#"{"at":2,"agent":"droid","session":"x","cwd":"/q","credits":7}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (bare.credits, bare.cost, bare.model.as_deref()),
+            (7, 0., None)
+        );
         assert!(!bare.is_empty());
     }
 }

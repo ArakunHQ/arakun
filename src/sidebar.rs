@@ -165,7 +165,6 @@ impl Pin {
     }
 }
 
-
 /// How the rail sits in the window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -253,7 +252,9 @@ impl Default for Style {
 pub enum Piece {
     /// The search box (Ctrl+K).
     Search,
-    View { view: View },
+    View {
+        view: View,
+    },
     /// Projects, with the environments of the open one.
     Projects {
         #[serde(default = "yes")]
@@ -264,7 +265,9 @@ pub enum Piece {
         #[serde(default)]
         only_open: bool,
     },
-    Pin { pin: Pin },
+    Pin {
+        pin: Pin,
+    },
     /// Who is signed in, with the account menu.
     User,
     /// Plan usage of the signed-in agents.
@@ -274,7 +277,9 @@ pub enum Piece {
     Mascot,
     Separator,
     /// A line of text, as a heading inside a segment.
-    Title { text: String },
+    Title {
+        text: String,
+    },
     /// Empty room that pushes what follows to the segment's end.
     Spacer,
 }
@@ -289,12 +294,19 @@ impl Piece {
     }
 
     pub fn projects() -> Self {
-        Piece::Projects { envs: true, changes: true, only_open: false }
+        Piece::Projects {
+            envs: true,
+            changes: true,
+            only_open: false,
+        }
     }
 
     /// One of a kind: placing it again moves it.
     pub fn unique(&self) -> bool {
-        !matches!(self, Piece::Pin { .. } | Piece::Separator | Piece::Title { .. } | Piece::Spacer)
+        !matches!(
+            self,
+            Piece::Pin { .. } | Piece::Separator | Piece::Title { .. } | Piece::Spacer
+        )
     }
 
     /// The same piece, whatever its options.
@@ -316,7 +328,13 @@ impl Piece {
             Piece::Settings => "Settings".into(),
             Piece::Mascot => "Mascot".into(),
             Piece::Separator => "Separator".into(),
-            Piece::Title { text } => if text.is_empty() { "Title".into() } else { text.clone() },
+            Piece::Title { text } => {
+                if text.is_empty() {
+                    "Title".into()
+                } else {
+                    text.clone()
+                }
+            }
             Piece::Spacer => "Spacer".into(),
         }
     }
@@ -376,11 +394,20 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
 
 impl Item {
     pub fn new(piece: Piece) -> Self {
-        Item { piece, label: None, emoji: None, badge: BadgeMode::Count, only_when_busy: false }
+        Item {
+            piece,
+            label: None,
+            emoji: None,
+            badge: BadgeMode::Count,
+            only_when_busy: false,
+        }
     }
 
     pub fn name(&self) -> String {
-        self.label.clone().filter(|l| !l.trim().is_empty()).unwrap_or_else(|| self.piece.label())
+        self.label
+            .clone()
+            .filter(|l| !l.trim().is_empty())
+            .unwrap_or_else(|| self.piece.label())
     }
 }
 
@@ -394,7 +421,11 @@ pub enum TitleAction {
 }
 
 impl TitleAction {
-    pub const ALL: [TitleAction; 3] = [TitleAction::AddProject, TitleAction::NewSession, TitleAction::NewTerminal];
+    pub const ALL: [TitleAction; 3] = [
+        TitleAction::AddProject,
+        TitleAction::NewSession,
+        TitleAction::NewTerminal,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -490,7 +521,13 @@ pub enum Preset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 5] = [Preset::Focused, Preset::Developer, Preset::Notion, Preset::Compact, Preset::Everything];
+    pub const ALL: [Preset; 5] = [
+        Preset::Focused,
+        Preset::Developer,
+        Preset::Notion,
+        Preset::Compact,
+        Preset::Everything,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -530,36 +567,99 @@ impl Preset {
             View::Team,
         ];
         let top = Section::new("Top", Mode::Fixed, vec![Piece::Search]);
-        let projects = Section::new("Projects", Mode::Scroll, vec![Piece::projects()]).titled().with_action(TitleAction::AddProject);
+        let projects = Section::new("Projects", Mode::Scroll, vec![Piece::projects()])
+            .titled()
+            .with_action(TitleAction::AddProject);
         let account = |pieces| Section::new("Account", Mode::Fixed, pieces);
         let mut style = Style::default();
         let sections = match self {
             Preset::Focused => vec![
-                Section::new("Top", Mode::Fixed, vec![Piece::Search, Piece::view(View::Inbox)]),
+                Section::new(
+                    "Top",
+                    Mode::Fixed,
+                    vec![Piece::Search, Piece::view(View::Inbox)],
+                ),
                 projects,
-                Section::new("Tools", Mode::Scroll, views(&[&[#[cfg(feature = "coderlabs")] View::Tasks, View::Runs, View::Branches][..], &more].concat())).folding(true),
+                Section::new(
+                    "Tools",
+                    Mode::Scroll,
+                    views(
+                        &[
+                            &[
+                                #[cfg(feature = "coderlabs")]
+                                View::Tasks,
+                                View::Runs,
+                                View::Branches,
+                            ][..],
+                            &more,
+                        ]
+                        .concat(),
+                    ),
+                )
+                .folding(true),
                 account(vec![Piece::Usage, Piece::Settings]),
             ],
             Preset::Developer => vec![
-                Section::new("Top", Mode::Fixed, vec![Piece::Search, Piece::view(View::Inbox), #[cfg(feature = "coderlabs")] Piece::view(View::Tasks)]),
+                Section::new(
+                    "Top",
+                    Mode::Fixed,
+                    vec![
+                        Piece::Search,
+                        Piece::view(View::Inbox),
+                        #[cfg(feature = "coderlabs")]
+                        Piece::view(View::Tasks),
+                    ],
+                ),
                 projects,
                 Section::new("Git", Mode::Scroll, views(&[View::Runs, View::Branches])).titled(),
                 Section::new("More", Mode::Scroll, views(&more)).folding(true),
                 account(vec![Piece::Usage, Piece::User, Piece::Settings]),
             ],
             Preset::Notion => vec![
-                Section::new("Top", Mode::Fixed, vec![Piece::User, Piece::Search, Piece::view(View::Inbox)]),
-                Section::new("Pinned", Mode::Scroll, views(&[View::Notes, #[cfg(feature = "coderlabs")] View::Tasks])).folding(false),
+                Section::new(
+                    "Top",
+                    Mode::Fixed,
+                    vec![Piece::User, Piece::Search, Piece::view(View::Inbox)],
+                ),
+                Section::new(
+                    "Pinned",
+                    Mode::Scroll,
+                    views(&[
+                        View::Notes,
+                        #[cfg(feature = "coderlabs")]
+                        View::Tasks,
+                    ]),
+                )
+                .folding(false),
                 projects,
-                Section::new("More", Mode::Scroll, views(&[&[View::Runs, View::Branches][..], &more[1..]].concat())).folding(true),
+                Section::new(
+                    "More",
+                    Mode::Scroll,
+                    views(&[&[View::Runs, View::Branches][..], &more[1..]].concat()),
+                )
+                .folding(true),
                 Section::new("Bottom", Mode::Fixed, vec![Piece::Settings]),
             ],
             Preset::Compact => {
                 style.collapse = Collapse::Icons;
                 style.density = Density::Compact;
                 vec![
-                    Section::new("Top", Mode::Fixed, vec![Piece::Search, Piece::view(View::Inbox)]),
-                    Section::new("Views", Mode::Scroll, views(&[#[cfg(feature = "coderlabs")] View::Tasks, View::Runs, View::Branches, View::Notes])),
+                    Section::new(
+                        "Top",
+                        Mode::Fixed,
+                        vec![Piece::Search, Piece::view(View::Inbox)],
+                    ),
+                    Section::new(
+                        "Views",
+                        Mode::Scroll,
+                        views(&[
+                            #[cfg(feature = "coderlabs")]
+                            View::Tasks,
+                            View::Runs,
+                            View::Branches,
+                            View::Notes,
+                        ]),
+                    ),
                     projects,
                     account(vec![Piece::Settings]),
                 ]
@@ -571,7 +671,11 @@ impl Preset {
                 account(vec![Piece::Usage, Piece::Settings]),
             ],
         };
-        Sidebar { style, sections, known: View::ALL.to_vec() }
+        Sidebar {
+            style,
+            sections,
+            known: View::ALL.to_vec(),
+        }
     }
 }
 
@@ -596,7 +700,10 @@ impl Default for Sidebar {
 
 impl Sidebar {
     pub fn load() -> Self {
-        std::fs::read(file()).ok().and_then(|b| Self::parse(&b)).unwrap_or_default()
+        std::fs::read(file())
+            .ok()
+            .and_then(|b| Self::parse(&b))
+            .unwrap_or_default()
     }
 
     pub fn save(&self) {
@@ -636,10 +743,12 @@ impl Sidebar {
     }
 
     pub fn find(&self, piece: &Piece) -> Option<Path> {
-        self.sections
-            .iter()
-            .enumerate()
-            .find_map(|(s, sec)| sec.items.iter().position(|i| i.piece.same(piece)).map(|i| (s, i)))
+        self.sections.iter().enumerate().find_map(|(s, sec)| {
+            sec.items
+                .iter()
+                .position(|i| i.piece.same(piece))
+                .map(|i| (s, i))
+        })
     }
 
     pub fn has(&self, piece: &Piece) -> bool {
@@ -649,7 +758,11 @@ impl Sidebar {
     /// Views not in the rail.
     #[cfg_attr(not(test), allow(dead_code))] // only the tests ask for it so far
     pub fn hidden_views(&self) -> Vec<View> {
-        View::ALL.iter().copied().filter(|v| !self.has(&Piece::view(*v))).collect()
+        View::ALL
+            .iter()
+            .copied()
+            .filter(|v| !self.has(&Piece::view(*v)))
+            .collect()
     }
 
     /// A view this layout has never offered.
@@ -678,7 +791,12 @@ impl Sidebar {
         if to.0 >= self.sections.len() {
             return false;
         }
-        let to = match item.piece.unique().then(|| self.find(&item.piece)).flatten() {
+        let to = match item
+            .piece
+            .unique()
+            .then(|| self.find(&item.piece))
+            .flatten()
+        {
             Some(from) => {
                 self.remove(from);
                 shift(to, from)
@@ -694,7 +812,9 @@ impl Sidebar {
         if to.0 >= self.sections.len() {
             return false;
         }
-        let Some(item) = self.remove(from) else { return false };
+        let Some(item) = self.remove(from) else {
+            return false;
+        };
         let to = shift(to, from);
         let items = &mut self.sections[to.0].items;
         items.insert(to.1.min(items.len()), item);
@@ -745,7 +865,11 @@ impl Sidebar {
 
 /// Where `to` points once the item at `removed` is gone.
 fn shift(to: Path, removed: Path) -> Path {
-    if to.0 == removed.0 && removed.1 < to.1 { (to.0, to.1 - 1) } else { to }
+    if to.0 == removed.0 && removed.1 < to.1 {
+        (to.0, to.1 - 1)
+    } else {
+        to
+    }
 }
 
 fn file() -> PathBuf {
@@ -762,7 +886,17 @@ mod tests {
     fn names(s: &Sidebar) -> Vec<String> {
         s.sections
             .iter()
-            .map(|sec| format!("{}[{}]", sec.title, sec.items.iter().map(|i| i.name()).collect::<Vec<_>>().join(",")))
+            .map(|sec| {
+                format!(
+                    "{}[{}]",
+                    sec.title,
+                    sec.items
+                        .iter()
+                        .map(|i| i.name())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
             .collect()
     }
 
@@ -770,8 +904,16 @@ mod tests {
         Sidebar {
             style: Style::default(),
             sections: vec![
-                Section::new("A", Mode::Fixed, vec![Piece::Search, Piece::view(View::Inbox)]),
-                Section::new("B", Mode::Scroll, vec![Piece::projects(), Piece::view(View::Runs)]),
+                Section::new(
+                    "A",
+                    Mode::Fixed,
+                    vec![Piece::Search, Piece::view(View::Inbox)],
+                ),
+                Section::new(
+                    "B",
+                    Mode::Scroll,
+                    vec![Piece::projects(), Piece::view(View::Runs)],
+                ),
                 Section::new("C", Mode::Fixed, vec![Piece::Settings]),
             ],
             known: View::ALL.to_vec(),
@@ -790,19 +932,31 @@ mod tests {
     fn items_move_within_and_across_segments() {
         let mut s = small();
         assert!(s.move_item((1, 1), (1, 0)));
-        assert_eq!(names(&s), ["A[Search,Inbox]", "B[Runs,Projects]", "C[Settings]"]);
+        assert_eq!(
+            names(&s),
+            ["A[Search,Inbox]", "B[Runs,Projects]", "C[Settings]"]
+        );
         // Down past itself lands where it was aimed.
         assert!(s.move_item((0, 0), (0, 2)));
-        assert_eq!(names(&s), ["A[Inbox,Search]", "B[Runs,Projects]", "C[Settings]"]);
+        assert_eq!(
+            names(&s),
+            ["A[Inbox,Search]", "B[Runs,Projects]", "C[Settings]"]
+        );
         assert!(s.move_item((2, 0), (0, 0)));
-        assert_eq!(names(&s), ["A[Settings,Inbox,Search]", "B[Runs,Projects]", "C[]"]);
+        assert_eq!(
+            names(&s),
+            ["A[Settings,Inbox,Search]", "B[Runs,Projects]", "C[]"]
+        );
     }
 
     #[test]
     fn a_unique_piece_moves_instead_of_doubling() {
         let mut s = small();
         assert!(s.insert(Item::new(Piece::view(View::Runs)), (0, 0)));
-        assert_eq!(names(&s), ["A[Runs,Search,Inbox]", "B[Projects]", "C[Settings]"]);
+        assert_eq!(
+            names(&s),
+            ["A[Runs,Search,Inbox]", "B[Projects]", "C[Settings]"]
+        );
         assert!(s.insert(Item::new(Piece::Separator), (2, 0)));
         assert!(s.insert(Item::new(Piece::Separator), (2, 0)));
         assert_eq!(names(&s)[2], "C[Separator,Separator,Settings]");
@@ -812,9 +966,15 @@ mod tests {
     fn segments_reorder_add_and_go() {
         let mut s = small();
         assert!(s.move_section(2, 0));
-        assert_eq!(names(&s), ["C[Settings]", "A[Search,Inbox]", "B[Projects,Runs]"]);
+        assert_eq!(
+            names(&s),
+            ["C[Settings]", "A[Search,Inbox]", "B[Projects,Runs]"]
+        );
         assert!(s.move_section(0, 3));
-        assert_eq!(names(&s), ["A[Search,Inbox]", "B[Projects,Runs]", "C[Settings]"]);
+        assert_eq!(
+            names(&s),
+            ["A[Search,Inbox]", "B[Projects,Runs]", "C[Settings]"]
+        );
         let at = s.add_section(1);
         assert_eq!(at, 1);
         assert_eq!(names(&s)[1], "Segment 4[]");
@@ -841,11 +1001,29 @@ mod tests {
     fn presets_round_trip() {
         for p in Preset::ALL {
             let s = p.layout();
-            assert_eq!(Sidebar::parse(s.to_json().as_bytes()), Some(s.clone()), "{}", p.label());
+            assert_eq!(
+                Sidebar::parse(s.to_json().as_bytes()),
+                Some(s.clone()),
+                "{}",
+                p.label()
+            );
             assert!(s.has(&Piece::projects()), "{}", p.label());
             // Every view once at most: a preset can't show one twice.
-            let views: Vec<_> = s.sections.iter().flat_map(|x| &x.items).filter(|i| matches!(i.piece, Piece::View { .. })).collect();
-            assert_eq!(views.len(), View::ALL.iter().filter(|v| s.has(&Piece::view(**v))).count(), "{}", p.label());
+            let views: Vec<_> = s
+                .sections
+                .iter()
+                .flat_map(|x| &x.items)
+                .filter(|i| matches!(i.piece, Piece::View { .. }))
+                .collect();
+            assert_eq!(
+                views.len(),
+                View::ALL
+                    .iter()
+                    .filter(|v| s.has(&Piece::view(**v)))
+                    .count(),
+                "{}",
+                p.label()
+            );
         }
     }
 }

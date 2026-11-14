@@ -33,7 +33,9 @@ pub struct Toolbar {
 pub fn toolbar(t: Toolbar, address: Entity<TextField>) -> Div {
     let site_icon: AnyElement = match t.favicon {
         Some(image) => img(image).size(px(14.)).flex_none().into_any_element(),
-        None => icon("internet", 12.).text_color(theme::text_subtle()).into_any_element(),
+        None => icon("internet", 12.)
+            .text_color(theme::text_subtle())
+            .into_any_element(),
     };
     div()
         .relative()
@@ -45,8 +47,18 @@ pub fn toolbar(t: Toolbar, address: Entity<TextField>) -> Div {
         .px(px(8.))
         .border_b_1()
         .border_color(theme::stroke())
-        .child(nav_button("browser-back", "arrow-left01", t.can_back, t.on_back))
-        .child(nav_button("browser-forward", "arrow-right01", t.can_forward, t.on_forward))
+        .child(nav_button(
+            "browser-back",
+            "arrow-left01",
+            t.can_back,
+            t.on_back,
+        ))
+        .child(nav_button(
+            "browser-forward",
+            "arrow-right01",
+            t.can_forward,
+            t.on_forward,
+        ))
         .child(nav_button(
             "browser-reload",
             if t.loading { "cancel01" } else { "refresh01" },
@@ -64,7 +76,11 @@ pub fn toolbar(t: Toolbar, address: Entity<TextField>) -> Div {
                 .px(px(10.))
                 .rounded(px(8.))
                 .border_1()
-                .border_color(if t.address_focused { theme::mix(0.16) } else { gpui::transparent_black() })
+                .border_color(if t.address_focused {
+                    theme::mix(0.16)
+                } else {
+                    gpui::transparent_black()
+                })
                 .bg(theme::mix(if t.address_focused { 0.08 } else { 0.05 }))
                 .text_size(px(crate::ui::TEXT_SM))
                 .child(site_icon)
@@ -98,7 +114,13 @@ fn nav_button(id: &'static str, name: &str, enabled: bool, on_click: Handler) ->
             .cursor_pointer()
             .group("browser-nav")
             .hover(|s| s.bg(theme::fill_selected()))
-            .child(hover_icon(name, 14., theme::text_subtle(), theme::content(), "browser-nav"))
+            .child(hover_icon(
+                name,
+                14.,
+                theme::text_subtle(),
+                theme::content(),
+                "browser-nav",
+            ))
             .on_click(on_click)
     } else {
         button.child(icon(name, 14.).text_color(theme::mix(0.18)))
@@ -126,7 +148,12 @@ pub fn popover(id: impl Into<ElementId>) -> Stateful<Div> {
         .text_color(theme::content())
 }
 
-pub fn menu_item(id: impl Into<ElementId>, label: &str, shortcut: Option<&str>, enabled: bool) -> Stateful<Div> {
+pub fn menu_item(
+    id: impl Into<ElementId>,
+    label: &str,
+    shortcut: Option<&str>,
+    enabled: bool,
+) -> Stateful<Div> {
     let item = div()
         .id(id)
         .flex()
@@ -137,19 +164,33 @@ pub fn menu_item(id: impl Into<ElementId>, label: &str, shortcut: Option<&str>, 
         .px(px(8.))
         .rounded(px(8.))
         .child(label.to_string())
-        .children(shortcut.map(|s| div().text_size(px(crate::ui::TEXT_XS)).text_color(theme::text_faint()).child(crate::platform::shortcut_label(s))));
+        .children(shortcut.map(|s| {
+            div()
+                .text_size(px(crate::ui::TEXT_XS))
+                .text_color(theme::text_faint())
+                .child(crate::platform::shortcut_label(s))
+        }));
     if enabled {
-        item.cursor_pointer().hover(|s| s.bg(theme::fill_selected()))
+        item.cursor_pointer()
+            .hover(|s| s.bg(theme::fill_selected()))
     } else {
         item.text_color(theme::text_faint())
     }
 }
 
 pub fn separator() -> Div {
-    div().h(px(1.)).my(px(4.)).mx(px(4.)).bg(theme::fill_selected())
+    div()
+        .h(px(1.))
+        .my(px(4.))
+        .mx(px(4.))
+        .bg(theme::fill_selected())
 }
 
-pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, primary: bool) -> Stateful<Div> {
+pub fn button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    primary: bool,
+) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -162,13 +203,26 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, primary:
         .cursor_pointer()
         .text_size(px(crate::ui::TEXT_SM))
         .font_weight(gpui::FontWeight::MEDIUM)
-        .when(primary, |d| d.bg(theme::accent()).text_color(theme::background()).hover(|s| s.opacity(0.9)))
-        .when(!primary, |d| d.bg(theme::fill_selected()).text_color(theme::content()).hover(|s| s.bg(theme::fill_selected())))
+        .when(primary, |d| {
+            d.bg(theme::accent())
+                .text_color(theme::background())
+                .hover(|s| s.opacity(0.9))
+        })
+        .when(!primary, |d| {
+            d.bg(theme::fill_selected())
+                .text_color(theme::content())
+                .hover(|s| s.bg(theme::fill_selected()))
+        })
         .child(label.into())
 }
 
 /// Full-page message (runtime missing, load error, crash).
-pub fn notice(icon_name: &str, title: &str, detail: Option<SharedString>, action: Option<AnyElement>) -> Div {
+pub fn notice(
+    icon_name: &str,
+    title: &str,
+    detail: Option<SharedString>,
+    action: Option<AnyElement>,
+) -> Div {
     div()
         .absolute()
         .inset_0()
@@ -183,6 +237,12 @@ pub fn notice(icon_name: &str, title: &str, detail: Option<SharedString>, action
         .text_color(theme::text_subtle())
         .child(icon(icon_name, 28.).text_color(theme::text_faint()))
         .child(div().text_color(theme::content()).child(title.to_string()))
-        .children(detail.map(|d| div().max_w(px(560.)).text_size(px(crate::ui::TEXT_SM)).text_color(theme::text_subtle()).child(d)))
+        .children(detail.map(|d| {
+            div()
+                .max_w(px(560.))
+                .text_size(px(crate::ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(d)
+        }))
         .children(action)
 }

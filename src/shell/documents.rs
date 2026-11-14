@@ -60,7 +60,12 @@ impl Shell {
     }
 
     /// Opens (or focuses) a read-only tab for a file or a diff and loads it.
-    pub(super) fn open_doc_tab(&mut self, kind: TabKind, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_doc_tab(
+        &mut self,
+        kind: TabKind,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }
@@ -79,7 +84,10 @@ impl Shell {
     ) -> Option<u64> {
         let visible = self.has_projects() && self.env().path == env_path;
         let (title, key): (SharedString, String) = match &kind {
-            TabKind::File { path } => (model::dir_name(path).into(), format!("f:{}", path.display())),
+            TabKind::File { path } => (
+                model::dir_name(path).into(),
+                format!("f:{}", path.display()),
+            ),
             TabKind::Diff { path, .. } => {
                 let name = path.rsplit('/').next().unwrap_or(path);
                 (format!("{name} (diff)").into(), format!("d:{path}"))
@@ -115,8 +123,17 @@ impl Shell {
 
     /// Scrolls the file tab `id` to `line` (1-based) and marks it, also
     /// while the file is still loading.
-    pub(super) fn reveal_line(&mut self, env_path: &std::path::Path, id: u64, line: usize, cx: &mut Context<Self>) {
-        let Some(tab) = self.find_env_mut(env_path).and_then(|e| e.tabs.iter_mut().find(|t| t.id == id)) else {
+    pub(super) fn reveal_line(
+        &mut self,
+        env_path: &std::path::Path,
+        id: u64,
+        line: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self
+            .find_env_mut(env_path)
+            .and_then(|e| e.tabs.iter_mut().find(|t| t.id == id))
+        else {
             return;
         };
         // A sheet's first item is its row of column letters, so Excel's row N is item N.
@@ -128,7 +145,12 @@ impl Shell {
     }
 
     /// Loads (or reloads) the document of an open file or diff tab.
-    pub(super) fn reload_doc(&mut self, env_path: std::path::PathBuf, kind: TabKind, cx: &mut Context<Self>) {
+    pub(super) fn reload_doc(
+        &mut self,
+        env_path: std::path::PathBuf,
+        kind: TabKind,
+        cx: &mut Context<Self>,
+    ) {
         if let TabKind::File { path } = &kind
             && explorer::file_kind(path) == explorer::FileKind::Image
         {
@@ -193,7 +215,10 @@ impl Shell {
                             let is_diff = matches!(&k, TabKind::Diff { .. });
                             // Diff markers are not code; headers feed nothing.
                             let code: Vec<String> = if is_diff {
-                                lines.iter().map(|l| highlight::diff_code(l).to_string()).collect()
+                                lines
+                                    .iter()
+                                    .map(|l| highlight::diff_code(l).to_string())
+                                    .collect()
                             } else {
                                 lines.iter().map(|l| l.to_string()).collect()
                             };
@@ -237,7 +262,13 @@ impl Shell {
 
     /// Closes the diff tab of a file that no longer has changes, in whichever
     /// environment holds it. Runs from `render`, where a window is at hand.
-    pub(super) fn close_diff_tab(&mut self, env_path: &std::path::Path, file: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_diff_tab(
+        &mut self,
+        env_path: &std::path::Path,
+        file: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let is_diff = |t: &Tab| matches!(&t.kind, TabKind::Diff { path, .. } if path == file);
         if self.has_projects() && self.env().path == env_path {
             if self.env().changes.iter().any(|c| c.path == file) {
@@ -281,7 +312,12 @@ fn parse_markdown(tab: &Tab) -> Option<Rc<Vec<crate::agent::markdown::Block>>> {
     let Some(Document::Lines(doc)) = &tab.doc else {
         return None;
     };
-    let text = doc.lines.iter().map(|l| l.as_ref()).collect::<Vec<&str>>().join("\n");
+    let text = doc
+        .lines
+        .iter()
+        .map(|l| l.as_ref())
+        .collect::<Vec<&str>>()
+        .join("\n");
     Some(Rc::new(crate::agent::markdown::parse(&text)))
 }
 
@@ -371,29 +407,47 @@ impl Shell {
                             .cursor_pointer()
                             .when(is_selected, |d| d.bg(theme::selection()))
                             .when(!is_selected, |d| d.hover(|s| s.bg(theme::hover())))
+                            .child(div().flex().flex_none().w(px(12.)).when(entry.is_dir, |d| {
+                                d.child(
+                                    icon(
+                                        if row.expanded {
+                                            "arrow-down01"
+                                        } else {
+                                            "arrow-right01"
+                                        },
+                                        12.,
+                                    )
+                                    .text_color(theme::text_faint()),
+                                )
+                            }))
+                            .child(if entry.is_dir {
+                                icon(
+                                    if row.expanded {
+                                        "folder-open"
+                                    } else {
+                                        "folder01"
+                                    },
+                                    14.,
+                                )
+                                .text_color(if entry.ignored {
+                                    theme::mix(0.3)
+                                } else {
+                                    theme::mix(0.55)
+                                })
+                            } else {
+                                icon(file_icon_name, 14.).text_color(if entry.ignored {
+                                    file_color.opacity(0.4)
+                                } else {
+                                    file_color
+                                })
+                            })
                             .child(
                                 div()
-                                    .flex()
-                                    .flex_none()
-                                    .w(px(12.))
-                                    .when(entry.is_dir, |d| {
-                                        d.child(
-                                            icon(
-                                                if row.expanded { "arrow-down01" } else { "arrow-right01" },
-                                                12.,
-                                            )
-                                            .text_color(theme::text_faint()),
-                                        )
-                                    }),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(entry.name.clone()),
                             )
-                            .child(if entry.is_dir {
-                                icon(if row.expanded { "folder-open" } else { "folder01" }, 14.)
-                                    .text_color(if entry.ignored { theme::mix(0.3) } else { theme::mix(0.55) })
-                            } else {
-                                icon(file_icon_name, 14.)
-                                    .text_color(if entry.ignored { file_color.opacity(0.4) } else { file_color })
-                            })
-                            .child(div().flex_1().min_w_0().truncate().child(entry.name.clone()))
                             .when(modified, |d| {
                                 d.child(div().size(px(6.)).rounded_full().bg(theme::warn()))
                             })
@@ -494,7 +548,12 @@ impl Shell {
         }
     }
 
-    pub(super) fn render_document(&self, tab: &Tab, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_document(
+        &self,
+        tab: &Tab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (subtitle, is_diff): (SharedString, bool) = match &tab.kind {
             TabKind::File { path } => (
                 path.strip_prefix(&self.env().path)
@@ -517,42 +576,65 @@ impl Shell {
             .border_color(theme::stroke())
             .text_size(px(ui::TEXT_SM))
             .text_color(theme::text_subtle())
-            .child(icon(if is_diff { "file-diff" } else { "file01" }, 14.).text_color(theme::text_subtle()))
-            .child(div().font_family(theme::FONT_MONO).truncate().child(subtitle.clone()))
+            .child(
+                icon(if is_diff { "file-diff" } else { "file01" }, 14.)
+                    .text_color(theme::text_subtle()),
+            )
+            .child(
+                div()
+                    .font_family(theme::FONT_MONO)
+                    .truncate()
+                    .child(subtitle.clone()),
+            )
             .child(div().flex_1())
-            .when(is_markdown(tab) && matches!(tab.doc, Some(Document::Lines(_))), |d| {
-                let id = tab.id;
-                let on = tab.markdown.is_some();
-                d.child(
-                    div()
-                        .id("doc-md-viewer")
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .size(px(ui::ICON_BUTTON))
-                        .rounded(px(ui::RADIUS))
-                        .cursor_pointer()
-                        .group("doc-md-viewer")
-                        .when(on, |b| b.bg(theme::fill_selected()))
-                        .hover(|s| s.bg(theme::fill_selected()))
-                        .child(ui::hover_icon(
-                            "view",
-                            15.,
-                            if on { theme::content() } else { theme::text_subtle() },
-                            theme::content(),
-                            "doc-md-viewer",
-                        ))
-                        .tooltip(ui::tip(if on { "MD Viewer: show the raw file" } else { "MD Viewer: show it rendered" }))
-                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_md_viewer(id, cx))),
-                )
-            })
+            .when(
+                is_markdown(tab) && matches!(tab.doc, Some(Document::Lines(_))),
+                |d| {
+                    let id = tab.id;
+                    let on = tab.markdown.is_some();
+                    d.child(
+                        div()
+                            .id("doc-md-viewer")
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(ui::ICON_BUTTON))
+                            .rounded(px(ui::RADIUS))
+                            .cursor_pointer()
+                            .group("doc-md-viewer")
+                            .when(on, |b| b.bg(theme::fill_selected()))
+                            .hover(|s| s.bg(theme::fill_selected()))
+                            .child(ui::hover_icon(
+                                "view",
+                                15.,
+                                if on {
+                                    theme::content()
+                                } else {
+                                    theme::text_subtle()
+                                },
+                                theme::content(),
+                                "doc-md-viewer",
+                            ))
+                            .tooltip(ui::tip(if on {
+                                "MD Viewer: show the raw file"
+                            } else {
+                                "MD Viewer: show it rendered"
+                            }))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.toggle_md_viewer(id, cx)),
+                            ),
+                    )
+                },
+            )
             .when_some(self.doc_edit_target(tab), |d, (path, line)| {
                 let open = path.clone();
                 // A picture or a workbook has no text to edit, except an SVG or a CSV.
                 let editable = !matches!(tab.doc, Some(Document::Image(_) | Document::Sheet(_)))
                     || path.extension().is_some_and(|e| {
-                        ["svg", "csv", "tsv"].iter().any(|t| e.eq_ignore_ascii_case(t))
+                        ["svg", "csv", "tsv"]
+                            .iter()
+                            .any(|t| e.eq_ignore_ascii_case(t))
                     });
                 d.when(editable, |d| {
                     d.child(
@@ -588,9 +670,14 @@ impl Shell {
                     .child(e.clone())
                     .when_some(file, |d, file| {
                         d.child(
-                            ui::button("doc-open-system", "Open with default app", ui::ButtonKind::Ghost, true)
-                                .h(px(28.))
-                                .on_click(move |_, _, cx| cx.open_with_system(&file)),
+                            ui::button(
+                                "doc-open-system",
+                                "Open with default app",
+                                ui::ButtonKind::Ghost,
+                                true,
+                            )
+                            .h(px(28.))
+                            .on_click(move |_, _, cx| cx.open_with_system(&file)),
                         )
                     })
                     .into_any_element()
@@ -622,8 +709,13 @@ impl Shell {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(
-                        div().mx_auto().w_full().max_w(px(820.)).px(px(32.)).py(px(24.)).child(
-                            crate::agent::markdown::render(
+                        div()
+                            .mx_auto()
+                            .w_full()
+                            .max_w(px(820.))
+                            .px(px(32.))
+                            .py(px(24.))
+                            .child(crate::agent::markdown::render(
                                 ("md-doc", tab.id as usize),
                                 &blocks,
                                 crate::agent::markdown::MdStyle::reply(),
@@ -633,8 +725,7 @@ impl Shell {
                                 base.as_deref(),
                                 None,
                                 None,
-                            ),
-                        ),
+                            )),
                     )
                     .into_any_element()
             }
@@ -646,7 +737,11 @@ impl Shell {
                     .lines
                     .iter()
                     .enumerate()
-                    .max_by_key(|(_, l)| l.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>())
+                    .max_by_key(|(_, l)| {
+                        l.chars()
+                            .map(|c| if c == '\t' { 4 } else { 1 })
+                            .sum::<usize>()
+                    })
                     .map(|(i, _)| i);
                 let gutter = (doc.lines.len().max(1) as f32).log10().floor() as usize + 1;
                 let gutter_w = gutter as f32 * 7.8 + 24.;
@@ -805,7 +900,11 @@ impl Shell {
 
 /// A spreadsheet tab: the grid of the shown sheet with Excel's row numbers and
 /// column letters, virtualized by row, and a bar of sheets below when there are several.
-fn render_sheet(tab: &Tab, book: Arc<crate::sheet::Workbook>, cx: &mut Context<Shell>) -> AnyElement {
+fn render_sheet(
+    tab: &Tab,
+    book: Arc<crate::sheet::Workbook>,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
     use crate::sheet::CellKind;
     const ROW_H: f32 = 26.;
     let index = tab.sheet.min(book.sheets.len().saturating_sub(1));
@@ -872,8 +971,12 @@ fn render_sheet(tab: &Tab, book: Arc<crate::sheet::Workbook>, cx: &mut Context<S
                             match cells.get(c) {
                                 Some(v) if !v.text.is_empty() => {
                                     let d = match v.kind {
-                                        CellKind::Number => d.justify_end().text_color(theme::text()),
-                                        CellKind::Formula => d.text_color(theme::text_faint()).font_family(theme::FONT_MONO),
+                                        CellKind::Number => {
+                                            d.justify_end().text_color(theme::text())
+                                        }
+                                        CellKind::Formula => d
+                                            .text_color(theme::text_faint())
+                                            .font_family(theme::FONT_MONO),
                                         CellKind::Error => d.text_color(theme::diff_del()),
                                         CellKind::Text => d.text_color(theme::text()),
                                     };
@@ -906,10 +1009,17 @@ fn render_sheet(tab: &Tab, book: Arc<crate::sheet::Workbook>, cx: &mut Context<S
             .border_t_1()
             .border_color(theme::stroke())
             .overflow_x_scroll()
-            .children(book.sheets.iter().enumerate().filter(|_| book.sheets.len() > 1).map(|(i, s)| {
-                ui::chip(("sheet-tab", i), s.name.clone(), i == index)
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_sheet(id, i, cx)))
-            }))
+            .children(
+                book.sheets
+                    .iter()
+                    .enumerate()
+                    .filter(|_| book.sheets.len() > 1)
+                    .map(|(i, s)| {
+                        ui::chip(("sheet-tab", i), s.name.clone(), i == index).on_click(
+                            cx.listener(move |this, _, _, cx| this.select_sheet(id, i, cx)),
+                        )
+                    }),
+            )
             .when(sheet.truncated, |d| {
                 d.child(div().flex_1()).child(
                     div()
@@ -940,7 +1050,9 @@ pub(super) fn hunk_start(line: &str) -> Option<usize> {
 /// `$VISUAL` / `$EDITOR` (which may carry arguments), else the first terminal
 /// editor on PATH, opening `path` at `line` when the editor takes `+N`.
 pub(super) fn editor_command(path: &std::path::Path, line: Option<usize>) -> Option<Vec<String>> {
-    const KNOWN: &[&str] = &["nvim", "vim", "vi", "nano", "micro", "emacs", "kak", "helix", "hx"];
+    const KNOWN: &[&str] = &[
+        "nvim", "vim", "vi", "nano", "micro", "emacs", "kak", "helix", "hx",
+    ];
     let on_path = |name: &str| {
         std::env::var_os("PATH")
             .into_iter()
@@ -955,7 +1067,12 @@ pub(super) fn editor_command(path: &std::path::Path, line: Option<usize>) -> Opt
         Some(v) => v.split_whitespace().map(str::to_string).collect(),
         None => vec![KNOWN.iter().find(|e| on_path(e))?.to_string()],
     };
-    let program = cmd.first()?.rsplit('/').next().unwrap_or_default().to_string();
+    let program = cmd
+        .first()?
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string();
     let file = path.display().to_string();
     match line {
         Some(n) if matches!(program.as_str(), "helix" | "hx") => cmd.push(format!("{file}:{n}")),

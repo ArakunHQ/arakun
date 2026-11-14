@@ -114,7 +114,10 @@ impl Window {
         } else if self.label == "Monthly limit" {
             "Month".into()
         } else {
-            self.label.strip_prefix("Weekly · ").unwrap_or(&self.label).to_string()
+            self.label
+                .strip_prefix("Weekly · ")
+                .unwrap_or(&self.label)
+                .to_string()
         }
     }
 
@@ -135,18 +138,33 @@ impl Window {
             return Some(format!("resets in {}m", delta.div_ceil(60)));
         }
         if delta < 36 * 3600 {
-            return Some(format!("resets in {}h {:02}m", delta / 3600, delta % 3600 / 60));
+            return Some(format!(
+                "resets in {}h {:02}m",
+                delta / 3600,
+                delta % 3600 / 60
+            ));
         }
         let t = crate::platform::local_time(at)?;
         if delta >= 7 * 86_400 {
-            return Some(format!("resets {} {}", MONTH[t.month.rem_euclid(12) as usize], t.day));
+            return Some(format!(
+                "resets {} {}",
+                MONTH[t.month.rem_euclid(12) as usize],
+                t.day
+            ));
         }
-        Some(format!("resets {} {:02}:{:02}", WEEKDAY[t.wday.rem_euclid(7) as usize], t.hour, t.minute))
+        Some(format!(
+            "resets {} {:02}:{:02}",
+            WEEKDAY[t.wday.rem_euclid(7) as usize],
+            t.hour,
+            t.minute
+        ))
     }
 }
 
 const WEEKDAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTH: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 impl PlanUsage {
     /// "Team · Max 5x" for the settings list; empty when nothing is known.
@@ -158,7 +176,9 @@ impl PlanUsage {
             "" => String::new(),
             s => {
                 let mut c = s.chars();
-                c.next().map_or_else(String::new, |f| f.to_uppercase().collect()) + c.as_str()
+                c.next()
+                    .map_or_else(String::new, |f| f.to_uppercase().collect())
+                    + c.as_str()
             }
         };
         let tier = self
@@ -170,9 +190,15 @@ impl PlanUsage {
             tier
         } else {
             let mut c = tier.chars();
-            c.next().map_or_else(String::new, |f| f.to_uppercase().collect()) + c.as_str()
+            c.next()
+                .map_or_else(String::new, |f| f.to_uppercase().collect())
+                + c.as_str()
         };
-        [sub, tier].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
+        [sub, tier]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     /// "5h 12% · Weekly 0%", one percentage per window, for compact rows.
@@ -193,11 +219,15 @@ impl PlanUsage {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn credentials_path() -> PathBuf {
-    crate::platform::home().join(".claude").join(".credentials.json")
+    crate::platform::home()
+        .join(".claude")
+        .join(".credentials.json")
 }
 
 fn seats_path() -> PathBuf {
@@ -254,8 +284,8 @@ pub fn seats() -> Seats {
     let mut out = cached_seats().unwrap_or_default();
     let token = borrowed_token();
     let own_due = out.own.is_none() || at.saturating_sub(out.at) >= STALE;
-    let borrowed_due =
-        token.is_some() && (out.borrowed.is_none() || at.saturating_sub(out.borrowed_at) >= BORROWED_STALE);
+    let borrowed_due = token.is_some()
+        && (out.borrowed.is_none() || at.saturating_sub(out.borrowed_at) >= BORROWED_STALE);
     if !own_due && !borrowed_due && (token.is_some() || out.borrowed.is_none()) {
         return remember_seats(out);
     }
@@ -313,7 +343,10 @@ fn fetch_own() -> Result<Option<PlanUsage>> {
         ],
     )?;
     let json: Value = serde_json::from_str(&body).context("usage endpoint did not answer JSON")?;
-    if let Some(msg) = json["error"]["message"].as_str().or_else(|| json["error"].as_str()) {
+    if let Some(msg) = json["error"]["message"]
+        .as_str()
+        .or_else(|| json["error"].as_str())
+    {
         bail!("usage endpoint: {msg}");
     }
     Ok(Some(parse(&json, &oauth)))
@@ -330,13 +363,17 @@ struct Oauth {
 
 /// Claude Code's sign-in, shared with every tool that reads ~/.claude.
 fn credentials() -> Option<Oauth> {
-    let json: Value = serde_json::from_str(&std::fs::read_to_string(credentials_path()).ok()?).ok()?;
+    let json: Value =
+        serde_json::from_str(&std::fs::read_to_string(credentials_path()).ok()?).ok()?;
     let o = json.get("claudeAiOauth")?;
     Some(Oauth {
         access_token: o["accessToken"].as_str()?.to_string(),
         refresh_token: o["refreshToken"].as_str()?.to_string(),
         expires_at: (o["expiresAt"].as_f64().unwrap_or(0.) / 1000.) as u64,
-        subscription: o["subscriptionType"].as_str().unwrap_or_default().to_string(),
+        subscription: o["subscriptionType"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         tier: o["rateLimitTier"].as_str().unwrap_or_default().to_string(),
     })
 }
@@ -345,11 +382,17 @@ fn credentials() -> Option<Oauth> {
 /// claude.ai sign-in: from `env` in ~/.claude/settings.json (it wins, Claude
 /// Code applies it over its own environment) or from ours.
 fn oauth_token() -> Option<String> {
-    let settings = crate::platform::home().join(".claude").join("settings.json");
+    let settings = crate::platform::home()
+        .join(".claude")
+        .join("settings.json");
     let from_settings = std::fs::read_to_string(settings)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|j| j["env"]["CLAUDE_CODE_OAUTH_TOKEN"].as_str().map(str::to_string));
+        .and_then(|j| {
+            j["env"]["CLAUDE_CODE_OAUTH_TOKEN"]
+                .as_str()
+                .map(str::to_string)
+        });
     from_settings
         .or_else(|| std::env::var("CLAUDE_CODE_OAUTH_TOKEN").ok())
         .filter(|t| !t.trim().is_empty())
@@ -378,7 +421,12 @@ fn borrowed_token() -> Option<String> {
 /// or the file at [`seat_token_path`]. Read only, for the usage card.
 #[cfg(feature = "coderlabs")]
 fn borrowed_token() -> Option<String> {
-    let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let env = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
     oauth_token()
         .or_else(|| env("ARAKUN_CLAUDE_SEAT_TOKEN"))
         .or_else(|| {
@@ -419,7 +467,11 @@ fn fetch_borrowed(token: &str) -> Result<PlanUsage> {
 /// `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset,status}` (curl's
 /// `%{header_json}`: lowercase names, each an array of values).
 fn parse_headers(headers: &Value) -> PlanUsage {
-    let get = |name: &str| headers[format!("anthropic-ratelimit-unified-{name}")][0].as_str().map(str::to_string);
+    let get = |name: &str| {
+        headers[format!("anthropic-ratelimit-unified-{name}")][0]
+            .as_str()
+            .map(str::to_string)
+    };
     let windows = [("5h", "5-hour limit"), ("7d", "Weekly limit")]
         .into_iter()
         .filter_map(|(key, label)| {
@@ -439,7 +491,12 @@ fn parse_headers(headers: &Value) -> PlanUsage {
             })
         })
         .collect();
-    PlanUsage { at: now(), windows, borrowed: true, ..PlanUsage::default() }
+    PlanUsage {
+        at: now(),
+        windows,
+        borrowed: true,
+        ..PlanUsage::default()
+    }
 }
 
 /// A fresh access token, in memory only: the file stays Claude Code's to write.
@@ -450,7 +507,11 @@ fn refresh_token(refresh: &str) -> Result<String> {
         "client_id": CLIENT_ID,
     })
     .to_string();
-    let out = http(TOKEN_URL, Some(&body), &[("Content-Type", "application/json".into())])?;
+    let out = http(
+        TOKEN_URL,
+        Some(&body),
+        &[("Content-Type", "application/json".into())],
+    )?;
     let json: Value = serde_json::from_str(&out).context("token refresh did not answer JSON")?;
     json["access_token"]
         .as_str()
@@ -470,14 +531,29 @@ pub(crate) fn http(url: &str, post: Option<&str>, headers: &[(&str, String)]) ->
 
 /// curl with `extra` (write-out variables) printed after the body: the
 /// output and the HTTP status, whatever it is.
-fn http_with(url: &str, post: Option<&str>, headers: &[(&str, String)], extra: &str) -> Result<(String, u32)> {
-    let mut config = format!("url = \"{url}\"\nsilent\nshow-error\nmax-time = 20\nwrite-out = \"{}\\n%{{http_code}}\"\n", extra.replace('"', "\\\""));
+fn http_with(
+    url: &str,
+    post: Option<&str>,
+    headers: &[(&str, String)],
+    extra: &str,
+) -> Result<(String, u32)> {
+    let mut config = format!(
+        "url = \"{url}\"\nsilent\nshow-error\nmax-time = 20\nwrite-out = \"{}\\n%{{http_code}}\"\n",
+        extra.replace('"', "\\\"")
+    );
     for (k, v) in headers {
-        config.push_str(&format!("header = \"{}: {}\"\n", k, v.replace('\\', "\\\\").replace('"', "\\\"")));
+        config.push_str(&format!(
+            "header = \"{}: {}\"\n",
+            k,
+            v.replace('\\', "\\\\").replace('"', "\\\"")
+        ));
     }
     if let Some(body) = post {
         config.push_str("request = \"POST\"\n");
-        config.push_str(&format!("data = \"{}\"\n", body.replace('\\', "\\\\").replace('"', "\\\"")));
+        config.push_str(&format!(
+            "data = \"{}\"\n",
+            body.replace('\\', "\\\\").replace('"', "\\\"")
+        ));
     }
     let mut child = crate::platform::command("curl")
         .args(["--config", "-"])
@@ -486,7 +562,11 @@ fn http_with(url: &str, post: Option<&str>, headers: &[(&str, String)], extra: &
         .stderr(std::process::Stdio::piped())
         .spawn()
         .context("curl is needed to read plan usage")?;
-    child.stdin.take().expect("piped").write_all(config.as_bytes())?;
+    child
+        .stdin
+        .take()
+        .expect("piped")
+        .write_all(config.as_bytes())?;
     let out = child.wait_with_output()?;
     if !out.status.success() {
         bail!("curl: {}", String::from_utf8_lossy(&out.stderr).trim());
@@ -501,8 +581,13 @@ fn http_with(url: &str, post: Option<&str>, headers: &[(&str, String)], extra: &
 fn http_headers(url: &str, post: Option<&str>, headers: &[(&str, String)]) -> Result<(u32, Value)> {
     // curl turns the config's `\n` into a newline before the marker.
     let (out, status) = http_with(url, post, headers, "\\n@@arakun-headers@@%{header_json}")?;
-    let (_, json) = out.rsplit_once("\n@@arakun-headers@@").ok_or_else(|| anyhow!("curl printed no headers"))?;
-    Ok((status, serde_json::from_str(json).context("curl's header_json")?))
+    let (_, json) = out
+        .rsplit_once("\n@@arakun-headers@@")
+        .ok_or_else(|| anyhow!("curl printed no headers"))?;
+    Ok((
+        status,
+        serde_json::from_str(json).context("curl's header_json")?,
+    ))
 }
 
 /// The endpoint's JSON into our shape. `limits[]` is the canonical list; the
@@ -512,7 +597,9 @@ fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
     if let Some(limits) = json["limits"].as_array().filter(|l| !l.is_empty()) {
         for l in limits {
             let kind = l["kind"].as_str().unwrap_or_default();
-            let model = l["scope"]["model"]["display_name"].as_str().unwrap_or_default();
+            let model = l["scope"]["model"]["display_name"]
+                .as_str()
+                .unwrap_or_default();
             let label = match kind {
                 "session" => "5-hour limit".to_string(),
                 "weekly_scoped" if !model.is_empty() => format!("Weekly · {model}"),
@@ -544,7 +631,10 @@ fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
                 windows.push(Window {
                     label: label.to_string(),
                     percent: percent(&w["utilization"]),
-                    severity: w["locked_reason"].as_str().map_or("normal", |_| "warning").to_string(),
+                    severity: w["locked_reason"]
+                        .as_str()
+                        .map_or("normal", |_| "warning")
+                        .to_string(),
                     resets_at: w["resets_at"].as_str().and_then(from_iso),
                     active: true,
                 });
@@ -564,7 +654,9 @@ fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
 
 /// `limits[].percent` and `spend.percent` are always 0-100: a 1 there is 1%, not a whole fraction.
 fn whole(v: &Value) -> u64 {
-    v.as_f64().filter(|p| p.is_finite() && *p >= 0.).map_or(0, |p| p.round() as u64)
+    v.as_f64()
+        .filter(|p| p.is_finite() && *p >= 0.)
+        .map_or(0, |p| p.round() as u64)
 }
 
 /// A fraction (0-1) or an already-percent number, as 0-100 (legacy `utilization` fields).
@@ -603,12 +695,26 @@ fn spend(json: &Value) -> Option<Spend> {
 pub(crate) fn from_iso(s: &str) -> Option<u64> {
     let (date, time) = s.split_once('T')?;
     let mut d = date.split('-');
-    let (mut y, mo, da): (i64, i64, i64) = (d.next()?.parse().ok()?, d.next()?.parse().ok()?, d.next()?.parse().ok()?);
-    let (clock, offset) = time.split_once(['+', '-']).unwrap_or((time.trim_end_matches('Z'), ""));
-    let sign: i64 = if time.contains('-') && !time.ends_with('Z') { -1 } else { 1 };
+    let (mut y, mo, da): (i64, i64, i64) = (
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+    );
+    let (clock, offset) = time
+        .split_once(['+', '-'])
+        .unwrap_or((time.trim_end_matches('Z'), ""));
+    let sign: i64 = if time.contains('-') && !time.ends_with('Z') {
+        -1
+    } else {
+        1
+    };
     let mut t = clock.split(':');
     let secs = |s: &str| s.split('.').next().unwrap_or("0").parse().ok();
-    let (h, mi, se): (i64, i64, i64) = (t.next()?.parse().ok()?, t.next().and_then(secs)?, t.next().and_then(secs).unwrap_or(0));
+    let (h, mi, se): (i64, i64, i64) = (
+        t.next()?.parse().ok()?,
+        t.next().and_then(secs)?,
+        t.next().and_then(secs).unwrap_or(0),
+    );
     let mut off = offset.split(':');
     let offset_secs = off.next().unwrap_or("0").parse::<i64>().unwrap_or(0) * 3600
         + off.next().unwrap_or("0").parse::<i64>().unwrap_or(0) * 60;
@@ -639,7 +745,13 @@ mod tests {
             ],
             "spend": {"enabled": true, "used": {"amount_minor": 1234, "currency": "USD", "exponent": 2}, "limit": {"amount_minor": 5000, "exponent": 2}, "percent": 24.68}
         });
-        let oauth = Oauth { access_token: String::new(), refresh_token: String::new(), expires_at: 0, subscription: "team".into(), tier: "default_claude_max_5x".into() };
+        let oauth = Oauth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            expires_at: 0,
+            subscription: "team".into(),
+            tier: "default_claude_max_5x".into(),
+        };
         let p = parse(&json, &oauth);
         assert_eq!(p.plan_label(), "Team · Max 5x");
         assert_eq!(p.windows.len(), 2);
@@ -649,7 +761,10 @@ mod tests {
         assert!(!p.windows[1].active);
         assert!(p.windows[1].hot());
         let spend = p.spend.unwrap();
-        assert_eq!((spend.used, spend.limit, spend.percent), (12.34, Some(50.), 25));
+        assert_eq!(
+            (spend.used, spend.limit, spend.percent),
+            (12.34, Some(50.), 25)
+        );
     }
 
     #[test]
@@ -658,9 +773,21 @@ mod tests {
             "five_hour": {"utilization": 0.04, "resets_at": "2026-10-26T02:59:59+00:00"},
             "seven_day_opus": {"utilization": 12.0, "resets_at": null}
         });
-        let oauth = Oauth { access_token: String::new(), refresh_token: String::new(), expires_at: 0, subscription: "max".into(), tier: String::new() };
+        let oauth = Oauth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            expires_at: 0,
+            subscription: "max".into(),
+            tier: String::new(),
+        };
         let p = parse(&json, &oauth);
-        assert_eq!(p.windows.iter().map(|w| (w.label.as_str(), w.percent)).collect::<Vec<_>>(), [("5-hour limit", 4), ("Weekly · Opus", 12)]);
+        assert_eq!(
+            p.windows
+                .iter()
+                .map(|w| (w.label.as_str(), w.percent))
+                .collect::<Vec<_>>(),
+            [("5-hour limit", 4), ("Weekly · Opus", 12)]
+        );
         assert!(p.spend.is_none());
     }
 
@@ -677,7 +804,13 @@ mod tests {
         let p = parse_headers(&headers);
         assert!(p.borrowed);
         assert_eq!(p.plan_label(), "Borrowed token");
-        assert_eq!(p.windows.iter().map(|w| (w.label.as_str(), w.percent)).collect::<Vec<_>>(), [("5-hour limit", 0), ("Weekly limit", 86)]);
+        assert_eq!(
+            p.windows
+                .iter()
+                .map(|w| (w.label.as_str(), w.percent))
+                .collect::<Vec<_>>(),
+            [("5-hour limit", 0), ("Weekly limit", 86)]
+        );
         assert_eq!(p.windows[1].resets_at, Some(1_794_337_200));
         assert!(p.windows[1].hot() && !p.windows[0].hot());
     }
@@ -699,12 +832,22 @@ mod tests {
 
     #[test]
     fn seats_keep_both_and_pick_the_active_one() {
-        let own = PlanUsage { at: 1, subscription: "team".into(), tier: "default_claude_max_5x".into(), ..PlanUsage::default() };
+        let own = PlanUsage {
+            at: 1,
+            subscription: "team".into(),
+            tier: "default_claude_max_5x".into(),
+            ..PlanUsage::default()
+        };
         let borrowed = parse_headers(&serde_json::json!({
             "anthropic-ratelimit-unified-5h-utilization": ["1.0"],
             "anthropic-ratelimit-unified-5h-status": ["rejected"]
         }));
-        let seats = Seats { at: 1, own: Some(own.clone()), borrowed_at: 1, borrowed: Some(borrowed.clone()) };
+        let seats = Seats {
+            at: 1,
+            own: Some(own.clone()),
+            borrowed_at: 1,
+            borrowed: Some(borrowed.clone()),
+        };
         // Signed in on this machine's own account: that is the seat in use.
         assert_eq!(seats.active(), Some(&own));
         // Both survive a round trip through the cache file's JSON.
@@ -718,18 +861,33 @@ mod tests {
     fn iso_dates_become_unix_seconds() {
         assert_eq!(from_iso("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(from_iso("1970-01-01T02:30:00+02:30"), Some(0));
-        assert_eq!(from_iso("2026-10-26T02:59:59.778354+00:00"), Some(1_792_983_599));
+        assert_eq!(
+            from_iso("2026-10-26T02:59:59.778354+00:00"),
+            Some(1_792_983_599)
+        );
         assert_eq!(from_iso("nonsense"), None);
     }
 
     #[test]
     fn reset_text_is_relative_soon_and_absolute_later() {
-        let w = Window { label: "x".into(), percent: 0, severity: "normal".into(), resets_at: Some(1_000_900), active: true };
+        let w = Window {
+            label: "x".into(),
+            percent: 0,
+            severity: "normal".into(),
+            resets_at: Some(1_000_900),
+            active: true,
+        };
         assert_eq!(w.reset_text(1_000_000).as_deref(), Some("resets in 15m"));
-        let w = Window { resets_at: Some(1_000_000 + 5_500), ..w };
+        let w = Window {
+            resets_at: Some(1_000_000 + 5_500),
+            ..w
+        };
         assert_eq!(w.reset_text(1_000_000).as_deref(), Some("resets in 1h 31m"));
         assert_eq!(w.reset_text(1_000_001).as_deref(), Some("resets in 1h 31m"));
-        let past = Window { resets_at: Some(10), ..w };
+        let past = Window {
+            resets_at: Some(10),
+            ..w
+        };
         assert_eq!(past.reset_text(1_000_000).as_deref(), Some("resetting…"));
     }
 }

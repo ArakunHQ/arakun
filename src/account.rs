@@ -159,11 +159,17 @@ impl Limits {
             .unwrap_or_default();
         match self.mode(now) {
             UsageMode::Blocked => {
-                format!("Standard Usage limit reached; droid will stop until you pick Droid Core or Extra Usage.{resets}")
+                format!(
+                    "Standard Usage limit reached; droid will stop until you pick Droid Core or Extra Usage.{resets}"
+                )
             }
             UsageMode::Standard => match self.headline(now) {
                 Some((label, pct)) if pct >= 70. => {
-                    format!("You are using Standard Usage, but the {} window is at {:.0}%.", label.to_lowercase(), pct.ceil())
+                    format!(
+                        "You are using Standard Usage, but the {} window is at {:.0}%.",
+                        label.to_lowercase(),
+                        pct.ceil()
+                    )
                 }
                 _ => "You are using Standard Usage.".into(),
             },
@@ -333,7 +339,8 @@ impl Account {
             let result = cx
                 .background_spawn(async move {
                     let limits = fetch_limits(&k, KeySource::Keyring)?;
-                    keyring_store(&k).map_err(|e| format!("Could not save the key in the keyring: {e}"))?;
+                    keyring_store(&k)
+                        .map_err(|e| format!("Could not save the key in the keyring: {e}"))?;
                     Ok(limits)
                 })
                 .await;
@@ -396,7 +403,11 @@ impl Account {
 }
 
 fn key_ok(key: &str) -> bool {
-    key.len() >= 16 && key.len() <= 512 && key.bytes().all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+    key.len() >= 16
+        && key.len() <= 512
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
 }
 
 /// `ARAKUN_USAGE_FIXTURE=<file.json>` stands in for the API, to look at the UI offline.
@@ -415,9 +426,10 @@ fn load_key() -> Option<(String, KeySource)> {
         }
     }
     if let Some(k) = keyring::lookup(KEYRING_ACCOUNT)
-        && key_ok(&k) {
-            return Some((k, KeySource::Keyring));
-        }
+        && key_ok(&k)
+    {
+        return Some((k, KeySource::Keyring));
+    }
     droid_session().map(|token| (token, KeySource::Droid))
 }
 
@@ -431,7 +443,12 @@ fn droid_session() -> Option<String> {
     let dir = std::path::PathBuf::from(home).join(".factory");
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
     let json = read("auth.v2.keyring")
-        .and_then(|raw| droid_decrypt(&raw, &keyring::lookup_in("Factory CLI", "auth-encryption-key")?))
+        .and_then(|raw| {
+            droid_decrypt(
+                &raw,
+                &keyring::lookup_in("Factory CLI", "auth-encryption-key")?,
+            )
+        })
         .or_else(|| droid_decrypt(&read("auth.v2.file")?, &read("auth.v2.key")?));
     let creds: Value = serde_json::from_str(&json?).ok()?;
     let token = creds["access_token"].as_str()?.to_string();
@@ -446,7 +463,11 @@ fn jwt_expired(token: &str) -> bool {
     let exp = token
         .split('.')
         .nth(1)
-        .and_then(|p| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(p.trim_end_matches('=')).ok())
+        .and_then(|p| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(p.trim_end_matches('='))
+                .ok()
+        })
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .and_then(|v| v["exp"].as_u64());
     exp.is_none_or(|exp| exp <= unix_now() + 60)
@@ -496,7 +517,9 @@ fn droid_decrypt(raw: &str, key_b64: &str) -> Option<String> {
     // Rust's aes-gcm wants the tag appended to the ciphertext.
     data.extend_from_slice(&tag);
     let cipher = Aes256Gcm16::new_from_slice(&key).ok()?;
-    let plain = cipher.decrypt(GenericArray::from_slice(&nonce), data.as_ref()).ok()?;
+    let plain = cipher
+        .decrypt(GenericArray::from_slice(&nonce), data.as_ref())
+        .ok()?;
     String::from_utf8(plain).ok()
 }
 
@@ -535,7 +558,10 @@ fn fetch_limits(key: &str, source: KeySource) -> Result<Limits, String> {
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("Factory is unreachable ({})", err.trim().trim_start_matches("curl: ")));
+        return Err(format!(
+            "Factory is unreachable ({})",
+            err.trim().trim_start_matches("curl: ")
+        ));
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let (body, code) = text.rsplit_once('\n').unwrap_or(("", &text));
@@ -549,7 +575,8 @@ fn fetch_limits(key: &str, source: KeySource) -> Result<Limits, String> {
         }
         c => return Err(format!("Factory answered HTTP {c}.")),
     }
-    let v: Value = serde_json::from_str(body).map_err(|_| "Unexpected answer from Factory.".to_string())?;
+    let v: Value =
+        serde_json::from_str(body).map_err(|_| "Unexpected answer from Factory.".to_string())?;
     let limits = Limits::parse(&v);
     if limits.standard.is_none() {
         return Err("Factory sent no plan limits for this account.".into());
@@ -600,7 +627,11 @@ pub fn when(t: u64, now: u64) -> String {
     let left = t.saturating_sub(now);
     if left < 86400 {
         let (h, m) = (left / 3600, left % 3600 / 60);
-        return if h > 0 { format!("in {h}h {m}m") } else { format!("in {}m", m.max(1)) };
+        return if h > 0 {
+            format!("in {h}h {m}m")
+        } else {
+            format!("in {}m", m.max(1))
+        };
     }
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -629,7 +660,8 @@ mod tests {
     fn jwt_expiry() {
         use base64::Engine as _;
         let jwt = |exp: u64| {
-            let p = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{exp}}}"));
+            let p = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(format!("{{\"exp\":{exp}}}"));
             format!("h.{p}.s")
         };
         assert!(!jwt_expired(&jwt(unix_now() + 3600)));
@@ -647,11 +679,19 @@ mod tests {
         let nonce = [3u8; 16];
         let cipher = aes_gcm::AesGcm::<aes_gcm::aes::Aes256, U16>::new_from_slice(&key).unwrap();
         let sealed = cipher
-            .encrypt(GenericArray::from_slice(&nonce), br#"{"access_token":"a.b.c"}"#.as_ref())
+            .encrypt(
+                GenericArray::from_slice(&nonce),
+                br#"{"access_token":"a.b.c"}"#.as_ref(),
+            )
             .unwrap();
         // droid writes iv:tag:ciphertext, each base64; aes-gcm returns ct||tag.
         let (ct, tag) = sealed.split_at(sealed.len() - 16);
-        let raw = format!("{}:{}:{}", b64.encode(nonce), b64.encode(tag), b64.encode(ct));
+        let raw = format!(
+            "{}:{}:{}",
+            b64.encode(nonce),
+            b64.encode(tag),
+            b64.encode(ct)
+        );
         let json = droid_decrypt(&raw, &b64.encode(key)).unwrap();
         assert!(json.contains("a.b.c"));
         assert!(droid_decrypt(&raw, "bad key").is_none());

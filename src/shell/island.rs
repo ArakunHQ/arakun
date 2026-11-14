@@ -54,8 +54,13 @@ struct Seen {
 pub(super) enum Open {
     Session(SharedString),
     /// The Runs tab of the project at `root`, at a run's page when set.
-    Runs { root: PathBuf, run: Option<u64> },
-    Branches { root: PathBuf },
+    Runs {
+        root: PathBuf,
+        run: Option<u64>,
+    },
+    Branches {
+        root: PathBuf,
+    },
     /// A CoderSpace task, by id.
     #[cfg(feature = "coderlabs")]
     Task(String),
@@ -74,7 +79,10 @@ impl Open {
         match self {
             Open::Session(id) => id.clone(),
             Open::Runs { root, run: None } => format!("open:runs:{}", root.display()).into(),
-            Open::Runs { root, run: Some(run) } => format!("open:run:{run}:{}", root.display()).into(),
+            Open::Runs {
+                root,
+                run: Some(run),
+            } => format!("open:run:{run}:{}", root.display()).into(),
             Open::Branches { root } => format!("open:branches:{}", root.display()).into(),
             #[cfg(feature = "coderlabs")]
             Open::Task(id) => format!("open:task:{id}").into(),
@@ -94,10 +102,16 @@ impl Open {
         };
         let (kind, rest) = what.split_once(':').unwrap_or((what, ""));
         match (kind, rest) {
-            ("runs", root) if !root.is_empty() => Some(Open::Runs { root: root.into(), run: None }),
+            ("runs", root) if !root.is_empty() => Some(Open::Runs {
+                root: root.into(),
+                run: None,
+            }),
             ("run", rest) => {
                 let (run, root) = rest.split_once(':')?;
-                Some(Open::Runs { root: root.into(), run: Some(run.parse().ok()?) })
+                Some(Open::Runs {
+                    root: root.into(),
+                    run: Some(run.parse().ok()?),
+                })
             }
             ("branches", root) if !root.is_empty() => Some(Open::Branches { root: root.into() }),
             #[cfg(feature = "coderlabs")]
@@ -107,7 +121,9 @@ impl Open {
             #[cfg(feature = "team")]
             ("team", "") => Some(Open::Team),
             #[cfg(feature = "team")]
-            ("url", url) if url.starts_with("https://") || url.starts_with("http://") => Some(Open::Url(url.to_string())),
+            ("url", url) if url.starts_with("https://") || url.starts_with("http://") => {
+                Some(Open::Url(url.to_string()))
+            }
             _ => None,
         }
     }
@@ -149,7 +165,9 @@ impl Shell {
             let events = cx.spawn_in(window, async move |this, cx| {
                 while let Some(ev) = presses.next().await {
                     let handled = this.update_in(cx, |this, window, cx| match ev {
-                        FromIsland::Ver { key } | FromIsland::Row { key } => this.open_from_island(key, window, cx),
+                        FromIsland::Ver { key } | FromIsland::Row { key } => {
+                            this.open_from_island(key, window, cx)
+                        }
                         FromIsland::Luego { .. } => {}
                     });
                     if handled.is_err() {
@@ -160,12 +178,22 @@ impl Shell {
             let feed = cx.spawn_in(window, async move |this, cx| {
                 loop {
                     cx.background_executor().timer(FEED_EVERY).await;
-                    if this.update_in(cx, |this, window, cx| this.feed_island(window, cx)).is_err() {
+                    if this
+                        .update_in(cx, |this, window, cx| this.feed_island(window, cx))
+                        .is_err()
+                    {
                         break;
                     }
                 }
             });
-            self.island = Some(IslandLink { tx, up, sent: None, _events: events, _feed: feed, seen: HashMap::new() });
+            self.island = Some(IslandLink {
+                tx,
+                up,
+                sent: None,
+                _events: events,
+                _feed: feed,
+                seen: HashMap::new(),
+            });
             self.feed_island(window, cx);
         }
     }
@@ -176,7 +204,10 @@ impl Shell {
         match Open::parse(&key) {
             Some(Open::Session(id)) => {
                 let found = self.projects.iter().enumerate().find_map(|(pi, p)| {
-                    p.environments.iter().position(|e| e.session_index(&id).is_some()).map(|ei| (pi, ei))
+                    p.environments
+                        .iter()
+                        .position(|e| e.session_index(&id).is_some())
+                        .map(|ei| (pi, ei))
                 });
                 if let Some((pi, ei)) = found {
                     self.open_session_at(pi, ei, id, window, cx);
@@ -231,7 +262,10 @@ impl Shell {
             req: SharedString::default(),
             image: SharedString::default(),
         };
-        let shown = self.island.as_ref().is_some_and(|link| send_alert(&link.tx, &link.up, alert));
+        let shown = self
+            .island
+            .as_ref()
+            .is_some_and(|link| send_alert(&link.tx, &link.up, alert));
         if !shown {
             super::sessions::send_notification(title, body, kind == AlertKind::Failure);
         }
@@ -241,7 +275,9 @@ impl Shell {
     /// caller tells it some other way.
     #[cfg(feature = "team")]
     pub(super) fn island_card(&self, alert: isl::Alert) -> bool {
-        self.island.as_ref().is_some_and(|link| send_alert(&link.tx, &link.up, alert))
+        self.island
+            .as_ref()
+            .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
     }
 
     /// Hands the island what every session is up to, when that changed.
@@ -251,9 +287,15 @@ impl Shell {
         };
         let now = model::unix_now();
         let mut rows = Vec::new();
-        for s in self.projects.iter().flat_map(|p| &p.environments).flat_map(|e| &e.sessions) {
+        for s in self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+        {
             if let Some(live) = &s.live {
-                link.seen.insert(s.id.clone(), seen(s, live.thread.read(cx)));
+                link.seen
+                    .insert(s.id.clone(), seen(s, live.thread.read(cx)));
             }
             let recent = now.saturating_sub(s.updated) < RECENT_SECS;
             let status = match s.status {
@@ -287,14 +329,19 @@ impl Shell {
             .iter()
             .flat_map(|p| &p.environments)
             .flat_map(|e| &e.sessions)
-            .filter(|s| crate::platform::local_time(s.updated).map(|t| (t.year, t.month, t.day)) == today)
+            .filter(|s| {
+                crate::platform::local_time(s.updated).map(|t| (t.year, t.month, t.day)) == today
+            })
             .filter_map(|s| link.seen.get(&s.id))
             .map(|seen| seen.usd)
             .sum();
         let feed = isl::Feed {
             rows,
             today: (spent > 0.).then(|| crate::agent::fmt_cost(spent, "USD", false).into()),
-            viewing: window.is_window_active().then(|| self.active_session_id()).flatten(),
+            viewing: window
+                .is_window_active()
+                .then(|| self.active_session_id())
+                .flatten(),
         };
         if let Some(feed) = changed(&mut link.sent, feed) {
             let _ = link.tx.send(ToIsland::Feed { feed });
@@ -321,8 +368,16 @@ impl Shell {
                 let reply = last_text(t.entries()).map(brief).filter(|b| !b.is_empty());
                 (AlertKind::Finished, format!("{model} terminó"), reply)
             }
-            Notice::Input => (AlertKind::Input, format!("{model} necesita tu decisión"), waiting_on(t, brief)),
-            Notice::Error => (AlertKind::Error, format!("{model} falló"), error_line(t, brief)),
+            Notice::Input => (
+                AlertKind::Input,
+                format!("{model} necesita tu decisión"),
+                waiting_on(t, brief),
+            ),
+            Notice::Error => (
+                AlertKind::Error,
+                format!("{model} falló"),
+                error_line(t, brief),
+            ),
         };
         let alert = isl::Alert {
             key: id.clone(),
@@ -367,7 +422,11 @@ fn seen(s: &model::Session, t: &Thread) -> Seen {
     let (cost, usd) = match &usage.cost {
         Some((amount, currency)) => (
             crate::agent::fmt_cost(*amount, currency, false),
-            if currency.eq_ignore_ascii_case("USD") { *amount } else { 0. },
+            if currency.eq_ignore_ascii_case("USD") {
+                *amount
+            } else {
+                0.
+            },
         ),
         None => (String::new(), 0.),
     };
@@ -384,7 +443,10 @@ fn seen(s: &model::Session, t: &Thread) -> Seen {
 fn model_label(t: &Thread, s: Option<&model::Session>) -> String {
     t.setting_label(Setting::Model)
         .filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case("default"))
-        .or_else(|| s.and_then(|s| s.cli_model.as_deref()).map(|m| m.rsplit('/').next().unwrap_or(m).to_string()))
+        .or_else(|| {
+            s.and_then(|s| s.cli_model.as_deref())
+                .map(|m| m.rsplit('/').next().unwrap_or(m).to_string())
+        })
         .unwrap_or_else(|| t.kind().label().to_string())
 }
 
@@ -395,9 +457,12 @@ fn doing_now(entries: &[Entry]) -> Option<String> {
         let line = match e {
             Entry::User { .. } => return None,
             Entry::Tool(call) => one_line(&call.title),
-            Entry::Agent { text } | Entry::Thought { text } => {
-                text.lines().rev().map(one_line).find(|l| !l.is_empty()).unwrap_or_default()
-            }
+            Entry::Agent { text } | Entry::Thought { text } => text
+                .lines()
+                .rev()
+                .map(one_line)
+                .find(|l| !l.is_empty())
+                .unwrap_or_default(),
             _ => continue,
         };
         if !line.is_empty() {
@@ -427,9 +492,15 @@ fn last_reply(entries: &[Entry]) -> Option<String> {
 /// What the agent waits on, as a row (`one_line`) or a card (`brief`) puts it.
 fn waiting_on(t: &Thread, shape: fn(&str) -> String) -> Option<String> {
     if let Some(p) = t.pending_permission() {
-        return Some(if p.plan.is_some() { "Tiene un plan listo para aprobar".into() } else { shape(&p.title) });
+        return Some(if p.plan.is_some() {
+            "Tiene un plan listo para aprobar".into()
+        } else {
+            shape(&p.title)
+        });
     }
-    t.pending_question().and_then(|q| q.questions.first()).map(|q| shape(&q.question))
+    t.pending_question()
+        .and_then(|q| q.questions.first())
+        .map(|q| shape(&q.question))
 }
 
 fn error_line(t: &Thread, shape: fn(&str) -> String) -> Option<String> {
@@ -452,7 +523,9 @@ mod tests {
     }
 
     fn tool(title: &str) -> Entry {
-        entry(serde_json::json!({"type": "tool", "id": "1", "title": title, "kind": "execute", "status": "in_progress"}))
+        entry(
+            serde_json::json!({"type": "tool", "id": "1", "title": title, "kind": "execute", "status": "in_progress"}),
+        )
     }
 
     fn agent(text: &str) -> Entry {
@@ -461,9 +534,17 @@ mod tests {
 
     #[test]
     fn doing_now_is_the_latest_tool_or_text_of_the_turn() {
-        let entries = [user(), agent("Voy a correr las pruebas."), tool("cargo test -p arakun")];
+        let entries = [
+            user(),
+            agent("Voy a correr las pruebas."),
+            tool("cargo test -p arakun"),
+        ];
         assert_eq!(doing_now(&entries).as_deref(), Some("cargo test -p arakun"));
-        let entries = [user(), tool("cargo test"), agent("Todo pasa.\n\n## Siguiente\n- revisar `rail.rs`\n")];
+        let entries = [
+            user(),
+            tool("cargo test"),
+            agent("Todo pasa.\n\n## Siguiente\n- revisar `rail.rs`\n"),
+        ];
         assert_eq!(doing_now(&entries).as_deref(), Some("revisar rail.rs"));
         // Nothing yet in this turn: the last one's work does not count.
         let entries = [user(), tool("ls"), user()];
@@ -472,8 +553,15 @@ mod tests {
 
     #[test]
     fn last_reply_is_its_first_line() {
-        let entries = [user(), agent("**Listo**: qkv m32 −0.4 µs\nmás detalle"), tool("git diff")];
-        assert_eq!(last_reply(&entries).as_deref(), Some("Listo: qkv m32 −0.4 µs"));
+        let entries = [
+            user(),
+            agent("**Listo**: qkv m32 −0.4 µs\nmás detalle"),
+            tool("git diff"),
+        ];
+        assert_eq!(
+            last_reply(&entries).as_deref(),
+            Some("Listo: qkv m32 −0.4 µs")
+        );
         assert_eq!(last_reply(&[agent("viejo"), user()]), None);
     }
 
@@ -488,7 +576,11 @@ mod tests {
             cost: SharedString::default(),
             updated: 1,
         };
-        let feed = |status| isl::Feed { rows: vec![row(status)], today: None, viewing: None };
+        let feed = |status| isl::Feed {
+            rows: vec![row(status)],
+            today: None,
+            viewing: None,
+        };
         let mut sent = None;
         assert!(changed(&mut sent, feed(isl::Status::Working)).is_some());
         assert!(changed(&mut sent, feed(isl::Status::Working)).is_none());
@@ -502,8 +594,17 @@ mod tests {
 
     #[test]
     fn a_finished_card_says_more_than_its_row() {
-        let entries = [user(), agent("Listo, el parche ya está.\nPasé `cargo test` y todo sale verde.\n\nOtro párrafo."), tool("git diff")];
-        assert_eq!(last_reply(&entries).as_deref(), Some("Listo, el parche ya está."));
+        let entries = [
+            user(),
+            agent(
+                "Listo, el parche ya está.\nPasé `cargo test` y todo sale verde.\n\nOtro párrafo.",
+            ),
+            tool("git diff"),
+        ];
+        assert_eq!(
+            last_reply(&entries).as_deref(),
+            Some("Listo, el parche ya está.")
+        );
         assert_eq!(
             last_text(&entries).map(brief).as_deref(),
             Some("Listo, el parche ya está. Pasé cargo test y todo sale verde. Otro párrafo.")
@@ -515,9 +616,17 @@ mod tests {
     fn notice_keys_never_pass_for_sessions() {
         let all = [
             Open::Session("6f1c2d".into()),
-            Open::Runs { root: "/home/k/app".into(), run: None },
-            Open::Runs { root: "/home/k/my:app".into(), run: Some(1234567) },
-            Open::Branches { root: "/home/k/app".into() },
+            Open::Runs {
+                root: "/home/k/app".into(),
+                run: None,
+            },
+            Open::Runs {
+                root: "/home/k/my:app".into(),
+                run: Some(1234567),
+            },
+            Open::Branches {
+                root: "/home/k/app".into(),
+            },
             #[cfg(feature = "coderlabs")]
             Open::Task("tsk_9".into()),
             Open::Cloudflare,
@@ -529,12 +638,30 @@ mod tests {
         ];
         for open in all {
             let key = open.key();
-            assert_eq!(key.starts_with("open:"), !matches!(open, Open::Session(_)), "{key}");
+            assert_eq!(
+                key.starts_with("open:"),
+                !matches!(open, Open::Session(_)),
+                "{key}"
+            );
             assert_eq!(Open::parse(&key), Some(open));
         }
-        assert_eq!(Open::Runs { root: "/r".into(), run: Some(7) }.key().as_ref(), "open:run:7:/r");
+        assert_eq!(
+            Open::Runs {
+                root: "/r".into(),
+                run: Some(7)
+            }
+            .key()
+            .as_ref(),
+            "open:run:7:/r"
+        );
         // From a newer build, or broken: only the window comes up.
-        for key in ["open:deploys", "open:run:x:/r", "open:run:7", "open:task:", "open:usage:more"] {
+        for key in [
+            "open:deploys",
+            "open:run:x:/r",
+            "open:run:7",
+            "open:task:",
+            "open:usage:more",
+        ] {
             assert_eq!(Open::parse(key), None, "{key}");
         }
     }
@@ -564,7 +691,10 @@ mod tests {
 
     #[test]
     fn one_line_trims_and_cuts() {
-        assert_eq!(one_line("\n  #  Título   con   espacios \nresto"), "Título con espacios");
+        assert_eq!(
+            one_line("\n  #  Título   con   espacios \nresto"),
+            "Título con espacios"
+        );
         let long = "a".repeat(200);
         assert_eq!(one_line(&long).chars().count(), 121);
     }

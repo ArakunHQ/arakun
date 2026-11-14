@@ -11,8 +11,11 @@ pub struct Assets;
 /// The bundled fonts (Geist and the rest): they are rarely installed.
 #[allow(dead_code, reason = "the examples include this file but draw no tasks")]
 pub fn load_fonts(cx: &mut gpui::App) {
-    let fonts: Vec<Cow<'static, [u8]>> =
-        Assets::iter().filter(|p| p.ends_with(".ttf")).filter_map(|p| Assets::get(&p)).map(|f| f.data).collect();
+    let fonts: Vec<Cow<'static, [u8]>> = Assets::iter()
+        .filter(|p| p.ends_with(".ttf"))
+        .filter_map(|p| Assets::get(&p))
+        .map(|f| f.data)
+        .collect();
     if let Err(e) = cx.text_system().add_fonts(fonts) {
         eprintln!("arakun: fonts: {e}");
     }

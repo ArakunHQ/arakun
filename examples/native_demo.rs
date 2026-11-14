@@ -22,14 +22,14 @@
 
 #[path = "../src/agent/mod.rs"]
 mod agent;
+#[allow(dead_code)]
+#[path = "../src/headless/broker.rs"]
+mod broker;
 #[path = "../src/durable.rs"]
 mod durable;
 #[path = "../src/fetch.rs"]
 #[allow(dead_code)]
 mod fetch;
-#[allow(dead_code)]
-#[path = "../src/headless/broker.rs"]
-mod broker;
 #[allow(dead_code)]
 #[path = "../src/headless/sandbox.rs"]
 mod sandbox;
@@ -46,23 +46,23 @@ mod memory {
         String::new()
     }
 }
+#[path = "../src/assets.rs"]
+mod assets;
 #[allow(dead_code)]
 #[path = "../src/highlight.rs"]
 mod highlight;
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
-#[allow(dead_code)]
-#[path = "../src/schedule.rs"]
-mod schedule;
-#[path = "../src/assets.rs"]
-mod assets;
 #[allow(dead_code)]
 #[path = "../src/input.rs"]
 mod input;
 #[allow(dead_code)]
 #[path = "../src/mascot.rs"]
 mod mascot;
+#[allow(dead_code)]
+#[path = "../src/platform.rs"]
+mod platform;
+#[allow(dead_code)]
+#[path = "../src/schedule.rs"]
+mod schedule;
 #[allow(dead_code)]
 #[path = "../src/theme.rs"]
 mod theme;
@@ -209,7 +209,9 @@ fn print_entries(entries: &[Entry], printed: &mut Vec<String>) {
             Entry::Notice { text, error, .. } => {
                 format!("[notice{}] {text}", if *error { " error" } else { "" })
             }
-            Entry::Compacted { before, after, .. } => format!("[compacted {before:?}% -> {after:?}%]"),
+            Entry::Compacted { before, after, .. } => {
+                format!("[compacted {before:?}% -> {after:?}%]")
+            }
         };
         // Streaming text is printed once it stops changing (on the next event or the end).
         if printed.get(i) != Some(&line) {
@@ -303,7 +305,9 @@ fn next_step(run: &Rc<RefCell<Run>>, thread: &Entity<Thread>, cx: &mut App) {
                 // The rename has no reply event; give Droid a moment to store it.
                 let (run, thread) = (run.clone(), thread.clone());
                 cx.spawn(async move |cx| {
-                    cx.background_executor().timer(Duration::from_millis(1500)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(1500))
+                        .await;
                     cx.update(|cx| next_step(&run, &thread, cx));
                 })
                 .detach();
@@ -325,10 +329,20 @@ fn print_catalog(cwd: &std::path::Path) {
         "[defaults] model={:?} effort={:?} autonomy={:?} mode={:?}",
         d.model_id, d.reasoning_effort, d.autonomy_level, d.interaction_mode
     );
-    println!("[models] {}", c.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>().join(", "));
+    println!(
+        "[models] {}",
+        c.models
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("[slug] {}", agent::catalog::session_slug(cwd));
     for s in agent::catalog::droid_sessions(cwd) {
-        println!("[droid session] {} updated={} {:?}", s.id, s.updated, s.title);
+        println!(
+            "[droid session] {} updated={} {:?}",
+            s.id, s.updated, s.title
+        );
     }
 }
 

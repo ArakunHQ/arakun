@@ -138,7 +138,8 @@ impl TextMap {
             first = false;
             let (a, b) = (a - s.start, b - s.start);
             let mut ix = a;
-            let mut pads: Vec<&Range<usize>> = s.pads.iter().filter(|p| p.end > a && p.start < b).collect();
+            let mut pads: Vec<&Range<usize>> =
+                s.pads.iter().filter(|p| p.end > a && p.start < b).collect();
             pads.sort_by_key(|p| p.start);
             for p in pads {
                 if p.start > ix {
@@ -164,7 +165,9 @@ impl TextMap {
         let text: &str = &s.text;
         let mut a = local;
         while a > 0 {
-            let Some(c) = text[..a].chars().next_back() else { break };
+            let Some(c) = text[..a].chars().next_back() else {
+                break;
+            };
             if !word(c) {
                 break;
             }
@@ -172,7 +175,9 @@ impl TextMap {
         }
         let mut b = local;
         while b < text.len() {
-            let Some(c) = text[b..].chars().next() else { break };
+            let Some(c) = text[b..].chars().next() else {
+                break;
+            };
             if !word(c) {
                 break;
             }
@@ -266,7 +271,9 @@ impl SelText {
     /// Local ranges matching the search; `current` indexes them and reports
     /// where it lands in `spot`.
     pub fn hits(mut self, hits: Vec<Range<usize>>, current: Option<usize>, spot: &Spot) -> Self {
-        self.current_hit = current.filter(|&c| c < hits.len()).map(|c| (c, spot.clone()));
+        self.current_hit = current
+            .filter(|&c| c < hits.len())
+            .map(|c| (c, spot.clone()));
         self.hits = hits;
         self
     }
@@ -317,17 +324,28 @@ fn range_rects(
     let mut out = vec![Bounds::new(a, size(bounds.right() - a.x, lh))];
     let mut y = a.y + lh;
     while y + px(1.) < b.y {
-        out.push(Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh)));
+        out.push(Bounds::new(
+            point(bounds.left(), y),
+            size(bounds.size.width, lh),
+        ));
         y += lh;
     }
-    out.push(Bounds::new(point(bounds.left(), b.y), size(b.x - bounds.left(), lh)));
+    out.push(Bounds::new(
+        point(bounds.left(), b.y),
+        size(b.x - bounds.left(), lh),
+    ));
     out
 }
 
 /// The boxes of a chip, one per line it spans, each as wide as its own text.
 /// `range_rects` runs a wrapped range to the edge of the text, which drew a long
 /// empty tail after the part left on the upper line.
-fn chip_rects(layout: &TextLayout, text: &str, bounds: Bounds<Pixels>, range: Range<usize>) -> Vec<Bounds<Pixels>> {
+fn chip_rects(
+    layout: &TextLayout,
+    text: &str,
+    bounds: Bounds<Pixels>,
+    range: Range<usize>,
+) -> Vec<Bounds<Pixels>> {
     let lh = layout.line_height();
     let Some(chip) = text.get(range.clone()) else {
         return Vec::new();
@@ -342,8 +360,13 @@ fn chip_rects(layout: &TextLayout, text: &str, bounds: Bounds<Pixels>, range: Ra
     };
     let mut line: Option<(Pixels, Pixels, Pixels, usize)> = None;
     let mut last = range.start;
-    for i in chip.char_indices().map(|(i, c)| range.start + i + c.len_utf8()) {
-        let Some(at) = layout.position_for_index(i) else { continue };
+    for i in chip
+        .char_indices()
+        .map(|(i, c)| range.start + i + c.len_utf8())
+    {
+        let Some(at) = layout.position_for_index(i) else {
+            continue;
+        };
         let prev = i - text[..i].chars().next_back().map_or(1, char::len_utf8);
         line = match line {
             Some((y, x0, _, from)) if (at.y - y).abs() < px(1.) => Some((y, x0, at.x, from)),
@@ -450,9 +473,15 @@ impl Element for SelText {
                     let room = range_rects(&self.layout, &self.text, bounds, lead)
                         .first()
                         .map_or(px(18.), |l| l.size.width + px(1.));
-                    let s = (lh * 0.6).clamp(px(11.), px(16.)).min(room - px(4.)).max(px(8.));
+                    let s = (lh * 0.6)
+                        .clamp(px(11.), px(16.))
+                        .min(room - px(4.))
+                        .max(px(8.));
                     let icon_bounds = Bounds::new(
-                        point(r.origin.x + (room - s) / 2., r.origin.y + (r.size.height - s) / 2.),
+                        point(
+                            r.origin.x + (room - s) / 2.,
+                            r.origin.y + (r.size.height - s) / 2.,
+                        ),
                         size(s, s),
                     );
                     let _ = window.paint_svg(
@@ -477,8 +506,17 @@ impl Element for SelText {
             }
         }
         let current = self.current_hit.as_ref().map(|(i, _)| *i);
-        for (i, h) in self.hits.iter().enumerate().filter(|(_, h)| h.start < h.end) {
-            let color = if Some(i) == current { current_hit_color() } else { hit_color() };
+        for (i, h) in self
+            .hits
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.start < h.end)
+        {
+            let color = if Some(i) == current {
+                current_hit_color()
+            } else {
+                hit_color()
+            };
             for r in range_rects(&self.layout, &self.text, bounds, h.clone()) {
                 window.paint_quad(fill(r, color).corner_radii(px(3.)));
             }

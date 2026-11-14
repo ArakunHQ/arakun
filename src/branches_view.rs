@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, BorderStyle, Bounds, Context, Div, EventEmitter, FocusHandle, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathBuilder, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Task, TextAlign, TextRun, Window, canvas, div, point, px, quad, size,
+    AnyElement, App, AppContext as _, BorderStyle, Bounds, Context, Div, EventEmitter, FocusHandle,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, PathBuilder,
+    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
+    TextAlign, TextRun, Window, canvas, div, point, px, quad, size,
 };
 
 use crate::branches::{self, Branch, Checks, Map, Status, Who};
@@ -58,21 +59,38 @@ pub struct SessionInfo {
 
 impl EnvInfo {
     fn working(&self) -> bool {
-        self.sessions.iter().any(|s| matches!(s.status, SessionStatus::Working | SessionStatus::NeedsInput))
+        self.sessions
+            .iter()
+            .any(|s| matches!(s.status, SessionStatus::Working | SessionStatus::NeedsInput))
     }
 }
 
 pub enum BranchesEvent {
     /// Open a pull request in a browser tab.
     Open(String),
-    OpenEnv { project: usize, env: usize },
-    OpenSession { project: usize, env: usize, id: SharedString },
+    OpenEnv {
+        project: usize,
+        env: usize,
+    },
+    OpenSession {
+        project: usize,
+        env: usize,
+        id: SharedString,
+    },
     /// Check `branch` out in a new environment.
     CreateEnv(String),
     /// Start a session of the environment's agent with `prompt`.
-    Ask { path: PathBuf, title: String, prompt: String },
+    Ask {
+        path: PathBuf,
+        title: String,
+        prompt: String,
+    },
     /// A pull request's checks finished since the last read.
-    ChecksDone { title: String, body: String, failed: bool },
+    ChecksDone {
+        title: String,
+        body: String,
+        failed: bool,
+    },
 }
 
 pub struct BranchesView {
@@ -137,7 +155,12 @@ impl BranchesView {
 
     /// The visible project: its main checkout and environments. A new project
     /// drops the old map.
-    pub fn set_project(&mut self, root: Option<PathBuf>, envs: Vec<EnvInfo>, cx: &mut Context<Self>) {
+    pub fn set_project(
+        &mut self,
+        root: Option<PathBuf>,
+        envs: Vec<EnvInfo>,
+        cx: &mut Context<Self>,
+    ) {
         if self.root != root {
             self.root = root;
             self.map = None;
@@ -156,20 +179,37 @@ impl BranchesView {
             self.set_project(Some(root), Vec::new(), cx);
         }
         // Checks running somewhere: look again sooner, to tell when they end.
-        let every = if self.checks_running() { STALE } else { BACKGROUND };
+        let every = if self.checks_running() {
+            STALE
+        } else {
+            BACKGROUND
+        };
         if self.loaded_at.is_none_or(|t| t.elapsed() > every) {
             self.refresh(cx);
         }
     }
 
     fn checks_running(&self) -> bool {
-        self.map.as_ref().is_some_and(|m| m.branches.iter().filter_map(|b| b.pr.as_ref()).any(|p| p.open() && p.checks == Checks::Pending))
+        self.map.as_ref().is_some_and(|m| {
+            m.branches
+                .iter()
+                .filter_map(|b| b.pr.as_ref())
+                .any(|p| p.open() && p.checks == Checks::Pending)
+        })
     }
 
     /// Every branch read, with its PR's number and title: what Ctrl+K can jump to.
     pub fn branch_list(&self) -> Vec<(String, Option<(u64, String)>)> {
         self.map.as_ref().map_or_else(Vec::new, |m| {
-            m.branches.iter().map(|b| (b.name.clone(), b.pr.as_ref().map(|p| (p.number, p.title.clone())))).collect()
+            m.branches
+                .iter()
+                .map(|b| {
+                    (
+                        b.name.clone(),
+                        b.pr.as_ref().map(|p| (p.number, p.title.clone())),
+                    )
+                })
+                .collect()
         })
     }
 
@@ -181,7 +221,10 @@ impl BranchesView {
             .iter()
             .filter(|b| {
                 let env = self.env_of(&b.name);
-                matches!(b.status(env.is_some(), env.is_some_and(EnvInfo::working), now), Status::Conflict | Status::Failing)
+                matches!(
+                    b.status(env.is_some(), env.is_some_and(EnvInfo::working), now),
+                    Status::Conflict | Status::Failing
+                )
             })
             .count()
     }
@@ -193,7 +236,9 @@ impl BranchesView {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.root.clone() else { return };
+        let Some(root) = self.root.clone() else {
+            return;
+        };
         if self.loading {
             return;
         }
@@ -207,7 +252,11 @@ impl BranchesView {
                 if this.root.as_ref() == Some(&root) {
                     if let Some(old) = &this.map {
                         for (title, body, failed) in finished_checks(old, &map) {
-                            cx.emit(BranchesEvent::ChecksDone { title, body, failed });
+                            cx.emit(BranchesEvent::ChecksDone {
+                                title,
+                                body,
+                                failed,
+                            });
                         }
                     }
                     this.map = Some(map);
@@ -220,7 +269,9 @@ impl BranchesView {
 
     /// Reads pull requests from the GitHub repository typed in the field.
     fn use_repo(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.root.clone() else { return };
+        let Some(root) = self.root.clone() else {
+            return;
+        };
         let text = self.repo.read(cx).text().to_string();
         match branches::set_github_repo(&root, &text) {
             Ok(()) => {
@@ -249,14 +300,24 @@ impl BranchesView {
                     .gap(px(8.))
                     .text_size(px(ui::TEXT_SM))
                     .child(icon("git-pull-request", 14.).text_color(theme::text_subtle()))
-                    .child(div().flex_1().min_w_0().child(format!("Pull requests unavailable: {error}"))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(format!("Pull requests unavailable: {error}")),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_muted()).child("Read them from GitHub repository"))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_muted())
+                            .child("Read them from GitHub repository"),
+                    )
                     .child(
                         div()
                             .flex()
@@ -271,9 +332,19 @@ impl BranchesView {
                             .text_size(px(ui::TEXT_SM))
                             .child(self.repo.clone()),
                     )
-                    .child(ui::button("branches-repo", "Use", ButtonKind::Outline, true).on_click(cx.listener(|this, _, _, cx| this.use_repo(cx)))),
+                    .child(
+                        ui::button("branches-repo", "Use", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|this, _, _, cx| this.use_repo(cx))),
+                    ),
             )
-            .when_some(self.repo_error.clone(), |d, e| d.child(div().text_size(px(ui::TEXT_XS)).text_color(theme::danger()).child(e)))
+            .when_some(self.repo_error.clone(), |d, e| {
+                d.child(
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::danger())
+                        .child(e),
+                )
+            })
     }
 
     fn env_of(&self, branch: &str) -> Option<&EnvInfo> {
@@ -288,10 +359,20 @@ impl BranchesView {
             .iter()
             .map(|b| {
                 let env = self.env_of(&b.name);
-                Row { branch: Some(b), status: b.status(env.is_some(), env.is_some_and(EnvInfo::working), now), env }
+                Row {
+                    branch: Some(b),
+                    status: b.status(env.is_some(), env.is_some_and(EnvInfo::working), now),
+                    env,
+                }
             })
             .collect();
-        rows.sort_by(|a, b| a.status.cmp(&b.status).then_with(|| b.branch.map_or(0, |x| x.time).cmp(&a.branch.map_or(0, |x| x.time))));
+        rows.sort_by(|a, b| {
+            a.status.cmp(&b.status).then_with(|| {
+                b.branch
+                    .map_or(0, |x| x.time)
+                    .cmp(&a.branch.map_or(0, |x| x.time))
+            })
+        });
         let idle = rows.iter().filter(|r| r.status == Status::Idle).count();
         let merged = rows.iter().filter(|r| r.status == Status::Merged).count();
         let selected = self.selected.as_deref();
@@ -301,7 +382,14 @@ impl BranchesView {
             Status::Merged => self.show_merged || r.branch.map(|b| b.name.as_str()) == selected,
             _ => true,
         });
-        rows.insert(0, Row { branch: None, status: Status::Working, env: self.env_of(&map.main) });
+        rows.insert(
+            0,
+            Row {
+                branch: None,
+                status: Status::Working,
+                env: self.env_of(&map.main),
+            },
+        );
         (rows, merged, idle)
     }
 
@@ -327,39 +415,59 @@ impl BranchesView {
             }
         }
         counts.sort_by_key(|(s, _)| *s);
-        div().flex().flex_wrap().gap(px(8.)).children(counts.into_iter().filter(|(s, _)| *s != Status::Idle).map(|(s, n)| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .h(px(26.))
-                .px(px(10.))
-                .rounded_full()
-                .bg(status_color(s).opacity(0.12))
-                .text_size(px(ui::TEXT_SM))
-                .child(div().size(px(7.)).rounded_full().bg(status_color(s)))
-                .child(div().font_weight(FontWeight::MEDIUM).child(n.to_string()))
-                .child(div().text_color(theme::text_muted()).child(s.label()))
-        }))
+        div().flex().flex_wrap().gap(px(8.)).children(
+            counts
+                .into_iter()
+                .filter(|(s, _)| *s != Status::Idle)
+                .map(|(s, n)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .h(px(26.))
+                        .px(px(10.))
+                        .rounded_full()
+                        .bg(status_color(s).opacity(0.12))
+                        .text_size(px(ui::TEXT_SM))
+                        .child(div().size(px(7.)).rounded_full().bg(status_color(s)))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(n.to_string()))
+                        .child(div().text_color(theme::text_muted()).child(s.label()))
+                }),
+        )
     }
 
-    fn render_graph(&self, map: &Map, rows: &[Row], merged: usize, idle: usize, now: u64, cx: &mut Context<Self>) -> Div {
+    fn render_graph(
+        &self,
+        map: &Map,
+        rows: &[Row],
+        merged: usize,
+        idle: usize,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let lanes = Lanes::new(map, rows);
         let height = AXIS_H + rows.len() as f32 * ROW_H;
         let painter = lanes.clone();
-        let graph = canvas(|_, _, _| {}, move |bounds, _, window, cx| painter.paint(bounds, window, cx))
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left(px(LABEL_W))
-            .right(px(STATUS_W))
-            .h(px(height));
+        let graph = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| painter.paint(bounds, window, cx),
+        )
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(LABEL_W))
+        .right(px(STATUS_W))
+        .h(px(height));
 
         let mut list = div().relative().flex().flex_col().pt(px(AXIS_H));
         for (i, row) in rows.iter().enumerate() {
             list = list.child(self.render_row(map, row, i, now, cx));
         }
-        let toggle = |id: &'static str, open: bool, label: String, cx: &mut Context<Self>, flip: fn(&mut Self)| {
+        let toggle = |id: &'static str,
+                      open: bool,
+                      label: String,
+                      cx: &mut Context<Self>,
+                      flip: fn(&mut Self)| {
             div()
                 .id(id)
                 .flex()
@@ -371,7 +479,10 @@ impl BranchesView {
                 .text_color(theme::text_subtle())
                 .cursor_pointer()
                 .hover(|s| s.text_color(theme::content()))
-                .child(icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.).text_color(theme::text_subtle()))
+                .child(
+                    icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.)
+                        .text_color(theme::text_subtle()),
+                )
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     flip(this);
@@ -383,12 +494,28 @@ impl BranchesView {
             .flex()
             .gap(px(4.))
             .when(merged > 0, |d| {
-                let label = if self.show_merged { "Hide merged".to_string() } else { format!("{merged} merged this week") };
-                d.child(toggle("branches-merged", self.show_merged, label, cx, |this| this.show_merged = !this.show_merged))
+                let label = if self.show_merged {
+                    "Hide merged".to_string()
+                } else {
+                    format!("{merged} merged this week")
+                };
+                d.child(toggle(
+                    "branches-merged",
+                    self.show_merged,
+                    label,
+                    cx,
+                    |this| this.show_merged = !this.show_merged,
+                ))
             })
             .when(idle > 0, |d| {
-                let label = if self.show_idle { "Hide inactive".to_string() } else { format!("{idle} inactive {}", plural(idle)) };
-                d.child(toggle("branches-idle", self.show_idle, label, cx, |this| this.show_idle = !this.show_idle))
+                let label = if self.show_idle {
+                    "Hide inactive".to_string()
+                } else {
+                    format!("{idle} inactive {}", plural(idle))
+                };
+                d.child(toggle("branches-idle", self.show_idle, label, cx, |this| {
+                    this.show_idle = !this.show_idle
+                }))
             });
         div()
             .flex()
@@ -400,10 +527,19 @@ impl BranchesView {
             .when(merged + idle > 0, |d| d.child(toggles))
     }
 
-    fn render_row(&self, map: &Map, row: &Row, i: usize, now: u64, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(
+        &self,
+        map: &Map,
+        row: &Row,
+        i: usize,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let name = row.branch.map_or(map.main.clone(), |b| b.name.clone());
         let selected = self.selected.as_deref() == Some(name.as_str()) && row.branch.is_some();
-        let color = row.branch.map_or(theme::mix(0.45), |_| status_color(row.status));
+        let color = row
+            .branch
+            .map_or(theme::mix(0.45), |_| status_color(row.status));
         let label = div()
             .flex()
             .items_center()
@@ -419,15 +555,29 @@ impl BranchesView {
                     .truncate()
                     .font_family(theme::FONT_MONO)
                     .text_size(px(ui::TEXT_SM))
-                    .when(row.branch.is_none(), |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .when(row.branch.is_some_and(|b| b.ghost), |d| d.text_color(theme::text_subtle()))
+                    .when(row.branch.is_none(), |d| {
+                        d.font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(row.branch.is_some_and(|b| b.ghost), |d| {
+                        d.text_color(theme::text_subtle())
+                    })
                     .child(name.clone()),
             )
-            .when_some(row.env, |d, _| d.child(icon("folder01", 11.).text_color(theme::text_subtle())));
-        let status = div().flex().items_center().justify_end().gap(px(6.)).w(px(STATUS_W)).flex_none().pr(px(14.)).children(match row.branch {
-            None => vec![meta(format!("{} commits shown", map.main_commits.len()))],
-            Some(b) => row_status(b, row.status, row.env, now),
-        });
+            .when_some(row.env, |d, _| {
+                d.child(icon("folder01", 11.).text_color(theme::text_subtle()))
+            });
+        let status = div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(6.))
+            .w(px(STATUS_W))
+            .flex_none()
+            .pr(px(14.))
+            .children(match row.branch {
+                None => vec![meta(format!("{} commits shown", map.main_commits.len()))],
+                Some(b) => row_status(b, row.status, row.env, now),
+            });
         div()
             .id(SharedString::from(format!("branch-row-{i}")))
             .flex()
@@ -435,7 +585,9 @@ impl BranchesView {
             .h(px(ROW_H))
             .when(i > 0, |d| d.border_t_1().border_color(theme::stroke()))
             .when(selected, |d| d.bg(theme::fill_selected()))
-            .when(row.branch.is_some() && !selected, |d| d.hover(|s| s.bg(theme::fill_hover())))
+            .when(row.branch.is_some() && !selected, |d| {
+                d.hover(|s| s.bg(theme::fill_hover()))
+            })
             .when(row.branch.is_some(), |d| d.cursor_pointer())
             .child(label)
             .child(div().flex_1())
@@ -453,36 +605,68 @@ impl BranchesView {
         if let Some(pr) = &b.pr {
             let url = pr.url.clone();
             actions.push(
-                ui::button_with(SharedString::from("branch-pr"), Some("git-pull-request"), format!("PR #{}", pr.number), ButtonKind::Outline, true)
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(BranchesEvent::Open(url.clone()))))
-                    .into_any_element(),
+                ui::button_with(
+                    SharedString::from("branch-pr"),
+                    Some("git-pull-request"),
+                    format!("PR #{}", pr.number),
+                    ButtonKind::Outline,
+                    true,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(BranchesEvent::Open(url.clone()))))
+                .into_any_element(),
             );
         }
         match env {
             Some(e) => {
                 let (project, envi) = (e.project, e.env);
                 actions.push(
-                    ui::button_with(SharedString::from("branch-env"), Some("folder-open"), format!("Open {}", e.name), ButtonKind::Outline, true)
-                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(BranchesEvent::OpenEnv { project, env: envi })))
-                        .into_any_element(),
+                    ui::button_with(
+                        SharedString::from("branch-env"),
+                        Some("folder-open"),
+                        format!("Open {}", e.name),
+                        ButtonKind::Outline,
+                        true,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(BranchesEvent::OpenEnv { project, env: envi })
+                    }))
+                    .into_any_element(),
                 );
                 if let Some((title, prompt)) = fix_prompt(map, b, status) {
                     let path = e.path.clone();
                     actions.push(
-                        ui::button_with(SharedString::from("branch-fix"), Some("sparkles"), title.clone(), ButtonKind::Primary, true)
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(BranchesEvent::Ask { path: path.clone(), title: title.clone(), prompt: prompt.clone() })
-                            }))
-                            .into_any_element(),
+                        ui::button_with(
+                            SharedString::from("branch-fix"),
+                            Some("sparkles"),
+                            title.clone(),
+                            ButtonKind::Primary,
+                            true,
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(BranchesEvent::Ask {
+                                path: path.clone(),
+                                title: title.clone(),
+                                prompt: prompt.clone(),
+                            })
+                        }))
+                        .into_any_element(),
                     );
                 }
             }
             None if !b.ghost && status != Status::Merged => {
                 let name = b.name.clone();
                 actions.push(
-                    ui::button_with(SharedString::from("branch-checkout"), Some("folder-add"), "Check out in a new environment", ButtonKind::Outline, true)
-                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(BranchesEvent::CreateEnv(name.clone()))))
-                        .into_any_element(),
+                    ui::button_with(
+                        SharedString::from("branch-checkout"),
+                        Some("folder-add"),
+                        "Check out in a new environment",
+                        ButtonKind::Outline,
+                        true,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(BranchesEvent::CreateEnv(name.clone()))
+                    }))
+                    .into_any_element(),
                 );
             }
             None => {}
@@ -490,10 +674,22 @@ impl BranchesView {
 
         let mut facts = Vec::new();
         if !b.ghost && !matches!(status, Status::Merged | Status::Idle) {
-            facts.push(format!("{} ahead, {} behind {}", b.ahead, b.behind, map.main));
+            facts.push(format!(
+                "{} ahead, {} behind {}",
+                b.ahead, b.behind, map.main
+            ));
         }
         if let Some(pr) = &b.pr {
-            facts.push(format!("PR #{} {} by {}", pr.number, pr.state.to_lowercase(), if pr.author.is_empty() { "?" } else { &pr.author }));
+            facts.push(format!(
+                "PR #{} {} by {}",
+                pr.number,
+                pr.state.to_lowercase(),
+                if pr.author.is_empty() {
+                    "?"
+                } else {
+                    &pr.author
+                }
+            ));
         }
         if b.time > 0 {
             facts.push(format!("last commit {}", crate::account::ago(b.time, now)));
@@ -512,38 +708,66 @@ impl BranchesView {
                 .p(px(10.))
                 .rounded(px(ui::RADIUS))
                 .bg(Hsla::from(theme::danger()).opacity(0.08))
-                .child(div().text_size(px(ui::TEXT_SM)).font_weight(FontWeight::MEDIUM).text_color(theme::danger()).child(format!(
-                    "Merging into {} would conflict in {} {}",
-                    map.main,
-                    files.len(),
-                    if files.len() == 1 { "file" } else { "files" }
-                )))
-                .children(files.iter().take(8).map(|f| div().font_family(theme::FONT_MONO).text_size(px(ui::TEXT_XS)).text_color(theme::text_muted()).child(f.clone())))
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::danger())
+                        .child(format!(
+                            "Merging into {} would conflict in {} {}",
+                            map.main,
+                            files.len(),
+                            if files.len() == 1 { "file" } else { "files" }
+                        )),
+                )
+                .children(files.iter().take(8).map(|f| {
+                    div()
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_muted())
+                        .child(f.clone())
+                }))
         });
 
         let sessions = env.map(|e| {
             let (project, envi) = (e.project, e.env);
-            div().flex().flex_wrap().gap(px(6.)).children(e.sessions.iter().take(6).map(|s| {
-                let id = s.id.clone();
-                div()
-                    .id(SharedString::from(format!("branch-session-{}", s.id)))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .h(px(26.))
-                    .px(px(8.))
-                    .max_w(px(260.))
-                    .rounded(px(ui::RADIUS))
-                    .border_1()
-                    .border_color(theme::stroke())
-                    .cursor_pointer()
-                    .hover(|st| st.bg(theme::fill_hover()))
-                    .text_size(px(ui::TEXT_SM))
-                    .child(crate::shell::agent_icon(s.agent, 12.))
-                    .child(div().min_w_0().truncate().child(s.title.clone()))
-                    .when(matches!(s.status, SessionStatus::Working), |d| d.child(ui::spinner(SharedString::from(format!("bs-spin-{}", s.id)), 10., theme::accent())))
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(BranchesEvent::OpenSession { project, env: envi, id: id.clone() })))
-            }))
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.))
+                .children(e.sessions.iter().take(6).map(|s| {
+                    let id = s.id.clone();
+                    div()
+                        .id(SharedString::from(format!("branch-session-{}", s.id)))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .h(px(26.))
+                        .px(px(8.))
+                        .max_w(px(260.))
+                        .rounded(px(ui::RADIUS))
+                        .border_1()
+                        .border_color(theme::stroke())
+                        .cursor_pointer()
+                        .hover(|st| st.bg(theme::fill_hover()))
+                        .text_size(px(ui::TEXT_SM))
+                        .child(crate::shell::agent_icon(s.agent, 12.))
+                        .child(div().min_w_0().truncate().child(s.title.clone()))
+                        .when(matches!(s.status, SessionStatus::Working), |d| {
+                            d.child(ui::spinner(
+                                SharedString::from(format!("bs-spin-{}", s.id)),
+                                10.,
+                                theme::accent(),
+                            ))
+                        })
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(BranchesEvent::OpenSession {
+                                project,
+                                env: envi,
+                                id: id.clone(),
+                            })
+                        }))
+                }))
         });
 
         let commits = div().flex().flex_col().children(b.commits.iter().map(|c| {
@@ -553,16 +777,46 @@ impl BranchesView {
                 .gap(px(10.))
                 .h(px(28.))
                 .text_size(px(ui::TEXT_SM))
-                .child(div().flex_none().size(px(10.)).rounded_full().border_2().border_color(who_color(c.who)).when(!c.pushed, |d| d.border_dashed()))
-                .child(div().flex_none().w(px(58.)).font_family(theme::FONT_MONO).text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(c.short().to_string()))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(10.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(who_color(c.who))
+                        .when(!c.pushed, |d| d.border_dashed()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(58.))
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_subtle())
+                        .child(c.short().to_string()),
+                )
                 .child(div().flex_1().min_w_0().truncate().child(c.title.clone()))
-                .child(div().flex_none().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(match c.who {
-                    Who::Claude => format!("Claude · {}", c.author),
-                    Who::Droid => format!("Droid · {}", c.author),
-                    Who::Person => c.author.clone(),
-                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_subtle())
+                        .child(match c.who {
+                            Who::Claude => format!("Claude · {}", c.author),
+                            Who::Droid => format!("Droid · {}", c.author),
+                            Who::Person => c.author.clone(),
+                        }),
+                )
                 .when(!c.pushed, |d| d.child(ui::tag("not pushed", theme::warn())))
-                .child(div().flex_none().w(px(64.)).text_right().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(crate::account::ago(c.time, now)))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(64.))
+                        .text_right()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_subtle())
+                        .child(crate::account::ago(c.time, now)),
+                )
         }));
 
         div()
@@ -579,17 +833,35 @@ impl BranchesView {
                     .items_center()
                     .gap(px(10.))
                     .child(div().size(px(10.)).rounded_full().bg(status_color(status)))
-                    .child(div().min_w_0().truncate().font_family(theme::FONT_MONO).text_size(px(ui::TEXT_LG)).font_weight(FontWeight::MEDIUM).child(b.name.clone()))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(theme::FONT_MONO)
+                            .text_size(px(ui::TEXT_LG))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(b.name.clone()),
+                    )
                     .child(ui::tag(status.label(), status_color(status)))
                     .child(div().flex_1())
-                    .child(icon_button("branch-close", "cancel01", 12.).on_click(cx.listener(|this, _, _, cx| this.select(None, cx)))),
+                    .child(
+                        icon_button("branch-close", "cancel01", 12.)
+                            .on_click(cx.listener(|this, _, _, cx| this.select(None, cx))),
+                    ),
             )
-            .when_some(b.pr.as_ref(), |d, pr| d.child(div().text_size(px(ui::TEXT_MD)).child(pr.title.clone())))
+            .when_some(b.pr.as_ref(), |d, pr| {
+                d.child(div().text_size(px(ui::TEXT_MD)).child(pr.title.clone()))
+            })
             .child(meta(facts.join(" · ")))
             .children(conflicts)
-            .when(!actions.is_empty(), |d| d.child(div().flex().flex_wrap().gap(px(8.)).children(actions)))
+            .when(!actions.is_empty(), |d| {
+                d.child(div().flex().flex_wrap().gap(px(8.)).children(actions))
+            })
             .children(sessions)
-            .when(!b.commits.is_empty(), |d| d.child(meta(format!("Commits not on {}", map.main))).child(commits))
+            .when(!b.commits.is_empty(), |d| {
+                d.child(meta(format!("Commits not on {}", map.main)))
+                    .child(commits)
+            })
     }
 }
 
@@ -597,15 +869,45 @@ impl BranchesView {
 fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
     if let Some(e) = env
-        && let Some(s) = e.sessions.iter().find(|s| matches!(s.status, SessionStatus::Working | SessionStatus::NeedsInput))
+        && let Some(s) = e
+            .sessions
+            .iter()
+            .find(|s| matches!(s.status, SessionStatus::Working | SessionStatus::NeedsInput))
     {
-        out.push(div().flex().items_center().gap(px(4.)).child(crate::shell::agent_icon(s.agent, 12.)).child(ui::spinner(SharedString::from(format!("bw-{}", s.id)), 10., theme::accent())).into_any_element());
+        out.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(crate::shell::agent_icon(s.agent, 12.))
+                .child(ui::spinner(
+                    SharedString::from(format!("bw-{}", s.id)),
+                    10.,
+                    theme::accent(),
+                ))
+                .into_any_element(),
+        );
     } else {
-        for w in b.authors().into_iter().filter(|w| *w != Who::Person).take(2) {
-            out.push(div().size(px(8.)).rounded_full().bg(who_color(w)).into_any_element());
+        for w in b
+            .authors()
+            .into_iter()
+            .filter(|w| *w != Who::Person)
+            .take(2)
+        {
+            out.push(
+                div()
+                    .size(px(8.))
+                    .rounded_full()
+                    .bg(who_color(w))
+                    .into_any_element(),
+            );
         }
     }
-    if !b.ghost && status != Status::Merged && status != Status::Idle && (b.ahead > 0 || b.behind > 0) {
+    if !b.ghost
+        && status != Status::Merged
+        && status != Status::Idle
+        && (b.ahead > 0 || b.behind > 0)
+    {
         out.push(meta(format!("↑{} ↓{}", b.ahead, b.behind)));
     }
     if let Some(pr) = &b.pr {
@@ -618,7 +920,19 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
         if pr.open() && !name.is_empty() {
             out.push(icon(name, 12.).text_color(color).into_any_element());
         }
-        out.push(ui::tag(format!("#{}", pr.number), if pr.merged() { Hsla::from(theme::pr_merged()) } else if pr.open() { theme::pr_open().into() } else { theme::mix(0.45) }).into_any_element());
+        out.push(
+            ui::tag(
+                format!("#{}", pr.number),
+                if pr.merged() {
+                    Hsla::from(theme::pr_merged())
+                } else if pr.open() {
+                    theme::pr_open().into()
+                } else {
+                    theme::mix(0.45)
+                },
+            )
+            .into_any_element(),
+        );
     }
     out.push(ui::tag(status.label(), status_color(status)).into_any_element());
     if status == Status::Idle {
@@ -629,15 +943,28 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
 
 /// The pull requests whose checks were running in `old` and are done in `new`.
 fn finished_checks(old: &Map, new: &Map) -> Vec<(String, String, bool)> {
-    let prs = |m: &Map| m.branches.iter().filter_map(|b| b.pr.clone()).collect::<Vec<_>>();
+    let prs = |m: &Map| {
+        m.branches
+            .iter()
+            .filter_map(|b| b.pr.clone())
+            .collect::<Vec<_>>()
+    };
     let before = prs(old);
     prs(new)
         .into_iter()
         .filter(|p| matches!(p.checks, Checks::Passed | Checks::Failed))
-        .filter(|p| before.iter().any(|b| b.number == p.number && b.checks == Checks::Pending))
+        .filter(|p| {
+            before
+                .iter()
+                .any(|b| b.number == p.number && b.checks == Checks::Pending)
+        })
         .map(|p| {
             let failed = p.checks == Checks::Failed;
-            let title = format!("Checks {} on #{}", if failed { "failed" } else { "passed" }, p.number);
+            let title = format!(
+                "Checks {} on #{}",
+                if failed { "failed" } else { "passed" },
+                p.number
+            );
             (title, p.title, failed)
         })
         .collect()
@@ -647,7 +974,11 @@ fn finished_checks(old: &Map, new: &Map) -> Vec<(String, String, bool)> {
 fn fix_prompt(map: &Map, b: &Branch, status: Status) -> Option<(String, String)> {
     match status {
         Status::Conflict => {
-            let files = b.conflicts.as_ref().map(|f| f.join(", ")).unwrap_or_default();
+            let files = b
+                .conflicts
+                .as_ref()
+                .map(|f| f.join(", "))
+                .unwrap_or_default();
             Some((
                 "Resolve conflicts".into(),
                 format!(
@@ -656,7 +987,11 @@ fn fix_prompt(map: &Map, b: &Branch, status: Status) -> Option<(String, String)>
                     b.ahead,
                     b.behind,
                     map.main_ref,
-                    if files.is_empty() { String::new() } else { format!(" in {files}") },
+                    if files.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" in {files}")
+                    },
                     map.main_ref
                 ),
             ))
@@ -665,12 +1000,18 @@ fn fix_prompt(map: &Map, b: &Branch, status: Status) -> Option<(String, String)>
             let n = b.pr.as_ref()?.number;
             Some((
                 "Fix failing checks".into(),
-                format!("The checks of PR #{n} (branch `{}`) are failing. Read them with `gh pr checks {n}` and the failed job logs (`gh run view --log-failed`), fix the cause in this branch, run the same checks locally, and commit. Don't push without asking me.", b.name),
+                format!(
+                    "The checks of PR #{n} (branch `{}`) are failing. Read them with `gh pr checks {n}` and the failed job logs (`gh run view --log-failed`), fix the cause in this branch, run the same checks locally, and commit. Don't push without asking me.",
+                    b.name
+                ),
             ))
         }
         _ if b.behind > 20 => Some((
             format!("Update with {}", map.main),
-            format!("This branch (`{}`) is {} commits behind `{}`. Bring those changes in (merge, unless rebases are the norm here), make sure everything still builds and the tests pass, and commit. Don't push without asking me.", b.name, b.behind, map.main_ref),
+            format!(
+                "This branch (`{}`) is {} commits behind `{}`. Bring those changes in (merge, unless rebases are the norm here), make sure everything still builds and the tests pass, and commit. Don't push without asking me.",
+                b.name, b.behind, map.main_ref
+            ),
         )),
         _ => None,
     }
@@ -697,7 +1038,12 @@ fn who_color(w: Who) -> Hsla {
 }
 
 fn meta(text: impl Into<SharedString>) -> AnyElement {
-    div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).truncate().child(text.into()).into_any_element()
+    div()
+        .text_size(px(ui::TEXT_XS))
+        .text_color(theme::text_subtle())
+        .truncate()
+        .child(text.into())
+        .into_any_element()
 }
 
 /// What the canvas needs, copied out of the rows so it can paint later.
@@ -731,8 +1077,17 @@ struct Lane {
 
 impl Lanes {
     fn new(map: &Map, rows: &[Row]) -> Self {
-        let main_time = |sha: &str| map.main_commits.iter().find(|c| c.sha == sha).map(|c| c.time);
-        let dot = |c: &branches::Commit| Dot { time: c.time, who: c.who, pushed: c.pushed };
+        let main_time = |sha: &str| {
+            map.main_commits
+                .iter()
+                .find(|c| c.sha == sha)
+                .map(|c| c.time)
+        };
+        let dot = |c: &branches::Commit| Dot {
+            time: c.time,
+            who: c.who,
+            pushed: c.pushed,
+        };
         let lanes: Vec<Lane> = rows
             .iter()
             .skip(1)
@@ -746,10 +1101,19 @@ impl Lanes {
                 faded: matches!(status, Status::Idle | Status::Merged),
             })
             .collect();
-        let mut times: Vec<u64> = map.main_commits.iter().map(|c| c.time).chain(lanes.iter().flat_map(|l| l.dots.iter().map(|d| d.time))).collect();
+        let mut times: Vec<u64> = map
+            .main_commits
+            .iter()
+            .map(|c| c.time)
+            .chain(lanes.iter().flat_map(|l| l.dots.iter().map(|d| d.time)))
+            .collect();
         times.sort_unstable_by(|a, b| b.cmp(a));
         times.dedup();
-        Self { times, main: map.main_commits.iter().map(dot).collect(), rows: lanes }
+        Self {
+            times,
+            main: map.main_commits.iter().map(dot).collect(),
+            rows: lanes,
+        }
     }
 
     /// x of a time: its column from the right edge; None when older than what fits.
@@ -766,7 +1130,12 @@ impl Lanes {
         let left = right - (columns.saturating_sub(1)) as f32 * COL_W;
         let y = |row: usize| AXIS_H + row as f32 * ROW_H + ROW_H / 2.;
         let at = |x: f32, yy: f32| point(o.x + px(x), o.y + px(yy));
-        let line = |from: gpui::Point<Pixels>, to: gpui::Point<Pixels>, curve: bool, color: Hsla, width: f32, window: &mut Window| {
+        let line = |from: gpui::Point<Pixels>,
+                    to: gpui::Point<Pixels>,
+                    curve: bool,
+                    color: Hsla,
+                    width: f32,
+                    window: &mut Window| {
             let mut p = PathBuilder::stroke(px(width));
             p.move_to(from);
             if curve {
@@ -789,7 +1158,11 @@ impl Lanes {
             let mut p = PathBuilder::stroke(px(2.));
             p.move_to(at(x, y(0)));
             p.line_to(at(x, lane_y - r));
-            p.cubic_bezier_to(at(x + dir * r, lane_y), at(x, lane_y - r + k), at(x + dir * (r - k), lane_y));
+            p.cubic_bezier_to(
+                at(x + dir * r, lane_y),
+                at(x, lane_y - r + k),
+                at(x + dir * (r - k), lane_y),
+            );
             p.line_to(at(to_x, lane_y));
             if let Ok(path) = p.build() {
                 window.paint_path(path, color);
@@ -800,34 +1173,82 @@ impl Lanes {
 
         // The default branch: one line across, a dot per commit.
         let main_color = theme::mix(0.4);
-        let main_xs: Vec<f32> = self.main.iter().filter_map(|d| self.x(d.time, right, columns)).collect();
-        let main_left = if self.main.len() > main_xs.len() { left } else { main_xs.last().copied().unwrap_or(right) };
-        line(at(main_left, y(0)), at(main_xs.first().copied().unwrap_or(right), y(0)), false, main_color, 2., window);
+        let main_xs: Vec<f32> = self
+            .main
+            .iter()
+            .filter_map(|d| self.x(d.time, right, columns))
+            .collect();
+        let main_left = if self.main.len() > main_xs.len() {
+            left
+        } else {
+            main_xs.last().copied().unwrap_or(right)
+        };
+        line(
+            at(main_left, y(0)),
+            at(main_xs.first().copied().unwrap_or(right), y(0)),
+            false,
+            main_color,
+            2.,
+            window,
+        );
 
         for (i, lane) in self.rows.iter().enumerate() {
             let row_y = y(i + 1);
-            let color = if lane.faded { lane.color.opacity(0.45) } else { lane.color };
-            let xs: Vec<f32> = lane.dots.iter().filter_map(|d| self.x(d.time, right, columns)).collect();
+            let color = if lane.faded {
+                lane.color.opacity(0.45)
+            } else {
+                lane.color
+            };
+            let xs: Vec<f32> = lane
+                .dots
+                .iter()
+                .filter_map(|d| self.x(d.time, right, columns))
+                .collect();
             // A lane with no commit in view still shows where it is: a stub at its merge, or at the right edge.
             let (newest, oldest) = match (xs.first(), xs.last()) {
                 (Some(n), Some(o)) => (*n, if lane.dots.len() > xs.len() { left } else { *o }),
-                _ => match (lane.merge.and_then(|t| self.x(t, right, columns)), lane.fork.filter(|f| *f > 0).and_then(|t| self.x(t, right, columns))) {
+                _ => match (
+                    lane.merge.and_then(|t| self.x(t, right, columns)),
+                    lane.fork
+                        .filter(|f| *f > 0)
+                        .and_then(|t| self.x(t, right, columns)),
+                ) {
                     (Some(m), _) => (m - COL_W, m - COL_W),
                     // No commits of its own: it points at a commit of main.
-                    (None, Some(f)) if lane.dots.is_empty() && !lane.ghost => (f + COL_W, f + COL_W),
+                    (None, Some(f)) if lane.dots.is_empty() && !lane.ghost => {
+                        (f + COL_W, f + COL_W)
+                    }
                     (None, _) if lane.dots.is_empty() => (right, right),
                     (None, _) => continue,
                 },
             };
             if newest > oldest {
-                line(at(oldest, row_y), at(newest, row_y), false, color, 2., window);
+                line(
+                    at(oldest, row_y),
+                    at(newest, row_y),
+                    false,
+                    color,
+                    2.,
+                    window,
+                );
             }
             // Grew from main: a curve down from the fork commit to its first commit.
             if let Some(fork) = lane.fork {
-                let fx = if fork == 0 { None } else { self.x(fork, right, columns) };
+                let fx = if fork == 0 {
+                    None
+                } else {
+                    self.x(fork, right, columns)
+                };
                 match fx {
                     Some(fx) if fx < oldest => elbow(fx, row_y, oldest, color, window),
-                    _ if oldest > left => line(at(left, row_y), at(oldest, row_y), false, color.opacity(0.4), 2., window),
+                    _ if oldest > left => line(
+                        at(left, row_y),
+                        at(oldest, row_y),
+                        false,
+                        color.opacity(0.4),
+                        2.,
+                        window,
+                    ),
                     _ => {}
                 }
             }
@@ -835,7 +1256,13 @@ impl Lanes {
                 elbow(mx, row_y, newest, color, window);
             }
             for (d, x) in lane.dots.iter().zip(xs.iter()) {
-                dot(window, at(*x, row_y), who_color(d.who), d.pushed, if lane.faded { 0.5 } else { 1. });
+                dot(
+                    window,
+                    at(*x, row_y),
+                    who_color(d.who),
+                    d.pushed,
+                    if lane.faded { 0.5 } else { 1. },
+                );
             }
             if lane.dots.is_empty() {
                 // Only known from GitHub: a hollow dashed ring.
@@ -844,10 +1271,17 @@ impl Lanes {
         }
         for d in &self.main {
             if let Some(x) = self.x(d.time, right, columns) {
-                let c = if d.who == Who::Person { main_color } else { who_color(d.who) };
+                let c = if d.who == Who::Person {
+                    main_color
+                } else {
+                    who_color(d.who)
+                };
                 let r = 3.5;
                 window.paint_quad(quad(
-                    Bounds::new(point(o.x + px(x - r), o.y + px(y(0) - r)), size(px(r * 2.), px(r * 2.))),
+                    Bounds::new(
+                        point(o.x + px(x - r), o.y + px(y(0) - r)),
+                        size(px(r * 2.), px(r * 2.)),
+                    ),
                     px(r),
                     c,
                     px(0.),
@@ -859,7 +1293,14 @@ impl Lanes {
     }
 
     /// A label where the day changes, over a faint guide line.
-    fn paint_days(&self, o: gpui::Point<Pixels>, right: f32, columns: usize, window: &mut Window, cx: &mut App) {
+    fn paint_days(
+        &self,
+        o: gpui::Point<Pixels>,
+        right: f32,
+        columns: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let font_size = px(ui::TEXT_XS);
         let mut last_day = None;
         let mut last_x = f32::MAX;
@@ -875,7 +1316,11 @@ impl Lanes {
                 continue;
             }
             last_x = x;
-            let text: SharedString = crate::cloudflare::date(*t).get(5..).unwrap_or_default().to_string().into();
+            let text: SharedString = crate::cloudflare::date(*t)
+                .get(5..)
+                .unwrap_or_default()
+                .to_string()
+                .into();
             let run = TextRun {
                 len: text.len(),
                 font: gpui::font(theme::FONT_SANS),
@@ -884,9 +1329,18 @@ impl Lanes {
                 underline: None,
                 strikethrough: None,
             };
-            let shaped = window.text_system().shape_line(text, font_size, &[run], None);
+            let shaped = window
+                .text_system()
+                .shape_line(text, font_size, &[run], None);
             let tx = x - f32::from(shaped.width);
-            let _ = shaped.paint(point(o.x + px(tx.max(0.)), o.y + px(4.)), px(14.), TextAlign::Left, None, window, cx);
+            let _ = shaped.paint(
+                point(o.x + px(tx.max(0.)), o.y + px(4.)),
+                px(14.),
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
     }
 }
@@ -894,12 +1348,19 @@ impl Lanes {
 fn dot(window: &mut Window, c: gpui::Point<Pixels>, ring: Hsla, pushed: bool, alpha: f32) {
     let r = 5.;
     window.paint_quad(quad(
-        Bounds::new(point(c.x - px(r), c.y - px(r)), size(px(r * 2.), px(r * 2.))),
+        Bounds::new(
+            point(c.x - px(r), c.y - px(r)),
+            size(px(r * 2.), px(r * 2.)),
+        ),
         px(r),
         theme::fill_raised(),
         px(2.),
         ring.opacity(alpha),
-        if pushed { BorderStyle::Solid } else { BorderStyle::Dashed },
+        if pushed {
+            BorderStyle::Solid
+        } else {
+            BorderStyle::Dashed
+        },
     ));
 }
 
@@ -920,25 +1381,39 @@ impl Render for BranchesView {
             .child(icon("git-branch", 14.).text_color(theme::text_subtle()))
             .child(div().flex_none().child("Branches"))
             .when_some(self.map.as_ref(), |d, m| {
-                let from = m.github.as_ref().map_or(String::new(), |g| format!(" · PRs from {g}"));
-                d.child(div().min_w_0().truncate().text_color(theme::text_faint()).child(format!("against {}{from}", m.main_ref)))
-            })
-            .child(div().flex_1())
-            .when(self.map.as_ref().is_some_and(|m| m.prs_error.as_deref() == Some(branches::NO_REMOTE)), |d| {
+                let from = m
+                    .github
+                    .as_ref()
+                    .map_or(String::new(), |g| format!(" · PRs from {g}"));
                 d.child(
                     div()
-                        .id("branches-link-repo")
-                        .flex_none()
+                        .min_w_0()
+                        .truncate()
                         .text_color(theme::text_faint())
-                        .cursor_pointer()
-                        .hover(|s| s.text_color(theme::content()))
-                        .child("No GitHub remote · Link a repo")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_repo = !this.show_repo;
-                            cx.notify();
-                        })),
+                        .child(format!("against {}{from}", m.main_ref)),
                 )
             })
+            .child(div().flex_1())
+            .when(
+                self.map
+                    .as_ref()
+                    .is_some_and(|m| m.prs_error.as_deref() == Some(branches::NO_REMOTE)),
+                |d| {
+                    d.child(
+                        div()
+                            .id("branches-link-repo")
+                            .flex_none()
+                            .text_color(theme::text_faint())
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(theme::content()))
+                            .child("No GitHub remote · Link a repo")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_repo = !this.show_repo;
+                                cx.notify();
+                            })),
+                    )
+                },
+            )
             .child(
                 div()
                     .flex()
@@ -952,29 +1427,55 @@ impl Render for BranchesView {
             .child(ui::refresh_control(
                 "branches-refresh",
                 self.loading,
-                self.map.as_ref().map(|m| crate::account::ago(m.fetched, now)),
+                self.map
+                    .as_ref()
+                    .map(|m| crate::account::ago(m.fetched, now)),
                 cx.listener(|this, _, _, cx| this.refresh(cx)),
             ));
 
         let body: AnyElement = match self.map.clone() {
-            None if self.root.is_none() => ui::empty_state("git-branch", "No project", "Open a project to see its branches.", None).into_any_element(),
-            None => div().pt(px(60.)).child(ui::loading("branches-first", "Reading branches…")).into_any_element(),
-            Some(map) if map.main.is_empty() => {
-                ui::empty_state("git-branch", "No default branch", "This project has no main or master branch to compare with.", None).into_any_element()
-            }
+            None if self.root.is_none() => ui::empty_state(
+                "git-branch",
+                "No project",
+                "Open a project to see its branches.",
+                None,
+            )
+            .into_any_element(),
+            None => div()
+                .pt(px(60.))
+                .child(ui::loading("branches-first", "Reading branches…"))
+                .into_any_element(),
+            Some(map) if map.main.is_empty() => ui::empty_state(
+                "git-branch",
+                "No default branch",
+                "This project has no main or master branch to compare with.",
+                None,
+            )
+            .into_any_element(),
             Some(map) => {
                 let (rows, merged, idle) = self.rows(&map, now);
-                let detail = self.selected.as_deref().and_then(|n| map.branch(n)).map(|b| self.render_detail(&map, b, now, cx));
+                let detail = self
+                    .selected
+                    .as_deref()
+                    .and_then(|n| map.branch(n))
+                    .map(|b| self.render_detail(&map, b, now, cx));
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(16.))
                     .child(self.render_summary(&map, now))
                     // No remote is not a failure: a quiet link in the header opens the field.
-                    .when_some(map.prs_error.clone().filter(|e| e != branches::NO_REMOTE || self.show_repo), |d, e| d.child(self.render_repo(&e, cx)))
+                    .when_some(
+                        map.prs_error
+                            .clone()
+                            .filter(|e| e != branches::NO_REMOTE || self.show_repo),
+                        |d, e| d.child(self.render_repo(&e, cx)),
+                    )
                     .child(self.render_graph(&map, &rows, merged, idle, now, cx))
                     .children(detail)
-                    .when(map.branches.is_empty(), |d| d.child(meta(format!("No branches besides {}.", map.main))))
+                    .when(map.branches.is_empty(), |d| {
+                        d.child(meta(format!("No branches besides {}.", map.main)))
+                    })
                     .into_any_element()
             }
         };
@@ -996,13 +1497,25 @@ impl Render for BranchesView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(div().w_full().max_w(px(1200.)).mx_auto().p(px(ui::PAGE_PAD)).child(body)),
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(1200.))
+                            .mx_auto()
+                            .p(px(ui::PAGE_PAD))
+                            .child(body),
+                    ),
             )
     }
 }
 
 fn legend(color: Hsla, name: &'static str) -> Div {
-    div().flex().items_center().gap(px(4.)).child(div().size(px(7.)).rounded_full().bg(color)).child(name)
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .child(div().size(px(7.)).rounded_full().bg(color))
+        .child(name)
 }
 
 #[cfg(test)]
@@ -1011,7 +1524,14 @@ mod tests {
     use crate::branches::Commit;
 
     fn commit(sha: &str, time: u64) -> Commit {
-        Commit { sha: sha.into(), time, author: String::new(), title: String::new(), who: Who::Person, pushed: true }
+        Commit {
+            sha: sha.into(),
+            time,
+            author: String::new(),
+            title: String::new(),
+            who: Who::Person,
+            pushed: true,
+        }
     }
 
     #[test]
@@ -1030,14 +1550,33 @@ mod tests {
             updated_at: 0,
         };
         let map = |prs: Vec<branches::Pr>| Map {
-            branches: prs.into_iter().map(|p| Branch { name: format!("b{}", p.number), pr: Some(p), ..Default::default() }).collect(),
+            branches: prs
+                .into_iter()
+                .map(|p| Branch {
+                    name: format!("b{}", p.number),
+                    pr: Some(p),
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
         };
-        let old = map(vec![pr(1, Checks::Pending), pr(2, Checks::Pending), pr(3, Checks::Passed)]);
-        let new = map(vec![pr(1, Checks::Passed), pr(2, Checks::Failed), pr(3, Checks::Failed), pr(4, Checks::Failed)]);
+        let old = map(vec![
+            pr(1, Checks::Pending),
+            pr(2, Checks::Pending),
+            pr(3, Checks::Passed),
+        ]);
+        let new = map(vec![
+            pr(1, Checks::Passed),
+            pr(2, Checks::Failed),
+            pr(3, Checks::Failed),
+            pr(4, Checks::Failed),
+        ]);
         assert_eq!(
             finished_checks(&old, &new),
-            vec![("Checks passed on #1".to_string(), "PR 1".to_string(), false), ("Checks failed on #2".to_string(), "PR 2".to_string(), true)]
+            vec![
+                ("Checks passed on #1".to_string(), "PR 1".to_string(), false),
+                ("Checks failed on #2".to_string(), "PR 2".to_string(), true)
+            ]
         );
     }
 
@@ -1046,12 +1585,27 @@ mod tests {
         let map = Map {
             main: "main".into(),
             main_commits: vec![commit("m3", 900), commit("m2", 500), commit("m1", 100)],
-            branches: vec![Branch { name: "b".into(), commits: vec![commit("b1", 600)], fork: Some("m2".into()), time: 600, ahead: 1, ..Default::default() }],
+            branches: vec![Branch {
+                name: "b".into(),
+                commits: vec![commit("b1", 600)],
+                fork: Some("m2".into()),
+                time: 600,
+                ahead: 1,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let view_rows = [
-            Row { branch: None, status: Status::Working, env: None },
-            Row { branch: Some(&map.branches[0]), status: Status::Working, env: None },
+            Row {
+                branch: None,
+                status: Status::Working,
+                env: None,
+            },
+            Row {
+                branch: Some(&map.branches[0]),
+                status: Status::Working,
+                env: None,
+            },
         ];
         let lanes = Lanes::new(&map, &view_rows);
         assert_eq!(lanes.times, vec![900, 600, 500, 100]);

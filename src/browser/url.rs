@@ -13,7 +13,10 @@ pub fn from_input(input: &str) -> String {
         return text.into();
     }
     if let Some(rest) = text.strip_prefix("~/") {
-        let home = crate::platform::home().display().to_string().replace('\\', "/");
+        let home = crate::platform::home()
+            .display()
+            .to_string()
+            .replace('\\', "/");
         let sep = if home.starts_with('/') { "" } else { "/" };
         return format!("file://{sep}{home}/{rest}");
     }
@@ -42,8 +45,13 @@ pub fn from_input(input: &str) -> String {
     let looks_like_domain = host.contains('.')
         && !host.starts_with('.')
         && !host.ends_with('.')
-        && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b >= 0x80)
-        && host.rsplit('.').next().is_some_and(|tld| tld.len() >= 2 && !tld.bytes().all(|b| b.is_ascii_digit()));
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b >= 0x80)
+        && host
+            .rsplit('.')
+            .next()
+            .is_some_and(|tld| tld.len() >= 2 && !tld.bytes().all(|b| b.is_ascii_digit()));
     if looks_like_domain {
         return format!("https://{text}");
     }
@@ -51,15 +59,26 @@ pub fn from_input(input: &str) -> String {
 }
 
 fn has_scheme(text: &str) -> bool {
-    let Some((scheme, rest)) = text.split_once(':') else { return false };
+    let Some((scheme, rest)) = text.split_once(':') else {
+        return false;
+    };
     let valid = scheme.len() > 1
         && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-        && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b));
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b));
     valid
         && (rest.starts_with("//")
             || matches!(
                 scheme.to_ascii_lowercase().as_str(),
-                "about" | "data" | "javascript" | "mailto" | "view-source" | "blob" | "chrome" | "devtools"
+                "about"
+                    | "data"
+                    | "javascript"
+                    | "mailto"
+                    | "view-source"
+                    | "blob"
+                    | "chrome"
+                    | "devtools"
             ))
 }
 
@@ -73,7 +92,9 @@ fn search(query: &str) -> String {
     for b in query.bytes() {
         match b {
             b' ' => out.push('+'),
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -87,7 +108,11 @@ pub fn display(url: &str) -> String {
         .strip_prefix("https://")
         .map(|rest| rest.strip_prefix("www.").unwrap_or(rest));
     match short {
-        Some(rest) => rest.strip_suffix('/').filter(|r| !r.contains('/')).unwrap_or(rest).to_string(),
+        Some(rest) => rest
+            .strip_suffix('/')
+            .filter(|r| !r.contains('/'))
+            .unwrap_or(rest)
+            .to_string(),
         None => url.to_string(),
     }
 }
@@ -104,10 +129,19 @@ mod tests {
         assert_eq!(from_input("myhost:8080"), "http://myhost:8080");
         assert_eq!(from_input("https://a.b/c"), "https://a.b/c");
         assert_eq!(from_input("about:blank"), "about:blank");
-        assert_eq!(from_input("rust gpui"), "https://duckduckgo.com/?q=rust+gpui");
-        assert_eq!(from_input("ñandú"), "https://duckduckgo.com/?q=%C3%B1and%C3%BA");
+        assert_eq!(
+            from_input("rust gpui"),
+            "https://duckduckgo.com/?q=rust+gpui"
+        );
+        assert_eq!(
+            from_input("ñandú"),
+            "https://duckduckgo.com/?q=%C3%B1and%C3%BA"
+        );
         assert_eq!(from_input("foo"), "https://duckduckgo.com/?q=foo");
         assert_eq!(from_input("v1.2"), "https://duckduckgo.com/?q=v1.2");
-        assert_eq!(from_input("developer.mozilla.org/en-US/"), "https://developer.mozilla.org/en-US/");
+        assert_eq!(
+            from_input("developer.mozilla.org/en-US/"),
+            "https://developer.mozilla.org/en-US/"
+        );
     }
 }

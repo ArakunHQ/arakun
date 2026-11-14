@@ -44,7 +44,12 @@ impl Shell {
         self.spawn_terminal(true, window, cx);
     }
 
-    pub(super) fn spawn_terminal(&mut self, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn spawn_terminal(
+        &mut self,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.spawn_terminal_command(None, focus, window, cx);
     }
 
@@ -90,7 +95,12 @@ impl Shell {
     /// `KEEP_FINISHED_RUNS` others, so repeated runs don't pile up. One whose
     /// shell was opened stays, and so does one on screen unless the new run
     /// replaces it. Focus doesn't move.
-    fn prune_finished_runs(&mut self, env_path: &std::path::Path, command: &str, cx: &mut Context<Self>) {
+    fn prune_finished_runs(
+        &mut self,
+        env_path: &std::path::Path,
+        command: &str,
+        cx: &mut Context<Self>,
+    ) {
         const KEEP_FINISHED_RUNS: usize = 4;
         let Some(env) = self.find_env(env_path) else {
             return;
@@ -98,8 +108,16 @@ impl Shell {
         let finished: Vec<(gpui::EntityId, bool)> = env
             .terminals
             .iter()
-            .filter(|t| t.command.is_some() && super::commands::run_waiting(&t.terminal.read(cx).recent_text(4)))
-            .map(|t| (t.terminal.entity_id(), t.command.as_deref() == Some(command)))
+            .filter(|t| {
+                t.command.is_some()
+                    && super::commands::run_waiting(&t.terminal.read(cx).recent_text(4))
+            })
+            .map(|t| {
+                (
+                    t.terminal.entity_id(),
+                    t.command.as_deref() == Some(command),
+                )
+            })
             .filter(|&(id, same)| same || !self.terminal_on_screen(env_path, id))
             .collect();
         let others = finished.iter().filter(|(_, same)| !same).count();
@@ -118,7 +136,10 @@ impl Shell {
             return;
         }
         let env = self.find_env_mut(env_path).expect("env looked up above");
-        let active = env.terminals.get(env.active_terminal).map(|t| t.terminal.entity_id());
+        let active = env
+            .terminals
+            .get(env.active_terminal)
+            .map(|t| t.terminal.entity_id());
         env.terminals.retain(|t| {
             let keep = !close.contains(&t.terminal.entity_id());
             if !keep {
@@ -127,7 +148,11 @@ impl Shell {
             keep
         });
         env.active_terminal = active
-            .and_then(|a| env.terminals.iter().position(|t| t.terminal.entity_id() == a))
+            .and_then(|a| {
+                env.terminals
+                    .iter()
+                    .position(|t| t.terminal.entity_id() == a)
+            })
             .unwrap_or(env.terminals.len().saturating_sub(1));
         cx.notify();
     }
@@ -146,7 +171,10 @@ impl Shell {
         let terminal = match Terminal::spawn(cwd.clone(), command, cx) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("arakun: could not start a shell in {}: {e:#}", cwd.display());
+                eprintln!(
+                    "arakun: could not start a shell in {}: {e:#}",
+                    cwd.display()
+                );
                 return None;
             }
         };
@@ -164,7 +192,10 @@ impl Shell {
                     let id = terminal.entity_id();
                     let on_screen = this.terminal_on_screen(&cwd, id);
                     if let Some(env) = this.find_env_mut(&cwd)
-                        && let Some(tab) = env.terminals.iter_mut().find(|t| t.terminal.entity_id() == id)
+                        && let Some(tab) = env
+                            .terminals
+                            .iter_mut()
+                            .find(|t| t.terminal.entity_id() == id)
                         && !on_screen
                         && !tab.unseen
                     {
@@ -197,7 +228,11 @@ impl Shell {
         Some(index)
     }
 
-    pub(super) fn terminal_on_screen(&self, env_path: &std::path::Path, id: gpui::EntityId) -> bool {
+    pub(super) fn terminal_on_screen(
+        &self,
+        env_path: &std::path::Path,
+        id: gpui::EntityId,
+    ) -> bool {
         self.dock_open
             && self.has_projects()
             && self.env().path == env_path
@@ -218,7 +253,12 @@ impl Shell {
         }
     }
 
-    pub(super) fn select_terminal(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn select_terminal(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.env_mut().active_terminal = index;
         self.focus_terminal(window, cx);
         cx.notify();
@@ -235,7 +275,11 @@ impl Shell {
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        let Some(i) = env.terminals.iter().position(|t| t.terminal.entity_id() == id) else {
+        let Some(i) = env
+            .terminals
+            .iter()
+            .position(|t| t.terminal.entity_id() == id)
+        else {
             return;
         };
         let tab = env.terminals.remove(i);
@@ -308,10 +352,22 @@ impl Shell {
                     } else {
                         theme::mix(0.5)
                     }))
-                    .child(div().flex_none().text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child(tab.number.to_string()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(tab.number.to_string()),
+                    )
                     .child(div().flex_1().min_w_0().truncate().child(title))
                     .when(tab.unseen && !active, |d| {
-                        d.child(div().flex_none().size(px(6.)).rounded_full().bg(theme::accent()))
+                        d.child(
+                            div()
+                                .flex_none()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(theme::accent()),
+                        )
                     })
                     .when(exited, |d| d.opacity(0.6))
                     .child(
@@ -368,41 +424,55 @@ impl Shell {
                     .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
                     .child(env.branch.clone())
                     .when(added + removed > 0, |d| {
-                        d.child(div().text_color(theme::diff_add()).child(format!("+{added}")))
-                            .child(div().text_color(theme::diff_del()).child(format!("-{removed}")))
+                        d.child(
+                            div()
+                                .text_color(theme::diff_add())
+                                .child(format!("+{added}")),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme::diff_del())
+                                .child(format!("-{removed}")),
+                        )
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.show_changes(cx))),
             )
-            .when(env.sync.ahead + env.sync.behind > 0 || env.pr.is_some(), |d| {
-                let (ahead, behind) = (env.sync.ahead, env.sync.behind);
-                let pr = env.pr.clone();
-                let branch = env.branch.to_string();
-                d.child(
-                    div()
-                        .id("status-sync")
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .h(px(24.))
-                        .px(px(6.))
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
-                        .tooltip(ui::tip("Show in Branches"))
-                        .when(ahead > 0, |d| d.child(format!("↑{ahead}")))
-                        .when(behind > 0, |d| d.child(format!("↓{behind}")))
-                        .when_some(pr, |d, pr| {
-                            let color: Hsla = match pr.state.as_str() {
-                                "MERGED" => theme::pr_merged().into(),
-                                "OPEN" if pr.is_draft => theme::mix(0.55),
-                                "OPEN" => theme::pr_open().into(),
-                                _ => theme::mix(0.45),
-                            };
-                            d.child(icon("git-pull-request", 12.).text_color(color)).child(div().text_color(color).child(format!("#{}", pr.number)))
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| this.reveal_branch(branch.clone(), window, cx))),
-                )
-            })
+            .when(
+                env.sync.ahead + env.sync.behind > 0 || env.pr.is_some(),
+                |d| {
+                    let (ahead, behind) = (env.sync.ahead, env.sync.behind);
+                    let pr = env.pr.clone();
+                    let branch = env.branch.to_string();
+                    d.child(
+                        div()
+                            .id("status-sync")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .h(px(24.))
+                            .px(px(6.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                            .tooltip(ui::tip("Show in Branches"))
+                            .when(ahead > 0, |d| d.child(format!("↑{ahead}")))
+                            .when(behind > 0, |d| d.child(format!("↓{behind}")))
+                            .when_some(pr, |d, pr| {
+                                let color: Hsla = match pr.state.as_str() {
+                                    "MERGED" => theme::pr_merged().into(),
+                                    "OPEN" if pr.is_draft => theme::mix(0.55),
+                                    "OPEN" => theme::pr_open().into(),
+                                    _ => theme::mix(0.45),
+                                };
+                                d.child(icon("git-pull-request", 12.).text_color(color))
+                                    .child(div().text_color(color).child(format!("#{}", pr.number)))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reveal_branch(branch.clone(), window, cx)
+                            })),
+                    )
+                },
+            )
             .child(
                 div()
                     .id("status-path")
@@ -453,7 +523,9 @@ impl Shell {
                             .hover(|s| s.bg(theme::fill_selected()))
                             .child(ci_mark(state))
                             .child(runs::ci_chip_label(state, &run))
-                            .on_click(cx.listener(move |this, _, window, cx| this.open_runs_tab(Some(id), window, cx))),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_runs_tab(Some(id), window, cx)
+                            })),
                     )
                 })
                 .when_some(deploy, |d, run| {
@@ -472,7 +544,9 @@ impl Shell {
                             .child(icon("cloud-upload", 12.).text_color(theme::text_subtle()))
                             .child(format!("Production {}", run.head_branch))
                             .child(ci_mark(state))
-                            .on_click(cx.listener(move |this, _, window, cx| this.open_runs_tab(Some(id), window, cx))),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_runs_tab(Some(id), window, cx)
+                            })),
                     )
                 })
             })
@@ -499,12 +573,22 @@ impl Shell {
                     div()
                         .flex()
                         .gap(px(2.))
-                        .child(icon_button("term-add", "add01", 14.).tooltip(ui::tip("New terminal (Ctrl+Shift+T)")).on_click(cx.listener(
-                            |this, _, window, cx| this.new_terminal(window, cx),
-                        )))
-                        .child(icon_button("term-hide", "arrow-down01", 14.).tooltip(ui::tip("Hide terminal (Ctrl+J)")).on_click(
-                            cx.listener(|this, _, window, cx| this.set_dock(false, window, cx)),
-                        )),
+                        .child(
+                            icon_button("term-add", "add01", 14.)
+                                .tooltip(ui::tip("New terminal (Ctrl+Shift+T)"))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.new_terminal(window, cx)
+                                    }),
+                                ),
+                        )
+                        .child(
+                            icon_button("term-hide", "arrow-down01", 14.)
+                                .tooltip(ui::tip("Hide terminal (Ctrl+J)"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_dock(false, window, cx)
+                                })),
+                        ),
                 )
             })
             .when(!dock_open, |d| {
@@ -563,9 +647,17 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .h(px(if dock_open { self.dock_height } else { DOCK_BAR_H }))
+            .h(px(if dock_open {
+                self.dock_height
+            } else {
+                DOCK_BAR_H
+            }))
             .bg(theme::background())
-            .border_color(if self.dock_drag { theme::accent() } else { theme::stroke() })
+            .border_color(if self.dock_drag {
+                theme::accent()
+            } else {
+                theme::stroke()
+            })
             .child(header)
             .when(dock_open, |d| d.child(body).child(handle))
     }

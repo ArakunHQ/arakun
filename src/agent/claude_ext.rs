@@ -101,12 +101,23 @@ pub struct Diagnosis {
 impl Diagnosis {
     /// One sentence on what went wrong.
     pub fn explain(&self, token: bool) -> String {
-        let said = if self.message.is_empty() { String::new() } else { format!(": “{}”", self.message) };
+        let said = if self.message.is_empty() {
+            String::new()
+        } else {
+            format!(": “{}”", self.message)
+        };
         match self.status {
-            0 => format!("The server could not be reached{said}. Check the URL and your connection."),
-            401 | 403 if token => format!("The server rejected the token Claude sends ({}{said}). It expired, was revoked or belongs to another account.", self.status),
+            0 => {
+                format!("The server could not be reached{said}. Check the URL and your connection.")
+            }
+            401 | 403 if token => format!(
+                "The server rejected the token Claude sends ({}{said}). It expired, was revoked or belongs to another account.",
+                self.status
+            ),
             401 | 403 => format!("The server asks for a sign-in ({}{said}).", self.status),
-            404 => format!("Nothing answers at this URL (404{said}). The address may have changed."),
+            404 => {
+                format!("Nothing answers at this URL (404{said}). The address may have changed.")
+            }
             s if s >= 500 => format!("The server is having trouble ({s}{said}). Try again later."),
             s => format!("The server answered {s}{said}."),
         }
@@ -124,10 +135,12 @@ impl Server {
         self.headers
             .iter()
             .find(|h| h.eq_ignore_ascii_case("authorization"))
-            .or_else(|| self.headers.iter().find(|h| {
-                let h = h.to_lowercase();
-                h.contains("key") || h.contains("token")
-            }))
+            .or_else(|| {
+                self.headers.iter().find(|h| {
+                    let h = h.to_lowercase();
+                    h.contains("key") || h.contains("token")
+                })
+            })
             .map(String::as_str)
     }
 
@@ -138,7 +151,10 @@ impl Server {
 
     /// A stdio command that can run in a terminal as shown (no masked secrets, no env).
     pub fn runnable(&self) -> bool {
-        self.transport == "stdio" && self.env.is_empty() && !self.target.contains('•') && !self.target.is_empty()
+        self.transport == "stdio"
+            && self.env.is_empty()
+            && !self.target.contains('•')
+            && !self.target.is_empty()
     }
 
     pub fn tool_prefix(&self) -> String {
@@ -232,7 +248,13 @@ pub struct ClaudeExtensions {
 impl ClaudeExtensions {
     /// Servers that need you: failing, or yours and waiting for a sign-in.
     pub fn problems(&self) -> usize {
-        self.servers.iter().filter(|s| matches!(s.health, Health::Failed(_)) || (s.health == Health::NeedsAuth && !s.unused_connector())).count()
+        self.servers
+            .iter()
+            .filter(|s| {
+                matches!(s.health, Health::Failed(_))
+                    || (s.health == Health::NeedsAuth && !s.unused_connector())
+            })
+            .count()
     }
 }
 
@@ -252,11 +274,17 @@ fn cache_file(cwd: &Path) -> PathBuf {
     use std::hash::{Hash as _, Hasher as _};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cwd.hash(&mut h);
-    crate::platform::app_dir().join("cache").join("extensions").join(format!("claude-{:016x}.json", h.finish()))
+    crate::platform::app_dir()
+        .join("cache")
+        .join("extensions")
+        .join(format!("claude-{:016x}.json", h.finish()))
 }
 
 fn read_checked(cwd: &Path) -> Checked {
-    std::fs::read(cache_file(cwd)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(cache_file(cwd))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 fn save_checked(cwd: &Path, checked: &Checked) {
@@ -278,8 +306,14 @@ pub fn load_quick(cwd: &Path) -> ClaudeExtensions {
     let home = launch::home();
     let checked = read_checked(cwd);
     let plugins = read_plugins(&installed_plugins(&home, cwd));
-    let listed = checked.mcp_list.as_deref().map(parse_list).unwrap_or_default();
-    let mut x = assemble(&home, cwd, plugins, listed, |_, s| checked.probes.get(&s.name).cloned());
+    let listed = checked
+        .mcp_list
+        .as_deref()
+        .map(parse_list)
+        .unwrap_or_default();
+    let mut x = assemble(&home, cwd, plugins, listed, |_, s| {
+        checked.probes.get(&s.name).cloned()
+    });
     x.cli = claude_bin().is_some();
     x.checking = true;
     x
@@ -292,7 +326,11 @@ pub fn load(cwd: &Path) -> ClaudeExtensions {
     let bin = claude_bin();
     let plugin_list = bin
         .as_ref()
-        .and_then(|b| run(b, cwd, &["plugin", "list", "--json"], CLI_TIMEOUT).ok().and_then(|o| serde_json::from_str(&o).ok()))
+        .and_then(|b| {
+            run(b, cwd, &["plugin", "list", "--json"], CLI_TIMEOUT)
+                .ok()
+                .and_then(|o| serde_json::from_str(&o).ok())
+        })
         .unwrap_or_else(|| installed_plugins(&home, cwd));
     let plugins = read_plugins(&plugin_list);
     let mut checked = Checked::default();
@@ -308,7 +346,9 @@ pub fn load(cwd: &Path) -> ClaudeExtensions {
         None => (Vec::new(), Vec::new()),
     };
     let mut x = assemble(&home, cwd, plugins, listed, |raw, s| {
-        (matches!(s.health, Health::Failed(_)) && s.transport != "stdio").then(|| raw.and_then(probe)).flatten()
+        (matches!(s.health, Health::Failed(_)) && s.transport != "stdio")
+            .then(|| raw.and_then(probe))
+            .flatten()
     });
     for s in &x.servers {
         if let Some(d) = &s.diagnosis {
@@ -342,15 +382,31 @@ fn assemble(
         s.rules = permissions
             .rules
             .iter()
-            .filter(|r| r.rule == prefix || r.rule.starts_with(&format!("{prefix}__")) || r.rule.starts_with(&format!("{prefix}(")))
+            .filter(|r| {
+                r.rule == prefix
+                    || r.rule.starts_with(&format!("{prefix}__"))
+                    || r.rule.starts_with(&format!("{prefix}("))
+            })
             .cloned()
             .collect();
         let raw = raw_config(&state, project, cwd, &s.name, &s.scope);
         s.diagnosis = diagnose(raw.as_ref(), s);
     }
-    servers.sort_by(|a, b| scope_rank(&a.scope).cmp(&scope_rank(&b.scope)).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    servers.sort_by(|a, b| {
+        scope_rank(&a.scope)
+            .cmp(&scope_rank(&b.scope))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     let skills = read_skills(home, cwd, &plugins);
-    ClaudeExtensions { cli: false, checking: false, servers, plugins, skills, permissions, warnings }
+    ClaudeExtensions {
+        cli: false,
+        checking: false,
+        servers,
+        plugins,
+        skills,
+        permissions,
+        warnings,
+    }
 }
 
 /// What `claude plugin list --json` says, from the files: installed plugins,
@@ -360,14 +416,29 @@ fn installed_plugins(home: &Path, cwd: &Path) -> Value {
     let settings = settings_files(home, cwd);
     let mut out = Vec::new();
     for (id, entries) in installed["plugins"].as_object().into_iter().flatten() {
-        let Some(e) = entries.as_array().and_then(|a| a.iter().find(|e| e["scope"] == "user").or_else(|| a.first())) else { continue };
+        let Some(e) = entries.as_array().and_then(|a| {
+            a.iter()
+                .find(|e| e["scope"] == "user")
+                .or_else(|| a.first())
+        }) else {
+            continue;
+        };
         let path = PathBuf::from(e["installPath"].as_str().unwrap_or_default());
-        let enabled = settings.iter().find_map(|(_, _, v)| v["enabledPlugins"][id].as_bool()).unwrap_or(false);
+        let enabled = settings
+            .iter()
+            .find_map(|(_, _, v)| v["enabledPlugins"][id].as_bool())
+            .unwrap_or(false);
         let servers = [".mcp.json", "mcp.json"]
             .iter()
             .map(|f| read_json(&path.join(f)))
             .find(|v| !v.is_null())
-            .map(|v| if v["mcpServers"].is_object() { v["mcpServers"].clone() } else { v })
+            .map(|v| {
+                if v["mcpServers"].is_object() {
+                    v["mcpServers"].clone()
+                } else {
+                    v
+                }
+            })
             .unwrap_or(Value::Null);
         out.push(serde_json::json!({
             "id": id,
@@ -382,7 +453,13 @@ fn installed_plugins(home: &Path, cwd: &Path) -> Value {
 }
 
 /// The config of a server as its file has it, secrets and all: never shown.
-fn raw_config(state: &Value, project: &Value, cwd: &Path, name: &str, scope: &Scope) -> Option<Value> {
+fn raw_config(
+    state: &Value,
+    project: &Value,
+    cwd: &Path,
+    name: &str,
+    scope: &Scope,
+) -> Option<Value> {
     let v = match scope {
         Scope::User => state["mcpServers"][name].clone(),
         Scope::Local => project["mcpServers"][name].clone(),
@@ -397,7 +474,9 @@ fn scope_arg(scope: &Scope) -> Result<&'static str> {
         Scope::User => Ok("user"),
         Scope::Local => Ok("local"),
         Scope::Project => Ok("project"),
-        _ => Err(anyhow!("Claude Code can't edit this server: it comes from a plugin or claude.ai")),
+        _ => Err(anyhow!(
+            "Claude Code can't edit this server: it comes from a plugin or claude.ai"
+        )),
     }
 }
 
@@ -411,7 +490,11 @@ fn probe(raw: &Value) -> Option<Diagnosis> {
         quote(url)
     );
     for (k, v) in raw["headers"].as_object().into_iter().flatten() {
-        config.push_str(&format!("header = \"{}: {}\"\n", quote(k), quote(v.as_str().unwrap_or_default())));
+        config.push_str(&format!(
+            "header = \"{}: {}\"\n",
+            quote(k),
+            quote(v.as_str().unwrap_or_default())
+        ));
     }
     config.push_str("header = \"Content-Type: application/json\"\nheader = \"Accept: application/json, text/event-stream\"\n");
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"arakun","version":"1"}}}"#;
@@ -442,26 +525,61 @@ fn parse_probe(out: &str) -> Diagnosis {
     let message = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|v| {
-            let m = v["error"]["message"].as_str().or(v["error_description"].as_str()).or(v["error"].as_str()).or(v["message"].as_str())?;
+            let m = v["error"]["message"]
+                .as_str()
+                .or(v["error_description"].as_str())
+                .or(v["error"].as_str())
+                .or(v["message"].as_str())?;
             Some(m.to_string())
         })
-        .unwrap_or_else(|| if body.starts_with('<') { String::new() } else { body.chars().take(160).collect() });
-    Diagnosis { status, message: redact(message.trim()), oauth: auth.contains("resource_metadata") || auth.to_lowercase().starts_with("bearer") }
+        .unwrap_or_else(|| {
+            if body.starts_with('<') {
+                String::new()
+            } else {
+                body.chars().take(160).collect()
+            }
+        });
+    Diagnosis {
+        status,
+        message: redact(message.trim()),
+        oauth: auth.contains("resource_metadata") || auth.to_lowercase().starts_with("bearer"),
+    }
 }
 
 /// Removes a server from the scope it lives in.
 pub fn remove(cwd: &Path, name: &str, scope: &Scope) -> Result<()> {
     let bin = claude_bin().ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    run(&bin, cwd, &["mcp", "remove", name, "-s", scope_arg(scope)?], CLI_TIMEOUT).map(|_| ())
+    run(
+        &bin,
+        cwd,
+        &["mcp", "remove", name, "-s", scope_arg(scope)?],
+        CLI_TIMEOUT,
+    )
+    .map(|_| ())
 }
 
 /// Puts `config` in place of the server's, putting the old one back if that fails.
 fn replace(cwd: &Path, name: &str, scope: &Scope, old: &Value, config: &Value) -> Result<()> {
     let bin = claude_bin().ok_or_else(|| anyhow!("claude is not on PATH"))?;
     let scope = scope_arg(scope)?;
-    run(&bin, cwd, &["mcp", "remove", name, "-s", scope], CLI_TIMEOUT)?;
-    if let Err(e) = run(&bin, cwd, &["mcp", "add-json", name, &config.to_string(), "-s", scope], CLI_TIMEOUT) {
-        let _ = run(&bin, cwd, &["mcp", "add-json", name, &old.to_string(), "-s", scope], CLI_TIMEOUT);
+    run(
+        &bin,
+        cwd,
+        &["mcp", "remove", name, "-s", scope],
+        CLI_TIMEOUT,
+    )?;
+    if let Err(e) = run(
+        &bin,
+        cwd,
+        &["mcp", "add-json", name, &config.to_string(), "-s", scope],
+        CLI_TIMEOUT,
+    ) {
+        let _ = run(
+            &bin,
+            cwd,
+            &["mcp", "add-json", name, &old.to_string(), "-s", scope],
+            CLI_TIMEOUT,
+        );
         return Err(e);
     }
     Ok(())
@@ -469,20 +587,34 @@ fn replace(cwd: &Path, name: &str, scope: &Scope, old: &Value, config: &Value) -
 
 fn current(cwd: &Path, name: &str, scope: &Scope) -> Result<Value> {
     let state = read_json(&launch::home().join(".claude.json"));
-    raw_config(&state, project_entry(&state, cwd), cwd, name, scope).ok_or_else(|| anyhow!("{name} is not in its config file anymore"))
+    raw_config(&state, project_entry(&state, cwd), cwd, name, scope)
+        .ok_or_else(|| anyhow!("{name} is not in its config file anymore"))
 }
 
 /// Swaps the token in `header`, keeping a `Bearer ` the old value had.
-pub fn replace_token(cwd: &Path, name: &str, scope: &Scope, header: &str, token: &str) -> Result<()> {
+pub fn replace_token(
+    cwd: &Path,
+    name: &str,
+    scope: &Scope,
+    header: &str,
+    token: &str,
+) -> Result<()> {
     let token = token.trim();
     if token.is_empty() {
         return Err(anyhow!("The token is empty"));
     }
     let old = current(cwd, name, scope)?;
     let mut config = old.clone();
-    let before = config["headers"][header].as_str().unwrap_or_default().to_string();
+    let before = config["headers"][header]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let bearer = before.starts_with("Bearer ") && !token.starts_with("Bearer ");
-    config["headers"][header] = Value::String(if bearer { format!("Bearer {token}") } else { token.to_string() });
+    config["headers"][header] = Value::String(if bearer {
+        format!("Bearer {token}")
+    } else {
+        token.to_string()
+    });
     replace(cwd, name, scope, &old, &config)
 }
 
@@ -502,22 +634,83 @@ pub fn use_sign_in(cwd: &Path, name: &str, scope: &Scope, header: &str) -> Resul
 /// Adds a remote server for your user (every project).
 pub fn add_http(cwd: &Path, name: &str, url: &str) -> Result<()> {
     let bin = claude_bin().ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    run(&bin, cwd, &["mcp", "add", "--transport", "http", "-s", "user", name, url], CLI_TIMEOUT).map(|_| ())
+    run(
+        &bin,
+        cwd,
+        &["mcp", "add", "--transport", "http", "-s", "user", name, url],
+        CLI_TIMEOUT,
+    )
+    .map(|_| ())
 }
 
 /// Popular remote servers to add in one click: (name, URL, what it gives, needs sign-in).
 pub const CATALOG: &[(&str, &str, &str, bool)] = &[
-    ("linear", "https://mcp.linear.app/mcp", "Issues, projects and cycles", true),
-    ("notion", "https://mcp.notion.com/mcp", "Pages, databases and search", true),
-    ("sentry", "https://mcp.sentry.dev/mcp", "Errors, traces and releases", true),
-    ("supabase", "https://mcp.supabase.com/mcp", "Database, auth and edge functions", true),
-    ("stripe", "https://mcp.stripe.com", "Payments, customers and billing", true),
-    ("figma", "https://mcp.figma.com/mcp", "Designs, components and variables", true),
-    ("vercel", "https://mcp.vercel.com", "Deployments, logs and projects", true),
-    ("cloudflare", "https://mcp.cloudflare.com/mcp", "Workers, DNS, storage and analytics", true),
-    ("posthog", "https://mcp.posthog.com/mcp", "Product analytics, flags and errors", true),
-    ("neon", "https://mcp.neon.tech/mcp", "Serverless Postgres and branches", true),
-    ("context7", "https://mcp.context7.com/mcp", "Up-to-date docs for any library", false),
+    (
+        "linear",
+        "https://mcp.linear.app/mcp",
+        "Issues, projects and cycles",
+        true,
+    ),
+    (
+        "notion",
+        "https://mcp.notion.com/mcp",
+        "Pages, databases and search",
+        true,
+    ),
+    (
+        "sentry",
+        "https://mcp.sentry.dev/mcp",
+        "Errors, traces and releases",
+        true,
+    ),
+    (
+        "supabase",
+        "https://mcp.supabase.com/mcp",
+        "Database, auth and edge functions",
+        true,
+    ),
+    (
+        "stripe",
+        "https://mcp.stripe.com",
+        "Payments, customers and billing",
+        true,
+    ),
+    (
+        "figma",
+        "https://mcp.figma.com/mcp",
+        "Designs, components and variables",
+        true,
+    ),
+    (
+        "vercel",
+        "https://mcp.vercel.com",
+        "Deployments, logs and projects",
+        true,
+    ),
+    (
+        "cloudflare",
+        "https://mcp.cloudflare.com/mcp",
+        "Workers, DNS, storage and analytics",
+        true,
+    ),
+    (
+        "posthog",
+        "https://mcp.posthog.com/mcp",
+        "Product analytics, flags and errors",
+        true,
+    ),
+    (
+        "neon",
+        "https://mcp.neon.tech/mcp",
+        "Serverless Postgres and branches",
+        true,
+    ),
+    (
+        "context7",
+        "https://mcp.context7.com/mcp",
+        "Up-to-date docs for any library",
+        false,
+    ),
 ];
 
 /// The host of a URL (`https://mcp.linear.app/mcp` → `mcp.linear.app`).
@@ -529,7 +722,13 @@ pub fn host(url: &str) -> &str {
 /// Turns a plugin on or off for your user, as `/plugin` does.
 pub fn set_plugin(cwd: &Path, id: &str, enabled: bool) -> Result<()> {
     let bin = claude_bin().ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    run(&bin, cwd, &["plugin", if enabled { "enable" } else { "disable" }, id], CLI_TIMEOUT).map(|_| ())
+    run(
+        &bin,
+        cwd,
+        &["plugin", if enabled { "enable" } else { "disable" }, id],
+        CLI_TIMEOUT,
+    )
+    .map(|_| ())
 }
 
 /// The terminal command that signs in to a server (opens the browser).
@@ -538,7 +737,9 @@ pub fn login_command(name: &str) -> String {
 }
 
 fn shell_quote(s: &str) -> String {
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:@/".contains(c)) {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.:@/".contains(c))
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', r"'\''"))
@@ -559,7 +760,10 @@ fn scope_rank(s: &Scope) -> u8 {
 // Files.
 
 fn read_json(path: &Path) -> Value {
-    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null)
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null)
 }
 
 /// This folder's entry in `~/.claude.json` (keyed by absolute path).
@@ -595,14 +799,24 @@ fn settings_files(home: &Path, cwd: &Path) -> Vec<(&'static str, PathBuf, Value)
     if cwd == home {
         files.retain(|(s, _)| *s != "project");
     }
-    files.into_iter().filter(|(_, p)| p.is_file()).map(|(s, p)| {
-        let v = read_json(&p);
-        (s, p, v)
-    }).collect()
+    files
+        .into_iter()
+        .filter(|(_, p)| p.is_file())
+        .map(|(s, p)| {
+            let v = read_json(&p);
+            (s, p, v)
+        })
+        .collect()
 }
 
 fn read_permissions(settings: &[(&'static str, PathBuf, Value)], project: &Value) -> Permissions {
-    let mut p = Permissions { files: settings.iter().map(|(s, path, _)| (*s, path.clone())).collect(), ..Default::default() };
+    let mut p = Permissions {
+        files: settings
+            .iter()
+            .map(|(s, path, _)| (*s, path.clone()))
+            .collect(),
+        ..Default::default()
+    };
     let mut seen = HashSet::new();
     for (source, _, v) in settings {
         let perms = &v["permissions"];
@@ -611,42 +825,85 @@ fn read_permissions(settings: &[(&'static str, PathBuf, Value)], project: &Value
         {
             p.mode = Some((m.to_string(), source));
         }
-        for (key, kind) in [("deny", RuleKind::Deny), ("ask", RuleKind::Ask), ("allow", RuleKind::Allow)] {
-            for r in perms[key].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        for (key, kind) in [
+            ("deny", RuleKind::Deny),
+            ("ask", RuleKind::Ask),
+            ("allow", RuleKind::Allow),
+        ] {
+            for r in perms[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
                 if seen.insert((kind, r.to_string())) {
-                    p.rules.push(Rule { kind, rule: redact(r), source });
+                    p.rules.push(Rule {
+                        kind,
+                        rule: redact(r),
+                        source,
+                    });
                 }
             }
         }
-        for d in perms["additionalDirectories"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        for d in perms["additionalDirectories"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
             if !p.dirs.iter().any(|x| x == d) {
                 p.dirs.push(d.to_string());
             }
         }
     }
     // Older Claude Code kept "always allow" answers in ~/.claude.json.
-    for r in project["allowedTools"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+    for r in project["allowedTools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
         if seen.insert((RuleKind::Allow, r.to_string())) {
-            p.rules.push(Rule { kind: RuleKind::Allow, rule: redact(r), source: "local" });
+            p.rules.push(Rule {
+                kind: RuleKind::Allow,
+                rule: redact(r),
+                source: "local",
+            });
         }
     }
     p
 }
 
 fn names(v: &Value) -> Vec<String> {
-    let mut n: Vec<String> = v.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+    let mut n: Vec<String> = v
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
     n.sort();
     n
 }
 
 fn server_from(name: &str, scope: Scope, v: &Value) -> Server {
     let url = v["url"].as_str();
-    let transport = v["type"].as_str().map(str::to_string).unwrap_or_else(|| if url.is_some() { "http".into() } else { "stdio".into() });
+    let transport = v["type"].as_str().map(str::to_string).unwrap_or_else(|| {
+        if url.is_some() {
+            "http".into()
+        } else {
+            "stdio".into()
+        }
+    });
     let target = match url {
         Some(u) => redact(u),
         None => {
             let mut parts = vec![v["command"].as_str().unwrap_or_default().to_string()];
-            parts.extend(v["args"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string));
+            parts.extend(
+                v["args"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string),
+            );
             redact(parts.join(" ").trim())
         }
     };
@@ -672,7 +929,11 @@ fn configured_servers(state: &Value, project: &Value, cwd: &Path) -> Vec<Server>
             out.push(server_from(name, scope, v));
         }
     };
-    for (scope, map) in [(Scope::Local, &project["mcpServers"]), (Scope::Project, &mcp_json["mcpServers"]), (Scope::User, &state["mcpServers"])] {
+    for (scope, map) in [
+        (Scope::Local, &project["mcpServers"]),
+        (Scope::Project, &mcp_json["mcpServers"]),
+        (Scope::User, &state["mcpServers"]),
+    ] {
         for (name, v) in map.as_object().into_iter().flatten() {
             add(name, scope.clone(), v);
         }
@@ -726,22 +987,37 @@ fn skill_dirs(dir: &Path) -> Vec<PathBuf> {
 
 fn read_skills(home: &Path, cwd: &Path, plugins: &[Plugin]) -> Vec<Skill> {
     let mut out = Vec::new();
-    let mut roots: Vec<(String, PathBuf, Option<String>)> = vec![("personal".into(), home.join(".claude/skills"), None)];
+    let mut roots: Vec<(String, PathBuf, Option<String>)> =
+        vec![("personal".into(), home.join(".claude/skills"), None)];
     if cwd != home {
         roots.push(("project".into(), cwd.join(".claude/skills"), None));
     }
     for p in plugins.iter().filter(|p| p.enabled) {
-        roots.push((p.short().to_string(), p.path.join("skills"), Some(p.short().to_string())));
+        roots.push((
+            p.short().to_string(),
+            p.path.join("skills"),
+            Some(p.short().to_string()),
+        ));
     }
     for (source, root, prefix) in roots {
         for dir in skill_dirs(&root) {
             let (name, description) = frontmatter(&dir.join("SKILL.md"));
-            let name = name.unwrap_or_else(|| dir.file_name().unwrap_or_default().to_string_lossy().to_string());
+            let name = name.unwrap_or_else(|| {
+                dir.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
             let name = match &prefix {
                 Some(p) => format!("{p}:{name}"),
                 None => name,
             };
-            out.push(Skill { name, description, source: source.clone(), path: dir });
+            out.push(Skill {
+                name,
+                description,
+                source: source.clone(),
+                path: dir,
+            });
         }
     }
     out
@@ -776,8 +1052,14 @@ fn parse_frontmatter(text: &str) -> (Option<String>, String) {
             continue;
         }
         folding = false;
-        let Some((key, value)) = line.split_once(':') else { continue };
-        let value = value.trim().trim_matches('"').trim_matches('\'').to_string();
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
         match key.trim() {
             "name" => name = Some(value),
             "description" => {
@@ -812,8 +1094,12 @@ fn parse_list(out: &str) -> (Vec<Listed>, Vec<String>) {
             warnings.push(redact(line.trim_start_matches(['└', ' '])));
             continue;
         }
-        let Some((name, rest)) = line.split_once(": ") else { continue };
-        let Some((target, state)) = rest.rsplit_once(" - ") else { continue };
+        let Some((name, rest)) = line.split_once(": ") else {
+            continue;
+        };
+        let Some((target, state)) = rest.rsplit_once(" - ") else {
+            continue;
+        };
         if name.is_empty() || name.starts_with('[') || name == "Location" {
             continue;
         }
@@ -825,7 +1111,9 @@ fn parse_list(out: &str) -> (Vec<Listed>, Vec<String>) {
                 transport = Some(t.to_string());
             }
         }
-        let state = state.trim_start_matches(|c: char| !c.is_alphabetic()).trim();
+        let state = state
+            .trim_start_matches(|c: char| !c.is_alphabetic())
+            .trim();
         let health = if state.starts_with("Connected") {
             Health::Connected
         } else if state.starts_with("Needs auth") {
@@ -835,7 +1123,12 @@ fn parse_list(out: &str) -> (Vec<Listed>, Vec<String>) {
         } else {
             Health::Failed(state.to_string())
         };
-        listed.push(Listed { name: name.to_string(), target: redact(&target), transport, health });
+        listed.push(Listed {
+            name: name.to_string(),
+            target: redact(&target),
+            transport,
+            health,
+        });
     }
     (listed, warnings)
 }
@@ -853,7 +1146,13 @@ fn merge_health(servers: &mut Vec<Server>, listed: Vec<Listed>) {
         } else {
             Scope::User
         };
-        let transport = l.transport.unwrap_or_else(|| if l.target.contains("://") { "http".into() } else { "stdio".into() });
+        let transport = l.transport.unwrap_or_else(|| {
+            if l.target.contains("://") {
+                "http".into()
+            } else {
+                "stdio".into()
+            }
+        });
         servers.push(Server {
             name: l.name,
             scope,
@@ -870,7 +1169,14 @@ fn merge_health(servers: &mut Vec<Server>, listed: Vec<Listed>) {
 
 /// Servers this folder turned off (`/mcp` → disable), and `.mcp.json` ones it rejected.
 fn turn_off(servers: &mut [Server], project: &Value, settings: &[(&'static str, PathBuf, Value)]) {
-    let list = |v: &Value| -> Vec<String> { v.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect() };
+    let list = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    };
     let off = list(&project["disabledMcpServers"]);
     let mut rejected = list(&project["disabledMcpjsonServers"]);
     for (_, _, v) in settings {
@@ -885,7 +1191,16 @@ fn turn_off(servers: &mut [Server], project: &Value, settings: &[(&'static str, 
 
 /// How Claude names a server inside tool names (`claude.ai Gmail` → `claude_ai_Gmail`).
 fn tool_name(server: &str) -> String {
-    server.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect()
+    server
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -932,7 +1247,12 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
     let out = reader.join().unwrap_or_default();
     let err = err_reader.join().unwrap_or_default();
     if !status.success() {
-        let msg = err.lines().chain(out.lines()).map(str::trim).find(|l| !l.is_empty()).unwrap_or("failed");
+        let msg = err
+            .lines()
+            .chain(out.lines())
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("failed");
         return Err(anyhow!("{}", redact(msg)));
     }
     Ok(out)
@@ -941,8 +1261,22 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
 // ---------------------------------------------------------------------------
 // Secrets.
 
-const SECRET_PREFIXES: [&str; 14] =
-    ["ghp_", "gho_", "ghu_", "ghs_", "github_pat_", "sk-", "sk_", "phx_", "phc_", "xox", "AKIA", "eyJ", "glpat-", "sbp_"];
+const SECRET_PREFIXES: [&str; 14] = [
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "github_pat_",
+    "sk-",
+    "sk_",
+    "phx_",
+    "phc_",
+    "xox",
+    "AKIA",
+    "eyJ",
+    "glpat-",
+    "sbp_",
+];
 
 /// Masks what looks like a token: known prefixes, `user:token@` in URLs and
 /// long random-looking words. Keeps the first characters so it stays recognizable.
@@ -989,12 +1323,23 @@ mod tests {
     #[test]
     fn masks_tokens() {
         assert_eq!(
-            redact("Bash(git remote set-url origin https://me:ghp_FAKEtoken0000000000000000000000000000@github.com/a/b.git)"),
+            redact(
+                "Bash(git remote set-url origin https://me:ghp_FAKEtoken0000000000000000000000000000@github.com/a/b.git)"
+            ),
             "Bash(git remote set-url origin https://me:ghp_••••@github.com/a/b.git)"
         );
-        assert_eq!(redact("Bearer phx_FAKEkey000000000000000000000000000000000000000"), "Bearer phx_••••");
-        assert_eq!(redact("npx @playwright/mcp@latest --viewport-size 1280x800"), "npx @playwright/mcp@latest --viewport-size 1280x800");
-        assert_eq!(redact("https://mcp.supabase.com/mcp?project_ref=ahjnnuzxjuniajhxzrnw"), "https://mcp.supabase.com/mcp?project_ref=ahjnnuzxjuniajhxzrnw");
+        assert_eq!(
+            redact("Bearer phx_FAKEkey000000000000000000000000000000000000000"),
+            "Bearer phx_••••"
+        );
+        assert_eq!(
+            redact("npx @playwright/mcp@latest --viewport-size 1280x800"),
+            "npx @playwright/mcp@latest --viewport-size 1280x800"
+        );
+        assert_eq!(
+            redact("https://mcp.supabase.com/mcp?project_ref=ahjnnuzxjuniajhxzrnw"),
+            "https://mcp.supabase.com/mcp?project_ref=ahjnnuzxjuniajhxzrnw"
+        );
         assert_eq!(redact("Bash(cargo build:*)"), "Bash(cargo build:*)");
     }
 
@@ -1034,7 +1379,9 @@ mod tests {
         });
         let project = project_entry(&state, Path::new("/p"));
         let mut servers = configured_servers(&state, project, Path::new("/nonexistent"));
-        let (listed, _) = parse_list("helius: npx helius-mcp@latest - ✔ Connected\nclaude.ai Gmail: https://g - ✔ Connected\nplugin:posthog:posthog: https://p (HTTP) - ! Needs authentication\n");
+        let (listed, _) = parse_list(
+            "helius: npx helius-mcp@latest - ✔ Connected\nclaude.ai Gmail: https://g - ✔ Connected\nplugin:posthog:posthog: https://p (HTTP) - ! Needs authentication\n",
+        );
         merge_health(&mut servers, listed);
         turn_off(&mut servers, project, &[]);
         let find = |n: &str| servers.iter().find(|s| s.name == n).unwrap();
@@ -1044,16 +1391,33 @@ mod tests {
         assert_eq!(find("posthog").health, Health::Off);
         assert_eq!(find("posthog").headers, vec!["Authorization".to_string()]);
         assert_eq!(find("claude.ai Gmail").scope, Scope::ClaudeAi);
-        assert_eq!(find("plugin:posthog:posthog").scope, Scope::Plugin("posthog".into()));
-        assert_eq!(find("claude.ai Gmail").tool_prefix(), "mcp__claude_ai_Gmail");
+        assert_eq!(
+            find("plugin:posthog:posthog").scope,
+            Scope::Plugin("posthog".into())
+        );
+        assert_eq!(
+            find("claude.ai Gmail").tool_prefix(),
+            "mcp__claude_ai_Gmail"
+        );
     }
 
     #[test]
     fn reads_probe() {
-        let d = parse_probe("Invalid API key\n401\nBearer resource_metadata=\"https://x/.well-known\"");
-        assert_eq!(d, Diagnosis { status: 401, message: "Invalid API key".into(), oauth: true });
+        let d =
+            parse_probe("Invalid API key\n401\nBearer resource_metadata=\"https://x/.well-known\"");
+        assert_eq!(
+            d,
+            Diagnosis {
+                status: 401,
+                message: "Invalid API key".into(),
+                oauth: true
+            }
+        );
         let d = parse_probe("{\"error\":{\"message\":\"nope\"}}\n403\n");
-        assert_eq!((d.status, d.message.as_str(), d.oauth), (403, "nope", false));
+        assert_eq!(
+            (d.status, d.message.as_str(), d.oauth),
+            (403, "nope", false)
+        );
         assert_eq!(parse_probe("\n000\n").status, 0);
         assert!(d.explain(true).contains("rejected the token"));
         assert_eq!(host("https://mcp.linear.app/mcp"), "mcp.linear.app");
@@ -1061,7 +1425,9 @@ mod tests {
 
     #[test]
     fn reads_frontmatter() {
-        let (n, d) = parse_frontmatter("---\nname: seo-audit\ndescription: >\n  Full audit\n  of a site.\n---\nbody");
+        let (n, d) = parse_frontmatter(
+            "---\nname: seo-audit\ndescription: >\n  Full audit\n  of a site.\n---\nbody",
+        );
         assert_eq!(n.as_deref(), Some("seo-audit"));
         assert_eq!(d, "Full audit of a site.");
         let (n, d) = parse_frontmatter("---\nname: \"x\"\ndescription: 'One line'\n---\n");
@@ -1071,13 +1437,32 @@ mod tests {
     #[test]
     fn rules_by_precedence() {
         let settings = vec![
-            ("local", PathBuf::from("/l"), json!({"permissions": {"allow": ["Bash(ls:*)"], "defaultMode": "acceptEdits"}})),
-            ("user", PathBuf::from("/u"), json!({"permissions": {"allow": ["Bash(ls:*)", "mcp__posthog__*"], "deny": ["Read(.env)"], "defaultMode": "plan"}})),
+            (
+                "local",
+                PathBuf::from("/l"),
+                json!({"permissions": {"allow": ["Bash(ls:*)"], "defaultMode": "acceptEdits"}}),
+            ),
+            (
+                "user",
+                PathBuf::from("/u"),
+                json!({"permissions": {"allow": ["Bash(ls:*)", "mcp__posthog__*"], "deny": ["Read(.env)"], "defaultMode": "plan"}}),
+            ),
         ];
         let p = read_permissions(&settings, &Value::Null);
         assert_eq!(p.mode, Some(("acceptEdits".into(), "local")));
-        let rules: Vec<(RuleKind, &str, &str)> = p.rules.iter().map(|r| (r.kind, r.rule.as_str(), r.source)).collect();
-        assert_eq!(rules, vec![(RuleKind::Allow, "Bash(ls:*)", "local"), (RuleKind::Deny, "Read(.env)", "user"), (RuleKind::Allow, "mcp__posthog__*", "user")]);
+        let rules: Vec<(RuleKind, &str, &str)> = p
+            .rules
+            .iter()
+            .map(|r| (r.kind, r.rule.as_str(), r.source))
+            .collect();
+        assert_eq!(
+            rules,
+            vec![
+                (RuleKind::Allow, "Bash(ls:*)", "local"),
+                (RuleKind::Deny, "Read(.env)", "user"),
+                (RuleKind::Allow, "mcp__posthog__*", "user")
+            ]
+        );
     }
 
     #[test]
@@ -1086,11 +1471,30 @@ mod tests {
         let dir = std::env::var("CLAUDE_EXT_DIR").unwrap_or_else(|_| ".".into());
         let x = load(&std::fs::canonicalize(dir).unwrap());
         for s in &x.servers {
-            eprintln!("{:<28} {:<16} {:<6} {:?} {} rules {} {:?}", s.name, s.scope.label(), s.transport, s.health, s.target, s.rules.len(), s.diagnosis);
+            eprintln!(
+                "{:<28} {:<16} {:<6} {:?} {} rules {} {:?}",
+                s.name,
+                s.scope.label(),
+                s.transport,
+                s.health,
+                s.target,
+                s.rules.len(),
+                s.diagnosis
+            );
         }
         for p in &x.plugins {
-            eprintln!("plugin {} {} on={} skills={} agents={} cmds={} hooks={} mcp={:?}", p.id, p.version, p.enabled, p.skills, p.agents, p.commands, p.hooks, p.servers);
+            eprintln!(
+                "plugin {} {} on={} skills={} agents={} cmds={} hooks={} mcp={:?}",
+                p.id, p.version, p.enabled, p.skills, p.agents, p.commands, p.hooks, p.servers
+            );
         }
-        eprintln!("skills {} mode {:?} rules {} files {:?} warnings {:?}", x.skills.len(), x.permissions.mode, x.permissions.rules.len(), x.permissions.files, x.warnings);
+        eprintln!(
+            "skills {} mode {:?} rules {} files {:?} warnings {:?}",
+            x.skills.len(),
+            x.permissions.mode,
+            x.permissions.rules.len(),
+            x.permissions.files,
+            x.warnings
+        );
     }
 }

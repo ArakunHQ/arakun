@@ -7,13 +7,13 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, BorderStyle, Bounds, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathBuilder, Pixels, Point, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas,
-    div, point, px, quad, size,
+    App, BorderStyle, Bounds, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathBuilder, Pixels, Point, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, point, px, quad, size,
 };
 
-use super::kit::{Type, Typography as _};
 use super::RADIUS;
+use super::kit::{Type, Typography as _};
 use crate::theme;
 
 /// One line of a chart.
@@ -74,7 +74,10 @@ impl AreaChart {
         cx: &mut Context<Self>,
     ) {
         // Views hand the data over on every render; only a change repaints.
-        let same = self.series == series && self.labels == labels && self.ticks == ticks && self.notes == notes;
+        let same = self.series == series
+            && self.labels == labels
+            && self.ticks == ticks
+            && self.notes == notes;
         self.format = format;
         self.axis_format = axis_format;
         if same {
@@ -91,7 +94,11 @@ impl AreaChart {
     }
 
     fn len(&self) -> usize {
-        self.series.iter().map(|s| s.values.len()).max().unwrap_or(0)
+        self.series
+            .iter()
+            .map(|s| s.values.len())
+            .max()
+            .unwrap_or(0)
     }
 
     fn pointer(&mut self, x: Pixels, cx: &mut Context<Self>) {
@@ -129,7 +136,11 @@ pub fn axis_steps(hi: f64) -> (f64, usize) {
 
 /// Catmull-Rom spans through `pts`: (end, control 1, control 2), with the
 /// controls kept between `top` and `base` so the curve never leaves the plot.
-fn spans(pts: &[Point<Pixels>], top: f32, base: f32) -> Vec<(Point<Pixels>, Point<Pixels>, Point<Pixels>)> {
+fn spans(
+    pts: &[Point<Pixels>],
+    top: f32,
+    base: f32,
+) -> Vec<(Point<Pixels>, Point<Pixels>, Point<Pixels>)> {
     let n = pts.len();
     let clamp = |y: f32| y.clamp(top, base);
     let f = |p: Point<Pixels>| (p.x.as_f32(), p.y.as_f32());
@@ -149,7 +160,15 @@ fn spans(pts: &[Point<Pixels>], top: f32, base: f32) -> Vec<(Point<Pixels>, Poin
 }
 
 /// Paints a series' fill and line.
-fn paint_curve(pts: &[Point<Pixels>], top: f32, base: f32, color: Hsla, fill_alpha: f32, width: f32, window: &mut Window) {
+fn paint_curve(
+    pts: &[Point<Pixels>],
+    top: f32,
+    base: f32,
+    color: Hsla,
+    fill_alpha: f32,
+    width: f32,
+    window: &mut Window,
+) {
     if pts.len() < 2 {
         return;
     }
@@ -184,7 +203,11 @@ impl Render for AreaChart {
         let plot_h = self.height;
         let n = self.len();
         let hover = self.hover.filter(|h| *h < n);
-        let hi = self.series.iter().flat_map(|s| s.values.iter().copied()).fold(0., f64::max);
+        let hi = self
+            .series
+            .iter()
+            .flat_map(|s| s.values.iter().copied())
+            .fold(0., f64::max);
         let (step, ticks) = axis_steps(hi);
         let top_value = step * ticks as f64;
         let series = self.series.clone();
@@ -194,14 +217,24 @@ impl Render for AreaChart {
             move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
                 bounds_cell.set(Some(bounds));
                 let o = bounds.origin;
-                let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32() - 2. * INSET);
+                let (w, h) = (
+                    bounds.size.width.as_f32(),
+                    bounds.size.height.as_f32() - 2. * INSET,
+                );
                 for k in 0..=ticks {
                     let y = o.y + px(INSET + h * k as f32 / ticks as f32);
                     let mut p = PathBuilder::stroke(px(1.));
                     p.move_to(point(o.x, y));
                     p.line_to(point(o.x + px(w), y));
                     if let Ok(path) = p.build() {
-                        window.paint_path(path, if k == ticks { theme::border() } else { theme::border_subtle() });
+                        window.paint_path(
+                            path,
+                            if k == ticks {
+                                theme::border()
+                            } else {
+                                theme::border_subtle()
+                            },
+                        );
                     }
                 }
                 if n < 2 {
@@ -219,13 +252,17 @@ impl Render for AreaChart {
                 }
                 let (top, base) = (o.y.as_f32() + INSET, y_of(0.).as_f32());
                 for s in &series {
-                    let pts: Vec<Point<Pixels>> =
-                        (0..n).map(|i| point(x_of(i), y_of(s.values.get(i).copied().unwrap_or(0.)))).collect();
+                    let pts: Vec<Point<Pixels>> = (0..n)
+                        .map(|i| point(x_of(i), y_of(s.values.get(i).copied().unwrap_or(0.))))
+                        .collect();
                     paint_curve(&pts, top, base, s.color, 0.13, 1.75, window);
                     if let Some(d) = hover {
                         let (q, r) = (pts[d], 4.);
                         window.paint_quad(quad(
-                            Bounds::new(point(q.x - px(r), q.y - px(r)), size(px(r * 2.), px(r * 2.))),
+                            Bounds::new(
+                                point(q.x - px(r), q.y - px(r)),
+                                size(px(r * 2.), px(r * 2.)),
+                            ),
                             px(r),
                             s.color,
                             px(2.),
@@ -241,8 +278,16 @@ impl Render for AreaChart {
         // The point's card, on the side of the guide line with more room.
         let card = hover.zip(self.bounds.get()).map(|(d, b)| {
             let w = b.size.width.as_f32();
-            let x = if n > 1 { d as f32 * w / (n - 1) as f32 } else { 0. };
-            let total: f64 = self.series.iter().map(|s| s.values.get(d).copied().unwrap_or(0.)).sum();
+            let x = if n > 1 {
+                d as f32 * w / (n - 1) as f32
+            } else {
+                0.
+            };
+            let total: f64 = self
+                .series
+                .iter()
+                .map(|s| s.values.get(d).copied().unwrap_or(0.))
+                .sum();
             let mut rows = div().flex().flex_col().gap(px(5.));
             if self.series.len() > 1 {
                 for s in &self.series {
@@ -253,7 +298,12 @@ impl Render for AreaChart {
                             .items_center()
                             .gap(px(8.))
                             .child(div().size(px(7.)).rounded_full().bg(s.color))
-                            .child(div().flex_1().text_color(theme::text_muted()).child(s.name.clone()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_color(theme::text_muted())
+                                    .child(s.name.clone()),
+                            )
                             .child(div().text_color(theme::text()).child((self.format)(v))),
                     );
                 }
@@ -278,12 +328,33 @@ impl Render for AreaChart {
                     div()
                         .flex()
                         .items_center()
-                        .child(div().flex_1().text_color(theme::text_subtle()).child(self.labels.get(d).cloned().unwrap_or_default()))
-                        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child((self.format)(total))),
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_color(theme::text_subtle())
+                                .child(self.labels.get(d).cloned().unwrap_or_default()),
+                        )
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::text())
+                                .child((self.format)(total)),
+                        ),
                 )
                 .when(self.series.len() > 1, |c| c.child(rows))
-                .when_some(note, |c, note| c.child(div().ty(Type::Caption).text_color(theme::text_faint()).child(note)));
-            if x > w * 0.6 { card.right(px(w - x + 12.)) } else { card.left(px(x + 12.)) }
+                .when_some(note, |c, note| {
+                    c.child(
+                        div()
+                            .ty(Type::Caption)
+                            .text_color(theme::text_faint())
+                            .child(note),
+                    )
+                });
+            if x > w * 0.6 {
+                card.right(px(w - x + 12.))
+            } else {
+                card.left(px(x + 12.))
+            }
         });
 
         let mut axis = div().relative().w(px(AXIS_W)).flex_none().h(px(plot_h));
@@ -299,24 +370,37 @@ impl Render for AreaChart {
                     .child((self.axis_format)(step * (ticks - k) as f64)),
             );
         }
-        let mut x_row = div().flex().justify_between().pl(px(AXIS_W)).ty(Type::Caption).text_color(theme::text_faint());
+        let mut x_row = div()
+            .flex()
+            .justify_between()
+            .pl(px(AXIS_W))
+            .ty(Type::Caption)
+            .text_color(theme::text_faint());
         for t in &self.ticks {
             x_row = x_row.child(t.clone());
         }
-        let area = div()
-            .id("area-chart-plot")
-            .relative()
-            .flex_1()
-            .h(px(plot_h))
-            .child(plot)
-            .children(card)
-            .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| this.pointer(ev.position.x, cx)))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !*hovered && this.hover.take().is_some() {
-                    cx.notify();
-                }
-            }));
-        div().flex().flex_col().gap(px(8.)).child(div().flex().child(axis).child(area)).child(x_row)
+        let area =
+            div()
+                .id("area-chart-plot")
+                .relative()
+                .flex_1()
+                .h(px(plot_h))
+                .child(plot)
+                .children(card)
+                .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
+                    this.pointer(ev.position.x, cx)
+                }))
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if !*hovered && this.hover.take().is_some() {
+                        cx.notify();
+                    }
+                }));
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(div().flex().child(axis).child(area))
+            .child(x_row)
     }
 }
 
@@ -329,19 +413,34 @@ pub fn sparkline(values: Vec<f64>, color: Hsla, width: f32, height: f32) -> impl
             if n < 2 {
                 return;
             }
-            let hi = values.iter().copied().fold(0., f64::max).max(f64::MIN_POSITIVE);
+            let hi = values
+                .iter()
+                .copied()
+                .fold(0., f64::max)
+                .max(f64::MIN_POSITIVE);
             let o = bounds.origin;
-            let (w, h) = (bounds.size.width.as_f32() - 3., bounds.size.height.as_f32() - 4.);
+            let (w, h) = (
+                bounds.size.width.as_f32() - 3.,
+                bounds.size.height.as_f32() - 4.,
+            );
             let pts: Vec<Point<Pixels>> = values
                 .iter()
                 .enumerate()
-                .map(|(i, v)| point(o.x + px(i as f32 * w / (n - 1) as f32), o.y + px(2. + h - (v / hi) as f32 * h)))
+                .map(|(i, v)| {
+                    point(
+                        o.x + px(i as f32 * w / (n - 1) as f32),
+                        o.y + px(2. + h - (v / hi) as f32 * h),
+                    )
+                })
                 .collect();
             let (top, base) = (o.y.as_f32() + 2., o.y.as_f32() + 2. + h);
             paint_curve(&pts, top, base, color, 0.12, 1.5, window);
             let (q, r) = (pts[n - 1], 2.5);
             window.paint_quad(quad(
-                Bounds::new(point(q.x - px(r), q.y - px(r)), size(px(r * 2.), px(r * 2.))),
+                Bounds::new(
+                    point(q.x - px(r), q.y - px(r)),
+                    size(px(r * 2.), px(r * 2.)),
+                ),
                 px(r),
                 color,
                 px(0.),
@@ -366,7 +465,10 @@ mod tests {
         assert_eq!(axis_steps(0.9), (0.2, 5));
         for hi in [0.3, 7., 42., 999., 3.0e9] {
             let (step, n) = axis_steps(hi);
-            assert!(step * n as f64 >= hi && (3..=5).contains(&n), "{hi}: {step}×{n}");
+            assert!(
+                step * n as f64 >= hi && (3..=5).contains(&n),
+                "{hi}: {step}×{n}"
+            );
         }
     }
 }

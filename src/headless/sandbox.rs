@@ -47,7 +47,8 @@ impl Cap {
 pub fn parse_caps(s: &str) -> Result<Vec<Cap>, String> {
     let mut caps = Vec::new();
     for c in s.split(',').map(str::trim).filter(|c| !c.is_empty()) {
-        let cap = Cap::parse(c).ok_or_else(|| format!("unknown --allow {c}: net, modal or mail-read"))?;
+        let cap =
+            Cap::parse(c).ok_or_else(|| format!("unknown --allow {c}: net, modal or mail-read"))?;
         if !caps.contains(&cap) {
             caps.push(cap);
         }
@@ -56,7 +57,11 @@ pub fn parse_caps(s: &str) -> Result<Vec<Cap>, String> {
 }
 
 pub fn caps_names(caps: &[Cap]) -> String {
-    if caps.is_empty() { "none".into() } else { caps.iter().map(|c| c.name()).collect::<Vec<_>>().join(",") }
+    if caps.is_empty() {
+        "none".into()
+    } else {
+        caps.iter().map(|c| c.name()).collect::<Vec<_>>().join(",")
+    }
 }
 
 /// Paths under `$HOME` the sandbox never sees: keys, tokens, mail, browser
@@ -183,9 +188,15 @@ pub const TOOLCHAINS: &[&str] = &[
 /// A file that looks like it holds a secret, wherever it is.
 fn secret_file(name: &str) -> bool {
     let n = name.to_lowercase();
-    let (stem, ext) = n.rsplit_once('.').filter(|(a, _)| !a.is_empty()).unwrap_or((n.as_str(), ""));
+    let (stem, ext) = n
+        .rsplit_once('.')
+        .filter(|(a, _)| !a.is_empty())
+        .unwrap_or((n.as_str(), ""));
     // Words count in data files only, so password_reset.rs is code, not a secret.
-    let data = ["", "json", "txt", "toml", "yaml", "yml", "ini", "conf", "cfg"].contains(&ext);
+    let data = [
+        "", "json", "txt", "toml", "yaml", "yml", "ini", "conf", "cfg",
+    ]
+    .contains(&ext);
     n == ".env"
         || n.starts_with(".env.")
         || n.ends_with(".env")
@@ -198,7 +209,20 @@ fn secret_file(name: &str) -> bool {
 }
 
 /// Folders a secrets scan skips: packages and build output, never the user's.
-const SKIP: &[&str] = &[".git", "node_modules", "target", ".venv", "venv", "site-packages", "dist-packages", "__pycache__", ".cache", ".mypy_cache", ".pytest_cache", ".next"];
+const SKIP: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".venv",
+    "venv",
+    "site-packages",
+    "dist-packages",
+    "__pycache__",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".next",
+];
 
 /// Files under `root` that look like secrets, a few levels down.
 pub fn scan_secrets(root: &Path) -> Vec<PathBuf> {
@@ -206,7 +230,14 @@ pub fn scan_secrets(root: &Path) -> Vec<PathBuf> {
     let mut budget = 50_000usize;
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     if std::fs::metadata(root).is_ok_and(|m| m.is_file()) {
-        return if root.file_name().is_some_and(|n| secret_file(&n.to_string_lossy())) { vec![root.to_path_buf()] } else { out };
+        return if root
+            .file_name()
+            .is_some_and(|n| secret_file(&n.to_string_lossy()))
+        {
+            vec![root.to_path_buf()]
+        } else {
+            out
+        };
     }
     while let Some((dir, depth)) = stack.pop() {
         for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -233,17 +264,37 @@ pub fn scan_secrets(root: &Path) -> Vec<PathBuf> {
 /// scan would keep out. Refused, not trimmed, so what the agent sees is
 /// what the user named.
 pub fn check_read(raw: &Path, hidden: &[Hidden]) -> Result<PathBuf, String> {
-    let p = crate::platform::canonicalize(raw).map_err(|e| format!("--read {}: {e}", raw.display()))?;
+    let p =
+        crate::platform::canonicalize(raw).map_err(|e| format!("--read {}: {e}", raw.display()))?;
     if p == Path::new("/") || p == crate::platform::home() {
-        return Err(format!("--read {} is too wide; name the folder the agent needs", p.display()));
+        return Err(format!(
+            "--read {} is too wide; name the folder the agent needs",
+            p.display()
+        ));
     }
-    if let Some(h) = hidden.iter().find(|h| p.starts_with(&h.path) || h.path.starts_with(&p)) {
-        return Err(format!("--read {}: it is or holds {}, which stays hidden", p.display(), h.path.display()));
+    if let Some(h) = hidden
+        .iter()
+        .find(|h| p.starts_with(&h.path) || h.path.starts_with(&p))
+    {
+        return Err(format!(
+            "--read {}: it is or holds {}, which stays hidden",
+            p.display(),
+            h.path.display()
+        ));
     }
     let found = scan_secrets(&p);
     if !found.is_empty() {
-        let list: Vec<String> = found.iter().take(5).map(|f| f.display().to_string()).collect();
-        return Err(format!("--read {} holds what looks like secrets: {}{}", p.display(), list.join(", "), if found.len() > 5 { ", …" } else { "" }));
+        let list: Vec<String> = found
+            .iter()
+            .take(5)
+            .map(|f| f.display().to_string())
+            .collect();
+        return Err(format!(
+            "--read {} holds what looks like secrets: {}{}",
+            p.display(),
+            list.join(", "),
+            if found.len() > 5 { ", …" } else { "" }
+        ));
     }
     Ok(p)
 }
@@ -251,7 +302,18 @@ pub fn check_read(raw: &Path, hidden: &[Hidden]) -> Result<PathBuf, String> {
 /// Top-level names in `$HOME` and `~/.config` hidden for what they look like.
 fn secret_name(name: &str) -> bool {
     let n = name.to_lowercase();
-    ["key", "secret", "password", "passwd", "token", "wallet", "credential", "cookie"].iter().any(|w| n.contains(w))
+    [
+        "key",
+        "secret",
+        "password",
+        "passwd",
+        "token",
+        "wallet",
+        "credential",
+        "cookie",
+    ]
+    .iter()
+    .any(|w| n.contains(w))
         || n.starts_with(".env")
         || n.ends_with(".env")
         || n.ends_with(".pem")
@@ -264,22 +326,85 @@ pub fn secret_var(name: &str, caps: &[Cap]) -> bool {
     if n.starts_with("MODAL_") && caps.contains(&Cap::Modal) {
         return false;
     }
-    const WORDS: &[&str] = &["TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "COOKIE", "API_KEY", "APIKEY", "PRIVATE"];
+    const WORDS: &[&str] = &[
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "AUTH",
+        "COOKIE",
+        "API_KEY",
+        "APIKEY",
+        "PRIVATE",
+    ];
     const PREFIXES: &[&str] = &[
-        "CLOUDFLARE_", "CF_", "MODAL_", "GH_", "GITHUB_", "AWS_", "AZURE_", "GOOGLE_", "GEMINI_", "OPENAI_", "ANTHROPIC_",
-        "OPENCODE_", "OPENROUTER_", "ARAKUN_", "HF_", "HUGGING", "RUNPOD_", #[cfg(feature = "coderlabs")] "OKC_", "STRIPE_", "SUPABASE_", "VERCEL_",
-        "NPM_CONFIG_", "DOCKER_", "VAULT_", "SSH_", "GPG_", "GNUPG", "DBUS_", "WAYLAND_", "HYPRLAND_", "KITTY_", "PULSE_",
-        "PIPEWIRE_", "KRB5", "BW_", "OP_", "TAILSCALE",
+        "CLOUDFLARE_",
+        "CF_",
+        "MODAL_",
+        "GH_",
+        "GITHUB_",
+        "AWS_",
+        "AZURE_",
+        "GOOGLE_",
+        "GEMINI_",
+        "OPENAI_",
+        "ANTHROPIC_",
+        "OPENCODE_",
+        "OPENROUTER_",
+        "ARAKUN_",
+        "HF_",
+        "HUGGING",
+        "RUNPOD_",
+        #[cfg(feature = "coderlabs")]
+        "OKC_",
+        "STRIPE_",
+        "SUPABASE_",
+        "VERCEL_",
+        "NPM_CONFIG_",
+        "DOCKER_",
+        "VAULT_",
+        "SSH_",
+        "GPG_",
+        "GNUPG",
+        "DBUS_",
+        "WAYLAND_",
+        "HYPRLAND_",
+        "KITTY_",
+        "PULSE_",
+        "PIPEWIRE_",
+        "KRB5",
+        "BW_",
+        "OP_",
+        "TAILSCALE",
     ];
     const EXACT: &[&str] = &[
-        "XDG_RUNTIME_DIR", "DISPLAY", "TMUX", "TMUX_PANE", "ZELLIJ", "NETRC", "KUBECONFIG", "HIMALAYA_CONFIG",
-        "GIT_ASKPASS", "SUDO_ASKPASS", "XDG_SESSION_COOKIE",
+        "XDG_RUNTIME_DIR",
+        "DISPLAY",
+        "TMUX",
+        "TMUX_PANE",
+        "ZELLIJ",
+        "NETRC",
+        "KUBECONFIG",
+        "HIMALAYA_CONFIG",
+        "GIT_ASKPASS",
+        "SUDO_ASKPASS",
+        "XDG_SESSION_COOKIE",
     ];
-    WORDS.iter().any(|w| n.contains(w)) || n.contains("SOCK") || n.ends_with("KEY") || n.ends_with("_KEYS") || PREFIXES.iter().any(|p| n.starts_with(p)) || EXACT.contains(&n.as_str())
+    WORDS.iter().any(|w| n.contains(w))
+        || n.contains("SOCK")
+        || n.ends_with("KEY")
+        || n.ends_with("_KEYS")
+        || PREFIXES.iter().any(|p| n.starts_with(p))
+        || EXACT.contains(&n.as_str())
 }
 
 /// The environment a sandboxed command starts with.
-pub fn scrub_env(vars: impl IntoIterator<Item = (String, String)>, caps: &[Cap], path: &str) -> Vec<(String, String)> {
+pub fn scrub_env(
+    vars: impl IntoIterator<Item = (String, String)>,
+    caps: &[Cap],
+    path: &str,
+) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vars
         .into_iter()
         .filter(|(k, _)| !secret_var(k, caps) && !matches!(k.as_str(), "PATH" | "TMPDIR"))
@@ -337,14 +462,33 @@ impl Sandbox {
 
     /// `bwrap …` around `inner`, run in `cwd` (the workspace when outside it).
     pub fn argv(&self, cwd: &Path, inner: &[String]) -> Vec<String> {
-        let mut a: Vec<String> = ["--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try"]
-            .map(String::from)
-            .to_vec();
+        let mut a: Vec<String> = [
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
+        ]
+        .map(String::from)
+        .to_vec();
         if !self.net() {
             a.push("--unshare-net".into());
         }
         let mut push = |xs: &[&str]| a.extend(xs.iter().map(|x| x.to_string()));
-        push(&["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/run", "--tmpfs", "/var/tmp"]);
+        push(&[
+            "--ro-bind",
+            "/",
+            "/",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--tmpfs",
+            "/run",
+            "--tmpfs",
+            "/var/tmp",
+        ]);
         let tmp = s(&self.tmp);
         push(&["--bind", &tmp, "/tmp"]);
         if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR")
@@ -372,7 +516,12 @@ impl Sandbox {
         };
         // Hidden places outside $HOME (arakun's data under another XDG_DATA_HOME…);
         // /tmp and /run are the sandbox's own already.
-        for h in self.hidden.iter().filter(|h| !h.path.starts_with(&self.home) && !["/tmp", "/run", "/var/tmp"].iter().any(|t| h.path.starts_with(t))) {
+        for h in self.hidden.iter().filter(|h| {
+            !h.path.starts_with(&self.home)
+                && !["/tmp", "/run", "/var/tmp"]
+                    .iter()
+                    .any(|t| h.path.starts_with(t))
+        }) {
             hide(&mut a, h);
         }
         let mut shown: Vec<&Path> = Vec::new();
@@ -392,7 +541,11 @@ impl Sandbox {
         a.extend(["--bind".to_string(), ws.clone(), ws.clone()]);
         shown.push(&self.workspace);
         // The hide list again, over whatever was bound back.
-        for h in self.hidden.iter().filter(|h| shown.iter().any(|p| h.path.starts_with(p) && h.path != *p)) {
+        for h in self
+            .hidden
+            .iter()
+            .filter(|h| shown.iter().any(|p| h.path.starts_with(p) && h.path != *p))
+        {
             hide(&mut a, h);
         }
         for f in &self.frozen {
@@ -401,7 +554,11 @@ impl Sandbox {
         for f in &self.extra_ro {
             a.extend(["--ro-bind".to_string(), s(f), s(f)]);
         }
-        let cwd = if cwd.starts_with(&self.workspace) || cwd.starts_with("/tmp") { cwd } else { &self.workspace };
+        let cwd = if cwd.starts_with(&self.workspace) || cwd.starts_with("/tmp") {
+            cwd
+        } else {
+            &self.workspace
+        };
         a.extend(["--chdir".to_string(), s(cwd), "--".to_string()]);
         a.extend(inner.iter().cloned());
         a
@@ -411,21 +568,39 @@ impl Sandbox {
     pub fn command(&self, cwd: &Path, inner: &[String]) -> Command {
         let mut cmd = crate::platform::command(&self.bwrap);
         cmd.args(self.argv(cwd, inner));
-        let path = crate::agent::workers_ai::child_path().to_string_lossy().into_owned();
-        cmd.env_clear().envs(scrub_env(std::env::vars(), &self.caps, &path));
+        let path = crate::agent::workers_ai::child_path()
+            .to_string_lossy()
+            .into_owned();
+        cmd.env_clear()
+            .envs(scrub_env(std::env::vars(), &self.caps, &path));
         cmd
     }
 
     /// Runs `inner` inside to the end (or `timeout`), `input` on its stdin.
-    pub fn output(&self, cwd: &Path, inner: &[String], input: Option<&[u8]>, timeout: Duration) -> Result<std::process::Output, String> {
+    pub fn output(
+        &self,
+        cwd: &Path,
+        inner: &[String],
+        input: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<std::process::Output, String> {
         let mut cmd = self.command(cwd, inner);
-        cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
-        run_with_timeout(cmd, input, timeout).map_err(|e| format!("the sandbox did not run it: {e}"))
+        cmd.stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+        run_with_timeout(cmd, input, timeout)
+            .map_err(|e| format!("the sandbox did not run it: {e}"))
     }
 }
 
 /// Runs `cmd` to the end, killing it after `timeout`; `input` goes to its stdin.
-pub fn run_with_timeout(mut cmd: Command, input: Option<&[u8]>, timeout: Duration) -> Result<std::process::Output, String> {
+pub fn run_with_timeout(
+    mut cmd: Command,
+    input: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
     use std::io::{Read as _, Write as _};
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     if input.is_some() {
@@ -449,8 +624,18 @@ pub fn run_with_timeout(mut cmd: Command, input: Option<&[u8]>, timeout: Duratio
             buf
         })
     };
-    let out = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
-    let err = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let out = reader(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let err = reader(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
     let start = Instant::now();
     let status = loop {
         if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
@@ -464,34 +649,59 @@ pub fn run_with_timeout(mut cmd: Command, input: Option<&[u8]>, timeout: Duratio
         std::thread::sleep(Duration::from_millis(20));
     };
     tree.kill();
-    Ok(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() })
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
 }
 
 /// Paths a mail account's password command reads, one script deep.
 fn mail_secrets(home: &Path, config: &Path) -> Vec<PathBuf> {
-    let Ok(text) = std::fs::read_to_string(config) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(config) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     let paths = |text: &str| -> Vec<PathBuf> {
-        text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ';' | '(' | ')' | '<' | '>' | '|' | '`'))
-            .filter_map(|w| {
-                let w = w.trim_end_matches([',', ':']);
-                if let Some(r) = w.strip_prefix("~/").or_else(|| w.strip_prefix("$HOME/")).or_else(|| w.strip_prefix("${HOME}/")) {
-                    Some(home.join(r))
-                } else if w.starts_with('/') && w.len() > 1 {
-                    Some(PathBuf::from(w))
-                } else {
-                    None
-                }
-            })
-            .collect()
+        text.split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '"' | '\'' | '=' | ';' | '(' | ')' | '<' | '>' | '|' | '`'
+                )
+        })
+        .filter_map(|w| {
+            let w = w.trim_end_matches([',', ':']);
+            if let Some(r) = w
+                .strip_prefix("~/")
+                .or_else(|| w.strip_prefix("$HOME/"))
+                .or_else(|| w.strip_prefix("${HOME}/"))
+            {
+                Some(home.join(r))
+            } else if w.starts_with('/') && w.len() > 1 {
+                Some(PathBuf::from(w))
+            } else {
+                None
+            }
+        })
+        .collect()
     };
-    for line in text.lines().filter(|l| l.contains("command") || l.contains("file") || l.contains("path")) {
+    for line in text
+        .lines()
+        .filter(|l| l.contains("command") || l.contains("file") || l.contains("path"))
+    {
         for p in paths(line.split_once('=').map_or("", |(_, v)| v)) {
             if !p.starts_with(home) {
                 continue;
             }
-            if let Ok(script) = std::fs::read_to_string(&p).map(|t| t.chars().take(20_000).collect::<String>()) {
-                out.extend(paths(&script).into_iter().filter(|q| q.starts_with(home) && q.exists()));
+            if let Ok(script) =
+                std::fs::read_to_string(&p).map(|t| t.chars().take(20_000).collect::<String>())
+            {
+                out.extend(
+                    paths(&script)
+                        .into_iter()
+                        .filter(|q| q.starts_with(home) && q.exists()),
+                );
             }
             out.push(p);
         }
@@ -502,7 +712,10 @@ fn mail_secrets(home: &Path, config: &Path) -> Vec<PathBuf> {
 /// Everything to hide for a session in `workspace`, as it is on disk now.
 pub fn hidden(home: &Path, caps: &[Cap]) -> Vec<Hidden> {
     let mut paths: Vec<PathBuf> = HIDE.iter().map(|r| home.join(r)).collect();
-    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".config"));
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"));
     let data = crate::platform::data_home();
     paths.extend([
         crate::platform::app_dir(),
@@ -516,7 +729,10 @@ pub fn hidden(home: &Path, caps: &[Cap]) -> Vec<Hidden> {
     if let Some(h) = std::env::var_os("HIMALAYA_CONFIG") {
         paths.extend(std::env::split_paths(&h));
     }
-    for c in [config.join("himalaya/config.toml"), home.join(".config/himalaya/config.toml")] {
+    for c in [
+        config.join("himalaya/config.toml"),
+        home.join(".config/himalaya/config.toml"),
+    ] {
         paths.extend(mail_secrets(home, &c));
     }
     for dir in [home.to_path_buf(), home.join(".config")] {
@@ -531,11 +747,15 @@ pub fn hidden(home: &Path, caps: &[Cap]) -> Vec<Hidden> {
     }
     let mut out: Vec<Hidden> = Vec::new();
     for p in paths {
-        let Ok(meta) = std::fs::symlink_metadata(&p) else { continue };
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
         // A link is hidden where it leads, and where it is.
         let real = crate::platform::canonicalize(&p).ok();
         for q in [Some(p.clone()), real].into_iter().flatten() {
-            let dir = std::fs::metadata(&q).map(|m| m.is_dir()).unwrap_or(meta.is_dir());
+            let dir = std::fs::metadata(&q)
+                .map(|m| m.is_dir())
+                .unwrap_or(meta.is_dir());
             if q.exists() && q != Path::new("/") && !out.iter().any(|h| h.path == q) {
                 out.push(Hidden { path: q, dir });
             }
@@ -557,7 +777,9 @@ pub fn toolchains(home: &Path, hidden: &[Hidden]) -> Vec<Bound> {
     let mut out = Vec::new();
     for rel in TOOLCHAINS {
         let p = home.join(rel);
-        let Ok(meta) = std::fs::symlink_metadata(&p) else { continue };
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
         if hidden.iter().any(|h| p.starts_with(&h.path)) {
             continue;
         }
@@ -582,20 +804,35 @@ pub fn find_bwrap() -> Option<PathBuf> {
 impl Sandbox {
     /// The sandbox of the session whose data is in `session_dir`; it checks
     /// that bwrap starts, so a broken one is an error now, not a silent bypass.
-    pub fn new(workspace: &Path, session_dir: &Path, caps: &[Cap], reads: &[PathBuf]) -> Result<Self, String> {
+    pub fn new(
+        workspace: &Path,
+        session_dir: &Path,
+        caps: &[Cap],
+        reads: &[PathBuf],
+    ) -> Result<Self, String> {
         Self::with(find_bwrap(), workspace, session_dir, caps, reads)
     }
 
-    fn with(bwrap: Option<PathBuf>, workspace: &Path, session_dir: &Path, caps: &[Cap], reads: &[PathBuf]) -> Result<Self, String> {
+    fn with(
+        bwrap: Option<PathBuf>,
+        workspace: &Path,
+        session_dir: &Path,
+        caps: &[Cap],
+        reads: &[PathBuf],
+    ) -> Result<Self, String> {
         let bwrap = bwrap.ok_or("bubblewrap (bwrap) is not installed; headless agents run inside it. Install it (pacman -S bubblewrap / apt install bubblewrap), or pass --no-sandbox, which you must then confirm.")?;
-        let workspace = crate::platform::canonicalize(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
+        let workspace = crate::platform::canonicalize(workspace)
+            .map_err(|e| format!("{}: {e}", workspace.display()))?;
         let tmp = session_dir.join("tmp");
         std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
         let empty = session_dir.join("empty");
         std::fs::write(&empty, b"").map_err(|e| format!("{}: {e}", empty.display()))?;
         let home = crate::platform::home();
         let git = workspace.join(".git");
-        let frozen = [git.join("config"), git.join("hooks")].into_iter().filter(|p| p.exists()).collect();
+        let frozen = [git.join("config"), git.join("hooks")]
+            .into_iter()
+            .filter(|p| p.exists())
+            .collect();
         let mut extra_ro = Vec::new();
         if caps.iter().any(|c| matches!(c, Cap::Net | Cap::Modal))
             && let Ok(r) = crate::platform::canonicalize("/etc/resolv.conf")
@@ -604,20 +841,46 @@ impl Sandbox {
             extra_ro.push(r);
         }
         let mut hidden = hidden(&home, caps);
-        let reads = reads.iter().map(|r| check_read(r, &hidden)).collect::<Result<Vec<_>, _>>()?;
+        let reads = reads
+            .iter()
+            .map(|r| check_read(r, &hidden))
+            .collect::<Result<Vec<_>, _>>()?;
         // What looks like a secret in the workspace stays out too (.env, keys).
-        hidden.extend(scan_secrets(&workspace).into_iter().map(|path| Hidden { path, dir: false }));
+        hidden.extend(
+            scan_secrets(&workspace)
+                .into_iter()
+                .map(|path| Hidden { path, dir: false }),
+        );
         let mut toolchains = toolchains(&home, &hidden);
         if caps.contains(&Cap::Modal) && home.join(".modal.toml").is_file() {
             toolchains.push(Bound::Path(home.join(".modal.toml")));
         }
-        let sb = Sandbox { bwrap, home, toolchains, reads, workspace, tmp, empty, caps: caps.to_vec(), hidden, frozen, extra_ro };
+        let sb = Sandbox {
+            bwrap,
+            home,
+            toolchains,
+            reads,
+            workspace,
+            tmp,
+            empty,
+            caps: caps.to_vec(),
+            hidden,
+            frozen,
+            extra_ro,
+        };
         sb.probe()?;
         Ok(sb)
     }
 
     fn probe(&self) -> Result<(), String> {
-        let out = self.output(&self.workspace, &["true".into()], None, Duration::from_secs(20)).map_err(|e| format!("bubblewrap ({}) would not start: {e}", self.bwrap.display()))?;
+        let out = self
+            .output(
+                &self.workspace,
+                &["true".into()],
+                None,
+                Duration::from_secs(20),
+            )
+            .map_err(|e| format!("bubblewrap ({}) would not start: {e}", self.bwrap.display()))?;
         if out.status.success() {
             Ok(())
         } else {
@@ -631,36 +894,71 @@ impl Sandbox {
 
     // ---- file tools, seen from inside ----------------------------------------------
 
-    fn sh(&self, cwd: &Path, script: &str, args: &[&str], input: Option<&[u8]>) -> Result<std::process::Output, String> {
-        let mut inner = vec!["sh".to_string(), "-c".to_string(), script.to_string(), "sh".to_string()];
+    fn sh(
+        &self,
+        cwd: &Path,
+        script: &str,
+        args: &[&str],
+        input: Option<&[u8]>,
+    ) -> Result<std::process::Output, String> {
+        let mut inner = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+            "sh".to_string(),
+        ];
         inner.extend(args.iter().map(|a| a.to_string()));
         self.output(cwd, &inner, input, Duration::from_secs(60))
     }
 
     fn failed(out: &std::process::Output, what: &str) -> String {
-        let e = String::from_utf8_lossy(&out.stderr).trim().replace("sh: 1: ", "").to_string();
-        if e.is_empty() { format!("cannot {what}") } else { e }
+        let e = String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .replace("sh: 1: ", "")
+            .to_string();
+        if e.is_empty() {
+            format!("cannot {what}")
+        } else {
+            e
+        }
     }
 
     pub fn read(&self, cwd: &Path, path: &Path) -> Result<Vec<u8>, String> {
         let out = self.sh(cwd, "exec cat -- \"$1\"", &[&s(path)], None)?;
-        if out.status.success() { Ok(out.stdout) } else { Err(Self::failed(&out, &format!("read {}", path.display()))) }
+        if out.status.success() {
+            Ok(out.stdout)
+        } else {
+            Err(Self::failed(&out, &format!("read {}", path.display())))
+        }
     }
 
     /// Writes `content` to `path`; whether it was there before.
     pub fn write(&self, cwd: &Path, path: &Path, content: &[u8]) -> Result<bool, String> {
         let script = "e=N; [ -e \"$1\" ] && e=Y; mkdir -p -- \"$(dirname -- \"$1\")\" && cat > \"$1\" && printf %s \"$e\"";
         let out = self.sh(cwd, script, &[&s(path)], Some(content))?;
-        if out.status.success() { Ok(out.stdout == b"Y") } else { Err(Self::failed(&out, &format!("write {}", path.display()))) }
+        if out.status.success() {
+            Ok(out.stdout == b"Y")
+        } else {
+            Err(Self::failed(&out, &format!("write {}", path.display())))
+        }
     }
 
     /// A folder's entries, folders ending in `/`.
     pub fn list(&self, cwd: &Path, dir: &Path) -> Result<Vec<String>, String> {
-        let out = self.sh(cwd, "LC_ALL=C exec ls -1Ap --color=never -- \"$1\"", &[&s(dir)], None)?;
+        let out = self.sh(
+            cwd,
+            "LC_ALL=C exec ls -1Ap --color=never -- \"$1\"",
+            &[&s(dir)],
+            None,
+        )?;
         if !out.status.success() {
             return Err(Self::failed(&out, &format!("list {}", dir.display())));
         }
-        Ok(String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.is_empty()).map(str::to_string).collect())
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 }
 
@@ -699,7 +997,10 @@ mod tests {
             toolchains: vec![
                 Bound::Path("/home/u/.cargo/bin".into()),
                 Bound::Path("/home/u/.local/bin".into()),
-                Bound::Link("/home/u/.nix-profile".into(), "/home/u/.local/state/nix/profiles/profile".into()),
+                Bound::Link(
+                    "/home/u/.nix-profile".into(),
+                    "/home/u/.local/state/nix/profiles/profile".into(),
+                ),
             ],
             reads: vec!["/home/u/data".into()],
             workspace: "/home/u/proj".into(),
@@ -707,12 +1008,30 @@ mod tests {
             empty: "/d/h1/empty".into(),
             caps: caps.to_vec(),
             hidden: vec![
-                Hidden { path: "/home/u/.ssh".into(), dir: true },
-                Hidden { path: "/home/u/.netrc".into(), dir: false },
-                Hidden { path: "/home/u/proj/.env".into(), dir: false },
-                Hidden { path: "/home/u/.local/bin/mail-pass".into(), dir: false },
-                Hidden { path: "/data/arakun".into(), dir: true },
-                Hidden { path: "/tmp/x/arakun".into(), dir: true },
+                Hidden {
+                    path: "/home/u/.ssh".into(),
+                    dir: true,
+                },
+                Hidden {
+                    path: "/home/u/.netrc".into(),
+                    dir: false,
+                },
+                Hidden {
+                    path: "/home/u/proj/.env".into(),
+                    dir: false,
+                },
+                Hidden {
+                    path: "/home/u/.local/bin/mail-pass".into(),
+                    dir: false,
+                },
+                Hidden {
+                    path: "/data/arakun".into(),
+                    dir: true,
+                },
+                Hidden {
+                    path: "/tmp/x/arakun".into(),
+                    dir: true,
+                },
             ],
             frozen: vec!["/home/u/proj/.git/hooks".into()],
             extra_ro: Vec::new(),
@@ -720,20 +1039,41 @@ mod tests {
     }
 
     fn after<'a>(a: &'a [String], flag: &str) -> Vec<&'a str> {
-        a.windows(2).filter(|w| w[0] == flag).map(|w| w[1].as_str()).collect()
+        a.windows(2)
+            .filter(|w| w[0] == flag)
+            .map(|w| w[1].as_str())
+            .collect()
     }
 
     #[test]
     fn the_sandbox_hides_credentials_and_cuts_the_network() {
-        let a = sb(&[]).argv(Path::new("/home/u/proj/src"), &["bash".into(), "-c".into(), "ls".into()]);
-        for f in ["--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net"] {
+        let a = sb(&[]).argv(
+            Path::new("/home/u/proj/src"),
+            &["bash".into(), "-c".into(), "ls".into()],
+        );
+        for f in [
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-net",
+        ] {
             assert!(a.contains(&f.to_string()), "{f} missing: {a:?}");
         }
         let tmpfs = after(&a, "--tmpfs");
-        assert!(tmpfs.contains(&"/run") && tmpfs.contains(&"/home/u") && tmpfs.contains(&"/data/arakun"));
+        assert!(
+            tmpfs.contains(&"/run")
+                && tmpfs.contains(&"/home/u")
+                && tmpfs.contains(&"/data/arakun")
+        );
         // Under the empty $HOME, .ssh is gone without a mount of its own; /tmp is the sandbox's.
         assert!(!tmpfs.contains(&"/home/u/.ssh") && !tmpfs.contains(&"/tmp/x/arakun"));
-        let ro: Vec<(&str, &str)> = a.windows(3).filter(|w| w[0] == "--ro-bind").map(|w| (w[1].as_str(), w[2].as_str())).collect();
+        let ro: Vec<(&str, &str)> = a
+            .windows(3)
+            .filter(|w| w[0] == "--ro-bind")
+            .map(|w| (w[1].as_str(), w[2].as_str()))
+            .collect();
         assert!(ro.contains(&("/", "/")));
         assert!(ro.contains(&("/home/u/.cargo/bin", "/home/u/.cargo/bin")));
         assert!(ro.contains(&("/home/u/data", "/home/u/data")));
@@ -741,25 +1081,44 @@ mod tests {
         assert!(ro.contains(&("/d/h1/empty", "/home/u/.local/bin/mail-pass")));
         assert!(ro.contains(&("/d/h1/empty", "/home/u/proj/.env")));
         assert!(ro.contains(&("/home/u/proj/.git/hooks", "/home/u/proj/.git/hooks")));
-        assert!(a.windows(3).any(|w| w == ["--symlink", "/home/u/.local/state/nix/profiles/profile", "/home/u/.nix-profile"]));
+        assert!(a.windows(3).any(|w| w
+            == [
+                "--symlink",
+                "/home/u/.local/state/nix/profiles/profile",
+                "/home/u/.nix-profile"
+            ]));
         let pos = |x: &str| a.iter().rposition(|y| y == x).unwrap();
         // $HOME empties first, then what comes back, then the hides over it.
         assert!(pos("/home/u") < pos("/home/u/.cargo/bin"));
-        assert!(pos("/home/u/proj/.env") > pos("/home/u/proj") && pos("/home/u/.local/bin/mail-pass") > pos("/home/u/.local/bin"));
+        assert!(
+            pos("/home/u/proj/.env") > pos("/home/u/proj")
+                && pos("/home/u/.local/bin/mail-pass") > pos("/home/u/.local/bin")
+        );
         assert!(after(&a, "--bind").contains(&"/d/h1/tmp"));
         assert!(after(&a, "--bind").contains(&"/home/u/proj"));
         assert_eq!(after(&a, "--chdir"), vec!["/home/u/proj/src"]);
         assert_eq!(&a[a.len() - 4..], &["--", "bash", "-c", "ls"]);
         // Outside the workspace it starts in the workspace.
-        assert_eq!(after(&sb(&[]).argv(Path::new("/etc"), &[]), "--chdir"), vec!["/home/u/proj"]);
+        assert_eq!(
+            after(&sb(&[]).argv(Path::new("/etc"), &[]), "--chdir"),
+            vec!["/home/u/proj"]
+        );
     }
 
     #[test]
     fn network_caps_share_the_network() {
         for caps in [[Cap::Net], [Cap::Modal]] {
-            assert!(!sb(&caps).argv(Path::new("/home/u/proj"), &[]).contains(&"--unshare-net".to_string()));
+            assert!(
+                !sb(&caps)
+                    .argv(Path::new("/home/u/proj"), &[])
+                    .contains(&"--unshare-net".to_string())
+            );
         }
-        assert!(sb(&[Cap::MailRead]).argv(Path::new("/home/u/proj"), &[]).contains(&"--unshare-net".to_string()));
+        assert!(
+            sb(&[Cap::MailRead])
+                .argv(Path::new("/home/u/proj"), &[])
+                .contains(&"--unshare-net".to_string())
+        );
     }
 
     #[test]
@@ -773,18 +1132,49 @@ mod tests {
         std::fs::write(d.join("ok/tokenizer.json"), "").unwrap();
         std::fs::write(d.join("ok/.venv/lib/.env"), "").unwrap();
         std::fs::write(d.join("bad/sub/.env"), "K=v").unwrap();
-        assert_eq!(check_read(&d.join("ok"), &[]).unwrap(), crate::platform::canonicalize(d.join("ok")).unwrap());
-        assert!(check_read(&d.join("bad"), &[]).unwrap_err().contains(".env"));
+        assert_eq!(
+            check_read(&d.join("ok"), &[]).unwrap(),
+            crate::platform::canonicalize(d.join("ok")).unwrap()
+        );
+        assert!(
+            check_read(&d.join("bad"), &[])
+                .unwrap_err()
+                .contains(".env")
+        );
         std::fs::create_dir_all(d.join("ok/private")).unwrap();
-        let hidden = vec![Hidden { path: crate::platform::canonicalize(d.join("ok/private")).unwrap(), dir: true }];
-        assert!(check_read(&d.join("ok"), &hidden).unwrap_err().contains("stays hidden"));
+        let hidden = vec![Hidden {
+            path: crate::platform::canonicalize(d.join("ok/private")).unwrap(),
+            dir: true,
+        }];
+        assert!(
+            check_read(&d.join("ok"), &hidden)
+                .unwrap_err()
+                .contains("stays hidden")
+        );
         assert!(check_read(&d.join("ok/private"), &hidden).is_err());
         assert!(check_read(Path::new("/"), &[]).is_err());
         assert!(check_read(&d.join("missing"), &[]).is_err());
-        for n in [".env", "prod.env", ".env.local", "id_ed25519", "server.pem", "gh-token.txt", "token.json", "my-wallet.json", "auth.json"] {
+        for n in [
+            ".env",
+            "prod.env",
+            ".env.local",
+            "id_ed25519",
+            "server.pem",
+            "gh-token.txt",
+            "token.json",
+            "my-wallet.json",
+            "auth.json",
+        ] {
             assert!(secret_file(n), "{n}");
         }
-        for n in ["main.rs", "token.rs", "tokenizer.json", "password_reset.rs", "keyboard.c", "Cargo.toml"] {
+        for n in [
+            "main.rs",
+            "token.rs",
+            "tokenizer.json",
+            "password_reset.rs",
+            "keyboard.c",
+            "Cargo.toml",
+        ] {
             assert!(!secret_file(n), "{n}");
         }
         std::fs::remove_dir_all(&d).unwrap();
@@ -796,19 +1186,45 @@ mod tests {
         assert_eq!(parse_caps("mail-read"), Ok(vec![Cap::MailRead]));
         assert!(parse_caps("root").unwrap_err().contains("root"));
         assert_eq!(caps_names(&[]), "none");
-        assert_eq!(serde_json::to_value([Cap::MailRead]).unwrap(), serde_json::json!(["mail-read"]));
+        assert_eq!(
+            serde_json::to_value([Cap::MailRead]).unwrap(),
+            serde_json::json!(["mail-read"])
+        );
     }
 
     #[test]
     fn the_hide_list_covers_what_the_user_named() {
         for p in [
-            ".ssh", ".gnupg", ".config/himalaya", ".config/gh", ".config/cloudflare", ".local/share/opencode", ".config/opencode",
-            ".modal.toml", ".netrc", ".git-credentials", ".docker", ".aws", ".claude", ".local/share/arakun",
-            ".cargo/credentials.toml", ".npmrc", ".local/share/keyrings", ".mozilla", ".config/BraveSoftware",
+            ".ssh",
+            ".gnupg",
+            ".config/himalaya",
+            ".config/gh",
+            ".config/cloudflare",
+            ".local/share/opencode",
+            ".config/opencode",
+            ".modal.toml",
+            ".netrc",
+            ".git-credentials",
+            ".docker",
+            ".aws",
+            ".claude",
+            ".local/share/arakun",
+            ".cargo/credentials.toml",
+            ".npmrc",
+            ".local/share/keyrings",
+            ".mozilla",
+            ".config/BraveSoftware",
         ] {
             assert!(HIDE.contains(&p), "{p} is not hidden");
         }
-        for n in ["x-key.txt", "secure-arb-wallet.json", ".env", "r2-site.env", "wbg-admin-password.txt", "cert.pem"] {
+        for n in [
+            "x-key.txt",
+            "secure-arb-wallet.json",
+            ".env",
+            "r2-site.env",
+            "wbg-admin-password.txt",
+            "cert.pem",
+        ] {
             assert!(secret_name(n), "{n}");
         }
         for n in [".bashrc", "Projects", ".gitconfig", ".cargo"] {
@@ -829,7 +1245,9 @@ mod tests {
         std::os::unix::fs::symlink(home.join("real"), home.join(".codex")).unwrap();
         let h = hidden(&home, &[]);
         let has = |p: PathBuf| h.iter().any(|x| x.path == p);
-        assert!(has(home.join(".ssh")) && has(home.join(".modal.toml")) && has(home.join("x-key.txt")));
+        assert!(
+            has(home.join(".ssh")) && has(home.join(".modal.toml")) && has(home.join("x-key.txt"))
+        );
         #[cfg(unix)]
         assert!(has(home.join("real")));
         assert!(h.iter().find(|x| x.path == home.join(".ssh")).unwrap().dir);
@@ -842,8 +1260,16 @@ mod tests {
     fn no_bwrap_no_sandbox() {
         let d = std::env::temp_dir().join(format!("arakun-sbx-none-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        assert!(Sandbox::with(None, &d, &d, &[], &[]).unwrap_err().contains("not installed"));
-        assert!(Sandbox::with(Some(d.join("no-bwrap")), &d, &d, &[], &[]).unwrap_err().contains("would not start"));
+        assert!(
+            Sandbox::with(None, &d, &d, &[], &[])
+                .unwrap_err()
+                .contains("not installed")
+        );
+        assert!(
+            Sandbox::with(Some(d.join("no-bwrap")), &d, &d, &[], &[])
+                .unwrap_err()
+                .contains("would not start")
+        );
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -851,18 +1277,32 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn inside_the_sandbox() {
-        let Some(bwrap) = find_bwrap().filter(|p| p.exists()) else { return };
+        let Some(bwrap) = find_bwrap().filter(|p| p.exists()) else {
+            return;
+        };
         let d = std::env::temp_dir().join(format!("arakun-sbx-real-{}", std::process::id()));
         let ws = d.join("ws");
         std::fs::create_dir_all(&ws).unwrap();
-        let Ok(sb) = Sandbox::with(Some(bwrap), &ws, &d.join("session"), &[], &[]) else { return };
+        let Ok(sb) = Sandbox::with(Some(bwrap), &ws, &d.join("session"), &[], &[]) else {
+            return;
+        };
         // Beside the workspace, under the host's /tmp, which the sandbox doesn't see.
         let secret = d.join("secret");
         std::fs::create_dir_all(&secret).unwrap();
         std::fs::write(secret.join("token"), "s3cr3t").unwrap();
         let run = |c: &str| {
-            let o = sb.output(&ws, &["sh".into(), "-c".into(), c.into()], None, Duration::from_secs(20)).unwrap();
-            (o.status.success(), String::from_utf8_lossy(&o.stdout).trim().to_string())
+            let o = sb
+                .output(
+                    &ws,
+                    &["sh".into(), "-c".into(), c.into()],
+                    None,
+                    Duration::from_secs(20),
+                )
+                .unwrap();
+            (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            )
         };
         assert_eq!(run("echo hi > f && cat f"), (true, "hi".into()));
         assert_eq!(std::fs::read_to_string(ws.join("f")).unwrap(), "hi\n");
@@ -871,8 +1311,17 @@ mod tests {
         let probe = home.join(format!(".arakun-sbx-probe-{}", std::process::id()));
         assert!(run(&format!("touch {}", probe.display())).0);
         assert!(!probe.exists());
-        for p in [".ssh", ".config/himalaya", ".local/share/opencode", ".modal.toml"] {
-            assert_eq!(run(&format!("test -e {}/{p} || echo gone", home.display())).1, "gone", "{p}");
+        for p in [
+            ".ssh",
+            ".config/himalaya",
+            ".local/share/opencode",
+            ".modal.toml",
+        ] {
+            assert_eq!(
+                run(&format!("test -e {}/{p} || echo gone", home.display())).1,
+                "gone",
+                "{p}"
+            );
         }
         if home.join(".cargo/bin").is_dir() {
             assert!(!run(&format!("touch {}/.cargo/bin/x", home.display())).0);
@@ -883,12 +1332,18 @@ mod tests {
         // Its own processes only.
         assert!(run("ls /proc | grep -c '^[0-9]'").1.parse::<u32>().unwrap() < 8);
         // Only loopback: no network.
-        assert_eq!(run("tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' '").1, "lo");
+        assert_eq!(
+            run("tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' '").1,
+            "lo"
+        );
         if let Some((k, _)) = std::env::vars().find(|(k, _)| secret_var(k, &[])) {
             assert_eq!(run(&format!("printenv {k} || echo gone")).1, "gone");
         }
         assert_eq!(run("echo t > /tmp/t && cat /tmp/t"), (true, "t".into()));
-        assert_eq!(std::fs::read_to_string(d.join("session/tmp/t")).unwrap(), "t\n");
+        assert_eq!(
+            std::fs::read_to_string(d.join("session/tmp/t")).unwrap(),
+            "t\n"
+        );
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -917,15 +1372,34 @@ mod tests {
     #[test]
     fn tokens_stay_out_of_the_environment() {
         let vars = [
-            "CLOUDFLARE_API_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "MODAL_TOKEN_ID", "OPENAI_API_KEY", "SSH_AUTH_SOCK",
-            "DBUS_SESSION_BUS_ADDRESS", "ARAKUN_SOCKET", "IPC_SOCKET", "CLAUDE_CODE_MESSAGING_SOCKET", "AWS_SECRET_ACCESS_KEY", "XDG_RUNTIME_DIR", "MY_SERVICE_KEY", "DISPLAY",
-            "PATH", "HOME", "LANG", "CARGO_HOME", "TMPDIR",
+            "CLOUDFLARE_API_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "MODAL_TOKEN_ID",
+            "OPENAI_API_KEY",
+            "SSH_AUTH_SOCK",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "ARAKUN_SOCKET",
+            "IPC_SOCKET",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "AWS_SECRET_ACCESS_KEY",
+            "XDG_RUNTIME_DIR",
+            "MY_SERVICE_KEY",
+            "DISPLAY",
+            "PATH",
+            "HOME",
+            "LANG",
+            "CARGO_HOME",
+            "TMPDIR",
         ]
         .map(|k| (k.to_string(), "v".to_string()));
         let env = scrub_env(vars.clone(), &[], "/usr/bin");
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["CARGO_HOME", "HOME", "LANG", "PATH", "TMPDIR"]);
-        assert!(env.contains(&("PATH".into(), "/usr/bin".into())) && env.contains(&("TMPDIR".into(), "/tmp".into())));
+        assert!(
+            env.contains(&("PATH".into(), "/usr/bin".into()))
+                && env.contains(&("TMPDIR".into(), "/tmp".into()))
+        );
         let env = scrub_env(vars, &[Cap::Modal], "/usr/bin");
         assert!(env.iter().any(|(k, _)| k == "MODAL_TOKEN_ID"));
         assert!(!env.iter().any(|(k, _)| k == "GH_TOKEN"));

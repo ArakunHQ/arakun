@@ -79,7 +79,11 @@ impl Watch {
                     model: model.clone().into(),
                     doing: doing(m).into(),
                     elapsed: SharedString::default(),
-                    cost: if m.cost > 0. { crate::agent::fmt_cost(m.cost, "USD", false).into() } else { SharedString::default() },
+                    cost: if m.cost > 0. {
+                        crate::agent::fmt_cost(m.cost, "USD", false).into()
+                    } else {
+                        SharedString::default()
+                    },
                     updated: m.updated,
                 });
             }
@@ -102,10 +106,20 @@ impl Watch {
                 image: SharedString::default(),
             };
             match status {
-                Status::Idle if ended => seen.alerts.push(card(AlertKind::Finished, format!("{model} terminó"), told(m))),
+                Status::Idle if ended => seen.alerts.push(card(
+                    AlertKind::Finished,
+                    format!("{model} terminó"),
+                    told(m),
+                )),
                 Status::Error if ended => {
-                    let why = m.error.as_deref().map(brief).filter(|l| !l.is_empty()).unwrap_or_else(|| told(m));
-                    seen.alerts.push(card(AlertKind::Error, format!("{model} falló"), why));
+                    let why = m
+                        .error
+                        .as_deref()
+                        .map(brief)
+                        .filter(|l| !l.is_empty())
+                        .unwrap_or_else(|| told(m));
+                    seen.alerts
+                        .push(card(AlertKind::Error, format!("{model} falló"), why));
                 }
                 _ => {}
             }
@@ -125,7 +139,8 @@ impl Watch {
             }
         }
         self.asked.retain(|a| seen.pending.contains(a));
-        self.last.retain(|id, _| scan.sessions.iter().any(|(m, _, _)| &m.id == id));
+        self.last
+            .retain(|id, _| scan.sessions.iter().any(|(m, _, _)| &m.id == id));
         self.started = true;
         isl::sort_rows(&mut seen.rows);
         seen.today = (spent > 0.).then(|| crate::agent::fmt_cost(spent, "USD", false).into());
@@ -135,27 +150,41 @@ impl Watch {
 
 /// "GLM 5.3" for `workers-ai/@cf/zai-org/glm-5.3`; the id's last part for another.
 fn model_label(m: &Meta) -> String {
-    let id = m.model.strip_prefix(crate::agent::workers_ai::CLI_PREFIX).unwrap_or(&m.model);
+    let id = m
+        .model
+        .strip_prefix(crate::agent::workers_ai::CLI_PREFIX)
+        .unwrap_or(&m.model);
     match crate::agent::workers_ai::model(id) {
         Some(known) => known.name.to_string(),
-        None => id.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(m.agent.label()).to_string(),
+        None => id
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(m.agent.label())
+            .to_string(),
     }
 }
 
 fn doing(m: &Meta) -> String {
-    Some(isl::one_line(&m.last)).filter(|l| !l.is_empty()).unwrap_or_else(|| isl::one_line(&m.title))
+    Some(isl::one_line(&m.last))
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| isl::one_line(&m.title))
 }
 
 /// What a card says until `read_replies` finds more: the last thing it did.
 fn told(m: &Meta) -> String {
-    Some(brief(&m.last)).filter(|l| !l.is_empty()).unwrap_or_else(|| isl::one_line(&m.title))
+    Some(brief(&m.last))
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| isl::one_line(&m.title))
 }
 
 /// Gives each finished turn's card the turn's reply, from its transcript;
 /// it reads files, so off the main thread.
 pub fn read_replies(alerts: &mut [Alert]) {
     for alert in alerts.iter_mut().filter(|a| a.kind == AlertKind::Finished) {
-        if let Some(reply) = headless::read_transcript(&alert.key).and_then(|t| last_reply(&t.entries)) {
+        if let Some(reply) =
+            headless::read_transcript(&alert.key).and_then(|t| last_reply(&t.entries))
+        {
             alert.subtitle = reply.into();
         }
     }
@@ -178,7 +207,12 @@ fn last_reply(entries: &[Entry]) -> Option<String> {
 pub fn merge(app: Option<&Feed>, headless: &Seen) -> Feed {
     let mut rows = headless.rows.clone();
     if let Some(app) = app {
-        rows.extend(app.rows.iter().filter(|r| !headless.rows.iter().any(|h| h.key == r.key)).cloned());
+        rows.extend(
+            app.rows
+                .iter()
+                .filter(|r| !headless.rows.iter().any(|h| h.key == r.key))
+                .cloned(),
+        );
     }
     isl::sort_rows(&mut rows);
     Feed {
@@ -237,11 +271,26 @@ mod tests {
         let seen = w.update(&scan(vec![
             (meta("old", Status::Idle, NOW - 3600), Status::Idle, None),
             (meta("done", Status::Idle, NOW - 30), Status::Idle, None),
-            (meta("busy", Status::Working, NOW - 1), Status::Working, None),
+            (
+                meta("busy", Status::Working, NOW - 1),
+                Status::Working,
+                None,
+            ),
             (meta("dead", Status::Working, NOW - 5), Status::Error, None),
         ]));
-        let rows: Vec<(&str, isl::Status)> = seen.rows.iter().map(|r| (r.key.as_ref(), r.status)).collect();
-        assert_eq!(rows, [("dead", isl::Status::Error), ("busy", isl::Status::Working), ("done", isl::Status::Done)]);
+        let rows: Vec<(&str, isl::Status)> = seen
+            .rows
+            .iter()
+            .map(|r| (r.key.as_ref(), r.status))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("dead", isl::Status::Error),
+                ("busy", isl::Status::Working),
+                ("done", isl::Status::Done)
+            ]
+        );
         assert_eq!(seen.rows[1].model.as_ref(), "GLM 5.3");
         assert_eq!(seen.rows[1].doing.as_ref(), "cargo test: 3 passed");
         assert_eq!(seen.rows[1].cost.as_ref(), "$0.50");
@@ -263,21 +312,43 @@ mod tests {
         ]));
         let mut b = meta("b", Status::Error, NOW);
         b.error = Some("Workers AI: 429 too many requests\nretry in 20 s".into());
-        let seen = w.update(&scan(vec![(meta("a", Status::Idle, NOW), Status::Idle, None), (b, Status::Error, None)]));
-        let cards: Vec<(AlertKind, &str, &str)> =
-            seen.alerts.iter().map(|a| (a.kind, a.title.as_ref(), a.subtitle.as_ref())).collect();
+        let seen = w.update(&scan(vec![
+            (meta("a", Status::Idle, NOW), Status::Idle, None),
+            (b, Status::Error, None),
+        ]));
+        let cards: Vec<(AlertKind, &str, &str)> = seen
+            .alerts
+            .iter()
+            .map(|a| (a.kind, a.title.as_ref(), a.subtitle.as_ref()))
+            .collect();
         assert_eq!(
             cards,
             [
-                (AlertKind::Finished, "GLM 5.3 terminó", "cargo test: 3 passed"),
-                (AlertKind::Error, "GLM 5.3 falló", "Workers AI: 429 too many requests retry in 20 s"),
+                (
+                    AlertKind::Finished,
+                    "GLM 5.3 terminó",
+                    "cargo test: 3 passed"
+                ),
+                (
+                    AlertKind::Error,
+                    "GLM 5.3 falló",
+                    "Workers AI: 429 too many requests retry in 20 s"
+                ),
             ]
         );
         // Told once.
-        let seen = w.update(&scan(vec![(meta("a", Status::Idle, NOW), Status::Idle, None)]));
+        let seen = w.update(&scan(vec![(
+            meta("a", Status::Idle, NOW),
+            Status::Idle,
+            None,
+        )]));
         assert!(seen.alerts.is_empty());
         // One that started and finished between two looks.
-        let seen = w.update(&scan(vec![(meta("c", Status::Idle, NOW - 2), Status::Idle, None)]));
+        let seen = w.update(&scan(vec![(
+            meta("c", Status::Idle, NOW - 2),
+            Status::Idle,
+            None,
+        )]));
         assert_eq!(seen.alerts.len(), 1);
     }
 
@@ -293,14 +364,25 @@ mod tests {
         // Long: cut near the cap, at a word's end.
         let long = "palabra ".repeat(100);
         let cut = brief(&long);
-        assert!(cut.ends_with("palabra…") && (290..=301).contains(&cut.chars().count()), "{cut}");
+        assert!(
+            cut.ends_with("palabra…") && (290..=301).contains(&cut.chars().count()),
+            "{cut}"
+        );
         let one_word = "x".repeat(500);
         assert_eq!(brief(&one_word).chars().count(), 301);
         // The turn's last reply, not an earlier turn's.
         let entry = |v: serde_json::Value| -> Entry { serde_json::from_value(v).unwrap() };
         let user = entry(serde_json::json!({"type": "user", "text": "go", "at": 0}));
         let agent = |t: &str| entry(serde_json::json!({"type": "agent", "text": t}));
-        assert_eq!(last_reply(&[user.clone(), agent("**Hecho**\ncon detalle"), agent("```\n```")]).as_deref(), Some("Hecho con detalle"));
+        assert_eq!(
+            last_reply(&[
+                user.clone(),
+                agent("**Hecho**\ncon detalle"),
+                agent("```\n```")
+            ])
+            .as_deref(),
+            Some("Hecho con detalle")
+        );
         assert_eq!(last_reply(&[agent("viejo"), user]), None);
         // Until the transcript is read, the card says the last thing it did.
         let mut m = meta("a", Status::Idle, NOW);
@@ -313,20 +395,39 @@ mod tests {
     #[test]
     fn a_waiting_call_asks_once_until_answered() {
         let mut w = Watch::default();
-        let waiting = || vec![(meta("h1", Status::NeedsInput, NOW), Status::NeedsInput, Some(pending("h1", "r1")))];
+        let waiting = || {
+            vec![(
+                meta("h1", Status::NeedsInput, NOW),
+                Status::NeedsInput,
+                Some(pending("h1", "r1")),
+            )]
+        };
         let seen = w.update(&scan(waiting()));
         assert_eq!(seen.rows[0].status, isl::Status::Waiting);
-        let [card] = &seen.alerts[..] else { panic!("{:?}", seen.alerts) };
+        let [card] = &seen.alerts[..] else {
+            panic!("{:?}", seen.alerts)
+        };
         assert_eq!(card.kind, AlertKind::Confirm);
         assert_eq!((card.key.as_ref(), card.req.as_ref()), ("h1", "r1"));
         assert_eq!(card.title.as_ref(), "Hacer git push de main a origin");
-        assert_eq!(card.subtitle.as_ref(), "GLM 5.3 · git push publica commits en el remoto");
+        assert_eq!(
+            card.subtitle.as_ref(),
+            "GLM 5.3 · git push publica commits en el remoto"
+        );
         assert!(seen.pending.contains(&("h1".to_string(), "r1".to_string())));
         assert!(w.update(&scan(waiting())).alerts.is_empty());
         // Answered: gone; the next request asks again.
-        let seen = w.update(&scan(vec![(meta("h1", Status::Working, NOW), Status::Working, None)]));
+        let seen = w.update(&scan(vec![(
+            meta("h1", Status::Working, NOW),
+            Status::Working,
+            None,
+        )]));
         assert!(seen.pending.is_empty() && seen.alerts.is_empty());
-        let seen = w.update(&scan(vec![(meta("h1", Status::NeedsInput, NOW), Status::NeedsInput, Some(pending("h1", "r2")))]));
+        let seen = w.update(&scan(vec![(
+            meta("h1", Status::NeedsInput, NOW),
+            Status::NeedsInput,
+            Some(pending("h1", "r2")),
+        )]));
         assert_eq!(seen.alerts[0].req.as_ref(), "r2");
     }
 
@@ -341,14 +442,32 @@ mod tests {
             cost: SharedString::default(),
             updated: 0,
         };
-        let headless = Seen { rows: vec![row("h1", "GLM 5.3")], today: Some("$0.50".into()), ..Default::default() };
-        let app = Feed { rows: vec![row("h1", "Workers AI"), row("s1", "Opus 5.5")], today: Some("$3.00".into()), viewing: Some("s1".into()) };
+        let headless = Seen {
+            rows: vec![row("h1", "GLM 5.3")],
+            today: Some("$0.50".into()),
+            ..Default::default()
+        };
+        let app = Feed {
+            rows: vec![row("h1", "Workers AI"), row("s1", "Opus 5.5")],
+            today: Some("$3.00".into()),
+            viewing: Some("s1".into()),
+        };
         let both = merge(Some(&app), &headless);
-        let rows: Vec<(&str, &str)> = both.rows.iter().map(|r| (r.key.as_ref(), r.model.as_ref())).collect();
+        let rows: Vec<(&str, &str)> = both
+            .rows
+            .iter()
+            .map(|r| (r.key.as_ref(), r.model.as_ref()))
+            .collect();
         assert_eq!(rows, [("h1", "GLM 5.3"), ("s1", "Opus 5.5")]);
-        assert_eq!((both.today.as_deref(), both.viewing.as_deref()), (Some("$3.00"), Some("s1")));
+        assert_eq!(
+            (both.today.as_deref(), both.viewing.as_deref()),
+            (Some("$3.00"), Some("s1"))
+        );
         let alone = merge(None, &headless);
-        assert_eq!((alone.rows.len(), alone.today.as_deref(), alone.viewing), (1, Some("$0.50"), None));
+        assert_eq!(
+            (alone.rows.len(), alone.today.as_deref(), alone.viewing),
+            (1, Some("$0.50"), None)
+        );
         assert_eq!(merge(None, &Seen::default()), Feed::default());
     }
 }

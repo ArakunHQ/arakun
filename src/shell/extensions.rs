@@ -15,7 +15,9 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        self.show_view_tab("Extensions", TabKind::Extensions, |k| matches!(k, TabKind::Extensions));
+        self.show_view_tab("Extensions", TabKind::Extensions, |k| {
+            matches!(k, TabKind::Extensions)
+        });
         self.note_active_tab();
         let dir = self.env().path.clone();
         self.extensions_view.update(cx, |v, cx| {
@@ -26,7 +28,12 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn on_extensions_event(&mut self, ev: &ExtensionsEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_extensions_event(
+        &mut self,
+        ev: &ExtensionsEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }

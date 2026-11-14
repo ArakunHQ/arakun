@@ -16,7 +16,10 @@ use serde_json::{Value, json};
 
 use crate::account::{self, Limits, UsageMode};
 use crate::agent::plan::PlanUsage;
-use crate::agent::{AskUserRequest, Entry, PermissionRequest, ToolContent, ToolStatus, Usage, attach, diff, fmt_cost};
+use crate::agent::{
+    AskUserRequest, Entry, PermissionRequest, ToolContent, ToolStatus, Usage, attach, diff,
+    fmt_cost,
+};
 use crate::model::Status;
 
 /// What entries are read against: the session's directory, which the `@path`
@@ -51,7 +54,11 @@ pub fn error(message: &str) -> String {
 
 /// The entries from `from` on, as the phone shows them.
 pub fn entries(all: &[Entry], from: usize, scope: &Scope) -> Vec<Value> {
-    all.get(from..).unwrap_or_default().iter().map(|e| entry(e, scope)).collect()
+    all.get(from..)
+        .unwrap_or_default()
+        .iter()
+        .map(|e| entry(e, scope))
+        .collect()
 }
 
 /// The agent's words with the images it names as markdown turned into signed
@@ -64,8 +71,12 @@ fn agent_images(text: &str, scope: &Scope) -> String {
         let after = &rest[at + 2..];
         out.push_str(&rest[..at + 2]);
         rest = after;
-        let Some(close) = after.find("](") else { continue };
-        let Some(end) = after[close + 2..].find(')') else { continue };
+        let Some(close) = after.find("](") else {
+            continue;
+        };
+        let Some(end) = after[close + 2..].find(')') else {
+            continue;
+        };
         let alt = &after[..close];
         out.push_str(alt);
         out.push_str("](");
@@ -128,7 +139,14 @@ pub fn usage(u: &Usage) -> Value {
 
 pub fn entry(e: &Entry, scope: &Scope) -> Value {
     match e {
-        Entry::User { text, at, elapsed_ms, tokens, shell_changes, .. } => {
+        Entry::User {
+            text,
+            at,
+            elapsed_ms,
+            tokens,
+            shell_changes,
+            ..
+        } => {
             // As the desktop shows it: the typed words, with the pasted blocks
             // and the mentioned images set apart.
             let (typed, pastes) = attach::split_pastes(text);
@@ -149,7 +167,11 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
             for c in &t.content {
                 match c {
                     ToolContent::Text { text } => texts.push(text.as_str()),
-                    ToolContent::Diff { path, old_text, new_text } => {
+                    ToolContent::Diff {
+                        path,
+                        old_text,
+                        new_text,
+                    } => {
                         let (added, removed) = diff_counts(old_text.as_deref(), new_text);
                         diffs.push(json!({ "path": path, "added": added, "removed": removed }));
                     }
@@ -182,10 +204,16 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
             "type": "plan",
             "entries": entries.iter().map(|p| json!({ "content": p.content, "status": p.status })).collect::<Vec<_>>(),
         }),
-        Entry::Notice { text, error, mark, .. } => json!({
+        Entry::Notice {
+            text, error, mark, ..
+        } => json!({
             "type": "notice", "text": text, "error": error, "mark": mark,
         }),
-        Entry::Compacted { removed, before, after } => json!({
+        Entry::Compacted {
+            removed,
+            before,
+            after,
+        } => json!({
             "type": "compacted", "removed": removed, "before": before, "after": after,
         }),
     }
@@ -209,7 +237,13 @@ struct TurnChanges<'a> {
 
 /// The turns that changed files, oldest first, with each file in first-touched order.
 fn turns_with_changes(all: &[Entry]) -> Vec<TurnChanges<'_>> {
-    fn add<'a>(turn: &mut TurnChanges<'a>, path: &'a Path, old: Option<&str>, new: &str, at: (usize, usize)) {
+    fn add<'a>(
+        turn: &mut TurnChanges<'a>,
+        path: &'a Path,
+        old: Option<&str>,
+        new: &str,
+        at: (usize, usize),
+    ) {
         let (added, removed) = diff::stats(&diff::line_diff(old.unwrap_or(""), new));
         match turn.files.iter_mut().find(|f| f.path == path) {
             Some(f) => {
@@ -217,26 +251,66 @@ fn turns_with_changes(all: &[Entry]) -> Vec<TurnChanges<'_>> {
                 f.removed += removed;
                 f.diffs.push(at);
             }
-            None => turn.files.push(FileChange { path, added, removed, diffs: vec![at] }),
+            None => turn.files.push(FileChange {
+                path,
+                added,
+                removed,
+                diffs: vec![at],
+            }),
         }
     }
     let mut turns: Vec<TurnChanges> = Vec::new();
-    let mut current = TurnChanges { start: 0, text: "", at: 0, files: Vec::new() };
+    let mut current = TurnChanges {
+        start: 0,
+        text: "",
+        at: 0,
+        files: Vec::new(),
+    };
     for (i, e) in all.iter().enumerate() {
         match e {
-            Entry::User { text, at, shell_changes, .. } => {
-                let done = std::mem::replace(&mut current, TurnChanges { start: i, text, at: *at, files: Vec::new() });
+            Entry::User {
+                text,
+                at,
+                shell_changes,
+                ..
+            } => {
+                let done = std::mem::replace(
+                    &mut current,
+                    TurnChanges {
+                        start: i,
+                        text,
+                        at: *at,
+                        files: Vec::new(),
+                    },
+                );
                 if !done.files.is_empty() {
                     turns.push(done);
                 }
                 for (k, c) in shell_changes.iter().enumerate() {
-                    add(&mut current, c.path.as_path(), c.old.as_deref(), &c.new, (i, k));
+                    add(
+                        &mut current,
+                        c.path.as_path(),
+                        c.old.as_deref(),
+                        &c.new,
+                        (i, k),
+                    );
                 }
             }
             Entry::Tool(t) if t.status == ToolStatus::Completed => {
                 for (k, c) in t.content.iter().enumerate() {
-                    if let ToolContent::Diff { path, old_text, new_text } = c {
-                        add(&mut current, path.as_path(), old_text.as_deref(), new_text, (i, k));
+                    if let ToolContent::Diff {
+                        path,
+                        old_text,
+                        new_text,
+                    } = c
+                    {
+                        add(
+                            &mut current,
+                            path.as_path(),
+                            old_text.as_deref(),
+                            new_text,
+                            (i, k),
+                        );
                     }
                 }
             }
@@ -315,7 +389,11 @@ pub fn changes(all: &[Entry], cwd: &Path) -> Value {
 pub fn diff_message(all: &[Entry], entry: usize, index: usize, cwd: &Path) -> Option<Value> {
     let (path, old, new) = match all.get(entry)? {
         Entry::Tool(t) => match t.content.get(index)? {
-            ToolContent::Diff { path, old_text, new_text } => (path.as_path(), old_text.as_deref(), new_text.as_str()),
+            ToolContent::Diff {
+                path,
+                old_text,
+                new_text,
+            } => (path.as_path(), old_text.as_deref(), new_text.as_str()),
             _ => return None,
         },
         Entry::User { shell_changes, .. } => {
@@ -357,7 +435,10 @@ pub fn diff_message(all: &[Entry], entry: usize, index: usize, cwd: &Path) -> Op
 }
 
 fn rel_path(path: &Path, cwd: &Path) -> String {
-    path.strip_prefix(cwd).unwrap_or(path).to_string_lossy().replace('\\', "/")
+    path.strip_prefix(cwd)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// What the desktop knows of Droid's account, for `plan_usage`.
@@ -400,7 +481,11 @@ fn claude_card(plan: Option<&PlanUsage>, now: u64) -> Value {
         && (s.used > 0. || s.limit.is_some())
     {
         let detail = match s.limit {
-            Some(limit) => format!("{} of {}", fmt_cost(s.used, &s.currency, false), fmt_cost(limit, &s.currency, false)),
+            Some(limit) => format!(
+                "{} of {}",
+                fmt_cost(s.used, &s.currency, false),
+                fmt_cost(limit, &s.currency, false)
+            ),
             None => format!("{} this month", fmt_cost(s.used, &s.currency, false)),
         };
         rows.push(limit_row("Extra usage", s.percent as f32, Some(detail)));
@@ -427,17 +512,31 @@ fn droid_card(d: &DroidPlan, now: u64) -> Value {
     let mode = limits.mode(now);
     let core_first = mode == UsageMode::DroidCore && limits.core.is_some();
     let (main, other) = if core_first {
-        (limits.core.as_ref().map(|p| ("Core", p)), limits.standard.as_ref().map(|p| ("Standard", p)))
+        (
+            limits.core.as_ref().map(|p| ("Core", p)),
+            limits.standard.as_ref().map(|p| ("Standard", p)),
+        )
     } else {
-        (limits.standard.as_ref().map(|p| ("Standard", p)), limits.core.as_ref().map(|p| ("Core", p)))
+        (
+            limits.standard.as_ref().map(|p| ("Standard", p)),
+            limits.core.as_ref().map(|p| ("Core", p)),
+        )
     };
-    let reset = |b: &account::Bucket| b.window_end.filter(|end| *end > now).map(|end| format!("resets {}", account::when(end, now)));
+    let reset = |b: &account::Bucket| {
+        b.window_end
+            .filter(|end| *end > now)
+            .map(|end| format!("resets {}", account::when(end, now)))
+    };
     let mut rows = Vec::new();
     let mut idle = Vec::new();
     if let Some((name, pool)) = main {
         for (label, b) in pool.buckets() {
             if b.active(now) {
-                rows.push(limit_row(&format!("{name} · {label}"), b.current(now), reset(&b)));
+                rows.push(limit_row(
+                    &format!("{name} · {label}"),
+                    b.current(now),
+                    reset(&b),
+                ));
             } else {
                 idle.push(format!("{name} · {label}"));
             }
@@ -451,7 +550,11 @@ fn droid_card(d: &DroidPlan, now: u64) -> Value {
             .filter(|(_, b)| b.active(now))
             .max_by(|a, b| a.1.used_percent.total_cmp(&b.1.used_percent))
     {
-        rows.push(limit_row(&format!("{name} · {label}"), b.current(now), reset(&b)));
+        rows.push(limit_row(
+            &format!("{name} · {label}"),
+            b.current(now),
+            reset(&b),
+        ));
     }
     let plan = match mode {
         UsageMode::Standard => "Standard",
@@ -464,7 +567,8 @@ fn droid_card(d: &DroidPlan, now: u64) -> Value {
         UsageMode::Standard => "normal",
         _ => "warn",
     };
-    let balance = (limits.extra_usage_cents > 0).then(|| format!("${:.2}", limits.extra_usage_cents as f64 / 100.));
+    let balance = (limits.extra_usage_cents > 0)
+        .then(|| format!("${:.2}", limits.extra_usage_cents as f64 / 100.));
     json!({
         "agent": "droid", "name": "Droid", "signed_in": true, "plan": plan, "rows": rows, "idle": idle,
         "balance": balance, "note": limits.summary(now), "tone": tone, "at": d.fetched_at,
@@ -494,14 +598,21 @@ fn command(t: &crate::agent::ToolCall) -> Option<String> {
     let input = t.raw_input.as_ref()?;
     let raw = match input.get("command").or_else(|| input.get("cmd"))? {
         Value::String(s) => s.clone(),
-        Value::Array(parts) => parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
         _ => return None,
     };
     Some(head(raw.trim(), CLIP_COMMAND))
 }
 
 fn file_name(p: &std::path::Path) -> String {
-    p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
+    p.file_name().map_or_else(
+        || p.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Lines a diff adds and removes, by counting lines; a new file is all adds.
@@ -526,7 +637,10 @@ mod tests {
     use crate::agent::{ToolCall, ToolStatus};
 
     fn scope(cwd: &std::path::Path) -> Scope {
-        Scope { cwd: cwd.to_path_buf(), key: "k".into() }
+        Scope {
+            cwd: cwd.to_path_buf(),
+            key: "k".into(),
+        }
     }
 
     #[test]
@@ -535,7 +649,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("shot.png"), b"png").unwrap();
         let text = format!("look at @shot.png and {}", attach::wrap_paste("one\ntwo"));
-        let e = Entry::User { text, at: 1, elapsed_ms: None, message_id: None, tokens: None, shell_changes: Vec::new() };
+        let e = Entry::User {
+            text,
+            at: 1,
+            elapsed_ms: None,
+            message_id: None,
+            tokens: None,
+            shell_changes: Vec::new(),
+        };
         let v = entry(&e, &scope(&dir));
         assert_eq!(v["text"], "look at  and");
         assert_eq!(v["images"][0]["name"], "shot.png");
@@ -558,14 +679,22 @@ mod tests {
         let v = entry(&e, &scope(&dir));
         let text = v["text"].as_str().unwrap();
         assert!(text.starts_with("before ![the shot](/image?s="), "{text}");
-        assert!(text.contains("shot.png) mid [link](https://arakun.dev) after ![gone](missing.png)"), "{text}");
-        assert!(text.ends_with("![remote](https://x.dev/a.png) last"), "{text}");
+        assert!(
+            text.contains("shot.png) mid [link](https://arakun.dev) after ![gone](missing.png)"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("![remote](https://x.dev/a.png) last"),
+            "{text}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn long_output_keeps_its_end() {
-        let long: String = (0..2000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let long: String = (0..2000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
         let t = tail(&long, 100);
         assert!(t.starts_with("… [1900 chars] "));
         assert!(t.ends_with(&long[1900..]));
@@ -606,7 +735,11 @@ mod tests {
             title: format!("Edit {path}"),
             kind: "edit".into(),
             status,
-            content: vec![ToolContent::Diff { path: path.into(), old_text: old.map(str::to_string), new_text: new.into() }],
+            content: vec![ToolContent::Diff {
+                path: path.into(),
+                old_text: old.map(str::to_string),
+                new_text: new.into(),
+            }],
             locations: vec![],
             raw_input: None,
             raw_output: None,
@@ -620,7 +753,14 @@ mod tests {
     }
 
     fn user(text: &str, shell_changes: Vec<crate::agent::ShellChange>) -> Entry {
-        Entry::User { text: text.into(), at: 7, elapsed_ms: None, message_id: None, tokens: None, shell_changes }
+        Entry::User {
+            text: text.into(),
+            at: 7,
+            elapsed_ms: None,
+            message_id: None,
+            tokens: None,
+            shell_changes,
+        }
     }
 
     #[test]
@@ -628,19 +768,40 @@ mod tests {
         let cwd = std::path::Path::new("/w");
         let all = vec![
             user("first", vec![]),
-            edit("t1", "/w/src/a.rs", Some("a\nb\nc\nd\ne\nf\ng\nh\n"), "a\nb\nc\nd\nX\nf\ng\nh\n", ToolStatus::Completed),
-            edit("t2", "/w/src/a.rs", Some("x\n"), "x\ny\n", ToolStatus::Completed),
+            edit(
+                "t1",
+                "/w/src/a.rs",
+                Some("a\nb\nc\nd\ne\nf\ng\nh\n"),
+                "a\nb\nc\nd\nX\nf\ng\nh\n",
+                ToolStatus::Completed,
+            ),
+            edit(
+                "t2",
+                "/w/src/a.rs",
+                Some("x\n"),
+                "x\ny\n",
+                ToolStatus::Completed,
+            ),
             edit("t3", "/w/src/lost.rs", None, "never\n", ToolStatus::Failed),
             user(
                 "second @shot.png",
-                vec![crate::agent::ShellChange { path: "/w/gen.txt".into(), old: None, new: "1\n2\n".into(), added: 2, removed: 0 }],
+                vec![crate::agent::ShellChange {
+                    path: "/w/gen.txt".into(),
+                    old: None,
+                    new: "1\n2\n".into(),
+                    added: 2,
+                    removed: 0,
+                }],
             ),
             edit("t4", "/w/src/b.rs", None, "new\n", ToolStatus::Completed),
             user("third, nothing changed", vec![]),
         ];
         // The prompt carries what its shell commands changed, so the turn's header can count it.
         let prompt = entry(&all[4], &scope(cwd));
-        assert_eq!(prompt["edits"], json!([{ "path": "/w/gen.txt", "added": 2, "removed": 0 }]));
+        assert_eq!(
+            prompt["edits"],
+            json!([{ "path": "/w/gen.txt", "added": 2, "removed": 0 }])
+        );
         assert_eq!(entry(&all[0], &scope(cwd))["edits"], json!([]));
 
         let totals = change_totals(&all);
@@ -656,7 +817,11 @@ mod tests {
         assert_eq!(turns[0]["files"][0]["diffs"], json!([[4, 0]]));
         assert_eq!(turns[0]["files"][1]["path"], "src/b.rs");
         assert_eq!(turns[1]["entry"], 0);
-        assert_eq!(turns[1]["files"].as_array().unwrap().len(), 1, "the failed edit does not count");
+        assert_eq!(
+            turns[1]["files"].as_array().unwrap().len(),
+            1,
+            "the failed edit does not count"
+        );
         assert_eq!(turns[1]["files"][0]["name"], "a.rs");
         assert_eq!(turns[1]["files"][0]["added"], 2);
         assert_eq!(turns[1]["files"][0]["removed"], 1);
@@ -678,7 +843,10 @@ mod tests {
         assert_eq!(shell["new_file"], true);
         assert_eq!(shell["lines"][0], json!("@@ -0,0 +1,2 @@"));
         assert_eq!(shell["lines"][1], json!(["+", 1, "1"]));
-        assert!(diff_message(&all, 3, 0, cwd).is_some(), "a failed edit still has a diff to look at");
+        assert!(
+            diff_message(&all, 3, 0, cwd).is_some(),
+            "a failed edit still has a diff to look at"
+        );
         assert!(diff_message(&all, 0, 0, cwd).is_none());
         assert!(diff_message(&all, 99, 0, cwd).is_none());
     }
@@ -699,27 +867,52 @@ mod tests {
             at: now - 60,
             subscription: "team".into(),
             tier: "default_claude_max_5x".into(),
-            windows: vec![window("5-hour limit", 32, true), window("Weekly · Sonnet", 0, false)],
+            windows: vec![
+                window("5-hour limit", 32, true),
+                window("Weekly · Sonnet", 0, false),
+            ],
             spend: None,
             borrowed: false,
         };
-        let bucket = |pct: f32, end: u64| Bucket { used_percent: pct, window_end: Some(end) };
+        let bucket = |pct: f32, end: u64| Bucket {
+            used_percent: pct,
+            window_end: Some(end),
+        };
         let limits = Limits {
-            standard: Some(Pool { five_hour: bucket(100., now + 600), weekly: bucket(44., now + 86_400 * 3), monthly: bucket(10., now + 86_400 * 20) }),
-            core: Some(Pool { five_hour: bucket(12., now + 600), weekly: bucket(5., now + 86_400 * 3), monthly: Bucket::default() }),
+            standard: Some(Pool {
+                five_hour: bucket(100., now + 600),
+                weekly: bucket(44., now + 86_400 * 3),
+                monthly: bucket(10., now + 86_400 * 20),
+            }),
+            core: Some(Pool {
+                five_hour: bucket(12., now + 600),
+                weekly: bucket(5., now + 86_400 * 3),
+                monthly: Bucket::default(),
+            }),
             extra_usage_cents: 1250,
             overage_preference: Some("droidCore".into()),
         };
-        let droid = DroidPlan { connected: true, limits: Some(&limits), error: None, fetched_at: Some(now - 10) };
+        let droid = DroidPlan {
+            connected: true,
+            limits: Some(&limits),
+            error: None,
+            fetched_at: Some(now - 10),
+        };
         let v = plan_usage(Some(&plan), &droid, now);
         assert_eq!(v["type"], "usage");
         let claude = &v["agents"][0];
         assert_eq!(claude["signed_in"], true);
         assert_eq!(claude["plan"], "Team · Max 5x");
-        assert_eq!(claude["rows"], json!([{ "label": "5-hour limit", "percent": 32, "detail": "resets in 2h 30m" }]));
+        assert_eq!(
+            claude["rows"],
+            json!([{ "label": "5-hour limit", "percent": 32, "detail": "resets in 2h 30m" }])
+        );
         assert_eq!(claude["idle"], json!(["Weekly · Sonnet"]));
         let d = &v["agents"][1];
-        assert_eq!(d["plan"], "Droid Core", "standard is used up and the account falls back to core");
+        assert_eq!(
+            d["plan"], "Droid Core",
+            "standard is used up and the account falls back to core"
+        );
         assert_eq!(d["tone"], "warn");
         assert_eq!(d["balance"], "$12.50");
         let rows = d["rows"].as_array().unwrap();
@@ -727,15 +920,32 @@ mod tests {
         assert_eq!(rows[0]["percent"], 12);
         assert_eq!(rows[0]["detail"], "resets in 10m");
         assert_eq!(rows[1]["label"], "Core · Week");
-        assert_eq!(rows[2]["label"], "Standard · 5 hours", "the other pool shows only its fullest window");
+        assert_eq!(
+            rows[2]["label"], "Standard · 5 hours",
+            "the other pool shows only its fullest window"
+        );
         assert_eq!(rows[2]["percent"], 100);
         assert_eq!(rows.len(), 3);
         assert_eq!(d["idle"], json!(["Core · Month"]));
 
-        let out = plan_usage(None, &DroidPlan { connected: false, limits: None, error: None, fetched_at: None }, now);
+        let out = plan_usage(
+            None,
+            &DroidPlan {
+                connected: false,
+                limits: None,
+                error: None,
+                fetched_at: None,
+            },
+            now,
+        );
         assert_eq!(out["agents"][0]["signed_in"], false);
         assert_eq!(out["agents"][1]["signed_in"], false);
-        assert!(out["agents"][1]["note"].as_str().unwrap().contains("Factory API key"));
+        assert!(
+            out["agents"][1]["note"]
+                .as_str()
+                .unwrap()
+                .contains("Factory API key")
+        );
     }
 
     #[test]

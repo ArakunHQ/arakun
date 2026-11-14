@@ -83,8 +83,14 @@ pub const RULES: [(&str, &str); 6] = [
         "no_web_unless_needed",
         "- Do not use web_search or web_fetch unless the task needs external information that is not in the repository.",
     ),
-    ("parallelize", "- Prefer several independent tool calls in one reply (reads, searches) over one call per reply."),
-    ("one_larger_read", "- Prefer one larger read of a file over many small slices of it."),
+    (
+        "parallelize",
+        "- Prefer several independent tool calls in one reply (reads, searches) over one call per reply.",
+    ),
+    (
+        "one_larger_read",
+        "- Prefer one larger read of a file over many small slices of it.",
+    ),
     (
         "checklist",
         "- At the start, list each requirement, example and constraint in the request as a short checklist in your notes.\n\
@@ -94,8 +100,18 @@ pub const RULES: [(&str, &str); 6] = [
 ];
 
 const KEYS: [&str; 12] = [
-    "adaptive_effort", "self_test", "stop_on_green", "tool_chars", "read_lines", "reasoning_effort",
-    "max_tokens", "parallel_tools", "rules", "read_budget", "bash_tail", "prune_tool_results",
+    "adaptive_effort",
+    "self_test",
+    "stop_on_green",
+    "tool_chars",
+    "read_lines",
+    "reasoning_effort",
+    "max_tokens",
+    "parallel_tools",
+    "rules",
+    "read_budget",
+    "bash_tail",
+    "prune_tool_results",
 ];
 
 /// The knobs in `raw`, and a warning for each thing ignored.
@@ -104,8 +120,20 @@ pub fn parse(raw: &str) -> (Knobs, Vec<String>) {
     let mut warn = Vec::new();
     let v: Value = match serde_json::from_str(raw) {
         Ok(v @ Value::Object(_)) => v,
-        Ok(_) => return (k, vec!["ARAKUN_KNOBS is not a JSON object; using the defaults".into()]),
-        Err(e) => return (k, vec![format!("ARAKUN_KNOBS is not valid JSON ({e}); using the defaults")]),
+        Ok(_) => {
+            return (
+                k,
+                vec!["ARAKUN_KNOBS is not a JSON object; using the defaults".into()],
+            );
+        }
+        Err(e) => {
+            return (
+                k,
+                vec![format!(
+                    "ARAKUN_KNOBS is not valid JSON ({e}); using the defaults"
+                )],
+            );
+        }
     };
     let o = v.as_object().unwrap();
     for key in o.keys().filter(|key| !KEYS.contains(&key.as_str())) {
@@ -116,7 +144,9 @@ pub fn parse(raw: &str) -> (Knobs, Vec<String>) {
         match x.as_u64().filter(|n| *n >= min) {
             Some(n) => Some(n),
             None => {
-                warn.push(format!("{key} must be an integer ≥ {min}, not {x}; ignored"));
+                warn.push(format!(
+                    "{key} must be an integer ≥ {min}, not {x}; ignored"
+                ));
                 None
             }
         }
@@ -130,9 +160,16 @@ pub fn parse(raw: &str) -> (Knobs, Vec<String>) {
     if let Some(n) = int("max_tokens", 256) {
         k.max_tokens = n;
     }
-    let prune = o.get("prune_tool_results").filter(|p| !p.is_null()).map(|p| {
-        (p.is_object(), p["protect_tokens"].as_u64(), p["min_free"].as_u64())
-    });
+    let prune = o
+        .get("prune_tool_results")
+        .filter(|p| !p.is_null())
+        .map(|p| {
+            (
+                p.is_object(),
+                p["protect_tokens"].as_u64(),
+                p["min_free"].as_u64(),
+            )
+        });
     match prune {
         None => {}
         Some((true, Some(protect_tokens), Some(min_free))) if min_free > 0 => k.prune = Some(Prune { protect_tokens, min_free }),
@@ -154,8 +191,12 @@ pub fn parse(raw: &str) -> (Knobs, Vec<String>) {
     k.stop_on_green = flag("stop_on_green");
     match o.get("reasoning_effort") {
         None | Some(Value::Null) => {}
-        Some(Value::String(e)) if ["none", "low", "high", "max"].contains(&e.as_str()) => k.reasoning_effort = Some(e.clone()),
-        Some(x) => warn.push(format!("reasoning_effort must be none, low, high or max, not {x}; ignored")),
+        Some(Value::String(e)) if ["none", "low", "high", "max"].contains(&e.as_str()) => {
+            k.reasoning_effort = Some(e.clone())
+        }
+        Some(x) => warn.push(format!(
+            "reasoning_effort must be none, low, high or max, not {x}; ignored"
+        )),
     }
     match o.get("rules") {
         None | Some(Value::Null) => {}
@@ -176,8 +217,12 @@ pub fn parse(raw: &str) -> (Knobs, Vec<String>) {
 impl Knobs {
     /// The rules' text, to append to the system prompt; empty without rules.
     pub fn rules_text(&self) -> String {
-        let texts: Vec<&str> =
-            self.rules.iter().filter_map(|r| RULES.iter().find(|(n, _)| n == r)).map(|(_, t)| *t).collect();
+        let texts: Vec<&str> = self
+            .rules
+            .iter()
+            .filter_map(|r| RULES.iter().find(|(n, _)| n == r))
+            .map(|(_, t)| *t)
+            .collect();
         texts.join("\n")
     }
 
@@ -205,7 +250,10 @@ impl Knobs {
 pub fn get() -> &'static Knobs {
     static KNOBS: OnceLock<Knobs> = OnceLock::new();
     KNOBS.get_or_init(|| {
-        let Some(raw) = std::env::var("ARAKUN_KNOBS").ok().filter(|r| !r.trim().is_empty()) else {
+        let Some(raw) = std::env::var("ARAKUN_KNOBS")
+            .ok()
+            .filter(|r| !r.trim().is_empty())
+        else {
             return Knobs::default();
         };
         let (k, warnings) = parse(&raw);
@@ -232,7 +280,10 @@ and add a quick test with variants of the given examples that tries to break you
 
 /// Whether a tool's result tells the model something went wrong.
 pub fn result_failed(tool: &str, content: &str) -> bool {
-    if content.starts_with("Error:") || content.starts_with("The user declined") || content.starts_with("(not run") {
+    if content.starts_with("Error:")
+        || content.starts_with("The user declined")
+        || content.starts_with("(not run")
+    {
         return true;
     }
     if tool != "bash" {
@@ -242,9 +293,16 @@ pub fn result_failed(tool: &str, content: &str) -> bool {
     if tail.starts_with('[') && tail.ends_with(']') && tail != "[exit code 0]" {
         return true;
     }
-    ["test result: FAILED", "FAILED", "AssertionError", "Traceback (most recent call last)", "failures:", "npm ERR!"]
-        .iter()
-        .any(|m| content.contains(m))
+    [
+        "test result: FAILED",
+        "FAILED",
+        "AssertionError",
+        "Traceback (most recent call last)",
+        "failures:",
+        "npm ERR!",
+    ]
+    .iter()
+    .any(|m| content.contains(m))
 }
 
 /// What one prompt has done, to choose each call's effort and to time the self test.
@@ -261,7 +319,11 @@ impl Progress {
     /// "high" for the first call, after a failure, and after an edit nothing has
     /// run against; "low" for the routine rest.
     pub fn effort(&self) -> &'static str {
-        if self.calls == 0 || self.failed || self.unchecked_edit { "high" } else { "low" }
+        if self.calls == 0 || self.failed || self.unchecked_edit {
+            "high"
+        } else {
+            "low"
+        }
     }
 
     /// A model call is about to go out.
@@ -321,10 +383,8 @@ pub struct ReadBudget {
     greens_since_edit: u32,
 }
 
-pub const GREEN_REMINDER_FIRST: &str =
-    "<system-reminder>All tests just passed (exit code 0). If your test for the request's examples is already in place, write $LAB_NOTES (if set) and finish your turn immediately — the adversarial verifier runs next.</system-reminder>";
-pub const GREEN_REMINDER_REPEAT: &str =
-    "<system-reminder>Tests already passed and no files were edited since. Write $LAB_NOTES (if set) and end your turn now.</system-reminder>";
+pub const GREEN_REMINDER_FIRST: &str = "<system-reminder>All tests just passed (exit code 0). If your test for the request's examples is already in place, write $LAB_NOTES (if set) and finish your turn immediately — the adversarial verifier runs next.</system-reminder>";
+pub const GREEN_REMINDER_REPEAT: &str = "<system-reminder>Tests already passed and no files were edited since. Write $LAB_NOTES (if set) and end your turn now.</system-reminder>";
 
 /// What the working tree looks like, to tell that a shell command edited files: the paths
 /// `git status` lists (changed and untracked, not ignored), each with its size and its
@@ -343,10 +403,23 @@ pub fn tree_mark(cwd: &std::path::Path) -> Option<u64> {
         return None;
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for entry in out.stdout.split(|b| *b == 0).filter(|e| e.len() > 3).take(5000) {
+    for entry in out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|e| e.len() > 3)
+        .take(5000)
+    {
         let name = String::from_utf8_lossy(&entry[3..]);
         // what running tests leaves behind in repositories that do not ignore it is not an edit
-        if ["__pycache__/", ".pytest_cache/", "node_modules/", ".mypy_cache/", ".ruff_cache/"].iter().any(|d| name.contains(d))
+        if [
+            "__pycache__/",
+            ".pytest_cache/",
+            "node_modules/",
+            ".mypy_cache/",
+            ".ruff_cache/",
+        ]
+        .iter()
+        .any(|d| name.contains(d))
             || name.ends_with(".pyc")
             || name.ends_with(".coverage")
         {
@@ -370,16 +443,55 @@ pub fn bash_is_read_only(cmd: &str) -> bool {
         return false;
     }
     let active = [
-        "cargo ", "rustc", "npm ", "npx ", "bun ", "node ", "pytest", "python", "nvcc", "ptxas",
-        "make", "cmake", "./", "bash ", "sh ", "dash ", "zsh ", "git commit", "git checkout",
-        "git reset", "git clean", "rm ", "mv ", "cp ", "mkdir ", "tee ", ">>", " > ",
+        "cargo ",
+        "rustc",
+        "npm ",
+        "npx ",
+        "bun ",
+        "node ",
+        "pytest",
+        "python",
+        "nvcc",
+        "ptxas",
+        "make",
+        "cmake",
+        "./",
+        "bash ",
+        "sh ",
+        "dash ",
+        "zsh ",
+        "git commit",
+        "git checkout",
+        "git reset",
+        "git clean",
+        "rm ",
+        "mv ",
+        "cp ",
+        "mkdir ",
+        "tee ",
+        ">>",
+        " > ",
     ];
     if active.iter().any(|k| t.contains(k)) {
         return false;
     }
-    ["sed ", "nl ", "cat ", "head ", "tail ", "grep ", "rg ", "wc ", "ls", "find ", "git status", "git diff", "git log"]
-        .iter()
-        .any(|k| t.contains(k))
+    [
+        "sed ",
+        "nl ",
+        "cat ",
+        "head ",
+        "tail ",
+        "grep ",
+        "rg ",
+        "wc ",
+        "ls",
+        "find ",
+        "git status",
+        "git diff",
+        "git log",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
 }
 
 impl ReadBudget {
@@ -428,7 +540,12 @@ impl ReadBudget {
     }
 
     /// Tracks green test runs after edits so the agent stops looping on passing tests.
-    pub fn note_green_test(&mut self, tool: &str, bash_cmd: Option<&str>, content: &str) -> Option<&'static str> {
+    pub fn note_green_test(
+        &mut self,
+        tool: &str,
+        bash_cmd: Option<&str>,
+        content: &str,
+    ) -> Option<&'static str> {
         if matches!(tool, "edit_file" | "write_file") && !result_failed(tool, content) {
             self.edited = true;
             self.greens_since_edit = 0;
@@ -441,9 +558,16 @@ impl ReadBudget {
         if cmd.contains("--no-run") {
             return None;
         }
-        let is_test = ["cargo test", "bun test", "node --test", "pytest", "npm test", "npm run test"]
-            .iter()
-            .any(|k| cmd.contains(k))
+        let is_test = [
+            "cargo test",
+            "bun test",
+            "node --test",
+            "pytest",
+            "npm test",
+            "npm run test",
+        ]
+        .iter()
+        .any(|k| cmd.contains(k))
             || content.contains("test result: ok.");
         if !is_test {
             return None;
@@ -458,12 +582,20 @@ impl ReadBudget {
 
     /// Uses Cloudflare Clef (`ARAKUN_CLEF_URL`) on the first green test run to decide in ~200 ms
     /// whether the diff already includes both the implementation and new test assertions.
-    pub fn note_green_test_with_clef(&mut self, cwd: &std::path::Path, tool: &str, bash_cmd: Option<&str>, content: &str) -> Option<String> {
+    pub fn note_green_test_with_clef(
+        &mut self,
+        cwd: &std::path::Path,
+        tool: &str,
+        bash_cmd: Option<&str>,
+        content: &str,
+    ) -> Option<String> {
         let base = self.note_green_test(tool, bash_cmd, content);
         if self.greens_since_edit != 1 {
             return base.map(str::to_string);
         }
-        let url = std::env::var("ARAKUN_CLEF_URL").ok().filter(|u| !u.trim().is_empty())?;
+        let url = std::env::var("ARAKUN_CLEF_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty())?;
         let diff = crate::platform::command("git")
             .args(["diff", "-U1"])
             .current_dir(cwd)
@@ -474,8 +606,13 @@ impl ReadBudget {
         if diff.trim().is_empty() {
             return None;
         }
-        let cut = (0..=diff.len().min(14_000)).rev().find(|&i| diff.is_char_boundary(i)).unwrap_or(0);
-        let tail_start = (diff.len().saturating_sub(6_000)..=diff.len()).find(|&i| diff.is_char_boundary(i)).unwrap_or(diff.len());
+        let cut = (0..=diff.len().min(14_000))
+            .rev()
+            .find(|&i| diff.is_char_boundary(i))
+            .unwrap_or(0);
+        let tail_start = (diff.len().saturating_sub(6_000)..=diff.len())
+            .find(|&i| diff.is_char_boundary(i))
+            .unwrap_or(diff.len());
         let diff_excerpt = if cut < tail_start {
             format!("{}\n…\n{}", &diff[..cut.min(8_000)], &diff[tail_start..])
         } else {
@@ -572,7 +709,10 @@ pub fn pruned_stub(chars: usize) -> String {
 /// `min_free` tokens; else none. The last user message and the results of the
 /// last reply are never touched.
 pub fn prune_plan(messages: &[Value], p: &Prune) -> Vec<usize> {
-    let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
+    let last_assistant = messages
+        .iter()
+        .rposition(|m| m["role"] == "assistant")
+        .unwrap_or(0);
     let tokens = |m: &Value| m["content"].as_str().map_or(0, str::len) as u64 / 3;
     let (mut seen, mut free, mut picked) = (0u64, 0u64, Vec::new());
     for (i, m) in messages.iter().enumerate().rev() {
@@ -584,7 +724,9 @@ pub fn prune_plan(messages: &[Value], p: &Prune) -> Vec<usize> {
             seen += t;
             continue;
         }
-        let pruned = m["content"].as_str().is_some_and(|c| c.starts_with(PRUNED_PREFIX));
+        let pruned = m["content"]
+            .as_str()
+            .is_some_and(|c| c.starts_with(PRUNED_PREFIX));
         if seen < p.protect_tokens || pruned {
             seen += t;
             continue;
@@ -592,14 +734,20 @@ pub fn prune_plan(messages: &[Value], p: &Prune) -> Vec<usize> {
         free += t;
         picked.push(i);
     }
-    if free >= p.min_free { picked } else { Vec::new() }
+    if free >= p.min_free {
+        picked
+    } else {
+        Vec::new()
+    }
 }
 
 /// Applies [`prune_plan`]; how many results it stubbed.
 pub fn prune(messages: &mut [Value], p: &Prune) -> usize {
     let picked = prune_plan(messages, p);
     for &i in &picked {
-        let chars = messages[i]["content"].as_str().map_or(0, |c| c.chars().count());
+        let chars = messages[i]["content"]
+            .as_str()
+            .map_or(0, |c| c.chars().count());
         messages[i]["content"] = json!(pruned_stub(chars));
     }
     picked.len()
@@ -631,7 +779,13 @@ mod tests {
         assert_eq!(k.max_tokens, 32768);
         assert!(k.parallel_tools && k.read_budget && k.bash_tail);
         assert_eq!(k.rules, vec!["small_task", "argon"]);
-        assert_eq!(k.prune, Some(Prune { protect_tokens: 40000, min_free: 20000 }));
+        assert_eq!(
+            k.prune,
+            Some(Prune {
+                protect_tokens: 40000,
+                min_free: 20000
+            })
+        );
         assert_eq!(w.len(), 2, "{w:?}");
         assert!(w.iter().any(|x| x.contains("colour")) && w.iter().any(|x| x.contains("nope")));
         let text = k.rules_text();
@@ -640,7 +794,9 @@ mod tests {
 
     #[test]
     fn bad_values_keep_the_defaults() {
-        let (k, w) = parse(r#"{"tool_chars": "big", "reasoning_effort": "medium", "bash_tail": 1, "prune_tool_results": {"protect_tokens": 1}}"#);
+        let (k, w) = parse(
+            r#"{"tool_chars": "big", "reasoning_effort": "medium", "bash_tail": 1, "prune_tool_results": {"protect_tokens": 1}}"#,
+        );
         assert_eq!(k, Knobs::default());
         assert_eq!(w.len(), 4, "{w:?}");
         let (k, w) = parse("not json");
@@ -705,45 +861,81 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("arakun-tree-mark-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let git = |args: &[&str]| crate::git::unpinned(&mut std::process::Command::new("git")).arg("-C").arg(&dir).args(args).output().unwrap();
+        let git = |args: &[&str]| {
+            crate::git::unpinned(&mut std::process::Command::new("git"))
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
         assert!(tree_mark(&dir).is_none(), "not a repository yet");
         git(&["init", "-q"]);
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
         git(&["add", "-A"]);
-        git(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
         let clean = tree_mark(&dir).expect("a repository");
         assert_eq!(tree_mark(&dir), Some(clean), "reading changes nothing");
         std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
         let edited = tree_mark(&dir).unwrap();
         assert_ne!(edited, clean, "a tracked file changed");
         std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
-        assert_ne!(tree_mark(&dir).unwrap(), edited, "the same file changed again");
+        assert_ne!(
+            tree_mark(&dir).unwrap(),
+            edited,
+            "the same file changed again"
+        );
         let before = tree_mark(&dir).unwrap();
         std::fs::write(dir.join("new.txt"), "x").unwrap();
         assert_ne!(tree_mark(&dir).unwrap(), before, "a new file");
         let before = tree_mark(&dir).unwrap();
         std::fs::create_dir_all(dir.join("__pycache__")).unwrap();
         std::fs::write(dir.join("__pycache__/a.cpython-311.pyc"), "x").unwrap();
-        assert_eq!(tree_mark(&dir).unwrap(), before, "what a test run leaves behind is not an edit");
+        assert_eq!(
+            tree_mark(&dir).unwrap(),
+            before,
+            "what a test run leaves behind is not an edit"
+        );
         let _ = std::fs::remove_dir_all(&dir);
 
         // and the self test, which waits for an edit, fires after one
         let mut p = Progress::default();
         p.results([("bash", "[exit code 0]")]);
-        assert!(!p.self_test_due(), "a command that changed nothing is not an edit");
+        assert!(
+            !p.self_test_due(),
+            "a command that changed nothing is not an edit"
+        );
         p.tree_changed();
         assert_eq!(p.effort(), "high", "nothing has run against the edit");
         assert!(p.self_test_due());
         let mut b = ReadBudget::default();
-        assert!(b.note_green_test("bash", Some("pytest -q"), "[exit code 0]").is_none(), "no edit yet");
+        assert!(
+            b.note_green_test("bash", Some("pytest -q"), "[exit code 0]")
+                .is_none(),
+            "no edit yet"
+        );
         b.note_edit();
         b.note_green_test("bash", Some("pytest -q"), "[exit code 0]");
-        assert!(b.note_green_test("bash", Some("pytest -q"), "[exit code 0]").is_some(), "second green run after a shell edit");
+        assert!(
+            b.note_green_test("bash", Some("pytest -q"), "[exit code 0]")
+                .is_some(),
+            "second green run after a shell edit"
+        );
     }
 
     #[test]
     fn checklist_rule_is_three_lines_at_most() {
-        let (k, w) = parse(r#"{"adaptive_effort": true, "self_test": true, "rules": ["checklist"]}"#);
+        let (k, w) =
+            parse(r#"{"adaptive_effort": true, "self_test": true, "rules": ["checklist"]}"#);
         assert!(w.is_empty(), "{w:?}");
         assert!(k.adaptive_effort && k.self_test);
         assert!(k.rules_text().lines().count() <= 3);
@@ -772,7 +964,10 @@ mod tests {
         assert!(!b2.note_call("bash", Some("sed -n '1,240p' src/lib.rs"), 8_000));
         assert!(!b2.note_call("bash", Some("sed -n '240,520p' src/lib.rs"), 8_000));
         assert!(!b2.note_call("bash", Some("grep -n foo src/lib.rs"), 2_000));
-        assert!(b2.note_call("bash", Some("sed -n '520,820p' src/lib.rs"), 8_000), "read-only bash counts toward lookups");
+        assert!(
+            b2.note_call("bash", Some("sed -n '520,820p' src/lib.rs"), 8_000),
+            "read-only bash counts toward lookups"
+        );
     }
 
     #[test]
@@ -786,7 +981,10 @@ mod tests {
         assert_eq!(clip_tail("short", 2000, "/tmp/x", 5), "short");
         // run_bash keeps only a head and a tail of long output: the counts are the real ones.
         let long = clip_tail(&text, 2000, "/p", 100_000);
-        assert!(long.contains("[98000 bytes cut; the whole output (100000 bytes)"), "{long}");
+        assert!(
+            long.contains("[98000 bytes cut; the whole output (100000 bytes)"),
+            "{long}"
+        );
         let wide = "ñ".repeat(3000);
         assert!(clip_tail(&wide, 1001, "/p", 1).ends_with('ñ'));
     }
@@ -798,7 +996,10 @@ mod tests {
     #[test]
     fn prune_takes_old_results_only_past_the_threshold() {
         let call = json!({"role": "assistant", "content": null, "tool_calls": [{"id": "x"}]});
-        let mut m = vec![json!({"role": "system", "content": "s"}), json!({"role": "user", "content": "do it"})];
+        let mut m = vec![
+            json!({"role": "system", "content": "s"}),
+            json!({"role": "user", "content": "do it"}),
+        ];
         for _ in 0..4 {
             m.push(call.clone());
             m.push(tool(30_000)); // 10k tokens each
@@ -806,9 +1007,22 @@ mod tests {
         m.push(call.clone());
         m.push(tool(90_000)); // the last reply's result: always kept
         // The last result (30k tokens) and the one before it fill the 35k protected.
-        let p = Prune { protect_tokens: 35_000, min_free: 15_000 };
+        let p = Prune {
+            protect_tokens: 35_000,
+            min_free: 15_000,
+        };
         assert_eq!(prune_plan(&m, &p), vec![7, 5, 3]);
-        assert!(prune_plan(&m, &Prune { protect_tokens: 35_000, min_free: 40_000 }).is_empty(), "too little to free");
+        assert!(
+            prune_plan(
+                &m,
+                &Prune {
+                    protect_tokens: 35_000,
+                    min_free: 40_000
+                }
+            )
+            .is_empty(),
+            "too little to free"
+        );
         assert_eq!(prune(&mut m, &p), 3);
         assert_eq!(m[3]["content"], pruned_stub(30_000));
         assert_eq!(m[11]["content"].as_str().unwrap().len(), 90_000);

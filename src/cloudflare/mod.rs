@@ -9,10 +9,10 @@
 mod advice;
 mod extra;
 pub mod fix;
-pub mod tail;
 mod local;
 mod network;
 mod parse;
+pub mod tail;
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -48,7 +48,11 @@ email-routing-rule.read email-routing-rule.write email-routing-address.read emai
 /// The command that asks Cloudflare for [`SCOPES`] on the `cf` profile in use
 /// (`cf auth login` would write a new default profile instead).
 pub fn access_command(profile: &str) -> String {
-    if profile.is_empty() { format!("cf auth login --scopes {SCOPES}") } else { format!("cf auth create {profile} --scopes {SCOPES}") }
+    if profile.is_empty() {
+        format!("cf auth login --scopes {SCOPES}")
+    } else {
+        format!("cf auth create {profile} --scopes {SCOPES}")
+    }
 }
 
 /// Days of zone traffic the Domains page charts.
@@ -131,10 +135,16 @@ impl Zone {
     }
     /// Share of requests served from Cloudflare's cache, 0–100.
     pub fn cache_pct(&self) -> u64 {
-        (self.days.iter().map(|d| d.cached).sum::<u64>() * 100).checked_div(self.requests()).unwrap_or(0)
+        (self.days.iter().map(|d| d.cached).sum::<u64>() * 100)
+            .checked_div(self.requests())
+            .unwrap_or(0)
     }
     pub fn visitors_per_day(&self) -> u64 {
-        if self.days.is_empty() { 0 } else { self.days.iter().map(|d| d.visitors).sum::<u64>() / self.days.len() as u64 }
+        if self.days.is_empty() {
+            0
+        } else {
+            self.days.iter().map(|d| d.visitors).sum::<u64>() / self.days.len() as u64
+        }
     }
     /// Requests of the last 24 hours.
     pub fn served(&self) -> u64 {
@@ -155,7 +165,12 @@ impl Zone {
     }
     /// 5xx statuses, most frequent first.
     pub fn server_statuses(&self) -> Vec<(u16, u64)> {
-        let mut s: Vec<(u16, u64)> = self.statuses.iter().copied().filter(|(c, _)| *c >= 500).collect();
+        let mut s: Vec<(u16, u64)> = self
+            .statuses
+            .iter()
+            .copied()
+            .filter(|(c, _)| *c >= 500)
+            .collect();
         s.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         s
     }
@@ -167,14 +182,23 @@ impl Zone {
             return true;
         }
         self.dns.iter().any(|r| {
-            r.name == host || r.name.strip_prefix("*.").is_some_and(|base| host.strip_suffix(base).is_some_and(|rest| rest.ends_with('.') && !rest[..rest.len() - 1].contains('.')))
+            r.name == host
+                || r.name.strip_prefix("*.").is_some_and(|base| {
+                    host.strip_suffix(base).is_some_and(|rest| {
+                        rest.ends_with('.') && !rest[..rest.len() - 1].contains('.')
+                    })
+                })
         })
     }
 
     /// 5xx of the last 24 hours from hostnames that no longer resolve: fixed
     /// already, still in the window.
     pub fn gone_errors(&self) -> u64 {
-        self.bad_hosts.iter().filter(|(h, _)| !self.resolves(h)).map(|(_, n)| n).sum()
+        self.bad_hosts
+            .iter()
+            .filter(|(h, _)| !self.resolves(h))
+            .map(|(_, n)| n)
+            .sum()
     }
 
     /// 5xx that still matter: those of hostnames that still answer.
@@ -184,7 +208,10 @@ impl Zone {
 
     /// Whether `host` belongs to this zone.
     pub fn covers(&self, host: &str) -> bool {
-        host == self.name || host.strip_suffix(&self.name).is_some_and(|rest| rest.ends_with('.'))
+        host == self.name
+            || host
+                .strip_suffix(&self.name)
+                .is_some_and(|rest| rest.ends_with('.'))
     }
 }
 
@@ -454,13 +481,20 @@ impl Snapshot {
     }
     /// The Workers serving a domain of `zone`.
     pub fn workers_on(&self, zone: &Zone) -> Vec<&Worker> {
-        self.workers.iter().filter(|w| w.domains.iter().any(|d| zone.covers(d))).collect()
+        self.workers
+            .iter()
+            .filter(|w| w.domains.iter().any(|d| zone.covers(d)))
+            .collect()
     }
     /// The Workers bound to bucket `name`.
     pub fn bucket_users(&self, name: &str) -> Vec<&str> {
         self.workers
             .iter()
-            .filter(|w| w.bindings.iter().any(|b| b.kind == "R2" && b.target == name))
+            .filter(|w| {
+                w.bindings
+                    .iter()
+                    .any(|b| b.kind == "R2" && b.target == name)
+            })
             .map(|w| w.name.as_str())
             .collect()
     }
@@ -470,14 +504,23 @@ impl Snapshot {
         if !self.cloudflared.latest.is_empty() {
             return self.cloudflared.latest.clone();
         }
-        self.tunnels.iter().flat_map(|t| &t.connectors).map(|c| c.version.clone()).max_by_key(|v| version(v)).unwrap_or_default()
+        self.tunnels
+            .iter()
+            .flat_map(|t| &t.connectors)
+            .map(|c| c.version.clone())
+            .max_by_key(|v| version(v))
+            .unwrap_or_default()
     }
     /// The DNS records, across zones, that route to a Tunnel id no longer in the account.
     pub fn dangling_tunnel_records(&self) -> Vec<&DnsRecord> {
         self.zones
             .iter()
             .flat_map(|z| &z.dns)
-            .filter(|r| self.tunnels_read && r.tunnel().is_some_and(|id| self.tunnels.iter().all(|t| t.id != id)))
+            .filter(|r| {
+                self.tunnels_read
+                    && r.tunnel()
+                        .is_some_and(|id| self.tunnels.iter().all(|t| t.id != id))
+            })
             .collect()
     }
     pub fn tunnel(&self, name: &str) -> Option<&Tunnel> {
@@ -487,7 +530,11 @@ impl Snapshot {
         self.zones.iter().find(|z| z.name == name)
     }
     pub fn dash(&self, path: &str) -> String {
-        if path.is_empty() { format!("{DASH}/{}", self.account_id) } else { format!("{DASH}/{}/{path}", self.account_id) }
+        if path.is_empty() {
+            format!("{DASH}/{}", self.account_id)
+        } else {
+            format!("{DASH}/{}/{path}", self.account_id)
+        }
     }
 }
 
@@ -536,13 +583,20 @@ fn whoami() -> Result<Session, LoadError> {
     let v: Value = text
         .find('{')
         .and_then(|i| serde_json::from_str(&text[i..]).ok())
-        .ok_or_else(|| LoadError::Failed(first_line(&String::from_utf8_lossy(&out.stderr)).to_string()))?;
+        .ok_or_else(|| {
+            LoadError::Failed(first_line(&String::from_utf8_lossy(&out.stderr)).to_string())
+        })?;
     if v["authenticated"].as_bool() != Some(true) {
-        return Err(LoadError::SignedOut(v["error"].as_str().unwrap_or("Not logged in").to_string()));
+        return Err(LoadError::SignedOut(
+            v["error"].as_str().unwrap_or("Not logged in").to_string(),
+        ));
     }
     let source = v["authSource"].as_str().unwrap_or_default();
     let file = token_file(source);
-    let profile = file.as_ref().and_then(|f| f.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default();
+    let profile = file
+        .as_ref()
+        .and_then(|f| f.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
     let account = &v["accounts"][0];
     let mut s = Session {
         token: String::new(),
@@ -552,7 +606,8 @@ fn whoami() -> Result<Session, LoadError> {
         account_id: account["id"].as_str().unwrap_or_default().to_string(),
         account_name: account["name"].as_str().unwrap_or_default().to_string(),
     };
-    s.token = read_token(&s, true).ok_or_else(|| LoadError::SignedOut(format!("Couldn't read the token ({source})")))?;
+    s.token = read_token(&s, true)
+        .ok_or_else(|| LoadError::SignedOut(format!("Couldn't read the token ({source})")))?;
     write_json(&cache_dir().join("cloudflare-session.json"), &s);
     Ok(s)
 }
@@ -565,7 +620,10 @@ fn read_token(s: &Session, any: bool) -> Option<String> {
             let c: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
             // RFC 3339 times compare as text; a minute of margin.
             let expires = c["expiration_time"].as_str().unwrap_or_default();
-            if !any && !expires.is_empty() && expires[..expires.len().min(19)] <= iso(crate::model::unix_now() + 60)[..19] {
+            if !any
+                && !expires.is_empty()
+                && expires[..expires.len().min(19)] <= iso(crate::model::unix_now() + 60)[..19]
+            {
                 return None;
             }
             c["oauth_token"].as_str().map(str::to_string)
@@ -577,7 +635,9 @@ fn read_token(s: &Session, any: bool) -> Option<String> {
 
 /// The session the last `whoami` found, with its token if still good: no Node.
 fn quick_session() -> Option<Session> {
-    let mut s: Session = serde_json::from_slice(&std::fs::read(cache_dir().join("cloudflare-session.json")).ok()?).ok()?;
+    let mut s: Session =
+        serde_json::from_slice(&std::fs::read(cache_dir().join("cloudflare-session.json")).ok()?)
+            .ok()?;
     s.token = read_token(&s, false)?;
     Some(s)
 }
@@ -586,7 +646,9 @@ fn quick_session() -> Option<Session> {
 fn token_file(source: &str) -> Option<PathBuf> {
     let (_, path) = source.split_once(" from ")?;
     let path = PathBuf::from(path.trim());
-    path.extension().is_some_and(|e| e == "json").then_some(path)
+    path.extension()
+        .is_some_and(|e| e == "json")
+        .then_some(path)
 }
 
 fn first_line(s: &str) -> &str {
@@ -616,19 +678,40 @@ fn call(token: &str, method: &str, url: &str, body: Option<&Value>) -> Result<Va
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json");
     let sent = match body {
-        Some(b) => request.body(b.to_string()).map_err(|e| e.to_string()).and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-        None => request.body(()).map_err(|e| e.to_string()).and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+        Some(b) => request
+            .body(b.to_string())
+            .map_err(|e| e.to_string())
+            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+        None => request
+            .body(())
+            .map_err(|e| e.to_string())
+            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
     };
     let mut response = sent?;
     let status = response.status().as_u16();
-    let text = response.body_mut().with_config().limit(32 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())?;
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(32 * 1024 * 1024)
+        .read_to_string()
+        .map_err(|e| e.to_string())?;
     let v: Value = serde_json::from_str(&text).map_err(|_| {
-        if status == 401 { REFUSED.to_string() } else { format!("Cloudflare answered {status} with something unexpected") }
+        if status == 401 {
+            REFUSED.to_string()
+        } else {
+            format!("Cloudflare answered {status} with something unexpected")
+        }
     })?;
     // REST and GraphQL both put failures in `errors`.
     if let Some(e) = v["errors"].as_array().and_then(|e| e.first()) {
-        let message = e["message"].as_str().unwrap_or("Cloudflare refused the request");
-        return Err(if status == 401 { format!("{REFUSED}: {message}") } else { message.to_string() });
+        let message = e["message"]
+            .as_str()
+            .unwrap_or("Cloudflare refused the request");
+        return Err(if status == 401 {
+            format!("{REFUSED}: {message}")
+        } else {
+            message.to_string()
+        });
     }
     if v["success"].as_bool() == Some(false) {
         return Err("Cloudflare refused the request".into());
@@ -649,7 +732,10 @@ fn joined<T>(h: std::thread::ScopedJoinHandle<'_, Joined<T>>) -> Joined<T> {
 /// the projects on this machine, whose wrangler configs name the D1 databases.
 /// `partial` gets the account as soon as the quick REST answers are in; the
 /// analytics (seconds) come in the result. The result is kept for `cached`.
-pub fn load(roots: &[PathBuf], partial: &(dyn Fn(&Snapshot) + Sync)) -> Result<Snapshot, LoadError> {
+pub fn load(
+    roots: &[PathBuf],
+    partial: &(dyn Fn(&Snapshot) + Sync),
+) -> Result<Snapshot, LoadError> {
     let quick = quick_session();
     let fresh = quick.is_none();
     let s = match quick {
@@ -658,19 +744,32 @@ pub fn load(roots: &[PathBuf], partial: &(dyn Fn(&Snapshot) + Sync)) -> Result<S
     };
     let snap = match load_with(&s, roots, partial) {
         // The token was revoked or replaced since: ask `cf` once.
-        Err(LoadError::SignedOut(e)) if !fresh && e.starts_with(REFUSED) => load_with(&whoami()?, roots, partial)?,
+        Err(LoadError::SignedOut(e)) if !fresh && e.starts_with(REFUSED) => {
+            load_with(&whoami()?, roots, partial)?
+        }
         other => other?,
     };
     write_json(&cache_dir().join("cloudflare.json"), &snap);
     Ok(snap)
 }
 
-fn load_with(s: &Session, roots: &[PathBuf], partial: &(dyn Fn(&Snapshot) + Sync)) -> Result<Snapshot, LoadError> {
+fn load_with(
+    s: &Session,
+    roots: &[PathBuf],
+    partial: &(dyn Fn(&Snapshot) + Sync),
+) -> Result<Snapshot, LoadError> {
     let now = crate::model::unix_now();
     let a = s.account_id.as_str();
     let t = s.token.as_str();
     let get = move |path: String| call(t, "GET", &format!("{API}{path}"), None);
-    let graphql = move |query: &str, vars: Value| call(t, "POST", &format!("{API}/graphql"), Some(&json!({ "query": query, "variables": vars })));
+    let graphql = move |query: &str, vars: Value| {
+        call(
+            t,
+            "POST",
+            &format!("{API}/graphql"),
+            Some(&json!({ "query": query, "variables": vars })),
+        )
+    };
     let (from, to) = (iso(now - 86_400), iso(now));
     let errors_query = |view: &str| {
         let mut q = json!({
@@ -685,7 +784,8 @@ fn load_with(s: &Session, roots: &[PathBuf], partial: &(dyn Fn(&Snapshot) + Sync
         });
         if view == "calculations" {
             q["parameters"]["calculations"] = json!([{ "operator": "count" }]);
-            q["parameters"]["groupBys"] = json!([{ "type": "string", "value": "$metadata.service" }]);
+            q["parameters"]["groupBys"] =
+                json!([{ "type": "string", "value": "$metadata.service" }]);
         }
         q
     };
@@ -709,7 +809,10 @@ fn load_with(s: &Session, roots: &[PathBuf], partial: &(dyn Fn(&Snapshot) + Sync
             refused = Some(e.clone());
             return;
         }
-        let ids: Vec<String> = zone_list.as_ref().map(|v| parse_zones(v).into_iter().map(|z| z.id).collect()).unwrap_or_default();
+        let ids: Vec<String> = zone_list
+            .as_ref()
+            .map(|v| parse_zones(v).into_iter().map(|z| z.id).collect())
+            .unwrap_or_default();
         let traffic = {
             let ids = ids.clone();
             let (from, to) = (from.clone(), to.clone());
@@ -727,7 +830,14 @@ fn load_with(s: &Session, roots: &[PathBuf], partial: &(dyn Fn(&Snapshot) + Sync
                 let handles: Vec<_> = zones
                     .iter()
                     .map(|z| {
-                        ["dns_records?per_page=500", "settings", "ssl/certificate_packs?status=all", "email/routing", "email/routing/rules"].map(|what| {
+                        [
+                            "dns_records?per_page=500",
+                            "settings",
+                            "ssl/certificate_packs?status=all",
+                            "email/routing",
+                            "email/routing/rules",
+                        ]
+                        .map(|what| {
                             let id = z.id.clone();
                             sc.spawn(move || get(format!("/zones/{id}/{what}")))
                         })
@@ -747,39 +857,72 @@ fn load_with(s: &Session, roots: &[PathBuf], partial: &(dyn Fn(&Snapshot) + Sync
         // Each Worker's settings (bindings), last deploy and crons.
         let scripts = sc.spawn(|| -> Joined<(Value, Vec<ScriptDetails>)> {
             let scripts = get(format!("/accounts/{a}/workers/scripts"))?;
-            let names: Vec<String> =
-                scripts["result"].as_array().into_iter().flatten().filter_map(|s| s["id"].as_str().map(str::to_string)).collect();
+            let names: Vec<String> = scripts["result"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s["id"].as_str().map(str::to_string))
+                .collect();
             let details = std::thread::scope(|sc| {
                 let handles: Vec<_> = names
                     .iter()
                     .map(|n| {
                         let hs = ["settings", "deployments", "schedules"].map(|what| {
                             let n = n.clone();
-                            sc.spawn(move || get(format!("/accounts/{a}/workers/scripts/{n}/{what}")))
+                            sc.spawn(move || {
+                                get(format!("/accounts/{a}/workers/scripts/{n}/{what}"))
+                            })
                         });
                         (n.clone(), hs)
                     })
                     .collect();
-                handles.into_iter().map(|(n, hs)| (n, hs.map(|h| joined(h).unwrap_or(Value::Null)))).collect()
+                handles
+                    .into_iter()
+                    .map(|(n, hs)| (n, hs.map(|h| joined(h).unwrap_or(Value::Null))))
+                    .collect()
             });
             Ok((scripts, details))
         });
-        let insights = sc.spawn(|| get(format!("/accounts/{a}/security-center/insights?per_page=100")));
+        let insights = sc.spawn(|| {
+            get(format!(
+                "/accounts/{a}/security-center/insights?per_page=100"
+            ))
+        });
         let containers = sc.spawn(|| get(format!("/accounts/{a}/containers/applications")));
         let members = sc.spawn(|| get(format!("/accounts/{a}/members")));
         let access = sc.spawn(|| get(format!("/accounts/{a}/access/apps")));
         let stream = sc.spawn(|| get(format!("/accounts/{a}/stream?limit=1000")));
-        let billing = sc.spawn(|| get("/user/billing/history?per_page=12&order=occurred_at&direction=desc".into()));
-        let usage = sc.spawn(|| graphql(ACCOUNT_QUERY, json!({ "a": a, "from": from, "to": to, "week": date(now - 7 * 86_400) })));
+        let billing = sc.spawn(|| {
+            get("/user/billing/history?per_page=12&order=occurred_at&direction=desc".into())
+        });
+        let usage = sc.spawn(|| {
+            graphql(
+                ACCOUNT_QUERY,
+                json!({ "a": a, "from": from, "to": to, "week": date(now - 7 * 86_400) }),
+            )
+        });
         let domains = sc.spawn(|| get(format!("/accounts/{a}/workers/domains")));
         let counts = sc.spawn(|| call(t, "POST", &telemetry, Some(&errors_query("calculations"))));
         let events = sc.spawn(|| call(t, "POST", &telemetry, Some(&errors_query("events"))));
-        let alerts = sc.spawn(|| get(format!("/accounts/{a}/alerting/v3/history?per_page=25&since={}", iso(now - 30 * 86_400))));
-        let audit = sc.spawn(|| get(format!("/accounts/{a}/audit_logs?per_page=40&direction=desc")));
+        let alerts = sc.spawn(|| {
+            get(format!(
+                "/accounts/{a}/alerting/v3/history?per_page=25&since={}",
+                iso(now - 30 * 86_400)
+            ))
+        });
+        let audit = sc.spawn(|| {
+            get(format!(
+                "/accounts/{a}/audit_logs?per_page=40&direction=desc"
+            ))
+        });
         let buckets = sc.spawn(|| get(format!("/accounts/{a}/r2/buckets")));
         let queues = sc.spawn(|| get(format!("/accounts/{a}/queues")));
         let flows = sc.spawn(|| get(format!("/accounts/{a}/workflows?per_page=50")));
-        let tunnels = sc.spawn(|| get(format!("/accounts/{a}/cfd_tunnel?is_deleted=false&per_page=100")));
+        let tunnels = sc.spawn(|| {
+            get(format!(
+                "/accounts/{a}/cfd_tunnel?is_deleted=false&per_page=100"
+            ))
+        });
         let registrar = sc.spawn(|| get(format!("/accounts/{a}/registrar/domains")));
         let pages = sc.spawn(|| get(format!("/accounts/{a}/pages/projects")));
         let kv = sc.spawn(|| get(format!("/accounts/{a}/storage/kv/namespaces?per_page=100")));
@@ -946,18 +1089,43 @@ hours: httpRequestsAdaptiveGroups(limit:48,filter:{datetime_geq:$from,datetime_l
 
 /// Blocking: reads one zone's detail, when asked (it costs analytics budget).
 pub fn zone_traffic(zone_id: &str) -> Result<ZoneTraffic, String> {
-    let s = quick_session().map(Ok).unwrap_or_else(whoami).map_err(|e| match e {
-        LoadError::NoCli => "The cf CLI isn't installed".to_string(),
-        LoadError::SignedOut(m) | LoadError::Failed(m) => m,
-    })?;
+    let s = quick_session()
+        .map(Ok)
+        .unwrap_or_else(whoami)
+        .map_err(|e| match e {
+            LoadError::NoCli => "The cf CLI isn't installed".to_string(),
+            LoadError::SignedOut(m) | LoadError::Failed(m) => m,
+        })?;
     let now = crate::model::unix_now();
-    let v = call(&s.token, "POST", &format!("{API}/graphql"), Some(&json!({ "query": DETAIL_QUERY, "variables": { "z": zone_id, "from": iso(now - 86_400), "to": iso(now) } })))?;
+    let v = call(
+        &s.token,
+        "POST",
+        &format!("{API}/graphql"),
+        Some(
+            &json!({ "query": DETAIL_QUERY, "variables": { "z": zone_id, "from": iso(now - 86_400), "to": iso(now) } }),
+        ),
+    )?;
     let z = &v["data"]["viewer"]["zones"][0];
     let list = |k: &str| -> Vec<(String, u64)> {
-        z[k].as_array().into_iter().flatten().map(|g| (g["dimensions"]["v"].as_str().unwrap_or_default().to_string(), g["count"].as_u64().unwrap_or(0))).collect()
+        z[k].as_array()
+            .into_iter()
+            .flatten()
+            .map(|g| {
+                (
+                    g["dimensions"]["v"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    g["count"].as_u64().unwrap_or(0),
+                )
+            })
+            .collect()
     };
     Ok(ZoneTraffic {
-        hours: list("hours").into_iter().map(|(h, n)| (crate::account::parse_rfc3339(&h).unwrap_or(0), n)).collect(),
+        hours: list("hours")
+            .into_iter()
+            .map(|(h, n)| (crate::account::parse_rfc3339(&h).unwrap_or(0), n))
+            .collect(),
         paths: list("paths"),
         countries: list("countries"),
         hosts: list("hosts"),
@@ -967,12 +1135,21 @@ pub fn zone_traffic(zone_id: &str) -> Result<ZoneTraffic, String> {
 
 /// Notes a part that couldn't be read, saying what Cloudflare's rate limit means.
 fn problem(problems: &mut Vec<String>, what: &str, e: String) {
-    let e = if e.contains("budget depleted") { "Cloudflare's analytics rate limit was hit; it resets in about 5 minutes".into() } else { e };
+    let e = if e.contains("budget depleted") {
+        "Cloudflare's analytics rate limit was hit; it resets in about 5 minutes".into()
+    } else {
+        e
+    };
     problems.push(format!("{what}: {e}"))
 }
 
 /// What needs several parts together: D1 names, Tunnels against DNS, the order.
-fn finish(snap: &mut Snapshot, roots: &[PathBuf], d1_list: &Option<Value>, tunnel_list: &Option<Vec<Tunnel>>) {
+fn finish(
+    snap: &mut Snapshot,
+    roots: &[PathBuf],
+    d1_list: &Option<Value>,
+    tunnel_list: &Option<Vec<Tunnel>>,
+) {
     name_databases(&mut snap.databases, &snap.workers, &d1_names(roots));
     if let Some(v) = d1_list {
         apply_d1_list(v, &mut snap.databases);
@@ -980,8 +1157,16 @@ fn finish(snap: &mut Snapshot, roots: &[PathBuf], d1_list: &Option<Value>, tunne
     // Without the Tunnel permission Cloudflare answers an empty list, not an
     // error: when DNS routes to Tunnels the list can't be empty.
     match tunnel_list {
-        Some(t) if t.is_empty() && snap.zones.iter().flat_map(|z| &z.dns).any(|r| r.tunnel().is_some()) => {
-            snap.problems.push("Tunnels: this sign-in can't list them; grant read access in Tools".into());
+        Some(t)
+            if t.is_empty()
+                && snap
+                    .zones
+                    .iter()
+                    .flat_map(|z| &z.dns)
+                    .any(|r| r.tunnel().is_some()) =>
+        {
+            snap.problems
+                .push("Tunnels: this sign-in can't list them; grant read access in Tools".into());
         }
         Some(t) => {
             snap.tunnels = t.clone();
@@ -991,14 +1176,34 @@ fn finish(snap: &mut Snapshot, roots: &[PathBuf], d1_list: &Option<Value>, tunne
     }
     for t in &mut snap.tunnels {
         let target = t.target();
-        t.hostnames = snap.zones.iter().flat_map(|z| &z.dns).filter(|r| r.content == target).map(|r| r.name.clone()).collect();
+        t.hostnames = snap
+            .zones
+            .iter()
+            .flat_map(|z| &z.dns)
+            .filter(|r| r.content == target)
+            .map(|r| r.name.clone())
+            .collect();
     }
-    let zones_without_dns: Vec<String> = snap.zones.iter().filter(|z| !z.settings.read).map(|z| z.name.clone()).collect();
+    let zones_without_dns: Vec<String> = snap
+        .zones
+        .iter()
+        .filter(|z| !z.settings.read)
+        .map(|z| z.name.clone())
+        .collect();
     if !zones_without_dns.is_empty() {
-        snap.problems.push(format!("DNS and SSL settings: not readable for {}", zones_without_dns.join(", ")));
+        snap.problems.push(format!(
+            "DNS and SSL settings: not readable for {}",
+            zones_without_dns.join(", ")
+        ));
     }
-    snap.workers.sort_by(|x, y| y.errors.cmp(&x.errors).then(y.requests.cmp(&x.requests)).then(y.deployed.cmp(&x.deployed)));
-    snap.buckets.sort_by(|x, y| y.size.cmp(&x.size).then(x.name.cmp(&y.name)));
+    snap.workers.sort_by(|x, y| {
+        y.errors
+            .cmp(&x.errors)
+            .then(y.requests.cmp(&x.requests))
+            .then(y.deployed.cmp(&x.deployed))
+    });
+    snap.buckets
+        .sort_by(|x, y| y.size.cmp(&x.size).then(x.name.cmp(&y.name)));
 }
 
 /// Unix seconds → `2026-10-19`.
@@ -1010,7 +1215,13 @@ pub fn date(t: u64) -> String {
 /// Unix seconds → `2026-10-19T03:05:21Z`.
 fn iso(t: u64) -> String {
     let s = t % 86_400;
-    format!("{}T{:02}:{:02}:{:02}Z", date(t), s / 3600, s % 3600 / 60, s % 60)
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        date(t),
+        s / 3600,
+        s % 3600 / 60,
+        s % 60
+    )
 }
 
 /// Howard Hinnant's `civil_from_days`.
@@ -1034,7 +1245,10 @@ mod tests {
     fn dates() {
         assert_eq!(date(0), "1970-01-01");
         assert_eq!(iso(1_791_928_800), "2026-10-13T22:00:00Z");
-        assert_eq!(crate::account::parse_rfc3339(&iso(1_792_462_588)), Some(1_792_462_588));
+        assert_eq!(
+            crate::account::parse_rfc3339(&iso(1_792_462_588)),
+            Some(1_792_462_588)
+        );
     }
 
     #[test]
@@ -1043,12 +1257,21 @@ mod tests {
             token_file("OAuth token from /home/k/.config/cloudflare/config/k.json"),
             Some(PathBuf::from("/home/k/.config/cloudflare/config/k.json"))
         );
-        assert_eq!(token_file("CLOUDFLARE_API_TOKEN environment variable"), None);
+        assert_eq!(
+            token_file("CLOUDFLARE_API_TOKEN environment variable"),
+            None
+        );
     }
 
     #[test]
     fn removed_hosts_stop_counting() {
-        let dns = |name: &str| DnsRecord { id: "r".into(), kind: "CNAME".into(), name: name.into(), content: "x".into(), proxied: true };
+        let dns = |name: &str| DnsRecord {
+            id: "r".into(),
+            kind: "CNAME".into(),
+            name: name.into(),
+            content: "x".into(),
+            proxied: true,
+        };
         let z = Zone {
             name: "a.dev".into(),
             statuses: vec![(200, 100), (530, 309), (500, 4)],
@@ -1056,9 +1279,18 @@ mod tests {
             dns: vec![dns("www.a.dev"), dns("*.cdn.a.dev")],
             ..Default::default()
         };
-        assert_eq!((z.server_errors(), z.gone_errors(), z.live_server_errors()), (313, 309, 4));
+        assert_eq!(
+            (z.server_errors(), z.gone_errors(), z.live_server_errors()),
+            (313, 309, 4)
+        );
         assert!(z.resolves("img.cdn.a.dev") && !z.resolves("deep.img.cdn.a.dev"));
-        assert!(Zone { dns: vec![], ..z.clone() }.resolves("support.a.dev"));
+        assert!(
+            Zone {
+                dns: vec![],
+                ..z.clone()
+            }
+            .resolves("support.a.dev")
+        );
     }
 
     #[test]
@@ -1077,16 +1309,51 @@ mod tests {
 
     #[test]
     fn scanner_paths() {
-        for p in ["/.env.bak", "/.git/config", "/xmlrpc.php", "/wp-login.php", "/database.sql", "/appsettings.Production.json", "/Dockerfile", "/config.yaml", "/api/.env"] {
+        for p in [
+            "/.env.bak",
+            "/.git/config",
+            "/xmlrpc.php",
+            "/wp-login.php",
+            "/database.sql",
+            "/appsettings.Production.json",
+            "/Dockerfile",
+            "/config.yaml",
+            "/api/.env",
+        ] {
             assert!(probe_path(p), "{p}");
         }
-        for p in ["/", "/about", "/rss.xml", "/.well-known/security.txt", "/_next/static/chunks/a.js", "/a-benchmark-changed-two-products"] {
+        for p in [
+            "/",
+            "/about",
+            "/rss.xml",
+            "/.well-known/security.txt",
+            "/_next/static/chunks/a.js",
+            "/a-benchmark-changed-two-products",
+        ] {
             assert!(!probe_path(p), "{p}");
         }
-        let sample = |url: &str| ErrorSample { url: url.into(), trigger: "GET".into(), ..Default::default() };
+        let sample = |url: &str| ErrorSample {
+            url: url.into(),
+            trigger: "GET".into(),
+            ..Default::default()
+        };
         assert_eq!(sample("https://www.example.org/.env?x=1").path(), "/.env");
-        assert_eq!(ErrorSample { trigger: "POST /xmlrpc.php".into(), ..Default::default() }.path(), "/xmlrpc.php");
-        let mut w = Worker { samples: vec![sample("https://a.dev/.env"), sample("https://a.dev/.env"), sample("https://a.dev/x.php")], ..Default::default() };
+        assert_eq!(
+            ErrorSample {
+                trigger: "POST /xmlrpc.php".into(),
+                ..Default::default()
+            }
+            .path(),
+            "/xmlrpc.php"
+        );
+        let mut w = Worker {
+            samples: vec![
+                sample("https://a.dev/.env"),
+                sample("https://a.dev/.env"),
+                sample("https://a.dev/x.php"),
+            ],
+            ..Default::default()
+        };
         assert!(w.bot_noise());
         assert_eq!(w.probed(), vec!["/.env".to_string(), "/x.php".to_string()]);
         w.samples.push(sample("https://a.dev/posts/1"));
@@ -1105,10 +1372,27 @@ mod live {
             let r = super::load(&[], &|_| {
                 early.lock().unwrap().get_or_insert(t.elapsed());
             });
-            let s = r.as_ref().map(|s| (s.zones.len(), s.workers.len(), s.traffic, s.usage, s.problems.clone()));
-            eprintln!("round {round}: quick part {:?}, all {:?} → {:?}", early.lock().unwrap(), t.elapsed(), s);
+            let s = r.as_ref().map(|s| {
+                (
+                    s.zones.len(),
+                    s.workers.len(),
+                    s.traffic,
+                    s.usage,
+                    s.problems.clone(),
+                )
+            });
+            eprintln!(
+                "round {round}: quick part {:?}, all {:?} → {:?}",
+                early.lock().unwrap(),
+                t.elapsed(),
+                s
+            );
         }
         let t = std::time::Instant::now();
-        eprintln!("cached() {:?} in {:?}", super::cached().map(|s| s.zones.len()), t.elapsed());
+        eprintln!(
+            "cached() {:?} in {:?}",
+            super::cached().map(|s| s.zones.len()),
+            t.elapsed()
+        );
     }
 }

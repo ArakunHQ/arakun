@@ -12,10 +12,28 @@ impl ThreadView {
     }
 
     /// Every diff a settled turn made, file by file; a click opens the file.
-    pub(super) fn turn_changes(&self, edits: &TurnEdits, turn_start: usize, base: usize, cwd: &Path, cx: &Context<Self>) -> AnyElement {
-        let mut col = div().flex().flex_col().gap(px(6.)).min_w_0().px(px(16.)).pt(px(2.)).pb(px(8.));
+    pub(super) fn turn_changes(
+        &self,
+        edits: &TurnEdits,
+        turn_start: usize,
+        base: usize,
+        cwd: &Path,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .min_w_0()
+            .px(px(16.))
+            .pt(px(2.))
+            .pb(px(8.));
         for (n, (path, diffs)) in edits.files.iter().enumerate() {
-            let full = if path.is_relative() { cwd.join(path) } else { path.to_path_buf() };
+            let full = if path.is_relative() {
+                cwd.join(path)
+            } else {
+                path.to_path_buf()
+            };
             let exists = full.exists();
             for (k, diff) in diffs.iter().enumerate() {
                 let full = full.clone();
@@ -25,28 +43,38 @@ impl ThreadView {
                         .id(("turn-diff", n * 1000 + k))
                         .min_w_0()
                         .when(exists, |d| {
-                            d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
-                                let entries = this.thread.read(cx).entries();
-                                let (old, new) = match (at, entries.get(turn_start)) {
-                                    (DiffAt::Tool(i, ci), _) => match entries.get(base + i) {
-                                        Some(Entry::Tool(t)) => match t.content.get(ci) {
-                                            Some(ToolContent::Diff { old_text, new_text, .. }) => {
-                                                (old_text.as_deref(), Some(new_text.as_str()))
-                                            }
+                            d.cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let entries = this.thread.read(cx).entries();
+                                    let (old, new) = match (at, entries.get(turn_start)) {
+                                        (DiffAt::Tool(i, ci), _) => match entries.get(base + i) {
+                                            Some(Entry::Tool(t)) => match t.content.get(ci) {
+                                                Some(ToolContent::Diff {
+                                                    old_text,
+                                                    new_text,
+                                                    ..
+                                                }) => {
+                                                    (old_text.as_deref(), Some(new_text.as_str()))
+                                                }
+                                                _ => (None, None),
+                                            },
                                             _ => (None, None),
                                         },
+                                        (
+                                            DiffAt::Shell(i),
+                                            Some(Entry::User { shell_changes, .. }),
+                                        ) => shell_changes.get(i).map_or((None, None), |c| {
+                                            (c.old.as_deref(), Some(c.new.as_str()))
+                                        }),
                                         _ => (None, None),
-                                    },
-                                    (DiffAt::Shell(i), Some(Entry::User { shell_changes, .. })) => {
-                                        shell_changes.get(i).map_or((None, None), |c| (c.old.as_deref(), Some(c.new.as_str())))
-                                    }
-                                    _ => (None, None),
-                                };
-                                let line = new.and_then(|new| {
-                                    std::fs::read_to_string(&full).ok().and_then(|f| changed_line(&f, old, new))
-                                });
-                                cx.emit(ThreadViewEvent::OpenFile(full.clone(), line))
-                            }))
+                                    };
+                                    let line = new.and_then(|new| {
+                                        std::fs::read_to_string(&full)
+                                            .ok()
+                                            .and_then(|f| changed_line(&f, old, new))
+                                    });
+                                    cx.emit(ThreadViewEvent::OpenFile(full.clone(), line))
+                                }))
                         })
                         .child(diff_card(path, diff.old, diff.new, cwd)),
                 );
@@ -80,7 +108,11 @@ pub(super) enum DiffAt {
 
 /// The diffs of the edit tools, then what the shell commands changed besides.
 pub(super) fn turn_edits<'a>(shell: &'a [ShellChange], content: &'a [Entry]) -> TurnEdits<'a> {
-    let mut edits = TurnEdits { files: Vec::new(), added: 0, removed: 0 };
+    let mut edits = TurnEdits {
+        files: Vec::new(),
+        added: 0,
+        removed: 0,
+    };
     for (i, e) in content.iter().enumerate() {
         let Entry::Tool(t) = e else { continue };
         if t.status != ToolStatus::Completed {
@@ -88,9 +120,20 @@ pub(super) fn turn_edits<'a>(shell: &'a [ShellChange], content: &'a [Entry]) -> 
         }
         let mut any = false;
         for (k, c) in t.content.iter().enumerate() {
-            let ToolContent::Diff { path, old_text, new_text } = c else { continue };
+            let ToolContent::Diff {
+                path,
+                old_text,
+                new_text,
+            } = c
+            else {
+                continue;
+            };
             any = true;
-            let diff = TurnDiff { at: DiffAt::Tool(i, k), old: old_text.as_deref(), new: new_text };
+            let diff = TurnDiff {
+                at: DiffAt::Tool(i, k),
+                old: old_text.as_deref(),
+                new: new_text,
+            };
             match edits.files.iter_mut().find(|(p, _)| *p == path.as_path()) {
                 Some((_, diffs)) => diffs.push(diff),
                 None => edits.files.push((path, vec![diff])),
@@ -102,7 +145,14 @@ pub(super) fn turn_edits<'a>(shell: &'a [ShellChange], content: &'a [Entry]) -> 
         }
     }
     for (k, c) in shell.iter().enumerate() {
-        edits.files.push((&c.path, vec![TurnDiff { at: DiffAt::Shell(k), old: c.old.as_deref(), new: &c.new }]));
+        edits.files.push((
+            &c.path,
+            vec![TurnDiff {
+                at: DiffAt::Shell(k),
+                old: c.old.as_deref(),
+                new: &c.new,
+            }],
+        ));
         edits.added += c.added;
         edits.removed += c.removed;
     }
@@ -126,13 +176,30 @@ pub(super) fn diff_counts(added: u32, removed: u32) -> gpui::Div {
         .gap(px(4.))
         .text_size(px(crate::ui::TEXT_XS))
         .font_weight(FontWeight::SEMIBOLD)
-        .when(added > 0, |d| d.child(div().text_color(theme::diff_add()).child(format!("+{added}"))))
-        .when(removed > 0, |d| d.child(div().text_color(theme::diff_del()).child(format!("-{removed}"))))
+        .when(added > 0, |d| {
+            d.child(
+                div()
+                    .text_color(theme::diff_add())
+                    .child(format!("+{added}")),
+            )
+        })
+        .when(removed > 0, |d| {
+            d.child(
+                div()
+                    .text_color(theme::diff_del())
+                    .child(format!("-{removed}")),
+            )
+        })
 }
 
 /// Highlights the lines a diff card shows, once per diff: cards are drawn
 /// every frame while they are visible.
-pub(super) fn diff_spans(path: &Path, old: Option<&str>, new: &str, lines: &[String]) -> Option<Rc<Vec<LineSpans>>> {
+pub(super) fn diff_spans(
+    path: &Path,
+    old: Option<&str>,
+    new: &str,
+    lines: &[String],
+) -> Option<Rc<Vec<LineSpans>>> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (path, old, new).hash(&mut h);
@@ -152,7 +219,12 @@ pub(super) fn diff_spans(path: &Path, old: Option<&str>, new: &str, lines: &[Str
 }
 
 /// One line of code in its syntax colors over `base`; `dim` fades the colors.
-pub(super) fn colored_line(text: &str, spans: Option<&LineSpans>, base: Hsla, dim: f32) -> StyledText {
+pub(super) fn colored_line(
+    text: &str,
+    spans: Option<&LineSpans>,
+    base: Hsla,
+    dim: f32,
+) -> StyledText {
     let f = font(theme::FONT_MONO);
     let run = |len: usize, color: Hsla| TextRun {
         len,
@@ -238,10 +310,18 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                         .text_size(px(crate::ui::TEXT_XS))
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(added > 0, |d| {
-                            d.child(div().text_color(theme::diff_add()).child(format!("+{added}")))
+                            d.child(
+                                div()
+                                    .text_color(theme::diff_add())
+                                    .child(format!("+{added}")),
+                            )
                         })
                         .when(removed > 0, |d| {
-                            d.child(div().text_color(theme::diff_del()).child(format!("-{removed}")))
+                            d.child(
+                                div()
+                                    .text_color(theme::diff_del())
+                                    .child(format!("-{removed}")),
+                            )
                         }),
                 ),
         )
@@ -254,83 +334,120 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                         .overflow_x_scroll()
                         .restrict_scroll_to_axis()
                         .child(
-                    div()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .min_w_full()
-                    .py(px(2.))
-                    .children(hunks.iter().take(PREVIEW_LINES).enumerate().map(|(n, line)| match line {
-                        None => div()
-                            .h(px(18.))
-                            .pl(px(28.))
-                            .font_family(theme::FONT_MONO)
-                            .text_size(px(crate::ui::TEXT_XS))
-                            .text_color(theme::text_faint())
-                            .child("⋯"),
-                        Some(l) => {
-                            let (mark, mark_color, bar) = match l.kind {
-                                LineKind::Add => ("+", Hsla::from(theme::diff_add()), Some(theme::diff_add_bar())),
-                                LineKind::Del => ("−", Hsla::from(theme::diff_del()), Some(theme::diff_del_bar())),
-                                LineKind::Context => (" ", gpui::transparent_black(), None),
-                            };
                             div()
-                                .relative()
                                 .flex()
-                                .items_center()
-                                .h(px(18.))
-                                .when_some(diff_bg(l.kind), |d, bg| d.bg(bg))
-                                .when_some(bar, |d, bar| {
-                                    d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(bar))
-                                })
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .w(px(28.))
-                                        .pr(px(4.))
-                                        .flex()
-                                        .justify_end()
-                                        .font_family(theme::FONT_MONO)
-                                        .text_size(px(crate::ui::TEXT_XS))
-                                        .text_color(theme::text_faint())
-                                        .child(l.number.map_or(String::new(), |n| n.to_string())),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .w(px(12.))
-                                        .flex()
-                                        .justify_center()
-                                        .font_family(theme::FONT_MONO)
-                                        .text_size(px(crate::ui::TEXT_XS))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(mark_color)
-                                        .child(mark),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .pr(px(8.))
-                                        .whitespace_nowrap()
-                                        .font_family(theme::FONT_MONO)
-                                        .text_size(px(crate::ui::TEXT_XS))
-                                        .child({
-                                            let base = if l.kind == LineKind::Context {
-                                                theme::mix(0.55)
-                                            } else {
-                                                theme::mix(0.85)
-                                            };
-                                            let dim = if l.kind == LineKind::Context { 0.7 } else { 1. };
-                                            colored_line(
-                                                &texts[n],
-                                                spans.as_ref().and_then(|s| s.get(n)),
-                                                base,
-                                                dim,
-                                            )
-                                        }),
-                                )
-                        }
-                    })),
+                                .flex_col()
+                                .flex_none()
+                                .min_w_full()
+                                .py(px(2.))
+                                .children(hunks.iter().take(PREVIEW_LINES).enumerate().map(
+                                    |(n, line)| {
+                                        match line {
+                                            None => div()
+                                                .h(px(18.))
+                                                .pl(px(28.))
+                                                .font_family(theme::FONT_MONO)
+                                                .text_size(px(crate::ui::TEXT_XS))
+                                                .text_color(theme::text_faint())
+                                                .child("⋯"),
+                                            Some(l) => {
+                                                let (mark, mark_color, bar) = match l.kind {
+                                                    LineKind::Add => (
+                                                        "+",
+                                                        Hsla::from(theme::diff_add()),
+                                                        Some(theme::diff_add_bar()),
+                                                    ),
+                                                    LineKind::Del => (
+                                                        "−",
+                                                        Hsla::from(theme::diff_del()),
+                                                        Some(theme::diff_del_bar()),
+                                                    ),
+                                                    LineKind::Context => {
+                                                        (" ", gpui::transparent_black(), None)
+                                                    }
+                                                };
+                                                div()
+                                                    .relative()
+                                                    .flex()
+                                                    .items_center()
+                                                    .h(px(18.))
+                                                    .when_some(diff_bg(l.kind), |d, bg| d.bg(bg))
+                                                    .when_some(bar, |d, bar| {
+                                                        d.child(
+                                                            div()
+                                                                .absolute()
+                                                                .left_0()
+                                                                .top_0()
+                                                                .bottom_0()
+                                                                .w(px(2.))
+                                                                .bg(bar),
+                                                        )
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .flex_none()
+                                                            .w(px(28.))
+                                                            .pr(px(4.))
+                                                            .flex()
+                                                            .justify_end()
+                                                            .font_family(theme::FONT_MONO)
+                                                            .text_size(px(crate::ui::TEXT_XS))
+                                                            .text_color(theme::text_faint())
+                                                            .child(
+                                                                l.number
+                                                                    .map_or(String::new(), |n| {
+                                                                        n.to_string()
+                                                                    }),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_none()
+                                                            .w(px(12.))
+                                                            .flex()
+                                                            .justify_center()
+                                                            .font_family(theme::FONT_MONO)
+                                                            .text_size(px(crate::ui::TEXT_XS))
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(mark_color)
+                                                            .child(mark),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_none()
+                                                            .pr(px(8.))
+                                                            .whitespace_nowrap()
+                                                            .font_family(theme::FONT_MONO)
+                                                            .text_size(px(crate::ui::TEXT_XS))
+                                                            .child({
+                                                                let base = if l.kind
+                                                                    == LineKind::Context
+                                                                {
+                                                                    theme::mix(0.55)
+                                                                } else {
+                                                                    theme::mix(0.85)
+                                                                };
+                                                                let dim = if l.kind
+                                                                    == LineKind::Context
+                                                                {
+                                                                    0.7
+                                                                } else {
+                                                                    1.
+                                                                };
+                                                                colored_line(
+                                                                    &texts[n],
+                                                                    spans
+                                                                        .as_ref()
+                                                                        .and_then(|s| s.get(n)),
+                                                                    base,
+                                                                    dim,
+                                                                )
+                                                            }),
+                                                    )
+                                            }
+                                        }
+                                    },
+                                )),
                         ),
                 )
                 .when(total > PREVIEW_LINES, |d| {

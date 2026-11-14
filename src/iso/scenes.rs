@@ -72,7 +72,15 @@ fn coin_times(i: usize) -> (f32, f32) {
 /// 0 before coin `i` lands, 1 once it has, back to 0 as the month closes.
 fn landed(t: f32, i: usize) -> f32 {
     let (_, land) = coin_times(i);
-    keyed(t, &[(land - 0.01, 0., Out), (land + 0.06, 1., Linear), (0.5417, 1., InOut), (0.6667, 0., Linear)])
+    keyed(
+        t,
+        &[
+            (land - 0.01, 0., Out),
+            (land + 0.06, 1., Linear),
+            (0.5417, 1., InOut),
+            (0.6667, 0., Linear),
+        ],
+    )
 }
 
 fn billing(t: f32) -> Vec<Node> {
@@ -86,10 +94,18 @@ fn billing(t: f32) -> Vec<Node> {
     // Gauge on the left wall: fills a step per coin.
     let level = (0..COINS).map(|i| landed(t, i)).sum::<f32>() / COINS as f32;
     let gauge = Face::Left(140.);
-    n.push(plate(gauge, [36., 20., 112., 56.], 6.).fill(Tone::Recess).ink(Ink::Edge));
+    n.push(
+        plate(gauge, [36., 20., 112., 56.], 6.)
+            .fill(Tone::Recess)
+            .ink(Ink::Edge),
+    );
     let fill_w = 64. * level;
     if fill_w >= 6. {
-        n.push(plate(gauge, [42., 30., 42. + fill_w, 42.], 3.).accent().ink(Ink::Accent));
+        n.push(
+            plate(gauge, [42., 30., 42. + fill_w, 42.], 3.)
+                .accent()
+                .ink(Ink::Accent),
+        );
     }
     for i in 0..5 {
         let x = 44. + i as f32 * 15.;
@@ -98,31 +114,59 @@ fn billing(t: f32) -> Vec<Node> {
 
     // Screen on the right wall: a bar per week, raised by that week's coin.
     let screen = Face::Right(200.);
-    n.push(plate(screen, [34., 22., 104., 58.], 6.).fill(Tone::Recess).ink(Ink::Edge));
+    n.push(
+        plate(screen, [34., 22., 104., 58.], 6.)
+            .fill(Tone::Recess)
+            .ink(Ink::Edge),
+    );
     n.push(line(vec![[200., 96., 27.], [200., 42., 27.]]));
     for (i, h) in [14., 22., 17., 26.].into_iter().enumerate() {
         let y = 94. - i as f32 * 14.;
         let h = h * landed(t, i);
         // Below twice its radius a bar would round into a dot.
         if h >= 4. {
-            n.push(plate(screen, [y - 8., 28., y, 28. + h], 2.).accent().ink(Ink::Accent));
+            n.push(
+                plate(screen, [y - 8., 28., y, 28. + h], 2.)
+                    .accent()
+                    .ink(Ink::Accent),
+            );
         }
     }
 
     // Print button: flashes when the invoice comes out.
-    let flash = keyed(t, &[(0.661, 0., Out), (0.689, 1., Out), (0.819, 0., Linear)]);
+    let flash = keyed(
+        t,
+        &[(0.661, 0., Out), (0.689, 1., Out), (0.819, 0., Linear)],
+    );
     n.push(cylinder([178., 42., TOP], 8., 3.));
     n.push(disc(Face::Top(TOP + 3.), [178., 42.], 4.).ink(Ink::Mute));
-    n.push(disc(Face::Top(TOP + 3.), [178., 42.], 4.).accent().no_ink().alpha(flash));
+    n.push(
+        disc(Face::Top(TOP + 3.), [178., 42.], 4.)
+            .accent()
+            .no_ink()
+            .alpha(flash),
+    );
 
     // Paper slot.
-    n.push(plate(Face::Top(TOP), [120., 96., 184., 106.], 5.).fill(Tone::Recess).ink(Ink::Edge));
+    n.push(
+        plate(Face::Top(TOP), [120., 96., 184., 106.], 5.)
+            .fill(Tone::Recess)
+            .ink(Ink::Edge),
+    );
 
     // The hopper and the coins that drop into it. Each coin rests on the one
     // below and bounces a little less, as the stack takes the blow; the
     // floor of the hopper swallows them when the month closes.
     let (r, inner, h) = HOPPER_R;
-    n.push(Node::new(Shape::TubeBack { base: HOPPER, r, inner, h }).side_ink(Ink::Mute));
+    n.push(
+        Node::new(Shape::TubeBack {
+            base: HOPPER,
+            r,
+            inner,
+            h,
+        })
+        .side_ink(Ink::Mute),
+    );
     for i in 0..COINS {
         let (start, land) = coin_times(i);
         let drop = 56. - 10. * i as f32;
@@ -138,7 +182,15 @@ fn billing(t: f32) -> Vec<Node> {
                 (0.6667, -30., Linear),
             ],
         );
-        let alpha = keyed(t, &[(start, 0., Out), (start + 0.056, 1., Linear), (0.6722, 1., Linear), (0.6778, 0., Linear)]);
+        let alpha = keyed(
+            t,
+            &[
+                (start, 0., Out),
+                (start + 0.056, 1., Linear),
+                (0.6722, 1., Linear),
+                (0.6778, 0., Linear),
+            ],
+        );
         let z = TOP + i as f32 * COIN_H + dz;
         let coin = 10 + i as u32;
         n.push(
@@ -157,7 +209,12 @@ fn billing(t: f32) -> Vec<Node> {
                 .clip(Clip::above(TOP)),
         );
     }
-    n.push(Node::new(Shape::TubeFront { base: HOPPER, r, inner, h }));
+    n.push(Node::new(Shape::TubeFront {
+        base: HOPPER,
+        r,
+        inner,
+        h,
+    }));
 
     // Last month's invoice lifts away; this month's prints out of the slot,
     // its total marked once it is all out.
@@ -180,14 +237,34 @@ fn invoice(n: &mut Vec<Node>, dz: f32, alpha: f32, total: f32) {
     }
     let clip = Clip::above(TOP);
     let (y, z0) = (101.2, TOP + dz);
-    n.push(slab([126., 100., z0], [52., 1.2, PAPER_H], 0.).alpha(alpha).layer(1).clip(clip));
+    n.push(
+        slab([126., 100., z0], [52., 1.2, PAPER_H], 0.)
+            .alpha(alpha)
+            .layer(1)
+            .clip(clip),
+    );
     for (i, len) in [30., 22., 26.].into_iter().enumerate() {
         let z = z0 + PAPER_H - 12. - i as f32 * 7.;
-        n.push(line(vec![[134., y, z], [134. + len, y, z]]).alpha(alpha).layer(1).clip(clip));
+        n.push(
+            line(vec![[134., y, z], [134. + len, y, z]])
+                .alpha(alpha)
+                .layer(1)
+                .clip(clip),
+        );
     }
     let z = z0 + 12.;
-    n.push(line(vec![[134., y, z + 6.], [150., y, z + 6.]]).alpha(alpha).layer(1).clip(clip));
-    n.push(line(vec![[134., y, z], [170., y, z]]).ink(Ink::Accent).alpha(alpha * total).clip(clip));
+    n.push(
+        line(vec![[134., y, z + 6.], [150., y, z + 6.]])
+            .alpha(alpha)
+            .layer(1)
+            .clip(clip),
+    );
+    n.push(
+        line(vec![[134., y, z], [170., y, z]])
+            .ink(Ink::Accent)
+            .alpha(alpha * total)
+            .clip(clip),
+    );
 }
 
 // ---- Primitives ---------------------------------------------------------------------
@@ -212,16 +289,38 @@ fn primitives(t: f32) -> Vec<Node> {
 
     // Middle: plates on both visible walls of a block.
     n.push(slab([30., 90., 6.], [70., 60., 40.], 6.));
-    n.push(plate(Face::Left(150.), [38., 14., 92., 38.], 5.).fill(Tone::Recess).ink(Ink::Edge));
+    n.push(
+        plate(Face::Left(150.), [38., 14., 92., 38.], 5.)
+            .fill(Tone::Recess)
+            .ink(Ink::Edge),
+    );
     n.push(disc(Face::Left(150.), [50., 26.], 5.).accent());
-    n.push(plate(Face::Right(100.), [98., 14., 142., 38.], 5.).fill(Tone::Recess).ink(Ink::Edge));
+    n.push(
+        plate(Face::Right(100.), [98., 14., 142., 38.], 5.)
+            .fill(Tone::Recess)
+            .ink(Ink::Edge),
+    );
     n.push(disc(Face::Right(100.), [110., 26.], 5.).accent());
 
     // An open tube with a coin bobbing in it.
     let base = [190., 120., 6.];
-    n.push(Node::new(Shape::TubeBack { base, r: 32., inner: 24., h: 16. }));
-    n.push(cylinder([190., 120., 10. + 22. * bob], 18., 5.).accent().clip(Clip::above(6.)));
-    n.push(Node::new(Shape::TubeFront { base, r: 32., inner: 24., h: 16. }));
+    n.push(Node::new(Shape::TubeBack {
+        base,
+        r: 32.,
+        inner: 24.,
+        h: 16.,
+    }));
+    n.push(
+        cylinder([190., 120., 10. + 22. * bob], 18., 5.)
+            .accent()
+            .clip(Clip::above(6.)),
+    );
+    n.push(Node::new(Shape::TubeFront {
+        base,
+        r: 32.,
+        inner: 24.,
+        h: 16.,
+    }));
 
     // A small accent cube floating.
     n.push(slab([120., 130., 24. + 10. * bob], [20., 20., 20.], 3.).accent());

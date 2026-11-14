@@ -56,9 +56,11 @@ fn creds() -> Result<Creds, String> {
     let account = env("CLOUDFLARE_ACCOUNT_ID").or_else(|| keyring::lookup(ACCOUNT_KEY));
     match (token, account) {
         (Some(token), Some(account)) => Ok(Creds { token, account }),
-        _ => Err("no Browser Run token: create one with the \"Browser Run - Edit\" permission and run \
+        _ => Err(
+            "no Browser Run token: create one with the \"Browser Run - Edit\" permission and run \
                   `arakun fetch --set-token <account-id>` with it on stdin"
-            .into()),
+                .into(),
+        ),
     }
 }
 
@@ -72,18 +74,34 @@ fn call(c: &Creds, method: &str, path: &str, body: Option<&Value>) -> Result<Val
             .header("Authorization", format!("Bearer {}", c.token))
             .header("Content-Type", "application/json");
         let sent = match body {
-            Some(b) => request.body(b.to_string()).map_err(|e| e.to_string()).and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-            None => request.body(()).map_err(|e| e.to_string()).and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+            Some(b) => request
+                .body(b.to_string())
+                .map_err(|e| e.to_string())
+                .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+            None => request
+                .body(())
+                .map_err(|e| e.to_string())
+                .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
         };
         let mut response = sent?;
         let status = response.status().as_u16();
         if status == 429 && attempt < RETRIES {
-            let wait = response.headers().get("retry-after").and_then(|v| v.to_str().ok()?.parse().ok()).unwrap_or(10);
+            let wait = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok()?.parse().ok())
+                .unwrap_or(10);
             std::thread::sleep(Duration::from_secs(wait.min(120)));
             continue;
         }
-        let text = response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())?;
-        let v: Value = serde_json::from_str(&text).map_err(|_| format!("Browser Run answered {status}: {}", text.trim()))?;
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024 * 1024)
+            .read_to_string()
+            .map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|_| format!("Browser Run answered {status}: {}", text.trim()))?;
         if v["success"].as_bool() != Some(true) {
             let why = v["errors"][0]["message"].as_str().unwrap_or("refused");
             return Err(format!("Browser Run answered {status}: {why}"));
@@ -113,10 +131,19 @@ pub fn available() -> bool {
 /// fetch every 10 s asks.
 pub fn page(action: &str, url: &str) -> Result<String, String> {
     let c = creds()?;
-    let result = call(&c, "POST", action, Some(&json!({ "url": url, "rejectResourceTypes": SKIP })))?;
+    let result = call(
+        &c,
+        "POST",
+        action,
+        Some(&json!({ "url": url, "rejectResourceTypes": SKIP })),
+    )?;
     Ok(match result {
         Value::String(s) => s,
-        Value::Array(links) => links.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"),
+        Value::Array(links) => links
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n"),
         other => other.to_string(),
     })
 }
@@ -131,7 +158,14 @@ struct CrawlArgs {
 }
 
 fn crawl_args(args: &[String]) -> Option<CrawlArgs> {
-    let mut out = CrawlArgs { url: String::new(), limit: 20, depth: None, render: false, include: Vec::new(), exclude: Vec::new() };
+    let mut out = CrawlArgs {
+        url: String::new(),
+        limit: 20,
+        depth: None,
+        render: false,
+        include: Vec::new(),
+        exclude: Vec::new(),
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -151,7 +185,8 @@ fn crawl_args(args: &[String]) -> Option<CrawlArgs> {
 fn crawl(args: &[String]) -> Result<(), String> {
     let a = crawl_args(args).ok_or(USAGE)?;
     let c = creds()?;
-    let mut body = json!({ "url": a.url, "limit": a.limit, "formats": ["markdown"], "render": a.render });
+    let mut body =
+        json!({ "url": a.url, "limit": a.limit, "formats": ["markdown"], "render": a.render });
     if let Some(d) = a.depth {
         body["depth"] = json!(d);
     }
@@ -159,7 +194,11 @@ fn crawl(args: &[String]) -> Result<(), String> {
         body["options"] = json!({ "includePatterns": a.include, "excludePatterns": a.exclude });
     }
     let job = call(&c, "POST", "crawl", Some(&body))?;
-    let id = job.as_str().map(str::to_string).or_else(|| job["id"].as_str().map(str::to_string)).ok_or("no crawl job id")?;
+    let id = job
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| job["id"].as_str().map(str::to_string))
+        .ok_or("no crawl job id")?;
     eprintln!("crawl {id}: waiting");
     let started = Instant::now();
     loop {
@@ -172,7 +211,9 @@ fn crawl(args: &[String]) -> Result<(), String> {
             break;
         }
         if started.elapsed() > Duration::from_secs(1800) {
-            return Err(format!("crawl {id} still running after 30 min (cancel: DELETE crawl/{id})"));
+            return Err(format!(
+                "crawl {id} still running after 30 min (cancel: DELETE crawl/{id})"
+            ));
         }
         std::thread::sleep(Duration::from_secs(5));
     }
@@ -185,10 +226,16 @@ fn crawl(args: &[String]) -> Result<(), String> {
         let r = call(&c, "GET", &path, None)?;
         for page in r["records"].as_array().into_iter().flatten() {
             let url = page["url"].as_str().unwrap_or("?");
-            let text = page["markdown"].as_str().or(page["html"].as_str()).unwrap_or("");
+            let text = page["markdown"]
+                .as_str()
+                .or(page["html"].as_str())
+                .unwrap_or("");
             println!("\n===== {url} =====\n\n{}", text.trim());
         }
-        cursor = r["cursor"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+        cursor = r["cursor"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         if cursor.is_none() {
             break;
         }
@@ -197,15 +244,23 @@ fn crawl(args: &[String]) -> Result<(), String> {
 }
 
 fn set_token(args: &[String]) -> Result<(), String> {
-    let [account] = args else { return Err(USAGE.into()) };
+    let [account] = args else {
+        return Err(USAGE.into());
+    };
     let mut token = String::new();
-    std::io::stdin().read_to_string(&mut token).map_err(|e| e.to_string())?;
+    std::io::stdin()
+        .read_to_string(&mut token)
+        .map_err(|e| e.to_string())?;
     let token = token.trim();
     if token.is_empty() {
         return Err("no token on stdin".into());
     }
     keyring::store(TOKEN_KEY, "arakun: Cloudflare Browser Run token", token)?;
-    keyring::store(ACCOUNT_KEY, "arakun: Cloudflare Browser Run account", account)
+    keyring::store(
+        ACCOUNT_KEY,
+        "arakun: Cloudflare Browser Run account",
+        account,
+    )
 }
 
 /// `arakun fetch …` (`crawl` true for `arakun crawl …`); the exit code.
@@ -239,8 +294,20 @@ mod tests {
 
     #[test]
     fn crawl_flags() {
-        let a = crawl_args(&s(&["--limit", "50", "--depth", "2", "--include", "https://x.dev/docs/**", "https://x.dev/docs"])).unwrap();
-        assert_eq!((a.limit, a.depth, a.render, a.url.as_str()), (50, Some(2), false, "https://x.dev/docs"));
+        let a = crawl_args(&s(&[
+            "--limit",
+            "50",
+            "--depth",
+            "2",
+            "--include",
+            "https://x.dev/docs/**",
+            "https://x.dev/docs",
+        ]))
+        .unwrap();
+        assert_eq!(
+            (a.limit, a.depth, a.render, a.url.as_str()),
+            (50, Some(2), false, "https://x.dev/docs")
+        );
         assert_eq!(a.include, ["https://x.dev/docs/**"]);
         assert!(crawl_args(&s(&["--limit"])).is_none());
         assert!(crawl_args(&s(&[])).is_none());

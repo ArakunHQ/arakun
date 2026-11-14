@@ -133,7 +133,11 @@ impl Render for CommitDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = !self.message(cx).is_empty() && self.busy.is_none();
         let has_staged = self.staged > 0;
-        let files = if self.files == 1 { "1 file".to_string() } else { format!("{} files", self.files) };
+        let files = if self.files == 1 {
+            "1 file".to_string()
+        } else {
+            format!("{} files", self.files)
+        };
         let what = if has_staged {
             format!("{} of {files} staged", self.staged)
         } else {
@@ -147,14 +151,19 @@ impl Render for CommitDialog {
             }
         };
         let busy = self.busy;
-        let commit_button = |id: &'static str, all: bool, kind: ButtonKind, cx: &mut Context<Self>| {
-            ui::button(id, label(all, busy), kind, ready)
-                .when(busy == Some(all), |d| {
-                    let color = if kind == ButtonKind::Primary { theme::background() } else { theme::content() };
-                    d.child(ui::spinner(("commit-spin", all as usize), 12., color))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| this.submit(all, cx)))
-        };
+        let commit_button =
+            |id: &'static str, all: bool, kind: ButtonKind, cx: &mut Context<Self>| {
+                ui::button(id, label(all, busy), kind, ready)
+                    .when(busy == Some(all), |d| {
+                        let color = if kind == ButtonKind::Primary {
+                            theme::background()
+                        } else {
+                            theme::content()
+                        };
+                        d.child(ui::spinner(("commit-spin", all as usize), 12., color))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.submit(all, cx)))
+            };
 
         ui::modal_panel("commit", 440.)
             .child(ui::modal_header(
@@ -205,19 +214,41 @@ impl Render for CommitDialog {
                             .justify_end()
                             .gap(px(8.))
                             .child(
-                                ui::button("commit-cancel", "Cancel", ButtonKind::Ghost, self.busy.is_none())
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                ui::button(
+                                    "commit-cancel",
+                                    "Cancel",
+                                    ButtonKind::Ghost,
+                                    self.busy.is_none(),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         if this.busy.is_none() {
                                             cx.emit(GitDialogEvent::Dismissed)
                                         }
-                                    })),
+                                    },
+                                )),
                             )
                             .map(|d| {
                                 if has_staged {
-                                    d.child(commit_button("commit-all", true, ButtonKind::Ghost, cx))
-                                        .child(commit_button("commit-staged", false, ButtonKind::Primary, cx))
+                                    d.child(commit_button(
+                                        "commit-all",
+                                        true,
+                                        ButtonKind::Ghost,
+                                        cx,
+                                    ))
+                                    .child(commit_button(
+                                        "commit-staged",
+                                        false,
+                                        ButtonKind::Primary,
+                                        cx,
+                                    ))
                                 } else {
-                                    d.child(commit_button("commit-all", true, ButtonKind::Primary, cx))
+                                    d.child(commit_button(
+                                        "commit-all",
+                                        true,
+                                        ButtonKind::Primary,
+                                        cx,
+                                    ))
                                 }
                             }),
                     ),
@@ -273,7 +304,12 @@ impl ConfirmDialog {
         }
     }
 
-    pub fn detail(mut self, icon_name: &'static str, color: Hsla, text: impl Into<SharedString>) -> Self {
+    pub fn detail(
+        mut self,
+        icon_name: &'static str,
+        color: Hsla,
+        text: impl Into<SharedString>,
+    ) -> Self {
         self.details.push((icon_name, color, text.into()));
         self
     }
@@ -320,8 +356,16 @@ impl Focusable for ConfirmDialog {
 impl Render for ConfirmDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = !self.busy && self.blocked.is_none() && self.action.is_some();
-        let kind = if self.danger { ButtonKind::Danger } else { ButtonKind::Primary };
-        let spin_color: Hsla = if self.danger { theme::error().into() } else { theme::background() };
+        let kind = if self.danger {
+            ButtonKind::Danger
+        } else {
+            ButtonKind::Primary
+        };
+        let spin_color: Hsla = if self.danger {
+            theme::error().into()
+        } else {
+            theme::background()
+        };
         ui::modal_panel("git-confirm", 420.)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
@@ -348,7 +392,11 @@ impl Render for ConfirmDialog {
                     .p(px(16.))
                     .text_size(px(ui::TEXT_MD))
                     .line_height(px(19.))
-                    .child(div().text_color(theme::text_muted()).child(self.body.clone()))
+                    .child(
+                        div()
+                            .text_color(theme::text_muted())
+                            .child(self.body.clone()),
+                    )
                     .when(!self.details.is_empty(), |d| {
                         d.child(
                             div()
@@ -367,7 +415,11 @@ impl Render for ConfirmDialog {
                                         .flex()
                                         .items_start()
                                         .gap(px(10.))
-                                        .child(div().pt(px(2.)).child(icon(name, 14.).text_color(*color)))
+                                        .child(
+                                            div()
+                                                .pt(px(2.))
+                                                .child(icon(name, 14.).text_color(*color)),
+                                        )
                                         .child(div().flex_1().min_w_0().child(text.clone()))
                                 })),
                         )
@@ -380,7 +432,11 @@ impl Render for ConfirmDialog {
                                 .gap(px(10.))
                                 .text_size(px(ui::TEXT_SM))
                                 .text_color(theme::warn())
-                                .child(div().pt(px(2.)).child(icon("alert-circle", 14.).text_color(theme::warn())))
+                                .child(
+                                    div()
+                                        .pt(px(2.))
+                                        .child(icon("alert-circle", 14.).text_color(theme::warn())),
+                                )
                                 .child(div().flex_1().min_w_0().child(why)),
                         )
                     })
@@ -393,21 +449,34 @@ impl Render for ConfirmDialog {
                             .child(
                                 ui::button(
                                     "git-confirm-cancel",
-                                    if self.action.is_none() && !self.busy { "Close" } else { "Cancel" },
+                                    if self.action.is_none() && !self.busy {
+                                        "Close"
+                                    } else {
+                                        "Cancel"
+                                    },
                                     ButtonKind::Ghost,
                                     !self.busy,
                                 )
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if !this.busy {
-                                        cx.emit(GitDialogEvent::Dismissed)
-                                    }
-                                })),
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        if !this.busy {
+                                            cx.emit(GitDialogEvent::Dismissed)
+                                        }
+                                    },
+                                )),
                             )
                             .when(self.action.is_some() || self.busy, |d| {
                                 d.child(
-                                    ui::button("git-confirm-ok", self.confirm.clone(), kind, enabled)
-                                        .when(self.busy, |d| d.child(ui::spinner("git-confirm-spin", 12., spin_color)))
-                                        .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
+                                    ui::button(
+                                        "git-confirm-ok",
+                                        self.confirm.clone(),
+                                        kind,
+                                        enabled,
+                                    )
+                                    .when(self.busy, |d| {
+                                        d.child(ui::spinner("git-confirm-spin", 12., spin_color))
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                                 )
                             }),
                     ),

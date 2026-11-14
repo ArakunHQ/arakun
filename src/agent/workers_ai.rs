@@ -120,7 +120,10 @@ pub fn model(id: &str) -> Option<&'static Model> {
 }
 
 pub fn cli_models() -> Vec<String> {
-    MODELS.iter().map(|m| format!("{CLI_PREFIX}{}", m.id)).collect()
+    MODELS
+        .iter()
+        .map(|m| format!("{CLI_PREFIX}{}", m.id))
+        .collect()
 }
 
 impl Model {
@@ -134,7 +137,11 @@ impl Model {
 
     /// `input` is what went in fresh: neither read from the cache nor `written` to it.
     fn cost(&self, input: u64, cached: u64, written: u64, output: u64) -> f64 {
-        (input as f64 * self.price[0] + output as f64 * self.price[1] + cached as f64 * self.price[2] + written as f64 * self.cache_write) / 1e6
+        (input as f64 * self.price[0]
+            + output as f64 * self.price[1]
+            + cached as f64 * self.price[2]
+            + written as f64 * self.cache_write)
+            / 1e6
     }
 }
 
@@ -150,7 +157,11 @@ fn config_json(model: &Model, effort: &str) -> Value {
             })
         })
         .collect();
-    let efforts: Vec<Value> = model.efforts.iter().map(|e| json!({"value": e, "name": e})).collect();
+    let efforts: Vec<Value> = model
+        .efforts
+        .iter()
+        .map(|e| json!({"value": e, "name": e}))
+        .collect();
     json!([
         {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": model.id, "options": models},
         {"id": "reasoning_effort", "name": "Reasoning", "category": "thought_level", "type": "select", "currentValue": effort, "options": efforts},
@@ -159,7 +170,12 @@ fn config_json(model: &Model, effort: &str) -> Value {
 
 /// What the next session offers and starts with, after the settings `picked` for it.
 pub fn draft_options(picked: &[(Setting, String)]) -> Vec<ConfigOption> {
-    let get = |s: Setting| picked.iter().find(|(d, _)| *d == s).map(|(_, v)| v.as_str());
+    let get = |s: Setting| {
+        picked
+            .iter()
+            .find(|(d, _)| *d == s)
+            .map(|(_, v)| v.as_str())
+    };
     let m = get(Setting::Model).and_then(model).unwrap_or(&MODELS[0]);
     parse_config(&config_json(m, m.effort(get(Setting::Effort))))
 }
@@ -180,19 +196,30 @@ fn xdg(var: &str, fallback: &str) -> PathBuf {
 }
 
 fn auth_path() -> PathBuf {
-    xdg("XDG_DATA_HOME", ".local/share").join("opencode").join("auth.json")
+    xdg("XDG_DATA_HOME", ".local/share")
+        .join("opencode")
+        .join("auth.json")
 }
 
 fn account_path() -> PathBuf {
-    xdg("XDG_CONFIG_HOME", ".config").join("opencode").join("cf-account-id")
+    xdg("XDG_CONFIG_HOME", ".config")
+        .join("opencode")
+        .join("cf-account-id")
 }
 
 /// `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` first; else the Workers AI
 /// key `opencode auth login` keeps, with the account saved beside it or in
 /// opencode's `cf-account-id`. The error says how to set it up.
 pub fn credentials() -> Result<Credentials, String> {
-    let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let auth = std::fs::read(auth_path()).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let env = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let auth = std::fs::read(auth_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let file = std::fs::read_to_string(account_path()).ok();
     pick_credentials(env("CLOUDFLARE_API_TOKEN"), env("CLOUDFLARE_ACCOUNT_ID"), auth.as_ref(), file.as_deref()).ok_or_else(|| {
         format!(
@@ -215,14 +242,28 @@ fn pick_credentials(
         ["cloudflare-workers-ai", "workers-ai"]
             .iter()
             .filter_map(|k| o.get(*k))
-            .chain(o.iter().filter(|(k, _)| k.contains("workers-ai")).map(|(_, v)| v))
+            .chain(
+                o.iter()
+                    .filter(|(k, _)| k.contains("workers-ai"))
+                    .map(|(_, v)| v),
+            )
             .find(|v| v["key"].as_str().is_some_and(|k| !k.trim().is_empty()))
     });
-    let trimmed = |v: &Value| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let trimmed = |v: &Value| {
+        v.as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     let token = token.or_else(|| trimmed(&entry?["key"]))?;
     let account = account
         .or_else(|| trimmed(&entry?["metadata"]["accountId"]))
-        .or_else(|| account_file.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))?;
+        .or_else(|| {
+            account_file
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })?;
     Some(Credentials { account, token })
 }
 
@@ -240,19 +281,36 @@ pub struct Endpoint {
 /// containers) with `ARAKUN_WORKERS_AI_KEY` if set; else Cloudflare's API with
 /// [`credentials`].
 pub fn endpoint() -> Result<Endpoint, String> {
-    let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let env = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
     if let Some(url) = env("ARAKUN_WORKERS_AI_URL") {
-        return Ok(Endpoint { url, token: env("ARAKUN_WORKERS_AI_KEY"), api: Api::Chat });
+        return Ok(Endpoint {
+            url,
+            token: env("ARAKUN_WORKERS_AI_KEY"),
+            api: Api::Chat,
+        });
     }
     let c = credentials()?;
-    Ok(Endpoint { url: format!("{API}/accounts/{}/ai/v1/chat/completions", c.account), token: Some(c.token), api: Api::Chat })
+    Ok(Endpoint {
+        url: format!("{API}/accounts/{}/ai/v1/chat/completions", c.account),
+        token: Some(c.token),
+        api: Api::Chat,
+    })
 }
 
 /// Where `model`'s calls go, with what they need to get there.
 pub fn endpoint_for(model: &Model) -> Result<Endpoint, String> {
     match model.api {
         Api::Chat => endpoint(),
-        Api::Anthropic => anthropic::endpoint().map(|(url, key)| Endpoint { url, token: Some(key), api: Api::Anthropic }),
+        Api::Anthropic => anthropic::endpoint().map(|(url, key)| Endpoint {
+            url,
+            token: Some(key),
+            api: Api::Anthropic,
+        }),
     }
 }
 
@@ -272,7 +330,9 @@ impl Sse {
                 self.line.push(b);
                 continue;
             }
-            let line = String::from_utf8_lossy(&self.line).trim_end_matches('\r').to_string();
+            let line = String::from_utf8_lossy(&self.line)
+                .trim_end_matches('\r')
+                .to_string();
             self.line.clear();
             if let Some(data) = line.strip_prefix("data:") {
                 out.push(data.trim_start().to_string());
@@ -312,8 +372,16 @@ pub(crate) struct Reply {
 }
 
 pub(crate) fn api_error(v: &Value) -> Option<String> {
-    let e = v["errors"].get(0).or_else(|| v.get("error")).filter(|e| !e.is_null())?;
-    Some(e["message"].as_str().or(e.as_str()).map_or_else(|| e.to_string(), str::to_string))
+    let e = v["errors"]
+        .get(0)
+        .or_else(|| v.get("error"))
+        .filter(|e| !e.is_null())?;
+    Some(
+        e["message"]
+            .as_str()
+            .or(e.as_str())
+            .map_or_else(|| e.to_string(), str::to_string),
+    )
 }
 
 impl Reply {
@@ -339,7 +407,11 @@ impl Reply {
             }
             let d = &choice["delta"];
             // The API sends the reasoning twice, as `reasoning_content` and `reasoning`.
-            if let Some(r) = d["reasoning_content"].as_str().or(d["reasoning"].as_str()).filter(|r| !r.is_empty()) {
+            if let Some(r) = d["reasoning_content"]
+                .as_str()
+                .or(d["reasoning"].as_str())
+                .filter(|r| !r.is_empty())
+            {
                 self.reasoning.push_str(r);
                 out.push(Delta::Reasoning(r.to_string()));
             }
@@ -356,8 +428,10 @@ impl Reply {
                     c.id = id.to_string();
                 }
                 let named = !c.name.is_empty();
-                c.name.push_str(tc["function"]["name"].as_str().unwrap_or(""));
-                c.arguments.push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
+                c.name
+                    .push_str(tc["function"]["name"].as_str().unwrap_or(""));
+                c.arguments
+                    .push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
                 if !named && !c.name.is_empty() {
                     if c.id.is_empty() {
                         c.id = format!("call_{}", uuid_v4());
@@ -381,7 +455,11 @@ impl Reply {
 
     /// The assistant message that goes back into the history.
     pub(crate) fn message(&self) -> Value {
-        let content = if self.content.is_empty() { Value::Null } else { json!(self.content) };
+        let content = if self.content.is_empty() {
+            Value::Null
+        } else {
+            json!(self.content)
+        };
         let mut m = json!({"role": "assistant", "content": content});
         if !self.reasoning.is_empty() {
             m["reasoning_content"] = json!(self.reasoning);
@@ -413,7 +491,8 @@ fn request_body(model: &Model, effort: &str, messages: &[Value]) -> Value {
     let filled: Vec<Value>;
     let chat = model.api == Api::Chat;
     let fill = |m: &Value| {
-        (model.no_null_content && m["content"].is_null()) || (chat && (!m[anthropic::NATIVE].is_null() || m["content"].is_array()))
+        (model.no_null_content && m["content"].is_null())
+            || (chat && (!m[anthropic::NATIVE].is_null() || m["content"].is_array()))
     };
     let messages = if messages.iter().any(fill) {
         filled = messages
@@ -428,7 +507,11 @@ fn request_body(model: &Model, effort: &str, messages: &[Value]) -> Value {
                 if chat && let Some(parts) = m["content"].as_array() {
                     let words: Vec<&str> = parts
                         .iter()
-                        .map(|p| p["text"].as_str().unwrap_or("[a photo was attached here; this model cannot see it]"))
+                        .map(|p| {
+                            p["text"]
+                                .as_str()
+                                .unwrap_or("[a photo was attached here; this model cannot see it]")
+                        })
                         .collect();
                     m["content"] = json!(words.join("\n\n"));
                 }
@@ -505,11 +588,17 @@ impl Session {
     }
 
     fn save(&self) {
-        let Some(path) = Self::path(&self.id) else { return };
-        let written = std::fs::create_dir_all(sessions_dir())
-            .and_then(|_| crate::durable::write(&path, &serde_json::to_vec(self).unwrap_or_default()));
+        let Some(path) = Self::path(&self.id) else {
+            return;
+        };
+        let written = std::fs::create_dir_all(sessions_dir()).and_then(|_| {
+            crate::durable::write(&path, &serde_json::to_vec(self).unwrap_or_default())
+        });
         if let Err(e) = written {
-            eprintln!("arakun: could not save the Workers AI session {}: {e}", self.id);
+            eprintln!(
+                "arakun: could not save the Workers AI session {}: {e}",
+                self.id
+            );
         }
     }
 
@@ -535,11 +624,24 @@ impl Session {
     /// About how many tokens the next request takes: what the last one took
     /// plus what came after it, at three characters a token.
     fn estimate(&self) -> u64 {
-        let last = self.messages.iter().rposition(|m| m["role"] == "assistant").filter(|_| self.context > 0);
+        let last = self
+            .messages
+            .iter()
+            .rposition(|m| m["role"] == "assistant")
+            .filter(|_| self.context > 0);
         let start = last.map_or(0, |i| i + 1);
         // A photo counts as the 1,600 tokens a large one takes, not as its base64.
         let chars = |m: &Value| match m["content"].as_array() {
-            Some(parts) => parts.iter().map(|p| if p["type"] == "image_url" { 4_800 } else { p.to_string().len() }).sum(),
+            Some(parts) => parts
+                .iter()
+                .map(|p| {
+                    if p["type"] == "image_url" {
+                        4_800
+                    } else {
+                        p.to_string().len()
+                    }
+                })
+                .sum(),
             None => m.to_string().len(),
         };
         let chars: usize = self.messages[start..].iter().map(chars).sum();
@@ -556,7 +658,12 @@ pub fn history_path(id: &str) -> Option<PathBuf> {
 pub fn history_counts(id: &str) -> Option<(usize, usize)> {
     let s = Session::load(id)?;
     let replies = s.messages.iter().filter(|m| m["role"] == "assistant");
-    Some(replies.fold((0, 0), |(n, calls), m| (n + 1, calls + m["tool_calls"].as_array().map_or(0, Vec::len))))
+    Some(replies.fold((0, 0), |(n, calls), m| {
+        (
+            n + 1,
+            calls + m["tool_calls"].as_array().map_or(0, Vec::len),
+        )
+    }))
 }
 
 /// Model calls of session `id` that went out with each effort, as (high, low).
@@ -572,9 +679,10 @@ fn repair(messages: &mut Vec<Value>) {
     let mut i = 0;
     while i < messages.len() {
         let ids: Vec<String> = match messages[i]["tool_calls"].as_array() {
-            Some(calls) if messages[i]["role"] == "assistant" => {
-                calls.iter().filter_map(|c| c["id"].as_str().map(str::to_string)).collect()
-            }
+            Some(calls) if messages[i]["role"] == "assistant" => calls
+                .iter()
+                .filter_map(|c| c["id"].as_str().map(str::to_string))
+                .collect(),
             _ => Vec::new(),
         };
         i += 1;
@@ -583,7 +691,12 @@ fn repair(messages: &mut Vec<Value>) {
         }
         let mut answered = HashSet::new();
         while i < messages.len() && messages[i]["role"] == "tool" {
-            answered.insert(messages[i]["tool_call_id"].as_str().unwrap_or("").to_string());
+            answered.insert(
+                messages[i]["tool_call_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+            );
             i += 1;
         }
         let missing: Vec<Value> = ids
@@ -632,7 +745,8 @@ fn system_prompt(cwd: &Path) -> String {
         s.push_str(&rules);
     }
     // Arakun Lab tries variants of the rules this way.
-    if let Some(text) = std::env::var_os("ARAKUN_SYSTEM_APPEND").and_then(|p| std::fs::read_to_string(p).ok())
+    if let Some(text) =
+        std::env::var_os("ARAKUN_SYSTEM_APPEND").and_then(|p| std::fs::read_to_string(p).ok())
         && !text.trim().is_empty()
     {
         s.push_str("\n\n");
@@ -654,7 +768,11 @@ fn project_instructions(cwd: &Path) -> Option<(&'static str, String)> {
             return None;
         }
         let cut = floor_boundary(text, INSTRUCTIONS_BYTES);
-        let more = if cut < text.len() { "\n[arakun: the rest of the file is cut off here]" } else { "" };
+        let more = if cut < text.len() {
+            "\n[arakun: the rest of the file is cut off here]"
+        } else {
+            ""
+        };
         Some((name, format!("{}{more}", &text[..cut])))
     })
 }
@@ -782,7 +900,12 @@ fn clip_middle(text: &str, max: usize) -> String {
     while !text.is_char_boundary(tail) {
         tail += 1;
     }
-    format!("{}\n… [{} bytes cut] …\n{}", &text[..head], tail - head, &text[tail..])
+    format!(
+        "{}\n… [{} bytes cut] …\n{}",
+        &text[..head],
+        tail - head,
+        &text[tail..]
+    )
 }
 
 fn resolve(cwd: &Path, raw: &str) -> PathBuf {
@@ -794,7 +917,12 @@ fn resolve(cwd: &Path, raw: &str) -> PathBuf {
 }
 
 /// `old` replaced by `new` in `text`, and how many times; the error is for the model.
-fn apply_edit(text: &str, old: &str, new: &str, replace_all: bool) -> Result<(String, usize), String> {
+fn apply_edit(
+    text: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<(String, usize), String> {
     if old.is_empty() {
         return Err("old_string is empty; use write_file to create a file".into());
     }
@@ -806,7 +934,9 @@ fn apply_edit(text: &str, old: &str, new: &str, replace_all: bool) -> Result<(St
         0 => Err("old_string is not in the file; read it again and copy the text exactly".into()),
         1 => Ok((text.replacen(old, new, 1), 1)),
         _ if replace_all => Ok((text.replace(old, new), n)),
-        _ => Err(format!("old_string appears {n} times; add context to make it unique, or set replace_all")),
+        _ => Err(format!(
+            "old_string appears {n} times; add context to make it unique, or set replace_all"
+        )),
     }
 }
 
@@ -825,7 +955,8 @@ fn write_bytes(cwd: &Path, path: &Path, content: &[u8]) -> Result<bool, String> 
     }
     let existed = path.exists();
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     std::fs::write(path, content).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(existed)
@@ -845,7 +976,10 @@ fn read_file(cwd: &Path, args: &Value) -> Result<String, String> {
     }
     let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let min_limit = if knobs::get().read_budget { 500 } else { 1 };
-    let limit = args["limit"].as_u64().unwrap_or(knobs::get().read_lines as u64).max(min_limit) as usize;
+    let limit = args["limit"]
+        .as_u64()
+        .unwrap_or(knobs::get().read_lines as u64)
+        .max(min_limit) as usize;
     if offset > lines.len() {
         return Err(format!("{} has only {} lines", path.display(), lines.len()));
     }
@@ -860,7 +994,11 @@ fn read_file(cwd: &Path, args: &Value) -> Result<String, String> {
         end += 1;
     }
     if end < lines.len() {
-        out.push_str(&format!("… {} more lines; read on with offset={}\n", lines.len() - end, end + 1));
+        out.push_str(&format!(
+            "… {} more lines; read on with offset={}\n",
+            lines.len() - end,
+            end + 1
+        ));
     }
     Ok(out)
 }
@@ -870,41 +1008,70 @@ fn write_file(cwd: &Path, args: &Value) -> Result<String, String> {
     let content = args["content"].as_str().ok_or("content is missing")?;
     let existed = write_bytes(cwd, &path, content.as_bytes())?;
     let verb = if existed { "Replaced" } else { "Created" };
-    Ok(format!("{verb} {} ({} lines)", path.display(), content.lines().count()))
+    Ok(format!(
+        "{verb} {} ({} lines)",
+        path.display(),
+        content.lines().count()
+    ))
 }
 
 fn edit_file(cwd: &Path, args: &Value) -> Result<String, String> {
     let path = resolve(cwd, args["path"].as_str().ok_or("path is missing")?);
-    let mut text = String::from_utf8(read_bytes(cwd, &path)?).map_err(|_| format!("{} is not UTF-8 text", path.display()))?;
+    let mut text = String::from_utf8(read_bytes(cwd, &path)?)
+        .map_err(|_| format!("{} is not UTF-8 text", path.display()))?;
     let mut total = 0usize;
     if let Some(list) = args["edits"].as_array().filter(|a| !a.is_empty()) {
         for (idx, item) in list.iter().enumerate() {
-            let old = item["old_string"].as_str().ok_or_else(|| format!("edits[{idx}].old_string is missing"))?;
-            let new = item["new_string"].as_str().ok_or_else(|| format!("edits[{idx}].new_string is missing"))?;
+            let old = item["old_string"]
+                .as_str()
+                .ok_or_else(|| format!("edits[{idx}].old_string is missing"))?;
+            let new = item["new_string"]
+                .as_str()
+                .ok_or_else(|| format!("edits[{idx}].new_string is missing"))?;
             let all = item["replace_all"].as_bool().unwrap_or(false);
-            let (next, n) = apply_edit(&text, old, new, all).map_err(|e| format!("edits[{idx}]: {e}"))?;
+            let (next, n) =
+                apply_edit(&text, old, new, all).map_err(|e| format!("edits[{idx}]: {e}"))?;
             text = next;
             total += n;
         }
     } else {
         let old = args["old_string"].as_str().ok_or("old_string is missing")?;
         let new = args["new_string"].as_str().ok_or("new_string is missing")?;
-        let (next, n) = apply_edit(&text, old, new, args["replace_all"].as_bool().unwrap_or(false))?;
+        let (next, n) = apply_edit(
+            &text,
+            old,
+            new,
+            args["replace_all"].as_bool().unwrap_or(false),
+        )?;
         text = next;
         total = n;
     }
     write_bytes(cwd, &path, text.as_bytes())?;
-    Ok(format!("Edited {} ({total} replacement{})", path.display(), if total == 1 { "" } else { "s" }))
+    Ok(format!(
+        "Edited {} ({total} replacement{})",
+        path.display(),
+        if total == 1 { "" } else { "s" }
+    ))
 }
 
 fn grep(cwd: &Path, args: &Value) -> Result<String, String> {
     let pattern = args["pattern"].as_str().ok_or("pattern is missing")?;
-    let path = args["path"].as_str().filter(|p| !p.is_empty()).unwrap_or(".");
+    let path = args["path"]
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .unwrap_or(".");
     let glob = args["glob"].as_str().filter(|g| !g.is_empty());
     let mut cmd = match launch::which("rg") {
         Some(rg) => {
             let mut c = crate::platform::command(rg);
-            c.args(["-n", "--no-heading", "--color", "never", "--max-columns", "400"]);
+            c.args([
+                "-n",
+                "--no-heading",
+                "--color",
+                "never",
+                "--max-columns",
+                "400",
+            ]);
             if let Some(g) = glob {
                 c.args(["-g", g]);
             }
@@ -919,14 +1086,21 @@ fn grep(cwd: &Path, args: &Value) -> Result<String, String> {
             c
         }
     };
-    cmd.args(["-e", pattern, "--", path]).current_dir(cwd).stdin(Stdio::null());
+    cmd.args(["-e", pattern, "--", path])
+        .current_dir(cwd)
+        .stdin(Stdio::null());
     let out = match sandbox() {
         Some(j) => {
             let mut inner = vec![cmd.get_program().to_string_lossy().into_owned()];
             inner.extend(cmd.get_args().map(|a| a.to_string_lossy().into_owned()));
-            j.sandbox.as_ref().unwrap().output(cwd, &inner, None, Duration::from_secs(120))?
+            j.sandbox
+                .as_ref()
+                .unwrap()
+                .output(cwd, &inner, None, Duration::from_secs(120))?
         }
-        None => cmd.output().map_err(|e| format!("cannot run the search: {e}"))?,
+        None => cmd
+            .output()
+            .map_err(|e| format!("cannot run the search: {e}"))?,
     };
     let found = String::from_utf8_lossy(&out.stdout);
     match out.status.code() {
@@ -938,7 +1112,13 @@ fn grep(cwd: &Path, args: &Value) -> Result<String, String> {
 
 fn list(cwd: &Path, args: &Value) -> Result<String, String> {
     const MAX: usize = 1000;
-    let dir = resolve(cwd, args["path"].as_str().filter(|p| !p.is_empty()).unwrap_or("."));
+    let dir = resolve(
+        cwd,
+        args["path"]
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .unwrap_or("."),
+    );
     let mut names: Vec<String> = match sandbox() {
         Some(j) => j.sandbox.as_ref().unwrap().list(cwd, &dir)?,
         None => std::fs::read_dir(&dir)
@@ -946,7 +1126,11 @@ fn list(cwd: &Path, args: &Value) -> Result<String, String> {
             .filter_map(Result::ok)
             .map(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                if e.file_type().is_ok_and(|t| t.is_dir()) { format!("{name}/") } else { name }
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    format!("{name}/")
+                } else {
+                    name
+                }
             })
             .collect(),
     };
@@ -977,17 +1161,31 @@ struct Spool {
 
 impl Spool {
     fn new(call_id: &str) -> Self {
-        let name: String = call_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(60).collect();
+        let name: String = call_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(60)
+            .collect();
         let name = format!("arakun-bash-{name}.log");
         let (host, shown) = match sandbox() {
-            Some(j) => (j.sandbox.as_ref().unwrap().tmp.join(&name), format!("/tmp/{name}")),
+            Some(j) => (
+                j.sandbox.as_ref().unwrap().tmp.join(&name),
+                format!("/tmp/{name}"),
+            ),
             None => {
                 let p = std::env::temp_dir().join(&name);
                 let shown = p.display().to_string();
                 (p, shown)
             }
         };
-        Spool { mem: String::new(), file: None, host, shown, total: 0, failed: false }
+        Spool {
+            mem: String::new(),
+            file: None,
+            host,
+            shown,
+            total: 0,
+            failed: false,
+        }
     }
 
     fn push(&mut self, text: &str) {
@@ -1009,7 +1207,11 @@ impl Spool {
                 }
             }
         }
-        let chunk = if self.mem.is_empty() { text.as_bytes() } else { self.mem.as_bytes() };
+        let chunk = if self.mem.is_empty() {
+            text.as_bytes()
+        } else {
+            self.mem.as_bytes()
+        };
         let written = self.file.as_mut().unwrap().write_all(chunk);
         self.mem.clear();
         if written.is_err() {
@@ -1033,13 +1235,29 @@ struct Ran {
 
 /// Runs `command` in `cwd`, handing its output to `live` as it comes; ends it
 /// after `timeout`, or when `cancel` is set.
-fn run_bash(cwd: &Path, command: &str, timeout: Duration, cancel: &AtomicBool, mut live: impl FnMut(&str)) -> Result<Ran, String> {
-    let shell = if launch::which("bash").is_some() { "bash" } else { "sh" };
+fn run_bash(
+    cwd: &Path,
+    command: &str,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    mut live: impl FnMut(&str),
+) -> Result<Ran, String> {
+    let shell = if launch::which("bash").is_some() {
+        "bash"
+    } else {
+        "sh"
+    };
     let mut cmd = match sandbox() {
-        Some(j) => j.sandbox.as_ref().unwrap().command(cwd, &[shell.into(), "-c".into(), command.into()]),
+        Some(j) => j
+            .sandbox
+            .as_ref()
+            .unwrap()
+            .command(cwd, &[shell.into(), "-c".into(), command.into()]),
         None => {
             let mut c = crate::platform::agent_command(shell);
-            c.arg("-c").arg(command).env("PATH", launch::child_path_env());
+            c.arg("-c")
+                .arg(command)
+                .env("PATH", launch::child_path_env());
             c
         }
     };
@@ -1049,12 +1267,20 @@ fn run_bash(cwd: &Path, command: &str, timeout: Duration, cancel: &AtomicBool, m
         .stderr(Stdio::piped());
     crate::platform::ProcessTree::prepare(&mut cmd);
     crate::platform::lower_priority(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| format!("cannot start {shell}: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("cannot start {shell}: {e}"))?;
     let tree = crate::platform::ProcessTree::adopt(&child);
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
-        child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-        child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
     ];
     for mut pipe in pipes.into_iter().flatten() {
         let tx = tx.clone();
@@ -1088,7 +1314,9 @@ fn run_bash(cwd: &Path, command: &str, timeout: Duration, cancel: &AtomicBool, m
                 if output.len() > 8 * tool_chars() {
                     let keep = floor_boundary(&output, tool_chars());
                     let tail = output.len() - 4 * tool_chars();
-                    let tail = (tail..output.len()).find(|i| output.is_char_boundary(*i)).unwrap_or(output.len());
+                    let tail = (tail..output.len())
+                        .find(|i| output.is_char_boundary(*i))
+                        .unwrap_or(output.len());
                     output = format!("{}\n… [output cut] …\n{}", &output[..keep], &output[tail..]);
                 }
                 false
@@ -1123,12 +1351,19 @@ fn run_bash(cwd: &Path, command: &str, timeout: Duration, cancel: &AtomicBool, m
             break;
         }
     }
-    Ok(Ran { output, exit, stopped })
+    Ok(Ran {
+        output,
+        exit,
+        stopped,
+    })
 }
 
 /// Tools that only look, which may run side by side.
 fn read_only(name: &str) -> bool {
-    matches!(name, "read_file" | "grep" | "list" | "web_fetch" | "web_search")
+    matches!(
+        name,
+        "read_file" | "grep" | "list" | "web_fetch" | "web_search"
+    )
 }
 
 /// Tools that change things ask first, unless the session runs on its own.
@@ -1165,7 +1400,16 @@ fn describe(name: &str, args: &Value, cwd: &Path) -> Value {
         "web_fetch" => format!("Fetch {}", s("url")),
         "web_search" => format!("Search the web: {}", s("query")),
         "request_action" => format!("{} {}", broker::ACTION_TITLE, s("action")),
-        "read_email" => format!("Read email {}", if s("id").is_empty() { s("query") } else { s("id") }).trim_end().to_string(),
+        "read_email" => format!(
+            "Read email {}",
+            if s("id").is_empty() {
+                s("query")
+            } else {
+                s("id")
+            }
+        )
+        .trim_end()
+        .to_string(),
         other => other.to_string(),
     };
     let mut u = json!({"title": title, "kind": tool_kind(name), "rawInput": args});
@@ -1173,7 +1417,10 @@ fn describe(name: &str, args: &Value, cwd: &Path) -> Value {
         u["locations"] = json!([{"path": resolve(cwd, &path)}]);
     }
     match name {
-        "write_file" => u["content"] = json!([{"type": "diff", "path": resolve(cwd, &path), "newText": s("content")}]),
+        "write_file" => {
+            u["content"] =
+                json!([{"type": "diff", "path": resolve(cwd, &path), "newText": s("content")}])
+        }
         "edit_file" => {
             u["content"] = json!([{"type": "diff", "path": resolve(cwd, &path), "oldText": s("old_string"), "newText": s("new_string")}])
         }
@@ -1197,7 +1444,11 @@ const TRIES: u32 = 8;
 const RPM: usize = 20;
 
 fn rpm() -> usize {
-    std::env::var("ARAKUN_WORKERS_AI_RPM").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(RPM)
+    std::env::var("ARAKUN_WORKERS_AI_RPM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(RPM)
 }
 
 /// One model's share of the account limit, for every session in the app: when
@@ -1217,7 +1468,11 @@ impl Lane {
     /// How long until a request fits in the last minute's budget; when it
     /// fits now, the slot is taken.
     fn take(&mut self, rpm: usize, now: Instant) -> Option<Duration> {
-        while self.sent.front().is_some_and(|&t| now.duration_since(t) >= Duration::from_secs(60)) {
+        while self
+            .sent
+            .front()
+            .is_some_and(|&t| now.duration_since(t) >= Duration::from_secs(60))
+        {
             self.sent.pop_front();
         }
         if let Some(h) = self.hold.filter(|&h| h > now) {
@@ -1232,7 +1487,12 @@ impl Lane {
 }
 /// Takes a slot under `model`'s per-minute limit, or says how long until one frees.
 pub(crate) fn lane_wait(model: &str) -> Option<Duration> {
-    lanes().lock().unwrap().entry(model.to_string()).or_default().take(rpm(), Instant::now())
+    lanes()
+        .lock()
+        .unwrap()
+        .entry(model.to_string())
+        .or_default()
+        .take(rpm(), Instant::now())
 }
 
 /// A stream quiet this long is taken for dead.
@@ -1346,12 +1606,17 @@ pub fn serve(rx: mpsc::Receiver<String>, out: Out) {
         turns: AtomicU64::new(0),
     });
     for line in rx.iter() {
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let id = msg.get("id").cloned().filter(|v| !v.is_null());
         match msg["method"].as_str() {
             Some(method) => agent.handle(method, id, &msg["params"]),
             None => {
-                let waiting = id.as_ref().and_then(Value::as_u64).and_then(|n| agent.asks.lock().unwrap().remove(&n));
+                let waiting = id
+                    .as_ref()
+                    .and_then(Value::as_u64)
+                    .and_then(|n| agent.asks.lock().unwrap().remove(&n));
                 if let Some(tx) = waiting {
                     let _ = tx.send(msg);
                 }
@@ -1381,7 +1646,10 @@ fn prompt_images(blocks: &Value) -> Vec<(String, String)> {
         .flatten()
         .filter_map(|b| {
             let data = b["data"].as_str()?;
-            Some((b["mimeType"].as_str().unwrap_or("image/jpeg").to_string(), data.to_string()))
+            Some((
+                b["mimeType"].as_str().unwrap_or("image/jpeg").to_string(),
+                data.to_string(),
+            ))
         })
         .collect()
 }
@@ -1394,7 +1662,9 @@ impl Agent {
     fn reply(&self, id: Value, result: Result<Value, (i64, String)>) {
         self.send(match result {
             Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
-            Err((code, message)) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
+            Err((code, message)) => {
+                json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+            }
         });
     }
 
@@ -1451,7 +1721,10 @@ impl Agent {
             }))),
             "session/new" => {
                 knobs::log_once();
-                let cwd = params["cwd"].as_str().map(PathBuf::from).unwrap_or_else(launch::home);
+                let cwd = params["cwd"]
+                    .as_str()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(launch::home);
                 let s = Session::new(cwd);
                 s.save();
                 let result = json!({"sessionId": s.id, "configOptions": s.config()});
@@ -1459,30 +1732,52 @@ impl Agent {
                 reply(Ok(result))
             }
             // The transcript already shows the history, so loading replays nothing.
-            "session/resume" | "session/load" => match params["sessionId"].as_str().and_then(Session::load) {
-                Some(s) => {
-                    knobs::log_once();
-                    let result = json!({"configOptions": s.config()});
-                    *self.session.lock().unwrap() = Some(Arc::new(Mutex::new(s)));
-                    reply(Ok(result))
+            "session/resume" | "session/load" => {
+                match params["sessionId"].as_str().and_then(Session::load) {
+                    Some(s) => {
+                        knobs::log_once();
+                        let result = json!({"configOptions": s.config()});
+                        *self.session.lock().unwrap() = Some(Arc::new(Mutex::new(s)));
+                        reply(Ok(result))
+                    }
+                    None => reply(Err((
+                        -32002,
+                        "this Workers AI session is not saved on this machine".into(),
+                    ))),
                 }
-                None => reply(Err((-32002, "this Workers AI session is not saved on this machine".into()))),
-            },
+            }
             "session/set_config_option" | "session/set_model" => {
-                let Some(session) = self.current() else { return reply(no_session()) };
+                let Some(session) = self.current() else {
+                    return reply(no_session());
+                };
                 let mut s = session.lock().unwrap();
-                let value = params["value"].as_str().or(params["modelId"].as_str()).unwrap_or("");
+                let value = params["value"]
+                    .as_str()
+                    .or(params["modelId"].as_str())
+                    .unwrap_or("");
                 match params["configId"].as_str().unwrap_or("model") {
                     "model" => match model(value) {
                         Some(m) => {
                             // Another model starts on its own effort, as a draft does: each
                             // model's default is the level it works best at for its price.
-                            s.effort = if m.id == s.model { m.effort(Some(&s.effort)) } else { m.default_effort }.into();
+                            s.effort = if m.id == s.model {
+                                m.effort(Some(&s.effort))
+                            } else {
+                                m.default_effort
+                            }
+                            .into();
                             s.model = m.id.into();
                         }
-                        None => return reply(Err((-32602, format!("Workers AI has no model {value}")))),
+                        None => {
+                            return reply(Err((
+                                -32602,
+                                format!("Workers AI has no model {value}"),
+                            )));
+                        }
                     },
-                    "reasoning_effort" if s.model().efforts.contains(&value) => s.effort = value.into(),
+                    "reasoning_effort" if s.model().efforts.contains(&value) => {
+                        s.effort = value.into()
+                    }
                     other => return reply(Err((-32602, format!("cannot set {other} to {value}")))),
                 }
                 s.save();
@@ -1490,7 +1785,9 @@ impl Agent {
             }
             "session/prompt" => {
                 let Some(id) = id else { return };
-                let Some(session) = self.current() else { return self.reply(id, no_session()) };
+                let Some(session) = self.current() else {
+                    return self.reply(id, no_session());
+                };
                 if self.busy.swap(true, Ordering::SeqCst) {
                     return self.reply(id, Err((-32603, "a turn is already running".into())));
                 }
@@ -1499,15 +1796,17 @@ impl Agent {
                 let text = prompt_text(&params["prompt"]);
                 let images = prompt_images(&params["prompt"]);
                 let agent = self.clone();
-                let spawned = std::thread::Builder::new().name("workers-ai-turn".into()).spawn(move || {
-                    let result = agent.turn(&session, text, images);
-                    let ended = matches!(&result, Ok(v) if v["stopReason"] == "end_turn");
-                    agent.busy.store(false, Ordering::SeqCst);
-                    agent.reply(id, result);
-                    if ended && keep_warm_on() {
-                        agent.keep_warm(&session, turn);
-                    }
-                });
+                let spawned = std::thread::Builder::new()
+                    .name("workers-ai-turn".into())
+                    .spawn(move || {
+                        let result = agent.turn(&session, text, images);
+                        let ended = matches!(&result, Ok(v) if v["stopReason"] == "end_turn");
+                        agent.busy.store(false, Ordering::SeqCst);
+                        agent.reply(id, result);
+                        if ended && keep_warm_on() {
+                            agent.keep_warm(&session, turn);
+                        }
+                    });
                 if let Err(e) = spawned {
                     self.busy.store(false, Ordering::SeqCst);
                     eprintln!("arakun: could not start a Workers AI turn: {e}");
@@ -1529,7 +1828,11 @@ impl Agent {
         for n in 0..=WARM_TIMES {
             // The first one goes out at once: the cache's five minutes count from when the
             // last request started, and a long reply has used up part of them.
-            let wait = if n == 0 { Duration::from_secs(2) } else { WARM_EVERY };
+            let wait = if n == 0 {
+                Duration::from_secs(2)
+            } else {
+                WARM_EVERY
+            };
             let asleep = unix_now();
             let until = Instant::now() + wait;
             while Instant::now() < until {
@@ -1546,13 +1849,23 @@ impl Agent {
             let (sid, model, mut body) = {
                 let s = session.lock().unwrap();
                 let m = s.model();
-                let asked = s.messages.iter().rposition(|m| m["role"] != "assistant").map_or(0, |i| i + 1);
-                (s.id.clone(), m, request_body(m, s.effort(), &s.messages[..asked]))
+                let asked = s
+                    .messages
+                    .iter()
+                    .rposition(|m| m["role"] != "assistant")
+                    .map_or(0, |i| i + 1);
+                (
+                    s.id.clone(),
+                    m,
+                    request_body(m, s.effort(), &s.messages[..asked]),
+                )
             };
             if model.api != Api::Anthropic {
                 return;
             }
-            let Ok(creds) = endpoint_for(model) else { return };
+            let Ok(creds) = endpoint_for(model) else {
+                return;
+            };
             body["max_tokens"] = json!(0);
             body["stream"] = json!(false);
             let request = ureq::http::Request::builder()
@@ -1564,18 +1877,36 @@ impl Agent {
                 .header("Content-Type", "application/json")
                 .body(body.to_string());
             let Ok(request) = request else { return };
-            let Ok(mut response) = http().run(request) else { return };
-            let text = response.body_mut().with_config().limit(1 << 20).read_to_string().unwrap_or_default();
+            let Ok(mut response) = http().run(request) else {
+                return;
+            };
+            let text = response
+                .body_mut()
+                .with_config()
+                .limit(1 << 20)
+                .read_to_string()
+                .unwrap_or_default();
             if response.status().as_u16() != 200 || !live() {
                 if response.status().as_u16() != 200 {
-                    eprintln!("arakun: keeping the prompt cache warm stopped: {} {}", response.status(), text.chars().take(200).collect::<String>());
+                    eprintln!(
+                        "arakun: keeping the prompt cache warm stopped: {} {}",
+                        response.status(),
+                        text.chars().take(200).collect::<String>()
+                    );
                 }
                 return;
             }
-            let usage = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["usage"].as_object().cloned()).unwrap_or_default();
+            let usage = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| v["usage"].as_object().cloned())
+                .unwrap_or_default();
             let u = anthropic::usage_of(&usage);
             let n = |v: &Value| v.as_u64().unwrap_or(0);
-            let (prompt, cached, written) = (n(&u["prompt_tokens"]), n(&u["prompt_tokens_details"]["cached_tokens"]), n(&u["cache_creation_input_tokens"]));
+            let (prompt, cached, written) = (
+                n(&u["prompt_tokens"]),
+                n(&u["prompt_tokens_details"]["cached_tokens"]),
+                n(&u["cache_creation_input_tokens"]),
+            );
             let (cost, context) = {
                 let mut s = session.lock().unwrap();
                 s.cost += model.cost(prompt.saturating_sub(cached + written), cached, written, 0);
@@ -1608,13 +1939,21 @@ impl Agent {
     /// text-only model to act on it. One small request to the vision model,
     /// which takes the photo as base64 in `image` — the chat-completions
     /// endpoint does not take image parts, so this goes to `/ai/run/` instead.
-    fn describe(&self, creds: &Endpoint, sid: &str, _mime: &str, data: &str) -> Result<String, String> {
-        self.wait_for_lane(sid, VISION_MODEL)
-            .map_err(|e| match e {
-                Failed::Retry(why, _) | Failed::Fatal(_, why) => why,
-                Failed::Cancelled(_) => "cancelled".to_string(),
-            })?;
-        let url = creds.url.replace("/ai/v1/chat/completions", "/ai/run/@cf/meta/llama-3.2-11b-vision-instruct");
+    fn describe(
+        &self,
+        creds: &Endpoint,
+        sid: &str,
+        _mime: &str,
+        data: &str,
+    ) -> Result<String, String> {
+        self.wait_for_lane(sid, VISION_MODEL).map_err(|e| match e {
+            Failed::Retry(why, _) | Failed::Fatal(_, why) => why,
+            Failed::Cancelled(_) => "cancelled".to_string(),
+        })?;
+        let url = creds.url.replace(
+            "/ai/v1/chat/completions",
+            "/ai/run/@cf/meta/llama-3.2-11b-vision-instruct",
+        );
         let body = json!({ "prompt": DESCRIBE_PROMPT, "image": data, "max_tokens": 800 });
         let mut builder = ureq::http::Request::builder()
             .method("POST")
@@ -1624,10 +1963,21 @@ impl Agent {
             builder = builder.header("Authorization", format!("Bearer {token}"));
         }
         let request = builder.body(body.to_string()).map_err(|e| e.to_string())?;
-        let mut response = http().run(request).map_err(|e| format!("could not reach the API ({e})"))?;
-        let text = response.body_mut().with_config().limit(1 << 20).read_to_string().unwrap_or_default();
+        let mut response = http()
+            .run(request)
+            .map_err(|e| format!("could not reach the API ({e})"))?;
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(1 << 20)
+            .read_to_string()
+            .unwrap_or_default();
         if response.status().as_u16() != 200 {
-            return Err(format!("the vision model answered {}: {}", response.status(), text.trim().chars().take(200).collect::<String>()));
+            return Err(format!(
+                "the vision model answered {}: {}",
+                response.status(),
+                text.trim().chars().take(200).collect::<String>()
+            ));
         }
         let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         v["result"]["response"]
@@ -1637,18 +1987,29 @@ impl Agent {
     }
 
     /// One prompt: model calls and their tools until the model answers without any.
-    fn turn(&self, session: &Mutex<Session>, mut text: String, images: Vec<(String, String)>) -> Result<Value, (i64, String)> {
+    fn turn(
+        &self,
+        session: &Mutex<Session>,
+        mut text: String,
+        images: Vec<(String, String)>,
+    ) -> Result<Value, (i64, String)> {
         let (sid, cwd) = {
             let s = session.lock().unwrap();
             (s.id.clone(), s.cwd.clone())
         };
         let mut used = Used::default();
         if text.trim_start().starts_with("/compact") {
-            return Err((-32601, "Workers AI sessions are not compacted; the models hold 1M tokens".into()));
+            return Err((
+                -32601,
+                "Workers AI sessions are not compacted; the models hold 1M tokens".into(),
+            ));
         }
         let no_key = |how: String, m: &Model| {
             self.notice(&sid, &how, true);
-            Err((RpcError::AUTH_REQUIRED, format!("{} has no API key", m.api.name())))
+            Err((
+                RpcError::AUTH_REQUIRED,
+                format!("{} has no API key", m.api.name()),
+            ))
         };
         let first = session.lock().unwrap().model();
         if let Err(how) = endpoint_for(first) {
@@ -1661,7 +2022,10 @@ impl Agent {
         let mut seen: Vec<Value> = Vec::new();
         let mut vision: Option<Result<Endpoint, String>> = None;
         for (n, (mime, data)) in images.iter().enumerate() {
-            if first.api == Api::Anthropic && CLAUDE_SEES.contains(&mime.as_str()) && data.len() <= CLAUDE_PHOTO_CHARS {
+            if first.api == Api::Anthropic
+                && CLAUDE_SEES.contains(&mime.as_str())
+                && data.len() <= CLAUDE_PHOTO_CHARS
+            {
                 seen.push(json!({"type": "image_url", "image_url": {"url": format!("data:{mime};base64,{data}")}}));
                 continue;
             }
@@ -1672,11 +2036,19 @@ impl Agent {
             let what = match read {
                 Ok(words) => words,
                 Err(e) => {
-                    self.notice(&sid, &format!("Photo {} could not be read: {e}", n + 1), false);
+                    self.notice(
+                        &sid,
+                        &format!("Photo {} could not be read: {e}", n + 1),
+                        false,
+                    );
                     format!("(unreadable photo: {e})")
                 }
             };
-            text.push_str(&format!("\n\n[photo {} — what the vision model sees: {}]", n + 1, what.trim()));
+            text.push_str(&format!(
+                "\n\n[photo {} — what the vision model sees: {}]",
+                n + 1,
+                what.trim()
+            ));
         }
         {
             let mut s = session.lock().unwrap();
@@ -1699,8 +2071,13 @@ impl Agent {
         let mut progress = knobs::Progress::default();
         // The rules that wait for an edit also see the ones made from the shell: the working
         // tree is compared before and after each command (only when such a rule is on).
-        let watch_tree = knobs.adaptive_effort || knobs.self_test || knobs.stop_on_green || knobs.read_budget;
-        let mut tree = if watch_tree { knobs::tree_mark(&cwd) } else { None };
+        let watch_tree =
+            knobs.adaptive_effort || knobs.self_test || knobs.stop_on_green || knobs.read_budget;
+        let mut tree = if watch_tree {
+            knobs::tree_mark(&cwd)
+        } else {
+            None
+        };
         for _ in 0..MAX_STEPS {
             if self.cancelled() {
                 return Ok(Self::done("cancelled", &used));
@@ -1741,7 +2118,8 @@ impl Agent {
                 Err(Failed::Cancelled(partial)) => {
                     if !partial.content.is_empty() {
                         let mut s = session.lock().unwrap();
-                        s.messages.push(json!({"role": "assistant", "content": partial.content}));
+                        s.messages
+                            .push(json!({"role": "assistant", "content": partial.content}));
                         s.save();
                     }
                     return Ok(Self::done("cancelled", &used));
@@ -1750,14 +2128,29 @@ impl Agent {
                 Err(Failed::Retry(msg, _)) => return Err((-32603, msg)),
             };
             reply.settle();
-            let n = |k: &str| reply.usage.as_ref().and_then(|u| u[k].as_u64()).unwrap_or(0);
+            let n = |k: &str| {
+                reply
+                    .usage
+                    .as_ref()
+                    .and_then(|u| u[k].as_u64())
+                    .unwrap_or(0)
+            };
             let (prompt, output) = (n("prompt_tokens"), n("completion_tokens"));
-            let cached = reply.usage.as_ref().and_then(|u| u["prompt_tokens_details"]["cached_tokens"].as_u64()).unwrap_or(0).min(prompt);
+            let cached = reply
+                .usage
+                .as_ref()
+                .and_then(|u| u["prompt_tokens_details"]["cached_tokens"].as_u64())
+                .unwrap_or(0)
+                .min(prompt);
             let written = n("cache_creation_input_tokens").min(prompt - cached);
             used.input += prompt - cached;
             used.cached += cached;
             used.output += output;
-            used.reasoning += reply.usage.as_ref().and_then(|u| u["completion_tokens_details"]["reasoning_tokens"].as_u64()).unwrap_or(0);
+            used.reasoning += reply
+                .usage
+                .as_ref()
+                .and_then(|u| u["completion_tokens_details"]["reasoning_tokens"].as_u64())
+                .unwrap_or(0);
             let cost = {
                 let mut s = session.lock().unwrap();
                 s.cost += model.cost(prompt - cached - written, cached, written, output);
@@ -1779,10 +2172,15 @@ impl Agent {
                 }),
             );
             if reply.calls.is_empty() {
-                let stop = if reply.finish.as_deref() == Some("length") { "max_tokens" } else { "end_turn" };
+                let stop = if reply.finish.as_deref() == Some("length") {
+                    "max_tokens"
+                } else {
+                    "end_turn"
+                };
                 if knobs.self_test && stop == "end_turn" && progress.self_test_due() {
                     let mut s = session.lock().unwrap();
-                    s.messages.push(json!({"role": "user", "content": knobs::SELF_TEST_REMINDER}));
+                    s.messages
+                        .push(json!({"role": "user", "content": knobs::SELF_TEST_REMINDER}));
                     s.save();
                     continue;
                 }
@@ -1795,28 +2193,43 @@ impl Agent {
             while i < calls.len() {
                 // A run of read-only calls goes at once when the knob says; results keep their order.
                 let n = if knobs.parallel_tools && halt.is_none() {
-                    calls[i..].iter().take_while(|c| read_only(&c.name)).count().max(1)
+                    calls[i..]
+                        .iter()
+                        .take_while(|c| read_only(&c.name))
+                        .count()
+                        .max(1)
                 } else {
                     1
                 };
                 let group = &calls[i..i + n];
                 i += n;
                 let results: Vec<(String, Option<&'static str>)> = match halt {
-                    Some(why) => group.iter().map(|_| (format!("(not run: {why})"), None)).collect(),
+                    Some(why) => group
+                        .iter()
+                        .map(|_| (format!("(not run: {why})"), None))
+                        .collect(),
                     None if n == 1 => vec![self.run_call(&sid, session, &cwd, group[0])],
                     None => std::thread::scope(|scope| {
-                        let handles: Vec<_> =
-                            group.iter().map(|c| scope.spawn(|| self.run_call(&sid, session, &cwd, c))).collect();
+                        let handles: Vec<_> = group
+                            .iter()
+                            .map(|c| scope.spawn(|| self.run_call(&sid, session, &cwd, c)))
+                            .collect();
                         handles
                             .into_iter()
-                            .map(|h| h.join().unwrap_or_else(|_| ("Error: the tool panicked".into(), None)))
+                            .map(|h| {
+                                h.join()
+                                    .unwrap_or_else(|_| ("Error: the tool panicked".into(), None))
+                            })
                             .collect()
                     }),
                 };
                 for (call, (content, why)) in group.iter().zip(results) {
                     let ran = halt.is_none() && why.is_none();
                     let mut content = content;
-                    if watch_tree && ran && matches!(call.name.as_str(), "bash" | "edit_file" | "write_file") {
+                    if watch_tree
+                        && ran
+                        && matches!(call.name.as_str(), "bash" | "edit_file" | "write_file")
+                    {
                         let now = knobs::tree_mark(&cwd);
                         if call.name == "bash" && now != tree {
                             budget.note_edit();
@@ -1828,19 +2241,22 @@ impl Agent {
                         .then(|| serde_json::from_str::<Value>(&call.arguments).ok())
                         .flatten();
                     let cmd = cmd.as_ref().and_then(|v| v["command"].as_str());
-                    if knobs.read_budget && ran && budget.note_call(&call.name, cmd, content.len()) {
+                    if knobs.read_budget && ran && budget.note_call(&call.name, cmd, content.len())
+                    {
                         content.push_str("\n\n");
                         content.push_str(knobs::BUDGET_REMINDER);
                     }
                     if knobs.stop_on_green
                         && ran
-                        && let Some(rem) = budget.note_green_test_with_clef(&cwd, &call.name, cmd, &content)
+                        && let Some(rem) =
+                            budget.note_green_test_with_clef(&cwd, &call.name, cmd, &content)
                     {
                         content.push_str("\n\n");
                         content.push_str(&rem);
                     }
                     let mut s = session.lock().unwrap();
-                    s.messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
+                    s.messages
+                        .push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
                     s.save();
                     drop(s);
                     halt = halt.or(why);
@@ -1873,15 +2289,31 @@ impl Agent {
 
     /// Runs one tool call, asking first when it needs to; returns what the model
     /// is told, and why the rest of the calls must not run, if they mustn't.
-    fn run_call(&self, sid: &str, session: &Mutex<Session>, cwd: &Path, call: &Call) -> (String, Option<&'static str>) {
+    fn run_call(
+        &self,
+        sid: &str,
+        session: &Mutex<Session>,
+        cwd: &Path,
+        call: &Call,
+    ) -> (String, Option<&'static str>) {
         let id = call.id.as_str();
-        let args = match serde_json::from_str::<Value>(if call.arguments.trim().is_empty() { "{}" } else { &call.arguments }) {
+        let args = match serde_json::from_str::<Value>(if call.arguments.trim().is_empty() {
+            "{}"
+        } else {
+            &call.arguments
+        }) {
             Ok(v) if v.is_object() => v,
             _ => {
                 let mut u = json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"});
                 u["rawOutput"] = json!("invalid arguments");
                 self.update(sid, u);
-                return (format!("Error: the arguments are not a JSON object: {}", clip_middle(&call.arguments, 2000)), None);
+                return (
+                    format!(
+                        "Error: the arguments are not a JSON object: {}",
+                        clip_middle(&call.arguments, 2000)
+                    ),
+                    None,
+                );
             }
         };
         if call.name == "request_action" {
@@ -1898,20 +2330,38 @@ impl Agent {
                 Permit::Allowed => {}
                 Permit::Denied => {
                     self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "rawOutput": "Denied"}));
-                    return ("The user denied this call.".into(), Some("the user denied an earlier call"));
+                    return (
+                        "The user denied this call.".into(),
+                        Some("the user denied an earlier call"),
+                    );
                 }
                 Permit::Declined(why) => {
                     self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "rawOutput": "Declined"}));
-                    let why = if why.trim().is_empty() { String::new() } else { format!(" ({})", why.trim()) };
-                    return (format!("The user declined this call{why}. Do not try it another way; go on without it, or say what you could not do."), None);
+                    let why = if why.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", why.trim())
+                    };
+                    return (
+                        format!(
+                            "The user declined this call{why}. Do not try it another way; go on without it, or say what you could not do."
+                        ),
+                        None,
+                    );
                 }
                 Permit::Cancelled => {
                     self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"}));
-                    return ("(not run: the turn was stopped)".into(), Some("the turn was stopped"));
+                    return (
+                        "(not run: the turn was stopped)".into(),
+                        Some("the turn was stopped"),
+                    );
                 }
             }
         }
-        self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}));
+        self.update(
+            sid,
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}),
+        );
         if call.name == "bash" {
             return self.run_command(sid, cwd, id, &args);
         }
@@ -1923,7 +2373,12 @@ impl Agent {
             "list" => list(cwd, &args),
             "web_fetch" => super::web::fetch(&args).map(|t| clip_middle(&t, tool_chars())),
             "web_search" => super::web::search(&args).map(|t| clip_middle(&t, tool_chars())),
-            "read_email" if jail().is_some_and(|j| j.caps.contains(&crate::headless::sandbox::Cap::MailRead)) => broker::read_email(&args),
+            "read_email"
+                if jail()
+                    .is_some_and(|j| j.caps.contains(&crate::headless::sandbox::Cap::MailRead)) =>
+            {
+                broker::read_email(&args)
+            }
             other => Err(format!("there is no tool {other}")),
         };
         let (status, text) = match result {
@@ -1931,7 +2386,10 @@ impl Agent {
             Err(e) => ("failed", format!("Error: {e}")),
         };
         let shown_output = if call.name == "read_file" && status == "completed" {
-            format!("{} lines", text.lines().filter(|l| l.contains('\t')).count())
+            format!(
+                "{} lines",
+                text.lines().filter(|l| l.contains('\t')).count()
+            )
         } else {
             clip_middle(&text, tool_chars())
         };
@@ -1939,9 +2397,18 @@ impl Agent {
         (text, None)
     }
 
-    fn run_command(&self, sid: &str, cwd: &Path, id: &str, args: &Value) -> (String, Option<&'static str>) {
+    fn run_command(
+        &self,
+        sid: &str,
+        cwd: &Path,
+        id: &str,
+        args: &Value,
+    ) -> (String, Option<&'static str>) {
         let Some(command) = args["command"].as_str().filter(|c| !c.trim().is_empty()) else {
-            self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"}));
+            self.update(
+                sid,
+                json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"}),
+            );
             return ("Error: command is missing".into(), None);
         };
         let secs = args["timeout_secs"].as_u64().unwrap_or(600).clamp(1, 3600);
@@ -1959,16 +2426,22 @@ impl Agent {
             }
             self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "_meta": {"terminal_output": {"data": data}}}));
         };
-        let ran = run_bash(cwd, command, Duration::from_secs(secs), &self.cancel, |text| {
-            if let Some(s) = spool.as_mut() {
-                s.push(text);
-            }
-            buffer.push_str(text);
-            if at.elapsed() > Duration::from_millis(100) {
-                flush(&mut buffer, &mut sent);
-                at = Instant::now();
-            }
-        });
+        let ran = run_bash(
+            cwd,
+            command,
+            Duration::from_secs(secs),
+            &self.cancel,
+            |text| {
+                if let Some(s) = spool.as_mut() {
+                    s.push(text);
+                }
+                buffer.push_str(text);
+                if at.elapsed() > Duration::from_millis(100) {
+                    flush(&mut buffer, &mut sent);
+                    at = Instant::now();
+                }
+            },
+        );
         flush(&mut buffer, &mut sent);
         let ran = match ran {
             Ok(r) => r,
@@ -2001,12 +2474,20 @@ impl Agent {
 
     /// `request_action`: checked, shown, asked every time, and run by the host
     /// only on a yes.
-    fn action(&self, sid: &str, id: &str, cwd: &Path, args: &Value) -> (String, Option<&'static str>) {
+    fn action(
+        &self,
+        sid: &str,
+        id: &str,
+        cwd: &Path,
+        args: &Value,
+    ) -> (String, Option<&'static str>) {
         let failed = |msg: String| {
             self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "rawOutput": msg}));
             (format!("Error: {msg}"), None)
         };
-        let Some(jail) = jail() else { return failed("there is no tool request_action".into()) };
+        let Some(jail) = jail() else {
+            return failed("there is no tool request_action".into());
+        };
         let prepared = match broker::prepare(args, &jail) {
             Ok(v) => v,
             Err(e) => return failed(e),
@@ -2019,19 +2500,37 @@ impl Agent {
             Permit::Allowed => {}
             Permit::Denied => {
                 self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "rawOutput": "Denied"}));
-                return ("The user denied this action; nothing was done.".into(), Some("the user denied an earlier call"));
+                return (
+                    "The user denied this action; nothing was done.".into(),
+                    Some("the user denied an earlier call"),
+                );
             }
             Permit::Declined(why) => {
                 self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "rawOutput": "Declined"}));
-                let why = if why.trim().is_empty() { String::new() } else { format!(" ({})", why.trim()) };
-                return (format!("The user declined this action{why}; nothing was done. Do not try it another way."), None);
+                let why = if why.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", why.trim())
+                };
+                return (
+                    format!(
+                        "The user declined this action{why}; nothing was done. Do not try it another way."
+                    ),
+                    None,
+                );
             }
             Permit::Cancelled => {
                 self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"}));
-                return ("(not run: the turn was stopped)".into(), Some("the turn was stopped"));
+                return (
+                    "(not run: the turn was stopped)".into(),
+                    Some("the turn was stopped"),
+                );
             }
         }
-        self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}));
+        self.update(
+            sid,
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}),
+        );
         let (status, text) = match broker::execute(&prepared, &jail.workspace) {
             Ok(out) => ("completed", format!("Approved and done.\n{out}")),
             Err(e) => ("failed", format!("Approved, but it failed: {e}")),
@@ -2042,8 +2541,18 @@ impl Agent {
 
     /// Asks the user about a call; `session` takes an "always" answer, which
     /// actions never offer.
-    fn permit(&self, sid: &str, session: Option<&Mutex<Session>>, group: &str, shown: &Value) -> Permit {
-        let always = if group == "bash" { "Always allow commands" } else { "Always allow edits" };
+    fn permit(
+        &self,
+        sid: &str,
+        session: Option<&Mutex<Session>>,
+        group: &str,
+        shown: &Value,
+    ) -> Permit {
+        let always = if group == "bash" {
+            "Always allow commands"
+        } else {
+            "Always allow edits"
+        };
         let mut tool = shown.clone();
         if let Some(o) = tool.as_object_mut() {
             o.remove("sessionUpdate");
@@ -2071,7 +2580,12 @@ impl Agent {
                 Permit::Allowed
             }
             (Some("selected"), _) if answer["result"]["_meta"]["arakun"]["continue"] == true => {
-                Permit::Declined(answer["result"]["_meta"]["arakun"]["why"].as_str().unwrap_or_default().to_string())
+                Permit::Declined(
+                    answer["result"]["_meta"]["arakun"]["why"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
             }
             (Some("selected"), _) => Permit::Denied,
             _ => Permit::Cancelled,
@@ -2100,13 +2614,25 @@ impl Agent {
                 l.hold = Some(l.hold.map_or(until, |h| h.max(until)));
             }
             if attempt >= TRIES {
-                return Err(Failed::Retry(format!("{who}: {why} (gave up after {TRIES} tries)"), None));
+                return Err(Failed::Retry(
+                    format!("{who}: {why} (gave up after {TRIES} tries)"),
+                    None,
+                ));
             }
-            let wait = wait.unwrap_or([5, 10, 20, 40, 60][(attempt as usize - 1).min(4)]).clamp(1, 300);
+            let wait = wait
+                .unwrap_or([5, 10, 20, 40, 60][(attempt as usize - 1).min(4)])
+                .clamp(1, 300);
             if attempt == 1 {
-                self.notice(sid, &format!("{who}: {why}. Retrying, with longer waits each time."), false);
+                self.notice(
+                    sid,
+                    &format!("{who}: {why}. Retrying, with longer waits each time."),
+                    false,
+                );
             }
-            let title = format!("Retrying {who}, attempt {attempt} of {}. {why}; waiting {wait}s.", TRIES - 1);
+            let title = format!(
+                "Retrying {who}, attempt {attempt} of {}. {why}; waiting {wait}s.",
+                TRIES - 1
+            );
             self.update(
                 sid,
                 json!({"sessionUpdate": "session_info_update", "_meta": {"jetbrains": {"air": {"sessionFailure": {"severity": "warning", "title": title}}}}}),
@@ -2126,12 +2652,22 @@ impl Agent {
     fn wait_for_lane(&self, sid: &str, lane: &str) -> Result<(), Failed> {
         let mut told = false;
         loop {
-            let Some(wait) = lanes().lock().unwrap().entry(lane.to_string()).or_default().take(rpm(), Instant::now()) else {
+            let Some(wait) = lanes()
+                .lock()
+                .unwrap()
+                .entry(lane.to_string())
+                .or_default()
+                .take(rpm(), Instant::now())
+            else {
                 return Ok(());
             };
             if !told && wait > Duration::from_secs(1) {
                 told = true;
-                let title = format!("Waiting {}s for a free Workers AI slot ({} requests a minute per model).", wait.as_secs().max(1), rpm());
+                let title = format!(
+                    "Waiting {}s for a free Workers AI slot ({} requests a minute per model).",
+                    wait.as_secs().max(1),
+                    rpm()
+                );
                 self.update(
                     sid,
                     json!({"sessionUpdate": "session_info_update", "_meta": {"jetbrains": {"air": {"sessionFailure": {"severity": "warning", "title": title}}}}}),
@@ -2150,9 +2686,13 @@ impl Agent {
     /// One streamed request. The network runs on a thread of its own, so a stop
     /// doesn't wait for the next byte.
     fn stream(&self, sid: &str, creds: &Endpoint, body: &Value) -> Result<Reply, Failed> {
-        let mut request = ureq::http::Request::builder().method("POST").uri(&creds.url);
+        let mut request = ureq::http::Request::builder()
+            .method("POST")
+            .uri(&creds.url);
         match (&creds.token, creds.api) {
-            (Some(token), Api::Chat) => request = request.header("Authorization", format!("Bearer {token}")),
+            (Some(token), Api::Chat) => {
+                request = request.header("Authorization", format!("Bearer {token}"))
+            }
             (token, Api::Anthropic) => {
                 request = request
                     .header("x-api-key", token.as_deref().unwrap_or(""))
@@ -2175,7 +2715,11 @@ impl Agent {
             .map_err(|e| Failed::Fatal(-32603, e.to_string()))?;
         let mut sse = Sse::default();
         let mut reply = Reply::default();
-        let mut live = Live { kind: 0, text: String::new(), at: Instant::now() };
+        let mut live = Live {
+            kind: 0,
+            text: String::new(),
+            at: Instant::now(),
+        };
         let mut heard = Instant::now();
         let mut shown = false;
         'read: loop {
@@ -2193,7 +2737,11 @@ impl Agent {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if heard.elapsed() > STALL {
                         self.flush(sid, &mut live);
-                        return Err(self.broke_off(sid, Failed::Retry("no answer for 5 minutes".into(), None), shown));
+                        return Err(self.broke_off(
+                            sid,
+                            Failed::Retry("no answer for 5 minutes".into(), None),
+                            shown,
+                        ));
                     }
                     continue;
                 }
@@ -2239,12 +2787,19 @@ impl Agent {
         }
         self.flush(sid, &mut live);
         if !reply.done && reply.finish.is_none() {
-            return Err(self.broke_off(sid, Failed::Retry("the reply broke off".into(), None), shown));
+            return Err(self.broke_off(
+                sid,
+                Failed::Retry("the reply broke off".into(), None),
+                shown,
+            ));
         }
         if let Some(ev) = &events {
             reply.native = ev.blocks();
             if ev.dropped > 0 {
-                eprintln!("arakun: Anthropic left {} thinking blocks of the history out of this call (the history was edited)", ev.dropped);
+                eprintln!(
+                    "arakun: Anthropic left {} thinking blocks of the history out of this call (the history was edited)",
+                    ev.dropped
+                );
             }
         }
         Ok(reply)
@@ -2253,7 +2808,11 @@ impl Agent {
     /// A reply that failed after part of it showed says so before it is asked again.
     fn broke_off(&self, sid: &str, f: Failed, shown: bool) -> Failed {
         if shown && let Failed::Retry(why, _) = &f {
-            self.notice(sid, &format!("The model's reply failed: {why}; asking again."), false);
+            self.notice(
+                sid,
+                &format!("The model's reply failed: {why}; asking again."),
+                false,
+            );
         }
         f
     }
@@ -2274,9 +2833,16 @@ impl Agent {
         if live.text.is_empty() {
             return;
         }
-        let kind = if live.kind == 2 { "agent_thought_chunk" } else { "agent_message_chunk" };
+        let kind = if live.kind == 2 {
+            "agent_thought_chunk"
+        } else {
+            "agent_message_chunk"
+        };
         let text = std::mem::take(&mut live.text);
-        self.update(sid, json!({"sessionUpdate": kind, "content": {"type": "text", "text": text}}));
+        self.update(
+            sid,
+            json!({"sessionUpdate": kind, "content": {"type": "text", "text": text}}),
+        );
     }
 }
 
@@ -2285,7 +2851,10 @@ pub(crate) fn fetch(request: ureq::http::Request<String>, tx: &mpsc::Sender<Net>
     let response = match http().run(request) {
         Ok(r) => r,
         Err(e) => {
-            let _ = tx.send(Net::Failed(Failed::Retry(format!("could not reach the API ({e})"), None)));
+            let _ = tx.send(Net::Failed(Failed::Retry(
+                format!("could not reach the API ({e})"),
+                None,
+            )));
             return;
         }
     };
@@ -2295,7 +2864,12 @@ pub(crate) fn fetch(request: ureq::http::Request<String>, tx: &mpsc::Sender<Net>
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
-        let text = response.into_body().with_config().limit(1 << 20).read_to_string().unwrap_or_default();
+        let text = response
+            .into_body()
+            .with_config()
+            .limit(1 << 20)
+            .read_to_string()
+            .unwrap_or_default();
         let detail = serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|v| api_error(&v))
@@ -2306,7 +2880,10 @@ pub(crate) fn fetch(request: ureq::http::Request<String>, tx: &mpsc::Sender<Net>
         };
         let failed = match status {
             408 | 429 | 500..=599 => Failed::Retry(why, wait),
-            401 | 403 => Failed::Fatal(RpcError::AUTH_REQUIRED, format!("The API refused the key: {why}")),
+            401 | 403 => Failed::Fatal(
+                RpcError::AUTH_REQUIRED,
+                format!("The API refused the key: {why}"),
+            ),
             _ => Failed::Fatal(-32603, format!("The API answered: {why}")),
         };
         let _ = tx.send(Net::Failed(failed));
@@ -2326,7 +2903,10 @@ pub(crate) fn fetch(request: ureq::http::Request<String>, tx: &mpsc::Sender<Net>
                 }
             }
             Err(e) => {
-                let _ = tx.send(Net::Failed(Failed::Retry(format!("the stream broke ({e})"), None)));
+                let _ = tx.send(Net::Failed(Failed::Retry(
+                    format!("the stream broke ({e})"),
+                    None,
+                )));
                 return;
             }
         }
@@ -2381,15 +2961,31 @@ mod tests {
                 Delta::Call(1),
             ]
         );
-        assert_eq!(r.calls[&0], Call { id: "c1".into(), name: "bash".into(), arguments: "{\"command\":\"ls\"}".into() });
+        assert_eq!(
+            r.calls[&0],
+            Call {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: "{\"command\":\"ls\"}".into()
+            }
+        );
         assert_eq!(r.finish.as_deref(), Some("tool_calls"));
-        assert_eq!(r.usage.as_ref().unwrap()["prompt_tokens_details"]["cached_tokens"], 60);
+        assert_eq!(
+            r.usage.as_ref().unwrap()["prompt_tokens_details"]["cached_tokens"],
+            60
+        );
         let m = r.message();
         assert_eq!(m["reasoning_content"], "Let me look.");
-        assert_eq!(m["tool_calls"][0]["function"]["arguments"], "{\"command\":\"ls\"}");
+        assert_eq!(
+            m["tool_calls"][0]["function"]["arguments"],
+            "{\"command\":\"ls\"}"
+        );
         assert_eq!(m["tool_calls"][1]["function"]["arguments"], "{}");
         assert_eq!(m["tool_calls"][1]["type"], "function");
-        assert!(r.take(&json!({"errors": [{"message": "Capacity temporarily exceeded"}]}).to_string()).is_err());
+        assert!(
+            r.take(&json!({"errors": [{"message": "Capacity temporarily exceeded"}]}).to_string())
+                .is_err()
+        );
     }
 
     #[test]
@@ -2399,10 +2995,16 @@ mod tests {
         for i in 0..3 {
             assert_eq!(lane.take(3, t0 + Duration::from_secs(i)), None);
         }
-        assert_eq!(lane.take(3, t0 + Duration::from_secs(10)), Some(Duration::from_secs(50)));
+        assert_eq!(
+            lane.take(3, t0 + Duration::from_secs(10)),
+            Some(Duration::from_secs(50))
+        );
         assert_eq!(lane.take(3, t0 + Duration::from_secs(60)), None);
         lane.hold = Some(t0 + Duration::from_secs(90));
-        assert_eq!(lane.take(3, t0 + Duration::from_secs(70)), Some(Duration::from_secs(20)));
+        assert_eq!(
+            lane.take(3, t0 + Duration::from_secs(70)),
+            Some(Duration::from_secs(20))
+        );
     }
 
     #[test]
@@ -2411,15 +3013,25 @@ mod tests {
         r.take(&json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "grep", "arguments": "{}"}}]}}]}).to_string()).unwrap();
         r.settle();
         assert!(r.calls[&0].id.starts_with("call_"));
-        let m = Reply { content: "hi".into(), ..Reply::default() }.message();
+        let m = Reply {
+            content: "hi".into(),
+            ..Reply::default()
+        }
+        .message();
         assert_eq!(m, json!({"role": "assistant", "content": "hi"}));
     }
 
     #[test]
     fn null_content_becomes_empty_only_where_the_model_refuses_it() {
-        let msgs = vec![json!({"role": "user", "content": "hi"}), json!({"role": "assistant", "content": null, "tool_calls": []})];
+        let msgs = vec![
+            json!({"role": "user", "content": "hi"}),
+            json!({"role": "assistant", "content": null, "tool_calls": []}),
+        ];
         let oss = model("@cf/openai/gpt-oss-120b").unwrap();
-        assert_eq!(request_body(oss, "medium", &msgs)["messages"][1]["content"], "");
+        assert_eq!(
+            request_body(oss, "medium", &msgs)["messages"][1]["content"],
+            ""
+        );
         assert!(request_body(&MODELS[0], "high", &msgs)["messages"][1]["content"].is_null());
     }
 
@@ -2439,8 +3051,25 @@ mod tests {
         assert!(b.get("max_tokens").is_none());
         assert_eq!(b["stream"], true);
         assert_eq!(b["stream_options"]["include_usage"], true);
-        let names: Vec<&str> = b["tools"].as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["bash", "read_file", "write_file", "edit_file", "grep", "list", "web_fetch", "web_search"]);
+        let names: Vec<&str> = b["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "bash",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "grep",
+                "list",
+                "web_fetch",
+                "web_search"
+            ]
+        );
         assert!((ds.cost(1_000_000, 0, 0, 1_000_000) - 1.5).abs() < 1e-9);
     }
 
@@ -2474,13 +3103,22 @@ mod tests {
     #[test]
     fn a_claude_model_gets_the_photo_and_other_models_a_note() {
         let photo = json!({"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{RED_PNG}")}});
-        let messages = [json!({"role": "system", "content": "sys"}), json!({"role": "user", "content": [photo, {"type": "text", "text": "what is this?"}]})];
+        let messages = [
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": [photo, {"type": "text", "text": "what is this?"}]}),
+        ];
         let b = request_body(model("claude-sonnet-5-5").unwrap(), "high", &messages);
         let blocks = &b["messages"][0]["content"];
-        assert_eq!(blocks[0]["source"], json!({"type": "base64", "media_type": "image/png", "data": RED_PNG}));
+        assert_eq!(
+            blocks[0]["source"],
+            json!({"type": "base64", "media_type": "image/png", "data": RED_PNG})
+        );
         assert_eq!(blocks[1]["text"], "what is this?");
         let ds = request_body(&MODELS[0], "high", &messages);
-        assert_eq!(ds["messages"][1]["content"], "[a photo was attached here; this model cannot see it]\n\nwhat is this?");
+        assert_eq!(
+            ds["messages"][1]["content"],
+            "[a photo was attached here; this model cannot see it]\n\nwhat is this?"
+        );
         // the estimate counts the photo as a photo, not as its text
         let mut s = Session::new(PathBuf::from("/tmp"));
         let before = s.estimate();
@@ -2505,21 +3143,33 @@ mod tests {
         });
         std::thread::spawn(move || serve(rx, out));
         let send = |v: Value| tx.send(v.to_string()).unwrap();
-        send(json!({"jsonrpc": "2.0", "id": 1002, "method": "session/new", "params": {"cwd": dir}}));
+        send(
+            json!({"jsonrpc": "2.0", "id": 1002, "method": "session/new", "params": {"cwd": dir}}),
+        );
         let (mut sid, mut said) = (String::new(), String::new());
         loop {
-            let v = out_rx.recv_timeout(Duration::from_secs(300)).expect("the agent went quiet");
+            let v = out_rx
+                .recv_timeout(Duration::from_secs(300))
+                .expect("the agent went quiet");
             let answer = |n: u64| v.get("method").is_none() && v["id"] == n;
             if answer(1002) {
                 sid = v["result"]["sessionId"].as_str().unwrap().to_string();
-                send(json!({"jsonrpc": "2.0", "id": 1004, "method": "session/set_config_option", "params": {"sessionId": sid, "configId": "model", "value": "claude-sonnet-5-5"}}));
+                send(
+                    json!({"jsonrpc": "2.0", "id": 1004, "method": "session/set_config_option", "params": {"sessionId": sid, "configId": "model", "value": "claude-sonnet-5-5"}}),
+                );
             }
             if answer(1004) {
                 let prompt = json!([{"type": "image", "mimeType": "image/png", "data": RED_PNG}, {"type": "text", "text": "Which single color fills this image? Answer with one word, no tools."}]);
-                send(json!({"jsonrpc": "2.0", "id": 1003, "method": "session/prompt", "params": {"sessionId": sid, "prompt": prompt}}));
+                send(
+                    json!({"jsonrpc": "2.0", "id": 1003, "method": "session/prompt", "params": {"sessionId": sid, "prompt": prompt}}),
+                );
             }
             if v["params"]["update"]["sessionUpdate"] == "agent_message_chunk" {
-                said.push_str(v["params"]["update"]["content"]["text"].as_str().unwrap_or(""));
+                said.push_str(
+                    v["params"]["update"]["content"]["text"]
+                        .as_str()
+                        .unwrap_or(""),
+                );
             }
             if v["method"] == "_arakun/notice" {
                 println!("notice {}", v["params"]["text"]);
@@ -2542,9 +3192,18 @@ mod tests {
         let o = draft_options(&[]);
         assert_eq!(o[0].current, MODELS[0].id);
         assert_eq!(o[1].current, "high");
-        let o = draft_options(&[(Setting::Model, "@cf/zai-org/glm-5.3".into()), (Setting::Effort, "none".into())]);
+        let o = draft_options(&[
+            (Setting::Model, "@cf/zai-org/glm-5.3".into()),
+            (Setting::Effort, "none".into()),
+        ]);
         assert_eq!(o[1].current, "max");
-        assert_eq!(o[1].options.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["low", "high", "max"]);
+        assert_eq!(
+            o[1].options
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "high", "max"]
+        );
         assert_eq!(o[1].category.as_deref(), Some("thought_level"));
     }
 
@@ -2560,8 +3219,29 @@ mod tests {
             json!({"role": "assistant", "content": null, "tool_calls": [call("c")]}),
         ];
         repair(&mut m);
-        let roles: Vec<String> = m.iter().map(|x| format!("{}:{}", x["role"].as_str().unwrap(), x["tool_call_id"].as_str().unwrap_or(""))).collect();
-        assert_eq!(roles, ["system:", "user:", "assistant:", "tool:a", "tool:b", "user:", "assistant:", "tool:c"]);
+        let roles: Vec<String> = m
+            .iter()
+            .map(|x| {
+                format!(
+                    "{}:{}",
+                    x["role"].as_str().unwrap(),
+                    x["tool_call_id"].as_str().unwrap_or("")
+                )
+            })
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                "system:",
+                "user:",
+                "assistant:",
+                "tool:a",
+                "tool:b",
+                "user:",
+                "assistant:",
+                "tool:c"
+            ]
+        );
         assert_eq!(m[4]["content"], INTERRUPTED);
         let again = m.clone();
         repair(&mut m);
@@ -2576,16 +3256,32 @@ mod tests {
         let back: Session = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
         assert_eq!(back.messages, s.messages);
         assert_eq!(back.effort(), "max");
-        assert!(back.messages[0]["content"].as_str().unwrap().contains("/tmp"));
+        assert!(
+            back.messages[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("/tmp")
+        );
         assert!(Session::path("../etc").is_none());
     }
 
     #[test]
     fn edits_must_match_once() {
-        assert_eq!(apply_edit("a b a", "b", "c", false), Ok(("a c a".into(), 1)));
-        assert!(apply_edit("a b a", "a", "c", false).unwrap_err().contains("2 times"));
+        assert_eq!(
+            apply_edit("a b a", "b", "c", false),
+            Ok(("a c a".into(), 1))
+        );
+        assert!(
+            apply_edit("a b a", "a", "c", false)
+                .unwrap_err()
+                .contains("2 times")
+        );
         assert_eq!(apply_edit("a b a", "a", "c", true), Ok(("c b c".into(), 2)));
-        assert!(apply_edit("a", "x", "y", false).unwrap_err().contains("not in the file"));
+        assert!(
+            apply_edit("a", "x", "y", false)
+                .unwrap_err()
+                .contains("not in the file")
+        );
         assert!(apply_edit("a", "", "y", false).is_err());
         assert!(apply_edit("a", "a", "a", false).is_err());
     }
@@ -2594,18 +3290,62 @@ mod tests {
     fn file_tools_work_in_the_cwd() {
         let dir = std::env::temp_dir().join(format!("arakun-wai-{}", uuid_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(write_file(&dir, &json!({"path": "src/x.txt", "content": "one\ntwo\nthree\n"})).unwrap().starts_with("Created"));
-        assert_eq!(read_file(&dir, &json!({"path": "src/x.txt", "offset": 2, "limit": 1})).unwrap(), "     2\ttwo\n… 1 more lines; read on with offset=3\n");
-        edit_file(&dir, &json!({"path": "src/x.txt", "old_string": "two", "new_string": "2"})).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("src/x.txt")).unwrap(), "one\n2\nthree\n");
-        assert!(edit_file(&dir, &json!({"path": "src/x.txt", "old_string": "zzz", "new_string": "y"})).is_err());
+        assert!(
+            write_file(
+                &dir,
+                &json!({"path": "src/x.txt", "content": "one\ntwo\nthree\n"})
+            )
+            .unwrap()
+            .starts_with("Created")
+        );
+        assert_eq!(
+            read_file(&dir, &json!({"path": "src/x.txt", "offset": 2, "limit": 1})).unwrap(),
+            "     2\ttwo\n… 1 more lines; read on with offset=3\n"
+        );
+        edit_file(
+            &dir,
+            &json!({"path": "src/x.txt", "old_string": "two", "new_string": "2"}),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/x.txt")).unwrap(),
+            "one\n2\nthree\n"
+        );
+        assert!(
+            edit_file(
+                &dir,
+                &json!({"path": "src/x.txt", "old_string": "zzz", "new_string": "y"})
+            )
+            .is_err()
+        );
         assert_eq!(list(&dir, &json!({})).unwrap(), "src/");
-        assert!(grep(&dir, &json!({"pattern": "thr"})).unwrap().contains("x.txt:3:three"));
-        assert_eq!(grep(&dir, &json!({"pattern": "nothing-here"})).unwrap(), "No matches.");
-        let ran = run_bash(&dir, "echo out; echo err >&2; exit 3", Duration::from_secs(10), &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(
+            grep(&dir, &json!({"pattern": "thr"}))
+                .unwrap()
+                .contains("x.txt:3:three")
+        );
+        assert_eq!(
+            grep(&dir, &json!({"pattern": "nothing-here"})).unwrap(),
+            "No matches."
+        );
+        let ran = run_bash(
+            &dir,
+            "echo out; echo err >&2; exit 3",
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(ran.exit, Some(3));
         assert!(ran.output.contains("out") && ran.output.contains("err"));
-        let slow = run_bash(&dir, "sleep 5", Duration::from_secs(1), &AtomicBool::new(false), |_| {}).unwrap();
+        let slow = run_bash(
+            &dir,
+            "sleep 5",
+            Duration::from_secs(1),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
         assert!(slow.stopped.unwrap().starts_with("timed out"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2616,7 +3356,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(project_instructions(&dir), None);
         std::fs::write(dir.join("CLAUDE.md"), "claude rules\n").unwrap();
-        assert_eq!(project_instructions(&dir), Some(("CLAUDE.md", "claude rules".into())));
+        assert_eq!(
+            project_instructions(&dir),
+            Some(("CLAUDE.md", "claude rules".into()))
+        );
         std::fs::write(dir.join("AGENTS.md"), "ñ".repeat(INSTRUCTIONS_BYTES)).unwrap();
         let (name, text) = project_instructions(&dir).unwrap();
         assert_eq!(name, "AGENTS.md");
@@ -2643,10 +3386,28 @@ mod tests {
         let c = |t: Option<&str>, a: Option<&str>, auth: Option<&Value>, f: Option<&str>| {
             pick_credentials(t.map(str::to_string), a.map(str::to_string), auth, f)
         };
-        assert_eq!(c(None, None, Some(&auth), None), Some(Credentials { account: "acc".into(), token: "tok".into() }));
-        assert_eq!(c(Some("env"), Some("eacc"), Some(&auth), Some("file")), Some(Credentials { account: "eacc".into(), token: "env".into() }));
+        assert_eq!(
+            c(None, None, Some(&auth), None),
+            Some(Credentials {
+                account: "acc".into(),
+                token: "tok".into()
+            })
+        );
+        assert_eq!(
+            c(Some("env"), Some("eacc"), Some(&auth), Some("file")),
+            Some(Credentials {
+                account: "eacc".into(),
+                token: "env".into()
+            })
+        );
         let bare = json!({"workers-ai": {"type": "api", "key": "k"}});
-        assert_eq!(c(None, None, Some(&bare), Some("file\n")), Some(Credentials { account: "file".into(), token: "k".into() }));
+        assert_eq!(
+            c(None, None, Some(&bare), Some("file\n")),
+            Some(Credentials {
+                account: "file".into(),
+                token: "k".into()
+            })
+        );
         assert_eq!(c(None, None, Some(&bare), None), None);
         assert_eq!(c(None, Some("a"), None, None), None);
     }
@@ -2673,7 +3434,9 @@ mod tests {
     #[test]
     #[ignore]
     fn request_for_the_bridge() {
-        let Some(out) = std::env::var_os("ARAKUN_EQ_OUT") else { return };
+        let Some(out) = std::env::var_os("ARAKUN_EQ_OUT") else {
+            return;
+        };
         let call = |id: &str, cmd: &str| json!({"id": id, "type": "function", "function": {"name": "bash", "arguments": json!({"command": cmd, "timeout": 30}).to_string()}});
         let b1 = json!([
             {"type": "thinking", "thinking": "look first", "signature": "sig1"},
@@ -2696,7 +3459,11 @@ mod tests {
         let chat = request_body(&MODELS[0], "high", &messages);
         let native = request_body(model("claude-sonnet-5-5").unwrap(), "high", &messages);
         let kept = json!({"c-toolu_a": b1, "text:All good.": b2});
-        std::fs::write(out, json!({"chat": chat, "native": native, "kept": kept}).to_string()).unwrap();
+        std::fs::write(
+            out,
+            json!({"chat": chat, "native": native, "kept": kept}).to_string(),
+        )
+        .unwrap();
     }
 
     fn live_loop(pick: Option<&str>, effort: &str) {
@@ -2710,40 +3477,65 @@ mod tests {
         std::thread::spawn(move || serve(rx, out));
         let send = |v: Value| tx.send(v.to_string()).unwrap();
         send(json!({"jsonrpc": "2.0", "id": 1001, "method": "initialize", "params": {}}));
-        send(json!({"jsonrpc": "2.0", "id": 1002, "method": "session/new", "params": {"cwd": dir}}));
+        send(
+            json!({"jsonrpc": "2.0", "id": 1002, "method": "session/new", "params": {"cwd": dir}}),
+        );
         let mut sid = String::new();
         let mut kinds: Vec<String> = Vec::new();
         let mut prompted = false;
         loop {
-            let v = out_rx.recv_timeout(Duration::from_secs(600)).expect("the agent went quiet");
+            let v = out_rx
+                .recv_timeout(Duration::from_secs(600))
+                .expect("the agent went quiet");
             // Its own requests (permissions) count from 1.
             let answer = |n: u64| v.get("method").is_none() && v["id"] == n;
             if answer(1002) {
-                sid = v["result"]["sessionId"].as_str().unwrap_or_else(|| panic!("{v}")).to_string();
+                sid = v["result"]["sessionId"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{v}"))
+                    .to_string();
                 match pick {
-                    Some(m) => send(json!({"jsonrpc": "2.0", "id": 1004, "method": "session/set_config_option", "params": {"sessionId": sid, "configId": "model", "value": m}})),
+                    Some(m) => send(
+                        json!({"jsonrpc": "2.0", "id": 1004, "method": "session/set_config_option", "params": {"sessionId": sid, "configId": "model", "value": m}}),
+                    ),
                     None => assert_eq!(v["result"]["configOptions"][1]["currentValue"], effort),
                 }
             }
             if answer(1004) {
-                assert_eq!(v["result"]["configOptions"][1]["currentValue"], effort, "{v}");
+                assert_eq!(
+                    v["result"]["configOptions"][1]["currentValue"], effort,
+                    "{v}"
+                );
             }
             if !sid.is_empty() && !prompted && (pick.is_none() || answer(1004)) {
                 prompted = true;
                 let text = "Create hello.txt containing the word hi with write_file, then run `cat hello.txt` with bash, then answer in one short sentence.";
-                send(json!({"jsonrpc": "2.0", "id": 1003, "method": "session/prompt", "params": {"sessionId": sid, "prompt": [{"type": "text", "text": text}]}}));
+                send(
+                    json!({"jsonrpc": "2.0", "id": 1003, "method": "session/prompt", "params": {"sessionId": sid, "prompt": [{"type": "text", "text": text}]}}),
+                );
             }
             if v["method"] == "session/request_permission" {
                 kinds.push(format!("permission {}", v["params"]["toolCall"]["title"]));
-                send(json!({"jsonrpc": "2.0", "id": v["id"], "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}}));
+                send(
+                    json!({"jsonrpc": "2.0", "id": v["id"], "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}}),
+                );
             }
             if v["method"] == "_arakun/notice" {
                 kinds.push(format!("notice {}", v["params"]["text"]));
             }
             if let Some(kind) = v["params"]["update"]["sessionUpdate"].as_str() {
                 let detail = match kind {
-                    "tool_call" | "tool_call_update" => format!(" {} {}", v["params"]["update"]["title"], v["params"]["update"]["status"]),
-                    "usage_update" => format!(" {} tok ${:.5}", v["params"]["update"]["used"], v["params"]["update"]["cost"]["amount"].as_f64().unwrap_or(0.)),
+                    "tool_call" | "tool_call_update" => format!(
+                        " {} {}",
+                        v["params"]["update"]["title"], v["params"]["update"]["status"]
+                    ),
+                    "usage_update" => format!(
+                        " {} tok ${:.5}",
+                        v["params"]["update"]["used"],
+                        v["params"]["update"]["cost"]["amount"]
+                            .as_f64()
+                            .unwrap_or(0.)
+                    ),
                     _ => String::new(),
                 };
                 let line = format!("{kind}{detail}");
@@ -2759,7 +3551,9 @@ mod tests {
                     // the idle session reads its cache to keep it: a fraction of a cent, not a rewrite
                     let before = Session::load(&sid).unwrap().cost;
                     let warm = loop {
-                        let v = out_rx.recv_timeout(Duration::from_secs(60)).expect("no keep-warm request");
+                        let v = out_rx
+                            .recv_timeout(Duration::from_secs(60))
+                            .expect("no keep-warm request");
                         if v["params"]["update"]["sessionUpdate"] == "usage_update" {
                             break v["params"]["update"]["cost"]["amount"].as_f64().unwrap();
                         }
@@ -2770,17 +3564,39 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(std::fs::read_to_string(dir.join("hello.txt")).unwrap().trim(), "hi");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("hello.txt"))
+                .unwrap()
+                .trim(),
+            "hi"
+        );
         let saved = Session::load(&sid).unwrap();
-        println!("messages: {}", saved.messages.iter().map(|m| m["role"].as_str().unwrap_or("?")).collect::<Vec<_>>().join(" "));
+        println!(
+            "messages: {}",
+            saved
+                .messages
+                .iter()
+                .map(|m| m["role"].as_str().unwrap_or("?"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         if pick.is_some() {
             // every reply kept its own blocks, and the calls after the first read the cache
-            let kept = saved.messages.iter().filter(|m| m["role"] == "assistant").all(|m| m[anthropic::NATIVE].is_array());
+            let kept = saved
+                .messages
+                .iter()
+                .filter(|m| m["role"] == "assistant")
+                .all(|m| m[anthropic::NATIVE].is_array());
             assert!(kept, "an assistant message lost its blocks");
             println!("cost ${:.5}, efforts {:?}", saved.cost, saved.efforts);
             assert!(saved.cost > 0.0);
         } else {
-            assert!(saved.messages.iter().any(|m| m["reasoning_content"].is_string()));
+            assert!(
+                saved
+                    .messages
+                    .iter()
+                    .any(|m| m["reasoning_content"].is_string())
+            );
         }
         if let Some(p) = Session::path(&sid) {
             let _ = std::fs::remove_file(p);

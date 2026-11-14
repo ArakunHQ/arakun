@@ -16,7 +16,6 @@ use crate::browser::{BrowserView, ConsoleLine, PageState};
 use crate::control::{self, Reply, Request};
 use crate::model::TabKind;
 
-
 /// How long a command waits for the page to finish loading.
 const LOAD_WAIT: Duration = Duration::from_secs(15);
 /// How long a single DevTools command may take.
@@ -46,7 +45,10 @@ impl Action {
     /// Acts on the page as its user, so it is kept to pages served from this
     /// machine: the browser profile is the user's, logged in to their accounts.
     fn drives(&self) -> bool {
-        matches!(self, Action::Eval(_) | Action::Click(_) | Action::Type(..) | Action::Press(_))
+        matches!(
+            self,
+            Action::Eval(_) | Action::Click(_) | Action::Type(..) | Action::Press(_)
+        )
     }
 }
 
@@ -112,7 +114,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(Entity<BrowserView>, Action, bool), Reply> {
-        let env_path = self.command_env(req).ok_or_else(|| Reply::err("no project is open in arakun"))?;
+        let env_path = self
+            .command_env(req)
+            .ok_or_else(|| Reply::err("no project is open in arakun"))?;
         let place = self.env_label(&env_path);
         let action = match parse_action(req.args.get(1..).unwrap_or_default(), &req.cwd) {
             Ok(Some(action)) => action,
@@ -139,11 +143,17 @@ impl Shell {
                     )));
                 }
             },
-            n => match n.parse::<usize>().ok().and_then(|n| tabs.get(n.checked_sub(1)?)) {
+            n => match n
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| tabs.get(n.checked_sub(1)?))
+            {
                 Some(&i) => i,
                 None => {
                     let listing = self.page_listing(&env_path, &place, cx);
-                    return Err(Reply::err(format!("there is no browser tab {n}\n{listing}")));
+                    return Err(Reply::err(format!(
+                        "there is no browser tab {n}\n{listing}"
+                    )));
                 }
             },
         };
@@ -165,15 +175,25 @@ impl Shell {
         let Some(env) = self.find_env(env_path) else {
             return Vec::new();
         };
-        (0..env.tabs.len()).filter(|&i| matches!(env.tabs[i].kind, TabKind::Browser { .. })).collect()
+        (0..env.tabs.len())
+            .filter(|&i| matches!(env.tabs[i].kind, TabKind::Browser { .. }))
+            .collect()
     }
 
     /// The browser tab commands act on by default: the one on screen in that
     /// environment, else the one used last.
     fn current_browser_tab(&self, env_path: &Path) -> Option<usize> {
         let env = self.find_env(env_path)?;
-        let is_browser = |i: &usize| env.tabs.get(*i).is_some_and(|t| matches!(t.kind, TabKind::Browser { .. }));
-        let recent = env.tab_back.iter().rev().filter_map(|id| env.tabs.iter().position(|t| t.id == *id));
+        let is_browser = |i: &usize| {
+            env.tabs
+                .get(*i)
+                .is_some_and(|t| matches!(t.kind, TabKind::Browser { .. }))
+        };
+        let recent = env
+            .tab_back
+            .iter()
+            .rev()
+            .filter_map(|id| env.tabs.iter().position(|t| t.id == *id));
         std::iter::once(env.active_tab)
             .chain(env.split_other())
             .chain(recent)
@@ -184,7 +204,9 @@ impl Shell {
     fn page_listing(&self, env_path: &Path, place: &str, cx: &gpui::App) -> String {
         let tabs = self.browser_tabs(env_path);
         let Some(env) = self.find_env(env_path).filter(|_| !tabs.is_empty()) else {
-            return format!("no browser tabs are open in {place}; `arakun page open <url>` opens one");
+            return format!(
+                "no browser tabs are open in {place}; `arakun page open <url>` opens one"
+            );
         };
         let current = self.current_browser_tab(env_path);
         let mut out = format!("browser tabs in {place}:\n");
@@ -203,38 +225,56 @@ impl Shell {
                     };
                     (view.title(), view.url(), state)
                 }
-                (None, TabKind::Browser { url }) => (tab.title.clone(), url.clone(), "  (not loaded yet)"),
+                (None, TabKind::Browser { url }) => {
+                    (tab.title.clone(), url.clone(), "  (not loaded yet)")
+                }
                 (None, _) => continue,
             };
             let mark = if current == Some(i) { "*" } else { " " };
-            let title = if title == url { String::new() } else { format!("{title}  ") };
+            let title = if title == url {
+                String::new()
+            } else {
+                format!("{title}  ")
+            };
             out.push_str(&format!("{mark} {}  {title}{url}{state}\n", n + 1));
         }
-        out.push_str("Commands act on the tab marked *; `arakun page -t N <command>` picks another.");
+        out.push_str(
+            "Commands act on the tab marked *; `arakun page -t N <command>` picks another.",
+        );
         out
     }
 }
 
-async fn run(page: &Page, action: Action, fresh: bool, cx: &mut AsyncWindowContext) -> Result<String, String> {
+async fn run(
+    page: &Page,
+    action: Action,
+    fresh: bool,
+    cx: &mut AsyncWindowContext,
+) -> Result<String, String> {
     match action {
         Action::Open(url) => {
             if fresh {
                 return loaded(page, None, cx).await;
             }
             let loads = opened(page, cx).await?;
-            page.update(cx, |v, cx| v.navigate(&url, cx)).map_err(|_| CLOSED.to_string())?;
+            page.update(cx, |v, cx| v.navigate(&url, cx))
+                .map_err(|_| CLOSED.to_string())?;
             loaded(page, Some(loads), cx).await
         }
         Action::Reload => {
             let loads = opened(page, cx).await?;
-            page.update(cx, |v, cx| v.reload(cx)).map_err(|_| CLOSED.to_string())?;
+            page.update(cx, |v, cx| v.reload(cx))
+                .map_err(|_| CLOSED.to_string())?;
             loaded(page, Some(loads), cx).await
         }
         action => {
             let finished = wait_load(page, None, cx).await?;
             let mut out = act(page, action, cx).await?;
             if !finished {
-                out.push_str(&format!("\n(the page was still loading after {} s)", LOAD_WAIT.as_secs()));
+                out.push_str(&format!(
+                    "\n(the page was still loading after {} s)",
+                    LOAD_WAIT.as_secs()
+                ));
             }
             Ok(out)
         }
@@ -258,8 +298,13 @@ async fn act(page: &Page, action: Action, cx: &mut AsyncWindowContext) -> Result
     }
 }
 
-fn read<R>(page: &Page, cx: &AsyncWindowContext, f: impl FnOnce(&BrowserView) -> R) -> Result<R, String> {
-    page.read_with(cx, |v, _| f(v)).map_err(|_| CLOSED.to_string())
+fn read<R>(
+    page: &Page,
+    cx: &AsyncWindowContext,
+    f: impl FnOnce(&BrowserView) -> R,
+) -> Result<R, String> {
+    page.read_with(cx, |v, _| f(v))
+        .map_err(|_| CLOSED.to_string())
 }
 
 fn state(page: &Page, cx: &AsyncWindowContext) -> Result<PageState, String> {
@@ -268,7 +313,11 @@ fn state(page: &Page, cx: &AsyncWindowContext) -> Result<PageState, String> {
 
 /// Waits until the page is open and done loading; with `after`, until a load
 /// past that count finished. `Ok(false)`: still loading (or held by a dialog).
-async fn wait_load(page: &Page, after: Option<u64>, cx: &mut AsyncWindowContext) -> Result<bool, String> {
+async fn wait_load(
+    page: &Page,
+    after: Option<u64>,
+    cx: &mut AsyncWindowContext,
+) -> Result<bool, String> {
     let deadline = Instant::now() + LOAD_WAIT;
     loop {
         let s = state(page, cx)?;
@@ -283,7 +332,9 @@ async fn wait_load(page: &Page, after: Option<u64>, cx: &mut AsyncWindowContext)
         if s.dialog.is_some() || Instant::now() >= deadline {
             return Ok(false);
         }
-        cx.background_executor().timer(Duration::from_millis(50)).await;
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
     }
 }
 
@@ -299,11 +350,17 @@ async fn opened(page: &Page, cx: &mut AsyncWindowContext) -> Result<u64, String>
 }
 
 /// Waits for the load a navigation started and says how it went.
-async fn loaded(page: &Page, after: Option<u64>, cx: &mut AsyncWindowContext) -> Result<String, String> {
+async fn loaded(
+    page: &Page,
+    after: Option<u64>,
+    cx: &mut AsyncWindowContext,
+) -> Result<String, String> {
     let finished = wait_load(page, after, cx).await?;
     // Scripts that run right after the load may still log their errors.
     cx.background_executor().timer(SETTLE).await;
-    let (title, url, s, console) = read(page, cx, |v| (v.title(), v.url(), v.page_state(), v.console()))?;
+    let (title, url, s, console) = read(page, cx, |v| {
+        (v.title(), v.url(), v.page_state(), v.console())
+    })?;
     if let Some(e) = s.error {
         return Err(format!("{url} did not load: {e}"));
     }
@@ -311,21 +368,37 @@ async fn loaded(page: &Page, after: Option<u64>, cx: &mut AsyncWindowContext) ->
     Ok(format!("{verb} {url} · {title}{}", problems(&console, 0)))
 }
 
-async fn call(page: &Page, method: &str, params: Value, cx: &mut AsyncWindowContext) -> Result<Value, String> {
-    let answer = page.update(cx, |v, _| v.devtools(method, params)).map_err(|_| CLOSED.to_string())?;
+async fn call(
+    page: &Page,
+    method: &str,
+    params: Value,
+    cx: &mut AsyncWindowContext,
+) -> Result<Value, String> {
+    let answer = page
+        .update(cx, |v, _| v.devtools(method, params))
+        .map_err(|_| CLOSED.to_string())?;
     let timer = cx.background_executor().timer(CALL_WAIT);
     match select(answer, pin!(timer)).await {
         Either::Left((Ok(result), _)) => result,
         Either::Left((Err(_), _)) => Err(CLOSED.into()),
         Either::Right(_) => Err(match state(page, cx).ok().and_then(|s| s.dialog) {
-            Some(message) => format!("the page is waiting on a dialog (\"{message}\"); answer it in arakun"),
-            None => format!("the page did not answer {method} within {} s", CALL_WAIT.as_secs()),
+            Some(message) => {
+                format!("the page is waiting on a dialog (\"{message}\"); answer it in arakun")
+            }
+            None => format!(
+                "the page did not answer {method} within {} s",
+                CALL_WAIT.as_secs()
+            ),
         }),
     }
 }
 
 /// Runs JavaScript in the page; the result as a DevTools `RemoteObject`.
-async fn evaluate(page: &Page, expression: String, cx: &mut AsyncWindowContext) -> Result<Value, String> {
+async fn evaluate(
+    page: &Page,
+    expression: String,
+    cx: &mut AsyncWindowContext,
+) -> Result<Value, String> {
     let params = json!({
         "expression": expression,
         "returnByValue": true,
@@ -335,16 +408,25 @@ async fn evaluate(page: &Page, expression: String, cx: &mut AsyncWindowContext) 
     });
     let mut result = call(page, "Runtime.evaluate", params, cx).await?;
     if let Some(ex) = result.get("exceptionDetails") {
-        let text = ex["exception"]["description"].as_str().or_else(|| ex["text"].as_str()).unwrap_or("an exception");
+        let text = ex["exception"]["description"]
+            .as_str()
+            .or_else(|| ex["text"].as_str())
+            .unwrap_or("an exception");
         return Err(format!("the script threw: {text}"));
     }
-    Ok(result.get_mut("result").map(Value::take).unwrap_or(Value::Null))
+    Ok(result
+        .get_mut("result")
+        .map(Value::take)
+        .unwrap_or(Value::Null))
 }
 
 /// Calls one of the functions below with `args`, the helpers in scope.
 fn script(function: &str, args: &[Value]) -> String {
     let args: Vec<String> = args.iter().map(Value::to_string).collect();
-    format!("(() => {{\n{HELPERS}\nreturn ({function})({});\n}})()", args.join(", "))
+    format!(
+        "(() => {{\n{HELPERS}\nreturn ({function})({});\n}})()",
+        args.join(", ")
+    )
 }
 
 /// The value a script returned, as `arakun page` prints it.
@@ -355,14 +437,30 @@ fn value_text(object: &Value) -> String {
     match object.get("value") {
         Some(Value::String(s)) => s.clone(),
         Some(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
-        None => object["description"].as_str().or_else(|| object["type"].as_str()).unwrap_or("undefined").to_string(),
+        None => object["description"]
+            .as_str()
+            .or_else(|| object["type"].as_str())
+            .unwrap_or("undefined")
+            .to_string(),
     }
 }
 
-async fn screenshot(page: &Page, path: Option<PathBuf>, cx: &mut AsyncWindowContext) -> Result<String, String> {
-    let shot = call(page, "Page.captureScreenshot", json!({ "format": "png" }), cx).await?;
+async fn screenshot(
+    page: &Page,
+    path: Option<PathBuf>,
+    cx: &mut AsyncWindowContext,
+) -> Result<String, String> {
+    let shot = call(
+        page,
+        "Page.captureScreenshot",
+        json!({ "format": "png" }),
+        cx,
+    )
+    .await?;
     let data = shot["data"].as_str().ok_or("Chromium sent no image")?;
-    let png = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string())?;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| e.to_string())?;
     let path = match path {
         Some(p) if p.is_dir() => p.join(shot_name()),
         Some(p) => p,
@@ -370,12 +468,16 @@ async fn screenshot(page: &Page, path: Option<PathBuf>, cx: &mut AsyncWindowCont
     };
     std::fs::write(&path, &png).map_err(|e| format!("{}: {e}", path.display()))?;
     let url = read(page, cx, |v| v.url())?;
-    let size = png_size(&png).map(|(w, h)| format!("  {w}×{h}")).unwrap_or_default();
+    let size = png_size(&png)
+        .map(|(w, h)| format!("  {w}×{h}"))
+        .unwrap_or_default();
     Ok(format!("{}{size}  {url}", path.display()))
 }
 
 fn shot_name() -> String {
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
     format!("page-{ms}.png")
 }
 
@@ -424,11 +526,18 @@ fn snapshot(page: &Page, cx: &AsyncWindowContext) -> Result<Before, String> {
 
 /// Gives the page a moment to react to an action, waits for a navigation it
 /// started, and reports what changed.
-async fn settle(page: &Page, before: Before, cx: &mut AsyncWindowContext) -> Result<String, String> {
+async fn settle(
+    page: &Page,
+    before: Before,
+    cx: &mut AsyncWindowContext,
+) -> Result<String, String> {
     cx.background_executor().timer(SETTLE).await;
     let mut out = String::new();
     let s = state(page, cx)?;
-    if (s.loading || s.loads > before.loads) && !wait_load(page, None, cx).await? && s.dialog.is_none() {
+    if (s.loading || s.loads > before.loads)
+        && !wait_load(page, None, cx).await?
+        && s.dialog.is_none()
+    {
         out.push_str("\nthe page is still loading");
     }
     let (url, s, console) = read(page, cx, |v| (v.url(), v.page_state(), v.console()))?;
@@ -436,7 +545,9 @@ async fn settle(page: &Page, before: Before, cx: &mut AsyncWindowContext) -> Res
         out.push_str(&format!("\nnow at {url}"));
     }
     if let Some(message) = s.dialog {
-        out.push_str(&format!("\nthe page opened a dialog: \"{message}\" (answer it in arakun)"));
+        out.push_str(&format!(
+            "\nthe page opened a dialog: \"{message}\" (answer it in arakun)"
+        ));
     }
     out.push_str(&problems(&console, before.seq));
     Ok(out)
@@ -445,15 +556,24 @@ async fn settle(page: &Page, before: Before, cx: &mut AsyncWindowContext) -> Res
 async fn click(page: &Page, target: &str, cx: &mut AsyncWindowContext) -> Result<String, String> {
     let found = evaluate(page, script(CLICK_JS, &[json!(target)]), cx).await?;
     let Some(el) = found.get("value").filter(|v| v.is_object()) else {
-        return Err(format!("nothing on the page matches `{target}` (a CSS selector, or the text of a button or link)"));
+        return Err(format!(
+            "nothing on the page matches `{target}` (a CSS selector, or the text of a button or link)"
+        ));
     };
     let what = el["el"].as_str().unwrap_or("the element").to_string();
     if el["visible"] != true {
         return Err(format!("{what} is not visible"));
     }
-    let (x, y) = (el["x"].as_f64().unwrap_or(0.), el["y"].as_f64().unwrap_or(0.));
+    let (x, y) = (
+        el["x"].as_f64().unwrap_or(0.),
+        el["y"].as_f64().unwrap_or(0.),
+    );
     let before = snapshot(page, cx)?;
-    for (kind, button, buttons) in [("mouseMoved", "none", 0), ("mousePressed", "left", 1), ("mouseReleased", "left", 0)] {
+    for (kind, button, buttons) in [
+        ("mouseMoved", "none", 0),
+        ("mousePressed", "left", 1),
+        ("mouseReleased", "left", 0),
+    ] {
         let params = json!({ "type": kind, "x": x, "y": y, "button": button, "buttons": buttons, "clickCount": 1 });
         call(page, "Input.dispatchMouseEvent", params, cx).await?;
     }
@@ -465,7 +585,12 @@ async fn click(page: &Page, target: &str, cx: &mut AsyncWindowContext) -> Result
     Ok(out)
 }
 
-async fn type_into(page: &Page, field: &str, text: &str, cx: &mut AsyncWindowContext) -> Result<String, String> {
+async fn type_into(
+    page: &Page,
+    field: &str,
+    text: &str,
+    cx: &mut AsyncWindowContext,
+) -> Result<String, String> {
     let found = evaluate(page, script(FOCUS_JS, &[json!(field), json!(text)]), cx).await?;
     let Some(el) = found.get("value").filter(|v| v.is_object()) else {
         return Err(format!(
@@ -476,7 +601,10 @@ async fn type_into(page: &Page, field: &str, text: &str, cx: &mut AsyncWindowCon
     let before = snapshot(page, cx)?;
     let mut out = if let Some(options) = el["options"].as_array() {
         let options: Vec<&str> = options.iter().filter_map(Value::as_str).collect();
-        return Err(format!("{what} has no option `{text}`; it offers: {}", options.join(", ")));
+        return Err(format!(
+            "{what} has no option `{text}`; it offers: {}",
+            options.join(", ")
+        ));
     } else if let Some(chosen) = el["chosen"].as_str() {
         format!("picked \"{chosen}\" in {what}")
     } else {
@@ -490,14 +618,18 @@ async fn type_into(page: &Page, field: &str, text: &str, cx: &mut AsyncWindowCon
         }
         let value = evaluate(page, VALUE_JS.to_string(), cx).await?;
         let value = value.get("value").cloned().unwrap_or(Value::Null);
-        format!("typed into {what}; it now holds {}", clip_to(value.to_string(), 300))
+        format!(
+            "typed into {what}; it now holds {}",
+            clip_to(value.to_string(), 300)
+        )
     };
     out.push_str(&settle(page, before, cx).await?);
     Ok(out)
 }
 
 async fn press(page: &Page, name: &str, cx: &mut AsyncWindowContext) -> Result<String, String> {
-    let k = key(name).ok_or_else(|| format!("unknown key `{name}`; arakun page press knows {KEY_NAMES}"))?;
+    let k = key(name)
+        .ok_or_else(|| format!("unknown key `{name}`; arakun page press knows {KEY_NAMES}"))?;
     let before = snapshot(page, cx)?;
     send_key(page, k, cx).await?;
     let mut out = format!("pressed {}", k.code);
@@ -518,11 +650,23 @@ struct Key {
     text: Option<&'static str>,
 }
 
-const BACKSPACE: Key = Key { key: "Backspace", code: "Backspace", vk: 8, text: None };
+const BACKSPACE: Key = Key {
+    key: "Backspace",
+    code: "Backspace",
+    vk: 8,
+    text: None,
+};
 const KEY_NAMES: &str = "Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown";
 
 fn key(name: &str) -> Option<Key> {
-    let k = |key, code, vk, text| Some(Key { key, code, vk, text });
+    let k = |key, code, vk, text| {
+        Some(Key {
+            key,
+            code,
+            vk,
+            text,
+        })
+    };
     match name.to_ascii_lowercase().as_str() {
         "enter" | "return" => k("Enter", "Enter", 13, Some("\r")),
         "tab" => k("Tab", "Tab", 9, None),
@@ -563,8 +707,10 @@ async fn send_key(page: &Page, k: Key, cx: &mut AsyncWindowContext) -> Result<()
 
 /// Errors and warnings logged after `since`, for the answer to an action.
 fn problems(console: &[ConsoleLine], since: u64) -> String {
-    let new: Vec<&ConsoleLine> =
-        console.iter().filter(|l| l.seq > since && matches!(l.level, "error" | "warn")).collect();
+    let new: Vec<&ConsoleLine> = console
+        .iter()
+        .filter(|l| l.seq > since && matches!(l.level, "error" | "warn"))
+        .collect();
     if new.is_empty() {
         return String::new();
     }
@@ -653,14 +799,23 @@ fn drive_any_page_path() -> std::path::PathBuf {
 }
 
 fn is_local(url: &str) -> bool {
-    if url.is_empty() || ["file:", "about:", "data:"].iter().any(|s| url.starts_with(s)) {
+    if url.is_empty()
+        || ["file:", "about:", "data:"]
+            .iter()
+            .any(|s| url.starts_with(s))
+    {
         return true;
     }
-    let Some(rest) = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) else {
+    let Some(rest) = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+    else {
         return false;
     };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     let host = match authority.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or_default(),
         None => authority.split(':').next().unwrap_or_default(),
@@ -668,7 +823,9 @@ fn is_local(url: &str) -> bool {
     .to_ascii_lowercase();
     host == "localhost"
         || host.ends_with(".localhost")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
 }
 
 const TEXT_JS: &str = "(document.body || document.documentElement).innerText";
@@ -768,7 +925,12 @@ mod tests {
         ] {
             assert!(is_local(url), "{url}");
         }
-        for url in ["https://github.com/", "http://127.evil.com/", "http://localhost.evil.com/", "chrome://version"] {
+        for url in [
+            "https://github.com/",
+            "http://127.evil.com/",
+            "http://localhost.evil.com/",
+            "chrome://version",
+        ] {
             assert!(!is_local(url), "{url}");
         }
     }
@@ -776,13 +938,29 @@ mod tests {
     #[test]
     fn page_commands_parse() {
         let cwd = Path::new("/p");
-        let parse = |a: &[&str]| parse_action(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), cwd);
+        let parse =
+            |a: &[&str]| parse_action(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), cwd);
         assert_eq!(parse(&[]), Ok(None));
-        assert_eq!(parse(&["shot", "a.png"]), Ok(Some(Action::Screenshot(Some("/p/a.png".into())))));
-        assert_eq!(parse(&["eval", "1 +", "1"]), Ok(Some(Action::Eval("1 + 1".into()))));
-        assert_eq!(parse(&["type", "#q", "hello", "world"]), Ok(Some(Action::Type("#q".into(), "hello world".into()))));
-        assert_eq!(parse(&["type", "#q"]), Ok(Some(Action::Type("#q".into(), String::new()))));
-        assert_eq!(parse(&["open", "localhost:3000"]), Ok(Some(Action::Open("localhost:3000".into()))));
+        assert_eq!(
+            parse(&["shot", "a.png"]),
+            Ok(Some(Action::Screenshot(Some("/p/a.png".into()))))
+        );
+        assert_eq!(
+            parse(&["eval", "1 +", "1"]),
+            Ok(Some(Action::Eval("1 + 1".into())))
+        );
+        assert_eq!(
+            parse(&["type", "#q", "hello", "world"]),
+            Ok(Some(Action::Type("#q".into(), "hello world".into())))
+        );
+        assert_eq!(
+            parse(&["type", "#q"]),
+            Ok(Some(Action::Type("#q".into(), String::new())))
+        );
+        assert_eq!(
+            parse(&["open", "localhost:3000"]),
+            Ok(Some(Action::Open("localhost:3000".into())))
+        );
         assert!(parse(&["click"]).is_err());
         assert!(parse(&["console", "x"]).is_err());
         assert!(parse(&["fly"]).is_err());
@@ -791,14 +969,36 @@ mod tests {
 
     #[test]
     fn results_and_logs_read_well() {
-        assert_eq!(value_text(&json!({ "type": "string", "value": "hi" })), "hi");
+        assert_eq!(
+            value_text(&json!({ "type": "string", "value": "hi" })),
+            "hi"
+        );
         assert_eq!(value_text(&json!({ "type": "number", "value": 2 })), "2");
         assert_eq!(value_text(&json!({ "type": "undefined" })), "undefined");
-        assert_eq!(value_text(&json!({ "type": "number", "unserializableValue": "NaN" })), "NaN");
-        assert_eq!(value_text(&json!({ "type": "object", "value": { "a": 1 } })), "{\n  \"a\": 1\n}");
-        let line = |seq, level, text: &str| ConsoleLine { seq, level, text: text.into(), source: String::new() };
-        let console = [line(1, "error", "old"), line(2, "log", "hi"), line(3, "error", "boom"), line(4, "warn", "hmm")];
-        assert_eq!(problems(&console, 1), "\n1 error, 1 warning in the console:\n  error boom\n  warn  hmm");
+        assert_eq!(
+            value_text(&json!({ "type": "number", "unserializableValue": "NaN" })),
+            "NaN"
+        );
+        assert_eq!(
+            value_text(&json!({ "type": "object", "value": { "a": 1 } })),
+            "{\n  \"a\": 1\n}"
+        );
+        let line = |seq, level, text: &str| ConsoleLine {
+            seq,
+            level,
+            text: text.into(),
+            source: String::new(),
+        };
+        let console = [
+            line(1, "error", "old"),
+            line(2, "log", "hi"),
+            line(3, "error", "boom"),
+            line(4, "warn", "hmm"),
+        ];
+        assert_eq!(
+            problems(&console, 1),
+            "\n1 error, 1 warning in the console:\n  error boom\n  warn  hmm"
+        );
         assert_eq!(problems(&console[..2], 1), "");
         assert_eq!(clip_to("añb".into(), 2), "a… (3 more bytes)");
     }

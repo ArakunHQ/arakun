@@ -21,8 +21,8 @@ use futures::channel::{mpsc as fmpsc, oneshot};
 use serde_json::{Value, json};
 
 use super::AgentKind;
-use crate::platform::ProcessTree;
 use super::launch::{self, LaunchSpec};
+use crate::platform::ProcessTree;
 
 #[derive(Debug, Clone)]
 pub struct RpcError {
@@ -305,7 +305,10 @@ impl Connection {
                     for (_, tx) in pending.lock().unwrap().drain() {
                         let _ = tx.send(Err(RpcError::disconnected()));
                     }
-                    let _ = events.unbounded_send(Incoming::Closed { status: "stopped".into(), stderr_tail: String::new() });
+                    let _ = events.unbounded_send(Incoming::Closed {
+                        status: "stopped".into(),
+                        stderr_tail: String::new(),
+                    });
                 })?;
         }
         Ok((
@@ -351,10 +354,10 @@ impl Connection {
         if !self.write(
             "request",
             json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
-        )
-            && let Some(tx) = self.pending.lock().unwrap().remove(&key) {
-                let _ = tx.send(Err(RpcError::disconnected()));
-            }
+        ) && let Some(tx) = self.pending.lock().unwrap().remove(&key)
+        {
+            let _ = tx.send(Err(RpcError::disconnected()));
+        }
         async move { rx.await.unwrap_or_else(|_| Err(RpcError::disconnected())) }
     }
 
@@ -385,7 +388,10 @@ impl Connection {
 }
 
 fn dispatch(msg: Value, pending: &Pending, events: &fmpsc::UnboundedSender<Incoming>) {
-    let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
+    let method = msg
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let id = msg.get("id").cloned().filter(|v| !v.is_null());
     match (method, id) {
         (Some(method), Some(id)) => {

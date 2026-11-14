@@ -36,7 +36,12 @@ pub fn set_default_agent(agent: Agent) {
 }
 
 impl Agent {
-    pub const ALL: [Agent; 4] = [Agent::Claude, Agent::Droid, Agent::OpenCode, Agent::WorkersAi];
+    pub const ALL: [Agent; 4] = [
+        Agent::Claude,
+        Agent::Droid,
+        Agent::OpenCode,
+        Agent::WorkersAi,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -87,10 +92,20 @@ pub enum Status {
 #[derive(Clone)]
 pub enum TabKind {
     NewSession,
-    Session { agent: Agent, id: SharedString },
-    Browser { url: SharedString },
-    File { path: PathBuf },
-    Diff { path: String, untracked: bool },
+    Session {
+        agent: Agent,
+        id: SharedString,
+    },
+    Browser {
+        url: SharedString,
+    },
+    File {
+        path: PathBuf,
+    },
+    Diff {
+        path: String,
+        untracked: bool,
+    },
     /// The project's scratch notes.
     Notes,
     /// The phone page: on/off, link and QR code (`phone_view`).
@@ -181,7 +196,8 @@ impl Automation {
         if !self.enabled {
             return None;
         }
-        self.schedule.next_after(self.checked.max(now.saturating_sub(GRACE_SECS)))
+        self.schedule
+            .next_after(self.checked.max(now.saturating_sub(GRACE_SECS)))
     }
 }
 
@@ -500,7 +516,12 @@ impl Environment {
     /// Shows the tab `id` in the first (left or top) pane or the second, splitting with
     /// `companion` when only one pane shows. The two shown tabs swap when one is dropped on
     /// the other's side; a third tab takes over the pane it lands on. False when nothing moved.
-    pub fn place_tab(&mut self, id: u64, first: bool, companion: impl FnOnce(&mut Self) -> usize) -> bool {
+    pub fn place_tab(
+        &mut self,
+        id: u64,
+        first: bool,
+        companion: impl FnOnce(&mut Self) -> usize,
+    ) -> bool {
         let Some(index) = self.tabs.iter().position(|t| t.id == id) else {
             return false;
         };
@@ -525,9 +546,18 @@ impl Environment {
             return true;
         }
         let ratio = self.split.map_or(0.5, |s| s.ratio);
-        let other = if index == self.active_tab { companion(self) } else { self.active_tab };
+        let other = if index == self.active_tab {
+            companion(self)
+        } else {
+            self.active_tab
+        };
         let other_id = self.tabs[other].id;
-        self.split = Some(Split { other: other_id, dir: SplitDir::Right, ratio, focus_first: first });
+        self.split = Some(Split {
+            other: other_id,
+            dir: SplitDir::Right,
+            ratio,
+            focus_first: first,
+        });
         self.active_tab = index;
         true
     }
@@ -662,7 +692,13 @@ pub fn workspaces_root() -> PathBuf {
 pub fn worktree_path(project: &str, branch: &str) -> PathBuf {
     let slug: String = branch
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let slug = slug.trim_matches('-');
     let base = workspaces_root().join(project);
@@ -690,7 +726,10 @@ const OLD_LOGO_COLORS: [u32; 8] = [
 
 /// A saved logo color, moved to the current palette if it is an old one.
 pub fn current_logo(logo: u32) -> u32 {
-    OLD_LOGO_COLORS.iter().position(|&c| c == logo).map_or(logo, |i| LOGO_COLORS[i])
+    OLD_LOGO_COLORS
+        .iter()
+        .position(|&c| c == logo)
+        .map_or(logo, |i| LOGO_COLORS[i])
 }
 
 pub fn logo_for(path: &Path) -> (u32, u8) {
@@ -709,7 +748,10 @@ mod tests {
     fn old_logo_colors_move_to_the_palette() {
         assert_eq!(current_logo(0x38bdf8), crate::theme::CATEGORY[0]);
         assert_eq!(current_logo(0xf87171), crate::theme::CATEGORY[4]);
-        assert_eq!(current_logo(crate::theme::CATEGORY[2]), crate::theme::CATEGORY[2]);
+        assert_eq!(
+            current_logo(crate::theme::CATEGORY[2]),
+            crate::theme::CATEGORY[2]
+        );
         let mut seen = LOGO_COLORS.to_vec();
         seen.sort();
         seen.dedup();
@@ -717,27 +759,38 @@ mod tests {
     }
 
     fn env_with(kinds: Vec<TabKind>) -> Environment {
-        let mut env = Environment::new(PathBuf::from("/tmp/arakun-test"), Some("main".into()), true);
+        let mut env =
+            Environment::new(PathBuf::from("/tmp/arakun-test"), Some("main".into()), true);
         env.tabs = kinds.into_iter().map(|k| Tab::new("t", k)).collect();
         env
     }
 
     fn browser(url: &str) -> TabKind {
-        TabKind::Browser { url: url.to_string().into() }
+        TabKind::Browser {
+            url: url.to_string().into(),
+        }
     }
 
     #[test]
     fn activating_the_other_pane_swaps_roles() {
         let mut env = env_with(vec![browser("a"), browser("b"), browser("c")]);
         let ids: Vec<u64> = env.tabs.iter().map(|t| t.id).collect();
-        env.split = Some(Split { other: ids[1], dir: SplitDir::Right, ratio: 0.5, focus_first: true });
+        env.split = Some(Split {
+            other: ids[1],
+            dir: SplitDir::Right,
+            ratio: 0.5,
+            focus_first: true,
+        });
         assert_eq!(env.split_other(), Some(1));
 
         env.active_tab = 1;
         env.settle_split(Some(ids[0]));
         let split = env.split.unwrap();
         assert_eq!(split.other, ids[0]);
-        assert!(!split.focus_first, "the focused pane moved to the second slot");
+        assert!(
+            !split.focus_first,
+            "the focused pane moved to the second slot"
+        );
         assert_eq!(env.split_other(), Some(0));
 
         // Picking a third tab replaces the focused pane's content only.
@@ -749,11 +802,19 @@ mod tests {
 
     #[test]
     fn swapping_moves_each_pane_with_its_size() {
-        let mut split = Split { other: 7, dir: SplitDir::Right, ratio: 0.3, focus_first: true };
+        let mut split = Split {
+            other: 7,
+            dir: SplitDir::Right,
+            ratio: 0.3,
+            focus_first: true,
+        };
         split.swap();
         assert!(!split.focus_first, "the focused tab is now on the right");
         assert_eq!(split.other, 7, "the panes keep their tabs");
-        assert!((split.ratio - 0.7).abs() < 1e-6, "the left pane now has the right one's width");
+        assert!(
+            (split.ratio - 0.7).abs() < 1e-6,
+            "the left pane now has the right one's width"
+        );
         split.swap();
         assert!(split.focus_first);
         assert!((split.ratio - 0.3).abs() < 1e-6);
@@ -769,7 +830,11 @@ mod tests {
         let left_right = |env: &Environment| {
             let split = env.split.unwrap();
             let (active, other) = (env.tabs[env.active_tab].id, split.other);
-            if split.focus_first { (active, other) } else { (other, active) }
+            if split.focus_first {
+                (active, other)
+            } else {
+                (other, active)
+            }
         };
         assert_eq!(left_right(&env), (ids[0], ids[1]));
         // Dropping a shown tab on its own side does nothing; on the other side, they swap.
@@ -781,7 +846,10 @@ mod tests {
         assert_eq!(left_right(&env), (ids[1], ids[2]));
         assert!(env.place_tab(ids[0], true, no_companion));
         assert_eq!(left_right(&env), (ids[0], ids[2]));
-        assert_eq!(env.tabs[env.active_tab].id, ids[0], "the dropped tab gets the focus");
+        assert_eq!(
+            env.tabs[env.active_tab].id, ids[0],
+            "the dropped tab gets the focus"
+        );
     }
 
     #[test]
@@ -790,14 +858,22 @@ mod tests {
         let ids: Vec<u64> = env.tabs.iter().map(|t| t.id).collect();
         assert!(env.place_tab(ids[0], false, |_| 1));
         let split = env.split.unwrap();
-        assert_eq!((env.tabs[env.active_tab].id, split.other, split.focus_first), (ids[0], ids[1], false));
+        assert_eq!(
+            (env.tabs[env.active_tab].id, split.other, split.focus_first),
+            (ids[0], ids[1], false)
+        );
     }
 
     #[test]
     fn split_closes_when_its_other_tab_goes_away() {
         let mut env = env_with(vec![browser("a"), browser("b")]);
         let other = env.tabs[1].id;
-        env.split = Some(Split { other, dir: SplitDir::Down, ratio: 0.3, focus_first: true });
+        env.split = Some(Split {
+            other,
+            dir: SplitDir::Down,
+            ratio: 0.3,
+            focus_first: true,
+        });
         env.tabs.remove(1);
         assert_eq!(env.split_other(), None);
         env.settle_split(None);
@@ -808,7 +884,12 @@ mod tests {
     fn landing_on_the_other_tab_without_a_previous_one_unsplits() {
         let mut env = env_with(vec![browser("a"), browser("b")]);
         let ids: Vec<u64> = env.tabs.iter().map(|t| t.id).collect();
-        env.split = Some(Split { other: ids[1], dir: SplitDir::Right, ratio: 0.5, focus_first: true });
+        env.split = Some(Split {
+            other: ids[1],
+            dir: SplitDir::Right,
+            ratio: 0.5,
+            focus_first: true,
+        });
         // The active tab was closed, and its neighbour is the other pane's tab.
         env.tabs.remove(0);
         env.active_tab = 0;

@@ -12,10 +12,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, ElementId, FocusHandle, ImageSource,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent, ObjectFit, ParentElement as _,
-    Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, canvas, div, img, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, ElementId, FocusHandle,
+    ImageSource, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
+    ObjectFit, ParentElement as _, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, canvas, div, img,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::{theme, ui};
@@ -61,7 +62,10 @@ impl Zoom {
         let Some((nw, nh)) = self.natural.filter(|(w, h)| *w > 0. && *h > 0.) else {
             return;
         };
-        let (bw, bh) = (f32::from(self.bounds.size.width), f32::from(self.bounds.size.height));
+        let (bw, bh) = (
+            f32::from(self.bounds.size.width),
+            f32::from(self.bounds.size.height),
+        );
         if bw <= 0. || bh <= 0. {
             return;
         }
@@ -79,7 +83,10 @@ impl Zoom {
     /// How big it shows against its own size, when that is known.
     fn own_percent(&self, scale_factor: f32) -> Option<f32> {
         let (nw, nh) = self.natural.filter(|(w, h)| *w > 0. && *h > 0.)?;
-        let (bw, bh) = (f32::from(self.bounds.size.width), f32::from(self.bounds.size.height));
+        let (bw, bh) = (
+            f32::from(self.bounds.size.width),
+            f32::from(self.bounds.size.height),
+        );
         let fit_h = bh.min(bw * nh / nw);
         (fit_h > 0.).then(|| fit_h * self.scale / (nh / scale_factor) * 100.)
     }
@@ -95,7 +102,10 @@ impl Zoom {
         let px_ = f32::from(at.x - self.bounds.origin.x);
         let py_ = f32::from(at.y - self.bounds.origin.y);
         // Keep the point under the cursor fixed while the scale changes.
-        self.offset = (px_ - (px_ - self.offset.0) * k, py_ - (py_ - self.offset.1) * k);
+        self.offset = (
+            px_ - (px_ - self.offset.0) * k,
+            py_ - (py_ - self.offset.1) * k,
+        );
         self.scale = new;
         self.clamp();
     }
@@ -151,7 +161,11 @@ impl Render for DraggedImage {
             .shadow_lg()
             .overflow_hidden()
             .opacity(0.9)
-            .child(img(self.path.clone()).size_full().object_fit(ObjectFit::Contain))
+            .child(
+                img(self.path.clone())
+                    .size_full()
+                    .object_fit(ObjectFit::Contain),
+            )
     }
 }
 
@@ -222,24 +236,33 @@ fn build(
     let note = z.note;
     let zoomed = z.zoomed();
     let dragging = z.drag.is_some() && z.dragged > 3.;
-    let percent = z.own_percent(window.scale_factor()).unwrap_or(z.scale * 100.);
+    let percent = z
+        .own_percent(window.scale_factor())
+        .unwrap_or(z.scale * 100.);
     let scale = z.scale;
     let (ox, oy) = z.offset;
     let size = z.bounds.size;
 
-    let image = img(source).object_fit(ObjectFit::Contain).with_fallback(|| {
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(ui::TEXT_MD))
-            .text_color(theme::text_subtle())
-            .child("Could not load the image")
-            .into_any_element()
-    });
+    let image = img(source)
+        .object_fit(ObjectFit::Contain)
+        .with_fallback(|| {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(ui::TEXT_MD))
+                .text_color(theme::text_subtle())
+                .child("Could not load the image")
+                .into_any_element()
+        });
     let image = if zoomed {
-        image.absolute().left(px(ox)).top(px(oy)).w(size.width * scale).h(size.height * scale)
+        image
+            .absolute()
+            .left(px(ox))
+            .top(px(oy))
+            .w(size.width * scale)
+            .h(size.height * scale)
     } else {
         image.size_full()
     };
@@ -252,7 +275,13 @@ fn build(
         .size_full()
         .overflow_hidden()
         .when_some(focus.clone(), |d, f| d.track_focus(&f))
-        .when(zoomed, |d| if dragging { d.cursor_grabbing() } else { d.cursor_grab() })
+        .when(zoomed, |d| {
+            if dragging {
+                d.cursor_grabbing()
+            } else {
+                d.cursor_grab()
+            }
+        })
         .on_key_down({
             let state = state.clone();
             move |ev: &KeyDownEvent, _, cx| {
@@ -313,7 +342,8 @@ fn build(
         .on_scroll_wheel({
             let state = state.clone();
             move |ev: &ScrollWheelEvent, _, cx| {
-                let zoom_key = ev.modifiers.control || (cfg!(target_os = "macos") && ev.modifiers.platform);
+                let zoom_key =
+                    ev.modifiers.control || (cfg!(target_os = "macos") && ev.modifiers.platform);
                 if inline && !zoom_key {
                     return;
                 }
@@ -408,20 +438,25 @@ fn build(
                         }
                         cx.notify();
                     });
-                } else if !zoomed
-                    && let Some(f) = &on_click {
-                        f(window, cx);
-                    }
+                } else if !zoomed && let Some(f) = &on_click {
+                    f(window, cx);
+                }
             }
         })
         .when_some(lift, |d, path| {
-            d.on_drag(DraggedImage { path, offset: Point::default() }, |d, offset, window, cx| {
-                LIFTED.with(|l| *l.borrow_mut() = Some(d.path.clone()));
-                window.refresh();
-                let mut d = d.clone();
-                d.offset = offset;
-                cx.new(|_| d)
-            })
+            d.on_drag(
+                DraggedImage {
+                    path,
+                    offset: Point::default(),
+                },
+                |d, offset, window, cx| {
+                    LIFTED.with(|l| *l.borrow_mut() = Some(d.path.clone()));
+                    window.refresh();
+                    let mut d = d.clone();
+                    d.offset = offset;
+                    cx.new(|_| d)
+                },
+            )
         })
         .when_some(note, |d, note| {
             d.child(
@@ -477,12 +512,18 @@ fn copy(state: gpui::Entity<Zoom>, path: PathBuf, cx: &mut App) {
     let task = cx.background_spawn(async move { crate::platform::copy_image(&path) });
     state.update(cx, |_, cx| {
         cx.spawn(async move |this, cx| {
-            let note = if task.await.is_ok() { "Copied" } else { "Could not copy the image" };
+            let note = if task.await.is_ok() {
+                "Copied"
+            } else {
+                "Could not copy the image"
+            };
             let _ = this.update(cx, |z, cx| {
                 z.note = Some(note);
                 cx.notify();
             });
-            cx.background_executor().timer(Duration::from_millis(1500)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
             let _ = this.update(cx, |z, cx| {
                 z.note = None;
                 cx.notify();

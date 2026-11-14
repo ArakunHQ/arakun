@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Bounds, ContentMask, Context, DispatchPhase, Hsla, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, PathBuilder, PathStyle, Pixels, Point, Render, StrokeOptions,
-    Styled as _, Subscription, Task, Window, canvas, div, point, px,
+    Bounds, ContentMask, Context, DispatchPhase, Hsla, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement as _, PathBuilder, PathStyle, Pixels, Point, Render,
+    StrokeOptions, Styled as _, Subscription, Task, Window, canvas, div, point, px,
 };
 use lyon_tessellation::{LineCap, LineJoin};
 
@@ -280,8 +281,16 @@ struct Ear {
 }
 
 const EARS: [Ear; 2] = [
-    Ear { o: [39.5, 28.5], d: [0.783, -0.622], n: [-0.622, -0.783] },
-    Ear { o: [139.04, 28.5], d: [-0.783, -0.622], n: [0.622, -0.783] },
+    Ear {
+        o: [39.5, 28.5],
+        d: [0.783, -0.622],
+        n: [-0.622, -0.783],
+    },
+    Ear {
+        o: [139.04, 28.5],
+        d: [-0.783, -0.622],
+        n: [0.622, -0.783],
+    },
 ];
 
 fn side_of(q: [f32; 2]) -> usize {
@@ -305,7 +314,10 @@ fn ear_bend(q: [f32; 2], w: f32, ks: [f32; 2]) -> [f32; 2] {
     let v = [q[0] - e.o[0], q[1] - e.o[1]];
     let (along, up) = (v[0] * e.d[0] + v[1] * e.d[1], v[0] * e.n[0] + v[1] * e.n[1]);
     let (along, up) = (along + ks[0] * up, ks[1] * up);
-    let m = [e.o[0] + e.d[0] * along + e.n[0] * up, e.o[1] + e.d[1] * along + e.n[1] * up];
+    let m = [
+        e.o[0] + e.d[0] * along + e.n[0] * up,
+        e.o[1] + e.d[1] * along + e.n[1] * up,
+    ];
     [q[0] + (m[0] - q[0]) * w, q[1] + (m[1] - q[1]) * w]
 }
 
@@ -320,7 +332,12 @@ impl Shape {
         let segs = parse_path(d);
         let bend = segs
             .iter()
-            .flat_map(|s| s.points().chunks(2).map(|p| smoothstep(-1.5, 10., past_base([p[0], p[1]]))).collect::<Vec<_>>())
+            .flat_map(|s| {
+                s.points()
+                    .chunks(2)
+                    .map(|p| smoothstep(-1.5, 10., past_base([p[0], p[1]])))
+                    .collect::<Vec<_>>()
+            })
             .collect();
         Shape { segs, bend }
     }
@@ -341,7 +358,10 @@ fn geo() -> &'static Geo {
     static GEO: OnceLock<Geo> = OnceLock::new();
     GEO.get_or_init(|| {
         let (paths, rects) = svg_parts(include_str!("../assets/brand/raccoon.svg"));
-        assert!(paths.len() >= 5 && rects.len() >= 2, "raccoon.svg: head, ear insides, mask, nose and two eyes");
+        assert!(
+            paths.len() >= 5 && rects.len() >= 2,
+            "raccoon.svg: head, ear insides, mask, nose and two eyes"
+        );
         let centre = |r: [f32; 4]| [r[0] + r[2] / 2., r[1] + r[3] / 2.];
         Geo {
             head: Shape::new(&paths[0]),
@@ -433,17 +453,37 @@ enum Prop {
     Notes,
 }
 
-const PROPS: [Prop; 8] = [Prop::Dots, Prop::Code, Prop::Ask, Prop::Bang, Prop::Check, Prop::Pencil, Prop::Zzz, Prop::Notes];
+const PROPS: [Prop; 8] = [
+    Prop::Dots,
+    Prop::Code,
+    Prop::Ask,
+    Prop::Bang,
+    Prop::Check,
+    Prop::Pencil,
+    Prop::Zzz,
+    Prop::Notes,
+];
 
 /// Indent and length of the lines the working raccoon writes, in a loop.
-const CODE_LINES: [(f32, f32); 7] = [(0., 34.), (8., 22.), (8., 40.), (16., 16.), (8., 30.), (0., 26.), (0., 44.)];
+const CODE_LINES: [(f32, f32); 7] = [
+    (0., 34.),
+    (8., 22.),
+    (8., 40.),
+    (16., 16.),
+    (8., 30.),
+    (0., 26.),
+    (0., 44.),
+];
 /// Seconds each of those lines takes; the eyes sweep once per line.
 const CODE_PERIOD: f64 = 1.25;
 
 /// Which line is being written `t` seconds into the work, and how far along it is.
 fn code_line(t: f64) -> (i64, f32) {
     let t = t.max(0.);
-    ((t / CODE_PERIOD).floor() as i64, ((t % CODE_PERIOD) / CODE_PERIOD) as f32)
+    (
+        (t / CODE_PERIOD).floor() as i64,
+        ((t % CODE_PERIOD) / CODE_PERIOD) as f32,
+    )
 }
 
 /// One frame's intent.
@@ -571,7 +611,9 @@ impl Mascot {
         // settled raccoon costs no frames.
         let tick = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(33)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
                 let alive = this.update(cx, |m, cx| {
                     if m.wants_frame() {
                         m.rendered = false;
@@ -634,7 +676,11 @@ impl Mascot {
             head,
             ears: [ear; 2],
             gaze: [Spring::kc(0., 170., 22.); 2],
-            eye: [Spring::kc(1., 400., 32.), Spring::kc(1., 400., 32.), Spring::kc(0., 300., 28.)],
+            eye: [
+                Spring::kc(1., 400., 32.),
+                Spring::kc(1., 400., 32.),
+                Spring::kc(0., 300., 28.),
+            ],
             nose: Spring::kc(1., 500., 30.),
             prop: None,
             prop_t0: 0.,
@@ -848,7 +894,10 @@ impl Mascot {
         if now - self.last_move > 2.5 {
             return None;
         }
-        let (cx, cy) = (b.center().x.as_f32(), b.origin.y.as_f32() - self.perch + b.size.height.as_f32() * 0.65);
+        let (cx, cy) = (
+            b.center().x.as_f32(),
+            b.origin.y.as_f32() - self.perch + b.size.height.as_f32() * 0.65,
+        );
         let (vx, vy) = ((p.x.as_f32() - cx) / 320., (p.y.as_f32() - cy) / 260.);
         let m = vx.hypot(vy);
         Some(if m > 1. { [vx / m, vy / m] } else { [vx, vy] })
@@ -857,7 +906,11 @@ impl Mascot {
     fn wander_at(&mut self, now: f64) -> [f32; 2] {
         if now > self.next_wander {
             let a = self.rnd(0., std::f64::consts::TAU) as f32;
-            let m = if self.chance(0.4) { 0. } else { self.rnd(0.3, 0.75) as f32 };
+            let m = if self.chance(0.4) {
+                0.
+            } else {
+                self.rnd(0.3, 0.75) as f32
+            };
             self.wander = [a.cos() * m, a.sin() * m * 0.7];
             self.next_wander = now + self.rnd(1.4, 3.6);
         }
@@ -916,7 +969,11 @@ impl Mascot {
         match (spying, self.away) {
             (Some(d), _) => self.spy(p, now, d),
             // Back up, it keeps an eye on where you went.
-            (None, Some(d)) => p.look = self.cursor(now).unwrap_or([d[0] * 0.7, d[1].min(0.4) * 0.7]),
+            (None, Some(d)) => {
+                p.look = self
+                    .cursor(now)
+                    .unwrap_or([d[0] * 0.7, d[1].min(0.4) * 0.7])
+            }
             (None, None) => p.look = self.cursor(now).unwrap_or_else(|| self.wander_at(now)),
         }
         let quiet = now - self.last_input;
@@ -942,7 +999,11 @@ impl Mascot {
     /// higher for a better look.
     fn spy(&mut self, p: &mut Pose, now: f64, d: [f32; 2]) {
         let t = now - (self.spy_until - SPY_FOR);
-        p.head[1] = if (1.5..2.1).contains(&t) { AWAY_Y - 14. } else { AWAY_Y };
+        p.head[1] = if (1.5..2.1).contains(&t) {
+            AWAY_Y - 14.
+        } else {
+            AWAY_Y
+        };
         p.head[2] = d[0] * 4.;
         p.look = [d[0], d[1].min(0.4)];
         p.eye = [1.08, 1.1, 0.];
@@ -970,12 +1031,20 @@ impl Mascot {
     /// Slow and tilted, eyes up and away: the only state that looks away from
     /// you and the text.
     fn thinking(&mut self, p: &mut Pose, t: f64, now: f64) {
-        let side = if (t / 3.2).floor() as i64 % 2 == 1 { -1. } else { 1. };
+        let side = if (t / 3.2).floor() as i64 % 2 == 1 {
+            -1.
+        } else {
+            1.
+        };
         p.head[2] = 8. * side;
         p.head[1] = -1.;
         p.eye[1] = 0.92;
         p.look = [0.75 * side + 0.1 * (now * 1.3).sin() as f32, -0.95];
-        p.ears = if side > 0. { [[-0.1, 0.96], [0.14, 1.12]] } else { [[0.14, 1.12], [-0.1, 0.96]] };
+        p.ears = if side > 0. {
+            [[-0.1, 0.96], [0.14, 1.12]]
+        } else {
+            [[0.14, 1.12], [-0.1, 0.96]]
+        };
         p.prop = Some(Prop::Dots);
     }
 
@@ -1065,7 +1134,11 @@ impl Mascot {
         p.eye = [1., 0.72, 17.];
         p.head[1] = 6.;
         p.head[4] = 1. + 0.02 * (t * 1.2).sin() as f32;
-        p.look = if c > 3.4 { self.cursor(now).unwrap_or([0., -0.2]) } else { [0., 0.75] };
+        p.look = if c > 3.4 {
+            self.cursor(now).unwrap_or([0., -0.2])
+        } else {
+            [0., 0.75]
+        };
     }
 
     fn sleeping(&mut self, p: &mut Pose, t: f64) {
@@ -1089,7 +1162,11 @@ impl Mascot {
         let pb = std::f64::consts::PI * b;
         p.head[1] = -11. * pb.sin().abs() as f32;
         p.head[2] = 7. * (pb / 2.).sin() as f32;
-        p.eyes = if (b / 8.).floor() as i64 % 2 == 1 { Eyes::Open } else { Eyes::Happy };
+        p.eyes = if (b / 8.).floor() as i64 % 2 == 1 {
+            Eyes::Open
+        } else {
+            Eyes::Happy
+        };
         p.look = [0.5 * (pb / 2.).sin() as f32, 0.];
         if self.once(4, n) {
             self.ears[(n % 2) as usize][1].v += 2.4;
@@ -1101,7 +1178,11 @@ impl Mascot {
     fn run_act(&mut self, act: Act, t: f64, side: f32, now: f64, p: &mut Pose) {
         let first = std::mem::take(&mut self.act_first);
         let tilt = |p: &mut Pose| {
-            p.ears = if side > 0. { [[-0.1, 0.97], [0.12, 1.1]] } else { [[0.12, 1.1], [-0.1, 0.97]] };
+            p.ears = if side > 0. {
+                [[-0.1, 0.97], [0.12, 1.1]]
+            } else {
+                [[0.12, 1.1], [-0.1, 0.97]]
+            };
         };
         match act {
             Act::Twitch => {
@@ -1157,7 +1238,11 @@ impl Mascot {
 
     /// When an idle raccoon next has something to do, so frames can stop until then.
     fn next_event(&self) -> f64 {
-        let mut t = self.next_blink.min(self.next_act).min(self.last_input + DOZE_AFTER).min(self.last_input + SLEEP_AFTER);
+        let mut t = self
+            .next_blink
+            .min(self.next_act)
+            .min(self.last_input + DOZE_AFTER)
+            .min(self.last_input + SLEEP_AFTER);
         if self.pointer.is_none() || self.now() - self.last_move > 2.5 {
             t = t.min(self.next_wander);
         }
@@ -1223,13 +1308,22 @@ impl Mascot {
             self.prop_t0 = now;
         }
         self.moving = fading
-            || !(self.head.iter().zip(&p.head).enumerate().all(|(k, (s, &t))| s.settled(t, if k >= 3 { 0.001 } else { 0.02 }))
+            || !(self
+                .head
+                .iter()
+                .zip(&p.head)
+                .enumerate()
+                .all(|(k, (s, &t))| s.settled(t, if k >= 3 { 0.001 } else { 0.02 }))
                 && (0..2).all(|i| {
                     self.ears[i][0].settled(p.ears[i][0], 0.002)
                         && self.ears[i][1].settled(p.ears[i][1], 0.002)
                         && self.gaze[i].settled(p.look[i], 0.003)
                 })
-                && self.eye.iter().zip(&p.eye).all(|(s, &t)| s.settled(t, 0.002))
+                && self
+                    .eye
+                    .iter()
+                    .zip(&p.eye)
+                    .all(|(s, &t)| s.settled(t, 0.002))
                 && self.nose.settled(p.nose, 0.002));
 
         if p.blink && p.eyes == Eyes::Open && p.eye[1] > 0.4 && now > self.next_blink {
@@ -1276,9 +1370,18 @@ impl Mascot {
         let outline = body.len();
         body.extend(bend(&geo.ear_in[0]));
         body.extend(bend(&geo.ear_in[1]));
-        body.extend(geo.mask.iter().map(|s| map_seg(s, &mut |q| rig([q[0] + lx * 2.5, q[1] + ly * 2.]))));
+        body.extend(
+            geo.mask
+                .iter()
+                .map(|s| map_seg(s, &mut |q| rig([q[0] + lx * 2.5, q[1] + ly * 2.]))),
+        );
         body.extend(geo.nose.iter().map(|s| {
-            map_seg(s, &mut |q| rig([CX + (q[0] - CX) * nose + lx * 4.5, 97.5 + (q[1] - 97.5) * nose + ly * 3.5]))
+            map_seg(s, &mut |q| {
+                rig([
+                    CX + (q[0] - CX) * nose + lx * 4.5,
+                    97.5 + (q[1] - 97.5) * nose + ly * 3.5,
+                ])
+            })
         }));
 
         let mut marks = Vec::new();
@@ -1288,23 +1391,49 @@ impl Mascot {
             let side = if i == 0 { 1. } else { -1. };
             let (ts, tc) = (tilt * side).to_radians().sin_cos();
             let at = [c[0] + lx * 6., c[1] + ly * 5.];
-            let place = |q: [f32; 2]| rig([at[0] + (tc * q[0] - ts * q[1]) * big[0], at[1] + (ts * q[0] + tc * q[1]) * big[1]]);
-            match if p.wink == Some(i) { Eyes::Happy } else { p.eyes } {
+            let place = |q: [f32; 2]| {
+                rig([
+                    at[0] + (tc * q[0] - ts * q[1]) * big[0],
+                    at[1] + (ts * q[0] + tc * q[1]) * big[1],
+                ])
+            };
+            match if p.wink == Some(i) {
+                Eyes::Happy
+            } else {
+                p.eyes
+            } {
                 Eyes::Open => {
-                    let (w, h) = (geo.eye_size[0] * ew, (geo.eye_size[1] * eh * blink).max(2.4));
-                    marks.push(Mark::Fill(capsule(w, h).into_iter().map(place).collect(), 1.));
+                    let (w, h) = (
+                        geo.eye_size[0] * ew,
+                        (geo.eye_size[1] * eh * blink).max(2.4),
+                    );
+                    marks.push(Mark::Fill(
+                        capsule(w, h).into_iter().map(place).collect(),
+                        1.,
+                    ));
                 }
                 Eyes::Happy => {
                     let arc = (0..=12).map(|k| {
                         let t = k as f32 / 12.;
                         let u = 1. - t;
-                        place([-8.5 * u * u + 8.5 * t * t, 5. * u * u - 22. * u * t + 5. * t * t])
+                        place([
+                            -8.5 * u * u + 8.5 * t * t,
+                            5. * u * u - 22. * u * t + 5. * t * t,
+                        ])
                     });
                     marks.push(Mark::Line(arc.collect(), 6. * big[0], 1.));
                 }
                 Eyes::Cross => {
-                    marks.push(Mark::Line(vec![place([-7., -7.]), place([7., 7.])], 5.5 * big[0], 1.));
-                    marks.push(Mark::Line(vec![place([7., -7.]), place([-7., 7.])], 5.5 * big[0], 1.));
+                    marks.push(Mark::Line(
+                        vec![place([-7., -7.]), place([7., 7.])],
+                        5.5 * big[0],
+                        1.,
+                    ));
+                    marks.push(Mark::Line(
+                        vec![place([7., -7.]), place([-7., 7.])],
+                        5.5 * big[0],
+                        1.,
+                    ));
                 }
             }
         }
@@ -1315,25 +1444,44 @@ impl Mascot {
                 }
             }
         }
-        Frame { body, outline, marks, ledge: self.shy.then_some(LEDGE_Y), lift: self.perch }
+        Frame {
+            body,
+            outline,
+            marks,
+            ledge: self.shy.then_some(LEDGE_Y),
+            lift: self.perch,
+        }
     }
 
     /// One symbol at `anchor`, `a` of the way faded in (it grows as it does).
     fn prop_marks(&self, prop: Prop, a: f32, anchor: [f32; 2], now: f64, out: &mut Vec<Mark>) {
         let s = 0.5 + 0.5 * a;
-        let tp = (now - if self.prop == Some(prop) { self.prop_t0 } else { now - 10. }) as f32;
+        let tp = (now
+            - if self.prop == Some(prop) {
+                self.prop_t0
+            } else {
+                now - 10.
+            }) as f32;
         let now32 = now as f32;
         // Local units: translate by `tr` after turning by `deg`, all scaled.
         let at = |q: [f32; 2], tr: [f32; 2], deg: f32| {
             let (sn, cs) = deg.to_radians().sin_cos();
-            [anchor[0] + s * (tr[0] + cs * q[0] - sn * q[1]), anchor[1] + s * (tr[1] + sn * q[0] + cs * q[1])]
+            [
+                anchor[0] + s * (tr[0] + cs * q[0] - sn * q[1]),
+                anchor[1] + s * (tr[1] + sn * q[0] + cs * q[1]),
+            ]
         };
-        let pts = |v: &[[f32; 2]], tr: [f32; 2], deg: f32| v.iter().map(|&q| at(q, tr, deg)).collect::<Vec<_>>();
+        let pts = |v: &[[f32; 2]], tr: [f32; 2], deg: f32| {
+            v.iter().map(|&q| at(q, tr, deg)).collect::<Vec<_>>()
+        };
         match prop {
             Prop::Dots => {
                 for i in 0..3 {
                     let u = (now32 * 5.2 - i as f32 * 0.95).sin().max(0.);
-                    out.push(Mark::Fill(pts(&circle([-21. + 21. * i as f32, -9. * u], 7.), [0.; 2], 0.), a * (0.4 + 0.6 * u)));
+                    out.push(Mark::Fill(
+                        pts(&circle([-21. + 21. * i as f32, -9. * u], 7.), [0.; 2], 0.),
+                        a * (0.4 + 0.6 * u),
+                    ));
                 }
             }
             Prop::Code => {
@@ -1347,22 +1495,32 @@ impl Mascot {
                         continue;
                     }
                     let (indent, len) = CODE_LINES[j as usize % CODE_LINES.len()];
-                    let len = if i == 3 { len * ((f - 0.15) / 0.7).clamp(0., 1.) } else { len };
+                    let len = if i == 3 {
+                        len * ((f - 0.15) / 0.7).clamp(0., 1.)
+                    } else {
+                        len
+                    };
                     let fade = if i == 0 { 1. - scroll } else { 1. };
                     if len < 6. || fade < 0.02 {
                         continue;
                     }
                     let (x, y) = (-27. + indent, -23. + (i as f32 - scroll) * 12.);
-                    out.push(Mark::Line(pts(&[[x + 3., y], [x + len - 3., y]], [0.; 2], 0.), 6. * s, a * fade));
+                    out.push(Mark::Line(
+                        pts(&[[x + 3., y], [x + len - 3., y]], [0.; 2], 0.),
+                        6. * s,
+                        a * fade,
+                    ));
                 }
             }
             Prop::Ask => {
                 let tr = [0., -7. * (now32 * PI).sin().abs()];
                 let deg = 6. * (now32 * 3.1).sin();
-                let mut hook: Vec<_> = (0..=14).map(|k| {
-                    let t = -PI + k as f32 / 14. * 1.3 * PI;
-                    [9. * t.cos(), -9. + 9. * t.sin()]
-                }).collect();
+                let mut hook: Vec<_> = (0..=14)
+                    .map(|k| {
+                        let t = -PI + k as f32 / 14. * 1.3 * PI;
+                        [9. * t.cos(), -9. + 9. * t.sin()]
+                    })
+                    .collect();
                 hook.push([0., 3.]);
                 out.push(Mark::Line(pts(&hook, tr, deg), 7. * s, a));
                 out.push(Mark::Fill(pts(&circle([0., 13.], 4.5), tr, deg), a));
@@ -1379,11 +1537,20 @@ impl Mascot {
             }
             Prop::Check => {
                 let tick = [[-15., 0.], [-5., 11.], [16., -12.]];
-                out.push(Mark::Line(pts(&partial(&tick, (tp / 0.3).clamp(0., 1.)), [0.; 2], 0.), 9. * s, a));
+                out.push(Mark::Line(
+                    pts(&partial(&tick, (tp / 0.3).clamp(0., 1.)), [0.; 2], 0.),
+                    9. * s,
+                    a,
+                ));
                 let v = ((tp - 0.25) / 0.55).clamp(0., 1.);
                 if v > 0. && v < 1. {
                     let k = 0.6 + 0.7 * v;
-                    for [p0, p1] in [[[-30., -14.], [-38., -19.]], [[30., -16.], [38., -22.]], [[-32., 10.], [-41., 13.]], [[33., 8.], [42., 10.]]] {
+                    for [p0, p1] in [
+                        [[-30., -14.], [-38., -19.]],
+                        [[30., -16.], [38., -22.]],
+                        [[-32., 10.], [-41., 13.]],
+                        [[33., 8.], [42., 10.]],
+                    ] {
                         let seg = [[p0[0] * k, p0[1] * k], [p1[0] * k, p1[1] * k]];
                         out.push(Mark::Line(pts(&seg, [0.; 2], 0.), 5. * s, a * (1. - v * v)));
                     }
@@ -1393,10 +1560,23 @@ impl Mascot {
                 let since = (now - self.last_key) as f32;
                 let wd = 6. + (self.caret + 0.75) / 1.5 * 40.;
                 let k = (-since * 9.).exp();
-                out.push(Mark::Line(pts(&[[-25., 11.], [-28. + wd - 3., 11.]], [0.; 2], 0.), 6. * s, a));
-                let (tr, deg) = ([-28. + wd + 2., 9. - 3. * k], 28. + 12. * (now32 * 34.).sin() * k);
-                out.push(Mark::Fill(pts(&[[-5., -10.], [0., 0.], [5., -10.]], tr, deg), a));
-                out.push(Mark::Fill(pts(&[[-5., -36.], [5., -36.], [5., -13.], [-5., -13.]], tr, deg), a));
+                out.push(Mark::Line(
+                    pts(&[[-25., 11.], [-28. + wd - 3., 11.]], [0.; 2], 0.),
+                    6. * s,
+                    a,
+                ));
+                let (tr, deg) = (
+                    [-28. + wd + 2., 9. - 3. * k],
+                    28. + 12. * (now32 * 34.).sin() * k,
+                );
+                out.push(Mark::Fill(
+                    pts(&[[-5., -10.], [0., 0.], [5., -10.]], tr, deg),
+                    a,
+                ));
+                out.push(Mark::Fill(
+                    pts(&[[-5., -36.], [5., -36.], [5., -13.], [-5., -13.]], tr, deg),
+                    a,
+                ));
             }
             Prop::Zzz | Prop::Notes => {
                 let zz = prop == Prop::Zzz;
@@ -1409,20 +1589,38 @@ impl Mascot {
                     let alpha = a * (PI * ph).sin();
                     if zz {
                         let (w, h) = (fs * 0.5, fs * 0.55);
-                        let z = [[x - w / 2., y - h], [x + w / 2., y - h], [x - w / 2., y], [x + w / 2., y]];
+                        let z = [
+                            [x - w / 2., y - h],
+                            [x + w / 2., y - h],
+                            [x - w / 2., y],
+                            [x + w / 2., y],
+                        ];
                         out.push(Mark::Line(pts(&z, [0.; 2], 0.), fs * 0.16 * s, alpha));
                     } else {
                         let k = fs / 16.;
                         let head: Vec<_> = (0..16)
                             .map(|j| {
                                 let t = j as f32 / 16. * TAU;
-                                [x + k * (4.6 * t.cos() * 0.94 - 1.2 * t.sin()), y + k * (3.4 * t.sin() + 0.8 * t.cos())]
+                                [
+                                    x + k * (4.6 * t.cos() * 0.94 - 1.2 * t.sin()),
+                                    y + k * (3.4 * t.sin() + 0.8 * t.cos()),
+                                ]
                             })
                             .collect();
                         out.push(Mark::Fill(pts(&head, [0.; 2], 0.), alpha));
-                        let stem = [[x + 3.4 * k, y - k], [x + 5.2 * k, y - k], [x + 5.2 * k, y - 15. * k], [x + 3.4 * k, y - 15. * k]];
+                        let stem = [
+                            [x + 3.4 * k, y - k],
+                            [x + 5.2 * k, y - k],
+                            [x + 5.2 * k, y - 15. * k],
+                            [x + 3.4 * k, y - 15. * k],
+                        ];
                         out.push(Mark::Fill(pts(&stem, [0.; 2], 0.), alpha));
-                        let flag = [[x + 5.2 * k, y - 15. * k], [x + 10. * k, y - 11. * k], [x + 9. * k, y - 9. * k], [x + 5.2 * k, y - 11.5 * k]];
+                        let flag = [
+                            [x + 5.2 * k, y - 15. * k],
+                            [x + 10. * k, y - 11. * k],
+                            [x + 9. * k, y - 9. * k],
+                            [x + 5.2 * k, y - 11.5 * k],
+                        ];
                         out.push(Mark::Fill(pts(&flag, [0.; 2], 0.), alpha));
                     }
                 }
@@ -1436,10 +1634,12 @@ fn polar(r: f32, a: f32) -> [f32; 2] {
 }
 
 fn circle(c: [f32; 2], r: f32) -> Vec<[f32; 2]> {
-    (0..=24).map(|k| {
-        let p = polar(r, k as f32 / 24. * TAU);
-        [c[0] + p[0], c[1] + p[1]]
-    }).collect()
+    (0..=24)
+        .map(|k| {
+            let p = polar(r, k as f32 / 24. * TAU);
+            [c[0] + p[0], c[1] + p[1]]
+        })
+        .collect()
 }
 
 /// A rounded box `w` by `h` centred on 0,0, its ends fully round.
@@ -1447,7 +1647,12 @@ fn capsule(w: f32, h: f32) -> Vec<[f32; 2]> {
     let r = w.min(h) / 2.;
     let (hx, hy) = (w / 2. - r, h / 2. - r);
     let mut out = Vec::with_capacity(44);
-    for (cx, cy, a0) in [(hx, hy, 0.), (-hx, hy, 0.5 * PI), (-hx, -hy, PI), (hx, -hy, 1.5 * PI)] {
+    for (cx, cy, a0) in [
+        (hx, hy, 0.),
+        (-hx, hy, 0.5 * PI),
+        (-hx, -hy, PI),
+        (hx, -hy, 1.5 * PI),
+    ] {
         for k in 0..=10 {
             let p = polar(r, a0 + k as f32 / 10. * 0.5 * PI);
             out.push([cx + p[0], cy + p[1]]);
@@ -1458,7 +1663,10 @@ fn capsule(w: f32, h: f32) -> Vec<[f32; 2]> {
 
 /// The first `f` of a polyline's length.
 fn partial(pts: &[[f32; 2]], f: f32) -> Vec<[f32; 2]> {
-    let lens: Vec<f32> = pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).collect();
+    let lens: Vec<f32> = pts
+        .windows(2)
+        .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+        .collect();
     let mut left = f * lens.iter().sum::<f32>();
     let mut out = vec![pts[0]];
     for (w, l) in pts.windows(2).zip(lens) {
@@ -1467,7 +1675,10 @@ fn partial(pts: &[[f32; 2]], f: f32) -> Vec<[f32; 2]> {
             left -= l;
         } else {
             let t = left / l.max(1e-6);
-            out.push([w[0][0] + (w[1][0] - w[0][0]) * t, w[0][1] + (w[1][1] - w[0][1]) * t]);
+            out.push([
+                w[0][0] + (w[1][0] - w[0][0]) * t,
+                w[0][1] + (w[1][1] - w[0][1]) * t,
+            ]);
             break;
         }
     }
@@ -1489,7 +1700,8 @@ fn map_seg(s: &Seg, f: &mut impl FnMut([f32; 2]) -> [f32; 2]) -> Seg {
 fn paint(frame: &Frame, bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
     let k = bounds.size.width.as_f32() / VB_W;
     let ox = bounds.origin.x.as_f32() - VB_X * k;
-    let oy = bounds.origin.y.as_f32() - frame.lift - VB_Y * k + (bounds.size.height.as_f32() - VB_H * k) / 2.;
+    let oy = bounds.origin.y.as_f32() - frame.lift - VB_Y * k
+        + (bounds.size.height.as_f32() - VB_H * k) / 2.;
     let pt = |q: [f32; 2]| point(px(ox + q[0] * k), px(oy + q[1] * k));
 
     let draw = |window: &mut Window| {
@@ -1499,7 +1711,9 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, color: Hsla, window: &mut Window
                 match *seg {
                     Seg::M(p) => b.move_to(pt(p)),
                     Seg::L(p) => b.line_to(pt(p)),
-                    Seg::C(c) => b.cubic_bezier_to(pt([c[4], c[5]]), pt([c[0], c[1]]), pt([c[2], c[3]])),
+                    Seg::C(c) => {
+                        b.cubic_bezier_to(pt([c[4], c[5]]), pt([c[0], c[1]]), pt([c[2], c[3]]))
+                    }
                     Seg::Z => b.close(),
                 }
             }
@@ -1539,7 +1753,10 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, color: Hsla, window: &mut Window
     match frame.ledge {
         Some(ledge) => {
             let edge = oy + ledge * k;
-            let keep = Bounds::from_corners(point(px(ox - 2000.), px(edge - 2000.)), point(px(ox + 2000.), px(edge)));
+            let keep = Bounds::from_corners(
+                point(px(ox - 2000.), px(edge - 2000.)),
+                point(px(ox + 2000.), px(edge)),
+            );
             window.with_content_mask(Some(ContentMask { bounds: keep }), draw);
         }
         None => draw(window),
@@ -1559,7 +1776,14 @@ impl Render for Mascot {
         let bounds = self.bounds.clone();
         // Where it is drawn, not its box: it may sit higher, on the card over
         // the prompter, and a shy one ends at the prompter's edge.
-        let (lift, reach) = (self.perch, if self.shy { self.ledge() } else { self.width * VB_H / VB_W });
+        let (lift, reach) = (
+            self.perch,
+            if self.shy {
+                self.ledge()
+            } else {
+                self.width * VB_H / VB_W
+            },
+        );
         div()
             .flex_none()
             .w(px(self.width))
@@ -1576,11 +1800,17 @@ impl Render for Mascot {
                             }
                         });
                         let top = b.origin.y.as_f32() - lift;
-                        let (l, r) = (b.origin.x.as_f32(), b.origin.x.as_f32() + b.size.width.as_f32());
+                        let (l, r) = (
+                            b.origin.x.as_f32(),
+                            b.origin.x.as_f32() + b.size.width.as_f32(),
+                        );
                         window.on_mouse_event(move |e: &MouseDownEvent, phase, _, cx| {
                             let (x, y) = (e.position.x.as_f32(), e.position.y.as_f32());
                             let hit = x >= l && x <= r && y >= top && y <= top + reach;
-                            if phase == DispatchPhase::Bubble && e.button == MouseButton::Left && hit {
+                            if phase == DispatchPhase::Bubble
+                                && e.button == MouseButton::Left
+                                && hit
+                            {
                                 let _ = click.update(cx, |m, cx| {
                                     m.boop();
                                     cx.notify();
@@ -1603,7 +1833,12 @@ mod tests {
         let segs = parse_path("M1.5 2C3 4 5 6 7 8L-9 10.25Z");
         assert_eq!(
             segs,
-            vec![Seg::M([1.5, 2.]), Seg::C([3., 4., 5., 6., 7., 8.]), Seg::L([-9., 10.25]), Seg::Z]
+            vec![
+                Seg::M([1.5, 2.]),
+                Seg::C([3., 4., 5., 6., 7., 8.]),
+                Seg::L([-9., 10.25]),
+                Seg::Z
+            ]
         );
     }
 
@@ -1644,7 +1879,14 @@ mod tests {
         assert_eq!(at([156., 1.5]), 1.);
         assert_eq!(at([CX, FLOOR]), 0.);
         assert_eq!(at([0., 85.43]), 0.);
-        assert_eq!(g.head.bend.len(), g.head.segs.iter().map(|s| s.points().len() / 2).sum::<usize>());
+        assert_eq!(
+            g.head.bend.len(),
+            g.head
+                .segs
+                .iter()
+                .map(|s| s.points().len() / 2)
+                .sum::<usize>()
+        );
         // A point that takes no bend stays put however the ear moves.
         assert_eq!(ear_bend([CX, FLOOR], 0., [0.5, 1.3]), [CX, FLOOR]);
     }

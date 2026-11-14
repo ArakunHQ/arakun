@@ -52,7 +52,9 @@ fn session_meta(m: &Meta) -> agent::SessionMeta {
 }
 
 fn modified(id: &str) -> Option<SystemTime> {
-    std::fs::metadata(headless::transcript_path(id)).and_then(|m| m.modified()).ok()
+    std::fs::metadata(headless::transcript_path(id))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 impl Shell {
@@ -60,9 +62,17 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 let found = cx
-                    .background_spawn(async { headless::list().into_iter().map(|m| (modified(&m.id), m)).collect::<Vec<_>>() })
+                    .background_spawn(async {
+                        headless::list()
+                            .into_iter()
+                            .map(|m| (modified(&m.id), m))
+                            .collect::<Vec<_>>()
+                    })
                     .await;
-                if this.update_in(cx, |this, window, cx| this.sync_headless(found, window, cx)).is_err() {
+                if this
+                    .update_in(cx, |this, window, cx| this.sync_headless(found, window, cx))
+                    .is_err()
+                {
                     break;
                 }
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -71,13 +81,22 @@ impl Shell {
         .detach();
     }
 
-    fn sync_headless(&mut self, found: Vec<(Option<SystemTime>, Meta)>, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_headless(
+        &mut self,
+        found: Vec<(Option<SystemTime>, Meta)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let ids: HashSet<&str> = found.iter().map(|(_, m)| m.id.as_str()).collect();
         let gone: Vec<(PathBuf, String)> = self
             .projects
             .iter()
             .flat_map(|p| &p.environments)
-            .flat_map(|e| e.sessions.iter().map(move |s| (e.path.clone(), s.id.to_string())))
+            .flat_map(|e| {
+                e.sessions
+                    .iter()
+                    .map(move |s| (e.path.clone(), s.id.to_string()))
+            })
             .filter(|(_, id)| headless::shown(id) && !ids.contains(id.as_str()))
             .collect();
         let mut changed = !gone.is_empty();
@@ -98,20 +117,32 @@ impl Shell {
                 Some(_) => continue,
                 None => {
                     let env_path = self.env_for(&m.cwd).unwrap_or_else(|| self.headless_env());
-                    let Some(env) = self.find_env_mut(&env_path) else { continue };
-                    let mut s = Session::new(m.id.clone().into(), m.title.clone().into(), app_agent(m.agent));
+                    let Some(env) = self.find_env_mut(&env_path) else {
+                        continue;
+                    };
+                    let mut s = Session::new(
+                        m.id.clone().into(),
+                        m.title.clone().into(),
+                        app_agent(m.agent),
+                    );
                     s.status = app_status(status);
                     s.updated = m.updated;
                     s.cli_model = Some(m.model.clone());
                     s.meta = Some(session_meta(&m));
-                    let at = env.sessions.iter().position(|o| o.updated < m.updated).unwrap_or(env.sessions.len());
+                    let at = env
+                        .sessions
+                        .iter()
+                        .position(|o| o.updated < m.updated)
+                        .unwrap_or(env.sessions.len());
                     env.sessions.insert(at, s);
                     headless::set_shown(&m.id, true);
                     changed = true;
                     env_path
                 }
             };
-            let Some(s) = self.session_mut(&env_path, &m.id) else { continue };
+            let Some(s) = self.session_mut(&env_path, &m.id) else {
+                continue;
+            };
             let title: SharedString = m.title.clone().into();
             if s.status != app_status(status) || s.updated != m.updated || s.title != title {
                 s.status = app_status(status);
@@ -119,7 +150,9 @@ impl Shell {
                 s.title = title;
                 changed = true;
             }
-            let Some(thread) = s.live.as_ref().map(|l| l.thread.clone()) else { continue };
+            let Some(thread) = s.live.as_ref().map(|l| l.thread.clone()) else {
+                continue;
+            };
             let seen = SEEN.with(|seen| seen.borrow().get(&m.id).copied());
             if seen == Some((time, status)) {
                 continue;
@@ -148,8 +181,16 @@ impl Shell {
     }
 
     /// A read-only view of a headless session's transcript.
-    pub(super) fn view_headless(&mut self, env_path: &Path, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(m) = headless::read_meta(id) else { return };
+    pub(super) fn view_headless(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(m) = headless::read_meta(id) else {
+            return;
+        };
         let t = headless::read_transcript(id).unwrap_or_else(|| agent::Transcript {
             version: 1,
             meta: session_meta(&m),
@@ -162,7 +203,10 @@ impl Shell {
             handoff: None,
             subagents: Vec::new(),
         });
-        SEEN.with(|seen| seen.borrow_mut().insert(id.to_string(), (modified(id), headless::status(&m))));
+        SEEN.with(|seen| {
+            seen.borrow_mut()
+                .insert(id.to_string(), (modified(id), headless::status(&m)))
+        });
         let thread = Thread::viewer(t, headless::thread_status(&m), cx);
         self.attach(env_path, id, thread, window, cx);
     }
@@ -171,22 +215,47 @@ impl Shell {
     /// headless: in its sandbox, with its policy and caps and `request_action`,
     /// never as the app's own unsandboxed session. Always `false`: the app
     /// doesn't take it over.
-    pub(super) fn adopt_headless(&mut self, env_path: &Path, id: &str, text: &str, _window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn adopt_headless(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let notice = match headless::read_meta(id) {
             Some(m) => match headless::continue_with(&m, text) {
-                Ok(()) => (format!("Sent to the headless agent, which goes on in its sandbox ({}). Its replies show here; approve its requests with `arakun agent pending`.", m.confinement()), false),
-                Err(e) => (format!("Could not send it to the headless agent: {e}"), true),
+                Ok(()) => (
+                    format!(
+                        "Sent to the headless agent, which goes on in its sandbox ({}). Its replies show here; approve its requests with `arakun agent pending`.",
+                        m.confinement()
+                    ),
+                    false,
+                ),
+                Err(e) => (
+                    format!("Could not send it to the headless agent: {e}"),
+                    true,
+                ),
             },
             None => ("This headless session is gone.".to_string(), true),
         };
-        if let Some(t) = self.session_mut(env_path, id).and_then(|s| s.live.as_ref().map(|l| l.thread.clone())) {
+        if let Some(t) = self
+            .session_mut(env_path, id)
+            .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()))
+        {
             t.update(cx, |t, cx| t.post_notice(notice.0, notice.1, cx));
         }
         false
     }
 
     /// A headless session whose folder is gone leaves the list.
-    fn drop_headless(&mut self, env_path: &Path, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn drop_headless(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let open = |t: &model::Tab| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id);
         let active = self.has_projects() && self.env().path == env_path;
         if active {
@@ -194,7 +263,9 @@ impl Shell {
                 self.close_tab(i, window, cx);
             }
         }
-        let Some(env) = self.find_env_mut(env_path) else { return };
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
         // Its tab goes when that environment is on screen again.
         if env.tabs.iter().any(open) {
             return;

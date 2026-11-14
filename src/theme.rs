@@ -18,7 +18,11 @@ pub enum DiffPalette {
 }
 
 impl DiffPalette {
-    pub const ALL: [DiffPalette; 3] = [DiffPalette::Default, DiffPalette::Colorblind, DiffPalette::HighContrast];
+    pub const ALL: [DiffPalette; 3] = [
+        DiffPalette::Default,
+        DiffPalette::Colorblind,
+        DiffPalette::HighContrast,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -37,7 +41,10 @@ impl DiffPalette {
     }
 
     pub fn from_id(id: &str) -> Self {
-        Self::ALL.into_iter().find(|p| p.id() == id).unwrap_or(DiffPalette::Default)
+        Self::ALL
+            .into_iter()
+            .find(|p| p.id() == id)
+            .unwrap_or(DiffPalette::Default)
     }
 
     /// The added and removed text colors.
@@ -163,7 +170,10 @@ impl Grays {
     }
 
     pub fn from_id(id: &str) -> Self {
-        Self::ALL.into_iter().find(|g| g.id() == id).unwrap_or(Grays::Crisp)
+        Self::ALL
+            .into_iter()
+            .find(|g| g.id() == id)
+            .unwrap_or(Grays::Crisp)
     }
 
     /// Content alpha for each role.
@@ -416,7 +426,13 @@ mod tests {
 
     fn luminance(c: impl Into<Rgba>) -> f32 {
         let c: Rgba = c.into();
-        let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let lin = |v: f32| {
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
         0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
     }
 
@@ -427,8 +443,16 @@ mod tests {
 
     #[test]
     fn palette_matches_the_brand() {
-        assert!(near(background(), 0x10121c), "background {:06x}", hex(background()));
-        assert!(near(surface(SIDEBAR_L), 0x10121c), "sidebar {:06x}", hex(surface(SIDEBAR_L)));
+        assert!(
+            near(background(), 0x10121c),
+            "background {:06x}",
+            hex(background())
+        );
+        assert!(
+            near(surface(SIDEBAR_L), 0x10121c),
+            "sidebar {:06x}",
+            hex(surface(SIDEBAR_L))
+        );
         assert!(near(content(), 0xe6e8ef), "content {:06x}", hex(content()));
         assert!(near(accent(), 0xffb547), "accent {:06x}", hex(accent()));
         assert_eq!(hex(warn()), 0xfde047);
@@ -453,7 +477,12 @@ mod tests {
     fn over(top: Hsla, under: Hsla) -> Rgba {
         let (t, u): (Rgba, Rgba) = (top.into(), under.into());
         let a = top.a;
-        Rgba { r: t.r * a + u.r * (1. - a), g: t.g * a + u.g * (1. - a), b: t.b * a + u.b * (1. - a), a: 1. }
+        Rgba {
+            r: t.r * a + u.r * (1. - a),
+            g: t.g * a + u.g * (1. - a),
+            b: t.b * a + u.b * (1. - a),
+            a: 1.,
+        }
     }
 
     #[test]
@@ -463,7 +492,11 @@ mod tests {
             let on = |alpha: f32| contrast(over(mix(alpha), background()), background());
             // WCAG AA: 4.5 for body text, 3 for large text and hints.
             assert!(on(r.text_muted) >= 7., "{g:?} muted {}", on(r.text_muted));
-            assert!(on(r.text_subtle) >= 4.5, "{g:?} subtle {}", on(r.text_subtle));
+            assert!(
+                on(r.text_subtle) >= 4.5,
+                "{g:?} subtle {}",
+                on(r.text_subtle)
+            );
             assert!(on(r.text_faint) >= 2.5, "{g:?} faint {}", on(r.text_faint));
             assert!(r.text_muted > r.text_subtle && r.text_subtle > r.text_faint);
             assert!(r.border_subtle < r.border && r.border < r.border_strong);

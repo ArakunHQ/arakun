@@ -73,7 +73,9 @@ impl AgentKind {
                 .into_any_element(),
             AgentKind::Droid => ui::factory_logo(size).into_any_element(),
             AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
-            AgentKind::WorkersAi => ui::icon("internet", size).text_color(crate::theme::content()).into_any_element(),
+            AgentKind::WorkersAi => ui::icon("internet", size)
+                .text_color(crate::theme::content())
+                .into_any_element(),
         }
     }
 }

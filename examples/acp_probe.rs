@@ -19,14 +19,14 @@
 
 #[path = "../src/agent/mod.rs"]
 mod agent;
+#[allow(dead_code)]
+#[path = "../src/headless/broker.rs"]
+mod broker;
 #[path = "../src/durable.rs"]
 mod durable;
 #[path = "../src/fetch.rs"]
 #[allow(dead_code)]
 mod fetch;
-#[allow(dead_code)]
-#[path = "../src/headless/broker.rs"]
-mod broker;
 #[allow(dead_code)]
 #[path = "../src/headless/sandbox.rs"]
 mod sandbox;
@@ -43,23 +43,23 @@ mod memory {
         String::new()
     }
 }
+#[path = "../src/assets.rs"]
+mod assets;
 #[allow(dead_code)]
 #[path = "../src/highlight.rs"]
 mod highlight;
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
-#[allow(dead_code)]
-#[path = "../src/schedule.rs"]
-mod schedule;
-#[path = "../src/assets.rs"]
-mod assets;
 #[allow(dead_code)]
 #[path = "../src/input.rs"]
 mod input;
 #[allow(dead_code)]
 #[path = "../src/mascot.rs"]
 mod mascot;
+#[allow(dead_code)]
+#[path = "../src/platform.rs"]
+mod platform;
+#[allow(dead_code)]
+#[path = "../src/schedule.rs"]
+mod schedule;
 #[allow(dead_code)]
 #[path = "../src/theme.rs"]
 mod theme;
@@ -96,10 +96,15 @@ struct Args {
 fn parse_args() -> Args {
     let mut it = std::env::args().skip(1);
     let usage = || -> ! {
-        eprintln!("usage: acp_probe <claude|droid|opencode> <cwd> <prompt> [--allow|--deny] [--mode m] [--model m] [--cancel-after s] [--resume id] [--save p] [--restore p] [--list]");
+        eprintln!(
+            "usage: acp_probe <claude|droid|opencode> <cwd> <prompt> [--allow|--deny] [--mode m] [--model m] [--cancel-after s] [--resume id] [--save p] [--restore p] [--list]"
+        );
         std::process::exit(2)
     };
-    let kind = it.next().and_then(|k| AgentKind::parse(&k)).unwrap_or_else(|| usage());
+    let kind = it
+        .next()
+        .and_then(|k| AgentKind::parse(&k))
+        .unwrap_or_else(|| usage());
     let cwd = it.next().map(PathBuf::from).unwrap_or_else(|| usage());
     let cwd = cwd.canonicalize().unwrap_or(cwd);
     let prompt = it.next().unwrap_or_else(|| usage());
@@ -129,7 +134,10 @@ fn parse_args() -> Args {
             "--restore" => a.restore = it.next().map(PathBuf::from),
             "--list" => a.list = true,
             "--then" => {
-                let secs = it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage());
+                let secs = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| usage());
                 let prompt = it.next().unwrap_or_else(|| usage());
                 a.then.push((secs, prompt));
             }
@@ -151,7 +159,11 @@ impl Printer {
             self.printed.clear();
             self.tools.clear();
         }
-        for (i, e) in entries.iter().enumerate().skip(from.min(self.printed.len())) {
+        for (i, e) in entries
+            .iter()
+            .enumerate()
+            .skip(from.min(self.printed.len()))
+        {
             if self.printed.len() <= i {
                 self.printed.push((0, 0));
                 self.tools.push(String::new());
@@ -230,7 +242,13 @@ impl Printer {
 }
 
 /// Prints how the session ended, saves it if asked, and exits.
-fn report(thread: &Entity<Thread>, stop_reason: &str, save: Option<&PathBuf>, started: Instant, cx: &mut App) -> ! {
+fn report(
+    thread: &Entity<Thread>,
+    stop_reason: &str,
+    save: Option<&PathBuf>,
+    started: Instant,
+    cx: &mut App,
+) -> ! {
     let t = thread.read(cx);
     let (a, r) = t.diff_stats();
     let u = t.usage();
@@ -256,7 +274,10 @@ fn report(thread: &Entity<Thread>, stop_reason: &str, save: Option<&PathBuf>, st
             s.state,
             s.elapsed_secs(),
             c.entries().len(),
-            c.entries().iter().filter(|e| matches!(e, Entry::Tool(_))).count()
+            c.entries()
+                .iter()
+                .filter(|e| matches!(e, Entry::Tool(_)))
+                .count()
         );
     }
     if let Some(path) = save {

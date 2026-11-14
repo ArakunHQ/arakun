@@ -7,14 +7,14 @@
 //! Ctrl+Shift+T new tab, Ctrl+Shift+W hang up the tab, Ctrl+PageUp/PageDown switch tabs. A tab closes when its shell
 //! exits; the demo quits with the last one.
 
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
 #[path = "../src/assets.rs"]
 mod assets;
 #[path = "../src/input.rs"]
 #[allow(dead_code)]
 mod input;
+#[allow(dead_code)]
+#[path = "../src/platform.rs"]
+mod platform;
 #[path = "../src/terminal/mod.rs"]
 mod terminal;
 #[path = "../src/theme.rs"]
@@ -28,8 +28,8 @@ use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, prelude::FluentBuilder as _,
-    px, size,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, prelude::FluentBuilder as _, px,
+    size,
 };
 use terminal::{Terminal, TerminalEvent, TerminalView};
 
@@ -77,8 +77,10 @@ impl Demo {
             terminal.read(cx).cwd().display()
         );
         let view = cx.new(|cx| TerminalView::new(terminal.clone(), window, cx));
-        let sub = cx.subscribe_in(&terminal, window, |this, terminal, event, window, cx| {
-            match event {
+        let sub = cx.subscribe_in(
+            &terminal,
+            window,
+            |this, terminal, event, window, cx| match event {
                 TerminalEvent::Exited => {
                     eprintln!(
                         "terminal_demo: exited with {:?}",
@@ -94,8 +96,8 @@ impl Demo {
                 }
                 TerminalEvent::TitleChanged => cx.notify(),
                 TerminalEvent::Bell | TerminalEvent::Activity => {}
-            }
-        });
+            },
+        );
         self.tabs.push(Tab {
             terminal,
             view,

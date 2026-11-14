@@ -36,7 +36,13 @@ pub fn proj([x, y, z]: V3) -> P2 {
 pub enum Seg {
     M(P2),
     L(P2),
-    A { r: P2, rot: f32, large: bool, sweep: bool, to: P2 },
+    A {
+        r: P2,
+        rot: f32,
+        large: bool,
+        sweep: bool,
+        to: P2,
+    },
     /// A cubic Bézier: two controls, then the end. Glyphs use these.
     C(P2, P2, P2),
     Z,
@@ -90,18 +96,32 @@ pub enum Paint {
     /// Soft style: light over a curved body, a gradient in the frame of its
     /// outline ellipse (`[ox, oy, ux, uy, vx, vy]`: the unit circle's center
     /// and axes on screen), brightest at `hi` in that frame.
-    Shade { frame: [f32; 6], hi: P2 },
+    Shade {
+        frame: [f32; 6],
+        hi: P2,
+    },
     /// Soft style: ambient occlusion, darkening linearly from `a` (clear)
     /// to `b` (dark), screen points: walls deepening toward the ground.
-    Fade { a: P2, b: P2 },
+    Fade {
+        a: P2,
+        b: P2,
+    },
     /// Soft style: a blurred dark spot (a contact shadow) filling the frame's
     /// unit circle with `alpha` at its middle.
-    Soft { frame: [f32; 6], alpha: f32 },
+    Soft {
+        frame: [f32; 6],
+        alpha: f32,
+    },
     /// `flow` slides a dashed line along its path, in dash periods: animate
     /// it and the dashes travel the way the line was drawn.
     /// `wide` strokes are drawn twice as wide under a merged group's fills,
     /// so only the outer half shows: the group's union outline.
-    Stroke { ink: Ink, dashed: bool, flow: f32, wide: bool },
+    Stroke {
+        ink: Ink,
+        dashed: bool,
+        flow: f32,
+        wide: bool,
+    },
 }
 
 /// One painted path.
@@ -154,7 +174,13 @@ pub fn bounds(items: &[Item]) -> Option<Rect> {
                     add(p);
                     at = p;
                 }
-                Seg::A { r, rot, large, sweep, to } => {
+                Seg::A {
+                    r,
+                    rot,
+                    large,
+                    sweep,
+                    to,
+                } => {
                     for p in arc_points(at, r, rot, large, sweep, to, 8) {
                         add(p);
                     }
@@ -212,7 +238,10 @@ impl ArcCenter {
         }
         let cx1 = k * rx * y1 / ry;
         let cy1 = -k * ry * x1 / rx;
-        let c = [cos * cx1 - sin * cy1 + (from[0] + to[0]) / 2., sin * cx1 + cos * cy1 + (from[1] + to[1]) / 2.];
+        let c = [
+            cos * cx1 - sin * cy1 + (from[0] + to[0]) / 2.,
+            sin * cx1 + cos * cy1 + (from[1] + to[1]) / 2.,
+        ];
         let angle = |ux: f32, uy: f32| uy.atan2(ux);
         let t0 = angle((x1 - cx1) / rx, (y1 - cy1) / ry);
         let mut dt = angle((-x1 - cx1) / rx, (-y1 - cy1) / ry) - t0;
@@ -221,12 +250,23 @@ impl ArcCenter {
         } else if !sweep && dt > 0. {
             dt -= std::f32::consts::TAU;
         }
-        Some(ArcCenter { c, rx, ry, sin, cos, t0, dt })
+        Some(ArcCenter {
+            c,
+            rx,
+            ry,
+            sin,
+            cos,
+            t0,
+            dt,
+        })
     }
 
     fn at(&self, t: f32) -> P2 {
         let (ex, ey) = (self.rx * t.cos(), self.ry * t.sin());
-        [self.cos * ex - self.sin * ey + self.c[0], self.sin * ex + self.cos * ey + self.c[1]]
+        [
+            self.cos * ex - self.sin * ey + self.c[0],
+            self.sin * ex + self.cos * ey + self.c[1],
+        ]
     }
 
     /// The tangent at `t`, per radian.
@@ -237,11 +277,21 @@ impl ArcCenter {
 }
 
 /// Points along an SVG arc (endpoint form), for bounds and tests.
-pub fn arc_points(from: P2, r: P2, rot: f32, large: bool, sweep: bool, to: P2, steps: usize) -> Vec<P2> {
+pub fn arc_points(
+    from: P2,
+    r: P2,
+    rot: f32,
+    large: bool,
+    sweep: bool,
+    to: P2,
+    steps: usize,
+) -> Vec<P2> {
     let Some(arc) = ArcCenter::of(from, r, rot, large, sweep, to) else {
         return vec![from, to];
     };
-    (0..=steps).map(|i| arc.at(arc.t0 + arc.dt * i as f32 / steps as f32)).collect()
+    (0..=steps)
+        .map(|i| arc.at(arc.t0 + arc.dt * i as f32 / steps as f32))
+        .collect()
 }
 
 /// An SVG arc as cubic Béziers `[control, control, end]`, a piece per
@@ -259,7 +309,11 @@ pub fn arc_cubics(from: P2, r: P2, rot: f32, large: bool, sweep: bool, to: P2) -
             let (pa, pb) = (arc.at(a), arc.at(b));
             let (ta, tb) = (arc.tangent(a), arc.tangent(b));
             let end = if i + 1 == n { to } else { pb };
-            [[pa[0] + k * ta[0], pa[1] + k * ta[1]], [pb[0] - k * tb[0], pb[1] - k * tb[1]], end]
+            [
+                [pa[0] + k * ta[0], pa[1] + k * ta[1]],
+                [pb[0] - k * tb[0], pb[1] - k * tb[1]],
+                end,
+            ]
         })
         .collect()
 }
@@ -288,9 +342,21 @@ pub enum Face {
 impl Face {
     fn plane(self) -> Plane {
         match self {
-            Face::Top(z) => Plane { origin: [0., 0., z], e1: [1., 0., 0.], e2: [0., 1., 0.] },
-            Face::Left(y) => Plane { origin: [0., y, 0.], e1: [1., 0., 0.], e2: [0., 0., 1.] },
-            Face::Right(x) => Plane { origin: [x, 0., 0.], e1: [0., 1., 0.], e2: [0., 0., 1.] },
+            Face::Top(z) => Plane {
+                origin: [0., 0., z],
+                e1: [1., 0., 0.],
+                e2: [0., 1., 0.],
+            },
+            Face::Left(y) => Plane {
+                origin: [0., y, 0.],
+                e1: [1., 0., 0.],
+                e2: [0., 0., 1.],
+            },
+            Face::Right(x) => Plane {
+                origin: [x, 0., 0.],
+                e1: [0., 1., 0.],
+                e2: [0., 0., 1.],
+            },
         }
     }
 }
@@ -319,7 +385,11 @@ impl Plane {
         let spread = (((s11 - s22) / 2.).powi(2) + s12 * s12).sqrt();
         let rot = 0.5 * (2. * s12).atan2(s11 - s22);
         let keeps = u[0] * v[1] - u[1] * v[0] > 0.;
-        ([(mid + spread).sqrt(), (mid - spread).max(0.).sqrt()], rot.to_degrees(), keeps)
+        (
+            [(mid + spread).sqrt(), (mid - spread).max(0.).sqrt()],
+            rot.to_degrees(),
+            keeps,
+        )
     }
 }
 
@@ -337,7 +407,12 @@ impl Piece {
 
     fn reversed(self) -> Self {
         let Piece::Arc { c, r, a0, a1 } = self;
-        Piece::Arc { c, r, a0: a1, a1: a0 }
+        Piece::Arc {
+            c,
+            r,
+            a0: a1,
+            a1: a0,
+        }
     }
 }
 
@@ -405,10 +480,30 @@ impl Pen {
 fn rr_loop([a0, b0, a1, b1]: [f32; 4], r: f32) -> Vec<Piece> {
     let r = r.min((a1 - a0) / 2.).min((b1 - b0) / 2.).max(0.);
     vec![
-        Piece::Arc { c: [a1 - r, b1 - r], r, a0: 0., a1: 90. },
-        Piece::Arc { c: [a0 + r, b1 - r], r, a0: 90., a1: 180. },
-        Piece::Arc { c: [a0 + r, b0 + r], r, a0: 180., a1: 270. },
-        Piece::Arc { c: [a1 - r, b0 + r], r, a0: 270., a1: 360. },
+        Piece::Arc {
+            c: [a1 - r, b1 - r],
+            r,
+            a0: 0.,
+            a1: 90.,
+        },
+        Piece::Arc {
+            c: [a0 + r, b1 - r],
+            r,
+            a0: 90.,
+            a1: 180.,
+        },
+        Piece::Arc {
+            c: [a0 + r, b0 + r],
+            r,
+            a0: 180.,
+            a1: 270.,
+        },
+        Piece::Arc {
+            c: [a1 - r, b0 + r],
+            r,
+            a0: 270.,
+            a1: 360.,
+        },
     ]
 }
 
@@ -418,18 +513,43 @@ fn rr_loop([a0, b0, a1, b1]: [f32; 4], r: f32) -> Vec<Piece> {
 fn rr_front([x0, y0, x1, y1]: [f32; 4], r: f32, seam: f32) -> (Vec<Piece>, Vec<Piece>) {
     let r = r.min((x1 - x0) / 2.).min((y1 - y0) / 2.).max(0.);
     let left = vec![
-        Piece::Arc { c: [x0 + r, y1 - r], r, a0: 135., a1: 90. },
-        Piece::Arc { c: [x1 - r, y1 - r], r, a0: 90., a1: seam },
+        Piece::Arc {
+            c: [x0 + r, y1 - r],
+            r,
+            a0: 135.,
+            a1: 90.,
+        },
+        Piece::Arc {
+            c: [x1 - r, y1 - r],
+            r,
+            a0: 90.,
+            a1: seam,
+        },
     ];
     let right = vec![
-        Piece::Arc { c: [x1 - r, y1 - r], r, a0: 45., a1: 0. },
-        Piece::Arc { c: [x1 - r, y0 + r], r, a0: 360., a1: 315. },
+        Piece::Arc {
+            c: [x1 - r, y1 - r],
+            r,
+            a0: 45.,
+            a1: 0.,
+        },
+        Piece::Arc {
+            c: [x1 - r, y0 + r],
+            r,
+            a0: 360.,
+            a1: 315.,
+        },
     ];
     (left, right)
 }
 
 fn circle(c: P2, r: f32) -> Vec<Piece> {
-    vec![Piece::Arc { c, r, a0: 0., a1: 360. }]
+    vec![Piece::Arc {
+        c,
+        r,
+        a0: 0.,
+        a1: 360.,
+    }]
 }
 
 /// The two front walls of an upright shape between `z0` and `z1`, as filled
@@ -462,10 +582,16 @@ pub struct Clip {
 }
 
 impl Clip {
-    pub const NONE: Clip = Clip { min: [f32::MIN; 3], max: [f32::MAX; 3] };
+    pub const NONE: Clip = Clip {
+        min: [f32::MIN; 3],
+        max: [f32::MAX; 3],
+    };
 
     pub fn above(z: f32) -> Clip {
-        Clip { min: [f32::MIN, f32::MIN, z], ..Self::NONE }
+        Clip {
+            min: [f32::MIN, f32::MIN, z],
+            ..Self::NONE
+        }
     }
 }
 
@@ -477,8 +603,18 @@ pub enum Shape {
     Cylinder { base: V3, r: f32, h: f32 },
     /// The far half of a tube with an open top: what lies behind whatever
     /// drops into it. Paint `TubeFront` after the contents.
-    TubeBack { base: V3, r: f32, inner: f32, h: f32 },
-    TubeFront { base: V3, r: f32, inner: f32, h: f32 },
+    TubeBack {
+        base: V3,
+        r: f32,
+        inner: f32,
+        h: f32,
+    },
+    TubeFront {
+        base: V3,
+        r: f32,
+        inner: f32,
+        h: f32,
+    },
     /// A flat rounded rectangle `[a0, b0, a1, b1]` on a face.
     Plate { face: Face, rect: [f32; 4], r: f32 },
     /// A flat circle on a face.
@@ -487,7 +623,12 @@ pub enum Shape {
     Line { points: Vec<V3> },
     /// Flat text facing the viewer, centered vertically on `at`; `align` 0,
     /// 0.5 or 1 puts its left, middle or right end there.
-    Text { at: V3, text: String, size: f32, align: f32 },
+    Text {
+        at: V3,
+        text: String,
+        size: f32,
+        align: f32,
+    },
     /// A rounded rectangle flat on the screen, `size` wide and tall from its
     /// top-left at `at`: the card a caption sits on.
     Card { at: V3, size: P2, r: f32 },
@@ -497,7 +638,13 @@ pub enum Shape {
     /// A patch painted on an ellipsoid's surface: around the local direction
     /// `dir` (in the ellipsoid's own axes), spanning `[lon0, lat0, lon1,
     /// lat1]` degrees, corners rounded by `r` degrees. It turns with the body.
-    Decal { c: V3, axes: [V3; 3], dir: V3, rect: [f32; 4], r: f32 },
+    Decal {
+        c: V3,
+        axes: [V3; 3],
+        dir: V3,
+        rect: [f32; 4],
+        r: f32,
+    },
     /// Where the camera looks: `focus` comes to the middle of the frame,
     /// `zoom` times as large. Draws nothing.
     Camera { focus: V3, zoom: f32 },
@@ -508,7 +655,13 @@ pub enum Shape {
     /// right; negative runs it left) and the text at its far end. `reveal`
     /// (0..1) draws the leader from the text toward the thing it names, and
     /// the dot lands last, so the eye follows the line to it.
-    Label { from: V3, length: f32, text: String, size: f32, reveal: f32 },
+    Label {
+        from: V3,
+        length: f32,
+        text: String,
+        size: f32,
+        reveal: f32,
+    },
 }
 
 /// A shape with its look.
@@ -543,8 +696,14 @@ pub struct Node {
 
 impl Node {
     pub fn new(shape: Shape) -> Self {
-        let flat = matches!(shape, Shape::Plate { .. } | Shape::Disc { .. } | Shape::Line { .. });
-        let text = matches!(shape, Shape::Text { .. } | Shape::Label { .. } | Shape::Card { .. });
+        let flat = matches!(
+            shape,
+            Shape::Plate { .. } | Shape::Disc { .. } | Shape::Line { .. }
+        );
+        let text = matches!(
+            shape,
+            Shape::Text { .. } | Shape::Label { .. } | Shape::Card { .. }
+        );
         let flat = flat || matches!(shape, Shape::Decal { .. });
         Node {
             shape,
@@ -641,7 +800,11 @@ impl Node {
         let c = self.clip;
         match &self.shape {
             Shape::Slab { min, size, r } => {
-                let lo = [min[0].max(c.min[0]), min[1].max(c.min[1]), min[2].max(c.min[2])];
+                let lo = [
+                    min[0].max(c.min[0]),
+                    min[1].max(c.min[1]),
+                    min[2].max(c.min[2]),
+                ];
                 let hi = [
                     (min[0] + size[0]).min(c.max[0]),
                     (min[1] + size[1]).min(c.max[1]),
@@ -650,7 +813,8 @@ impl Node {
                 // A box clipped to no height is gone (a flat one drawn on purpose,
                 // size 0, keeps its top).
                 let squashed = size[2] > 0. && hi[2] - lo[2] <= 1e-3;
-                if hi[0] - lo[0] <= 1e-3 || hi[1] - lo[1] <= 1e-3 || hi[2] - lo[2] < 0. || squashed {
+                if hi[0] - lo[0] <= 1e-3 || hi[1] - lo[1] <= 1e-3 || hi[2] - lo[2] < 0. || squashed
+                {
                     return Vec::new();
                 }
                 let rect = [lo[0], lo[1], hi[0], hi[1]];
@@ -667,7 +831,10 @@ impl Node {
                     let mid = [(lo[0] + hi[0]) / 2., (lo[1] + hi[1]) / 2.];
                     extra.push((
                         wall(&front, lo[2], hi[2]),
-                        Paint::Fade { a: proj([mid[0], mid[1], hi[2]]), b: proj([mid[0], mid[1], lo[2]]) },
+                        Paint::Fade {
+                            a: proj([mid[0], mid[1], hi[2]]),
+                            b: proj([mid[0], mid[1], lo[2]]),
+                        },
                     ));
                 }
                 fill(flat(top, &rr_loop(rect, r), true), tones[0]);
@@ -700,12 +867,28 @@ impl Node {
                     return Vec::new();
                 }
                 let ctr = [base[0], base[1]];
-                let left = [Piece::Arc { c: ctr, r: *r, a0: 135., a1: 45. }];
-                let front = [Piece::Arc { c: ctr, r: *r, a0: 135., a1: -45. }];
+                let left = [Piece::Arc {
+                    c: ctr,
+                    r: *r,
+                    a0: 135.,
+                    a1: 45.,
+                }];
+                let front = [Piece::Arc {
+                    c: ctr,
+                    r: *r,
+                    a0: 135.,
+                    a1: -45.,
+                }];
                 if z1 - z0 > 1e-3 {
                     fill(wall(&front, z0, z1), tones[2]);
                     fill(wall(&left, z0, z1), tones[1]);
-                    extra.push((wall(&front, z0, z1), Paint::Fade { a: proj([ctr[0], ctr[1], z1]), b: proj([ctr[0], ctr[1], z0]) }));
+                    extra.push((
+                        wall(&front, z0, z1),
+                        Paint::Fade {
+                            a: proj([ctr[0], ctr[1], z1]),
+                            b: proj([ctr[0], ctr[1], z0]),
+                        },
+                    ));
                 }
                 fill(flat(Face::Top(z1), &circle(ctr, *r), true), tones[0]);
                 lines.push((flat(Face::Top(z1), &circle(ctr, *r), true), false));
@@ -724,36 +907,134 @@ impl Node {
                 // the far wall rising from it to the rim. The near half of
                 // the floor runs under the lip; `TubeFront` covers it.
                 let z0 = base[2];
-                fill(flat(Face::Top(z0), &circle(ctr, *inner), true), Tone::Recess);
+                fill(
+                    flat(Face::Top(z0), &circle(ctr, *inner), true),
+                    Tone::Recess,
+                );
                 for (a0, a1, tone) in [(135., 225., Tone::Right), (225., 315., Tone::Left)] {
-                    let arc = [Piece::Arc { c: ctr, r: *inner, a0, a1 }];
+                    let arc = [Piece::Arc {
+                        c: ctr,
+                        r: *inner,
+                        a0,
+                        a1,
+                    }];
                     fill(wall(&arc, z0, z1), tone);
                 }
-                lines.push((flat(Face::Top(z0), &[Piece::Arc { c: ctr, r: *inner, a0: 135., a1: 315. }], false), true));
-                lines.push((flat(top, &[Piece::Arc { c: ctr, r: *r, a0: 135., a1: 315. }], false), false));
-                lines.push((flat(top, &[Piece::Arc { c: ctr, r: *inner, a0: 135., a1: 315. }], false), false));
+                lines.push((
+                    flat(
+                        Face::Top(z0),
+                        &[Piece::Arc {
+                            c: ctr,
+                            r: *inner,
+                            a0: 135.,
+                            a1: 315.,
+                        }],
+                        false,
+                    ),
+                    true,
+                ));
+                lines.push((
+                    flat(
+                        top,
+                        &[Piece::Arc {
+                            c: ctr,
+                            r: *r,
+                            a0: 135.,
+                            a1: 315.,
+                        }],
+                        false,
+                    ),
+                    false,
+                ));
+                lines.push((
+                    flat(
+                        top,
+                        &[Piece::Arc {
+                            c: ctr,
+                            r: *inner,
+                            a0: 135.,
+                            a1: 315.,
+                        }],
+                        false,
+                    ),
+                    false,
+                ));
             }
             Shape::TubeFront { base, r, inner, h } => {
                 let ctr = [base[0], base[1]];
                 let (z0, z1) = (base[2], base[2] + h);
-                let left = [Piece::Arc { c: ctr, r: *r, a0: 135., a1: 45. }];
-                let front = [Piece::Arc { c: ctr, r: *r, a0: 135., a1: -45. }];
+                let left = [Piece::Arc {
+                    c: ctr,
+                    r: *r,
+                    a0: 135.,
+                    a1: 45.,
+                }];
+                let front = [Piece::Arc {
+                    c: ctr,
+                    r: *r,
+                    a0: 135.,
+                    a1: -45.,
+                }];
                 fill(wall(&front, z0, z1), tones[2]);
                 fill(wall(&left, z0, z1), tones[1]);
                 let top = Face::Top(z1);
                 let lip = [
-                    Piece::Arc { c: ctr, r: *r, a0: 135., a1: -45. },
-                    Piece::Arc { c: ctr, r: *inner, a0: -45., a1: 135. },
+                    Piece::Arc {
+                        c: ctr,
+                        r: *r,
+                        a0: 135.,
+                        a1: -45.,
+                    },
+                    Piece::Arc {
+                        c: ctr,
+                        r: *inner,
+                        a0: -45.,
+                        a1: 135.,
+                    },
                 ];
                 fill(flat(top, &lip, true), tones[0]);
-                lines.push((flat(top, &[Piece::Arc { c: ctr, r: *r, a0: 135., a1: -45. }], false), false));
-                lines.push((flat(top, &[Piece::Arc { c: ctr, r: *inner, a0: 135., a1: -45. }], false), false));
+                lines.push((
+                    flat(
+                        top,
+                        &[Piece::Arc {
+                            c: ctr,
+                            r: *r,
+                            a0: 135.,
+                            a1: -45.,
+                        }],
+                        false,
+                    ),
+                    false,
+                ));
+                lines.push((
+                    flat(
+                        top,
+                        &[Piece::Arc {
+                            c: ctr,
+                            r: *inner,
+                            a0: 135.,
+                            a1: -45.,
+                        }],
+                        false,
+                    ),
+                    false,
+                ));
                 lines.push((cyl_sides(ctr, *r, z0, z1), true));
             }
             Shape::Plate { face, rect, r } => {
-                let Some(rect) = clip_flat(*face, *rect, &c) else { return Vec::new() };
-                let (rect, r) = (&rect, &r.min((rect[2] - rect[0]) / 2.).min((rect[3] - rect[1]) / 2.));
-                let tone = self.fill.unwrap_or(if self.accent { Tone::AccentTop } else { Tone::Recess });
+                let Some(rect) = clip_flat(*face, *rect, &c) else {
+                    return Vec::new();
+                };
+                let (rect, r) = (
+                    &rect,
+                    &r.min((rect[2] - rect[0]) / 2.)
+                        .min((rect[3] - rect[1]) / 2.),
+                );
+                let tone = self.fill.unwrap_or(if self.accent {
+                    Tone::AccentTop
+                } else {
+                    Tone::Recess
+                });
                 if self.fill.is_some() || self.accent {
                     fill(flat(*face, &rr_loop(*rect, *r), true), tone);
                 }
@@ -765,19 +1046,35 @@ impl Node {
                 if clip_flat(*face, whole, &c) != Some(whole) {
                     return Vec::new();
                 }
-                let tone = self.fill.unwrap_or(if self.accent { Tone::Accent } else { Tone::Ink });
+                let tone = self
+                    .fill
+                    .unwrap_or(if self.accent { Tone::Accent } else { Tone::Ink });
                 if self.fill.is_some() || self.accent {
                     fill(flat(*face, &circle(*ctr, *r), true), tone);
                 }
                 lines.push((flat(*face, &circle(*ctr, *r), true), false));
             }
-            Shape::Text { at, text, size, align } => {
+            Shape::Text {
+                at,
+                text,
+                size,
+                align,
+            } => {
                 if (0..3).any(|i| at[i] < c.min[i] || at[i] > c.max[i]) {
                     return Vec::new();
                 }
-                fill(text::outline(text, proj(*at), *size, text::tracking(text, *size), *align), self.text_tone());
+                fill(
+                    text::outline(text, proj(*at), *size, text::tracking(text, *size), *align),
+                    self.text_tone(),
+                );
             }
-            Shape::Label { from, length, text, size, reveal } => {
+            Shape::Label {
+                from,
+                length,
+                text,
+                size,
+                reveal,
+            } => {
                 let p = proj(*from);
                 let end = [p[0] + length, p[1]];
                 let reveal = reveal.clamp(0., 1.);
@@ -788,8 +1085,17 @@ impl Node {
                 }
                 let dot = 1.6 * Ease::Out.at(((reveal - 0.85) / 0.15).clamp(0., 1.));
                 if dot > 0.05 {
-                    let a = |dx: f32| Seg::A { r: [dot, dot], rot: 0., large: false, sweep: true, to: [p[0] + dx, p[1]] };
-                    fill(vec![Seg::M([p[0] + dot, p[1]]), a(-dot), a(dot), Seg::Z], self.text_tone());
+                    let a = |dx: f32| Seg::A {
+                        r: [dot, dot],
+                        rot: 0.,
+                        large: false,
+                        sweep: true,
+                        to: [p[0] + dx, p[1]],
+                    };
+                    fill(
+                        vec![Seg::M([p[0] + dot, p[1]]), a(-dot), a(dot), Seg::Z],
+                        self.text_tone(),
+                    );
                 }
                 let gap = size * 0.8 * length.signum();
                 let align = if *length < 0. { 1. } else { 0. };
@@ -797,7 +1103,11 @@ impl Node {
                 // the drawing still reads.
                 let tracking = text::tracking(text, *size);
                 let w = text::width(text, *size, tracking);
-                let x0 = if *length < 0. { end[0] + gap - w } else { end[0] + gap };
+                let x0 = if *length < 0. {
+                    end[0] + gap - w
+                } else {
+                    end[0] + gap
+                };
                 let (pad, h) = (size * 0.35, size * 1.1);
                 fill(
                     vec![
@@ -809,7 +1119,10 @@ impl Node {
                     ],
                     Tone::Ground,
                 );
-                fill(text::outline(text, [end[0] + gap, end[1]], *size, tracking, align), self.text_tone());
+                fill(
+                    text::outline(text, [end[0] + gap, end[1]], *size, tracking, align),
+                    self.text_tone(),
+                );
             }
             Shape::Camera { .. } => {}
             Shape::Shadow { c: at, r, alpha } => {
@@ -818,13 +1131,24 @@ impl Node {
                 let ring: Vec<P2> = (0..48)
                     .map(|i| {
                         let a = i as f32 / 48. * std::f32::consts::TAU;
-                        [o[0] + u[0] * a.cos() + v[0] * a.sin(), o[1] + u[1] * a.cos() + v[1] * a.sin()]
+                        [
+                            o[0] + u[0] * a.cos() + v[0] * a.sin(),
+                            o[1] + u[1] * a.cos() + v[1] * a.sin(),
+                        ]
                     })
                     .collect();
-                extra.push((poly(&ring), Paint::Soft { frame: [o[0], o[1], u[0], u[1], v[0], v[1]], alpha: *alpha }));
+                extra.push((
+                    poly(&ring),
+                    Paint::Soft {
+                        frame: [o[0], o[1], u[0], u[1], v[0], v[1]],
+                        alpha: *alpha,
+                    },
+                ));
             }
             Shape::Ellipsoid { c: ctr, axes } => {
-                let Some(e) = Ell::new(*ctr, *axes) else { return Vec::new() };
+                let Some(e) = Ell::new(*ctr, *axes) else {
+                    return Vec::new();
+                };
                 let tones = if let Some(c) = self.color {
                     [Tone::Custom(c, 0), Tone::Custom(c, 2)]
                 } else if self.accent {
@@ -845,9 +1169,19 @@ impl Node {
                 extra.push((poly(&outline), Paint::Shade { frame, hi }));
                 lines.push((poly(&outline), true));
             }
-            Shape::Decal { c: ctr, axes, dir, rect, r } => {
-                let Some(e) = Ell::new(*ctr, *axes) else { return Vec::new() };
-                let Some(points) = e.decal(*dir, *rect, *r) else { return Vec::new() };
+            Shape::Decal {
+                c: ctr,
+                axes,
+                dir,
+                rect,
+                r,
+            } => {
+                let Some(e) = Ell::new(*ctr, *axes) else {
+                    return Vec::new();
+                };
+                let Some(points) = e.decal(*dir, *rect, *r) else {
+                    return Vec::new();
+                };
                 let tone = self.fill.unwrap_or(if let Some(c) = self.color {
                     Tone::Custom(c, 0)
                 } else if self.accent {
@@ -868,7 +1202,13 @@ impl Node {
                 let [x, y] = proj(*at);
                 let (w, h) = (size[0], size[1]);
                 let r = r.min(w / 2.).min(h / 2.).max(0.);
-                let a = |to: P2| Seg::A { r: [r, r], rot: 0., large: false, sweep: true, to };
+                let a = |to: P2| Seg::A {
+                    r: [r, r],
+                    rot: 0.,
+                    large: false,
+                    sweep: true,
+                    to,
+                };
                 let card = vec![
                     Seg::M([x + r, y]),
                     Seg::L([x + w - r, y]),
@@ -886,7 +1226,10 @@ impl Node {
             }
             Shape::Line { points } => {
                 let mut pen = Pen::default();
-                for p in points.iter().filter(|p| (0..3).all(|i| p[i] >= c.min[i] && p[i] <= c.max[i])) {
+                for p in points
+                    .iter()
+                    .filter(|p| (0..3).all(|i| p[i] >= c.min[i] && p[i] <= c.max[i]))
+                {
                     pen.to(proj(*p));
                 }
                 lines.push((pen.path, false));
@@ -902,12 +1245,37 @@ impl Node {
         out.extend(extra);
         // An ellipsoid's outline is all silhouette; it goes in as a side line.
         let solid_body = matches!(self.shape, Shape::Ellipsoid { .. });
-        let mut items: Vec<Item> =
-            out.into_iter().map(|(path, paint)| Item { path, paint, alpha: self.alpha, layer: 0, anchor, silhouette: false }).collect();
+        let mut items: Vec<Item> = out
+            .into_iter()
+            .map(|(path, paint)| Item {
+                path,
+                paint,
+                alpha: self.alpha,
+                layer: 0,
+                anchor,
+                silhouette: false,
+            })
+            .collect();
         for (path, side) in lines.into_iter().filter(|(p, _)| p.len() > 1) {
-            let ink = if side { self.side_ink.or(self.ink) } else { self.ink };
+            let ink = if side {
+                self.side_ink.or(self.ink)
+            } else {
+                self.ink
+            };
             if let Some(ink) = ink {
-                items.push(Item { path, paint: Paint::Stroke { ink, dashed: self.dashed, flow: self.flow.rem_euclid(1.), wide: false }, alpha: self.alpha, layer: 0, anchor, silhouette: side && solid_body });
+                items.push(Item {
+                    path,
+                    paint: Paint::Stroke {
+                        ink,
+                        dashed: self.dashed,
+                        flow: self.flow.rem_euclid(1.),
+                        wide: false,
+                    },
+                    alpha: self.alpha,
+                    layer: 0,
+                    anchor,
+                    silhouette: side && solid_body,
+                });
             }
         }
         items
@@ -917,7 +1285,15 @@ impl Node {
 /// The bottom front arc and the two silhouette edges of a cylinder.
 fn cyl_sides(c: P2, r: f32, z0: f32, z1: f32) -> Vec<Seg> {
     let mut pen = Pen::default();
-    pen.pieces(&Face::Top(z0).plane(), &[Piece::Arc { c, r, a0: 135., a1: -45. }]);
+    pen.pieces(
+        &Face::Top(z0).plane(),
+        &[Piece::Arc {
+            c,
+            r,
+            a0: 135.,
+            a1: -45.,
+        }],
+    );
     for a in [135., -45.] {
         let [x, y] = Piece::point(c, r, a);
         pen.lift();
@@ -939,7 +1315,12 @@ fn clip_flat(face: Face, [a0, b0, a1, b1]: [f32; 4], c: &Clip) -> Option<[f32; 4
     if at < c.min[plane] || at > c.max[plane] {
         return None;
     }
-    let r = [a0.max(c.min[a]), b0.max(c.min[b]), a1.min(c.max[a]), b1.min(c.max[b])];
+    let r = [
+        a0.max(c.min[a]),
+        b0.max(c.min[b]),
+        a1.min(c.max[a]),
+        b1.min(c.max[b]),
+    ];
     (r[2] - r[0] > 1e-3 && r[3] - r[1] > 1e-3).then_some(r)
 }
 
@@ -949,7 +1330,11 @@ fn dot(a: V3, b: V3) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn norm(a: V3) -> V3 {
     let l = dot(a, a).sqrt().max(1e-9);
@@ -986,24 +1371,42 @@ impl Ell {
         if det.abs() < 1e-6 {
             return None;
         }
-        let inv = [scale(cross(b, d), 1. / det), scale(cross(d, a), 1. / det), scale(cross(a, b), 1. / det)];
+        let inv = [
+            scale(cross(b, d), 1. / det),
+            scale(cross(d, a), 1. / det),
+            scale(cross(a, b), 1. / det),
+        ];
         Some(Ell { c, axes, inv })
     }
 
     /// A⁻¹ v: the unit-sphere direction whose points face `v` most.
     fn facing(&self, v: V3) -> V3 {
-        [dot(self.inv[0], v), dot(self.inv[1], v), dot(self.inv[2], v)]
+        [
+            dot(self.inv[0], v),
+            dot(self.inv[1], v),
+            dot(self.inv[2], v),
+        ]
     }
 
     fn at(&self, q: V3) -> P2 {
         let [a, b, d] = self.axes;
-        proj(add(self.c, add(scale(a, q[0]), add(scale(b, q[1]), scale(d, q[2])))))
+        proj(add(
+            self.c,
+            add(scale(a, q[0]), add(scale(b, q[1]), scale(d, q[2]))),
+        ))
     }
 
     /// The outline: the great circle of points edge-on to the viewer.
     fn silhouette(&self) -> Vec<P2> {
         let m = norm(self.facing(VIEW));
-        let e1 = norm(cross(m, if m[2].abs() < 0.9 { [0., 0., 1.] } else { [1., 0., 0.] }));
+        let e1 = norm(cross(
+            m,
+            if m[2].abs() < 0.9 {
+                [0., 0., 1.]
+            } else {
+                [1., 0., 0.]
+            },
+        ));
         let e2 = cross(m, e1);
         (0..96)
             .map(|i| {
@@ -1017,7 +1420,14 @@ impl Ell {
     /// two unit axes) and where in it the light lands brightest.
     fn light_frame(&self) -> ([f32; 6], P2) {
         let m = norm(self.facing(VIEW));
-        let e1 = norm(cross(m, if m[2].abs() < 0.9 { [0., 0., 1.] } else { [1., 0., 0.] }));
+        let e1 = norm(cross(
+            m,
+            if m[2].abs() < 0.9 {
+                [0., 0., 1.]
+            } else {
+                [1., 0., 0.]
+            },
+        ));
         let e2 = cross(m, e1);
         let [a, b, d] = self.axes;
         let image = |q: V3| proj(add(scale(a, q[0]), add(scale(b, q[1]), scale(d, q[2]))));
@@ -1025,7 +1435,10 @@ impl Ell {
         let (u, v) = (image(e1), image(e2));
         // Halfway between facing the light and facing us: where it shines.
         let h = norm(add(norm(self.facing(light())), m));
-        ([o[0], o[1], u[0], u[1], v[0], v[1]], [dot(h, e1), dot(h, e2)])
+        (
+            [o[0], o[1], u[0], u[1], v[0], v[1]],
+            [dot(h, e1), dot(h, e2)],
+        )
     }
 
     /// The part in shadow that the viewer sees: the lune between the
@@ -1063,18 +1476,30 @@ impl Ell {
     /// degrees with corners rounded `r` degrees. None when it faces away.
     fn decal(&self, dir: V3, [l0, b0, l1, b1]: [f32; 4], r: f32) -> Option<Vec<P2>> {
         let q0 = norm(dir);
-        let up = if q0[2].abs() > 0.95 { [0., 1., 0.] } else { [0., 0., 1.] };
+        let up = if q0[2].abs() > 0.95 {
+            [0., 1., 0.]
+        } else {
+            [0., 0., 1.]
+        };
         let east = norm(cross(up, q0));
         let north = cross(q0, east);
         let md = self.facing(VIEW);
         let point = |lon: f32, lat: f32| {
             let (lo, la) = (lon.to_radians(), lat.to_radians());
-            norm(add(scale(q0, la.cos() * lo.cos()), add(scale(east, la.cos() * lo.sin()), scale(north, la.sin()))))
+            norm(add(
+                scale(q0, la.cos() * lo.cos()),
+                add(scale(east, la.cos() * lo.sin()), scale(north, la.sin())),
+            ))
         };
         // Rounded rectangle in lon/lat, walked corner by corner.
         let r = r.min((l1 - l0) / 2.).min((b1 - b0) / 2.).max(0.);
         let mut pts = Vec::new();
-        let corners = [(l1 - r, b0 + r, -90.), (l1 - r, b1 - r, 0.), (l0 + r, b1 - r, 90.), (l0 + r, b0 + r, 180.)];
+        let corners = [
+            (l1 - r, b0 + r, -90.),
+            (l1 - r, b1 - r, 0.),
+            (l0 + r, b1 - r, 90.),
+            (l0 + r, b0 + r, 180.),
+        ];
         for (cx, cy, start) in corners {
             for i in 0..=8 {
                 let a = (start + i as f32 * 90. / 8.).to_radians();
@@ -1091,7 +1516,11 @@ impl Ell {
             pts.into_iter()
                 .map(|q| {
                     let d = dot(q, m);
-                    let q = if d < 0. { norm(add(q, scale(m, -d))) } else { q };
+                    let q = if d < 0. {
+                        norm(add(q, scale(m, -d)))
+                    } else {
+                        q
+                    };
                     self.at(q)
                 })
                 .collect(),
@@ -1100,7 +1529,11 @@ impl Ell {
 }
 
 fn poly(points: &[P2]) -> Vec<Seg> {
-    let mut path: Vec<Seg> = points.iter().enumerate().map(|(i, &p)| if i == 0 { Seg::M(p) } else { Seg::L(p) }).collect();
+    let mut path: Vec<Seg> = points
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| if i == 0 { Seg::M(p) } else { Seg::L(p) })
+        .collect();
     path.push(Seg::Z);
     path
 }
@@ -1116,7 +1549,10 @@ pub fn turn_onto(v: V3, from: V3, to: V3) -> V3 {
     }
     let k = scale(k, 1. / s);
     // v cosθ + (k × v) sinθ + k (k·v)(1 − cosθ)
-    add(add(scale(v, c), scale(cross(k, v), s)), scale(k, dot(k, v) * (1. - c)))
+    add(
+        add(scale(v, c), scale(cross(k, v), s)),
+        scale(k, dot(k, v) * (1. - c)),
+    )
 }
 
 /// `v` turned `deg` degrees about the world's up axis.
@@ -1133,11 +1569,17 @@ fn assemble(per_node: Vec<(Option<u32>, u32, Vec<Item>)>) -> Vec<Item> {
     while i < per_node.len() {
         let Some(m) = per_node[i].0 else {
             let (_, layer, items) = &per_node[i];
-            out.extend(items.iter().cloned().map(|item| Item { layer: *layer, ..item }));
+            out.extend(items.iter().cloned().map(|item| Item {
+                layer: *layer,
+                ..item
+            }));
             i += 1;
             continue;
         };
-        let run: Vec<&(Option<u32>, u32, Vec<Item>)> = per_node[i..].iter().take_while(|n| n.0 == Some(m)).collect();
+        let run: Vec<&(Option<u32>, u32, Vec<Item>)> = per_node[i..]
+            .iter()
+            .take_while(|n| n.0 == Some(m))
+            .collect();
         let layer = run[0].1;
         for (_, _, items) in &run {
             for item in items.iter().filter(|it| it.silhouette) {
@@ -1149,7 +1591,13 @@ fn assemble(per_node: Vec<(Option<u32>, u32, Vec<Item>)>) -> Vec<Item> {
             }
         }
         for (_, _, items) in &run {
-            out.extend(items.iter().filter(|it| !it.silhouette).cloned().map(|item| Item { layer, ..item }));
+            out.extend(
+                items
+                    .iter()
+                    .filter(|it| !it.silhouette)
+                    .cloned()
+                    .map(|item| Item { layer, ..item }),
+            );
         }
         i += run.len();
     }
@@ -1163,7 +1611,13 @@ pub fn render(nodes: &[Node]) -> Vec<Item> {
             .iter()
             .enumerate()
             // Named layers sit above the per-node ones so the two never collide.
-            .map(|(i, node)| (node.merge, node.layer.map_or(i as u32, |l| 1 << 20 | l), node.items()))
+            .map(|(i, node)| {
+                (
+                    node.merge,
+                    node.layer.map_or(i as u32, |l| 1 << 20 | l),
+                    node.items(),
+                )
+            })
             .collect(),
     )
 }
@@ -1179,8 +1633,14 @@ pub fn lens(nodes: &[Node], frame: Rect) -> Option<(f32, P2)> {
     // At zoom 1 the camera leaves the view as it rests; the closer it
     // comes, the more the focus moves to the middle (all the way by 1.4×).
     let pull = ((zoom - 1.) / 0.4).clamp(0., 1.);
-    let lands = [focus[0] + (center[0] - focus[0]) * pull, focus[1] + (center[1] - focus[1]) * pull];
-    Some((zoom, [lands[0] - focus[0] * zoom, lands[1] - focus[1] * zoom]))
+    let lands = [
+        focus[0] + (center[0] - focus[0]) * pull,
+        focus[1] + (center[1] - focus[1]) * pull,
+    ];
+    Some((
+        zoom,
+        [lands[0] - focus[0] * zoom, lands[1] - focus[1] * zoom],
+    ))
 }
 
 /// The frame as the camera sees it: like `render`, then the world zoomed
@@ -1198,12 +1658,22 @@ pub fn shoot(nodes: &[Node], frame: Rect) -> Vec<Item> {
         let layer = node.layer.map_or(i as u32, |l| 1 << 20 | l);
         let fitted;
         let node = match &node.shape {
-            Shape::Label { from, length, text: t, size, .. } if !node.fixed => {
+            Shape::Label {
+                from,
+                length,
+                text: t,
+                size,
+                ..
+            } if !node.fixed => {
                 let q = map(proj(*from));
                 let need = text::width(t, *size, text::tracking(t, *size)) + size * 0.8;
                 let right = frame[2] - margin - q[0] - need;
                 let left = q[0] - frame[0] - margin - need;
-                let (room, side) = if *length >= 0. { (right, 1.) } else { (left, -1.) };
+                let (room, side) = if *length >= 0. {
+                    (right, 1.)
+                } else {
+                    (left, -1.)
+                };
                 // Too tight on its side: the label turns to the other one.
                 let (room, side) = if room < 12. && (if side > 0. { left } else { right }) > room {
                     (if side > 0. { left } else { right }, -side)
@@ -1244,7 +1714,19 @@ pub fn shoot(nodes: &[Node], frame: Rect) -> Vec<Item> {
                 Seg::M(p) => Seg::M(tf(p)),
                 Seg::L(p) => Seg::L(tf(p)),
                 Seg::C(a, b, p) => Seg::C(tf(a), tf(b), tf(p)),
-                Seg::A { r, rot, large, sweep, to } => Seg::A { r: [r[0] * scale, r[1] * scale], rot, large, sweep, to: tf(to) },
+                Seg::A {
+                    r,
+                    rot,
+                    large,
+                    sweep,
+                    to,
+                } => Seg::A {
+                    r: [r[0] * scale, r[1] * scale],
+                    rot,
+                    large,
+                    sweep,
+                    to: tf(to),
+                },
                 Seg::Z => Seg::Z,
             };
         }
@@ -1257,7 +1739,12 @@ pub fn shoot(nodes: &[Node], frame: Rect) -> Vec<Item> {
 /// grown evenly around the world so the drawing sits in the middle.
 pub fn rest_bounds(frames: impl Iterator<Item = Vec<Node>>) -> Option<Rect> {
     let grow = |a: Option<Rect>, b: Option<Rect>| match (a, b) {
-        (Some(a), Some(b)) => Some([a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]),
+        (Some(a), Some(b)) => Some([
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[2].max(b[2]),
+            a[3].max(b[3]),
+        ]),
         (a, b) => a.or(b),
     };
     let (mut world, mut all) = (None, None);
@@ -1275,14 +1762,21 @@ pub fn rest_bounds(frames: impl Iterator<Item = Vec<Node>>) -> Option<Rect> {
             })
             .collect();
         let items = render(&nodes);
-        let solid: Vec<Item> = items.iter().filter(|i| matches!(i.anchor, Anchor::World)).cloned().collect();
+        let solid: Vec<Item> = items
+            .iter()
+            .filter(|i| matches!(i.anchor, Anchor::World))
+            .cloned()
+            .collect();
         world = grow(world, bounds(&solid));
         all = grow(all, bounds(&items));
     }
     let all = all?;
     let Some(world) = world else { return Some(all) };
     let [cx, cy] = middle(world);
-    let (hw, hh) = ((cx - all[0]).max(all[2] - cx), (cy - all[1]).max(all[3] - cy));
+    let (hw, hh) = (
+        (cx - all[0]).max(all[2] - cx),
+        (cy - all[1]).max(all[3] - cy),
+    );
     Some([cx - hw, cy - hh, cx + hw, cy + hh])
 }
 
@@ -1296,8 +1790,12 @@ pub fn middle(r: Rect) -> P2 {
 /// CSS `cubic-bezier(x1, y1, x2, y2)`: the progress at time `t` in 0..1.
 pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
     let t = t.clamp(0., 1.);
-    let bez = |a: f32, b: f32, s: f32| 3. * a * s * (1. - s).powi(2) + 3. * b * s * s * (1. - s) + s.powi(3);
-    let dbez = |a: f32, b: f32, s: f32| 3. * a * (1. - s).powi(2) + 6. * (b - a) * s * (1. - s) + 3. * (1. - b) * s * s;
+    let bez = |a: f32, b: f32, s: f32| {
+        3. * a * s * (1. - s).powi(2) + 3. * b * s * s * (1. - s) + s.powi(3)
+    };
+    let dbez = |a: f32, b: f32, s: f32| {
+        3. * a * (1. - s).powi(2) + 6. * (b - a) * s * (1. - s) + 3. * (1. - b) * s * s
+    };
     let mut s = t;
     for _ in 0..8 {
         let d = dbez(x1, x2, s);
@@ -1370,7 +1868,10 @@ mod tests {
     #[test]
     fn ground_circles_are_upright_ellipses() {
         let (r, rot, keeps) = Face::Top(0.).plane().ellipse();
-        assert!(close(r[0], 1.5f32.sqrt()) && close(r[1], 0.5f32.sqrt()), "{r:?}");
+        assert!(
+            close(r[0], 1.5f32.sqrt()) && close(r[1], 0.5f32.sqrt()),
+            "{r:?}"
+        );
         assert!(close(rot, 0.));
         assert!(keeps);
     }
@@ -1386,7 +1887,13 @@ mod tests {
             for seg in path {
                 match seg {
                     Seg::M(p) => at = p,
-                    Seg::A { r, rot, large, sweep, to } => {
+                    Seg::A {
+                        r,
+                        rot,
+                        large,
+                        sweep,
+                        to,
+                    } => {
                         for p in arc_points(at, r, rot, large, sweep, to, 6) {
                             // Find the world angle whose projection is closest.
                             let best = (0..3600)
@@ -1417,38 +1924,107 @@ mod tests {
     #[test]
     fn flat_shapes_obey_the_clip() {
         // A disc below the clip is gone; a plate across it is cut, not dropped.
-        let disc = Node::new(Shape::Disc { face: Face::Top(2.), c: [0., 0.], r: 3. }).clip(Clip::above(5.));
+        let disc = Node::new(Shape::Disc {
+            face: Face::Top(2.),
+            c: [0., 0.],
+            r: 3.,
+        })
+        .clip(Clip::above(5.));
         assert!(disc.items().is_empty());
         let wall = Face::Left(0.);
-        let plate = Node::new(Shape::Plate { face: wall, rect: [0., 0., 10., 10.], r: 2. }).clip(Clip::above(5.));
+        let plate = Node::new(Shape::Plate {
+            face: wall,
+            rect: [0., 0., 10., 10.],
+            r: 2.,
+        })
+        .clip(Clip::above(5.));
         let b = bounds(&plate.items()).unwrap();
-        let full = bounds(&Node::new(Shape::Plate { face: wall, rect: [0., 0., 10., 10.], r: 2. }).items()).unwrap();
+        let full = bounds(
+            &Node::new(Shape::Plate {
+                face: wall,
+                rect: [0., 0., 10., 10.],
+                r: 2.,
+            })
+            .items(),
+        )
+        .unwrap();
         assert!(b[3] < full[3] - 1., "the part below z 5 is cut away");
     }
 
     #[test]
     fn named_layers_fade_together() {
-        let coin = |l| Node::new(Shape::Cylinder { base: [0., 0., 0.], r: 4., h: 2. }).alpha(0.5).layer(l);
-        let items = render(&[coin(3), coin(3), Node::new(Shape::Line { points: vec![[0.; 3], [5., 0., 0.]] })]);
+        let coin = |l| {
+            Node::new(Shape::Cylinder {
+                base: [0., 0., 0.],
+                r: 4.,
+                h: 2.,
+            })
+            .alpha(0.5)
+            .layer(l)
+        };
+        let items = render(&[
+            coin(3),
+            coin(3),
+            Node::new(Shape::Line {
+                points: vec![[0.; 3], [5., 0., 0.]],
+            }),
+        ]);
         let layers: Vec<u32> = items.iter().map(|i| i.layer).collect();
         let first = layers[0];
         let shared = layers.iter().take_while(|&&l| l == first).count();
-        assert_eq!(shared, items.len() - 1, "both coins share a layer; the line has its own");
+        assert_eq!(
+            shared,
+            items.len() - 1,
+            "both coins share a layer; the line has its own"
+        );
     }
 
     #[test]
     fn the_camera_rests_at_zoom_one_and_keeps_text_size() {
-        let box_ = Node::new(Shape::Slab { min: [0., 0., 0.], size: [40., 40., 10.], r: 4. });
-        let tag = Node::new(Shape::Text { at: [40., 40., 10.], text: "A".into(), size: 10., align: 0. });
+        let box_ = Node::new(Shape::Slab {
+            min: [0., 0., 0.],
+            size: [40., 40., 10.],
+            r: 4.,
+        });
+        let tag = Node::new(Shape::Text {
+            at: [40., 40., 10.],
+            text: "A".into(),
+            size: 10.,
+            align: 0.,
+        });
         let frame = rest_bounds(std::iter::once(vec![box_.clone(), tag.clone()])).unwrap();
         // Zoom 1 looking anywhere: the view as it rests.
         let rest = shoot(&[box_.clone(), tag.clone()], frame);
-        let still = shoot(&[box_.clone(), tag.clone(), Node::new(Shape::Camera { focus: [0., 0., 0.], zoom: 1. })], frame);
+        let still = shoot(
+            &[
+                box_.clone(),
+                tag.clone(),
+                Node::new(Shape::Camera {
+                    focus: [0., 0., 0.],
+                    zoom: 1.,
+                }),
+            ],
+            frame,
+        );
         assert_eq!(rest, still);
         // Closer: the box grows, the pinned text keeps its size.
-        let close = shoot(&[box_, tag, Node::new(Shape::Camera { focus: [20., 20., 5.], zoom: 2. })], frame);
+        let close = shoot(
+            &[
+                box_,
+                tag,
+                Node::new(Shape::Camera {
+                    focus: [20., 20., 5.],
+                    zoom: 2.,
+                }),
+            ],
+            frame,
+        );
         let size = |items: &[Item], pinned: bool| {
-            let only: Vec<Item> = items.iter().filter(|i| matches!(i.anchor, Anchor::Pinned(_)) == pinned).cloned().collect();
+            let only: Vec<Item> = items
+                .iter()
+                .filter(|i| matches!(i.anchor, Anchor::Pinned(_)) == pinned)
+                .cloned()
+                .collect();
             let b = bounds(&only).unwrap();
             b[2] - b[0]
         };
@@ -1459,8 +2035,18 @@ mod tests {
     #[test]
     fn the_resting_view_centers_the_drawing() {
         // A long label off to the right must not push the box off-center.
-        let box_ = Node::new(Shape::Slab { min: [0., 0., 0.], size: [40., 40., 10.], r: 4. });
-        let label = Node::new(Shape::Label { from: [40., 0., 10.], length: 80., text: "A LONG LABEL".into(), size: 9., reveal: 1. });
+        let box_ = Node::new(Shape::Slab {
+            min: [0., 0., 0.],
+            size: [40., 40., 10.],
+            r: 4.,
+        });
+        let label = Node::new(Shape::Label {
+            from: [40., 0., 10.],
+            length: 80.,
+            text: "A LONG LABEL".into(),
+            size: 9.,
+            reveal: 1.,
+        });
         let frame = rest_bounds(std::iter::once(vec![box_.clone(), label])).unwrap();
         let world = bounds(&render(&[box_])).unwrap();
         let (f, w) = (middle(frame), middle(world));
@@ -1469,7 +2055,13 @@ mod tests {
 
     #[test]
     fn labels_stay_inside_the_frame() {
-        let label = Node::new(Shape::Label { from: [0., 0., 0.], length: 500., text: "FAR AWAY".into(), size: 9., reveal: 1. });
+        let label = Node::new(Shape::Label {
+            from: [0., 0., 0.],
+            length: 500.,
+            text: "FAR AWAY".into(),
+            size: 9.,
+            reveal: 1.,
+        });
         let frame = [-100., -50., 100., 50.];
         let b = bounds(&shoot(&[label], frame)).unwrap();
         assert!(b[2] <= frame[2] + 0.5, "{b:?}");
@@ -1478,15 +2070,30 @@ mod tests {
     #[test]
     fn clipped_to_no_height_paints_nothing() {
         // Sunk exactly to the clip: no top face left lying on the surface.
-        let n = Node::new(Shape::Slab { min: [0., 0., -5.], size: [10., 10., 5.], r: 2. }).clip(Clip::above(0.));
+        let n = Node::new(Shape::Slab {
+            min: [0., 0., -5.],
+            size: [10., 10., 5.],
+            r: 2.,
+        })
+        .clip(Clip::above(0.));
         assert!(n.items().is_empty());
-        let c = Node::new(Shape::Cylinder { base: [0., 0., -5.], r: 3., h: 5. }).clip(Clip::above(0.));
+        let c = Node::new(Shape::Cylinder {
+            base: [0., 0., -5.],
+            r: 3.,
+            h: 5.,
+        })
+        .clip(Clip::above(0.));
         assert!(c.items().is_empty());
     }
 
     #[test]
     fn clipped_away_slab_paints_nothing() {
-        let n = Node::new(Shape::Slab { min: [0., 0., 0.], size: [10., 10., 5.], r: 2. }).clip(Clip::above(6.));
+        let n = Node::new(Shape::Slab {
+            min: [0., 0., 0.],
+            size: [10., 10., 5.],
+            r: 2.,
+        })
+        .clip(Clip::above(6.));
         assert!(n.items().is_empty());
     }
 }

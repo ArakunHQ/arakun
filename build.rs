@@ -12,6 +12,9 @@ fn main() {
             .join("src/bin/arakun-helper.manifest");
         println!("cargo::rerun-if-changed={}", manifest.display());
         println!("cargo::rustc-link-arg-bin=arakun-helper=/MANIFEST:EMBED");
-        println!("cargo::rustc-link-arg-bin=arakun-helper=/MANIFESTINPUT:{}", manifest.display());
+        println!(
+            "cargo::rustc-link-arg-bin=arakun-helper=/MANIFESTINPUT:{}",
+            manifest.display()
+        );
     }
 }

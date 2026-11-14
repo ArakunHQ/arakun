@@ -9,7 +9,9 @@ fn str_of(v: &Value) -> String {
 }
 
 fn time_of(v: &Value) -> u64 {
-    v.as_str().and_then(crate::account::parse_rfc3339).unwrap_or(0)
+    v.as_str()
+        .and_then(crate::account::parse_rfc3339)
+        .unwrap_or(0)
 }
 
 fn items(v: &Value) -> impl Iterator<Item = &Value> {
@@ -81,9 +83,18 @@ impl Insight {
     /// `waf_not_enabled` → "WAF not enabled".
     pub fn title(&self) -> String {
         let t = self.class.replace('_', " ");
-        let t = t.replace("waf", "WAF").replace("hsts", "HSTS").replace("dmarc", "DMARC").replace("tls", "TLS").replace("https", "HTTPS").replace("cname", "CNAME").replace("mfa", "MFA");
+        let t = t
+            .replace("waf", "WAF")
+            .replace("hsts", "HSTS")
+            .replace("dmarc", "DMARC")
+            .replace("tls", "TLS")
+            .replace("https", "HTTPS")
+            .replace("cname", "CNAME")
+            .replace("mfa", "MFA");
         let mut c = t.chars();
-        c.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
+        c.next().map_or_else(String::new, |f| {
+            f.to_uppercase().collect::<String>() + c.as_str()
+        })
     }
 }
 
@@ -137,13 +148,22 @@ pub(super) fn parse_charges(v: &Value) -> Vec<Charge> {
 /// "Spend this period: $16.83" in a budget alert → 16.83.
 pub fn spend_in(detail: &str) -> Option<f64> {
     let i = detail.find('$')?;
-    detail[i + 1..].split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ',')).next()?.replace(',', "").parse().ok()
+    detail[i + 1..]
+        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
+        .next()?
+        .replace(',', "")
+        .parse()
+        .ok()
 }
 
 pub(super) fn parse_certs(v: &Value) -> Vec<Cert> {
     let mut out: Vec<Cert> = items(&v["result"])
         .map(|p| {
-            let expires = items(&p["certificates"]).map(|c| time_of(&c["expires_on"])).filter(|t| *t > 0).min().unwrap_or(0);
+            let expires = items(&p["certificates"])
+                .map(|c| time_of(&c["expires_on"]))
+                .filter(|t| *t > 0)
+                .min()
+                .unwrap_or(0);
             Cert {
                 hosts: items(&p["hosts"]).map(str_of).collect(),
                 status: str_of(&p["status"]),
@@ -165,12 +185,17 @@ pub(super) fn parse_email_enabled(v: &Value) -> Option<bool> {
 pub(super) fn parse_email_rules(v: &Value) -> Vec<EmailRule> {
     items(&v["result"])
         .map(|r| {
-            let to = items(&r["matchers"]).find(|m| m["field"] == "to").map(|m| str_of(&m["value"])).unwrap_or_else(|| "everything else".into());
+            let to = items(&r["matchers"])
+                .find(|m| m["field"] == "to")
+                .map(|m| str_of(&m["value"]))
+                .unwrap_or_else(|| "everything else".into());
             let action = items(&r["actions"]).next();
             EmailRule {
                 to,
                 action: action.map(|a| str_of(&a["type"])).unwrap_or_default(),
-                targets: action.map(|a| items(&a["value"]).map(str_of).collect()).unwrap_or_default(),
+                targets: action
+                    .map(|a| items(&a["value"]).map(str_of).collect())
+                    .unwrap_or_default(),
                 enabled: r["enabled"].as_bool().unwrap_or(true),
             }
         })
@@ -193,7 +218,11 @@ pub(super) fn parse_insights(v: &Value) -> (Vec<Insight>, u64) {
             content: str_of(&i["payload"]["dns_record_content"]),
         })
         .collect();
-    out.sort_by(|a, b| a.rank().cmp(&b.rank()).then_with(|| a.subject.cmp(&b.subject)));
+    out.sort_by(|a, b| {
+        a.rank()
+            .cmp(&b.rank())
+            .then_with(|| a.subject.cmp(&b.subject))
+    });
     (out, r["count"].as_u64().unwrap_or(0))
 }
 
@@ -227,17 +256,29 @@ pub(super) fn parse_members(v: &Value) -> Vec<Member> {
 }
 
 pub(super) fn parse_access(v: &Value) -> Vec<AccessApp> {
-    items(&v["result"]).map(|a| AccessApp { name: str_of(&a["name"]), domain: str_of(&a["domain"]), kind: str_of(&a["type"]) }).collect()
+    items(&v["result"])
+        .map(|a| AccessApp {
+            name: str_of(&a["name"]),
+            domain: str_of(&a["domain"]),
+            kind: str_of(&a["type"]),
+        })
+        .collect()
 }
 
 /// The newest deploy of a Worker: who and the version number it serves.
 pub(super) fn parse_deploy(v: &Value) -> (String, String) {
     let d = items(&v["result"]["deployments"]).next();
-    (d.map(|d| str_of(&d["author_email"])).unwrap_or_default(), d.map(|d| str_of(&d["source"])).unwrap_or_default())
+    (
+        d.map(|d| str_of(&d["author_email"])).unwrap_or_default(),
+        d.map(|d| str_of(&d["source"])).unwrap_or_default(),
+    )
 }
 
 pub(super) fn parse_crons(v: &Value) -> Vec<String> {
-    items(&v["result"]["schedules"]).map(|s| str_of(&s["cron"])).filter(|c| !c.is_empty()).collect()
+    items(&v["result"]["schedules"])
+        .map(|s| str_of(&s["cron"]))
+        .filter(|c| !c.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -251,14 +292,25 @@ mod tests {
             {"type": "universal", "status": "active", "certificate_authority": "lets_encrypt", "hosts": ["a.dev"], "certificates": [{"expires_on": "2027-01-22T18:51:11Z"}]},
             {"type": "advanced", "status": "pending_validation", "hosts": ["b.dev"], "certificates": []}]}));
         assert_eq!((certs[0].kind.as_str(), certs[1].expires), ("universal", 0));
-        let rules = parse_email_rules(&json!({"result": [{"matchers": [{"type": "literal", "field": "to", "value": "k@h.mx"}], "actions": [{"type": "forward", "value": ["k@gmail.com"]}], "enabled": true}]}));
-        assert_eq!((rules[0].to.as_str(), rules[0].targets[0].as_str()), ("k@h.mx", "k@gmail.com"));
+        let rules = parse_email_rules(
+            &json!({"result": [{"matchers": [{"type": "literal", "field": "to", "value": "k@h.mx"}], "actions": [{"type": "forward", "value": ["k@gmail.com"]}], "enabled": true}]}),
+        );
+        assert_eq!(
+            (rules[0].to.as_str(), rules[0].targets[0].as_str()),
+            ("k@h.mx", "k@gmail.com")
+        );
         let (ins, total) = parse_insights(&json!({"result": {"count": 3, "issues": [
             {"subject": "b.dev", "issue_class": "dmarc", "severity": "Low", "dismissed": false},
             {"subject": "a.dev", "issue_class": "waf_not_enabled", "severity": "Critical", "dismissed": false},
             {"subject": "c.dev", "issue_class": "x", "severity": "Low", "dismissed": true}]}}));
-        assert_eq!((ins.len(), total, ins[0].title()), (2, 3, "WAF not enabled".to_string()));
+        assert_eq!(
+            (ins.len(), total, ins[0].title()),
+            (2, 3, "WAF not enabled".to_string())
+        );
         assert_eq!(spend_in("Spend this period: $1,016.83"), Some(1016.83));
-        assert_eq!(parse_crons(&json!({"result": {"schedules": [{"cron": "*/5 * * * *"}]}})), vec!["*/5 * * * *".to_string()]);
+        assert_eq!(
+            parse_crons(&json!({"result": {"schedules": [{"cron": "*/5 * * * *"}]}})),
+            vec!["*/5 * * * *".to_string()]
+        );
     }
 }

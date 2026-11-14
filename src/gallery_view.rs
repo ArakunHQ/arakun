@@ -6,9 +6,9 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, px,
+    AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 
 use crate::theme::{self, Grays};
@@ -34,18 +34,42 @@ pub struct GalleryView {
 fn demo_series() -> (Vec<Series>, Vec<SharedString>, Vec<Option<SharedString>>) {
     let n = 30;
     let wave = |i: usize, f: f64, phase: f64, base: f64, amp: f64| {
-        (base + amp * ((i as f64 * f + phase).sin() * 0.5 + 0.5) * (0.6 + i as f64 / n as f64)).max(0.)
+        (base + amp * ((i as f64 * f + phase).sin() * 0.5 + 0.5) * (0.6 + i as f64 / n as f64))
+            .max(0.)
     };
-    let a: Vec<f64> = (0..n).map(|i| if i < 6 { 0. } else { wave(i, 0.55, 0.3, 20., 180.) }).collect();
+    let a: Vec<f64> = (0..n)
+        .map(|i| {
+            if i < 6 {
+                0.
+            } else {
+                wave(i, 0.55, 0.3, 20., 180.)
+            }
+        })
+        .collect();
     let b: Vec<f64> = (0..n).map(|i| wave(i, 0.31, 2.1, 4., 60.)).collect();
-    let labels = (0..n).map(|i| SharedString::from(format!("Oct {}", i + 1))).collect();
+    let labels = (0..n)
+        .map(|i| SharedString::from(format!("Oct {}", i + 1)))
+        .collect();
     let notes = (0..n)
-        .map(|i| Some(SharedString::from(format!("{}M tokens", ((a[i] + b[i]) * 1.4).round()))))
+        .map(|i| {
+            Some(SharedString::from(format!(
+                "{}M tokens",
+                ((a[i] + b[i]) * 1.4).round()
+            )))
+        })
         .collect();
     (
         vec![
-            Series { name: "Droid".into(), color: theme::mix(0.72), values: a },
-            Series { name: "Claude Code".into(), color: gpui::rgb(0xd97757).into(), values: b },
+            Series {
+                name: "Droid".into(),
+                color: theme::mix(0.72),
+                values: a,
+            },
+            Series {
+                name: "Claude Code".into(),
+                color: gpui::rgb(0xd97757).into(),
+                values: b,
+            },
         ],
         labels,
         notes,
@@ -59,7 +83,15 @@ impl GalleryView {
             let (series, labels, notes) = demo_series();
             let usd: ui::Format = Rc::new(|v| format!("${v:.2}"));
             let short: ui::Format = Rc::new(|v| format!("${v:.0}"));
-            c.set(series, labels, vec!["Oct 1".into(), "Oct 15".into(), "Oct 30".into()], notes, usd, short, cx);
+            c.set(
+                series,
+                labels,
+                vec!["Oct 1".into(), "Oct 15".into(), "Oct 30".into()],
+                notes,
+                usd,
+                short,
+                cx,
+            );
             c
         });
         Self {
@@ -102,7 +134,11 @@ fn section(title: &str, about: &str, body: impl IntoElement) -> AnyElement {
                 .flex_col()
                 .gap(px(4.))
                 .child(ui::text(Type::Title, theme::text(), title.to_string()))
-                .child(ui::text(Type::Body, theme::text_subtle(), about.to_string())),
+                .child(ui::text(
+                    Type::Body,
+                    theme::text_subtle(),
+                    about.to_string(),
+                )),
         )
         .child(body)
         .into_any_element()
@@ -110,7 +146,12 @@ fn section(title: &str, about: &str, body: impl IntoElement) -> AnyElement {
 
 /// A labeled specimen inside a section.
 fn specimen(label: &str, body: impl IntoElement) -> gpui::Div {
-    div().flex().flex_col().gap(px(10.)).child(ui::overline(label)).child(body)
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(ui::overline(label))
+        .child(body)
 }
 
 fn row() -> gpui::Div {
@@ -134,7 +175,11 @@ fn swatch(name: &str, note: &str, color: Hsla) -> AnyElement {
                 .child(div().size_full().rounded(px(ui::RADIUS)).bg(color)),
         )
         .child(ui::text(Type::Label, theme::text(), name.to_string()))
-        .child(ui::text(Type::Caption, theme::text_faint(), note.to_string()))
+        .child(ui::text(
+            Type::Caption,
+            theme::text_faint(),
+            note.to_string(),
+        ))
         .into_any_element()
 }
 
@@ -160,25 +205,29 @@ impl Render for GalleryView {
         // ---- the choices -----------------------------------------------------
         let mut grays = ui::segmented();
         for (i, g) in Grays::ALL.into_iter().enumerate() {
-            grays = grays.child(ui::segment(("ds-grays", i), None, g.label(), theme::grays() == g).on_click(cx.listener(
-                move |_, _, window, cx| {
-                    theme::set_grays(g);
-                    cx.emit(GalleryChanged);
-                    window.refresh();
-                    cx.notify();
-                },
-            )));
+            grays = grays.child(
+                ui::segment(("ds-grays", i), None, g.label(), theme::grays() == g).on_click(
+                    cx.listener(move |_, _, window, cx| {
+                        theme::set_grays(g);
+                        cx.emit(GalleryChanged);
+                        window.refresh();
+                        cx.notify();
+                    }),
+                ),
+            );
         }
         let mut scale = ui::segmented();
         for (i, t) in TypeScale::ALL.into_iter().enumerate() {
-            scale = scale.child(ui::segment(("ds-scale", i), None, t.label(), ui::type_scale() == t).on_click(cx.listener(
-                move |_, _, window, cx| {
-                    ui::set_type_scale(t);
-                    cx.emit(GalleryChanged);
-                    window.refresh();
-                    cx.notify();
-                },
-            )));
+            scale = scale.child(
+                ui::segment(("ds-scale", i), None, t.label(), ui::type_scale() == t).on_click(
+                    cx.listener(move |_, _, window, cx| {
+                        ui::set_type_scale(t);
+                        cx.emit(GalleryChanged);
+                        window.refresh();
+                        cx.notify();
+                    }),
+                ),
+            );
         }
         let header = div()
             .flex()
@@ -208,37 +257,75 @@ impl Render for GalleryView {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(ui::text(Type::Heading, theme::text(), "Primary — titles, values, what is selected"))
-            .child(ui::text(Type::Body, theme::text_muted(), format!("Muted — names and descriptions (content at {:.0}%)", r.text_muted * 100.)))
-            .child(ui::text(Type::Body, theme::text_subtle(), format!("Subtle — labels, units, column headers ({:.0}%)", r.text_subtle * 100.)))
-            .child(ui::text(Type::Body, theme::text_faint(), format!("Faint — placeholders, axis ticks, disabled ({:.0}%)", r.text_faint * 100.)));
+            .child(ui::text(
+                Type::Heading,
+                theme::text(),
+                "Primary — titles, values, what is selected",
+            ))
+            .child(ui::text(
+                Type::Body,
+                theme::text_muted(),
+                format!(
+                    "Muted — names and descriptions (content at {:.0}%)",
+                    r.text_muted * 100.
+                ),
+            ))
+            .child(ui::text(
+                Type::Body,
+                theme::text_subtle(),
+                format!(
+                    "Subtle — labels, units, column headers ({:.0}%)",
+                    r.text_subtle * 100.
+                ),
+            ))
+            .child(ui::text(
+                Type::Body,
+                theme::text_faint(),
+                format!(
+                    "Faint — placeholders, axis ticks, disabled ({:.0}%)",
+                    r.text_faint * 100.
+                ),
+            ));
         let surfaces = row()
             .items_start()
-            .child(swatch("Background", "theme::background", theme::background()))
+            .child(swatch(
+                "Background",
+                "theme::background",
+                theme::background(),
+            ))
             .child(swatch("Raised", "fill_raised", theme::fill_raised()))
             .child(swatch("Hover", "fill_hover", theme::fill_hover()))
             .child(swatch("Selected", "fill_selected", theme::fill_selected()))
             .child(swatch("Dialog", "theme::dialog", theme::dialog()));
         let borders = row().gap(px(16.)).children(
-            [("Subtle", "rules between rows", theme::border_subtle()), ("Default", "cards and controls", theme::border()), ("Strong", "inputs", theme::border_strong())]
-                .map(|(name, note, c)| {
-                    div()
-                        .w(px(180.))
-                        .h(px(56.))
-                        .p(px(10.))
-                        .rounded(px(ui::RADIUS_LG))
-                        .border_1()
-                        .border_color(c)
-                        .flex()
-                        .flex_col()
-                        .justify_between()
-                        .child(ui::text(Type::Label, theme::text(), name))
-                        .child(ui::text(Type::Caption, theme::text_faint(), note))
-                }),
+            [
+                ("Subtle", "rules between rows", theme::border_subtle()),
+                ("Default", "cards and controls", theme::border()),
+                ("Strong", "inputs", theme::border_strong()),
+            ]
+            .map(|(name, note, c)| {
+                div()
+                    .w(px(180.))
+                    .h(px(56.))
+                    .p(px(10.))
+                    .rounded(px(ui::RADIUS_LG))
+                    .border_1()
+                    .border_color(c)
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .child(ui::text(Type::Label, theme::text(), name))
+                    .child(ui::text(Type::Caption, theme::text_faint(), note))
+            }),
         );
-        let tones = row().items_start().children(Tone::ALL.map(|t| swatch(t.name(), "ui::Tone", t.color())));
+        let tones = row()
+            .items_start()
+            .children(Tone::ALL.map(|t| swatch(t.name(), "ui::Tone", t.color())));
         let category = row().gap(px(6.)).children(theme::CATEGORY.map(|c| {
-            div().size(px(28.)).rounded(px(ui::RADIUS_SM)).bg(gpui::rgb(c))
+            div()
+                .size(px(28.))
+                .rounded(px(ui::RADIUS_SM))
+                .bg(gpui::rgb(c))
         }));
         let color = div()
             .flex()
@@ -248,7 +335,10 @@ impl Render for GalleryView {
             .child(specimen("Surfaces", surfaces))
             .child(specimen("Borders", borders))
             .child(specimen("Status", tones))
-            .child(specimen("Categories — chart series, project logos", category));
+            .child(specimen(
+                "Categories — chart series, project logos",
+                category,
+            ));
 
         // ---- type ------------------------------------------------------------------
         let mut type_rows = div().flex().flex_col();
@@ -280,43 +370,103 @@ impl Render for GalleryView {
                             .flex()
                             .flex_col()
                             .child(ui::text(Type::Label, theme::text(), t.name()))
-                            .child(ui::text(Type::Caption, theme::text_faint(), format!("{size:.0}/{line:.0} · {w}"))),
+                            .child(ui::text(
+                                Type::Caption,
+                                theme::text_faint(),
+                                format!("{size:.0}/{line:.0} · {w}"),
+                            )),
                     )
-                    .child(div().flex_1().min_w_0().truncate().ty(t).text_color(theme::text()).child(sample)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .ty(t)
+                            .text_color(theme::text())
+                            .child(sample),
+                    ),
             );
         }
 
         // ---- space & shape -----------------------------------------------------------
-        let spacing = row().items_end().gap(px(14.)).children([2., 4., 8., 12., 16., 24., 32.].map(|s| {
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(6.))
-                .child(div().size(px(s)).bg(theme::accent().opacity(0.7)).rounded(px(1.)))
-                .child(ui::text(Type::Caption, theme::text_faint(), format!("{s:.0}")))
-        }));
-        let radii = row().gap(px(14.)).children(
-            [(ui::RADIUS_SM, "4 · chips, badges"), (ui::RADIUS, "8 · controls"), (ui::RADIUS_LG, "12 · cards, menus"), (ui::RADIUS_XL, "16 · window cards")]
-                .map(|(r, note)| {
+        let spacing =
+            row()
+                .items_end()
+                .gap(px(14.))
+                .children([2., 4., 8., 12., 16., 24., 32.].map(|s| {
                     div()
                         .flex()
                         .flex_col()
+                        .items_center()
                         .gap(px(6.))
-                        .child(div().w(px(110.)).h(px(64.)).rounded(px(r)).border_1().border_color(theme::border_strong()).bg(theme::fill_raised()))
-                        .child(ui::text(Type::Caption, theme::text_faint(), note))
-                }),
+                        .child(
+                            div()
+                                .size(px(s))
+                                .bg(theme::accent().opacity(0.7))
+                                .rounded(px(1.)),
+                        )
+                        .child(ui::text(
+                            Type::Caption,
+                            theme::text_faint(),
+                            format!("{s:.0}"),
+                        ))
+                }));
+        let radii = row().gap(px(14.)).children(
+            [
+                (ui::RADIUS_SM, "4 · chips, badges"),
+                (ui::RADIUS, "8 · controls"),
+                (ui::RADIUS_LG, "12 · cards, menus"),
+                (ui::RADIUS_XL, "16 · window cards"),
+            ]
+            .map(|(r, note)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .w(px(110.))
+                            .h(px(64.))
+                            .rounded(px(r))
+                            .border_1()
+                            .border_color(theme::border_strong())
+                            .bg(theme::fill_raised()),
+                    )
+                    .child(ui::text(Type::Caption, theme::text_faint(), note))
+            }),
         );
         let heights = row().items_end().gap(px(14.)).children(
-            [(20., "Badge, kbd"), (ui::ICON_BUTTON, "Icon button"), (ui::CONTROL_H, "Chip, segmented"), (ui::BUTTON_H, "Button"), (ui::MENU_ROW_H, "Menu row"), (ui::INPUT_H, "Input")]
-                .map(|(h, note)| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .child(div().w(px(84.)).h(px(h)).rounded(px(ui::RADIUS)).border_1().border_color(theme::border()).flex().items_center().justify_center().child(ui::text(Type::Caption, theme::text_subtle(), format!("{h:.0}"))))
-                        .child(ui::text(Type::Caption, theme::text_faint(), note))
-                }),
+            [
+                (20., "Badge, kbd"),
+                (ui::ICON_BUTTON, "Icon button"),
+                (ui::CONTROL_H, "Chip, segmented"),
+                (ui::BUTTON_H, "Button"),
+                (ui::MENU_ROW_H, "Menu row"),
+                (ui::INPUT_H, "Input"),
+            ]
+            .map(|(h, note)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .w(px(84.))
+                            .h(px(h))
+                            .rounded(px(ui::RADIUS))
+                            .border_1()
+                            .border_color(theme::border())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(ui::text(
+                                Type::Caption,
+                                theme::text_subtle(),
+                                format!("{h:.0}"),
+                            )),
+                    )
+                    .child(ui::text(Type::Caption, theme::text_faint(), note))
+            }),
         );
 
         // ---- controls ----------------------------------------------------------------------
@@ -325,52 +475,99 @@ impl Render for GalleryView {
             .child(ui::button("ds-b2", "Outline", ButtonKind::Outline, true))
             .child(ui::button("ds-b3", "Ghost", ButtonKind::Ghost, true))
             .child(ui::button("ds-b4", "Danger", ButtonKind::Danger, true))
-            .child(ui::button_with("ds-b5", Some("add01"), "With icon", ButtonKind::Outline, true))
+            .child(ui::button_with(
+                "ds-b5",
+                Some("add01"),
+                "With icon",
+                ButtonKind::Outline,
+                true,
+            ))
             .child(ui::button("ds-b6", "Disabled", ButtonKind::Primary, false));
-        let icon_buttons = row()
-            .gap(px(4.))
-            .children(["add01", "refresh01", "settings01", "search01", "more-horizontal"].into_iter().enumerate().map(|(i, name)| {
+        let icon_buttons = row().gap(px(4.)).children(
+            [
+                "add01",
+                "refresh01",
+                "settings01",
+                "search01",
+                "more-horizontal",
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
                 ui::icon_button(("ds-ib", i), name, 14.).tooltip(ui::tip("Icon button"))
-            }));
+            }),
+        );
         let mut seg = ui::segmented();
         for (i, label) in ["7 days", "30 days", "90 days"].into_iter().enumerate() {
-            seg = seg.child(ui::segment(("ds-seg", i), None, label, self.segment == i).on_click(cx.listener(move |this, _, _, cx| {
-                this.segment = i;
-                cx.notify();
-            })));
+            seg = seg.child(
+                ui::segment(("ds-seg", i), None, label, self.segment == i).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.segment = i;
+                        cx.notify();
+                    },
+                )),
+            );
         }
-        let toggle = ui::toggle_group("ds-toggle", &[(0usize, "Cost"), (1, "Tokens")], self.toggle, |seg, v| {
-            seg.on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle = v;
-                cx.notify();
-            }))
-        });
-        let chips = row().gap(px(6.)).children(["Claude Code", "Droid", "This week", "Failed"].into_iter().enumerate().map(|(i, label)| {
-            ui::chip(("ds-chip", i), label, self.chips[i]).on_click(cx.listener(move |this, _, _, cx| {
-                this.chips[i] = !this.chips[i];
-                cx.notify();
-            }))
-        }));
-        let switches = row().gap(px(20.)).children(["Glass", "Read aloud"].into_iter().enumerate().map(|(i, label)| {
-            div()
-                .id(("ds-switch", i))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .cursor_pointer()
-                .child(ui::switch(self.switches[i]))
-                .child(ui::text(Type::Body, theme::text_muted(), label))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.switches[i] = !this.switches[i];
+        let toggle = ui::toggle_group(
+            "ds-toggle",
+            &[(0usize, "Cost"), (1, "Tokens")],
+            self.toggle,
+            |seg, v| {
+                seg.on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle = v;
                     cx.notify();
                 }))
-        }));
+            },
+        );
+        let chips = row().gap(px(6.)).children(
+            ["Claude Code", "Droid", "This week", "Failed"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    ui::chip(("ds-chip", i), label, self.chips[i]).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.chips[i] = !this.chips[i];
+                            cx.notify();
+                        },
+                    ))
+                }),
+        );
+        let switches =
+            row()
+                .gap(px(20.))
+                .children(
+                    ["Glass", "Read aloud"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, label)| {
+                            div()
+                                .id(("ds-switch", i))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .cursor_pointer()
+                                .child(ui::switch(self.switches[i]))
+                                .child(ui::text(Type::Body, theme::text_muted(), label))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.switches[i] = !this.switches[i];
+                                    cx.notify();
+                                }))
+                        }),
+                );
         let badges = row()
             .gap(px(6.))
             .children(Tone::ALL.map(|t| ui::badge(t.name(), t)))
             .child(ui::tag("DNS", gpui::rgb(theme::CATEGORY[3])))
             .child(div().w(px(12.)))
-            .children([("Running", Tone::Info), ("Passed", Tone::Success), ("Flaky", Tone::Warning), ("Failed", Tone::Danger)].map(|(l, t)| ui::status_dot(l, t)));
+            .children(
+                [
+                    ("Running", Tone::Info),
+                    ("Passed", Tone::Success),
+                    ("Flaky", Tone::Warning),
+                    ("Failed", Tone::Danger),
+                ]
+                .map(|(l, t)| ui::status_dot(l, t)),
+            );
         let keys = row()
             .gap(px(16.))
             .child(ui::shortcut(&["Ctrl", "K"]))
@@ -379,7 +576,11 @@ impl Render for GalleryView {
         let input = ui::field()
             .w(px(280.))
             .child(ui::icon("search01", 14.).text_color(theme::text_faint()))
-            .child(div().text_color(theme::text_faint()).child("Search conversations…"));
+            .child(
+                div()
+                    .text_color(theme::text_faint())
+                    .child("Search conversations…"),
+            );
 
         // ---- menus ----------------------------------------------------------------------------
         let modes = [
@@ -392,14 +593,11 @@ impl Render for GalleryView {
         for (i, (name, desc)) in modes.into_iter().enumerate() {
             mode_menu = mode_menu.child(
                 ui::choice_row(("ds-radio", i), self.radio == i)
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(name)
-                            .child(ui::text(Type::Caption, theme::text_subtle(), desc)),
-                    )
+                    .child(div().flex_1().flex().flex_col().child(name).child(ui::text(
+                        Type::Caption,
+                        theme::text_subtle(),
+                        desc,
+                    )))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.radio = i;
                         cx.notify();
@@ -411,15 +609,26 @@ impl Render for GalleryView {
             .child(ui::submenu_row("ds-sub2", "Reasoning", "High", false))
             .child(ui::switch_row("ds-fast", "Fast mode", true))
             .child(ui::menu_divider())
-            .child(ui::menu_item("ds-reset", "undo", "Reset to default", false, true));
-        let menus = row().items_start().gap(px(24.)).child(model_menu).child(mode_menu);
+            .child(ui::menu_item(
+                "ds-reset",
+                "undo",
+                "Reset to default",
+                false,
+                true,
+            ));
+        let menus = row()
+            .items_start()
+            .gap(px(24.))
+            .child(model_menu)
+            .child(mode_menu);
 
         // ---- data -------------------------------------------------------------------------------
         let spark = |seed: f64| -> Vec<f64> {
             (0..14)
                 .map(|i| {
                     let x = i as f64;
-                    ((x * (0.35 + seed * 0.18) + seed).sin() + 1.2) * (1. + x * seed / 25.) + (x * 1.7 + seed * 3.).cos() * 0.35
+                    ((x * (0.35 + seed * 0.18) + seed).sin() + 1.2) * (1. + x * seed / 25.)
+                        + (x * 1.7 + seed * 3.).cos() * 0.35
                 })
                 .collect()
         };
@@ -433,7 +642,9 @@ impl Render for GalleryView {
                 .gap(px(8.))
                 .px(px(16.))
                 .py(px(14.))
-                .when(!last, |d| d.border_r_1().border_color(theme::border_subtle()))
+                .when(!last, |d| {
+                    d.border_r_1().border_color(theme::border_subtle())
+                })
                 .child(ui::stat(label, value.to_string(), sub.to_string()))
                 .child(ui::sparkline(spark(seed), theme::accent(), 56., 24.))
         };
@@ -443,19 +654,59 @@ impl Render for GalleryView {
             .border_t_1()
             .border_b_1()
             .border_color(theme::border_subtle())
-            .child(stat_cell("Processed tokens", "3.1B", "148M/active day", 0.2, false))
-            .child(stat_cell("Cached input", "2.91B", "94.7% of input", 1.4, false))
-            .child(stat_cell("Output", "25.7M", "227 sessions · 21 days", 2.6, false))
-            .child(stat_cell("Cache savings", "$11,893", "6.0× the raw cost", 3.3, true));
+            .child(stat_cell(
+                "Processed tokens",
+                "3.1B",
+                "148M/active day",
+                0.2,
+                false,
+            ))
+            .child(stat_cell(
+                "Cached input",
+                "2.91B",
+                "94.7% of input",
+                1.4,
+                false,
+            ))
+            .child(stat_cell(
+                "Output",
+                "25.7M",
+                "227 sessions · 21 days",
+                2.6,
+                false,
+            ))
+            .child(stat_cell(
+                "Cache savings",
+                "$11,893",
+                "6.0× the raw cost",
+                3.3,
+                true,
+            ));
         let limits = div()
             .w(px(340.))
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(ui::limit_line("5-hour limit", 12., Some("resets in 2h 25m".into())))
-            .child(ui::limit_line("Core · Week", 61., Some("resets Oct 31".into())))
-            .child(ui::limit_line("Core · Month", 78., Some("resets Nov 8".into())))
-            .child(ui::limit_line("Standard · Month", 100., Some("resets Nov 1".into())));
+            .child(ui::limit_line(
+                "5-hour limit",
+                12.,
+                Some("resets in 2h 25m".into()),
+            ))
+            .child(ui::limit_line(
+                "Core · Week",
+                61.,
+                Some("resets Oct 31".into()),
+            ))
+            .child(ui::limit_line(
+                "Core · Month",
+                78.,
+                Some("resets Nov 8".into()),
+            ))
+            .child(ui::limit_line(
+                "Standard · Month",
+                100.,
+                Some("resets Nov 1".into()),
+            ));
         let kvs = div()
             .w(px(340.))
             .flex()

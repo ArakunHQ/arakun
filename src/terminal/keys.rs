@@ -88,9 +88,10 @@ pub fn to_esc_str(ks: &Keystroke, mode: TermMode) -> Option<Cow<'static, str>> {
 
     // Caret notation. Ctrl+Shift+letter sends the same control code (xterm does too).
     if matches!(mods, Mods::Ctrl | Mods::CtrlShift)
-        && let Some(code) = control_code(key) {
-            return Some(Cow::Owned((code as char).to_string()));
-        }
+        && let Some(code) = control_code(key)
+    {
+        return Some(Cow::Owned((code as char).to_string()));
+    }
 
     if mods != Mods::None {
         let code = modifier_code(ks);
@@ -128,9 +129,10 @@ pub fn to_esc_str(ks: &Keystroke, mode: TermMode) -> Option<Cow<'static, str>> {
     // non-ASCII layouts still work.
     if ks.modifiers.alt && !ks.modifiers.platform {
         if ks.modifiers.control
-            && let Some(code) = control_code(key) {
-                return Some(Cow::Owned(format!("\x1b{}", code as char)));
-            }
+            && let Some(code) = control_code(key)
+        {
+            return Some(Cow::Owned(format!("\x1b{}", code as char)));
+        }
         let text = ks
             .key_char
             .as_deref()
@@ -196,8 +198,14 @@ mod tests {
     fn cursor_keys() {
         assert_eq!(esc("up", TermMode::NONE).as_deref(), Some("\x1b[A"));
         assert_eq!(esc("up", TermMode::APP_CURSOR).as_deref(), Some("\x1bOA"));
-        assert_eq!(esc("ctrl-left", TermMode::NONE).as_deref(), Some("\x1b[1;5D"));
-        assert_eq!(esc("shift-home", TermMode::NONE).as_deref(), Some("\x1b[1;2H"));
+        assert_eq!(
+            esc("ctrl-left", TermMode::NONE).as_deref(),
+            Some("\x1b[1;5D")
+        );
+        assert_eq!(
+            esc("shift-home", TermMode::NONE).as_deref(),
+            Some("\x1b[1;2H")
+        );
     }
 
     #[test]

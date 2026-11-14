@@ -71,9 +71,18 @@ impl Shell {
             Close,
         }
         let prompt_key = match &self.completion {
-            Some(c) if c.prompts && k.modifiers.alt && !k.modifiers.control => match k.key.as_str() {
-                "p" => c.items.get(c.selected).and_then(|i| i.prompt).map(|i| (i, true)),
-                "d" => c.items.get(c.selected).and_then(|i| i.prompt).map(|i| (i, false)),
+            Some(c) if c.prompts && k.modifiers.alt && !k.modifiers.control => match k.key.as_str()
+            {
+                "p" => c
+                    .items
+                    .get(c.selected)
+                    .and_then(|i| i.prompt)
+                    .map(|i| (i, true)),
+                "d" => c
+                    .items
+                    .get(c.selected)
+                    .and_then(|i| i.prompt)
+                    .map(|i| (i, false)),
                 _ => None,
             },
             _ => None,
@@ -112,7 +121,10 @@ impl Shell {
             match action {
                 CompKey::Up => {
                     if let Some(c) = &mut self.completion {
-                        c.selected = c.selected.checked_sub(1).unwrap_or(c.items.len().saturating_sub(1));
+                        c.selected = c
+                            .selected
+                            .checked_sub(1)
+                            .unwrap_or(c.items.len().saturating_sub(1));
                     }
                 }
                 CompKey::Down => {
@@ -280,7 +292,10 @@ impl Shell {
     /// Blinks the caret while the composer has focus in the active window.
     pub(super) fn sync_blink(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.hold_caret();
-        if self.caret_blinking || !self.composer_focus.is_focused(window) || !window.is_window_active() {
+        if self.caret_blinking
+            || !self.composer_focus.is_focused(window)
+            || !window.is_window_active()
+        {
             return;
         }
         self.caret_blinking = true;
@@ -326,9 +341,15 @@ impl Shell {
     /// last line (Down).
     fn recall(&mut self, up: bool) -> bool {
         let draft = &self.env().draft;
-        let showing = self.history_at.filter(|&i| self.prompt_history.get(i) == Some(&**draft));
+        let showing = self
+            .history_at
+            .filter(|&i| self.prompt_history.get(i) == Some(&**draft));
         let (before, after) = draft.split_at(draft.head());
-        let edge = if up { !before.contains('\n') } else { !after.contains('\n') };
+        let edge = if up {
+            !before.contains('\n')
+        } else {
+            !after.contains('\n')
+        };
         let next = match showing {
             None if up && draft.is_empty() => match self.prompt_history.older(None) {
                 Some(i) => Some(i),
@@ -339,7 +360,10 @@ impl Shell {
             _ => return false,
         };
         self.history_at = next;
-        let text = next.and_then(|i| self.prompt_history.get(i)).unwrap_or("").to_string();
+        let text = next
+            .and_then(|i| self.prompt_history.get(i))
+            .unwrap_or("")
+            .to_string();
         self.env_mut().draft.set(text);
         true
     }
@@ -349,18 +373,27 @@ impl Shell {
     fn composer_vertical(&mut self, up: bool, extend: bool) {
         let layout = self.composer_layout.borrow().clone();
         let head = self.env().draft.head();
-        let target = match layout.as_ref().and_then(|l| Some((l, l.position_for_index(head)?))) {
+        let target = match layout
+            .as_ref()
+            .and_then(|l| Some((l, l.position_for_index(head)?)))
+        {
             Some((layout, at)) => {
                 let x = *self.composer_goal_x.get_or_insert(at.x);
                 let line = layout.line_height();
-                let y = if up { at.y - line / 2. } else { at.y + line * 1.5 };
+                let y = if up {
+                    at.y - line / 2.
+                } else {
+                    at.y + line * 1.5
+                };
                 let bounds = layout.bounds();
                 if y < bounds.top() {
                     0
                 } else if y > bounds.bottom() {
                     usize::MAX
                 } else {
-                    layout.index_for_position(point(x, y)).unwrap_or_else(|ix| ix)
+                    layout
+                        .index_for_position(point(x, y))
+                        .unwrap_or_else(|ix| ix)
                 }
             }
             None if up => 0,
@@ -377,7 +410,13 @@ impl Shell {
 
     /// A click in the composer's text: places the caret (Shift extends the
     /// selection), a double click takes the word, a triple click the line.
-    fn composer_click(&mut self, position: gpui::Point<Pixels>, clicks: usize, shift: bool, cx: &mut Context<Self>) {
+    fn composer_click(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        clicks: usize,
+        shift: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.composer_goal_x = None;
         let Some(ix) = self.composer_index_at(position) else {
             return;
@@ -413,7 +452,10 @@ impl Shell {
     fn composer_to_primary(&self, cx: &mut Context<Self>) {
         let draft = &self.env().draft;
         if draft.has_selection() {
-            crate::platform::write_primary(cx, ClipboardItem::new_string(draft.selected_text().to_string()));
+            crate::platform::write_primary(
+                cx,
+                ClipboardItem::new_string(draft.selected_text().to_string()),
+            );
         }
     }
 
@@ -471,7 +513,12 @@ impl Shell {
                 .take(COMPLETION_ROWS)
                 .map(|i| {
                     let p = &self.saved_prompts[i];
-                    let first = p.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+                    let first = p
+                        .text
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim();
                     CompletionItem {
                         label: format!("{}!{}", if p.pinned { "★ " } else { "" }, p.name).into(),
                         detail: Some(first.to_string().into()),
@@ -482,13 +529,29 @@ impl Shell {
                 .collect();
             if items.is_empty() {
                 items.push(CompletionItem {
-                    label: if self.saved_prompts.is_empty() { "No saved prompts yet" } else { "No prompt matches" }.into(),
-                    detail: Some(crate::platform::shortcut_label("Write a prompt, then Ctrl+S saves it for !").into()),
+                    label: if self.saved_prompts.is_empty() {
+                        "No saved prompts yet"
+                    } else {
+                        "No prompt matches"
+                    }
+                    .into(),
+                    detail: Some(
+                        crate::platform::shortcut_label(
+                            "Write a prompt, then Ctrl+S saves it for !",
+                        )
+                        .into(),
+                    ),
                     insert: draft.to_string(),
                     prompt: None,
                 });
             }
-            return Some(Completion { token_start: 0, token_end: draft.len(), items, selected: 0, prompts: true });
+            return Some(Completion {
+                token_start: 0,
+                token_end: draft.len(),
+                items,
+                selected: 0,
+                prompts: true,
+            });
         }
         let (token_start, token) = draft.token()?;
         if token.is_empty() {
@@ -522,7 +585,13 @@ impl Shell {
                     prompt: None,
                 })
                 .collect();
-            return (!items.is_empty()).then_some(Completion { token_start, token_end, items, selected: 0, prompts: false });
+            return (!items.is_empty()).then_some(Completion {
+                token_start,
+                token_end,
+                items,
+                selected: 0,
+                prompts: false,
+            });
         }
         // `@path` in any token: the environment's files.
         if let Some(prefix) = token.strip_prefix('@') {
@@ -556,7 +625,13 @@ impl Shell {
                     prompt: None,
                 })
                 .collect();
-            return (!items.is_empty()).then_some(Completion { token_start, token_end, items, selected: 0, prompts: false });
+            return (!items.is_empty()).then_some(Completion {
+                token_start,
+                token_end,
+                items,
+                selected: 0,
+                prompts: false,
+            });
         }
         None
     }
@@ -576,7 +651,11 @@ impl Shell {
         let draft = &mut self.env_mut().draft;
         // Completing in the middle of the text, before a space: no second space.
         let spaced = draft[comp.token_end.min(draft.len())..].starts_with(char::is_whitespace);
-        let insert = if spaced { item.insert.trim_end_matches(' ') } else { item.insert.as_str() };
+        let insert = if spaced {
+            item.insert.trim_end_matches(' ')
+        } else {
+            item.insert.as_str()
+        };
         draft.replace(comp.token_start..comp.token_end, insert);
         self.composer_changed(cx);
         cx.notify();
@@ -589,15 +668,19 @@ impl Shell {
         self.completion = None;
         let env_path = self.env().path.clone();
         let picker = cx.new(|cx| AttachPicker::new(env_path.clone(), window, cx));
-        let sub = cx.subscribe_in(&picker, window, move |this, _, ev: &AttachEvent, window, cx| {
-            if let AttachEvent::Attach(paths) = ev
-                && this.env().path == env_path
-            {
-                this.push_mentions(paths);
-                this.composer_changed(cx);
-            }
-            this.close_modal(window, cx);
-        });
+        let sub = cx.subscribe_in(
+            &picker,
+            window,
+            move |this, _, ev: &AttachEvent, window, cx| {
+                if let AttachEvent::Attach(paths) = ev
+                    && this.env().path == env_path
+                {
+                    this.push_mentions(paths);
+                    this.composer_changed(cx);
+                }
+                this.close_modal(window, cx);
+            },
+        );
         self.modal = Some((Modal::Attach(picker), sub));
         cx.notify();
     }
@@ -606,7 +689,10 @@ impl Shell {
     fn save_draft_as_prompt(&mut self, cx: &mut Context<Self>) {
         let text = self.env().draft.trim().to_string();
         if text.is_empty() || text.starts_with('!') {
-            self.composer_flash = Some(crate::platform::shortcut_label("Write a prompt first; Ctrl+S saves it for !").into());
+            self.composer_flash = Some(
+                crate::platform::shortcut_label("Write a prompt first; Ctrl+S saves it for !")
+                    .into(),
+            );
         } else if let Some(p) = self.saved_prompts.iter().find(|p| p.text == text) {
             self.composer_flash = Some(format!("Already saved as !{}", p.name).into());
         } else {
@@ -632,14 +718,23 @@ impl Shell {
         let notes = self.notes.get(&env_path).cloned().unwrap_or_default();
         let contexts = self.attached.remove(&env_path).unwrap_or_default();
         let images = std::mem::take(&mut self.env_mut().draft_images);
-        if text.is_empty() && pastes.is_empty() && notes.is_empty() && contexts.is_empty() && images.is_empty() {
+        if text.is_empty()
+            && pastes.is_empty()
+            && notes.is_empty()
+            && contexts.is_empty()
+            && images.is_empty()
+        {
             return;
         }
         if !images.is_empty() {
             // Mentioned like any file: the agent gets the pictures and their paths.
             let mentions: Vec<String> = images
                 .iter()
-                .map(|p| crate::agent::attach::mention(&p.strip_prefix(&env_path).unwrap_or(p).to_string_lossy()))
+                .map(|p| {
+                    crate::agent::attach::mention(
+                        &p.strip_prefix(&env_path).unwrap_or(p).to_string_lossy(),
+                    )
+                })
                 .collect();
             if !text.is_empty() {
                 text.push_str("\n\n");
@@ -677,7 +772,8 @@ impl Shell {
         self.history_at = None;
         if self.prompt_history.push(&typed) {
             let bytes = self.prompt_history.bytes();
-            cx.background_spawn(async move { crate::history::write(&bytes) }).detach();
+            cx.background_spawn(async move { crate::history::write(&bytes) })
+                .detach();
         }
         self.send_prompt(text, window, cx);
     }
@@ -686,9 +782,17 @@ impl Shell {
     /// while the other pane (a page, a file) has the focus.
     pub(super) fn composer_tab(&self) -> usize {
         let env = self.env();
-        let session = |i: usize| matches!(env.tabs.get(i).map(|t| &t.kind), Some(TabKind::Session { .. }));
+        let session = |i: usize| {
+            matches!(
+                env.tabs.get(i).map(|t| &t.kind),
+                Some(TabKind::Session { .. })
+            )
+        };
         let active = env.active_tab;
-        let fresh = matches!(env.tabs.get(active).map(|t| &t.kind), Some(TabKind::NewSession));
+        let fresh = matches!(
+            env.tabs.get(active).map(|t| &t.kind),
+            Some(TabKind::NewSession)
+        );
         match env.split_other() {
             Some(other) if !session(active) && !fresh && session(other) => other,
             _ => active,
@@ -698,10 +802,13 @@ impl Shell {
     /// The chat the composer writes to; its raccoon sits on the composer.
     fn composer_chat(&self) -> Option<Entity<crate::agent::ThreadView>> {
         let env = self.env();
-        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind) else {
+        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind)
+        else {
             return None;
         };
-        env.session_index(id).and_then(|i| env.sessions[i].live.as_ref()).map(|l| l.view.clone())
+        env.session_index(id)
+            .and_then(|i| env.sessions[i].live.as_ref())
+            .map(|l| l.view.clone())
     }
 
     pub(super) fn composer_mascot(&self, cx: &App) -> Option<Entity<crate::mascot::Mascot>> {
@@ -715,7 +822,11 @@ impl Shell {
             return;
         };
         let env = self.env();
-        let dir = if env.terminals.iter().any(|t| t.view.focus_handle(cx).contains_focused(window, cx)) {
+        let dir = if env
+            .terminals
+            .iter()
+            .any(|t| t.view.focus_handle(cx).contains_focused(window, cx))
+        {
             [0., 1.]
         } else if chat.read(cx).focus_handle(cx).contains_focused(window, cx) {
             [0., -1.]
@@ -773,12 +884,17 @@ impl Shell {
             Some(TabKind::Session { agent, .. }) => *agent,
             _ => env.agent,
         };
-        let thread = session_id
-            .as_ref()
-            .and_then(|id| env.sessions[env.session_index(id)?].live.as_ref().map(|l| l.thread.clone()));
+        let thread = session_id.as_ref().and_then(|id| {
+            env.sessions[env.session_index(id)?]
+                .live
+                .as_ref()
+                .map(|l| l.thread.clone())
+        });
         let in_session = session_id.is_some();
         // A session another process runs can't be handed over from here.
-        let can_switch = !session_id.as_ref().is_some_and(|id| crate::headless::shown(id));
+        let can_switch = !session_id
+            .as_ref()
+            .is_some_and(|id| crate::headless::shown(id));
         let busy = thread.as_ref().is_some_and(|t| t.read(cx).is_busy());
         use crate::agent::Setting;
         let model_label = self.setting_value_label(Setting::Model, cx);
@@ -798,7 +914,11 @@ impl Shell {
         let pastes: Vec<(usize, usize)> = self
             .pastes
             .get(&env.path)
-            .map(|v| v.iter().map(|p| (p.lines().count(), p.chars().count())).collect())
+            .map(|v| {
+                v.iter()
+                    .map(|p| (p.lines().count(), p.chars().count()))
+                    .collect()
+            })
             .unwrap_or_default();
         let paste_row: Option<AnyElement> = (!pastes.is_empty()).then(|| {
             div()
@@ -823,11 +943,10 @@ impl Shell {
                         .text_size(px(ui::TEXT_SM))
                         .child(icon("file01", 12.).text_color(theme::text_subtle()))
                         .child(div().text_color(theme::text_muted()).child("Pasted text"))
-                        .child(
-                            div()
-                                .text_color(theme::text_subtle())
-                                .child(format!("{lines} lines · {:.1}k chars", chars as f32 / 1000.)),
-                        )
+                        .child(div().text_color(theme::text_subtle()).child(format!(
+                            "{lines} lines · {:.1}k chars",
+                            chars as f32 / 1000.
+                        )))
                         .child(
                             div()
                                 .id(("paste-remove", i))
@@ -941,8 +1060,11 @@ impl Shell {
         if draft.is_empty() {
             self.composer_layout.borrow_mut().take();
         }
-        let (layout_cell, reveal, scroll) =
-            (self.composer_layout.clone(), self.composer_reveal.clone(), self.composer_scroll.clone());
+        let (layout_cell, reveal, scroll) = (
+            self.composer_layout.clone(),
+            self.composer_reveal.clone(),
+            self.composer_scroll.clone(),
+        );
         let text: AnyElement = if draft.is_empty() {
             div()
                 .relative()
@@ -968,13 +1090,26 @@ impl Shell {
                 Some(marked) => Some((
                     marked,
                     HighlightStyle {
-                        underline: Some(UnderlineStyle { thickness: px(1.), color: Some(theme::content()), wavy: false }),
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.),
+                            color: Some(theme::content()),
+                            wavy: false,
+                        }),
                         ..Default::default()
                     },
                 )),
                 None => (!sel.is_empty()).then(|| {
                     let alpha = if focused { 0.35 } else { 0.18 };
-                    (sel.clone(), HighlightStyle { background_color: Some(gpui::Hsla { a: alpha, ..theme::text_selection() }), ..Default::default() })
+                    (
+                        sel.clone(),
+                        HighlightStyle {
+                            background_color: Some(gpui::Hsla {
+                                a: alpha,
+                                ..theme::text_selection()
+                            }),
+                            ..Default::default()
+                        },
+                    )
                 }),
             };
             let styled = StyledText::new(draft.to_string()).with_highlights(highlight);
@@ -988,19 +1123,25 @@ impl Shell {
             .track_focus(&self.composer_focus)
             .on_key_down(cx.listener(Self::composer_key))
             .drag_over::<drag::DraggedSession>(|s, _, _, _| {
-                s.border_color(theme::accent()).bg(theme::accent().opacity(0.06))
+                s.border_color(theme::accent())
+                    .bg(theme::accent().opacity(0.06))
             })
             .on_drop(cx.listener(|this, d: &drag::DraggedSession, window, cx| {
                 this.drop_session_on_composer(d, window, cx)
             }))
             // Files dropped from a file manager: images as pictures, the rest as mentions.
-            .drag_over::<gpui::ExternalPaths>(|s, _, _, _| s.border_color(theme::accent()).bg(theme::accent().opacity(0.06)))
-            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
-                this.push_mentions(paths.paths());
-                window.focus(&this.composer_focus, cx);
-                this.composer_changed(cx);
-                cx.notify();
-            }))
+            .drag_over::<gpui::ExternalPaths>(|s, _, _, _| {
+                s.border_color(theme::accent())
+                    .bg(theme::accent().opacity(0.06))
+            })
+            .on_drop(
+                cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                    this.push_mentions(paths.paths());
+                    window.focus(&this.composer_focus, cx);
+                    this.composer_changed(cx);
+                    cx.notify();
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -1028,14 +1169,17 @@ impl Shell {
                 theme::mix(0.10)
             })
             .bg(theme::fill_raised())
-
             .when_some(comp_popup, |d, p| d.child(p))
             .when_some(image_row, |d, p| d.child(p))
             .when_some(paste_row, |d, p| d.child(p))
             .when_some(note_row, |d, p| d.child(p))
             .when_some(context_row, |d, p| d.child(p))
             .when_some(self.agent_out_of_limits(agent, cx), |d, why| {
-                let other = if agent == Agent::Droid { Agent::Claude } else { Agent::Droid };
+                let other = if agent == Agent::Droid {
+                    Agent::Claude
+                } else {
+                    Agent::Droid
+                };
                 let other_ok = self.agent_out_of_limits(other, cx).is_none();
                 d.child(
                     div()
@@ -1054,13 +1198,20 @@ impl Shell {
                         .child(div().flex_1().min_w_0().child(why))
                         .when(!in_session && other_ok, |d| {
                             d.child(
-                                ui::button("composer-switch-agent", format!("Use {}", other.label()), ui::ButtonKind::Outline, true)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                ui::button(
+                                    "composer-switch-agent",
+                                    format!("Use {}", other.label()),
+                                    ui::ButtonKind::Outline,
+                                    true,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
                                         this.env_mut().agent = other;
                                         model::set_default_agent(other);
                                         this.save(cx);
                                         cx.notify();
-                                    })),
+                                    },
+                                )),
                             )
                         }),
                 )
@@ -1091,7 +1242,12 @@ impl Shell {
                         MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                             window.focus(&this.composer_focus, cx);
-                            this.composer_click(ev.position, ev.click_count, ev.modifiers.shift, cx);
+                            this.composer_click(
+                                ev.position,
+                                ev.click_count,
+                                ev.modifiers.shift,
+                                cx,
+                            );
                         }),
                     )
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
@@ -1099,8 +1255,14 @@ impl Shell {
                             this.composer_drag(ev.position, cx);
                         }
                     }))
-                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.composer_release(cx)))
-                    .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.composer_release(cx)))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.composer_release(cx)),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.composer_release(cx)),
+                    )
                     // The caret and input canvas cover the text only: sized to the
                     // scroll box itself, the bottom padding would count as overflow
                     // and the composer would scroll even when empty.
@@ -1128,13 +1290,19 @@ impl Shell {
                                     if show_caret {
                                         let top = at.y + (line - px(caret_height)) / 2.;
                                         window.paint_quad(fill(
-                                            Bounds::new(point(at.x, top), size(px(CARET_WIDTH), px(caret_height))),
+                                            Bounds::new(
+                                                point(at.x, top),
+                                                size(px(CARET_WIDTH), px(caret_height)),
+                                            ),
                                             theme::accent(),
                                         ));
                                     }
                                     if reveal.take() {
                                         let view = scroll.bounds();
-                                        let (top, bottom) = (view.top() + px(COMPOSER_PAD), view.bottom() - px(COMPOSER_PAD));
+                                        let (top, bottom) = (
+                                            view.top() + px(COMPOSER_PAD),
+                                            view.bottom() - px(COMPOSER_PAD),
+                                        );
                                         let mut offset = scroll.offset();
                                         let shift = if at.y < top {
                                             top - at.y
@@ -1144,7 +1312,8 @@ impl Shell {
                                             px(0.)
                                         };
                                         if shift != px(0.) {
-                                            offset.y = (offset.y + shift).clamp(-scroll.max_offset().y, px(0.));
+                                            offset.y = (offset.y + shift)
+                                                .clamp(-scroll.max_offset().y, px(0.));
                                             scroll.set_offset(offset);
                                             // A refresh asked for while drawing is dropped.
                                             window.on_next_frame(|window, _| window.refresh());
@@ -1189,9 +1358,9 @@ impl Shell {
                                 theme::content(),
                                 "composer-add",
                             ))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.attach_files(window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.attach_files(window, cx)),
+                            ),
                     )
                     // Narrow panes wrap the chips onto a second line rather than push the
                     // send button out of the composer.
@@ -1203,32 +1372,51 @@ impl Shell {
                             .flex_wrap()
                             .items_center()
                             .gap(px(4.))
-
                             .child(
-                                chip("composer-agent", Some(agent_icon(agent, 14.)), agent.label().into(), None, can_switch)
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .when(can_switch, |d| {
-                                        d.on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                                            this.open_composer_menu(MenuTarget::AgentMenu, ev.position(), cx)
-                                        }))
-                                    }),
+                                chip(
+                                    "composer-agent",
+                                    Some(agent_icon(agent, 14.)),
+                                    agent.label().into(),
+                                    None,
+                                    can_switch,
+                                )
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .when(can_switch, |d| {
+                                    d.on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                                        this.open_composer_menu(
+                                            MenuTarget::AgentMenu,
+                                            ev.position(),
+                                            cx,
+                                        )
+                                    }))
+                                }),
                             )
                             .when_some(model_label, |d, label| {
                                 d.child(
                                     chip(
                                         "composer-model",
                                         fast.then(|| {
-                                            icon("flash", 12.).text_color(theme::accent()).into_any_element()
+                                            icon("flash", 12.)
+                                                .text_color(theme::accent())
+                                                .into_any_element()
                                         }),
                                         label,
                                         effort_label,
                                         true,
                                     )
                                     .tooltip(ui::tip("Model and reasoning"))
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                                        this.open_composer_menu(MenuTarget::ModelMenu, ev.position(), cx)
-                                    })),
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(cx.listener(
+                                        |this, ev: &gpui::ClickEvent, _, cx| {
+                                            this.open_composer_menu(
+                                                MenuTarget::ModelMenu,
+                                                ev.position(),
+                                                cx,
+                                            )
+                                        },
+                                    )),
                                 )
                             })
                             .when_some(permissions, |d, (label, risky)| {
@@ -1236,19 +1424,38 @@ impl Shell {
                                     chip(
                                         "composer-permissions",
                                         Some(
-                                            icon(if risky { "shield-alert" } else { "square-lock02" }, 12.)
-                                                .text_color(if risky { theme::warn().into() } else { theme::mix(0.5) })
-                                                .into_any_element(),
+                                            icon(
+                                                if risky {
+                                                    "shield-alert"
+                                                } else {
+                                                    "square-lock02"
+                                                },
+                                                12.,
+                                            )
+                                            .text_color(if risky {
+                                                theme::warn().into()
+                                            } else {
+                                                theme::mix(0.5)
+                                            })
+                                            .into_any_element(),
                                         ),
                                         label,
                                         None,
                                         true,
                                     )
                                     .tooltip(ui::tip("Permissions · Shift+Tab to switch"))
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                                        this.open_composer_menu(MenuTarget::PermissionMenu, ev.position(), cx)
-                                    })),
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(cx.listener(
+                                        |this, ev: &gpui::ClickEvent, _, cx| {
+                                            this.open_composer_menu(
+                                                MenuTarget::PermissionMenu,
+                                                ev.position(),
+                                                cx,
+                                            )
+                                        },
+                                    )),
                                 )
                             }),
                     )
@@ -1263,8 +1470,11 @@ impl Shell {
                         )
                     })
                     .child({
-                        let ready =
-                            !draft.trim().is_empty() || !pastes.is_empty() || has_notes || has_context || has_images;
+                        let ready = !draft.trim().is_empty()
+                            || !pastes.is_empty()
+                            || has_notes
+                            || has_context
+                            || has_images;
                         let stop = busy && !ready;
                         let lit = ready || stop;
                         div()
@@ -1281,8 +1491,15 @@ impl Shell {
                                     .hover(|s| s.bg(gpui::white().opacity(0.9)))
                             })
                             .child(
-                                icon(if stop { "square" } else { "arrow-up01" }, if stop { 11. } else { 14. })
-                                    .text_color(if lit { gpui::black() } else { theme::mix(0.5) }),
+                                icon(
+                                    if stop { "square" } else { "arrow-up01" },
+                                    if stop { 11. } else { 14. },
+                                )
+                                .text_color(if lit {
+                                    gpui::black()
+                                } else {
+                                    theme::mix(0.5)
+                                }),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if stop {
@@ -1306,7 +1523,10 @@ impl EntityInputHandler for Shell {
         _: &mut Context<Self>,
     ) -> Option<String> {
         let draft = &self.env().draft;
-        let (a, b) = (draft.utf16_to_byte(range_utf16.start), draft.utf16_to_byte(range_utf16.end));
+        let (a, b) = (
+            draft.utf16_to_byte(range_utf16.start),
+            draft.utf16_to_byte(range_utf16.end),
+        );
         let range = a.min(b)..a.max(b);
         actual_range.replace(draft.byte_to_utf16(range.start)..draft.byte_to_utf16(range.end));
         Some(draft[range].to_string())
@@ -1328,7 +1548,9 @@ impl EntityInputHandler for Shell {
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
         let draft = &self.env().draft;
-        draft.marked().map(|m| draft.byte_to_utf16(m.start)..draft.byte_to_utf16(m.end))
+        draft
+            .marked()
+            .map(|m| draft.byte_to_utf16(m.start)..draft.byte_to_utf16(m.end))
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -1367,8 +1589,10 @@ impl EntityInputHandler for Shell {
     ) {
         let draft = &mut self.env_mut().draft;
         let range = range_utf16.map(|r| draft.utf16_to_byte(r.start)..draft.utf16_to_byte(r.end));
-        let selected = new_selected_range_utf16
-            .map(|r| crate::draft::byte_of_utf16(new_text, r.start)..crate::draft::byte_of_utf16(new_text, r.end));
+        let selected = new_selected_range_utf16.map(|r| {
+            crate::draft::byte_of_utf16(new_text, r.start)
+                ..crate::draft::byte_of_utf16(new_text, r.end)
+        });
         draft.compose(range, new_text, selected);
         self.composer_changed(cx);
         cx.notify();
@@ -1384,10 +1608,15 @@ impl EntityInputHandler for Shell {
     ) -> Option<Bounds<Pixels>> {
         let layout = self.composer_layout.borrow().clone();
         let ix = self.env().draft.utf16_to_byte(range_utf16.start);
-        Some(match layout.as_ref().and_then(|l| Some((l.position_for_index(ix)?, l.line_height()))) {
-            Some((at, line)) => Bounds::new(at, size(px(CARET_WIDTH), line)),
-            None => element_bounds,
-        })
+        Some(
+            match layout
+                .as_ref()
+                .and_then(|l| Some((l.position_for_index(ix)?, l.line_height())))
+            {
+                Some((at, line)) => Bounds::new(at, size(px(CARET_WIDTH), line)),
+                None => element_bounds,
+            },
+        )
     }
 
     fn character_index_for_point(

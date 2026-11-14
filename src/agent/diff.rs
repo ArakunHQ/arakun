@@ -125,7 +125,11 @@ fn myers(a: &[&str], b: &[&str], max_d: usize) -> Option<Vec<LineKind>> {
         trace.push(v[(off - d) as usize..=(off + d) as usize].to_vec());
         for k in (-d..=d).step_by(2) {
             let down = k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize]);
-            let mut x = if down { v[(off + k + 1) as usize] } else { v[(off + k - 1) as usize] + 1 };
+            let mut x = if down {
+                v[(off + k + 1) as usize]
+            } else {
+                v[(off + k - 1) as usize] + 1
+            };
             let mut y = x - k;
             while x < n && y < m && a[x as usize] == b[y as usize] {
                 x += 1;
@@ -236,11 +240,18 @@ pub fn hunk_header(lines: &[DiffLine], range: std::ops::Range<usize>, new_text: 
             LineKind::Add => new_len += 1,
         }
     }
-    let above: Vec<&str> = new_text.lines().take(new_start.saturating_sub(1) as usize).collect();
+    let above: Vec<&str> = new_text
+        .lines()
+        .take(new_start.saturating_sub(1) as usize)
+        .collect();
     let context = above
         .iter()
         .rev()
-        .find(|l| l.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$'))
+        .find(|l| {
+            l.chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
+        })
         .map(|l| format!(" {}", l.trim_end().chars().take(80).collect::<String>()))
         .unwrap_or_default();
     // As git does: an empty side points at the line before it, and a single line has no count.
@@ -249,7 +260,11 @@ pub fn hunk_header(lines: &[DiffLine], range: std::ops::Range<usize>, new_text: 
         1 => start.to_string(),
         _ => format!("{start},{len}"),
     };
-    format!("@@ -{} +{} @@{context}", side(old_start, old_len), side(new_start, new_len))
+    format!(
+        "@@ -{} +{} @@{context}",
+        side(old_start, old_len),
+        side(new_start, new_len)
+    )
 }
 
 #[cfg(test)]
@@ -267,31 +282,56 @@ mod tests {
     #[test]
     fn big_files_with_scattered_changes_count_only_those() {
         let old: String = (0..3000).map(|i| format!("line {i}\n")).collect();
-        let new = old.replace("line 10\n", "ten\n").replace("line 2990\n", "").replace("line 1500\n", "line 1500\nadded\n");
+        let new = old
+            .replace("line 10\n", "ten\n")
+            .replace("line 2990\n", "")
+            .replace("line 1500\n", "line 1500\nadded\n");
         let d = line_diff(&old, &new);
         assert_eq!(stats(&d), (2, 2));
-        let rebuilt: Vec<&str> = d.iter().filter(|l| l.kind != LineKind::Del).map(|l| l.text.as_str()).collect();
+        let rebuilt: Vec<&str> = d
+            .iter()
+            .filter(|l| l.kind != LineKind::Del)
+            .map(|l| l.text.as_str())
+            .collect();
         assert_eq!(rebuilt, new.lines().collect::<Vec<_>>());
-        let kept: Vec<&str> = d.iter().filter(|l| l.kind != LineKind::Add).map(|l| l.text.as_str()).collect();
+        let kept: Vec<&str> = d
+            .iter()
+            .filter(|l| l.kind != LineKind::Add)
+            .map(|l| l.text.as_str())
+            .collect();
         assert_eq!(kept, old.lines().collect::<Vec<_>>());
-        assert_eq!(myers(&["a", "b"], &["a", "c"], 5).map(|ops| ops.len()), Some(3));
+        assert_eq!(
+            myers(&["a", "b"], &["a", "c"], 5).map(|ops| ops.len()),
+            Some(3)
+        );
         assert_eq!(myers(&["a", "b"], &["c", "d"], 3), None);
     }
 
     #[test]
     fn hunk_headers_read_like_gits() {
         let old: String = (1..=30).map(|i| format!("    line {i}\n")).collect();
-        let new = old.replace("    line 5\n", "fn five() {\n    five\n}\n").replace("    line 25\n", "");
+        let new = old
+            .replace("    line 5\n", "fn five() {\n    five\n}\n")
+            .replace("    line 25\n", "");
         let lines = line_diff(&old, &new);
         let ranges = hunk_ranges(&lines, 2);
         assert_eq!(ranges.len(), 2);
         assert_eq!(hunks(&lines, 2).iter().filter(|l| l.is_none()).count(), 1);
         // Both sides counted, deletions and additions alike; the function above names the hunk.
-        assert_eq!(hunk_header(&lines, ranges[0].clone(), &new), "@@ -3,5 +3,7 @@");
-        assert_eq!(hunk_header(&lines, ranges[1].clone(), &new), "@@ -23,5 +25,4 @@ fn five() {");
+        assert_eq!(
+            hunk_header(&lines, ranges[0].clone(), &new),
+            "@@ -3,5 +3,7 @@"
+        );
+        assert_eq!(
+            hunk_header(&lines, ranges[1].clone(), &new),
+            "@@ -23,5 +25,4 @@ fn five() {"
+        );
         // A brand-new file starts from nothing.
         let lines = line_diff("", "a\nb\n");
         let ranges = hunk_ranges(&lines, 3);
-        assert_eq!(hunk_header(&lines, ranges[0].clone(), "a\nb\n"), "@@ -0,0 +1,2 @@");
+        assert_eq!(
+            hunk_header(&lines, ranges[0].clone(), "a\nb\n"),
+            "@@ -0,0 +1,2 @@"
+        );
     }
 }

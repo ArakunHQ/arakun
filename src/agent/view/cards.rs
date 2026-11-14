@@ -4,7 +4,12 @@ use super::*;
 
 impl ThreadView {
     /// Confirmation for going back to before a prompt: what happens to the files.
-    pub(super) fn rewind_card(&self, plan: &RewindPlan, cwd: &Path, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn rewind_card(
+        &self,
+        plan: &RewindPlan,
+        cwd: &Path,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         const SHOWN: usize = 8;
         let rel = |p: &str| {
             Path::new(p)
@@ -175,34 +180,36 @@ impl ThreadView {
             }
             None => format!("Allow {}?", p.title.replace('`', "")),
         };
-        let preview: Option<AnyElement> = tool.and_then(|t| {
-            t.content.iter().find_map(|c| match c {
-                ToolContent::Diff {
-                    path,
-                    old_text,
-                    new_text,
-                } => Some(diff_card(path, old_text.as_deref(), new_text, cwd)),
-                _ => None,
+        let preview: Option<AnyElement> = tool
+            .and_then(|t| {
+                t.content.iter().find_map(|c| match c {
+                    ToolContent::Diff {
+                        path,
+                        old_text,
+                        new_text,
+                    } => Some(diff_card(path, old_text.as_deref(), new_text, cwd)),
+                    _ => None,
+                })
             })
-        }).or_else(|| {
-            let t = tool?;
-            let cmd = t.raw_input.as_ref()?.get("command")?.as_str()?.to_string();
-            Some(
-                div()
-                    .max_h(px(128.))
-                    .overflow_hidden()
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(12.))
-                    .bg(theme::fill_hover())
-                    .font_family(theme::FONT_MONO)
-                    .text_size(px(crate::ui::TEXT_SM))
-                    .line_height(px(20.))
-                    .text_color(theme::text_muted())
-                    .child(cmd)
-                    .into_any_element(),
-            )
-        });
+            .or_else(|| {
+                let t = tool?;
+                let cmd = t.raw_input.as_ref()?.get("command")?.as_str()?.to_string();
+                Some(
+                    div()
+                        .max_h(px(128.))
+                        .overflow_hidden()
+                        .px(px(10.))
+                        .py(px(8.))
+                        .rounded(px(12.))
+                        .bg(theme::fill_hover())
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(crate::ui::TEXT_SM))
+                        .line_height(px(20.))
+                        .text_color(theme::text_muted())
+                        .child(cmd)
+                        .into_any_element(),
+                )
+            });
         let first_allow = p
             .options
             .iter()
@@ -284,7 +291,8 @@ impl ThreadView {
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let id = id.clone();
-                                this.thread.update(cx, |t, cx| t.respond_permission(&id, cx));
+                                this.thread
+                                    .update(cx, |t, cx| t.respond_permission(&id, cx));
                                 this.after_permission(window, cx);
                             }))
                     }))
@@ -368,7 +376,13 @@ impl ThreadView {
                         div()
                             .text_size(px(crate::ui::TEXT_XS))
                             .text_color(theme::text_subtle())
-                            .child(if self.thread.read(cx).kind() == crate::agent::AgentKind::Droid { "Spec" } else { "Plan" }),
+                            .child(
+                                if self.thread.read(cx).kind() == crate::agent::AgentKind::Droid {
+                                    "Spec"
+                                } else {
+                                    "Plan"
+                                },
+                            ),
                     ),
             )
             .child(
@@ -433,13 +447,16 @@ impl ThreadView {
                             }))
                     }))
                     .child(div().flex_1())
-                    .child(div().text_size(px(crate::ui::TEXT_XS)).text_color(theme::text_faint()).child(
-                        if focused {
-                            "Enter approve · Esc keep planning"
-                        } else {
-                            "Click here to use the keyboard"
-                        },
-                    )),
+                    .child(
+                        div()
+                            .text_size(px(crate::ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(if focused {
+                                "Enter approve · Esc keep planning"
+                            } else {
+                                "Click here to use the keyboard"
+                            }),
+                    ),
             )
             .on_click(cx.listener(|this, _, window, cx| {
                 window.focus(&this.focus, cx);

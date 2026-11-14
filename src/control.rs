@@ -41,11 +41,17 @@ pub struct Reply {
 
 impl Reply {
     pub fn ok(message: impl Into<String>) -> Self {
-        Self { ok: true, message: message.into() }
+        Self {
+            ok: true,
+            message: message.into(),
+        }
     }
 
     pub fn err(message: impl Into<String>) -> Self {
-        Self { ok: false, message: message.into() }
+        Self {
+            ok: false,
+            message: message.into(),
+        }
     }
 }
 
@@ -192,13 +198,18 @@ fn answer(stream: UnixStream, tx: mpsc::UnboundedSender<Incoming>) {
             if tx.unbounded_send((req, done)).is_err() {
                 Reply::err("arakun is shutting down")
             } else {
-                futures::executor::block_on(wait).unwrap_or_else(|_| Reply::err("arakun did not answer"))
+                futures::executor::block_on(wait)
+                    .unwrap_or_else(|_| Reply::err("arakun did not answer"))
             }
         }
         Err(e) => Reply::err(e),
     };
     let mut stream = stream;
-    let _ = writeln!(stream, "{}", serde_json::to_string(&reply).unwrap_or_default());
+    let _ = writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&reply).unwrap_or_default()
+    );
 }
 
 const HELP: &str = "\
@@ -375,12 +386,21 @@ fn cli(args: Vec<String>) -> Cli {
             Some(code) => Cli::Exit(code),
             None => cli(args[1..].to_vec()),
         };
-    }    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let (side, rest) = side_flag(first, &args[1..]);
-    let request = |cmd: &str, args: Vec<String>| Request { cmd: cmd.into(), args, cwd: cwd.clone(), side };
+    let request = |cmd: &str, args: Vec<String>| Request {
+        cmd: cmd.into(),
+        args,
+        cwd: cwd.clone(),
+        side,
+    };
     let req = match first.as_str() {
         "help" | "-h" | "--help" => {
-            let page = PAGE_USAGE.lines().map(|l| format!("  {l}\n")).collect::<String>();
+            let page = PAGE_USAGE
+                .lines()
+                .map(|l| format!("  {l}\n"))
+                .collect::<String>();
             let extra: &[&str] = &[
                 #[cfg(feature = "coderlabs")]
                 HELP_CODERLABS,
@@ -395,7 +415,11 @@ fn cli(args: Vec<String>) -> Cli {
         #[cfg(feature = "coderlabs")]
         "canvas" => match rest.as_slice() {
             [flag] if flag == "--stats" => request("canvas", vec![flag.clone()]),
-            [flag, rest @ ..] if flag == "--bench" && rest.len() <= 2 && rest.iter().all(|a| a.parse::<f32>().is_ok()) => {
+            [flag, rest @ ..]
+                if flag == "--bench"
+                    && rest.len() <= 2
+                    && rest.iter().all(|a| a.parse::<f32>().is_ok()) =>
+            {
                 request("canvas", args_with(flag, rest))
             }
             [source] if source.starts_with("http://") || source.starts_with("https://") => {
@@ -406,7 +430,9 @@ fn cli(args: Vec<String>) -> Cli {
                 Err(e) => return fail(&format!("{source}: {e}")),
             },
             _ => {
-                return usage("arakun canvas <file.json | folder | file.html | doop url> | --stats");
+                return usage(
+                    "arakun canvas <file.json | folder | file.html | doop url> | --stats",
+                );
             }
         },
         "browse" => match rest.as_slice() {
@@ -415,9 +441,13 @@ fn cli(args: Vec<String>) -> Cli {
         },
         "open" => match rest.as_slice() {
             [file] => match resolve_file(&cwd, file) {
-                Ok((path, line)) => {
-                    request("open", vec![path.display().to_string(), line.map(|n| n.to_string()).unwrap_or_default()])
-                }
+                Ok((path, line)) => request(
+                    "open",
+                    vec![
+                        path.display().to_string(),
+                        line.map(|n| n.to_string()).unwrap_or_default(),
+                    ],
+                ),
                 Err(e) => return fail(&e),
             },
             _ => return usage("arakun open [-s] <file[:line]>"),
@@ -425,7 +455,9 @@ fn cli(args: Vec<String>) -> Cli {
         "run" => match run_args(&rest) {
             Some(args) => request("run", args),
             None => {
-                return usage("arakun run [--ready <text>] [--port <n>] [--timeout <secs>] <command…>");
+                return usage(
+                    "arakun run [--ready <text>] [--port <n>] [--timeout <secs>] <command…>",
+                );
             }
         },
         "logs" => match logs_args(&rest) {
@@ -435,12 +467,16 @@ fn cli(args: Vec<String>) -> Cli {
                 return logs_until(&request("logs", args), &wait);
             }
             None => {
-                return usage("arakun logs [-n lines] [terminal] [--until <text> [--timeout <secs>]]");
+                return usage(
+                    "arakun logs [-n lines] [terminal] [--until <text> [--timeout <secs>]]",
+                );
             }
         },
         "check" if rest.is_empty() => return check_here(&request("check", Vec::new())),
         "check" => match rest.as_slice() {
-            [flag, command @ ..] if flag == "--set" && !command.is_empty() => request("check", vec![command.join(" ")]),
+            [flag, command @ ..] if flag == "--set" && !command.is_empty() => {
+                request("check", vec![command.join(" ")])
+            }
             _ => return usage("arakun check [--set <command…>]"),
         },
         "page" => match page_args(&rest) {
@@ -499,7 +535,12 @@ fn cli(args: Vec<String>) -> Cli {
             Cli::Exit(0)
         }
         Ok(reply) => fail(&reply.message),
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
             if req.cmd == "add" {
                 Cli::AppWith(PathBuf::from(&req.args[0]))
             } else {
@@ -518,16 +559,35 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
     match rest {
         [] => Some(Vec::new()),
         [state]
-            if ["sleeping", "idle", "working", "speaking", "listening", "list", "auto", "ver", "luego", "aprobar", "rechazar", "fps"]
-                .contains(&state.as_str()) =>
+            if [
+                "sleeping",
+                "idle",
+                "working",
+                "speaking",
+                "listening",
+                "list",
+                "auto",
+                "ver",
+                "luego",
+                "aprobar",
+                "rechazar",
+                "fps",
+            ]
+            .contains(&state.as_str()) =>
         {
             Some(vec![state.clone()])
         }
         #[cfg(feature = "coderlabs")]
-        [wake, state] if wake == "wake" && ["maybe", "yes", "no"].contains(&state.as_str()) => Some(vec![wake.clone(), state.clone()]),
-        [alert, title, subtitle @ ..] if alert == "alert" && subtitle.len() <= 1 => {
-            Some([alert, title].into_iter().chain(subtitle).cloned().collect())
+        [wake, state] if wake == "wake" && ["maybe", "yes", "no"].contains(&state.as_str()) => {
+            Some(vec![wake.clone(), state.clone()])
         }
+        [alert, title, subtitle @ ..] if alert == "alert" && subtitle.len() <= 1 => Some(
+            [alert, title]
+                .into_iter()
+                .chain(subtitle)
+                .cloned()
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -573,7 +633,10 @@ fn run_args(rest: &[String]) -> Option<Vec<String>> {
         port.parse::<u16>().ok().filter(|p| *p > 0)?;
     }
     if !timeout.is_empty() {
-        timeout.parse::<u64>().ok().filter(|s| (1..=MAX_RUN_WAIT).contains(s))?;
+        timeout
+            .parse::<u64>()
+            .ok()
+            .filter(|s| (1..=MAX_RUN_WAIT).contains(s))?;
     }
     match (ready.is_empty() && port.is_empty(), timeout.is_empty()) {
         (true, true) => Some(vec![command]),
@@ -585,8 +648,13 @@ fn run_args(rest: &[String]) -> Option<Vec<String>> {
 /// How long the client waits for an answer: `arakun page` waits for loads and
 /// clicks, each bounded on the app's side; `arakun run --ready` for its timeout.
 fn reply_wait(req: &Request) -> Duration {
-    let run = (req.cmd == "run" && req.args.len() > 1)
-        .then(|| req.args.get(3).and_then(|s| s.parse().ok()).unwrap_or(RUN_WAIT) + 15);
+    let run = (req.cmd == "run" && req.args.len() > 1).then(|| {
+        req.args
+            .get(3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(RUN_WAIT)
+            + 15
+    });
     Duration::from_secs(run.unwrap_or(90).max(90))
 }
 
@@ -612,18 +680,29 @@ fn logs_args(rest: &[String]) -> Option<(Vec<String>, Option<LogsWait>)> {
             "-n" | "--lines" => lines = it.next()?.parse().ok().filter(|n| *n > 0)?,
             "--until" => until = Some(it.next().filter(|t| !t.is_empty())?.clone()),
             "--timeout" => {
-                timeout = Some(it.next()?.parse::<u64>().ok().filter(|s| (1..=MAX_RUN_WAIT).contains(s))?)
+                timeout = Some(
+                    it.next()?
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|s| (1..=MAX_RUN_WAIT).contains(s))?,
+                )
             }
             _ if which.is_none() => which = Some(arg),
             _ => return None,
         }
     }
     let wait = match (until, timeout) {
-        (Some(text), secs) => Some(LogsWait { text, timeout: Duration::from_secs(secs.unwrap_or(RUN_WAIT)) }),
+        (Some(text), secs) => Some(LogsWait {
+            text,
+            timeout: Duration::from_secs(secs.unwrap_or(RUN_WAIT)),
+        }),
         (None, Some(_)) => return None,
         (None, None) => None,
     };
-    Some((vec![lines.to_string(), which.cloned().unwrap_or_default()], wait))
+    Some((
+        vec![lines.to_string(), which.cloned().unwrap_or_default()],
+        wait,
+    ))
 }
 
 /// What a terminal printed since `before` was read: what follows the last lines
@@ -631,7 +710,12 @@ fn logs_args(rest: &[String]) -> Option<(Vec<String>, Option<LogsWait>)> {
 /// the match is on a few lines; the newest of them may since have grown (a
 /// prompt with a command typed after it), so it only has to start the same.
 fn fresh_output<'a>(before: &str, now: &'a str) -> &'a str {
-    let anchor: Vec<&str> = before.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
+    let anchor: Vec<&str> = before
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(3)
+        .collect();
     if anchor.is_empty() {
         return now;
     }
@@ -644,14 +728,20 @@ fn fresh_output<'a>(before: &str, now: &'a str) -> &'a str {
         })
         .collect();
     let line = |i: usize| lines[i].1.trim_end_matches(['\n', '\r']);
-    let non_empty: Vec<usize> = (0..lines.len()).filter(|&i| !line(i).trim().is_empty()).collect();
+    let non_empty: Vec<usize> = (0..lines.len())
+        .filter(|&i| !line(i).trim().is_empty())
+        .collect();
     // The anchor reads newest first; walk `now`'s non-empty lines the same way.
     // Fewer anchor lines are tried when the full set no longer fits on screen.
     for size in (1..=anchor.len()).rev() {
         for w in (size - 1..non_empty.len()).rev() {
             let same = |k: usize| {
                 let (now, was) = (line(non_empty[w - k]).trim_end(), anchor[k].trim_end());
-                if k == 0 { now.starts_with(was) } else { now == was }
+                if k == 0 {
+                    now.starts_with(was)
+                } else {
+                    now == was
+                }
             };
             if (0..size).all(same) {
                 let end = lines[non_empty[w]];
@@ -690,14 +780,26 @@ fn logs_until(req: &Request, wait: &LogsWait) -> Cli {
             println!("{}", shown());
             return Cli::Exit(0);
         }
-        let exited = fresh.lines().rev().find_map(|l| l.strip_prefix("[exit ")?.strip_suffix(']')?.parse::<i32>().ok());
+        let exited = fresh.lines().rev().find_map(|l| {
+            l.strip_prefix("[exit ")?
+                .strip_suffix(']')?
+                .parse::<i32>()
+                .ok()
+        });
         if let Some(code) = exited {
             eprintln!("{}", shown());
-            return fail(&format!("the command exited with code {code} before its output showed \"{}\"", wait.text));
+            return fail(&format!(
+                "the command exited with code {code} before its output showed \"{}\"",
+                wait.text
+            ));
         }
         if start.elapsed() >= wait.timeout {
             eprintln!("{}", shown());
-            return fail(&format!("no new output showed \"{}\" within {} s", wait.text, wait.timeout.as_secs()));
+            return fail(&format!(
+                "no new output showed \"{}\" within {} s",
+                wait.text,
+                wait.timeout.as_secs()
+            ));
         }
     }
 }
@@ -707,7 +809,12 @@ fn ask(req: &Request) -> Result<String, String> {
     match send(req) {
         Ok(reply) if reply.ok => Ok(reply.message),
         Ok(reply) => Err(reply.message),
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
             Err("arakun is not running".into())
         }
         Err(e) => Err(format!("could not reach arakun: {e}")),
@@ -740,7 +847,8 @@ fn agent_args(rest: &[String]) -> Option<AgentCmd> {
     let (sub, rest) = rest.split_first()?;
     let args = match (sub.as_str(), rest) {
         ("new", _) => {
-            let (mut model, mut dir, mut title, mut ask) = (String::new(), String::new(), String::new(), false);
+            let (mut model, mut dir, mut title, mut ask) =
+                (String::new(), String::new(), String::new(), false);
             let (mut effort, mut mode) = (String::new(), String::new());
             let mut i = 0;
             while let Some(flag) = rest.get(i) {
@@ -764,7 +872,11 @@ fn agent_args(rest: &[String]) -> Option<AgentCmd> {
             if prompt.trim().is_empty() {
                 return None;
             }
-            let ask = if ask { "ask".to_string() } else { String::new() };
+            let ask = if ask {
+                "ask".to_string()
+            } else {
+                String::new()
+            };
             vec!["new".into(), model, dir, title, ask, prompt, effort, mode]
         }
         ("log" | "wait", _) => {
@@ -772,22 +884,31 @@ fn agent_args(rest: &[String]) -> Option<AgentCmd> {
             let mut it = rest.iter();
             while let Some(arg) = it.next() {
                 match arg.as_str() {
-                    "-n" | "--lines" if sub == "log" => lines = it.next()?.parse().ok().filter(|n| *n > 0)?,
-                    "--timeout" if sub == "wait" => secs = it.next()?.parse().ok().filter(|s| *s > 0)?,
+                    "-n" | "--lines" if sub == "log" => {
+                        lines = it.next()?.parse().ok().filter(|n| *n > 0)?
+                    }
+                    "--timeout" if sub == "wait" => {
+                        secs = it.next()?.parse().ok().filter(|s| *s > 0)?
+                    }
                     _ if id.is_none() && !arg.starts_with('-') => id = Some(arg.clone()),
                     _ => return None,
                 }
             }
             let id = id?;
             if sub == "wait" {
-                return Some(AgentCmd::Wait { id, timeout: Duration::from_secs(secs) });
+                return Some(AgentCmd::Wait {
+                    id,
+                    timeout: Duration::from_secs(secs),
+                });
             }
             vec!["log".into(), id, lines.to_string()]
         }
         ("ls", []) => vec!["ls".into()],
         // Every session, Claude Code and Droid ones too (the voice needs to find them by title).
         ("ls", [all]) if all == "--all" => vec!["ls".into(), "all".into()],
-        ("send", [id, text @ ..]) if !text.join(" ").trim().is_empty() => vec!["send".into(), id.clone(), text.join(" ")],
+        ("send", [id, text @ ..]) if !text.join(" ").trim().is_empty() => {
+            vec!["send".into(), id.clone(), text.join(" ")]
+        }
         ("stop", [id]) => vec!["stop".into(), id.clone()],
         _ => return None,
     };
@@ -813,7 +934,10 @@ fn agent_wait(req: &Request, timeout: Duration) -> Cli {
             return Cli::Exit(if status == "error" { 1 } else { 0 });
         }
         if start.elapsed() >= timeout {
-            return fail(&format!("the session is still working after {} s", timeout.as_secs()));
+            return fail(&format!(
+                "the session is still working after {} s",
+                timeout.as_secs()
+            ));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -834,7 +958,10 @@ arakun page eval <js>              run JavaScript in the page and print the resu
 fn page_args(rest: &[String]) -> Option<Vec<String>> {
     let is_flag = |a: &String| a == "-t" || a == "--tab";
     let (tab, rest) = match rest {
-        [flag, n, rest @ ..] if is_flag(flag) => (n.parse::<usize>().ok().filter(|n| *n > 0)?.to_string(), rest),
+        [flag, n, rest @ ..] if is_flag(flag) => (
+            n.parse::<usize>().ok().filter(|n| *n > 0)?.to_string(),
+            rest,
+        ),
         [flag] if is_flag(flag) => return None,
         _ => (String::new(), rest),
     };
@@ -846,7 +973,12 @@ fn page_args(rest: &[String]) -> Option<Vec<String>> {
 fn check_here(req: &Request) -> Cli {
     let reply = match send(req) {
         Ok(reply) => reply,
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
             return fail("arakun is not running");
         }
         Err(e) => return fail(&format!("could not reach arakun: {e}")),
@@ -873,7 +1005,9 @@ fn check_here(req: &Request) -> Cli {
 /// `flag` followed by `rest`, as a request's arguments.
 #[cfg(feature = "coderlabs")]
 fn args_with(flag: &str, rest: &[String]) -> Vec<String> {
-    std::iter::once(flag.to_string()).chain(rest.iter().cloned()).collect()
+    std::iter::once(flag.to_string())
+        .chain(rest.iter().cloned())
+        .collect()
 }
 
 fn usage(line: &str) -> Cli {
@@ -903,17 +1037,23 @@ pub fn send_to(socket: &Path, req: &Request) -> std::io::Result<Reply> {
 /// browser as typed (it already turns `localhost:3000` into a URL).
 pub(crate) fn browse_target(cwd: &Path, target: &str) -> String {
     let path = cwd.join(target);
-    if !target.contains("://") && path.exists()
-        && let Ok(abs) = crate::platform::canonicalize(&path) {
-            return file_url(&abs);
-        }
+    if !target.contains("://")
+        && path.exists()
+        && let Ok(abs) = crate::platform::canonicalize(&path)
+    {
+        return file_url(&abs);
+    }
     target.to_string()
 }
 
 /// `file:///home/me/a.html`; on Windows `file:///C:/Users/me/a.html`.
 fn file_url(abs: &Path) -> String {
     let path = abs.display().to_string().replace('\\', "/");
-    if path.starts_with('/') { format!("file://{path}") } else { format!("file:///{path}") }
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
 }
 
 /// `file`, or `file:42` / `file:42:7` as compilers and agents print it,
@@ -930,7 +1070,10 @@ fn resolve_file(cwd: &Path, file: &str) -> Result<(PathBuf, Option<usize>), Stri
         if path.is_dir() {
             return Err(format!("{name} is a directory"));
         }
-        match name.rsplit_once(':').filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) {
+        match name
+            .rsplit_once(':')
+            .filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        {
             Some((head, n)) => (name, line) = (head, n.parse().ok()),
             None => return Err(format!("no such file: {file}")),
         }
@@ -956,8 +1099,14 @@ mod tests {
         std::fs::write(dir.join("a.rs"), "fn main() {}\n").unwrap();
         let want = crate::platform::canonicalize(dir.join("a.rs")).unwrap();
         assert_eq!(resolve_file(&dir, "a.rs").unwrap(), (want.clone(), None));
-        assert_eq!(resolve_file(&dir, "a.rs:12").unwrap(), (want.clone(), Some(12)));
-        assert_eq!(resolve_file(&dir, "a.rs:12:7").unwrap(), (want.clone(), Some(12)));
+        assert_eq!(
+            resolve_file(&dir, "a.rs:12").unwrap(),
+            (want.clone(), Some(12))
+        );
+        assert_eq!(
+            resolve_file(&dir, "a.rs:12:7").unwrap(),
+            (want.clone(), Some(12))
+        );
         assert_eq!(resolve_file(&dir, "a.rs:0").unwrap(), (want, None));
         assert!(resolve_file(&dir, "b.rs:3").is_err());
         assert!(resolve_file(&dir, "b.rs").is_err());
@@ -972,15 +1121,30 @@ mod tests {
         let args = |a: &[&str]| logs_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let plain = |a: &[&str]| args(a).and_then(|(sent, wait)| (wait.is_none()).then_some(sent));
         assert_eq!(plain(&[]), Some(vec![LOG_LINES.to_string(), String::new()]));
-        assert_eq!(plain(&["2", "-n", "50"]), Some(vec!["50".into(), "2".into()]));
-        assert_eq!(plain(&["-n", "10", "cargo"]), Some(vec!["10".into(), "cargo".into()]));
+        assert_eq!(
+            plain(&["2", "-n", "50"]),
+            Some(vec!["50".into(), "2".into()])
+        );
+        assert_eq!(
+            plain(&["-n", "10", "cargo"]),
+            Some(vec!["10".into(), "cargo".into()])
+        );
         assert_eq!(args(&["-n"]), None);
         assert_eq!(args(&["-n", "0"]), None);
         assert_eq!(args(&["a", "b"]), None);
         let (sent, wait) = args(&["2", "--until", "Compiled", "--timeout", "5"]).unwrap();
         assert_eq!(sent, vec![LOG_LINES.to_string(), "2".into()]);
-        assert_eq!(wait, Some(LogsWait { text: "Compiled".into(), timeout: Duration::from_secs(5) }));
-        assert_eq!(args(&["--until", "x"]).unwrap().1.unwrap().timeout, Duration::from_secs(RUN_WAIT));
+        assert_eq!(
+            wait,
+            Some(LogsWait {
+                text: "Compiled".into(),
+                timeout: Duration::from_secs(5)
+            })
+        );
+        assert_eq!(
+            args(&["--until", "x"]).unwrap().1.unwrap().timeout,
+            Duration::from_secs(RUN_WAIT)
+        );
         assert_eq!(args(&["--until"]), None);
         assert_eq!(args(&["--until", ""]), None);
         assert_eq!(args(&["--timeout", "5"]), None);
@@ -993,11 +1157,17 @@ mod tests {
         assert_eq!(fresh_output("$ ", "$ ls\nx\n"), "x\n");
         assert_eq!(fresh_output("a\nb\n$ ", "a\nb\n$ make\nbuilt\n"), "built\n");
         // The last line read had no newline yet; what came after it is new.
-        assert_eq!(fresh_output("run\nLISTO", "run\nLISTO\nSEGUNDO\n"), "SEGUNDO\n");
+        assert_eq!(
+            fresh_output("run\nLISTO", "run\nLISTO\nSEGUNDO\n"),
+            "SEGUNDO\n"
+        );
         // The scrollback dropped the oldest lines meanwhile.
         assert_eq!(fresh_output("x\ny\nz\nw\n", "z\nw\nnew\n"), "new\n");
         // A watcher printing the same line again: only the new one counts.
-        assert_eq!(fresh_output("ok\nCompiled\n", "ok\nCompiled\n\nCompiled\n"), "\nCompiled\n");
+        assert_eq!(
+            fresh_output("ok\nCompiled\n", "ok\nCompiled\n\nCompiled\n"),
+            "\nCompiled\n"
+        );
         assert_eq!(fresh_output("ok\nCompiled\n", "ok\nCompiled\n"), "");
         // Nothing recognisable left: all of it is new.
         assert_eq!(fresh_output("gone\n", "fresh\n"), "fresh\n");
@@ -1012,9 +1182,18 @@ mod tests {
     #[test]
     fn side_flag_leaves_commands_alone() {
         let s = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(side_flag("run", &s(&["du", "-s", "."])), (false, s(&["du", "-s", "."])));
-        assert_eq!(side_flag("run", &s(&["-s", "ls", "-s"])), (true, s(&["ls", "-s"])));
-        assert_eq!(side_flag("notify", &s(&["use", "-s"])), (false, s(&["use", "-s"])));
+        assert_eq!(
+            side_flag("run", &s(&["du", "-s", "."])),
+            (false, s(&["du", "-s", "."]))
+        );
+        assert_eq!(
+            side_flag("run", &s(&["-s", "ls", "-s"])),
+            (true, s(&["ls", "-s"]))
+        );
+        assert_eq!(
+            side_flag("notify", &s(&["use", "-s"])),
+            (false, s(&["use", "-s"]))
+        );
         assert_eq!(side_flag("open", &s(&["a.rs", "-s"])), (true, s(&["a.rs"])));
         assert_eq!(side_flag("browse", &s(&["--side", "x"])), (true, s(&["x"])));
     }
@@ -1024,9 +1203,20 @@ mod tests {
         let args = |a: &[&str]| run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let v = |a: &[&str]| Some(a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(args(&["npm", "run", "dev"]), v(&["npm run dev"]));
-        assert_eq!(args(&["--ready", "Local:", "npm run dev"]), v(&["npm run dev", "Local:", "", ""]));
         assert_eq!(
-            args(&["--port", "5173", "--timeout", "30", "vite", "--port", "5173"]),
+            args(&["--ready", "Local:", "npm run dev"]),
+            v(&["npm run dev", "Local:", "", ""])
+        );
+        assert_eq!(
+            args(&[
+                "--port",
+                "5173",
+                "--timeout",
+                "30",
+                "vite",
+                "--port",
+                "5173"
+            ]),
             v(&["vite --port 5173", "", "5173", "30"])
         );
         assert_eq!(args(&[]), None);
@@ -1043,26 +1233,87 @@ mod tests {
             side: false,
         };
         assert_eq!(reply_wait(&req(&["make"])), Duration::from_secs(90));
-        assert_eq!(reply_wait(&req(&["make", "", "80", "300"])), Duration::from_secs(315));
+        assert_eq!(
+            reply_wait(&req(&["make", "", "80", "300"])),
+            Duration::from_secs(315)
+        );
     }
 
     #[test]
     fn agent_takes_its_subcommands() {
         let args = |a: &[&str]| agent_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let sent = |a: &[&str]| Some(AgentCmd::Send(a.iter().map(|s| s.to_string()).collect()));
-        assert_eq!(args(&["new", "fix", "the", "build"]), sent(&["new", "", "", "", "", "fix the build", "", ""]));
         assert_eq!(
-            args(&["new", "--model", "cloudflare-workers-ai/@cf/zai-org/glm-5.3", "--dir", "..", "--ask", "go", "--ask"]),
-            sent(&["new", "cloudflare-workers-ai/@cf/zai-org/glm-5.3", "..", "", "ask", "go --ask", "", ""])
-        );
-        assert_eq!(args(&["new", "--title", "Docs", "write", "them"]), sent(&["new", "", "", "Docs", "", "write them", "", ""]));
-        assert_eq!(
-            args(&["new", "--model", "workers-ai/@cf/zai-org/glm-5.3", "--effort", "high", "go", "--effort", "x"]),
-            sent(&["new", "workers-ai/@cf/zai-org/glm-5.3", "", "", "", "go --effort x", "high", ""])
+            args(&["new", "fix", "the", "build"]),
+            sent(&["new", "", "", "", "", "fix the build", "", ""])
         );
         assert_eq!(
-            args(&["new", "--model", "claude/opus", "--mode", "bypassPermissions", "go"]),
-            sent(&["new", "claude/opus", "", "", "", "go", "", "bypassPermissions"])
+            args(&[
+                "new",
+                "--model",
+                "cloudflare-workers-ai/@cf/zai-org/glm-5.3",
+                "--dir",
+                "..",
+                "--ask",
+                "go",
+                "--ask"
+            ]),
+            sent(&[
+                "new",
+                "cloudflare-workers-ai/@cf/zai-org/glm-5.3",
+                "..",
+                "",
+                "ask",
+                "go --ask",
+                "",
+                ""
+            ])
+        );
+        assert_eq!(
+            args(&["new", "--title", "Docs", "write", "them"]),
+            sent(&["new", "", "", "Docs", "", "write them", "", ""])
+        );
+        assert_eq!(
+            args(&[
+                "new",
+                "--model",
+                "workers-ai/@cf/zai-org/glm-5.3",
+                "--effort",
+                "high",
+                "go",
+                "--effort",
+                "x"
+            ]),
+            sent(&[
+                "new",
+                "workers-ai/@cf/zai-org/glm-5.3",
+                "",
+                "",
+                "",
+                "go --effort x",
+                "high",
+                ""
+            ])
+        );
+        assert_eq!(
+            args(&[
+                "new",
+                "--model",
+                "claude/opus",
+                "--mode",
+                "bypassPermissions",
+                "go"
+            ]),
+            sent(&[
+                "new",
+                "claude/opus",
+                "",
+                "",
+                "",
+                "go",
+                "",
+                "bypassPermissions"
+            ])
         );
         assert_eq!(args(&["new", "--effort", "", "go"]), None);
         assert_eq!(args(&["new", "--effort"]), None);
@@ -1072,23 +1323,44 @@ mod tests {
         assert_eq!(args(&["new", "--model"]), None);
         assert_eq!(args(&["ls"]), sent(&["ls"]));
         assert_eq!(args(&["ls", "x"]), None);
-        assert_eq!(args(&["log", "abc"]), sent(&["log", "abc", &AGENT_LOG.to_string()]));
+        assert_eq!(
+            args(&["log", "abc"]),
+            sent(&["log", "abc", &AGENT_LOG.to_string()])
+        );
         assert_eq!(args(&["log", "-n", "5", "abc"]), sent(&["log", "abc", "5"]));
         assert_eq!(args(&["log", "abc", "-n", "0"]), None);
         assert_eq!(args(&["log"]), None);
         assert_eq!(args(&["log", "a", "b"]), None);
-        assert_eq!(args(&["wait", "abc"]), Some(AgentCmd::Wait { id: "abc".into(), timeout: Duration::from_secs(AGENT_WAIT) }));
-        assert_eq!(args(&["wait", "--timeout", "30", "abc"]), Some(AgentCmd::Wait { id: "abc".into(), timeout: Duration::from_secs(30) }));
+        assert_eq!(
+            args(&["wait", "abc"]),
+            Some(AgentCmd::Wait {
+                id: "abc".into(),
+                timeout: Duration::from_secs(AGENT_WAIT)
+            })
+        );
+        assert_eq!(
+            args(&["wait", "--timeout", "30", "abc"]),
+            Some(AgentCmd::Wait {
+                id: "abc".into(),
+                timeout: Duration::from_secs(30)
+            })
+        );
         assert_eq!(args(&["wait", "abc", "-n", "3"]), None);
         assert_eq!(args(&["wait", "--timeout", "0", "abc"]), None);
-        assert_eq!(args(&["send", "abc", "and", "now", "-s"]), sent(&["send", "abc", "and now -s"]));
+        assert_eq!(
+            args(&["send", "abc", "and", "now", "-s"]),
+            sent(&["send", "abc", "and now -s"])
+        );
         assert_eq!(args(&["send", "abc"]), None);
         assert_eq!(args(&["stop", "abc"]), sent(&["stop", "abc"]));
         assert_eq!(args(&["stop"]), None);
         assert_eq!(args(&["frobnicate"]), None);
         assert_eq!(args(&[]), None);
         let s = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(side_flag("agent", &s(&["new", "use", "-s"])), (false, s(&["new", "use", "-s"])));
+        assert_eq!(
+            side_flag("agent", &s(&["new", "use", "-s"])),
+            (false, s(&["new", "use", "-s"]))
+        );
     }
 
     #[test]
@@ -1098,7 +1370,10 @@ mod tests {
         assert_eq!(a(&["working"]), Some(vec!["working".to_string()]));
         assert_eq!(a(&["ver"]), Some(vec!["ver".to_string()]));
         assert_eq!(a(&["rechazar"]), Some(vec!["rechazar".to_string()]));
-        assert_eq!(a(&["alert", "GLM terminó"]), Some(vec!["alert".to_string(), "GLM terminó".to_string()]));
+        assert_eq!(
+            a(&["alert", "GLM terminó"]),
+            Some(vec!["alert".to_string(), "GLM terminó".to_string()])
+        );
         assert_eq!(a(&["alert", "t", "s"]).map(|v| v.len()), Some(3));
         assert_eq!(a(&["alert"]), None);
         assert_eq!(a(&["alert", "t", "s", "x"]), None);
@@ -1109,8 +1384,14 @@ mod tests {
     fn page_takes_a_tab_then_a_command() {
         let args = |a: &[&str]| page_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(args(&[]), Some(vec![String::new()]));
-        assert_eq!(args(&["-t", "2", "shot"]), Some(vec!["2".into(), "shot".into()]));
-        assert_eq!(args(&["eval", "-t"]), Some(vec!["".into(), "eval".into(), "-t".into()]));
+        assert_eq!(
+            args(&["-t", "2", "shot"]),
+            Some(vec!["2".into(), "shot".into()])
+        );
+        assert_eq!(
+            args(&["eval", "-t"]),
+            Some(vec!["".into(), "eval".into(), "-t".into()])
+        );
         assert_eq!(args(&["--tab", "x"]), None);
         assert_eq!(args(&["-t"]), None);
     }
@@ -1126,10 +1407,16 @@ mod tests {
             answer(stream, tx);
         });
         std::thread::spawn(move || {
-            let (req, done) = futures::executor::block_on(futures::StreamExt::next(&mut rx)).unwrap();
+            let (req, done) =
+                futures::executor::block_on(futures::StreamExt::next(&mut rx)).unwrap();
             let _ = done.send(Reply::ok(format!("{} {}", req.cmd, req.args.join(","))));
         });
-        let req = Request { cmd: "browse".into(), args: vec!["x".into()], cwd: "/".into(), side: true };
+        let req = Request {
+            cmd: "browse".into(),
+            args: vec!["x".into()],
+            cwd: "/".into(),
+            side: true,
+        };
         let mut stream = UnixStream::connect(&sock).unwrap();
         writeln!(stream, "{}", serde_json::to_string(&req).unwrap()).unwrap();
         let mut line = String::new();

@@ -41,7 +41,11 @@ pub struct Plugins {
 /// Droid records git installs by full commit hash.
 fn short(version: &str) -> String {
     let hex = version.len() >= 12 && version.chars().all(|c| c.is_ascii_hexdigit());
-    if hex { version[..7].to_string() } else { version.to_string() }
+    if hex {
+        version[..7].to_string()
+    } else {
+        version.to_string()
+    }
 }
 
 fn droid_record(record: &Value, settings: &Value) -> Option<Installed> {
@@ -49,7 +53,12 @@ fn droid_record(record: &Value, settings: &Value) -> Option<Installed> {
     let entry = &record["entry"];
     let path = PathBuf::from(entry["installPath"].as_str()?);
     let enabled = settings["enabledPlugins"][&id].as_bool().unwrap_or(true);
-    Some(Installed { version: short(entry["version"].as_str().unwrap_or_default()), id, path, enabled })
+    Some(Installed {
+        version: short(entry["version"].as_str().unwrap_or_default()),
+        id,
+        path,
+        enabled,
+    })
 }
 
 fn claude_list(list: &Value) -> Vec<Installed> {
@@ -128,14 +137,27 @@ pub fn load() -> Plugins {
         let r = runtime(&p.path, None);
         (p, r)
     });
-    let seo_claude = if claude_cli { claude_list(&json_output(crate::platform::command(launch::which("claude").unwrap_or_else(|| "claude".into())).args(["plugin", "list", "--json"]))) } else { Default::default() }
-        .into_iter()
-        .find(|p| p.id == SEO_CLAUDE)
-        .map(|p| {
-            let r = runtime(&p.path, Some(&claude_seo_data()));
-            (p, r)
-        });
-    Plugins { droid, claude_cli, python, seo_droid, seo_claude }
+    let seo_claude = if claude_cli {
+        claude_list(&json_output(
+            crate::platform::command(launch::which("claude").unwrap_or_else(|| "claude".into()))
+                .args(["plugin", "list", "--json"]),
+        ))
+    } else {
+        Default::default()
+    }
+    .into_iter()
+    .find(|p| p.id == SEO_CLAUDE)
+    .map(|p| {
+        let r = runtime(&p.path, Some(&claude_seo_data()));
+        (p, r)
+    });
+    Plugins {
+        droid,
+        claude_cli,
+        python,
+        seo_droid,
+        seo_claude,
+    }
 }
 
 // Both CLIs exit 0 when an install fails, so each step is checked with `list`.
@@ -263,7 +285,9 @@ mod tests {
     fn script_verifies_and_sets_up() {
         let s = seo_script(true);
         assert!(s.starts_with("set -e\n"));
-        assert!(s.contains("droid plugin marketplace add https://github.com/AgriciDaniel/claude-seo"));
+        assert!(
+            s.contains("droid plugin marketplace add https://github.com/AgriciDaniel/claude-seo")
+        );
         assert!(s.contains("Droid did not install claude-seo"));
         assert!(s.contains("claude plugin install claude-seo@agricidaniel-claude-seo"));
         assert!(s.contains("CLAUDE_PLUGIN_DATA="));

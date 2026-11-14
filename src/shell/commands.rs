@@ -33,13 +33,17 @@ impl Shell {
                     continue;
                 }
                 if req.cmd == "page" {
-                    let _ = this.update_in(cx, |this, window, cx| this.page_command(req, done, window, cx));
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.page_command(req, done, window, cx)
+                    });
                     continue;
                 }
                 if req.cmd == "run"
                     && let Some(wait) = ReadyWait::parse(&req.args)
                 {
-                    let _ = this.update_in(cx, |this, window, cx| this.run_and_wait(req, wait, done, window, cx));
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.run_and_wait(req, wait, done, window, cx)
+                    });
                     continue;
                 }
                 let reply = this
@@ -75,7 +79,9 @@ impl Shell {
             self.restarting = true;
             // Quits a moment later, once this answer is on its way.
             cx.spawn(async move |_, cx| {
-                cx.background_executor().timer(Duration::from_millis(300)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
                 cx.update(|cx| cx.quit());
             })
             .detach();
@@ -86,14 +92,28 @@ impl Shell {
         };
         let visible = self.has_projects() && self.env().path == env_path;
         let place = self.env_label(&env_path);
-        let where_ = if visible { String::new() } else { format!(" in {place} (not on screen)") };
+        let where_ = if visible {
+            String::new()
+        } else {
+            format!(" in {place} (not on screen)")
+        };
         match req.cmd.as_str() {
             #[cfg(feature = "coderlabs")]
-            "canvas" if arg == "--stats" => Reply::ok(self.canvas_view.update(cx, |v, _| v.take_stats())),
+            "canvas" if arg == "--stats" => {
+                Reply::ok(self.canvas_view.update(cx, |v, _| v.take_stats()))
+            }
             #[cfg(feature = "coderlabs")]
             "canvas" if arg == "--bench" => {
-                let num = |i: usize, d: f32| req.args.get(i).and_then(|a| a.parse::<f32>().ok()).unwrap_or(d);
-                match self.canvas_view.update(cx, |v, cx| v.start_bench(num(1, 0.3), num(2, 2400.), cx)) {
+                let num = |i: usize, d: f32| {
+                    req.args
+                        .get(i)
+                        .and_then(|a| a.parse::<f32>().ok())
+                        .unwrap_or(d)
+                };
+                match self
+                    .canvas_view
+                    .update(cx, |v, cx| v.start_bench(num(1, 0.3), num(2, 2400.), cx))
+                {
                     Ok(m) => Reply::ok(m),
                     Err(e) => Reply::err(e),
                 }
@@ -104,7 +124,8 @@ impl Shell {
                 Reply::ok(format!("opening {arg} in the Canvas tab{where_}"))
             }
             "browse" => {
-                let id = self.push_browser_tab(&env_path, arg.clone(), !req.side, false, window, cx);
+                let id =
+                    self.push_browser_tab(&env_path, arg.clone(), !req.side, false, window, cx);
                 if req.side
                     && let Some(id) = id
                 {
@@ -134,7 +155,10 @@ impl Shell {
             "run" => match self.run_in_terminal(&env_path, &arg, false, window, cx) {
                 Some(i) => Reply::ok(format!(
                     "running in terminal {n}{where_}; `arakun logs {n}` shows its output",
-                    n = self.find_env(&env_path).and_then(|e| e.terminals.get(i)).map_or(i + 1, |t| t.number)
+                    n = self
+                        .find_env(&env_path)
+                        .and_then(|e| e.terminals.get(i))
+                        .map_or(i + 1, |t| t.number)
                 )),
                 None => Reply::err("could not start a terminal"),
             },
@@ -146,7 +170,11 @@ impl Shell {
             }
             // `arakun check --set <command>`: the project's check from now on.
             "check" if !arg.is_empty() => {
-                let Some(pi) = self.projects.iter().position(|p| p.env_index(&env_path).is_some()) else {
+                let Some(pi) = self
+                    .projects
+                    .iter()
+                    .position(|p| p.env_index(&env_path).is_some())
+                else {
                     return Reply::err("no project here");
                 };
                 self.projects[pi].check = Some(arg.clone());
@@ -196,8 +224,11 @@ impl Shell {
             return;
         }
         let visible = self.has_projects() && self.env().path == env_path;
-        let where_ =
-            if visible { String::new() } else { format!(" in {} (not on screen)", self.env_label(&env_path)) };
+        let where_ = if visible {
+            String::new()
+        } else {
+            format!(" in {} (not on screen)", self.env_label(&env_path))
+        };
         let terminal = self
             .run_in_terminal(&env_path, &command, false, window, cx)
             .and_then(|i| {
@@ -262,8 +293,18 @@ impl Shell {
 
     /// `arakun logs`: the output of the dock terminal `which` (its number, or a
     /// word of its title or command), or the list of them when that is unclear.
-    fn terminal_logs(&self, env_path: &Path, which: &str, lines: usize, one: bool, place: &str, cx: &App) -> Reply {
-        let terminals = self.find_env(env_path).map_or(&[][..], |e| &e.terminals[..]);
+    fn terminal_logs(
+        &self,
+        env_path: &Path,
+        which: &str,
+        lines: usize,
+        one: bool,
+        place: &str,
+        cx: &App,
+    ) -> Reply {
+        let terminals = self
+            .find_env(env_path)
+            .map_or(&[][..], |e| &e.terminals[..]);
         let opened = self.find_env(env_path).map_or(0, |e| e.terminals_opened);
         if terminals.is_empty() {
             return Reply::err(format!("no terminals are open in {place}"));
@@ -303,13 +344,17 @@ impl Shell {
             }
         } else {
             let needle = which.to_lowercase();
-            let hits: Vec<usize> =
-                (0..names.len()).filter(|&i| names[i].to_lowercase().contains(&needle)).collect();
+            let hits: Vec<usize> = (0..names.len())
+                .filter(|&i| names[i].to_lowercase().contains(&needle))
+                .collect();
             match hits[..] {
                 [i] => Some(i),
                 [] => return Reply::err(format!("no terminal matches `{which}`\n{}", listing())),
                 _ => {
-                    return Reply::err(format!("more than one terminal matches `{which}`\n{}", listing()));
+                    return Reply::err(format!(
+                        "more than one terminal matches `{which}`\n{}",
+                        listing()
+                    ));
                 }
             }
         };
@@ -325,7 +370,10 @@ impl Shell {
     /// directory belongs to, else the one on screen.
     pub(super) fn command_env(&self, req: &Request) -> Option<PathBuf> {
         let anchor = match req.cmd.as_str() {
-            "open" => req.args.first().map_or_else(|| req.cwd.clone(), PathBuf::from),
+            "open" => req
+                .args
+                .first()
+                .map_or_else(|| req.cwd.clone(), PathBuf::from),
             _ => req.cwd.clone(),
         };
         self.env_for(&anchor)
@@ -340,7 +388,8 @@ impl Shell {
             .flat_map(|p| &p.environments)
             .filter(|e| {
                 path.starts_with(&e.path)
-                    || crate::platform::canonicalize(&e.path).is_ok_and(|real| path.starts_with(real))
+                    || crate::platform::canonicalize(&e.path)
+                        .is_ok_and(|real| path.starts_with(real))
             })
             .max_by_key(|e| e.path.as_os_str().len())
             .map(|e| e.path.clone())
@@ -351,22 +400,38 @@ impl Shell {
             .iter()
             .find_map(|p| {
                 let e = p.environments.iter().find(|e| e.path == env_path)?;
-                Some(if e.name == p.name { p.name.to_string() } else { format!("{} / {}", p.name, e.name) })
+                Some(if e.name == p.name {
+                    p.name.to_string()
+                } else {
+                    format!("{} / {}", p.name, e.name)
+                })
             })
             .unwrap_or_else(|| env_path.display().to_string())
     }
 
     /// Puts tab `id` in the pane beside the active tab without moving the focus.
-    pub(super) fn show_beside(&mut self, env_path: &Path, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_beside(
+        &mut self,
+        env_path: &Path,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
         if env.tabs.get(env.active_tab).is_some_and(|t| t.id == id) {
             return;
         }
-        let (dir, ratio, focus_first) =
-            env.split.map_or((SplitDir::Right, 0.5, true), |s| (s.dir, s.ratio, s.focus_first));
-        env.split = Some(Split { other: id, dir, ratio, focus_first });
+        let (dir, ratio, focus_first) = env.split.map_or((SplitDir::Right, 0.5, true), |s| {
+            (s.dir, s.ratio, s.focus_first)
+        });
+        env.split = Some(Split {
+            other: id,
+            dir,
+            ratio,
+            focus_first,
+        });
         self.ensure_active_live(window, cx);
         self.ensure_active_browser(false, window, cx);
         self.save(cx);
@@ -387,7 +452,10 @@ impl Shell {
         let reply = match found {
             Some((pi, ei)) => {
                 self.select_env(pi, ei, window, cx);
-                Reply::ok(format!("showing {}", self.env_label(&self.env().path.clone())))
+                Reply::ok(format!(
+                    "showing {}",
+                    self.env_label(&self.env().path.clone())
+                ))
             }
             None => {
                 self.add_project(dir.to_path_buf(), window, cx);
@@ -405,7 +473,10 @@ impl Shell {
                 let shown = pi == self.active_project && ei == p.active_env;
                 let count = |st: Status| e.sessions.iter().filter(|s| s.status == st).count();
                 let mut state = Vec::new();
-                for (n, label) in [(count(Status::Working), "working"), (count(Status::NeedsInput), "needs input")] {
+                for (n, label) in [
+                    (count(Status::Working), "working"),
+                    (count(Status::NeedsInput), "needs input"),
+                ] {
                     if n > 0 {
                         state.push(format!("{n} {label}"));
                     }
@@ -415,7 +486,11 @@ impl Shell {
                     1 => "1 session".to_string(),
                     n => format!("{n} sessions"),
                 };
-                let state = if state.is_empty() { String::new() } else { format!(" ({})", state.join(", ")) };
+                let state = if state.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", state.join(", "))
+                };
                 out.push_str(&format!(
                     "{} {}  [{}]  {}  {sessions}{state}\n",
                     if shown { "*" } else { " " },
@@ -461,12 +536,21 @@ impl ReadyWait {
         if text.is_none() && port.is_none() {
             return None;
         }
-        let secs = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(control::RUN_WAIT);
-        Some(Self { text, port, timeout: Duration::from_secs(secs.clamp(1, control::MAX_RUN_WAIT)) })
+        let secs = args
+            .get(3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(control::RUN_WAIT);
+        Some(Self {
+            text,
+            port,
+            timeout: Duration::from_secs(secs.clamp(1, control::MAX_RUN_WAIT)),
+        })
     }
 
     fn saw_text(&self, out: &str) -> bool {
-        self.text.as_ref().is_none_or(|t| out.to_lowercase().contains(&t.to_lowercase()))
+        self.text
+            .as_ref()
+            .is_none_or(|t| out.to_lowercase().contains(&t.to_lowercase()))
     }
 
     /// Ready once every condition holds; a command that ends first has failed,
@@ -508,9 +592,12 @@ impl ReadyWait {
 /// servers often listen on only one of them).
 pub(super) fn port_open(port: u16) -> bool {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-    [SocketAddr::from((Ipv4Addr::LOCALHOST, port)), SocketAddr::from((Ipv6Addr::LOCALHOST, port))]
-        .iter()
-        .any(|addr| TcpStream::connect_timeout(addr, Duration::from_millis(300)).is_ok())
+    [
+        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    ]
+    .iter()
+    .any(|addr| TcpStream::connect_timeout(addr, Duration::from_millis(300)).is_ok())
 }
 
 fn tail(out: &str, lines: usize) -> String {
@@ -528,13 +615,20 @@ fn with_tail(message: String, out: &str, lines: usize) -> String {
 
 /// The code in the last `[exit N]` line `run_in_terminal` prints after its command.
 fn run_status(output: &str) -> Option<i32> {
-    output.lines().rev().find_map(|l| l.strip_prefix("[exit ")?.strip_suffix(']')?.parse().ok())
+    output
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("[exit ")?.strip_suffix(']')?.parse().ok())
 }
 
 /// Whether a `run_in_terminal` command has ended and its terminal still waits
 /// for Enter (nobody opened its shell): output nobody is using.
 pub(super) fn run_waiting(output: &str) -> bool {
-    output.lines().rev().find(|l| !l.trim().is_empty()).is_some_and(|l| l.trim() == crate::platform::RUN_SHELL_HINT)
+    output
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .is_some_and(|l| l.trim() == crate::platform::RUN_SHELL_HINT)
 }
 
 #[cfg(test)]
@@ -542,7 +636,10 @@ mod tests {
     #[test]
     fn run_status_reads_the_last_exit_line() {
         assert_eq!(super::run_status("building\n"), None);
-        assert_eq!(super::run_status("ok\n[exit 0]\nbanner\n$ make\n[exit 2]\nprompt"), Some(2));
+        assert_eq!(
+            super::run_status("ok\n[exit 0]\nbanner\n$ make\n[exit 2]\nprompt"),
+            Some(2)
+        );
     }
 
     #[test]
@@ -550,29 +647,53 @@ mod tests {
         let hint = crate::platform::RUN_SHELL_HINT;
         assert!(!super::run_waiting("building"));
         assert!(super::run_waiting(&format!("done\n[exit 0]\n{hint}\n\n")));
-        assert!(!super::run_waiting(&format!("done\n[exit 0]\n{hint}\nbanner\n$ ")));
+        assert!(!super::run_waiting(&format!(
+            "done\n[exit 0]\n{hint}\nbanner\n$ "
+        )));
     }
 
     #[test]
     fn run_waits_for_its_text_and_port() {
         use super::{Progress, ReadyWait};
         use std::time::Duration;
-        let parse = |a: &[&str]| ReadyWait::parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let parse =
+            |a: &[&str]| ReadyWait::parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(parse(&["make"]), None);
         assert_eq!(parse(&["make", "", "", ""]), None);
         let both = parse(&["vite", "local:", "5173", ""]).unwrap();
         assert_eq!(both.timeout, Duration::from_secs(crate::control::RUN_WAIT));
-        assert_eq!(both.progress("  ➜  Local:   http://localhost:5173/", false), Progress::Waiting);
-        assert_eq!(both.progress("  ➜  Local:   http://localhost:5173/", true), Progress::Ready);
+        assert_eq!(
+            both.progress("  ➜  Local:   http://localhost:5173/", false),
+            Progress::Waiting
+        );
+        assert_eq!(
+            both.progress("  ➜  Local:   http://localhost:5173/", true),
+            Progress::Ready
+        );
         assert_eq!(both.progress("starting", true), Progress::Waiting);
-        assert_eq!(both.progress("error: EADDRINUSE\n\n[exit 1]", false), Progress::Exited(1));
-        assert_eq!(both.missing("starting", true), "output never showed \"local:\"");
-        assert_eq!(both.describe(), "output showed \"local:\", port 5173 answers");
+        assert_eq!(
+            both.progress("error: EADDRINUSE\n\n[exit 1]", false),
+            Progress::Exited(1)
+        );
+        assert_eq!(
+            both.missing("starting", true),
+            "output never showed \"local:\""
+        );
+        assert_eq!(
+            both.describe(),
+            "output showed \"local:\", port 5173 answers"
+        );
         let text = parse(&["make", "Done", "", "5"]).unwrap();
         assert_eq!(text.timeout, Duration::from_secs(5));
         assert_eq!(text.progress("Done\n\n[exit 0]", true), Progress::Ready);
-        assert_eq!(text.progress("built\n\n[exit 0]", true), Progress::Exited(0));
-        assert_eq!(text.missing("built\n\n[exit 0]", true), "output never showed \"Done\"");
+        assert_eq!(
+            text.progress("built\n\n[exit 0]", true),
+            Progress::Exited(0)
+        );
+        assert_eq!(
+            text.missing("built\n\n[exit 0]", true),
+            "output never showed \"Done\""
+        );
         assert_eq!(super::tail("a\nb\nc", 2), "b\nc");
         assert_eq!(super::with_tail("m".into(), "\n\n", 5), "m");
         assert_eq!(super::with_tail("m".into(), "a\nb", 1), "m\nb");

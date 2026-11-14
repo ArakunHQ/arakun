@@ -23,7 +23,11 @@ fn local_ports(text: &str) -> Vec<u16> {
         let mut rest = text;
         while let Some(i) = rest.find(host) {
             rest = &rest[i + host.len()..];
-            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).take(5).collect();
+            let digits: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .take(5)
+                .collect();
             if let Ok(port) = digits.parse::<u16>()
                 && port > 0
                 && !out.contains(&port)
@@ -37,7 +41,12 @@ fn local_ports(text: &str) -> Vec<u16> {
 
 impl Shell {
     /// Opens a browser tab in the visible environment; an empty url focuses the address bar.
-    pub(super) fn open_browser_tab(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_browser_tab(
+        &mut self,
+        url: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }
@@ -56,7 +65,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<u64> {
-        let title = if url.is_empty() { "New tab".to_string() } else { url.clone() };
+        let title = if url.is_empty() {
+            "New tab".to_string()
+        } else {
+            url.clone()
+        };
         let visible = self.has_projects() && self.env().path == env_path;
         let env = self.find_env_mut(env_path)?;
         let tab = Tab::new(title, TabKind::Browser { url: url.into() });
@@ -80,14 +93,23 @@ impl Shell {
             return Vec::new();
         }
         let env = self.env();
-        std::iter::once(env.active_tab).chain(env.split_other()).collect()
+        std::iter::once(env.active_tab)
+            .chain(env.split_other())
+            .collect()
     }
 
     /// The pages of the browser tabs on screen.
     pub(super) fn visible_browsers(&self) -> Vec<EntityId> {
         let tabs = self.visible_tabs();
         tabs.into_iter()
-            .filter_map(|i| self.env().tabs.get(i)?.browser.as_ref().map(|b| b.view.entity_id()))
+            .filter_map(|i| {
+                self.env()
+                    .tabs
+                    .get(i)?
+                    .browser
+                    .as_ref()
+                    .map(|b| b.view.entity_id())
+            })
             .collect()
     }
 
@@ -105,7 +127,12 @@ impl Shell {
 
     /// Creates the pages of the browser tabs on screen that have none yet; `focus`
     /// focuses the active one.
-    pub(super) fn ensure_active_browser(&mut self, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn ensure_active_browser(
+        &mut self,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }
@@ -145,7 +172,10 @@ impl Shell {
             return;
         }
         let branch = env.branch.clone();
-        let pr = env.pr.as_ref().map(|pr| (pr.number, SharedString::from(pr.url.clone())));
+        let pr = env
+            .pr
+            .as_ref()
+            .map(|pr| (pr.number, SharedString::from(pr.url.clone())));
         let mut candidates: Vec<Server> = Vec::new();
         for t in &env.terminals {
             let text = t.terminal.read(cx).recent_text(SERVER_SCAN_LINES);
@@ -155,19 +185,30 @@ impl Shell {
             };
             for port in local_ports(&text) {
                 if !candidates.iter().any(|s| s.port == port) {
-                    candidates.push(Server { port, by: by.clone() });
+                    candidates.push(Server {
+                        port,
+                        by: by.clone(),
+                    });
                 }
             }
         }
         cx.spawn(async move |_, cx| {
             let servers = cx
                 .background_spawn(async move {
-                    let mut up: Vec<Server> = candidates.into_iter().filter(|s| port_open(s.port)).collect();
+                    let mut up: Vec<Server> = candidates
+                        .into_iter()
+                        .filter(|s| port_open(s.port))
+                        .collect();
                     up.sort_by_key(|s| s.port);
                     up
                 })
                 .await;
-            let info = HomeInfo { branch, pr, servers, checked: true };
+            let info = HomeInfo {
+                branch,
+                pr,
+                servers,
+                checked: true,
+            };
             for view in views {
                 view.update(cx, |v, cx| v.set_home(info.clone(), cx));
             }
@@ -175,7 +216,12 @@ impl Shell {
         .detach();
     }
 
-    fn ensure_page(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<BrowserView>> {
+    fn ensure_page(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<BrowserView>> {
         let env_path = self.env().path.clone();
         self.ensure_page_in(&env_path, index, window, cx)
     }
@@ -196,10 +242,17 @@ impl Shell {
             let env_path = env_path.to_path_buf();
             let url = url.to_string();
             let view = cx.new(|cx| BrowserView::new(url, window, cx));
-            let events = cx.subscribe_in(&view, window, move |this, view, ev: &BrowserEvent, window, cx| {
-                this.browser_event(&env_path, view, ev, window, cx)
+            let events = cx.subscribe_in(
+                &view,
+                window,
+                move |this, view, ev: &BrowserEvent, window, cx| {
+                    this.browser_event(&env_path, view, ev, window, cx)
+                },
+            );
+            tab.browser = Some(BrowserTab {
+                view: view.clone(),
+                _events: events,
             });
-            tab.browser = Some(BrowserTab { view: view.clone(), _events: events });
             self.browsers_dirty = true;
             return Some(view);
         }

@@ -37,7 +37,10 @@ fn run(cmd: &mut Command) -> Result<Output> {
     let out = cmd.output().context("could not run git")?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let err = err.trim().trim_start_matches("fatal: ").trim_start_matches("error: ");
+        let err = err
+            .trim()
+            .trim_start_matches("fatal: ")
+            .trim_start_matches("error: ");
         bail!("{}", if err.is_empty() { "git failed" } else { err });
     }
     Ok(out)
@@ -149,9 +152,10 @@ pub fn branches(repo: &Path) -> Result<Branches> {
             }
             b.local.push(local.to_string());
         } else if let Some(remote) = name.strip_prefix("refs/remotes/")
-            && !remote.ends_with("/HEAD") {
-                b.remote.push(remote.to_string());
-            }
+            && !remote.ends_with("/HEAD")
+        {
+            b.remote.push(remote.to_string());
+        }
     }
     Ok(b)
 }
@@ -164,7 +168,12 @@ pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: Option<&str>) 
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
     let exists = git(repo)
-        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
         .status()
         .is_ok_and(|s| s.success());
     let mut cmd = git(repo);
@@ -301,15 +310,19 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
         return Ok(changes);
     }
 
-    let numstat = stdout(git(dir).args(["diff", diff_base(dir), "--numstat", "-z", "--no-renames"]))
-        .unwrap_or_default();
+    let numstat =
+        stdout(git(dir).args(["diff", diff_base(dir), "--numstat", "-z", "--no-renames"]))
+            .unwrap_or_default();
     let mut counts = std::collections::HashMap::new();
     for rec in numstat.split('\0').filter(|s| !s.is_empty()) {
         let mut f = rec.splitn(3, '\t');
         let (Some(a), Some(r), Some(p)) = (f.next(), f.next(), f.next()) else {
             continue;
         };
-        counts.insert(p.to_string(), (a.parse().unwrap_or(0), r.parse().unwrap_or(0)));
+        counts.insert(
+            p.to_string(),
+            (a.parse().unwrap_or(0), r.parse().unwrap_or(0)),
+        );
     }
     for c in &mut changes {
         if c.kind == ChangeKind::Untracked {
@@ -339,7 +352,11 @@ fn count_lines(path: &Path) -> u32 {
 /// Every tracked and untracked (but not ignored) file, for `@` completion.
 pub fn ls_files(dir: &Path) -> Result<Vec<String>> {
     let text = stdout(git(dir).args(["ls-files", "-co", "--exclude-standard", "-z"]))?;
-    let mut files: Vec<String> = text.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect();
+    let mut files: Vec<String> = text
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
     files.sort_unstable();
     files.truncate(20_000);
     Ok(files)
@@ -379,10 +396,20 @@ fn run_loud(cmd: &mut Command) -> Result<String> {
     let tail = &lines[lines.len().saturating_sub(12)..];
     let msg = tail
         .iter()
-        .map(|l| l.trim_start_matches("fatal: ").trim_start_matches("error: "))
+        .map(|l| {
+            l.trim_start_matches("fatal: ")
+                .trim_start_matches("error: ")
+        })
         .collect::<Vec<_>>()
         .join("\n");
-    bail!("{}", if msg.is_empty() { "git failed".to_string() } else { msg })
+    bail!(
+        "{}",
+        if msg.is_empty() {
+            "git failed".to_string()
+        } else {
+            msg
+        }
+    )
 }
 
 pub(crate) fn strip_ansi(s: &str) -> String {
@@ -449,11 +476,16 @@ pub fn sync(dir: &Path) -> Result<Sync> {
         let Some((key, url)) = line.split_once(' ') else {
             continue;
         };
-        if let Some(name) = key.strip_prefix("remote.").and_then(|k| k.strip_suffix(".url")) {
+        if let Some(name) = key
+            .strip_prefix("remote.")
+            .and_then(|k| k.strip_suffix(".url"))
+        {
             remotes.push((name.to_string(), url.trim().to_string()));
         }
     }
-    let head = git(dir).args(["symbolic-ref", "-q", "--short", "HEAD"]).output();
+    let head = git(dir)
+        .args(["symbolic-ref", "-q", "--short", "HEAD"])
+        .output();
     s.branch = head
         .ok()
         .filter(|o| o.status.success())
@@ -533,7 +565,14 @@ pub fn commit(dir: &Path, message: &str, all: bool) -> Result<()> {
         let text = e.to_string();
         // Git's own wording here is a page of `git status` advice.
         if text.contains("nothing to commit") || text.contains("no changes added to commit") {
-            bail!("{}", if all { "Nothing to commit." } else { "Nothing is staged." });
+            bail!(
+                "{}",
+                if all {
+                    "Nothing to commit."
+                } else {
+                    "Nothing is staged."
+                }
+            );
         }
         return Err(e);
     }
@@ -558,8 +597,13 @@ pub fn stage(dir: &Path, path: &str) -> Result<()> {
 /// Stages the changes git sees to `files` (relative to `dir`), and only those;
 /// returns the ones it staged.
 pub fn stage_only(dir: &Path, files: &[String]) -> Result<Vec<String>> {
-    let changed: std::collections::HashSet<String> = status(dir)?.into_iter().map(|c| c.path).collect();
-    let picked: Vec<String> = files.iter().filter(|f| changed.contains(*f)).cloned().collect();
+    let changed: std::collections::HashSet<String> =
+        status(dir)?.into_iter().map(|c| c.path).collect();
+    let picked: Vec<String> = files
+        .iter()
+        .filter(|f| changed.contains(*f))
+        .cloned()
+        .collect();
     if !picked.is_empty() {
         run_loud(git_paths(dir).args(["add", "-A", "--"]).args(&picked))?;
     }
@@ -570,7 +614,11 @@ pub fn unstage(dir: &Path, path: &str) -> Result<()> {
     if has_head(dir) {
         run_loud(git_paths(dir).args(["restore", "--staged", "--"]).arg(path))?;
     } else {
-        run_loud(git_paths(dir).args(["rm", "-q", "--cached", "--"]).arg(path))?;
+        run_loud(
+            git_paths(dir)
+                .args(["rm", "-q", "--cached", "--"])
+                .arg(path),
+        )?;
     }
     Ok(())
 }
@@ -593,9 +641,14 @@ pub fn discard(dir: &Path, change: &Change) -> Result<()> {
                 .arg(&change.path),
         )?;
     } else {
-        run_loud(git_paths(dir).args(["rm", "-q", "-f", "--cached", "--"]).arg(&change.path))?;
+        run_loud(
+            git_paths(dir)
+                .args(["rm", "-q", "-f", "--cached", "--"])
+                .arg(&change.path),
+        )?;
         if file.exists() {
-            std::fs::remove_file(&file).with_context(|| format!("could not delete {}", change.path))?;
+            std::fs::remove_file(&file)
+                .with_context(|| format!("could not delete {}", change.path))?;
         }
     }
     Ok(())
@@ -621,7 +674,9 @@ impl MergePlan {
                 if self.base_dirty == 1 { "" } else { "s" },
                 if self.base_dirty == 1 { "it" } else { "them" },
             )),
-            Some(b) if self.commits == 0 => Some(format!("{b} already has every commit of {branch}.")),
+            Some(b) if self.commits == 0 => {
+                Some(format!("{b} already has every commit of {branch}."))
+            }
             Some(_) => None,
         }
     }
@@ -629,21 +684,30 @@ impl MergePlan {
 
 fn dirty_tracked(dir: &Path) -> Result<usize> {
     let text = stdout(git(dir).args(["status", "--porcelain=v1", "-z", "--untracked-files=no"]))?;
-    Ok(text.split('\0').filter(|s| s.len() > 3 && !s.starts_with("??")).count())
+    Ok(text
+        .split('\0')
+        .filter(|s| s.len() > 3 && !s.starts_with("??"))
+        .count())
 }
 
 pub fn merge_plan(main: &Path, branch: &str) -> Result<MergePlan> {
-    let head = git(main).args(["symbolic-ref", "-q", "--short", "HEAD"]).output()?;
+    let head = git(main)
+        .args(["symbolic-ref", "-q", "--short", "HEAD"])
+        .output()?;
     let base = head
         .status
         .success()
         .then(|| String::from_utf8_lossy(&head.stdout).trim().to_string())
         .filter(|b| !b.is_empty());
     let commits = match &base {
-        Some(b) => stdout(git(main).args(["rev-list", "--count", &format!("refs/heads/{b}..refs/heads/{branch}")]))?
-            .trim()
-            .parse()
-            .unwrap_or(0),
+        Some(b) => stdout(git(main).args([
+            "rev-list",
+            "--count",
+            &format!("refs/heads/{b}..refs/heads/{branch}"),
+        ]))?
+        .trim()
+        .parse()
+        .unwrap_or(0),
         None => 0,
     };
     Ok(MergePlan {
@@ -692,17 +756,26 @@ pub fn revert(dir: &Path, sha: &str) -> Result<()> {
 
 /// A file as it was at `rev`; None when the commit isn't in the local clone.
 pub fn show_file(dir: &Path, rev: &str, path: &str) -> Option<String> {
-    let out = git(dir).arg("show").arg(format!("{rev}:{path}")).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let out = git(dir)
+        .arg("show")
+        .arg(format!("{rev}:{path}"))
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// A worktree at `path` on `branch` as it is on `origin`, for a branch with no
 /// local checkout yet. `git worktree add` creates the tracking branch itself.
 pub fn add_branch_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
     }
-    let _ = git(repo).args(["fetch", "--quiet", "origin", branch]).output();
+    let _ = git(repo)
+        .args(["fetch", "--quiet", "origin", branch])
+        .output();
     run_loud(git(repo).args(["worktree", "add"]).arg(path).arg(branch))?;
     Ok(())
 }
@@ -719,7 +792,10 @@ pub(crate) fn gh(dir: &Path) -> Command {
 /// The pull request for the checked-out branch; None when there is none or `gh`
 /// can't tell (not logged in, offline).
 pub fn pr_view(dir: &Path) -> Option<PullRequest> {
-    let out = gh(dir).args(["pr", "view", "--json", "url,state,number,isDraft"]).output().ok()?;
+    let out = gh(dir)
+        .args(["pr", "view", "--json", "url,state,number,isDraft"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -734,7 +810,14 @@ pub fn pr_create_web(dir: &Path, branch: &str) -> Result<()> {
         .context("could not run gh")?;
     if !out.status.success() {
         let err = strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        bail!("{}", if err.trim().is_empty() { "gh pr create failed" } else { err.trim() });
+        bail!(
+            "{}",
+            if err.trim().is_empty() {
+                "gh pr create failed"
+            } else {
+                err.trim()
+            }
+        );
     }
     Ok(())
 }

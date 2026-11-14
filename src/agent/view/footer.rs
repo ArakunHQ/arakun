@@ -91,7 +91,10 @@ impl ThreadView {
                                             .text_size(px(crate::ui::TEXT_SM))
                                             .cursor_pointer()
                                             .hover(|s| s.bg(theme::mix(0.8)))
-                                            .child(icon("refresh01", 12.).text_color(theme::background()))
+                                            .child(
+                                                icon("refresh01", 12.)
+                                                    .text_color(theme::background()),
+                                            )
                                             .child("Retry")
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.thread.update(cx, |t, cx| t.retry(cx))
@@ -112,10 +115,14 @@ impl ThreadView {
                                                 .text_size(px(crate::ui::TEXT_SM))
                                                 .cursor_pointer()
                                                 .hover(|s| s.bg(theme::mix(0.18)))
-                                                .child(icon("square-lock02", 12.).text_color(theme::text_muted()))
+                                                .child(
+                                                    icon("square-lock02", 12.)
+                                                        .text_color(theme::text_muted()),
+                                                )
                                                 .child("Sign in in a terminal")
                                                 .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.thread.update(cx, |t, cx| t.request_login(cx))
+                                                    this.thread
+                                                        .update(cx, |t, cx| t.request_login(cx))
                                                 })),
                                         )
                                     })
@@ -158,7 +165,9 @@ impl ThreadView {
         let stuck = t.stuck().map(|s| s.message());
         let offer = t.check_offer().map(str::to_string);
         // Subagents left running once the turn was handed back.
-        let background = (!t.is_subagent_view() && !t.is_busy()).then(|| t.running_subagents()).filter(|&n| n > 0);
+        let background = (!t.is_subagent_view() && !t.is_busy())
+            .then(|| t.running_subagents())
+            .filter(|&n| n > 0);
         if queue.is_empty() && stuck.is_none() && offer.is_none() && background.is_none() {
             return None;
         }
@@ -175,7 +184,9 @@ impl ThreadView {
                 .rounded(px(8.))
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
-                .when_some(glyph, |d, g| d.child(icon(g, 14.).text_color(theme::text_subtle())))
+                .when_some(glyph, |d, g| {
+                    d.child(icon(g, 14.).text_color(theme::text_subtle()))
+                })
                 .child(label)
         };
         Some(

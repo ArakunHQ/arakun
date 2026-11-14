@@ -7,15 +7,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cef::{
-    ImplBrowser as _, ImplBrowserHost as _, ImplFileDialogCallback as _, ImplFrame as _, ImplJsdialogCallback as _,
-    KeyEventType,
+    ImplBrowser as _, ImplBrowserHost as _, ImplFileDialogCallback as _, ImplFrame as _,
+    ImplJsdialogCallback as _, KeyEventType,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase,
-    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    HitboxBehavior, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
-    Render, RenderImage, ScrollDelta, ScrollWheelEvent, SharedString,
+    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Corners, CursorStyle,
+    DispatchPhase, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, HitboxBehavior, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent,
+    Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    Pixels, Point, Render, RenderImage, ScrollDelta, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, UTF16Selection, Window, canvas,
     div, point, prelude::FluentBuilder as _, px, size,
 };
@@ -23,25 +23,30 @@ use gpui::{
 use futures::channel::oneshot;
 
 use super::chrome::{self, Toolbar};
-use super::home::{self, HomeInfo};
 use super::client::{
-    self, Bitmap, DevToolsResult, DialogKind, DownloadStatus, FileDialogKind, FileDialogRequest, JsDialog, MenuRequest,
-    Tab, TabState, Update,
+    self, Bitmap, DevToolsResult, DialogKind, DownloadStatus, FileDialogKind, FileDialogRequest,
+    JsDialog, MenuRequest, Tab, TabState, Update,
 };
-use super::{BrowserEvent, ConsoleLine, PageState};
+use super::home::{self, HomeInfo};
 use super::keys;
 use super::runtime;
 use super::text_field::{TextField, TextFieldEvent};
 use super::url;
+use super::{BrowserEvent, ConsoleLine, PageState};
 use crate::theme;
 use crate::ui::icon;
 
 /// "No range" for CEF's IME calls. Passing none means 0..0, which makes Chromium replace from
 /// the start of the field: text lands at the beginning instead of at the caret.
-const NO_RANGE: cef::Range = cef::Range { from: u32::MAX, to: u32::MAX };
+const NO_RANGE: cef::Range = cef::Range {
+    from: u32::MAX,
+    to: u32::MAX,
+};
 
 /// Chrome's zoom steps.
-const ZOOM_FACTORS: [f64; 13] = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+const ZOOM_FACTORS: [f64; 13] = [
+    0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0,
+];
 
 struct Dialog {
     request: JsDialog,
@@ -134,7 +139,11 @@ impl BrowserView {
     /// page itself loads asynchronously.
     pub fn new(url: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let created_at = Instant::now();
-        let target = if url.trim().is_empty() { None } else { Some(url::from_input(&url)) };
+        let target = if url.trim().is_empty() {
+            None
+        } else {
+            Some(url::from_input(&url))
+        };
         let address = cx.new(|cx| TextField::new("Search or enter address", cx));
         let home_field = cx.new(|cx| TextField::new("Search or enter address", cx));
         let error = runtime::ensure(cx).err().map(SharedString::from);
@@ -158,12 +167,21 @@ impl BrowserView {
             }),
             cx.observe_window_activation(window, |this, window, _| {
                 if let Some(host) = this.tab.host() {
-                    host.set_focus((window.is_window_active() && this.page_focus.is_focused(window)) as i32);
+                    host.set_focus(
+                        (window.is_window_active() && this.page_focus.is_focused(window)) as i32,
+                    );
                 }
             }),
         ];
         subscriptions.push(cx.on_release(|this, cx| {
-            for image in [this.image.take(), this.popup_image.take(), this.favicon.take()].into_iter().flatten() {
+            for image in [
+                this.image.take(),
+                this.popup_image.take(),
+                this.favicon.take(),
+            ]
+            .into_iter()
+            .flatten()
+            {
                 cx.drop_image(image, None);
             }
         }));
@@ -266,7 +284,8 @@ impl BrowserView {
         self.error = self.runtime_error.clone();
         self.crashed = false;
         self.url = target.clone().into();
-        self.address.update(cx, |f, cx| f.set_text(address_text(&target), cx));
+        self.address
+            .update(cx, |f, cx| f.set_text(address_text(&target), cx));
         match self.tab.browser().and_then(|b| b.main_frame()) {
             Some(frame) => frame.load_url(Some(&target.as_str().into())),
             None => self.pending_url = Some(target),
@@ -296,7 +315,11 @@ impl BrowserView {
         self.error = self.runtime_error.clone();
         self.crashed = false;
         if let Some(b) = self.tab.browser() {
-            if ignore_cache { b.reload_ignore_cache() } else { b.reload() }
+            if ignore_cache {
+                b.reload_ignore_cache()
+            } else {
+                b.reload()
+            }
         }
         cx.notify();
     }
@@ -331,7 +354,10 @@ impl BrowserView {
             host.close_browser(1);
         }
         self.tab.browser.borrow_mut().take();
-        for image in [self.image.take(), self.popup_image.take()].into_iter().flatten() {
+        for image in [self.image.take(), self.popup_image.take()]
+            .into_iter()
+            .flatten()
+        {
             cx.drop_image(image, None);
         }
         cx.notify();
@@ -357,7 +383,9 @@ impl BrowserView {
     /// Opens Chromium's DevTools for this page as a new tab (through
     /// [`BrowserEvent::OpenInNewTab`]).
     pub fn inspect(&mut self, cx: &mut Context<Self>) {
-        let Some(port) = runtime::cdp_port() else { return };
+        let Some(port) = runtime::cdp_port() else {
+            return;
+        };
         let info = self.devtools("Target.getTargetInfo", serde_json::json!({}));
         cx.spawn(async move |this, cx| {
             let Ok(Ok(info)) = info.await else { return };
@@ -369,7 +397,11 @@ impl BrowserView {
     }
 
     /// Sends a Chrome DevTools Protocol command to the page; resolves with its `result`.
-    pub fn devtools(&mut self, method: &str, params: serde_json::Value) -> oneshot::Receiver<DevToolsResult> {
+    pub fn devtools(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> oneshot::Receiver<DevToolsResult> {
         if self.devtools_observer.is_none()
             && let Some(host) = self.tab.host()
         {
@@ -389,7 +421,11 @@ impl BrowserView {
             open: self.tab.browser.borrow().is_some(),
             loading: self.loading,
             loads: self.loads,
-            error: if self.closed { Some("the tab was closed".into()) } else { self.error.clone() },
+            error: if self.closed {
+                Some("the tab was closed".into())
+            } else {
+                self.error.clone()
+            },
             dialog: self.dialog.as_ref().map(|d| d.request.message.clone()),
         }
     }
@@ -397,7 +433,11 @@ impl BrowserView {
     /// Keeps the page rendering while it is off screen, so `arakun page` can wait for
     /// loads and take screenshots there. Every `true` needs a matching `false`.
     pub fn hold_awake(&mut self, hold: bool) {
-        self.holds = if hold { self.holds + 1 } else { self.holds.saturating_sub(1) };
+        self.holds = if hold {
+            self.holds + 1
+        } else {
+            self.holds.saturating_sub(1)
+        };
         self.update_awake();
     }
 
@@ -430,17 +470,23 @@ impl BrowserView {
             tab.updates.borrow_mut().clear();
             return;
         }
-        if tab.browser.borrow().is_none() && runtime::CONTEXT_READY.load(std::sync::atomic::Ordering::Relaxed) {
-            let url = self.pending_url.take().unwrap_or_else(|| "about:blank".into());
+        if tab.browser.borrow().is_none()
+            && runtime::CONTEXT_READY.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let url = self
+                .pending_url
+                .take()
+                .unwrap_or_else(|| "about:blank".into());
             let browser = client::create_browser(&url, &tab);
             if browser.is_none() {
                 self.error = Some("Chromium could not create the page".into());
             }
             *tab.browser.borrow_mut() = browser;
             if let Some(host) = tab.host()
-                && !tab.visible.get() {
-                    host.was_hidden(1);
-                }
+                && !tab.visible.get()
+            {
+                host.was_hidden(1);
+            }
         }
 
         if tab.live_changed.replace(false)
@@ -463,7 +509,10 @@ impl BrowserView {
             if !self.first_paint {
                 self.first_paint = true;
                 if runtime::timing() {
-                    eprintln!("arakun-browser: first paint {:?} after BrowserView::new", self.created_at.elapsed());
+                    eprintln!(
+                        "arakun-browser: first paint {:?} after BrowserView::new",
+                        self.created_at.elapsed()
+                    );
                 }
             }
             self.image_view = tab.frame_view.get();
@@ -483,16 +532,26 @@ impl BrowserView {
 
     fn replace_image(&mut self, bitmap: Bitmap, popup: bool, cx: &mut Context<Self>) {
         if !popup
-            && let Some([r, g, b]) = super::client::edge_color(&bitmap.bgra, bitmap.width as usize, bitmap.height as usize)
+            && let Some([r, g, b]) = super::client::edge_color(
+                &bitmap.bgra,
+                bitmap.width as usize,
+                bitmap.height as usize,
+            )
         {
             self.page_color = gpui::rgb(u32::from_be_bytes([0, r, g, b]));
         }
-        let Some(image) = to_render_image(bitmap) else { return };
+        let Some(image) = to_render_image(bitmap) else {
+            return;
+        };
         if !popup {
             // The next frame of this size is written into this image's tile in place.
             *self.tab.live.borrow_mut() = Some(image.clone());
         }
-        let slot = if popup { &mut self.popup_image } else { &mut self.image };
+        let slot = if popup {
+            &mut self.popup_image
+        } else {
+            &mut self.image
+        };
         if let Some(old) = slot.replace(image) {
             cx.drop_image(old, None);
         }
@@ -525,7 +584,11 @@ impl BrowserView {
                     cx.emit(BrowserEvent::UrlChanged(self.url.clone()));
                 }
             }
-            Update::Loading { loading, back, forward } => {
+            Update::Loading {
+                loading,
+                back,
+                forward,
+            } => {
                 self.can_back = back;
                 self.can_forward = forward;
                 if loading != self.loading {
@@ -581,7 +644,10 @@ impl BrowserView {
             Update::Selection(s) => self.selection = s,
             // Browsers only let a page write the clipboard right after a user gesture.
             Update::PageCopy(text) => {
-                if self.last_input.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+                if self
+                    .last_input
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(5))
+                {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
             }
@@ -594,7 +660,10 @@ impl BrowserView {
                 }
             }
             Update::PopupRect(x, y, w, h) => {
-                self.popup_rect = Some(Bounds::new(point(px(x as f32), px(y as f32)), size(px(w as f32), px(h as f32))));
+                self.popup_rect = Some(Bounds::new(
+                    point(px(x as f32), px(y as f32)),
+                    size(px(w as f32), px(h as f32)),
+                ));
             }
         }
     }
@@ -619,14 +688,23 @@ impl BrowserView {
             Some(field) => field.focus_handle(cx),
             None => self.dialog_focus.clone(),
         });
-        self.dialog = Some(Dialog { request, field, _subscription: subscription });
+        self.dialog = Some(Dialog {
+            request,
+            field,
+            _subscription: subscription,
+        });
     }
 
     /// Answers an `<input type=file>` (or `showSaveFilePicker`) with the system picker.
     /// CEF holds the page until `cont`/`cancel`, so every outcome must reach one of them.
     fn open_file_dialog(&mut self, request: FileDialogRequest, cx: &mut Context<Self>) {
         use std::path::PathBuf;
-        let FileDialogRequest { kind, title, default_path, callback } = request;
+        let FileDialogRequest {
+            kind,
+            title,
+            default_path,
+            callback,
+        } = request;
         let paths: std::pin::Pin<Box<dyn std::future::Future<Output = Vec<PathBuf>>>> =
             if kind == FileDialogKind::Save {
                 let default = PathBuf::from(&default_path);
@@ -635,9 +713,18 @@ impl BrowserView {
                     .filter(|p| p.is_absolute() && p.is_dir())
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| crate::platform::home().join("Downloads"));
-                let name = default.file_name().map(|n| n.to_string_lossy().into_owned());
+                let name = default
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
                 let rx = cx.prompt_for_new_path(&dir, name.as_deref());
-                Box::pin(async move { rx.await.ok().and_then(|r| r.ok()).flatten().into_iter().collect() })
+                Box::pin(async move {
+                    rx.await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                        .into_iter()
+                        .collect()
+                })
             } else {
                 let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
                     files: kind != FileDialogKind::Folder,
@@ -645,7 +732,13 @@ impl BrowserView {
                     multiple: kind == FileDialogKind::OpenMultiple,
                     prompt: (!title.is_empty()).then(|| title.into()),
                 });
-                Box::pin(async move { rx.await.ok().and_then(|r| r.ok()).flatten().unwrap_or_default() })
+                Box::pin(async move {
+                    rx.await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                        .unwrap_or_default()
+                })
             };
         cx.spawn(async move |_, _| {
             let picked = paths.await;
@@ -663,16 +756,31 @@ impl BrowserView {
     }
 
     fn finish_dialog(&mut self, ok: bool, cx: &mut Context<Self>) {
-        let Some(dialog) = self.dialog.take() else { return };
-        let input = dialog.field.as_ref().map(|f| f.read(cx).text().to_string()).unwrap_or_default();
-        dialog.request.callback.cont(ok as i32, Some(&input.as_str().into()));
+        let Some(dialog) = self.dialog.take() else {
+            return;
+        };
+        let input = dialog
+            .field
+            .as_ref()
+            .map(|f| f.read(cx).text().to_string())
+            .unwrap_or_default();
+        dialog
+            .request
+            .callback
+            .cont(ok as i32, Some(&input.as_str().into()));
         self.pending_focus = Some(self.page_focus.clone());
         cx.notify();
     }
 
     // --- view → CEF ------------------------------------------------------------------------
 
-    fn address_event(&mut self, _: &Entity<TextField>, ev: &TextFieldEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn address_event(
+        &mut self,
+        _: &Entity<TextField>,
+        ev: &TextFieldEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match ev {
             TextFieldEvent::Submit => {
                 let text = self.address.read(cx).text().to_string();
@@ -681,13 +789,20 @@ impl BrowserView {
             }
             TextFieldEvent::Cancel => {
                 let shown = self.url.clone();
-                self.address.update(cx, |f, cx| f.set_text(address_text(&shown), cx));
+                self.address
+                    .update(cx, |f, cx| f.set_text(address_text(&shown), cx));
                 window.focus(&self.page_focus, cx);
             }
         }
     }
 
-    fn home_field_event(&mut self, _: &Entity<TextField>, ev: &TextFieldEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn home_field_event(
+        &mut self,
+        _: &Entity<TextField>,
+        ev: &TextFieldEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match ev {
             TextFieldEvent::Submit => {
                 let text = self.home_field.read(cx).text().to_string();
@@ -706,7 +821,12 @@ impl BrowserView {
         window.focus(&self.page_focus, cx);
     }
 
-    fn page_point(&self, position: Point<Pixels>, modifiers: &gpui::Modifiers, buttons: u32) -> cef::MouseEvent {
+    fn page_point(
+        &self,
+        position: Point<Pixels>,
+        modifiers: &gpui::Modifiers,
+        buttons: u32,
+    ) -> cef::MouseEvent {
         let origin = self.page_bounds.get().origin;
         cef::MouseEvent {
             x: f32::from(position.x - origin.x).round() as i32,
@@ -717,7 +837,10 @@ impl BrowserView {
 
     fn mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(dialog) = &self.dialog {
-            let focus = dialog.field.as_ref().map_or_else(|| self.dialog_focus.clone(), |f| f.focus_handle(cx));
+            let focus = dialog
+                .field
+                .as_ref()
+                .map_or_else(|| self.dialog_focus.clone(), |f| f.focus_handle(cx));
             window.focus(&focus, cx);
             return;
         }
@@ -792,7 +915,11 @@ impl BrowserView {
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
         // Cmd on macOS does what Ctrl does elsewhere.
-        let ctrl = if cfg!(target_os = "macos") { m.platform } else { m.control } && !m.alt;
+        let ctrl = if cfg!(target_os = "macos") {
+            m.platform
+        } else {
+            m.control
+        } && !m.alt;
         let handled = match ks.key.as_str() {
             "[" if cfg!(target_os = "macos") && ctrl => {
                 self.back(cx);
@@ -850,12 +977,23 @@ impl BrowserView {
     }
 
     fn zoom(&mut self, direction: i32, _: &mut Context<Self>) -> bool {
-        let Some(host) = self.tab.host() else { return true };
+        let Some(host) = self.tab.host() else {
+            return true;
+        };
         let factor = 1.2f64.powf(host.zoom_level());
         let next = match direction {
             0 => 1.0,
-            d if d > 0 => ZOOM_FACTORS.iter().copied().find(|&z| z > factor + 0.01).unwrap_or(2.0),
-            _ => ZOOM_FACTORS.iter().rev().copied().find(|&z| z < factor - 0.01).unwrap_or(0.25),
+            d if d > 0 => ZOOM_FACTORS
+                .iter()
+                .copied()
+                .find(|&z| z > factor + 0.01)
+                .unwrap_or(2.0),
+            _ => ZOOM_FACTORS
+                .iter()
+                .rev()
+                .copied()
+                .find(|&z| z < factor - 0.01)
+                .unwrap_or(0.25),
         };
         host.set_zoom_level(next.ln() / 1.2f64.ln());
         true
@@ -887,7 +1025,8 @@ impl BrowserView {
         #[cfg(target_os = "linux")]
         {
             let m = &ks.modifiers;
-            let paste = (m.control && ks.key == "v") || (m.shift && !m.control && ks.key == "insert");
+            let paste =
+                (m.control && ks.key == "v") || (m.shift && !m.control && ks.key == "insert");
             if paste && !m.alt && !m.platform {
                 self.paste(cx);
                 cx.stop_propagation();
@@ -922,7 +1061,12 @@ impl BrowserView {
         }
         let mods = keys::flags(&ks.modifiers);
         let ch = keys::key_character(&ks.key, ks.key_char.as_deref());
-        host.send_key_event(Some(&keys::event(KeyEventType::RAWKEYDOWN, &ks.key, mods, ch)));
+        host.send_key_event(Some(&keys::event(
+            KeyEventType::RAWKEYDOWN,
+            &ks.key,
+            mods,
+            ch,
+        )));
         // Printable text reaches the page through the input handler as CHAR events; Enter
         // and Tab never do, and forms only submit on Enter's CHAR.
         if ks.key == "enter" || ks.key == "tab" {
@@ -942,7 +1086,12 @@ impl BrowserView {
         }
         let Some(host) = self.tab.host() else { return };
         let ks = &ev.keystroke;
-        host.send_key_event(Some(&keys::event(KeyEventType::KEYUP, &ks.key, keys::flags(&ks.modifiers), 0)));
+        host.send_key_event(Some(&keys::event(
+            KeyEventType::KEYUP,
+            &ks.key,
+            keys::flags(&ks.modifiers),
+            0,
+        )));
     }
 
     fn run_menu(&mut self, command: MenuCommand, cx: &mut Context<Self>) {
@@ -954,8 +1103,12 @@ impl BrowserView {
             MenuCommand::Reload => self.reload(cx),
             MenuCommand::OpenLink => cx.emit(BrowserEvent::OpenInNewTab(menu.link)),
             MenuCommand::CopyLink => cx.write_to_clipboard(ClipboardItem::new_string(menu.link)),
-            MenuCommand::OpenImage => cx.emit(BrowserEvent::OpenInNewTab(menu.image.unwrap_or_default())),
-            MenuCommand::CopyImage => cx.write_to_clipboard(ClipboardItem::new_string(menu.image.unwrap_or_default())),
+            MenuCommand::OpenImage => {
+                cx.emit(BrowserEvent::OpenInNewTab(menu.image.unwrap_or_default()))
+            }
+            MenuCommand::CopyImage => {
+                cx.write_to_clipboard(ClipboardItem::new_string(menu.image.unwrap_or_default()))
+            }
             MenuCommand::Copy => cx.write_to_clipboard(ClipboardItem::new_string(menu.selection)),
             MenuCommand::Cut => {
                 cx.write_to_clipboard(ClipboardItem::new_string(menu.selection));
@@ -979,7 +1132,9 @@ impl BrowserView {
         let frame = self.tab.browser().and_then(|b| b.focused_frame());
         #[cfg(target_os = "linux")]
         {
-            let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return };
+            let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+                return;
+            };
             if let Some(frame) = frame {
                 let script = super::clipboard::paste_script(&text);
                 frame.execute_java_script(Some(&script.as_str().into()), None, 0);
@@ -1040,15 +1195,27 @@ impl BrowserView {
         }
         if items.is_empty() {
             items.push((MenuCommand::Back, "Back", Some("Alt+←"), self.can_back));
-            items.push((MenuCommand::Forward, "Forward", Some("Alt+→"), self.can_forward));
+            items.push((
+                MenuCommand::Forward,
+                "Forward",
+                Some("Alt+→"),
+                self.can_forward,
+            ));
             items.push((MenuCommand::Reload, "Reload", Some("Ctrl+R"), true));
         }
         let inspect = runtime::cdp_port().is_some();
 
         let page = self.page_bounds.get().size;
-        let (w, h) = (210., items.len() as f32 * 26. + if inspect { 26. + 9. } else { 0. } + 10.);
+        let (w, h) = (
+            210.,
+            items.len() as f32 * 26. + if inspect { 26. + 9. } else { 0. } + 10.,
+        );
         let x = (menu.x as f32).min(f32::from(page.width) - w - 4.).max(4.);
-        let y = if menu.y as f32 + h > f32::from(page.height) - 4. { (menu.y as f32 - h).max(4.) } else { menu.y as f32 };
+        let y = if menu.y as f32 + h > f32::from(page.height) - 4. {
+            (menu.y as f32 - h).max(4.)
+        } else {
+            menu.y as f32
+        };
 
         chrome::popover("browser-menu")
             .absolute()
@@ -1056,18 +1223,26 @@ impl BrowserView {
             .top(px(y))
             .w(px(w))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .children(items.into_iter().enumerate().map(|(i, (cmd, label, shortcut, enabled))| {
-                let item = chrome::menu_item(("browser-menu-item", i), label, shortcut, enabled);
-                if enabled {
-                    item.on_click(cx.listener(move |this, _, _, cx| this.run_menu(cmd, cx)))
-                } else {
-                    item
-                }
-            }))
+            .children(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (cmd, label, shortcut, enabled))| {
+                        let item =
+                            chrome::menu_item(("browser-menu-item", i), label, shortcut, enabled);
+                        if enabled {
+                            item.on_click(cx.listener(move |this, _, _, cx| this.run_menu(cmd, cx)))
+                        } else {
+                            item
+                        }
+                    }),
+            )
             .when(inspect, |d| {
                 d.child(chrome::separator()).child(
                     chrome::menu_item("browser-menu-inspect", "Inspect", Some("F12"), true)
-                        .on_click(cx.listener(|this, _, _, cx| this.run_menu(MenuCommand::Inspect, cx))),
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.run_menu(MenuCommand::Inspect, cx)),
+                        ),
                 )
             })
             .into_any_element()
@@ -1108,7 +1283,12 @@ impl BrowserView {
                     .max_h_full()
                     .p(px(16.))
                     .gap(px(12.))
-                    .child(div().flex_none().text_size(px(crate::ui::TEXT_MD)).child(format!("{host} says")))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(crate::ui::TEXT_MD))
+                            .child(format!("{host} says")),
+                    )
                     .child(
                         div()
                             .id("browser-dialog-message")
@@ -1142,13 +1322,14 @@ impl BrowserView {
                             .when(kind != DialogKind::Alert, |d| {
                                 d.child(
                                     chrome::button("browser-dialog-cancel", "Cancel", false)
-                                        .on_click(cx.listener(|this, _, _, cx| this.finish_dialog(false, cx))),
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.finish_dialog(false, cx)
+                                        })),
                                 )
                             })
-                            .child(
-                                chrome::button("browser-dialog-ok", "OK", true)
-                                    .on_click(cx.listener(|this, _, _, cx| this.finish_dialog(true, cx))),
-                            ),
+                            .child(chrome::button("browser-dialog-ok", "OK", true).on_click(
+                                cx.listener(|this, _, _, cx| this.finish_dialog(true, cx)),
+                            )),
                     ),
             )
             .into_any_element()
@@ -1165,7 +1346,9 @@ impl BrowserView {
         } else {
             format!("{}…", d.name)
         };
-        let dir = std::path::Path::new(&d.path).parent().map(|p| p.to_path_buf());
+        let dir = std::path::Path::new(&d.path)
+            .parent()
+            .map(|p| p.to_path_buf());
         Some(
             div()
                 .id("browser-download")
@@ -1180,10 +1363,24 @@ impl BrowserView {
                 .rounded(px(4.))
                 .bg(theme::fill_selected())
                 .text_size(px(crate::ui::TEXT_XS))
-                .text_color(if d.failed { gpui::Hsla::from(theme::danger()) } else { theme::mix(0.7) })
+                .text_color(if d.failed {
+                    gpui::Hsla::from(theme::danger())
+                } else {
+                    theme::mix(0.7)
+                })
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::fill_selected()))
-                .child(icon(if d.done { "checkmark-circle02" } else { "circle-arrow-down01" }, 12.).text_color(theme::text_subtle()))
+                .child(
+                    icon(
+                        if d.done {
+                            "checkmark-circle02"
+                        } else {
+                            "circle-arrow-down01"
+                        },
+                        12.,
+                    )
+                    .text_color(theme::text_subtle()),
+                )
                 .child(div().truncate().child(label))
                 .on_click(cx.listener(move |_, _, _, _| {
                     if let Some(dir) = &dir {
@@ -1213,16 +1410,31 @@ fn button_type(b: MouseButton) -> cef::MouseButtonType {
 /// that starts at a fractional pixel (a split, a UI zoom of 110 %) would
 /// otherwise resample the page and blur it. A bitmap at another density (CEF
 /// ignoring the scale) is stretched over `logical` as before.
-fn pixel_aligned(origin: Point<Pixels>, pixels: gpui::Size<gpui::DevicePixels>, logical: gpui::Size<Pixels>, scale: f32) -> Bounds<Pixels> {
+fn pixel_aligned(
+    origin: Point<Pixels>,
+    pixels: gpui::Size<gpui::DevicePixels>,
+    logical: gpui::Size<Pixels>,
+    scale: f32,
+) -> Bounds<Pixels> {
     let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
-    let native = size(px(pixels.width.0 as f32 / scale), px(pixels.height.0 as f32 / scale));
-    let close = (native.width - logical.width).abs() <= px(2.) && (native.height - logical.height).abs() <= px(2.);
-    Bounds::new(point(snap(origin.x), snap(origin.y)), if close { native } else { logical })
+    let native = size(
+        px(pixels.width.0 as f32 / scale),
+        px(pixels.height.0 as f32 / scale),
+    );
+    let close = (native.width - logical.width).abs() <= px(2.)
+        && (native.height - logical.height).abs() <= px(2.);
+    Bounds::new(
+        point(snap(origin.x), snap(origin.y)),
+        if close { native } else { logical },
+    )
 }
 
 /// Tells CEF about a new page size or scale factor.
 fn resize(tab: &TabState, bounds: Bounds<Pixels>, scale: f32) {
-    let size = (f32::from(bounds.size.width).round() as i32, f32::from(bounds.size.height).round() as i32);
+    let size = (
+        f32::from(bounds.size.width).round() as i32,
+        f32::from(bounds.size.height).round() as i32,
+    );
     if size.0 <= 0 || size.1 <= 0 {
         return;
     }
@@ -1239,12 +1451,26 @@ fn resize(tab: &TabState, bounds: Bounds<Pixels>, scale: f32) {
 }
 
 impl EntityInputHandler for BrowserView {
-    fn text_for_range(&mut self, _: Range<usize>, _: &mut Option<Range<usize>>, _: &mut Window, _: &mut Context<Self>) -> Option<String> {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
         None
     }
 
-    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
-        Some(UTF16Selection { range: 0..0, reversed: false })
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
@@ -1253,12 +1479,19 @@ impl EntityInputHandler for BrowserView {
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
         if std::mem::take(&mut self.composing)
-            && let Some(host) = self.tab.host() {
-                host.ime_finish_composing_text(0);
-            }
+            && let Some(host) = self.tab.host()
+        {
+            host.ime_finish_composing_text(0);
+        }
     }
 
-    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, _: &mut Window, _: &mut Context<Self>) {
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
         let Some(host) = self.tab.host() else { return };
         if std::mem::take(&mut self.composing) {
             host.ime_commit_text(Some(&text.into()), Some(&NO_RANGE), 0);
@@ -1288,11 +1521,22 @@ impl EntityInputHandler for BrowserView {
         }
     }
 
-    fn bounds_for_range(&mut self, _: Range<usize>, element_bounds: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
         Some(element_bounds)
     }
 
-    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+    fn character_index_for_point(
+        &mut self,
+        _: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
         None
     }
 }
@@ -1317,7 +1561,11 @@ impl Render for BrowserView {
                 on_back: Box::new(cx.listener(|this, _, _, cx| this.back(cx))),
                 on_forward: Box::new(cx.listener(|this, _, _, cx| this.forward(cx))),
                 on_reload: Box::new(cx.listener(|this, _, _, cx| {
-                    if this.loading { this.stop(cx) } else { this.reload(cx) }
+                    if this.loading {
+                        this.stop(cx)
+                    } else {
+                        this.reload(cx)
+                    }
                 })),
             },
             self.address.clone(),
@@ -1329,10 +1577,18 @@ impl Render for BrowserView {
         let home = self.is_home();
         let image = self.image.clone().filter(|_| !self.closed && !home);
         let image_view = self.image_view;
-        let popup = self.popup_image.clone().zip(self.popup_rect).filter(|_| !home);
+        let popup = self
+            .popup_image
+            .clone()
+            .zip(self.popup_rect)
+            .filter(|_| !home);
         let page_bounds = self.page_bounds.clone();
         let focus = self.page_focus.clone();
-        let cursor = if home { CursorStyle::Arrow } else { self.cursor };
+        let cursor = if home {
+            CursorStyle::Arrow
+        } else {
+            self.cursor
+        };
         let dragging = self.dragging.is_some();
         let home_page = home.then(|| self.render_home(window, cx));
 
@@ -1341,7 +1597,11 @@ impl Render for BrowserView {
             .relative()
             .flex_1()
             .overflow_hidden()
-            .bg(if image.is_some() { self.page_color.into() } else { theme::background() })
+            .bg(if image.is_some() {
+                self.page_color.into()
+            } else {
+                theme::background()
+            })
             .track_focus(&self.page_focus)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
@@ -1376,7 +1636,14 @@ impl Render for BrowserView {
                                 size(px(s.width.0 as f32 / scale), px(s.height.0 as f32 / scale))
                             };
                             let image_bounds = pixel_aligned(bounds.origin, s, logical, scale);
-                            let _ = window.paint_image(bounds, image_bounds, Corners::default(), image, 0, false);
+                            let _ = window.paint_image(
+                                bounds,
+                                image_bounds,
+                                Corners::default(),
+                                image,
+                                0,
+                                false,
+                            );
                         }
                         if let Some((image, rect)) = popup {
                             let s = image.size(0);
@@ -1387,9 +1654,20 @@ impl Render for BrowserView {
                                 size(px(s.width.0 as f32 / scale), px(s.height.0 as f32 / scale))
                             };
                             let image_bounds = Bounds::new(bounds.origin + rect.origin, logical);
-                            let _ = window.paint_image(bounds, image_bounds, Corners::default(), image, 0, false);
+                            let _ = window.paint_image(
+                                bounds,
+                                image_bounds,
+                                Corners::default(),
+                                image,
+                                0,
+                                false,
+                            );
                         }
-                        window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
+                        window.handle_input(
+                            &focus,
+                            ElementInputHandler::new(bounds, entity.clone()),
+                            cx,
+                        );
 
                         let view = entity.clone();
                         let hit = hitbox.clone();
@@ -1401,7 +1679,9 @@ impl Render for BrowserView {
                         });
                         let view = entity.clone();
                         window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, cx| {
-                            if phase == DispatchPhase::Bubble && (dragging || hitbox.is_hovered(window)) {
+                            if phase == DispatchPhase::Bubble
+                                && (dragging || hitbox.is_hovered(window))
+                            {
                                 view.update(cx, |this, _| this.mouse_up(ev));
                             }
                         });
@@ -1410,27 +1690,30 @@ impl Render for BrowserView {
                 .size_full(),
             )
             .children(home_page)
-            .when_some(self.status.clone().filter(|_| self.menu.is_none()), |d, status| {
-                d.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .bottom_0()
-                        .max_w(px(560.))
-                        .h(px(22.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .rounded_tr(px(6.))
-                        .bg(chrome::panel_bg())
-                        .border_t_1()
-                        .border_r_1()
-                        .border_color(theme::border())
-                        .text_size(px(crate::ui::TEXT_SM))
-                        .text_color(theme::text_muted())
-                        .child(div().truncate().child(status)),
-                )
-            })
+            .when_some(
+                self.status.clone().filter(|_| self.menu.is_none()),
+                |d, status| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .bottom_0()
+                            .max_w(px(560.))
+                            .h(px(22.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .rounded_tr(px(6.))
+                            .bg(chrome::panel_bg())
+                            .border_t_1()
+                            .border_r_1()
+                            .border_color(theme::border())
+                            .text_size(px(crate::ui::TEXT_SM))
+                            .text_color(theme::text_muted())
+                            .child(div().truncate().child(status)),
+                    )
+                },
+            )
             .when_some(self.error.clone(), |d, error| {
                 let (title, icon_name) = if self.crashed {
                     ("This page crashed", "alert-circle")
@@ -1446,8 +1729,14 @@ impl Render for BrowserView {
                 });
                 d.child(chrome::notice(icon_name, title, Some(error), retry))
             })
-            .when_some(self.menu.as_ref().map(|m| self.render_menu(m, cx)), |d, menu| d.child(menu))
-            .when_some(self.dialog.as_ref().map(|dlg| self.render_dialog(dlg, cx)), |d, dialog| d.child(dialog));
+            .when_some(
+                self.menu.as_ref().map(|m| self.render_menu(m, cx)),
+                |d, menu| d.child(menu),
+            )
+            .when_some(
+                self.dialog.as_ref().map(|dlg| self.render_dialog(dlg, cx)),
+                |d, dialog| d.child(dialog),
+            );
 
         div()
             .id("browser-view")

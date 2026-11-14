@@ -239,7 +239,10 @@ impl AskUserRequest {
             if key.ends_with("_custom") && props.contains_key(key.trim_end_matches("_custom")) {
                 continue;
             }
-            let (choices, multi) = match (field["oneOf"].as_array(), field["items"]["anyOf"].as_array()) {
+            let (choices, multi) = match (
+                field["oneOf"].as_array(),
+                field["items"]["anyOf"].as_array(),
+            ) {
                 (Some(c), _) => (c.clone(), false),
                 (None, Some(c)) => (c.clone(), true),
                 _ if field["type"] == "string" => (Vec::new(), false),
@@ -276,8 +279,9 @@ impl AskUserRequest {
 fn form_content(req: &AskUserRequest, answers: &[String]) -> Value {
     let mut content = serde_json::Map::new();
     for ((q, (key, custom)), answer) in req.questions.iter().zip(&req.fields).zip(answers) {
-        let (picked, typed): (Vec<&str>, Vec<&str>) =
-            answer.split(", ").partition(|part| q.options.iter().any(|o| o == part));
+        let (picked, typed): (Vec<&str>, Vec<&str>) = answer
+            .split(", ")
+            .partition(|part| q.options.iter().any(|o| o == part));
         let typed = typed.join(", ");
         match (q.multi, picked.first(), custom) {
             (true, _, _) => {
@@ -453,7 +457,10 @@ pub fn apply_setting(settings: &mut NativeSettings, models: &[ModelInfo], s: Set
         && let Some(m) = models.iter().find(|m| m.id == value)
         && !m.efforts.is_empty()
         && !m.efforts.contains(&settings.reasoning_effort)
-        && let Some(effort) = m.default_effort.clone().or_else(|| m.efforts.first().cloned())
+        && let Some(effort) = m
+            .default_effort
+            .clone()
+            .or_else(|| m.efforts.first().cloned())
     {
         settings.reasoning_effort = effort;
     }
@@ -1037,7 +1044,14 @@ impl Thread {
                             t.meta.session_id = t.session_id.clone();
                         }
                         let removed = v["removedCount"].as_u64().unwrap_or(0);
-                        t.push_entry(Entry::Compacted { removed, before, after: None }, cx);
+                        t.push_entry(
+                            Entry::Compacted {
+                                removed,
+                                before,
+                                after: None,
+                            },
+                            cx,
+                        );
                     }
                     Err(e) => t.notice(format!("Compacting failed: {e}"), true, cx),
                 }
@@ -1098,7 +1112,13 @@ impl Thread {
     pub fn can_rewind(&self, ix: usize) -> bool {
         (self.native_live() || (self.acp_live() && self.caps.fork))
             && !self.is_busy()
-            && matches!(self.entries.get(ix), Some(Entry::User { message_id: Some(_), .. }))
+            && matches!(
+                self.entries.get(ix),
+                Some(Entry::User {
+                    message_id: Some(_),
+                    ..
+                })
+            )
     }
 
     pub fn rewind_plan(&self) -> Option<&RewindPlan> {
@@ -1111,7 +1131,12 @@ impl Thread {
         let (Some(conn), Some(session_id)) = (self.conn.clone(), self.session_id.clone()) else {
             return;
         };
-        let Some(Entry::User { text, message_id: Some(message_id), .. }) = self.entries.get(ix) else {
+        let Some(Entry::User {
+            text,
+            message_id: Some(message_id),
+            ..
+        }) = self.entries.get(ix)
+        else {
             return;
         };
         if !self.can_rewind(ix) {
@@ -1140,7 +1165,12 @@ impl Thread {
         cx.spawn(async move |this, cx| {
             let result = request.await;
             let _ = this.update(cx, |t, cx| {
-                let Some(plan) = t.native.rewind.as_mut().filter(|p| p.message_id == message_id) else {
+                let Some(plan) = t
+                    .native
+                    .rewind
+                    .as_mut()
+                    .filter(|p| p.message_id == message_id)
+                else {
                     return;
                 };
                 match result {
@@ -1150,7 +1180,12 @@ impl Thread {
                         plan.delete = list("createdFiles");
                         plan.evicted = list("evictedFiles")
                             .iter()
-                            .filter_map(|f| Some((str_of(f, "filePath")?, str_of(f, "reason").unwrap_or_default())))
+                            .filter_map(|f| {
+                                Some((
+                                    str_of(f, "filePath")?,
+                                    str_of(f, "reason").unwrap_or_default(),
+                                ))
+                            })
                             .collect();
                         plan.loading = false;
                     }
@@ -1182,7 +1217,12 @@ impl Thread {
         let (Some(conn), Some(session_id)) = (self.conn.clone(), self.session_id.clone()) else {
             return;
         };
-        let Some(plan) = self.native.rewind.as_mut().filter(|p| !p.loading && !p.running) else {
+        let Some(plan) = self
+            .native
+            .rewind
+            .as_mut()
+            .filter(|p| !p.loading && !p.running)
+        else {
             return;
         };
         plan.running = true;
@@ -1301,11 +1341,18 @@ impl Thread {
     /// from the loaded history, matching prompts by text in order.
     fn adopt_message_ids(&mut self, history: &[Entry]) {
         let mut known = history.iter().filter_map(|e| match e {
-            Entry::User { text, message_id: Some(id), .. } => Some((text, id)),
+            Entry::User {
+                text,
+                message_id: Some(id),
+                ..
+            } => Some((text, id)),
             _ => None,
         });
         for entry in &mut self.entries {
-            let Entry::User { text, message_id, .. } = entry else {
+            let Entry::User {
+                text, message_id, ..
+            } = entry
+            else {
                 continue;
             };
             if message_id.is_some() {
@@ -1477,8 +1524,16 @@ impl Thread {
         for path in images {
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             if len > attach::MAX_IMAGE_BYTES {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                self.notice(format!("Not attached: {name} is larger than 5 MB"), false, cx);
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                self.notice(
+                    format!("Not attached: {name} is larger than 5 MB"),
+                    false,
+                    cx,
+                );
             } else {
                 paths.push(path.display().to_string());
             }
@@ -1591,9 +1646,19 @@ impl Thread {
                 const COMPACTING: &str = "compacting_conversation";
                 if state == COMPACTING && self.native.working != COMPACTING {
                     self.native.compact_before = self.usage.context_percent();
-                } else if self.native.working == COMPACTING && state != COMPACTING && !self.native.compacting {
+                } else if self.native.working == COMPACTING
+                    && state != COMPACTING
+                    && !self.native.compacting
+                {
                     let before = self.native.compact_before.take();
-                    self.push_entry(Entry::Compacted { removed: 0, before, after: None }, cx);
+                    self.push_entry(
+                        Entry::Compacted {
+                            removed: 0,
+                            before,
+                            after: None,
+                        },
+                        cx,
+                    );
                     self.native_refresh_context(cx);
                 }
                 self.native.working = state;
@@ -1906,7 +1971,11 @@ impl Thread {
                                 .unwrap_or_default()
                                 .to_string()
                         };
-                        if name.is_empty() { title } else { format!("Plan: {name}") }
+                        if name.is_empty() {
+                            title
+                        } else {
+                            format!("Plan: {name}")
+                        }
                     }
                     _ => title,
                 };
@@ -1979,7 +2048,11 @@ impl Thread {
             && self.status == ThreadStatus::NeedsInput
         {
             // A subagent asking after the turn was handed back leaves it idle.
-            let status = if self.parent.is_some() { ThreadStatus::Working } else { self.resting_status() };
+            let status = if self.parent.is_some() {
+                ThreadStatus::Working
+            } else {
+                self.resting_status()
+            };
             self.set_status(status, cx);
             if self.status == ThreadStatus::Idle {
                 self.drain_queue(cx);
@@ -2055,21 +2128,31 @@ mod tests {
         assert_eq!(req.questions[0].question, "Which database?");
         assert_eq!(req.questions[0].options, ["Postgres", "SQLite"]);
         assert!(req.questions[1].multi);
-        let content = form_content(&req, &["SQLite, only in tests".into(), "Auth, Cache, logs".into()]);
+        let content = form_content(
+            &req,
+            &["SQLite, only in tests".into(), "Auth, Cache, logs".into()],
+        );
         assert_eq!(
             content,
             json!({"question_0": "SQLite", "question_0_custom": "only in tests",
                    "question_1": ["Auth", "Cache"], "question_1_custom": "logs"})
         );
         let content = form_content(&req, &["MySQL".into(), "Cache".into()]);
-        assert_eq!(content, json!({"question_0_custom": "MySQL", "question_1": ["Cache"]}));
+        assert_eq!(
+            content,
+            json!({"question_0_custom": "MySQL", "question_1": ["Cache"]})
+        );
         assert!(AskUserRequest::from_form(json!(8), &json!({"mode": "url", "url": "x"})).is_none());
     }
 
     fn percent(v: Value) -> Option<u64> {
         let (used, size) = compaction_meter(&v)?;
-        Usage { context_used: Some(used), context_size: Some(size), ..Default::default() }
-            .context_percent()
+        Usage {
+            context_used: Some(used),
+            context_size: Some(size),
+            ..Default::default()
+        }
+        .context_percent()
     }
 
     #[test]
@@ -2092,6 +2175,9 @@ mod tests {
     fn compaction_meter_caps_and_waits_for_a_call() {
         let over = json!({"contextBudget": 100000, "lastCallCompactionTokens": 150000});
         assert_eq!(percent(over), Some(100));
-        assert_eq!(compaction_meter(&json!({"contextBudget": 133424, "usedTokens": 10142})), None);
+        assert_eq!(
+            compaction_meter(&json!({"contextBudget": 133424, "usedTokens": 10142})),
+            None
+        );
     }
 }

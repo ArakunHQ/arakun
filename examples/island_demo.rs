@@ -37,8 +37,8 @@ mod demo {
     use std::time::{Duration, Instant};
 
     use gpui::{
-        App, AppContext as _, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, MouseButton, ParentElement as _,
-        Render, Styled as _, Subscription, Window, div, prelude::*,
+        App, AppContext as _, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, MouseButton,
+        ParentElement as _, Render, Styled as _, Subscription, Window, div, prelude::*,
     };
 
     use crate::island::{Alert, AlertKind, Feed, Island, IslandEvent, Phase, Row, Status};
@@ -46,7 +46,13 @@ mod demo {
     const CYCLE: Duration = Duration::from_secs(4);
     /// In the `alerts` tour, how long a card with buttons hangs before "Luego".
     const READ_FOR: Duration = Duration::from_millis(3500);
-    const PHASES: [Phase; 5] = [Phase::Sleeping, Phase::Working, Phase::Speaking, Phase::Listening, Phase::Alert];
+    const PHASES: [Phase; 5] = [
+        Phase::Sleeping,
+        Phase::Working,
+        Phase::Speaking,
+        Phase::Listening,
+        Phase::Alert,
+    ];
 
     fn feed() -> Feed {
         let row = |status, model: &str, doing: &str, elapsed: &str, cost: &str| Row {
@@ -60,9 +66,27 @@ mod demo {
         };
         Feed {
             rows: vec![
-                row(Status::Working, "GLM-5.3", "bench qkv m32 en la H100, ronda 4 de 6 con whole_compare", "12:41", "$0.84"),
-                row(Status::Waiting, "Opus 5.5", "¿Aplico el parche a src/shell/rail.rs y corro las pruebas?", "3:07", "$1.92"),
-                row(Status::Error, "Kimi K3", "cargo test: 2 fallas en usage_history::rolls_over_midnight", "0:58", "$0.11"),
+                row(
+                    Status::Working,
+                    "GLM-5.3",
+                    "bench qkv m32 en la H100, ronda 4 de 6 con whole_compare",
+                    "12:41",
+                    "$0.84",
+                ),
+                row(
+                    Status::Waiting,
+                    "Opus 5.5",
+                    "¿Aplico el parche a src/shell/rail.rs y corro las pruebas?",
+                    "3:07",
+                    "$1.92",
+                ),
+                row(
+                    Status::Error,
+                    "Kimi K3",
+                    "cargo test: 2 fallas en usage_history::rolls_over_midnight",
+                    "0:58",
+                    "$0.11",
+                ),
             ],
             today: Some("$2.87".into()),
             viewing: None,
@@ -95,7 +119,12 @@ mod demo {
                  registry.cloudflare.com/acme/doop:2026-11-05-1742/layers/sha256-9f2c7e1b44a0d3 pesa 2.4 GB y el plan \
                  permite 2 GB.",
             ),
-            alert("", AlertKind::Success, "Deploy listo", "doop · wrangler deploy en 41 s"),
+            alert(
+                "",
+                AlertKind::Success,
+                "Deploy listo",
+                "doop · wrangler deploy en 41 s",
+            ),
             alert(
                 "Sonnet 5.5",
                 AlertKind::Input,
@@ -123,7 +152,9 @@ mod demo {
         fn new(phase: Option<Phase>, pinned: bool, tour: bool, cx: &mut Context<Self>) -> Self {
             cx.spawn(async move |this, cx| {
                 loop {
-                    cx.background_executor().timer(Duration::from_millis(250)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(250))
+                        .await;
                     let alive = this.update(cx, |demo, cx| {
                         if demo.tour {
                             demo.step_tour(cx);
@@ -147,10 +178,21 @@ mod demo {
                 if let IslandEvent::Dismissed = ev
                     && demo.phase == Phase::Alert
                 {
-                    demo.go(if demo.tour { Phase::Working } else { Phase::Sleeping }, cx);
+                    demo.go(
+                        if demo.tour {
+                            Phase::Working
+                        } else {
+                            Phase::Sleeping
+                        },
+                        cx,
+                    );
                 }
             });
-            let start = if tour { Phase::Working } else { phase.unwrap_or(Phase::Sleeping) };
+            let start = if tour {
+                Phase::Working
+            } else {
+                phase.unwrap_or(Phase::Sleeping)
+            };
             let mut demo = Demo {
                 island,
                 phase: start,
@@ -242,7 +284,9 @@ mod demo {
         let phase = Phase::from_name(&arg).filter(|p| *p != Phase::Idle);
         let pinned = arg == "list";
         let tour = arg == "alerts";
-        let screen: Option<usize> = std::env::var("ISLAND_DEMO_SCREEN").ok().and_then(|s| s.parse().ok());
+        let screen: Option<usize> = std::env::var("ISLAND_DEMO_SCREEN")
+            .ok()
+            .and_then(|s| s.parse().ok());
         gpui_platform::application().run(move |cx: &mut App| {
             cx.spawn(async move |cx| {
                 // Wayland names its screens a moment after start.
@@ -250,12 +294,16 @@ mod demo {
                     if screen.is_none() || cx.update(|cx| !cx.displays().is_empty()) {
                         break;
                     }
-                    cx.background_executor().timer(Duration::from_millis(25)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(25))
+                        .await;
                 }
                 cx.update(|cx| {
                     let mut options = crate::island::window_options(true);
                     options.display_id = screen.and_then(|n| cx.displays().get(n).map(|d| d.id()));
-                    let opened = cx.open_window(options, |_, cx| cx.new(|cx| Demo::new(phase, pinned, tour, cx)));
+                    let opened = cx.open_window(options, |_, cx| {
+                        cx.new(|cx| Demo::new(phase, pinned, tour, cx))
+                    });
                     if let Err(e) = opened {
                         eprintln!("island_demo: {e}");
                         cx.quit();

@@ -5,9 +5,9 @@ use std::path::Path;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, px,
+    AnyElement, AppContext as _, Context, Entity, Focusable as _, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
 use super::Shell;
@@ -55,7 +55,13 @@ pub(super) fn diff_line_numbers(lines: &[SharedString]) -> Vec<Option<usize>> {
 }
 
 impl Shell {
-    pub(super) fn add_note(&mut self, env: &Path, note: ChatNote, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn add_note(
+        &mut self,
+        env: &Path,
+        note: ChatNote,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.notes.entry(env.to_path_buf()).or_default().push(note);
         self.sync_note_marks(env, cx);
         window.focus(&self.composer_focus, cx);
@@ -115,7 +121,9 @@ impl Shell {
             Some(d) if extend && d.path == path => (d.rows.0.min(row), d.rows.1.max(row)),
             _ => (row, row),
         };
-        let lines_in: Vec<usize> = (a..=b).filter_map(|i| numbers.get(i).copied().flatten()).collect();
+        let lines_in: Vec<usize> = (a..=b)
+            .filter_map(|i| numbers.get(i).copied().flatten())
+            .collect();
         let (Some(&first), Some(&last)) = (lines_in.iter().min(), lines_in.iter().max()) else {
             return;
         };
@@ -124,13 +132,24 @@ impl Shell {
             Some(d) if d.path == path => d.input,
             _ => cx.new(|cx| TextInput::new("Comment, Enter adds it to the review", cx)),
         };
-        let sub = cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| match ev {
-            InputEvent::Submit | InputEvent::SubmitAlt => this.finish_review(true, window, cx),
-            InputEvent::Cancel => this.finish_review(false, window, cx),
-            _ => {}
-        });
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Submit | InputEvent::SubmitAlt => this.finish_review(true, window, cx),
+                InputEvent::Cancel => this.finish_review(false, window, cx),
+                _ => {}
+            },
+        );
         window.focus(&input.focus_handle(cx), cx);
-        self.review_draft = Some(ReviewDraft { path, rows: (a, b), lines: (first, last), quote, input, _sub: sub });
+        self.review_draft = Some(ReviewDraft {
+            path,
+            rows: (a, b),
+            lines: (first, last),
+            quote,
+            input,
+            _sub: sub,
+        });
         cx.notify();
     }
 
@@ -156,7 +175,11 @@ impl Shell {
     }
 
     /// The comment box over the bottom of a file or diff tab.
-    pub(super) fn render_review_box(&self, path: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_review_box(
+        &self,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let d = self.review_draft.as_ref().filter(|d| d.path == path)?;
         let what = if d.lines.0 == d.lines.1 {
             format!("Comment on line {}", d.lines.0)
@@ -264,14 +287,23 @@ impl Shell {
 
     pub(super) fn render_note_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let notes = self.notes.get(&self.env().path).filter(|v| !v.is_empty())?;
-        let annotations = notes.iter().filter(|n| n.kind == NoteKind::Annotation).count();
+        let annotations = notes
+            .iter()
+            .filter(|n| n.kind == NoteKind::Annotation)
+            .count();
         let reviews = notes.len() - annotations;
         let mut summary = Vec::new();
         if annotations > 0 {
-            summary.push(format!("{annotations} annotation{}", if annotations == 1 { "" } else { "s" }));
+            summary.push(format!(
+                "{annotations} annotation{}",
+                if annotations == 1 { "" } else { "s" }
+            ));
         }
         if reviews > 0 {
-            summary.push(format!("{reviews} review comment{}", if reviews == 1 { "" } else { "s" }));
+            summary.push(format!(
+                "{reviews} review comment{}",
+                if reviews == 1 { "" } else { "s" }
+            ));
         }
         Some(
             div()
@@ -297,7 +329,9 @@ impl Shell {
                                 .text_size(px(crate::ui::TEXT_XS))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(crate::agent::mark_color())
-                                .child(icon("comment01", 11.).text_color(crate::agent::mark_color()))
+                                .child(
+                                    icon("comment01", 11.).text_color(crate::agent::mark_color()),
+                                )
                                 .child(summary.join(" · ")),
                         )
                         .child(div().flex_1())
@@ -340,45 +374,59 @@ impl Shell {
                                 })),
                         ),
                 )
-                .child(div().flex().flex_wrap().gap(px(6.)).children(notes.iter().enumerate().map(|(i, n)| {
-                    let review = n.kind == NoteKind::Review;
+                .child(
                     div()
-                        .id(("note-chip", i))
                         .flex()
-                        .items_center()
+                        .flex_wrap()
                         .gap(px(6.))
-                        .h(px(26.))
-                        .max_w(px(320.))
-                        .pl(px(8.))
-                        .pr(px(4.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::fill_hover())
-                        .text_size(px(crate::ui::TEXT_SM))
-                        .child(
-                            icon(if review { "comment-add01" } else { "note01" }, 12.)
-                                .text_color(theme::text_subtle()),
-                        )
-                        .child(div().min_w_0().truncate().text_color(theme::text_muted()).child(n.label()))
-                        .child(
+                        .children(notes.iter().enumerate().map(|(i, n)| {
+                            let review = n.kind == NoteKind::Review;
                             div()
-                                .id(("note-remove", i))
-                                .flex_none()
-                                .size(px(18.))
+                                .id(("note-chip", i))
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme::fill_selected()))
-                                .child(icon("cancel01", 11.).text_color(theme::text_subtle()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.remove_note(i, cx);
-                                })),
-                        )
-                })))
+                                .gap(px(6.))
+                                .h(px(26.))
+                                .max_w(px(320.))
+                                .pl(px(8.))
+                                .pr(px(4.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(theme::border())
+                                .bg(theme::fill_hover())
+                                .text_size(px(crate::ui::TEXT_SM))
+                                .child(
+                                    icon(if review { "comment-add01" } else { "note01" }, 12.)
+                                        .text_color(theme::text_subtle()),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme::text_muted())
+                                        .child(n.label()),
+                                )
+                                .child(
+                                    div()
+                                        .id(("note-remove", i))
+                                        .flex_none()
+                                        .size(px(18.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(theme::fill_selected()))
+                                        .child(
+                                            icon("cancel01", 11.).text_color(theme::text_subtle()),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.remove_note(i, cx);
+                                        })),
+                                )
+                        })),
+                )
                 .into_any_element(),
         )
     }
@@ -391,14 +439,32 @@ mod tests {
     #[test]
     fn numbers_diff_rows_by_new_file_line() {
         let lines: Vec<SharedString> = [
-            "diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -3,3 +3,4 @@", " keep", "-old", "+new", "+more", " tail",
+            "diff --git a/x b/x",
+            "--- a/x",
+            "+++ b/x",
+            "@@ -3,3 +3,4 @@",
+            " keep",
+            "-old",
+            "+new",
+            "+more",
+            " tail",
         ]
         .into_iter()
         .map(Into::into)
         .collect();
         assert_eq!(
             diff_line_numbers(&lines),
-            [None, None, None, None, Some(3), Some(4), Some(4), Some(5), Some(6)]
+            [
+                None,
+                None,
+                None,
+                None,
+                Some(3),
+                Some(4),
+                Some(4),
+                Some(5),
+                Some(6)
+            ]
         );
     }
 }

@@ -5,8 +5,9 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, ClipboardItem, Context, EventEmitter, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    App, ClipboardItem, Context, EventEmitter, FocusHandle, FontWeight, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, px,
 };
 
 use crate::phone::Reach;
@@ -46,7 +47,10 @@ pub enum Address {
     /// Being worked out (asking Tailscale).
     Pending(String),
     /// Not reachable until the user does something; an optional link that helps.
-    Problem { what: String, link: Option<(&'static str, String)> },
+    Problem {
+        what: String,
+        link: Option<(&'static str, String)>,
+    },
 }
 
 /// The code a new phone may bring right now.
@@ -112,7 +116,10 @@ impl EventEmitter<PhoneEvent> for PhoneView {}
 impl PhoneView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            state: PhoneState::Off { reach: Reach::Lan, relay: None },
+            state: PhoneState::Off {
+                reach: Reach::Lan,
+                relay: None,
+            },
             error: None,
             copied: None,
             confirm_identity: false,
@@ -155,7 +162,13 @@ impl PhoneView {
 
     /// Whether a code is on screen, so the shell keeps the countdown moving.
     pub fn pairing_shown(&self) -> bool {
-        matches!(&self.state, PhoneState::On { pairing: Some(_), .. })
+        matches!(
+            &self.state,
+            PhoneState::On {
+                pairing: Some(_),
+                ..
+            }
+        )
     }
 
     pub fn set_error(&mut self, message: String, cx: &mut Context<Self>) {
@@ -177,7 +190,12 @@ impl PhoneView {
         };
         let width = code.width();
         let colors = code.to_colors();
-        let mut rows = div().flex().flex_col().p(px(CELL * 3.)).bg(gpui::white()).rounded(px(ui::RADIUS));
+        let mut rows = div()
+            .flex()
+            .flex_col()
+            .p(px(CELL * 3.))
+            .bg(gpui::white())
+            .rounded(px(ui::RADIUS));
         for y in 0..width {
             let mut row = div().flex();
             for x in 0..width {
@@ -190,7 +208,11 @@ impl PhoneView {
     }
 
     fn section_title(text: &'static str) -> impl IntoElement {
-        div().text_size(px(ui::TEXT_SM)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_muted()).child(text)
+        div()
+            .text_size(px(ui::TEXT_SM))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme::text_muted())
+            .child(text)
     }
 
     /// The ways in, and what each means.
@@ -215,20 +237,48 @@ impl PhoneView {
                 div().flex().child(
                     ui::segmented()
                         .child(
-                            ui::segment("phone-reach-lan", Some("signal-full02"), "Same Wi-Fi", reach == Reach::Lan)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::SetReach(Reach::Lan)))),
+                            ui::segment(
+                                "phone-reach-lan",
+                                Some("signal-full02"),
+                                "Same Wi-Fi",
+                                reach == Reach::Lan,
+                            )
+                            .on_click(
+                                cx.listener(|_, _, _, cx| {
+                                    cx.emit(PhoneEvent::SetReach(Reach::Lan))
+                                }),
+                            ),
                         )
                         .child(
-                            ui::segment("phone-reach-ts", Some("globe"), "Tailscale", reach == Reach::Tailscale)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::SetReach(Reach::Tailscale)))),
+                            ui::segment(
+                                "phone-reach-ts",
+                                Some("globe"),
+                                "Tailscale",
+                                reach == Reach::Tailscale,
+                            )
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(PhoneEvent::SetReach(Reach::Tailscale))
+                            })),
                         )
                         .child(
-                            ui::segment("phone-reach-relay", Some("cloud-upload"), "Relay", reach == Reach::Relay)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::SetReach(Reach::Relay)))),
+                            ui::segment(
+                                "phone-reach-relay",
+                                Some("cloud-upload"),
+                                "Relay",
+                                reach == Reach::Relay,
+                            )
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(PhoneEvent::SetReach(Reach::Relay))
+                            })),
                         ),
                 ),
             )
-            .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child(explain))
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child(explain),
+            )
     }
 
     /// This computer's address on the relay, and the way to change it.
@@ -245,15 +295,22 @@ impl PhoneView {
                 .text_color(theme::attention())
                 .child("A new key means a new address: every paired phone has to pair again.")
                 .child(
-                    ui::button("phone-identity-confirm", "Replace it", ButtonKind::Outline, true)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::NewIdentity))),
+                    ui::button(
+                        "phone-identity-confirm",
+                        "Replace it",
+                        ButtonKind::Outline,
+                        true,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::NewIdentity))),
                 )
-                .child(ui::button("phone-identity-keep", "Keep it", ButtonKind::Ghost, true).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.confirm_identity = false;
-                        cx.notify();
-                    },
-                )))
+                .child(
+                    ui::button("phone-identity-keep", "Keep it", ButtonKind::Ghost, true).on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.confirm_identity = false;
+                            cx.notify();
+                        }),
+                    ),
+                )
                 .into_any_element()
         } else {
             div()
@@ -295,8 +352,13 @@ impl PhoneView {
                             .child(relay.url.clone()),
                     )
                     .child(
-                        ui::button("phone-relay-copy", if copied { "Copied" } else { "Copy" }, ButtonKind::Outline, true)
-                            .on_click(cx.listener(move |this, _, _, cx| this.copy(&url, cx))),
+                        ui::button(
+                            "phone-relay-copy",
+                            if copied { "Copied" } else { "Copy" },
+                            ButtonKind::Outline,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| this.copy(&url, cx))),
                     ),
             )
             .child(identity)
@@ -307,22 +369,35 @@ impl PhoneView {
     /// the address is known from the start (the section above shows it), so a
     /// ready one is news about the connection itself.
     fn render_address(address: &Address, reach: Reach, cx: &mut Context<Self>) -> impl IntoElement {
-        let row = div().flex().items_center().flex_wrap().gap(px(8.)).text_size(px(ui::TEXT_SM));
+        let row = div()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap(px(8.))
+            .text_size(px(ui::TEXT_SM));
         match address {
             Address::Ready(_) if reach == Reach::Relay => row
                 .text_color(theme::text_muted())
-                .child(div().size(px(8.)).rounded_full().bg(gpui::Hsla::from(theme::success())))
+                .child(
+                    div()
+                        .size(px(8.))
+                        .rounded_full()
+                        .bg(gpui::Hsla::from(theme::success())),
+                )
                 .child("Connected to the relay."),
-            Address::Ready(url) => row.text_color(theme::text_muted()).child("Phones reach this computer at").child(
-                div()
-                    .font_family(theme::FONT_MONO)
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(ui::RADIUS))
-                    .bg(theme::fill_raised())
-                    .text_color(theme::content())
-                    .child(url.clone()),
-            ),
+            Address::Ready(url) => row
+                .text_color(theme::text_muted())
+                .child("Phones reach this computer at")
+                .child(
+                    div()
+                        .font_family(theme::FONT_MONO)
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(ui::RADIUS))
+                        .bg(theme::fill_raised())
+                        .text_color(theme::content())
+                        .child(url.clone()),
+                ),
             Address::Pending(what) => row.text_color(theme::text_faint()).child(what.clone()),
             Address::Problem { what, link } => row
                 .text_color(theme::attention())
@@ -330,7 +405,9 @@ impl PhoneView {
                 .when_some(link.clone(), |d, (label, url)| {
                     d.child(
                         ui::button("phone-address-help", label, ButtonKind::Outline, true)
-                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(PhoneEvent::OpenHere(url.clone())))),
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(PhoneEvent::OpenHere(url.clone()))
+                            })),
                     )
                 }),
         }
@@ -340,15 +417,26 @@ impl PhoneView {
         let (url_open, url_copy) = (pairing.url.clone(), pairing.url.clone());
         let copied = self.copied.as_deref() == Some(pairing.url.as_str());
         // Through the relay the link carries everything: there is no code to type.
-        let code = (pairing.code.len() == 6).then(|| format!("{} {}", &pairing.code[..3], &pairing.code[3..]));
-        let left = format!("{}:{:02}", pairing.seconds_left / 60, pairing.seconds_left % 60);
+        let code = (pairing.code.len() == 6)
+            .then(|| format!("{} {}", &pairing.code[..3], &pairing.code[3..]));
+        let left = format!(
+            "{}:{:02}",
+            pairing.seconds_left / 60,
+            pairing.seconds_left % 60
+        );
         let how = match code {
-            Some(_) => "Scan the code with the phone's camera, or open the page on it and type this code:",
+            Some(_) => {
+                "Scan the code with the phone's camera, or open the page on it and type this code:"
+            }
             None => "Scan the code with the phone's camera, or send it the link:",
         };
         let works_once = match code {
-            Some(_) => "The code works once. The phone gets a key of its own, which you can revoke below.",
-            None => "The link works once. The phone gets a key of its own, which you can revoke below.",
+            Some(_) => {
+                "The code works once. The phone gets a key of its own, which you can revoke below."
+            }
+            None => {
+                "The link works once. The phone gets a key of its own, which you can revoke below."
+            }
         };
         div()
             .flex()
@@ -372,7 +460,13 @@ impl PhoneView {
                             .flex()
                             .items_baseline()
                             .gap(px(12.))
-                            .children(code.map(|code| div().ty(Type::Display).font_family(theme::FONT_MONO).text_color(theme::content()).child(code)))
+                            .children(code.map(|code| {
+                                div()
+                                    .ty(Type::Display)
+                                    .font_family(theme::FONT_MONO)
+                                    .text_color(theme::content())
+                                    .child(code)
+                            }))
                             .child(
                                 div()
                                     .text_size(px(ui::TEXT_XS))
@@ -385,16 +479,27 @@ impl PhoneView {
                             .flex()
                             .gap(px(8.))
                             .child(
-                                ui::button("phone-copy", if copied { "Copied" } else { "Copy link" }, ButtonKind::Outline, true)
-                                    .on_click(cx.listener(move |this, _, _, cx| this.copy(&url_copy, cx))),
+                                ui::button(
+                                    "phone-copy",
+                                    if copied { "Copied" } else { "Copy link" },
+                                    ButtonKind::Outline,
+                                    true,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.copy(&url_copy, cx)),
+                                ),
                             )
                             .child(
                                 ui::button("phone-open", "Open here", ButtonKind::Outline, true)
-                                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(PhoneEvent::OpenHere(url_open.clone())))),
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(PhoneEvent::OpenHere(url_open.clone()))
+                                    })),
                             )
                             .child(
                                 ui::button("phone-cancel-pair", "Cancel", ButtonKind::Ghost, true)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::CancelPairing))),
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(PhoneEvent::CancelPairing)
+                                    })),
                             ),
                     )
                     .child(
@@ -423,12 +528,11 @@ impl PhoneView {
             .bg(theme::fill_raised())
             .border_1()
             .border_color(theme::border())
-            .child(
-                div()
-                    .size(px(8.))
-                    .rounded_full()
-                    .bg(if d.connected { gpui::Hsla::from(theme::success()) } else { theme::text_faint() }),
-            )
+            .child(div().size(px(8.)).rounded_full().bg(if d.connected {
+                gpui::Hsla::from(theme::success())
+            } else {
+                theme::text_faint()
+            }))
             .child(
                 div()
                     .flex()
@@ -440,12 +544,20 @@ impl PhoneView {
                         div()
                             .text_size(px(ui::TEXT_XS))
                             .text_color(theme::text_faint())
-                            .child(format!("paired {} · {seen}", crate::memory::ago(d.paired_at, now))),
+                            .child(format!(
+                                "paired {} · {seen}",
+                                crate::memory::ago(d.paired_at, now)
+                            )),
                     ),
             )
             .child(
-                ui::button(SharedString::from(format!("phone-unpair-{}", d.id)), "Unpair", ButtonKind::Ghost, true)
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(PhoneEvent::Unpair(id.clone())))),
+                ui::button(
+                    SharedString::from(format!("phone-unpair-{}", d.id)),
+                    "Unpair",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(PhoneEvent::Unpair(id.clone())))),
             )
     }
 }
@@ -499,7 +611,11 @@ impl Render for PhoneView {
             )
         });
 
-        let relay = self.state.relay().cloned().map(|r| self.render_relay(&r, cx));
+        let relay = self
+            .state
+            .relay()
+            .cloned()
+            .map(|r| self.render_relay(&r, cx));
         let body = match self.state.clone() {
             PhoneState::Off { .. } => div()
                 .flex()
@@ -508,7 +624,14 @@ impl Render for PhoneView {
                 .child(intro)
                 .child(Self::render_reach(reach, cx))
                 .children(relay)
-                .when_some(self.error.clone(), |d, e| d.child(div().text_size(px(ui::TEXT_SM)).text_color(theme::error()).child(e)))
+                .when_some(self.error.clone(), |d, e| {
+                    d.child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::error())
+                            .child(e),
+                    )
+                })
                 .child(
                     div().flex().child(
                         ui::button("phone-enable", "Enable", ButtonKind::Primary, true)
@@ -517,7 +640,12 @@ impl Render for PhoneView {
                 )
                 .children(firewall)
                 .into_any_element(),
-            PhoneState::On { address, pairing, devices, .. } => {
+            PhoneState::On {
+                address,
+                pairing,
+                devices,
+                ..
+            } => {
                 let ready = matches!(address, Address::Ready(_));
                 let now = crate::model::unix_now();
                 let mut list = div().flex().flex_col().gap(px(6.));
@@ -551,8 +679,19 @@ impl Render for PhoneView {
                                 None => div()
                                     .flex()
                                     .child(
-                                        ui::button("phone-pair", "Pair a phone", ButtonKind::Primary, ready)
-                                            .when(ready, |b| b.on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::Pair)))),
+                                        ui::button(
+                                            "phone-pair",
+                                            "Pair a phone",
+                                            ButtonKind::Primary,
+                                            ready,
+                                        )
+                                        .when(ready, |b| {
+                                            b.on_click(
+                                                cx.listener(|_, _, _, cx| {
+                                                    cx.emit(PhoneEvent::Pair)
+                                                }),
+                                            )
+                                        }),
                                     )
                                     .into_any_element(),
                             }),
@@ -585,7 +724,14 @@ impl Render for PhoneView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(div().w_full().max_w(px(720.)).mx_auto().p(px(ui::PAGE_PAD)).child(body)),
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(720.))
+                            .mx_auto()
+                            .p(px(ui::PAGE_PAD))
+                            .child(body),
+                    ),
             )
     }
 }

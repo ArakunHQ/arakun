@@ -68,7 +68,11 @@ fn is_image_file(path: &Path) -> bool {
 
 /// The image files `text` mentions, resolved against `cwd`.
 pub fn images(text: &str, cwd: &Path) -> Vec<PathBuf> {
-    mentions(text).into_iter().filter_map(|m| resolve(&m, cwd)).filter(|p| is_image_file(p)).collect()
+    mentions(text)
+        .into_iter()
+        .filter_map(|m| resolve(&m, cwd))
+        .filter(|p| is_image_file(p))
+        .collect()
 }
 
 /// A prompt without its image mentions, and the images, to show them as
@@ -109,7 +113,11 @@ pub fn split_images(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
         }
     }
     out.push_str(rest);
-    let text = out.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
+    let text = out
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
     (text.trim().to_string(), found)
 }
 
@@ -120,7 +128,11 @@ pub fn is_large_paste(text: &str) -> bool {
 
 /// How a pasted block travels in a prompt, so [`split_pastes`] can fold it.
 pub fn wrap_paste(text: &str) -> String {
-    format!("<pasted-text lines=\"{}\">\n{}\n</pasted-text>", text.lines().count(), text.trim_end())
+    format!(
+        "<pasted-text lines=\"{}\">\n{}\n</pasted-text>",
+        text.lines().count(),
+        text.trim_end()
+    )
 }
 
 /// A prompt as typed, plus the pasted blocks it carries.
@@ -129,7 +141,9 @@ pub fn split_pastes(text: &str) -> (String, Vec<String>) {
     const CLOSE: &str = "</pasted-text>";
     let (mut typed, mut pastes, mut rest) = (String::new(), Vec::new(), text);
     while let Some(start) = rest.find(OPEN) {
-        let Some(body) = rest[start..].find('>').map(|i| start + i + 1) else { break };
+        let Some(body) = rest[start..].find('>').map(|i| start + i + 1) else {
+            break;
+        };
         let end = rest[body..].find(CLOSE).map_or(rest.len(), |i| body + i);
         typed.push_str(&rest[..start]);
         pastes.push(rest[body..end].trim_matches('\n').to_string());
@@ -145,14 +159,21 @@ pub fn title_text(text: &str) -> String {
     if !typed.is_empty() || pastes.is_empty() {
         return typed;
     }
-    pastes[0].lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
+    pastes[0]
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// An ACP `image` content block, or why the file can't be sent.
 pub fn acp_block(path: &Path) -> Result<Value, String> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let mime = mime_type(path).ok_or_else(|| format!("{name} is not an image"))?;
-    let len = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?.len();
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("{name}: {e}"))?
+        .len();
     if len > MAX_IMAGE_BYTES {
         return Err(format!("{name} is larger than 5 MB"));
     }
@@ -181,11 +202,18 @@ mod tests {
 
     #[test]
     fn pastes_fold_out_of_the_prompt() {
-        let prompt = format!("fix this\n\n{}\n\n{}", wrap_paste("a\nb\n"), wrap_paste("c"));
+        let prompt = format!(
+            "fix this\n\n{}\n\n{}",
+            wrap_paste("a\nb\n"),
+            wrap_paste("c")
+        );
         let (typed, pastes) = split_pastes(&prompt);
         assert_eq!(typed, "fix this");
         assert_eq!(pastes, ["a\nb", "c"]);
-        assert_eq!(title_text(&wrap_paste("\nfirst line\nsecond")), "first line");
+        assert_eq!(
+            title_text(&wrap_paste("\nfirst line\nsecond")),
+            "first line"
+        );
         assert_eq!(split_pastes("plain"), ("plain".to_string(), Vec::new()));
     }
 
@@ -204,10 +232,16 @@ mod tests {
         std::fs::write(dir.join("b.txt"), b"x").unwrap();
         let found = images("@a.PNG @b.txt @missing.png", &dir);
         assert_eq!(found, vec![dir.join("a.PNG")]);
-        let (text, shown) = split_images("look @a.PNG and @b.txt\n@\"a.PNG\" ok@a.PNG @missing.png", &dir);
+        let (text, shown) = split_images(
+            "look @a.PNG and @b.txt\n@\"a.PNG\" ok@a.PNG @missing.png",
+            &dir,
+        );
         assert_eq!(text, "look  and @b.txt\n ok@a.PNG @missing.png");
         assert_eq!(shown, vec![dir.join("a.PNG")]);
-        assert_eq!(split_images("@a.PNG", &dir), (String::new(), vec![dir.join("a.PNG")]));
+        assert_eq!(
+            split_images("@a.PNG", &dir),
+            (String::new(), vec![dir.join("a.PNG")])
+        );
         let block = acp_block(&found[0]).unwrap();
         assert_eq!(block["mimeType"], "image/png");
         assert_eq!(block["data"], "eA==");

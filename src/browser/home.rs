@@ -46,7 +46,10 @@ pub struct Layout {
 impl Layout {
     pub fn of(size: Size<Pixels>) -> Self {
         let (w, h) = (f32::from(size.width), f32::from(size.height));
-        Self { compact: h > 0. && h < 450., narrow: w > 0. && w < 700. }
+        Self {
+            compact: h > 0. && h < 450.,
+            narrow: w > 0. && w < 700.,
+        }
     }
 }
 
@@ -156,7 +159,9 @@ pub fn render(h: Home) -> AnyElement {
         .inset_0()
         .overflow_hidden()
         .bg(theme::background())
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| on_background(window, cx))
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            on_background(window, cx)
+        })
         .child(sky())
         .children(STARS.iter().map(|&(x, y, size, alpha)| {
             div()
@@ -168,7 +173,14 @@ pub fn render(h: Home) -> AnyElement {
                 .bg(gpui::white().opacity(alpha))
         }))
         .children(scene(h.size, layout, &h.info))
-        .child(content(&h.info, layout, empty, h.field, h.field_focused, h.open))
+        .child(content(
+            &h.info,
+            layout,
+            empty,
+            h.field,
+            h.field_focused,
+            h.open,
+        ))
         .into_any_element()
 }
 
@@ -184,7 +196,11 @@ fn sky() -> gpui::Div {
                 .right_0()
                 .top_0()
                 .h(relative(0.55))
-                .bg(linear_gradient(180., linear_color_stop(sky_top(), 0.), linear_color_stop(sky_mid(), 1.))),
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(sky_top(), 0.),
+                    linear_color_stop(sky_mid(), 1.),
+                )),
         )
         .child(
             div()
@@ -193,7 +209,11 @@ fn sky() -> gpui::Div {
                 .right_0()
                 .bottom_0()
                 .h(relative(0.45))
-                .bg(linear_gradient(180., linear_color_stop(sky_mid(), 0.), linear_color_stop(theme::background(), 1.))),
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(sky_mid(), 0.),
+                    linear_color_stop(theme::background(), 1.),
+                )),
         )
 }
 
@@ -204,12 +224,18 @@ fn scene(size: Size<Pixels>, layout: Layout, info: &HomeInfo) -> Option<gpui::Di
         return None;
     }
     // Narrow panels wrap the server chips onto a second row above the branch chip.
-    let chip_rows = if layout.narrow && !info.servers.is_empty() { 2. } else { 1. };
+    let chip_rows = if layout.narrow && !info.servers.is_empty() {
+        2.
+    } else {
+        1.
+    };
     let room = h - content_bottom(layout, chip_rows) - SCENE_GAP;
     // Only the ears may rise above the text; the bottom edge crops the bench. When
     // that would leave less than SHOW of the picture, shrink it rather than cut it.
     let fit_h = room / (SHOW - EARS);
-    let scene_w = w.clamp(SCENE_MIN_W, SCENE_MAX_W).min(fit_h * SCENE_W / SCENE_H);
+    let scene_w = w
+        .clamp(SCENE_MIN_W, SCENE_MAX_W)
+        .min(fit_h * SCENE_W / SCENE_H);
     if scene_w < SCENE_FLOOR_W {
         return None;
     }
@@ -222,7 +248,11 @@ fn scene(size: Size<Pixels>, layout: Layout, info: &HomeInfo) -> Option<gpui::Di
             .top(px(top))
             .w(px(scene_w))
             .h(px(scene_h))
-            .child(img("brand/browser-home.webp").size_full().object_fit(ObjectFit::Cover)),
+            .child(
+                img("brand/browser-home.webp")
+                    .size_full()
+                    .object_fit(ObjectFit::Cover),
+            ),
     )
 }
 
@@ -304,7 +334,12 @@ fn title(small: bool) -> gpui::Div {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::text())
         .child("Nothing to look at")
-        .child(div().flex().child(div().text_color(theme::accent()).child("yet")).child("."))
+        .child(
+            div()
+                .flex()
+                .child(div().text_color(theme::accent()).child("yet"))
+                .child("."),
+        )
 }
 
 fn lede(layout: Layout, empty: bool) -> gpui::Div {
@@ -340,7 +375,11 @@ fn address(field: Entity<TextField>, focused: bool, layout: Layout, open: Open) 
                 .px(px(12.))
                 .rounded(px(ui::RADIUS))
                 .border_1()
-                .border_color(if focused { theme::accent().opacity(0.7) } else { theme::border_strong() })
+                .border_color(if focused {
+                    theme::accent().opacity(0.7)
+                } else {
+                    theme::border_strong()
+                })
                 .bg(field_bg())
                 .text_size(px(FIELD))
                 .line_height(px(20.))
@@ -388,14 +427,28 @@ fn chips(info: &HomeInfo, layout: Layout, open: Open) -> gpui::Div {
                 .hover(|s| s.border_color(theme::border_strong()))
                 .on_click(move |_, window, cx| open(&url, window, cx))
                 .child(div().size(px(6.)).rounded_full().bg(theme::success()))
-                .child(div().font_family(theme::FONT_MONO).text_color(theme::text()).child(format!("localhost:{}", server.port)))
-                .child(div().text_color(theme::text_subtle()).child(server.by.clone())),
+                .child(
+                    div()
+                        .font_family(theme::FONT_MONO)
+                        .text_color(theme::text())
+                        .child(format!("localhost:{}", server.port)),
+                )
+                .child(
+                    div()
+                        .text_color(theme::text_subtle())
+                        .child(server.by.clone()),
+                ),
         );
     }
     if !info.branch.is_empty() {
         let mut branch = chip("browser-home-branch")
             .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
-            .child(div().font_family(theme::FONT_MONO).text_color(theme::text_muted()).child(info.branch.clone()));
+            .child(
+                div()
+                    .font_family(theme::FONT_MONO)
+                    .text_color(theme::text_muted())
+                    .child(info.branch.clone()),
+            );
         if let Some((number, url)) = &info.pr {
             let url = url.to_string();
             let open = open.clone();

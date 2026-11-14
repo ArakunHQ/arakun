@@ -17,7 +17,9 @@ use super::sessions::{Notice, summary};
 use crate::agent::{Setting, SettingOption, Thread, ThreadEvent};
 use crate::model::TabKind;
 use crate::phone::relay::{self, RelayClient};
-use crate::phone::{self, Access, ClientId, ClientMsg, Incoming, Reach, Server, push, tailscale, wire};
+use crate::phone::{
+    self, Access, ClientId, ClientMsg, Incoming, Reach, Server, push, tailscale, wire,
+};
 use crate::phone_view::{Address, DeviceInfo, PairingInfo, PhoneEvent, PhoneState, RelayInfo};
 use crate::state;
 
@@ -160,7 +162,11 @@ const PHONE_SETTINGS: [Setting; 2] = [Setting::Model, Setting::Effort];
 /// says something short and plain, jpg otherwise (the page re-encodes to JPEG).
 fn upload_ext(name: &str) -> &str {
     let ext = name.rsplit('.').next().unwrap_or("");
-    if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "gif") { ext } else { "jpg" }
+    if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "gif") {
+        ext
+    } else {
+        "jpg"
+    }
 }
 
 /// Settings with their value and choices, as the phone shows them.
@@ -179,13 +185,22 @@ fn settings_json(list: Vec<(Setting, (String, Vec<SettingOption>))>) -> serde_js
 impl Shell {
     /// Whether a phone is looking at this session, so it stays live like an open tab.
     pub(super) fn phone_watching(&self, id: &str) -> bool {
-        self.phone.as_ref().is_some_and(|link| link.watching.values().any(|w| w.as_ref() == id))
+        self.phone
+            .as_ref()
+            .is_some_and(|link| link.watching.values().any(|w| w.as_ref() == id))
     }
 
     /// What a session's entries are read against when they go to a phone.
     fn phone_scope(&self, cwd: &Path) -> wire::Scope {
-        let key = self.phone.as_ref().map(|l| l.access.lock().unwrap().image_key.clone()).unwrap_or_default();
-        wire::Scope { cwd: cwd.to_path_buf(), key }
+        let key = self
+            .phone
+            .as_ref()
+            .map(|l| l.access.lock().unwrap().image_key.clone())
+            .unwrap_or_default();
+        wire::Scope {
+            cwd: cwd.to_path_buf(),
+            key,
+        }
     }
 
     /// The sessions changed in a way the inbox shows; phones hear soon.
@@ -220,10 +235,15 @@ impl Shell {
             return;
         }
         let env = self.env_mut();
-        let index = match env.tabs.iter().position(|t| matches!(t.kind, TabKind::Phone)) {
+        let index = match env
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Phone))
+        {
             Some(i) => i,
             None => {
-                env.tabs.push(crate::model::Tab::new("Phone", TabKind::Phone));
+                env.tabs
+                    .push(crate::model::Tab::new("Phone", TabKind::Phone));
                 env.tabs.len() - 1
             }
         };
@@ -234,7 +254,12 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn on_phone_event(&mut self, ev: &PhoneEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_phone_event(
+        &mut self,
+        ev: &PhoneEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match ev {
             PhoneEvent::Enable => {
                 let mut settings = phone::Settings::load();
@@ -349,20 +374,35 @@ impl Shell {
         }
     }
 
-    fn start_phone(&mut self, settings: &phone::Settings, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_phone(
+        &mut self,
+        settings: &phone::Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let vapid = Arc::new(settings.clone().vapid());
         let access = Access::new(settings.devices.clone(), vapid.public_key());
         let (server, mut incoming) = match settings.reach {
-            Reach::Lan | Reach::Tailscale => match Server::start(settings.reach.bind(), settings.port, access.clone()) {
-                Ok((s, rx)) => (Transport::Local(s), rx),
-                Err(e) => {
-                    self.phone_view
-                        .update(cx, |v, cx| v.set_error(format!("Could not listen on port {}: {e}", settings.port), cx));
-                    return;
+            Reach::Lan | Reach::Tailscale => {
+                match Server::start(settings.reach.bind(), settings.port, access.clone()) {
+                    Ok((s, rx)) => (Transport::Local(s), rx),
+                    Err(e) => {
+                        self.phone_view.update(cx, |v, cx| {
+                            v.set_error(
+                                format!("Could not listen on port {}: {e}", settings.port),
+                                cx,
+                            )
+                        });
+                        return;
+                    }
                 }
-            },
+            }
             Reach::Relay => {
-                let (r, rx) = RelayClient::start(&settings.relay_base, settings.clone().identity(), access.clone());
+                let (r, rx) = RelayClient::start(
+                    &settings.relay_base,
+                    settings.clone().identity(),
+                    access.clone(),
+                );
                 (Transport::Relay(r), rx)
             }
         };
@@ -372,7 +412,10 @@ impl Shell {
         };
         let listen = cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = incoming.next().await {
-                if this.update_in(cx, |this, window, cx| this.phone_incoming(msg, window, cx)).is_err() {
+                if this
+                    .update_in(cx, |this, window, cx| this.phone_incoming(msg, window, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -380,7 +423,10 @@ impl Shell {
         let tick = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(INBOX_EVERY).await;
-                if this.update(cx, |this, cx| this.phone_sync_inbox(cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| this.phone_sync_inbox(cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -417,7 +463,10 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let mut tries = 0u32;
             loop {
-                let found = cx.background_executor().spawn(async move { tailscale_address(port) }).await;
+                let found = cx
+                    .background_executor()
+                    .spawn(async move { tailscale_address(port) })
+                    .await;
                 let ready = matches!(found, Address::Ready(_));
                 tries = if ready { 0 } else { tries + 1 };
                 let alive = this.update(cx, |this, cx| {
@@ -452,7 +501,9 @@ impl Shell {
         // The identity is made the first time the relay is chosen, not before.
         let relay = (reach == Reach::Relay).then(|| {
             let label = settings.identity().label();
-            RelayInfo { url: settings.relay_address(&label) }
+            RelayInfo {
+                url: settings.relay_address(&label),
+            }
         });
         let state = match &self.phone {
             Some(link) => {
@@ -475,11 +526,21 @@ impl Shell {
                 };
                 let connected = link.server.connected_devices();
                 let mut access = link.access.lock().unwrap();
-                let pairing = access.pairing().map(|(code, left)| match access.pairing_secret() {
-                    // Through the relay the link carries everything; there is no code to read out.
-                    Some(secret) => PairingInfo { url: phone::relay_link(&base, &code, &secret), code: String::new(), seconds_left: left.as_secs() },
-                    None => PairingInfo { url: phone::link(&base, &code), code, seconds_left: left.as_secs() },
-                });
+                let pairing = access
+                    .pairing()
+                    .map(|(code, left)| match access.pairing_secret() {
+                        // Through the relay the link carries everything; there is no code to read out.
+                        Some(secret) => PairingInfo {
+                            url: phone::relay_link(&base, &code, &secret),
+                            code: String::new(),
+                            seconds_left: left.as_secs(),
+                        },
+                        None => PairingInfo {
+                            url: phone::link(&base, &code),
+                            code,
+                            seconds_left: left.as_secs(),
+                        },
+                    });
                 let devices = access
                     .devices
                     .iter()
@@ -491,7 +552,14 @@ impl Shell {
                         connected: connected.contains(&d.id),
                     })
                     .collect();
-                PhoneState::On { reach: link.reach, relay, address, pairing, devices, phones: link.server.client_count() }
+                PhoneState::On {
+                    reach: link.reach,
+                    relay,
+                    address,
+                    pairing,
+                    devices,
+                    phones: link.server.client_count(),
+                }
             }
             None => PhoneState::Off { reach, relay },
         };
@@ -534,7 +602,13 @@ impl Shell {
         }
     }
 
-    fn phone_message(&mut self, client: ClientId, msg: ClientMsg, window: &mut Window, cx: &mut Context<Self>) {
+    fn phone_message(
+        &mut self,
+        client: ClientId,
+        msg: ClientMsg,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match msg {
             ClientMsg::Open { session } => {
                 let sid: SharedString = session.clone().into();
@@ -558,7 +632,11 @@ impl Shell {
                 let reply = json!({ "type": "entries", "id": session, "from": from, "count": count, "entries": entries, "older": true });
                 self.phone_send(client, reply.to_string());
             }
-            ClientMsg::Send { session, text, uploads } => {
+            ClientMsg::Send {
+                session,
+                text,
+                uploads,
+            } => {
                 let Some(env_path) = self.env_of_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
@@ -595,17 +673,27 @@ impl Shell {
             // A piece of a photo: base64, kept by upload id until the last one
             // lands. Then it is saved as a pasted image, and the id a prompt
             // names is worth that file.
-            ClientMsg::Upload { session: _, upload, name, part, of, data } => {
+            ClientMsg::Upload {
+                session: _,
+                upload,
+                name,
+                part,
+                of,
+                data,
+            } => {
                 use base64::Engine as _;
                 let saved = {
                     let Some(link) = &mut self.phone else { return };
                     link.uploads.retain(|_, u| u.at.elapsed() < UPLOAD_LIVES);
-                    let entry = link.uploads.entry(upload.clone()).or_insert_with(|| Upload {
-                        parts: vec![None; of.clamp(1, 512)],
-                        name: name.clone(),
-                        at: Instant::now(),
-                        path: None,
-                    });
+                    let entry = link
+                        .uploads
+                        .entry(upload.clone())
+                        .or_insert_with(|| Upload {
+                            parts: vec![None; of.clamp(1, 512)],
+                            name: name.clone(),
+                            at: Instant::now(),
+                            path: None,
+                        });
                     if let (Some(slot), Ok(bytes)) = (
                         entry.parts.get_mut(part),
                         base64::engine::general_purpose::STANDARD.decode(data.as_bytes()),
@@ -613,9 +701,11 @@ impl Shell {
                         *slot = (!bytes.is_empty()).then_some(bytes);
                     }
                     if entry.path.is_none() && entry.parts.iter().all(|p| p.is_some()) {
-                        let bytes: Vec<u8> = entry.parts.iter().flatten().flatten().cloned().collect();
+                        let bytes: Vec<u8> =
+                            entry.parts.iter().flatten().flatten().cloned().collect();
                         if bytes.len() <= crate::agent::attach::MAX_IMAGE_BYTES as usize
-                            && let Ok(path) = super::paste::save_image(&bytes, upload_ext(&entry.name))
+                            && let Ok(path) =
+                                super::paste::save_image(&bytes, upload_ext(&entry.name))
                         {
                             entry.path = Some(path);
                         }
@@ -623,17 +713,31 @@ impl Shell {
                     entry.path.clone()
                 };
                 if let Some(path) = saved {
-                    let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                    self.phone_send(client, json!({ "type": "uploaded", "upload": upload, "name": name }).to_string());
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default();
+                    self.phone_send(
+                        client,
+                        json!({ "type": "uploaded", "upload": upload, "name": name }).to_string(),
+                    );
                 }
             }
-            ClientMsg::Start { env, agent, text, settings } => {
+            ClientMsg::Start {
+                env,
+                agent,
+                text,
+                settings,
+            } => {
                 let path = PathBuf::from(env);
                 let Some(found) = self.find_env(&path) else {
                     self.phone_send(client, wire::error("that project is gone"));
                     return;
                 };
-                let agent = agent.as_deref().map(crate::model::Agent::from_key).unwrap_or(found.agent);
+                let agent = agent
+                    .as_deref()
+                    .map(crate::model::Agent::from_key)
+                    .unwrap_or(found.agent);
                 let text = text.trim().to_string();
                 if text.is_empty() {
                     return;
@@ -644,7 +748,9 @@ impl Shell {
                     }
                 }
                 // Not shown in a tab: the desktop keeps what it had on screen.
-                let Some(id) = self.start_session_in(&path, agent, summary(&text), text, false, window, cx) else {
+                let Some(id) =
+                    self.start_session_in(&path, agent, summary(&text), text, false, window, cx)
+                else {
                     self.phone_send(client, wire::error("could not start the session"));
                     return;
                 };
@@ -654,7 +760,10 @@ impl Shell {
             ClientMsg::Options { env, agent } => {
                 let path = PathBuf::from(&env);
                 let agent = crate::model::Agent::from_key(&agent);
-                let list = PHONE_SETTINGS.into_iter().filter_map(|s| Some((s, self.draft_choices(&path, agent, s)?))).collect();
+                let list = PHONE_SETTINGS
+                    .into_iter()
+                    .filter_map(|s| Some((s, self.draft_choices(&path, agent, s)?)))
+                    .collect();
                 let reply = json!({ "type": "options", "env": env, "agent": agent.key(), "settings": settings_json(list) });
                 self.phone_send(client, reply.to_string());
             }
@@ -666,15 +775,25 @@ impl Shell {
                 let list = match self.phone_thread(&env_path, &session) {
                     Some(thread) => {
                         let t = thread.read(cx);
-                        PHONE_SETTINGS.into_iter().filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?))).collect()
+                        PHONE_SETTINGS
+                            .into_iter()
+                            .filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?)))
+                            .collect()
                     }
                     None => Vec::new(),
                 };
-                let reply = json!({ "type": "settings", "id": session, "settings": settings_json(list) });
+                let reply =
+                    json!({ "type": "settings", "id": session, "settings": settings_json(list) });
                 self.phone_send(client, reply.to_string());
             }
-            ClientMsg::Setting { session, key, value } => {
-                let (Some(s), Some(env_path)) = (Setting::from_key(&key), self.env_of_session(&session)) else {
+            ClientMsg::Setting {
+                session,
+                key,
+                value,
+            } => {
+                let (Some(s), Some(env_path)) =
+                    (Setting::from_key(&key), self.env_of_session(&session))
+                else {
                     return;
                 };
                 let Some(thread) = self.phone_thread(&env_path, &session) else {
@@ -683,13 +802,20 @@ impl Shell {
                 };
                 thread.update(cx, |t, cx| t.set_setting(s, &value, cx));
                 // The environment remembers it too, as when picked on the desktop.
-                let agent = self.find_env(&env_path).and_then(|e| e.sessions.iter().find(|x| *x.id == *session)).map(|x| x.agent);
+                let agent = self
+                    .find_env(&env_path)
+                    .and_then(|e| e.sessions.iter().find(|x| *x.id == *session))
+                    .map(|x| x.agent);
                 if let Some(agent) = agent {
                     self.remember_setting(&env_path, agent, s, &value, cx);
                 }
                 let t = thread.read(cx);
-                let list = PHONE_SETTINGS.into_iter().filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?))).collect();
-                let reply = json!({ "type": "settings", "id": session, "settings": settings_json(list) });
+                let list = PHONE_SETTINGS
+                    .into_iter()
+                    .filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?)))
+                    .collect();
+                let reply =
+                    json!({ "type": "settings", "id": session, "settings": settings_json(list) });
                 self.phone_send(client, reply.to_string());
             }
             ClientMsg::Cancel { session } => {
@@ -710,7 +836,10 @@ impl Shell {
                 if let Some(env_path) = self.env_of_session(&session)
                     && let Some(thread) = self.phone_thread(&env_path, &session)
                 {
-                    let fits = thread.read(cx).pending_question().is_some_and(|q| q.questions.len() == answers.len());
+                    let fits = thread
+                        .read(cx)
+                        .pending_question()
+                        .is_some_and(|q| q.questions.len() == answers.len());
                     if fits {
                         thread.update(cx, |t, cx| t.answer_question(answers, cx));
                     } else {
@@ -734,7 +863,11 @@ impl Shell {
                 msg["id"] = json!(session);
                 self.phone_send(client, msg.to_string());
             }
-            ClientMsg::Diff { session, entry, index } => {
+            ClientMsg::Diff {
+                session,
+                entry,
+                index,
+            } => {
                 let Some(env_path) = self.env_of_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
@@ -753,7 +886,8 @@ impl Shell {
             }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `phone_usage_changed` once the read lands.
-                self.account.update(cx, |a, cx| a.refresh_if_stale(Duration::from_secs(60), cx));
+                self.account
+                    .update(cx, |a, cx| a.refresh_if_stale(Duration::from_secs(60), cx));
                 let usage = self.phone_usage_json(cx);
                 if let Some(link) = &mut self.phone {
                     link.last_usage = usage.clone();
@@ -832,7 +966,10 @@ impl Shell {
 
     fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
         let env = self.find_env(env_path)?;
-        env.sessions[env.session_index(id)?].live.as_ref().map(|l| l.thread.clone())
+        env.sessions[env.session_index(id)?]
+            .live
+            .as_ref()
+            .map(|l| l.thread.clone())
     }
 
     /// Every session of every project, newest first, with what a waiting one asks.
@@ -879,7 +1016,9 @@ impl Shell {
             return;
         };
         // The tab counts the code down and drops it when it expires.
-        if link.access.lock().unwrap().pairing().is_some() || self.phone_view.read(cx).pairing_shown() {
+        if link.access.lock().unwrap().pairing().is_some()
+            || self.phone_view.read(cx).pairing_shown()
+        {
             self.sync_phone_view(cx);
         }
         let Some(link) = &self.phone else {
@@ -900,7 +1039,12 @@ impl Shell {
     }
 
     /// A session as a phone opens it: its state and its last entries.
-    fn phone_session_json(&mut self, env_path: &Path, id: &SharedString, cx: &mut Context<Self>) -> String {
+    fn phone_session_json(
+        &mut self,
+        env_path: &Path,
+        id: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> String {
         let Some(env) = self.find_env(env_path) else {
             return wire::error("that session is gone");
         };
@@ -923,8 +1067,14 @@ impl Shell {
                 msg["from"] = json!(from);
                 msg["entries"] = json!(wire::entries(all, from, &self.phone_scope(t.cwd())));
                 msg["changes"] = wire::change_totals(all);
-                msg["permission"] = t.pending_permission().map(wire::permission).unwrap_or(serde_json::Value::Null);
-                msg["question"] = t.pending_question().map(wire::question).unwrap_or(serde_json::Value::Null);
+                msg["permission"] = t
+                    .pending_permission()
+                    .map(wire::permission)
+                    .unwrap_or(serde_json::Value::Null);
+                msg["question"] = t
+                    .pending_question()
+                    .map(wire::question)
+                    .unwrap_or(serde_json::Value::Null);
                 msg["usage"] = wire::usage(t.usage());
                 msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
                 msg["status"] = json!(wire::status(super::sessions::status_of(t)));
@@ -959,7 +1109,13 @@ impl Shell {
             let to = to.min(all.len());
             let from = from.min(to);
             let scope = self.phone_scope(cwd);
-            (all[from..to].iter().map(|e| wire::entry(e, &scope)).collect(), all.len())
+            (
+                all[from..to]
+                    .iter()
+                    .map(|e| wire::entry(e, &scope))
+                    .collect(),
+                all.len(),
+            )
         })
     }
 
@@ -987,14 +1143,22 @@ impl Shell {
     }
 
     /// Called for every event of a live thread; notes what phones should hear about.
-    pub(super) fn phone_thread_event(&mut self, id: &SharedString, ev: &ThreadEvent, cx: &mut Context<Self>) {
+    pub(super) fn phone_thread_event(
+        &mut self,
+        id: &SharedString,
+        ev: &ThreadEvent,
+        cx: &mut Context<Self>,
+    ) {
         let Some(link) = &mut self.phone else {
             return;
         };
         // The inbox shows every session's status and title, watched or not.
         if matches!(
             ev,
-            ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission | ThreadEvent::TitleChanged | ThreadEvent::Finished { .. }
+            ThreadEvent::StatusChanged
+                | ThreadEvent::NeedsPermission
+                | ThreadEvent::TitleChanged
+                | ThreadEvent::Finished { .. }
         ) && link.server.client_count() > 0
         {
             link.inbox_dirty = true;
@@ -1099,7 +1263,14 @@ impl Shell {
     /// Pushes a notice about a session to every phone that asked for them,
     /// except the ones looking at that very session right now. Subscriptions
     /// the push service says are gone are forgotten.
-    pub(super) fn notify_phones(&mut self, id: &SharedString, kind: Notice, title: &str, body: &str, cx: &mut Context<Self>) {
+    pub(super) fn notify_phones(
+        &mut self,
+        id: &SharedString,
+        kind: Notice,
+        title: &str,
+        body: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(link) = &self.phone else {
             return;
         };
@@ -1132,7 +1303,8 @@ impl Shell {
             Notice::Input => "input",
             Notice::Error => "error",
         };
-        let payload = json!({ "kind": kind, "session": id, "title": title, "body": body }).to_string();
+        let payload =
+            json!({ "kind": kind, "session": id, "title": title, "body": body }).to_string();
         let (vapid, access) = (link.vapid.clone(), link.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx
@@ -1169,10 +1341,14 @@ fn relay_address(status: relay::Status, page: &str) -> Address {
     match status {
         relay::Status::Connecting => Address::Pending("Connecting to the relay…".into()),
         relay::Status::Connected => Address::Ready(page.to_string()),
-        relay::Status::Reconnecting { why, retry_in } => {
-            Address::Pending(format!("{why} Trying again in {} s.", retry_in.as_secs().max(1)))
-        }
-        relay::Status::Rejected(why) => Address::Problem { what: why, link: None },
+        relay::Status::Reconnecting { why, retry_in } => Address::Pending(format!(
+            "{why} Trying again in {} s.",
+            retry_in.as_secs().max(1)
+        )),
+        relay::Status::Rejected(why) => Address::Problem {
+            what: why,
+            link: None,
+        },
     }
 }
 

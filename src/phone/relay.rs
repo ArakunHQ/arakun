@@ -64,7 +64,10 @@ pub enum Status {
     Connecting,
     Connected,
     /// Dropped or refused for now; dialing again after the wait.
-    Reconnecting { why: String, retry_in: Duration },
+    Reconnecting {
+        why: String,
+        retry_in: Duration,
+    },
     /// The relay will not have this computer, and asking again would not
     /// change that: the label belongs to another key, the operator blocked it,
     /// or another computer with this very key took the place.
@@ -76,14 +79,23 @@ enum Command {
     /// The whole list of ticket hashes the relay should admit.
     Tickets(Vec<String>),
     /// Let one phone in with the code whose hash this is, for so long.
-    PairOpen { hash: String, ttl: Duration },
+    PairOpen {
+        hash: String,
+        ttl: Duration,
+    },
     PairClose,
     /// A message to the phone on a channel, sealed there.
-    Send { channel: u32, text: String },
+    Send {
+        channel: u32,
+        text: String,
+    },
     /// A message to every phone that said who it is.
     Broadcast(String),
     /// Close a phone's channel; the relay tells the phone why.
-    CloseChannel { channel: u32, reason: String },
+    CloseChannel {
+        channel: u32,
+        reason: String,
+    },
 }
 
 /// A channel the relay opened, as the shell sees it: the phone's device once
@@ -110,7 +122,11 @@ impl RelayClient {
     /// Dials `base` as this identity and keeps the connection up. Status changes
     /// (`Incoming::Relay`, starting from `Connecting`) and what phones say come
     /// out of the receiver; who may come in is read from `access`.
-    pub fn start(base: &str, identity: Identity, access: Shared) -> (RelayClient, mpsc::UnboundedReceiver<Incoming>) {
+    pub fn start(
+        base: &str,
+        identity: Identity,
+        access: Shared,
+    ) -> (RelayClient, mpsc::UnboundedReceiver<Incoming>) {
         let label = identity.label();
         let (tx, rx) = mpsc::unbounded();
         let (cmd, commands) = std_mpsc::channel();
@@ -130,8 +146,19 @@ impl RelayClient {
             peers: HashMap::new(),
             stop: stop.clone(),
         };
-        std::thread::Builder::new().name("arakun-relay".into()).spawn(move || link.run()).expect("a thread can start");
-        (RelayClient { page: page_url(base, &label), channels, cmd, stop }, rx)
+        std::thread::Builder::new()
+            .name("arakun-relay".into())
+            .spawn(move || link.run())
+            .expect("a thread can start");
+        (
+            RelayClient {
+                page: page_url(base, &label),
+                channels,
+                cmd,
+                stop,
+            },
+            rx,
+        )
     }
 
     /// Where phones find this computer through the relay.
@@ -159,7 +186,10 @@ impl RelayClient {
     }
 
     pub fn close_channel(&self, channel: u32, reason: &str) {
-        let _ = self.cmd.send(Command::CloseChannel { channel, reason: reason.to_string() });
+        let _ = self.cmd.send(Command::CloseChannel {
+            channel,
+            reason: reason.to_string(),
+        });
     }
 
     /// The device behind a client, once it said who it is.
@@ -180,12 +210,24 @@ impl RelayClient {
     }
 
     pub fn client_count(&self) -> usize {
-        self.channels.lock().unwrap().values().filter(|c| c.ready).count()
+        self.channels
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|c| c.ready)
+            .count()
     }
 
     /// The devices with a channel that said who it is right now.
     pub fn connected_devices(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.channels.lock().unwrap().values().filter(|c| c.ready).filter_map(|c| c.device.clone()).collect();
+        let mut ids: Vec<String> = self
+            .channels
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|c| c.ready)
+            .filter_map(|c| c.device.clone())
+            .collect();
         ids.sort();
         ids.dedup();
         ids
@@ -226,7 +268,13 @@ pub fn page_url(base: &str, label: &str) -> String {
 fn origin(base: &str, label: &str) -> (bool, String) {
     let rest = base.trim().trim_end_matches('/');
     let (scheme, host) = rest.split_once("://").unwrap_or(("https", rest));
-    let name = host.rsplit_once(':').map_or(host, |(name, port)| if port.bytes().all(|b| b.is_ascii_digit()) { name } else { host });
+    let name = host.rsplit_once(':').map_or(host, |(name, port)| {
+        if port.bytes().all(|b| b.is_ascii_digit()) {
+            name
+        } else {
+            host
+        }
+    });
     let local = name == "localhost" || name.parse::<std::net::IpAddr>().is_ok();
     if local {
         (scheme == "https", host.to_string())
@@ -259,7 +307,11 @@ enum Peer {
     /// Keys agreed; the phone has yet to say who it is.
     Greeted(Session),
     /// A paired device: the shell knows it as a client.
-    Ready { session: Session, token: String, device: String },
+    Ready {
+        session: Session,
+        token: String,
+        device: String,
+    },
 }
 
 /// Why one connection ended, and whether another should follow.
@@ -304,7 +356,10 @@ impl Link {
                     return;
                 }
                 Ended::Retry(why) => {
-                    self.set_status(Status::Reconnecting { why, retry_in: wait });
+                    self.set_status(Status::Reconnecting {
+                        why,
+                        retry_in: wait,
+                    });
                     let until = Instant::now() + wait;
                     while Instant::now() < until {
                         if self.stop.load(Ordering::Relaxed) {
@@ -337,7 +392,9 @@ impl Link {
     fn remember(&mut self, cmd: &Command) {
         match cmd {
             Command::Tickets(hashes) => self.tickets = hashes.clone(),
-            Command::PairOpen { hash, ttl } => self.pairing = Some((hash.clone(), Instant::now() + *ttl)),
+            Command::PairOpen { hash, ttl } => {
+                self.pairing = Some((hash.clone(), Instant::now() + *ttl))
+            }
             Command::PairClose => self.pairing = None,
             Command::Send { .. } | Command::Broadcast(_) | Command::CloseChannel { .. } => {}
         }
@@ -349,15 +406,20 @@ impl Link {
         self.channels.lock().unwrap().clear();
         for (channel, peer) in std::mem::take(&mut self.peers) {
             if matches!(peer, Peer::Ready { .. }) {
-                let _ = self.tx.unbounded_send(Incoming::Disconnected(ClientId::from(channel)));
+                let _ = self
+                    .tx
+                    .unbounded_send(Incoming::Disconnected(ClientId::from(channel)));
             }
         }
     }
 
     /// TCP, TLS when the address asks for it, and the WebSocket handshake.
     fn connect(&self) -> Result<Socket, Ended> {
-        let (host, port, _) = parse_url(&self.url).ok_or_else(|| Ended::Rejected(format!("Bad relay address: {}", self.url)))?;
-        let addrs = (host.as_str(), port).to_socket_addrs().map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?;
+        let (host, port, _) = parse_url(&self.url)
+            .ok_or_else(|| Ended::Rejected(format!("Bad relay address: {}", self.url)))?;
+        let addrs = (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?;
         let mut stream = None;
         for addr in addrs {
             if let Ok(s) = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
@@ -365,22 +427,35 @@ impl Link {
                 break;
             }
         }
-        let stream = stream.ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}")))?;
+        let stream =
+            stream.ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}")))?;
         let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
         let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
         // A `ws://` address comes back as a plain stream in the same wrapper.
         let (ws, _) = tungstenite::client_tls(self.url.as_str(), stream).map_err(|e| match e {
             tungstenite::HandshakeError::Failure(tungstenite::Error::Http(res)) => {
-                let body = res.body().as_deref().map(|b| String::from_utf8_lossy(b).trim().to_string()).unwrap_or_default();
-                let text = if body.is_empty() { format!("The relay answered {}", res.status()) } else { body };
+                let body = res
+                    .body()
+                    .as_deref()
+                    .map(|b| String::from_utf8_lossy(b).trim().to_string())
+                    .unwrap_or_default();
+                let text = if body.is_empty() {
+                    format!("The relay answered {}", res.status())
+                } else {
+                    body
+                };
                 match res.status().as_u16() {
                     403 => Ended::Rejected(text),
                     _ => Ended::Retry(text),
                 }
             }
-            tungstenite::HandshakeError::Failure(e) => Ended::Retry(format!("Could not connect: {e}")),
+            tungstenite::HandshakeError::Failure(e) => {
+                Ended::Retry(format!("Could not connect: {e}"))
+            }
             // The stream blocks, so the handshake runs to its end.
-            tungstenite::HandshakeError::Interrupted(_) => Ended::Retry("The handshake was cut short".into()),
+            tungstenite::HandshakeError::Interrupted(_) => {
+                Ended::Retry("The handshake was cut short".into())
+            }
         })?;
         if let MaybeTlsStream::Plain(s) = ws.get_ref() {
             let _ = s.set_read_timeout(Some(READ_TICK));
@@ -397,14 +472,23 @@ impl Link {
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         let nonce = loop {
             if Instant::now() > deadline {
-                return Err(Ended::Retry("The relay did not challenge us in time".into()));
+                return Err(Ended::Retry(
+                    "The relay did not challenge us in time".into(),
+                ));
             }
             match self.next_control(ws)? {
                 Some(msg) if msg["type"] == "challenge" => {
                     let nonce = msg["nonce"].as_str().and_then(|n| B64.decode(n).ok());
-                    break nonce.ok_or_else(|| Ended::Retry("The relay sent a challenge without a nonce".into()))?;
+                    break nonce.ok_or_else(|| {
+                        Ended::Retry("The relay sent a challenge without a nonce".into())
+                    })?;
                 }
-                Some(msg) => return Err(Ended::Retry(format!("The relay said {} before challenging us", msg["type"]))),
+                Some(msg) => {
+                    return Err(Ended::Retry(format!(
+                        "The relay said {} before challenging us",
+                        msg["type"]
+                    )));
+                }
                 None => {}
             }
         };
@@ -419,12 +503,21 @@ impl Link {
         send_control(ws, 0, &claim)?;
         loop {
             if Instant::now() > deadline {
-                return Err(Ended::Retry("The relay did not answer the claim in time".into()));
+                return Err(Ended::Retry(
+                    "The relay did not answer the claim in time".into(),
+                ));
             }
             match self.next_control(ws)? {
                 Some(msg) if msg["type"] == "claimed" => break,
-                Some(msg) if msg["type"] == "bye" => return Err(refused(msg["reason"].as_str().unwrap_or("refused"))),
-                Some(msg) => return Err(Ended::Retry(format!("The relay said {} to our claim", msg["type"]))),
+                Some(msg) if msg["type"] == "bye" => {
+                    return Err(refused(msg["reason"].as_str().unwrap_or("refused")));
+                }
+                Some(msg) => {
+                    return Err(Ended::Retry(format!(
+                        "The relay said {} to our claim",
+                        msg["type"]
+                    )));
+                }
                 None => {}
             }
         }
@@ -433,7 +526,11 @@ impl Link {
         if let Some((hash, until)) = &self.pairing {
             let left = until.saturating_duration_since(Instant::now());
             if !left.is_zero() {
-                send_control(ws, 0, &json!({ "type": "pair_open", "hash": hash, "ttl": left.as_secs().max(1) }))?;
+                send_control(
+                    ws,
+                    0,
+                    &json!({ "type": "pair_open", "hash": hash, "ttl": left.as_secs().max(1) }),
+                )?;
             }
         }
         Ok(())
@@ -496,13 +593,19 @@ impl Link {
 
     fn obey(&mut self, ws: &mut Socket, cmd: Command) -> Result<(), Ended> {
         match cmd {
-            Command::Tickets(hashes) => send_control(ws, 0, &json!({ "type": "tickets", "hashes": hashes })),
-            Command::PairOpen { hash, ttl } => {
-                send_control(ws, 0, &json!({ "type": "pair_open", "hash": hash, "ttl": ttl.as_secs().max(1) }))
+            Command::Tickets(hashes) => {
+                send_control(ws, 0, &json!({ "type": "tickets", "hashes": hashes }))
             }
+            Command::PairOpen { hash, ttl } => send_control(
+                ws,
+                0,
+                &json!({ "type": "pair_open", "hash": hash, "ttl": ttl.as_secs().max(1) }),
+            ),
             Command::PairClose => send_control(ws, 0, &json!({ "type": "pair_close" })),
             Command::Send { channel, text } => match self.peers.get_mut(&channel) {
-                Some(Peer::Ready { session, .. }) => send_frame(ws, DATA, channel, &session.seal(text.as_bytes())),
+                Some(Peer::Ready { session, .. }) => {
+                    send_frame(ws, DATA, channel, &session.seal(text.as_bytes()))
+                }
                 _ => Ok(()),
             },
             Command::Broadcast(text) => {
@@ -519,7 +622,13 @@ impl Link {
 
     /// A frame from the relay. Control on channel 0 is about channels and about
     /// us; anything on another channel is a phone's.
-    fn heard(&mut self, ws: &mut Socket, kind: u8, channel: u32, payload: Vec<u8>) -> Result<(), Ended> {
+    fn heard(
+        &mut self,
+        ws: &mut Socket,
+        kind: u8,
+        channel: u32,
+        payload: Vec<u8>,
+    ) -> Result<(), Ended> {
         if channel != 0 {
             return self.phone_said(ws, kind, channel, payload);
         }
@@ -534,7 +643,13 @@ impl Link {
             Some("open") => {
                 if let Some(channel) = channel() {
                     let device = msg["device"].as_str().map(str::to_string);
-                    self.channels.lock().unwrap().insert(channel, Channel { device, ready: false });
+                    self.channels.lock().unwrap().insert(
+                        channel,
+                        Channel {
+                            device,
+                            ready: false,
+                        },
+                    );
                     self.peers.insert(channel, Peer::Opened);
                 }
             }
@@ -552,7 +667,13 @@ impl Link {
     /// A phone's frame on its channel: the hello first, then sealed messages.
     /// A phone that does not keep to this is cut off; a bad frame on an
     /// agreed channel means a replay or tampering and ends it too.
-    fn phone_said(&mut self, ws: &mut Socket, kind: u8, channel: u32, payload: Vec<u8>) -> Result<(), Ended> {
+    fn phone_said(
+        &mut self,
+        ws: &mut Socket,
+        kind: u8,
+        channel: u32,
+        payload: Vec<u8>,
+    ) -> Result<(), Ended> {
         let Some(peer) = self.peers.remove(&channel) else {
             return Ok(());
         };
@@ -562,8 +683,9 @@ impl Link {
         // The peer as it stands after the frame, or why the channel ends.
         let outcome: Result<Peer, &str> = match (kind, peer) {
             (HELLO, Peer::Opened) => {
-                let answered =
-                    PhoneHello::parse(&payload).and_then(|hello| Handshake::begin().answer(&hello, &self.identity, channel, &host));
+                let answered = PhoneHello::parse(&payload).and_then(|hello| {
+                    Handshake::begin().answer(&hello, &self.identity, channel, &host)
+                });
                 match answered {
                     Ok((reply, session)) => {
                         send_frame(ws, HELLO, channel, &reply)?;
@@ -573,7 +695,10 @@ impl Link {
                 }
             }
             (DATA, Peer::Greeted(mut session)) => {
-                let msg = session.open(&payload).ok().and_then(|p| serde_json::from_slice::<Value>(&p).ok());
+                let msg = session
+                    .open(&payload)
+                    .ok()
+                    .and_then(|p| serde_json::from_slice::<Value>(&p).ok());
                 match msg {
                     None => Err("bad_frame"),
                     Some(msg) if msg.get("pair").is_some() => {
@@ -584,26 +709,51 @@ impl Link {
                         match paired {
                             Some((device, token, ticket)) => {
                                 let told = json!({ "paired": { "id": device.id, "name": device.name, "token": token, "ticket": ticket, "host": host } });
-                                send_frame(ws, DATA, channel, &session.seal(told.to_string().as_bytes()))?;
+                                send_frame(
+                                    ws,
+                                    DATA,
+                                    channel,
+                                    &session.seal(told.to_string().as_bytes()),
+                                )?;
                                 // The relay admits the phone by ticket from its next socket on.
                                 self.tickets = self.access.lock().unwrap().ticket_hashes();
-                                send_control(ws, 0, &json!({ "type": "tickets", "hashes": self.tickets }))?;
+                                send_control(
+                                    ws,
+                                    0,
+                                    &json!({ "type": "tickets", "hashes": self.tickets }),
+                                )?;
                                 let _ = self.tx.unbounded_send(Incoming::Paired);
                                 self.ready(channel, &device.id);
-                                Ok(Peer::Ready { session, token, device: device.id })
+                                Ok(Peer::Ready {
+                                    session,
+                                    token,
+                                    device: device.id,
+                                })
                             }
                             None => Err("wrong_secret"),
                         }
                     }
                     Some(msg) if msg.get("auth").is_some() => {
-                        let token = msg["auth"]["token"].as_str().unwrap_or_default().to_string();
+                        let token = msg["auth"]["token"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
                         let device = self.access.lock().unwrap().device_for(&token, now);
                         match device {
                             Some(device) => {
                                 let told = json!({ "ok": { "id": device.id, "name": device.name, "host": host } });
-                                send_frame(ws, DATA, channel, &session.seal(told.to_string().as_bytes()))?;
+                                send_frame(
+                                    ws,
+                                    DATA,
+                                    channel,
+                                    &session.seal(told.to_string().as_bytes()),
+                                )?;
                                 self.ready(channel, &device.id);
-                                Ok(Peer::Ready { session, token, device: device.id })
+                                Ok(Peer::Ready {
+                                    session,
+                                    token,
+                                    device: device.id,
+                                })
                             }
                             None => Err("unauthorized"),
                         }
@@ -611,13 +761,25 @@ impl Link {
                     Some(_) => Err("unauthorized"),
                 }
             }
-            (DATA, Peer::Ready { mut session, token, device }) => match session.open(&payload) {
+            (
+                DATA,
+                Peer::Ready {
+                    mut session,
+                    token,
+                    device,
+                },
+            ) => match session.open(&payload) {
                 Err(_) => Err("bad_frame"),
                 Ok(plain) => {
                     let msg = serde_json::from_slice::<Value>(&plain);
                     let mut outcome = Ok(());
                     match msg {
-                        Err(_) => send_frame(ws, DATA, channel, &session.seal(wire::error("bad message: not json").as_bytes()))?,
+                        Err(_) => send_frame(
+                            ws,
+                            DATA,
+                            channel,
+                            &session.seal(wire::error("bad message: not json").as_bytes()),
+                        )?,
                         Ok(msg) if msg.get("req").is_some() => {
                             let req = &msg["req"];
                             let (reply, effect) = self.route(req, &token, now);
@@ -627,12 +789,24 @@ impl Link {
                         Ok(msg) => match serde_json::from_value::<ClientMsg>(msg) {
                             Ok(ClientMsg::Ping) => {}
                             Ok(msg) => {
-                                let _ = self.tx.unbounded_send(Incoming::Message(ClientId::from(channel), msg));
+                                let _ = self.tx.unbounded_send(Incoming::Message(
+                                    ClientId::from(channel),
+                                    msg,
+                                ));
                             }
-                            Err(e) => send_frame(ws, DATA, channel, &session.seal(wire::error(&format!("bad message: {e}")).as_bytes()))?,
+                            Err(e) => send_frame(
+                                ws,
+                                DATA,
+                                channel,
+                                &session.seal(wire::error(&format!("bad message: {e}")).as_bytes()),
+                            )?,
                         },
                     }
-                    outcome.map(|()| Peer::Ready { session, token, device })
+                    outcome.map(|()| Peer::Ready {
+                        session,
+                        token,
+                        device,
+                    })
                 }
             },
             _ => Err("bad_frame"),
@@ -644,7 +818,9 @@ impl Link {
             Err(reason) => {
                 self.channels.lock().unwrap().remove(&channel);
                 if was_ready {
-                    let _ = self.tx.unbounded_send(Incoming::Disconnected(ClientId::from(channel)));
+                    let _ = self
+                        .tx
+                        .unbounded_send(Incoming::Disconnected(ClientId::from(channel)));
                 }
                 send_control(ws, channel, &json!({ "type": "close", "reason": reason }))?;
             }
@@ -655,7 +831,12 @@ impl Link {
     /// What a `req` on `asking` changed, acted on. An unpairing closes the
     /// device's other channels here and ends the asking one with the reason
     /// given back.
-    fn apply(&mut self, ws: &mut Socket, asking: u32, effect: Effect) -> Result<Result<(), &'static str>, Ended> {
+    fn apply(
+        &mut self,
+        ws: &mut Socket,
+        asking: u32,
+        effect: Effect,
+    ) -> Result<Result<(), &'static str>, Ended> {
         match effect {
             Effect::None => {}
             Effect::Paired => {
@@ -687,7 +868,10 @@ impl Link {
     fn route(&self, req: &Value, token: &str, now: u64) -> (super::Reply, Effect) {
         let method = req["method"].as_str().unwrap_or("GET");
         let path = req["path"].as_str().unwrap_or("/");
-        let body = req["body"].as_str().map(|b| b.as_bytes().to_vec()).filter(|b| b.len() <= MAX_REQ_BODY);
+        let body = req["body"]
+            .as_str()
+            .map(|b| b.as_bytes().to_vec())
+            .filter(|b| b.len() <= MAX_REQ_BODY);
         match Head::relayed(method, path, token) {
             Some(head) => super::route(&head, body, &self.access, now),
             None => (super::Reply::error(400, "bad request"), Effect::None),
@@ -696,8 +880,17 @@ impl Link {
 
     /// The channel's phone said who it is: the shell gets a client.
     fn ready(&mut self, channel: u32, device: &str) {
-        self.channels.lock().unwrap().insert(channel, Channel { device: Some(device.to_string()), ready: true });
-        let _ = self.tx.unbounded_send(Incoming::Connected(ClientId::from(channel), device.to_string()));
+        self.channels.lock().unwrap().insert(
+            channel,
+            Channel {
+                device: Some(device.to_string()),
+                ready: true,
+            },
+        );
+        let _ = self.tx.unbounded_send(Incoming::Connected(
+            ClientId::from(channel),
+            device.to_string(),
+        ));
     }
 
     /// Ends a channel from this side: the relay passes the reason to the phone.
@@ -713,7 +906,9 @@ impl Link {
     fn forget_channel(&mut self, channel: u32) -> bool {
         let known = self.channels.lock().unwrap().remove(&channel).is_some();
         if let Some(Peer::Ready { .. }) = self.peers.remove(&channel) {
-            let _ = self.tx.unbounded_send(Incoming::Disconnected(ClientId::from(channel)));
+            let _ = self
+                .tx
+                .unbounded_send(Incoming::Disconnected(ClientId::from(channel)));
         }
         known
     }
@@ -721,8 +916,18 @@ impl Link {
 
 /// A `req`'s answer, sealed and sent in pieces the relay lets through: the
 /// first carries the status and type, each says whether more follow.
-fn respond(ws: &mut Socket, channel: u32, session: &mut Session, id: &Value, reply: super::Reply) -> Result<(), Ended> {
-    let pieces: Vec<&[u8]> = if reply.body.is_empty() { vec![&[]] } else { reply.body.chunks(RES_CHUNK).collect() };
+fn respond(
+    ws: &mut Socket,
+    channel: u32,
+    session: &mut Session,
+    id: &Value,
+    reply: super::Reply,
+) -> Result<(), Ended> {
+    let pieces: Vec<&[u8]> = if reply.body.is_empty() {
+        vec![&[]]
+    } else {
+        reply.body.chunks(RES_CHUNK).collect()
+    };
     let last = pieces.len() - 1;
     for (i, piece) in pieces.into_iter().enumerate() {
         let mut res = json!({ "id": id, "body": B64.encode(piece), "more": i < last });
@@ -730,7 +935,12 @@ fn respond(ws: &mut Socket, channel: u32, session: &mut Session, id: &Value, rep
             res["status"] = json!(reply.status);
             res["type"] = json!(reply.content_type);
         }
-        send_frame(ws, DATA, channel, &session.seal(json!({ "res": res }).to_string().as_bytes()))?;
+        send_frame(
+            ws,
+            DATA,
+            channel,
+            &session.seal(json!({ "res": res }).to_string().as_bytes()),
+        )?;
     }
     Ok(())
 }
@@ -738,10 +948,16 @@ fn respond(ws: &mut Socket, channel: u32, session: &mut Session, id: &Value, rep
 /// What a `bye` from the relay means for the next attempt.
 fn refused(reason: &str) -> Ended {
     match reason {
-        "wrong_label" | "key_mismatch" => Ended::Rejected("This address belongs to another key.".into()),
-        "bad_signature" => Ended::Rejected("The relay did not accept this computer's signature.".into()),
+        "wrong_label" | "key_mismatch" => {
+            Ended::Rejected("This address belongs to another key.".into())
+        }
+        "bad_signature" => {
+            Ended::Rejected("The relay did not accept this computer's signature.".into())
+        }
         "blocked" => Ended::Rejected("The relay operator blocked this address.".into()),
-        "replaced" => Ended::Rejected("Another computer with this key connected to the relay.".into()),
+        "replaced" => {
+            Ended::Rejected("Another computer with this key connected to the relay.".into())
+        }
         other => Ended::Retry(format!("The relay hung up: {other}")),
     }
 }
@@ -756,21 +972,35 @@ enum Read {
 
 fn read(ws: &mut Socket) -> Result<Read, Ended> {
     match ws.read() {
-        Ok(Message::Binary(bytes)) => Ok(parse_frame(&bytes).map_or(Read::Nothing, |(k, c, p)| Read::Frame(k, c, p))),
+        Ok(Message::Binary(bytes)) => {
+            Ok(parse_frame(&bytes).map_or(Read::Nothing, |(k, c, p)| Read::Frame(k, c, p)))
+        }
         // The pong to our ping is all the relay says while no phone is around:
         // it must count as hearing from it, or every silence looks like a loss.
         Ok(Message::Pong(_) | Message::Ping(_)) => Ok(Read::Alive),
         Ok(Message::Close(frame)) => {
             let _ = ws.flush();
-            let reason = frame.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
+            let reason = frame
+                .as_ref()
+                .map(|f| f.reason.to_string())
+                .unwrap_or_default();
             let code = frame.map(|f| u16::from(f.code));
             Err(match code {
                 Some(4401 | 4403 | 4409) => refused(&reason),
-                _ => Ended::Retry(if reason.is_empty() { "The relay closed the connection".into() } else { reason }),
+                _ => Ended::Retry(if reason.is_empty() {
+                    "The relay closed the connection".into()
+                } else {
+                    reason
+                }),
             })
         }
         Ok(_) => Ok(Read::Alive),
-        Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+        Err(tungstenite::Error::Io(e))
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
             Ok(Read::Nothing)
         }
         Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
@@ -785,7 +1015,8 @@ fn send_control(ws: &mut Socket, channel: u32, msg: &Value) -> Result<(), Ended>
 }
 
 fn send_frame(ws: &mut Socket, kind: u8, channel: u32, payload: &[u8]) -> Result<(), Ended> {
-    ws.send(Message::Binary(frame(kind, channel, payload).into())).map_err(|e| Ended::Retry(format!("Could not write to the relay: {e}")))
+    ws.send(Message::Binary(frame(kind, channel, payload).into()))
+        .map_err(|e| Ended::Retry(format!("Could not write to the relay: {e}")))
 }
 
 /// A computer frame: type, channel (big-endian), payload.
@@ -815,7 +1046,9 @@ fn parse_url(url: &str) -> Option<(String, u16, bool)> {
     };
     let host_port = rest.split(['/', '?', '#']).next()?;
     let (host, port) = match host_port.rsplit_once(':') {
-        Some((h, p)) if p.bytes().all(|b| b.is_ascii_digit()) && !p.is_empty() => (h, p.parse().ok()?),
+        Some((h, p)) if p.bytes().all(|b| b.is_ascii_digit()) && !p.is_empty() => {
+            (h, p.parse().ok()?)
+        }
         _ => (host_port, if secure { 443 } else { 80 }),
     };
     Some((host.trim_matches(['[', ']']).to_string(), port, secure))
@@ -830,12 +1063,30 @@ mod tests {
 
     #[test]
     fn the_endpoint_puts_the_label_in_front_unless_the_relay_is_local() {
-        assert_eq!(endpoint("https://arakun.dev", "abc"), "wss://abc.arakun.dev/pc");
-        assert_eq!(endpoint("https://example.workers.dev/", "abc"), "wss://abc.example.workers.dev/pc");
-        assert_eq!(endpoint("relay.example", "abc"), "wss://abc.relay.example/pc");
-        assert_eq!(endpoint("http://127.0.0.1:8787", "abc"), "ws://127.0.0.1:8787/pc");
-        assert_eq!(endpoint("http://localhost:8787/", "abc"), "ws://localhost:8787/pc");
-        assert_eq!(endpoint("https://127.0.0.1:8443", "abc"), "wss://127.0.0.1:8443/pc");
+        assert_eq!(
+            endpoint("https://arakun.dev", "abc"),
+            "wss://abc.arakun.dev/pc"
+        );
+        assert_eq!(
+            endpoint("https://example.workers.dev/", "abc"),
+            "wss://abc.example.workers.dev/pc"
+        );
+        assert_eq!(
+            endpoint("relay.example", "abc"),
+            "wss://abc.relay.example/pc"
+        );
+        assert_eq!(
+            endpoint("http://127.0.0.1:8787", "abc"),
+            "ws://127.0.0.1:8787/pc"
+        );
+        assert_eq!(
+            endpoint("http://localhost:8787/", "abc"),
+            "ws://localhost:8787/pc"
+        );
+        assert_eq!(
+            endpoint("https://127.0.0.1:8443", "abc"),
+            "wss://127.0.0.1:8443/pc"
+        );
     }
 
     #[test]
@@ -845,8 +1096,14 @@ mod tests {
         assert_eq!(parse_frame(&f), Some((DATA, 7, b"hi".to_vec())));
         assert_eq!(parse_frame(&[0x02, 0, 0]), None);
         assert_eq!(parse_frame(&[0x09, 0, 0, 0, 1]), None);
-        assert_eq!(parse_url("wss://abc.arakun.dev/pc"), Some(("abc.arakun.dev".into(), 443, true)));
-        assert_eq!(parse_url("ws://127.0.0.1:8787/pc"), Some(("127.0.0.1".into(), 8787, false)));
+        assert_eq!(
+            parse_url("wss://abc.arakun.dev/pc"),
+            Some(("abc.arakun.dev".into(), 443, true))
+        );
+        assert_eq!(
+            parse_url("ws://127.0.0.1:8787/pc"),
+            Some(("127.0.0.1".into(), 8787, false))
+        );
         assert_eq!(parse_url("https://x"), None);
     }
 
@@ -859,30 +1116,52 @@ mod tests {
     impl FakeRelay {
         fn start(label: &str) -> FakeRelay {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            FakeRelay { listener, label: label.into() }
+            FakeRelay {
+                listener,
+                label: label.into(),
+            }
         }
 
         fn base(&self) -> String {
-            format!("http://127.0.0.1:{}", self.listener.local_addr().unwrap().port())
+            format!(
+                "http://127.0.0.1:{}",
+                self.listener.local_addr().unwrap().port()
+            )
         }
 
         /// Takes the next computer, challenges it and checks the claim; gives the
         /// socket back claimed, with the `tickets` message it then sent.
         fn accept_and_claim(&self, public: &[u8]) -> (WebSocket<TcpStream>, Value) {
             let (stream, _) = self.listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut ws = tungstenite::accept(stream).unwrap();
             let nonce = [7u8; 16];
-            ws.send(Message::Binary(frame(CONTROL, 0, json!({"type": "challenge", "nonce": B64.encode(nonce)}).to_string().as_bytes()).into()))
-                .unwrap();
+            ws.send(Message::Binary(
+                frame(
+                    CONTROL,
+                    0,
+                    json!({"type": "challenge", "nonce": B64.encode(nonce)})
+                        .to_string()
+                        .as_bytes(),
+                )
+                .into(),
+            ))
+            .unwrap();
             let claim = control(&mut ws);
             assert_eq!(claim["type"], "claim");
             assert_eq!(B64.decode(claim["pub"].as_str().unwrap()).unwrap(), public);
             let sig = B64.decode(claim["sig"].as_str().unwrap()).unwrap();
             let mut signed = nonce.to_vec();
             signed.extend_from_slice(self.label.as_bytes());
-            signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, public).verify(&signed, &sig).unwrap();
-            ws.send(Message::Binary(frame(CONTROL, 0, br#"{"type":"claimed"}"#).into())).unwrap();
+            signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, public)
+                .verify(&signed, &sig)
+                .unwrap();
+            ws.send(Message::Binary(
+                frame(CONTROL, 0, br#"{"type":"claimed"}"#).into(),
+            ))
+            .unwrap();
             let tickets = control(&mut ws);
             assert_eq!(tickets["type"], "tickets");
             (ws, tickets)
@@ -905,7 +1184,10 @@ mod tests {
     }
 
     fn tell(ws: &mut WebSocket<TcpStream>, msg: Value) {
-        ws.send(Message::Binary(frame(CONTROL, 0, msg.to_string().as_bytes()).into())).unwrap();
+        ws.send(Message::Binary(
+            frame(CONTROL, 0, msg.to_string().as_bytes()).into(),
+        ))
+        .unwrap();
     }
 
     fn next_status(rx: &mut mpsc::UnboundedReceiver<Incoming>) -> Status {
@@ -969,7 +1251,8 @@ mod tests {
         let me = Identity::generate();
         let public = me.public_raw().to_vec();
         let relay = FakeRelay::start(&me.label());
-        let (client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&["aa", "bb"]));
+        let (client, mut rx) =
+            RelayClient::start(&relay.base(), me, access_with_tickets(&["aa", "bb"]));
         assert_eq!(next_status(&mut rx), Status::Connecting);
         assert_eq!(client.page_url(), format!("{}/", relay.base()));
 
@@ -977,15 +1260,36 @@ mod tests {
         assert_eq!(tickets["hashes"], json!(["aa", "bb"]));
         assert_eq!(next_status(&mut rx), Status::Connected);
 
-        tell(&mut ws, json!({"type": "open", "channel": 3, "device": "dev1"}));
-        tell(&mut ws, json!({"type": "open", "channel": 4, "device": null}));
+        tell(
+            &mut ws,
+            json!({"type": "open", "channel": 3, "device": "dev1"}),
+        );
+        tell(
+            &mut ws,
+            json!({"type": "open", "channel": 4, "device": null}),
+        );
         until(|| (client.channels().len() == 2).then_some(()));
-        assert_eq!(client.channels()[&3], Channel { device: Some("dev1".into()), ready: false });
-        assert_eq!(client.channels()[&4], Channel { device: None, ready: false });
+        assert_eq!(
+            client.channels()[&3],
+            Channel {
+                device: Some("dev1".into()),
+                ready: false
+            }
+        );
+        assert_eq!(
+            client.channels()[&4],
+            Channel {
+                device: None,
+                ready: false
+            }
+        );
         // Not clients yet: nobody has said who they are.
         assert_eq!(client.client_count(), 0);
         assert_eq!(client.device_of(3), None);
-        tell(&mut ws, json!({"type": "close", "channel": 3, "reason": "closed"}));
+        tell(
+            &mut ws,
+            json!({"type": "close", "channel": 3, "reason": "closed"}),
+        );
         until(|| (client.channels().len() == 1).then_some(()));
 
         client.set_tickets(vec!["cc".into()]);
@@ -997,10 +1301,16 @@ mod tests {
         client.close_channel(4, "done");
         let (kind, channel, payload) = next_frame(&mut ws);
         assert_eq!((kind, channel), (CONTROL, 4));
-        assert_eq!(serde_json::from_slice::<Value>(&payload).unwrap()["reason"], "done");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&payload).unwrap()["reason"],
+            "done"
+        );
 
         drop(client);
-        assert!(matches!(ws.read(), Ok(Message::Close(_)) | Err(_)), "the relay hears the computer hang up");
+        assert!(
+            matches!(ws.read(), Ok(Message::Close(_)) | Err(_)),
+            "the relay hears the computer hang up"
+        );
     }
 
     #[test]
@@ -1012,7 +1322,10 @@ mod tests {
         let (mut ws, _) = relay.accept_and_claim(&public);
         assert_eq!(next_status(&mut rx), Status::Connecting);
         assert_eq!(next_status(&mut rx), Status::Connected);
-        tell(&mut ws, json!({"type": "open", "channel": 1, "device": "d"}));
+        tell(
+            &mut ws,
+            json!({"type": "open", "channel": 1, "device": "d"}),
+        );
         until(|| (client.channels().len() == 1).then_some(()));
 
         ws.close(None).unwrap();
@@ -1039,10 +1352,19 @@ mod tests {
     impl FakePhone {
         /// Opens `channel` on the computer (as the relay would), shakes hands and
         /// checks the computer's hello is from `label`.
-        fn greet(ws: &mut WebSocket<TcpStream>, label: &str, channel: u32, device: Option<&str>) -> FakePhone {
-            tell(ws, json!({"type": "open", "channel": channel, "device": device}));
+        fn greet(
+            ws: &mut WebSocket<TcpStream>,
+            label: &str,
+            channel: u32,
+            device: Option<&str>,
+        ) -> FakePhone {
+            tell(
+                ws,
+                json!({"type": "open", "channel": channel, "device": device}),
+            );
             let hs = Handshake::begin();
-            ws.send(Message::Binary(frame(HELLO, channel, &hs.hello()).into())).unwrap();
+            ws.send(Message::Binary(frame(HELLO, channel, &hs.hello()).into()))
+                .unwrap();
             let (kind, ch, reply) = next_frame(ws);
             assert_eq!((kind, ch), (HELLO, channel));
             let session = hs.finish(&reply, label, channel).unwrap();
@@ -1051,19 +1373,34 @@ mod tests {
 
         fn say(&mut self, ws: &mut WebSocket<TcpStream>, msg: Value) {
             let sealed = self.session.seal(msg.to_string().as_bytes());
-            ws.send(Message::Binary(frame(DATA, self.channel, &sealed).into())).unwrap();
+            ws.send(Message::Binary(frame(DATA, self.channel, &sealed).into()))
+                .unwrap();
         }
 
         /// The next sealed message from the computer on this channel.
         fn hear(&mut self, ws: &mut WebSocket<TcpStream>) -> Value {
             let (kind, ch, payload) = next_frame(ws);
-            assert_eq!((kind, ch), (DATA, self.channel), "{}", String::from_utf8_lossy(&payload));
+            assert_eq!(
+                (kind, ch),
+                (DATA, self.channel),
+                "{}",
+                String::from_utf8_lossy(&payload)
+            );
             serde_json::from_slice(&self.session.open(&payload).unwrap()).unwrap()
         }
 
         /// A `req` and its whole answer: status and body, pieces joined.
-        fn req(&mut self, ws: &mut WebSocket<TcpStream>, method: &str, path: &str, body: Option<&str>) -> (u64, Vec<u8>) {
-            self.say(ws, json!({"req": {"id": 9, "method": method, "path": path, "body": body}}));
+        fn req(
+            &mut self,
+            ws: &mut WebSocket<TcpStream>,
+            method: &str,
+            path: &str,
+            body: Option<&str>,
+        ) -> (u64, Vec<u8>) {
+            self.say(
+                ws,
+                json!({"req": {"id": 9, "method": method, "path": path, "body": body}}),
+            );
             let mut status = 0;
             let mut out = Vec::new();
             loop {
@@ -1084,7 +1421,12 @@ mod tests {
     /// The next control message the computer sent to the relay about `channel`.
     fn closed(ws: &mut WebSocket<TcpStream>, channel: u32) -> String {
         let (kind, ch, payload) = next_frame(ws);
-        assert_eq!((kind, ch), (CONTROL, channel), "{}", String::from_utf8_lossy(&payload));
+        assert_eq!(
+            (kind, ch),
+            (CONTROL, channel),
+            "{}",
+            String::from_utf8_lossy(&payload)
+        );
         let msg: Value = serde_json::from_slice(&payload).unwrap();
         assert_eq!(msg["type"], "close");
         msg["reason"].as_str().unwrap().to_string()
@@ -1119,7 +1461,10 @@ mod tests {
 
         // The phone the relay let in with the code shows the secret.
         let mut phone = FakePhone::greet(&mut ws, &label, 5, None);
-        phone.say(&mut ws, json!({"pair": {"secret": secret, "name": "Alice's iPhone"}}));
+        phone.say(
+            &mut ws,
+            json!({"pair": {"secret": secret, "name": "Alice's iPhone"}}),
+        );
         let paired = phone.hear(&mut ws);
         let device = paired["paired"]["id"].as_str().unwrap().to_string();
         let token = paired["paired"]["token"].as_str().unwrap().to_string();
@@ -1134,7 +1479,10 @@ mod tests {
         assert_eq!(client.device_of(5), Some(device.clone()));
         assert_eq!(client.connected_devices(), vec![device.clone()]);
         assert_eq!(client.client_count(), 1);
-        assert!(access.lock().unwrap().pairing().is_none(), "the pairing was spent");
+        assert!(
+            access.lock().unwrap().pairing().is_none(),
+            "the pairing was spent"
+        );
 
         // What it would ask over HTTP goes inside: who am I.
         let (status, body) = phone.req(&mut ws, "GET", "/me", None);
@@ -1146,7 +1494,10 @@ mod tests {
         // What it would say on its socket goes inside too, both ways.
         phone.say(&mut ws, json!({"type": "ping"}));
         phone.say(&mut ws, json!({"type": "usage"}));
-        assert!(matches!(next_incoming(&mut rx), Incoming::Message(5, ClientMsg::Usage)));
+        assert!(matches!(
+            next_incoming(&mut rx),
+            Incoming::Message(5, ClientMsg::Usage)
+        ));
         client.send(5, r#"{"type":"inbox","sessions":[]}"#.into());
         assert_eq!(phone.hear(&mut ws)["type"], "inbox");
         client.broadcast(r#"{"type":"usage"}"#);
@@ -1195,7 +1546,10 @@ mod tests {
         phone.say(&mut ws, json!({"pair": {"secret": "nope", "name": "x"}}));
         assert_eq!(closed(&mut ws, 1), "wrong_secret");
         assert!(access.lock().unwrap().devices.is_empty());
-        assert!(access.lock().unwrap().pairing().is_some(), "one wrong try does not spend it");
+        assert!(
+            access.lock().unwrap().pairing().is_some(),
+            "one wrong try does not spend it"
+        );
 
         // A token nobody has.
         let mut phone = FakePhone::greet(&mut ws, &label, 2, Some("ghost"));
@@ -1203,13 +1557,23 @@ mod tests {
         assert_eq!(closed(&mut ws, 2), "unauthorized");
 
         // Data before the hello.
-        tell(&mut ws, json!({"type": "open", "channel": 3, "device": null}));
-        ws.send(Message::Binary(frame(DATA, 3, b"early").into())).unwrap();
+        tell(
+            &mut ws,
+            json!({"type": "open", "channel": 3, "device": null}),
+        );
+        ws.send(Message::Binary(frame(DATA, 3, b"early").into()))
+            .unwrap();
         assert_eq!(closed(&mut ws, 3), "bad_frame");
 
         // A hello that is not one.
-        tell(&mut ws, json!({"type": "open", "channel": 4, "device": null}));
-        ws.send(Message::Binary(frame(HELLO, 4, br#"{"v":1,"e":"short"}"#).into())).unwrap();
+        tell(
+            &mut ws,
+            json!({"type": "open", "channel": 4, "device": null}),
+        );
+        ws.send(Message::Binary(
+            frame(HELLO, 4, br#"{"v":1,"e":"short"}"#).into(),
+        ))
+        .unwrap();
         assert_eq!(closed(&mut ws, 4), "bad_hello");
 
         // A paired phone whose frame does not open (replayed): out, and the shell hears it leave.
@@ -1221,8 +1585,10 @@ mod tests {
         assert!(matches!(next_incoming(&mut rx), Incoming::Paired));
         assert!(matches!(next_incoming(&mut rx), Incoming::Connected(5, _)));
         let replay = phone.session.seal(br#"{"type":"ping"}"#);
-        ws.send(Message::Binary(frame(DATA, 5, &replay).into())).unwrap();
-        ws.send(Message::Binary(frame(DATA, 5, &replay).into())).unwrap();
+        ws.send(Message::Binary(frame(DATA, 5, &replay).into()))
+            .unwrap();
+        ws.send(Message::Binary(frame(DATA, 5, &replay).into()))
+            .unwrap();
         assert_eq!(closed(&mut ws, 5), "bad_frame");
         assert!(matches!(next_incoming(&mut rx), Incoming::Disconnected(5)));
         assert!(client.channels().is_empty());
@@ -1238,13 +1604,23 @@ mod tests {
         let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
         let (stream, _) = relay.listener.accept().unwrap();
         let mut ws = tungstenite::accept(stream).unwrap();
-        tell(&mut ws, json!({"type": "challenge", "nonce": B64.encode([1u8; 16])}));
+        tell(
+            &mut ws,
+            json!({"type": "challenge", "nonce": B64.encode([1u8; 16])}),
+        );
         let _claim = control(&mut ws);
         tell(&mut ws, json!({"type": "bye", "reason": "wrong_label"}));
-        ws.close(Some(tungstenite::protocol::CloseFrame { code: CloseCode::from(4403), reason: "wrong_label".into() })).unwrap();
+        ws.close(Some(tungstenite::protocol::CloseFrame {
+            code: CloseCode::from(4403),
+            reason: "wrong_label".into(),
+        }))
+        .unwrap();
         let _ = ws.flush();
         assert_eq!(next_status(&mut rx), Status::Connecting);
-        assert_eq!(next_status(&mut rx), Status::Rejected("This address belongs to another key.".into()));
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Rejected("This address belongs to another key.".into())
+        );
         // No second dial.
         relay.listener.set_nonblocking(true).unwrap();
         std::thread::sleep(Duration::from_millis(300));

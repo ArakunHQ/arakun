@@ -28,7 +28,9 @@ use gpui::{
     WindowButtonLayout, WindowControlArea, WindowControls, WindowDecorations, WindowInsets,
     WindowParams, WindowVisibility, point, size,
 };
-use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle};
+use raw_window_handle::{
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
+};
 use smallvec::SmallVec;
 
 /// UI zoom, in percent of the base size.
@@ -125,11 +127,16 @@ fn scale_input(input: PlatformInput, k: f32) -> PlatformInput {
             I::Touch(e)
         }
         I::FileDrop(e) => I::FileDrop(match e {
-            FileDropEvent::Entered { position, paths } => {
-                FileDropEvent::Entered { position: p(position), paths }
-            }
-            FileDropEvent::Pending { position } => FileDropEvent::Pending { position: p(position) },
-            FileDropEvent::Submit { position } => FileDropEvent::Submit { position: p(position) },
+            FileDropEvent::Entered { position, paths } => FileDropEvent::Entered {
+                position: p(position),
+                paths,
+            },
+            FileDropEvent::Pending { position } => FileDropEvent::Pending {
+                position: p(position),
+            },
+            FileDropEvent::Submit { position } => FileDropEvent::Submit {
+                position: p(position),
+            },
             other => other,
         }),
         other @ (I::KeyDown(_) | I::KeyUp(_) | I::ModifiersChanged(_)) => other,
@@ -139,7 +146,11 @@ fn scale_input(input: PlatformInput, k: f32) -> PlatformInput {
 struct ZoomPlatform(Rc<dyn Platform>);
 
 impl Platform for ZoomPlatform {
-    fn open_window(&self, handle: AnyWindowHandle, options: WindowParams) -> Result<Box<dyn PlatformWindow>> {
+    fn open_window(
+        &self,
+        handle: AnyWindowHandle,
+        options: WindowParams,
+    ) -> Result<Box<dyn PlatformWindow>> {
         // The island (a layer surface) keeps its size whatever the window's zoom.
         #[cfg(target_os = "linux")]
         if matches!(options.kind, gpui::WindowKind::LayerShell(_)) {
@@ -194,7 +205,9 @@ impl Platform for ZoomPlatform {
     fn is_screen_capture_supported(&self) -> bool {
         self.0.is_screen_capture_supported()
     }
-    fn screen_capture_sources(&self) -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
+    fn screen_capture_sources(
+        &self,
+    ) -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
         self.0.screen_capture_sources()
     }
     fn window_appearance(&self) -> WindowAppearance {
@@ -215,7 +228,10 @@ impl Platform for ZoomPlatform {
     fn register_url_scheme(&self, url: &str) -> Task<Result<()>> {
         self.0.register_url_scheme(url)
     }
-    fn prompt_for_paths(&self, options: PathPromptOptions) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+    fn prompt_for_paths(
+        &self,
+        options: PathPromptOptions,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
         self.0.prompt_for_paths(options)
     }
     fn prompt_for_new_path(
@@ -304,7 +320,10 @@ impl Platform for ZoomPlatform {
     fn dismiss_system_notification(&self, tag: &str) {
         self.0.dismiss_system_notification(tag)
     }
-    fn on_system_notification_response(&self, callback: Box<dyn FnMut(SystemNotificationResponse)>) {
+    fn on_system_notification_response(
+        &self,
+        callback: Box<dyn FnMut(SystemNotificationResponse)>,
+    ) {
         self.0.on_system_notification_response(callback)
     }
     fn compositor_name(&self) -> &'static str {
@@ -407,7 +426,9 @@ impl PlatformWindow for ZoomWindow {
         scale_point(self.inner.mouse_position(), 1. / factor())
     }
     fn on_input(&self, mut callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
-        self.inner.on_input(Box::new(move |input| callback(scale_input(input, 1. / factor()))))
+        self.inner.on_input(Box::new(move |input| {
+            callback(scale_input(input, 1. / factor()))
+        }))
     }
     fn on_resize(&self, mut callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
         self.inner.on_resize(Box::new(move |size, scale| {
@@ -416,7 +437,8 @@ impl PlatformWindow for ZoomWindow {
         }))
     }
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
-        self.inner.update_ime_position(scale_bounds(bounds, factor()))
+        self.inner
+            .update_ime_position(scale_bounds(bounds, factor()))
     }
     fn show_window_menu(&self, position: Point<Pixels>) {
         self.inner.show_window_menu(scale_point(position, factor()))
@@ -429,7 +451,8 @@ impl PlatformWindow for ZoomWindow {
     }
     fn set_input_region(&self, region: Option<&[Bounds<Pixels>]>) {
         let z = factor();
-        let scaled: Option<Vec<_>> = region.map(|r| r.iter().map(|b| scale_bounds(*b, z)).collect());
+        let scaled: Option<Vec<_>> =
+            region.map(|r| r.iter().map(|b| scale_bounds(*b, z)).collect());
         self.inner.set_input_region(scaled.as_deref())
     }
     #[cfg(target_os = "macos")]
@@ -592,7 +615,8 @@ impl PlatformWindow for ZoomWindow {
         self.inner.show_character_palette()
     }
     fn titlebar_double_click(&self, is_resizable: bool, is_minimizable: bool) {
-        self.inner.titlebar_double_click(is_resizable, is_minimizable)
+        self.inner
+            .titlebar_double_click(is_resizable, is_minimizable)
     }
     fn on_move_tab_to_new_window(&self, callback: Box<dyn FnMut()>) {
         self.inner.on_move_tab_to_new_window(callback)
@@ -717,7 +741,9 @@ mod tests {
             position: point(gpui::px(300.), gpui::px(150.)),
             ..Default::default()
         });
-        let PlatformInput::MouseDown(e) = scale_input(down, 1. / 1.5) else { unreachable!() };
+        let PlatformInput::MouseDown(e) = scale_input(down, 1. / 1.5) else {
+            unreachable!()
+        };
         assert_eq!(e.position, point(gpui::px(200.), gpui::px(100.)));
     }
 }

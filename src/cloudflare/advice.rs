@@ -73,13 +73,25 @@ impl Snapshot {
     pub fn issues(&self) -> Vec<Issue> {
         let mut out = Vec::new();
         for w in self.workers.iter().filter(|w| w.errors > 0) {
-            let errors = format!("{} {}", count(w.errors), plural(w.errors, "error", "errors"));
+            let errors = format!(
+                "{} {}",
+                count(w.errors),
+                plural(w.errors, "error", "errors")
+            );
             let issue = if w.bot_noise() {
                 Issue {
                     high: false,
                     bots: true,
                     title: format!("{}: {errors} in 24 h, from bots probing for files", w.name),
-                    detail: format!("Scanners asked for {}. Visitors aren't affected.", w.probed().iter().take(3).cloned().collect::<Vec<_>>().join(", ")),
+                    detail: format!(
+                        "Scanners asked for {}. Visitors aren't affected.",
+                        w.probed()
+                            .iter()
+                            .take(3)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                     subject: Subject::Worker(w.name.clone()),
                 }
             } else {
@@ -87,7 +99,10 @@ impl Snapshot {
                     high: w.errors >= 10,
                     bots: false,
                     title: format!("{} logged {errors} in 24 h", w.name),
-                    detail: w.samples.first().map_or_else(|| "Open the Worker's logs to see them.".into(), |s| one_line(&s.message)),
+                    detail: w.samples.first().map_or_else(
+                        || "Open the Worker's logs to see them.".into(),
+                        |s| one_line(&s.message),
+                    ),
                     subject: Subject::Worker(w.name.clone()),
                 }
             };
@@ -113,32 +128,56 @@ impl Snapshot {
             } else {
                 z.server_statuses()
             };
-            let mut detail = worst.iter().take(2).map(|(c, n)| format!("{} × {c} ({})", count(*n), status_meaning(*c))).collect::<Vec<_>>().join(" · ");
+            let mut detail = worst
+                .iter()
+                .take(2)
+                .map(|(c, n)| format!("{} × {c} ({})", count(*n), status_meaning(*c)))
+                .collect::<Vec<_>>()
+                .join(" · ");
             if gone > 0 {
-                detail.push_str(&format!(" · {} more from hostnames since removed", count(gone)));
+                detail.push_str(&format!(
+                    " · {} more from hostnames since removed",
+                    count(gone)
+                ));
             }
             out.push(Issue {
                 high: bad >= 100,
                 bots: false,
-                title: format!("{} answered {} server errors (5xx) in 24 h", z.name, count(bad)),
+                title: format!(
+                    "{} answered {} server errors (5xx) in 24 h",
+                    z.name,
+                    count(bad)
+                ),
                 detail,
                 subject: Subject::Zone(z.name.clone()),
             });
         }
         for g in &self.gateways {
             let failed = g.failures();
-            let Some(last) = g.recent.first() else { continue };
-            if failed == 0 || last.ok || self.fetched.saturating_sub(last.when) > GATEWAY_STALE_SECS {
+            let Some(last) = g.recent.first() else {
+                continue;
+            };
+            if failed == 0 || last.ok || self.fetched.saturating_sub(last.when) > GATEWAY_STALE_SECS
+            {
                 continue;
             }
-            let mut detail = format!("Latest: {} answered {} {}", last.model, last.status, ago(last.when, self.fetched));
+            let mut detail = format!(
+                "Latest: {} answered {} {}",
+                last.model,
+                last.status,
+                ago(last.when, self.fetched)
+            );
             if last.status == 402 {
                 detail.push_str(". Out of credit: add funds or use your own provider key.");
             }
             out.push(Issue {
                 high: false,
                 bots: false,
-                title: format!("AI Gateway {}: {failed} of the last {} requests failed", g.id, g.recent.len()),
+                title: format!(
+                    "AI Gateway {}: {failed} of the last {} requests failed",
+                    g.id,
+                    g.recent.len()
+                ),
                 detail,
                 subject: Subject::Gateway(g.id.clone()),
             });
@@ -147,7 +186,12 @@ impl Snapshot {
             out.push(Issue {
                 high: false,
                 bots: false,
-                title: format!("Workflow {} has {} errored {}", f.name, f.errored, plural(f.errored, "run", "runs")),
+                title: format!(
+                    "Workflow {} has {} errored {}",
+                    f.name,
+                    f.errored,
+                    plural(f.errored, "run", "runs")
+                ),
                 detail: format!("Runs in the Worker {}", f.script),
                 subject: Subject::Workflow(f.name.clone()),
             });
@@ -172,12 +216,25 @@ impl Snapshot {
         for t in &self.tunnels {
             if !t.up() && !t.hostnames.is_empty() {
                 // Down for weeks is a leftover to clean up; down this week is an outage.
-                let days = if t.inactive_at > 0 { self.fetched.saturating_sub(t.inactive_at) / 86_400 } else { u64::MAX };
-                let routes = if t.hostnames.len() == 1 { "routes" } else { "route" };
+                let days = if t.inactive_at > 0 {
+                    self.fetched.saturating_sub(t.inactive_at) / 86_400
+                } else {
+                    u64::MAX
+                };
+                let routes = if t.hostnames.len() == 1 {
+                    "routes"
+                } else {
+                    "route"
+                };
                 let (high, title, detail) = if days <= 7 {
                     (
                         true,
-                        format!("Tunnel {} is {}, but {} still {routes} to it", t.name, t.status, plural_list(&t.hostnames)),
+                        format!(
+                            "Tunnel {} is {}, but {} still {routes} to it",
+                            t.name,
+                            t.status,
+                            plural_list(&t.hostnames)
+                        ),
                         "Visitors get a 530 error. Start its cloudflared again, or delete the DNS records if the site is gone.",
                     )
                 } else {
@@ -187,7 +244,11 @@ impl Snapshot {
                             "Tunnel {} has been {} {}; {} still {routes} to it",
                             t.name,
                             t.status,
-                            if days == u64::MAX { "since it was created".to_string() } else { format!("for {days} days") },
+                            if days == u64::MAX {
+                                "since it was created".to_string()
+                            } else {
+                                format!("for {days} days")
+                            },
                             plural_list(&t.hostnames)
                         ),
                         "Those hostnames answer 530. Delete the DNS records (and the Tunnel) if the site is gone.",
@@ -201,13 +262,28 @@ impl Snapshot {
                     subject: Subject::Tunnel(t.name.clone()),
                 });
             }
-            let old: Vec<&Connector> = t.connectors.iter().filter(|c| outdated(&c.version, &latest)).collect();
+            let old: Vec<&Connector> = t
+                .connectors
+                .iter()
+                .filter(|c| outdated(&c.version, &latest))
+                .collect();
             if let Some(c) = old.first() {
                 out.push(Issue {
                     high: false,
                     bots: false,
-                    title: format!("Tunnel {} runs cloudflared {}; the latest is {}", t.name, c.version, latest),
-                    detail: format!("{} from {}. Update and restart it: releases often carry security fixes.", plural(old.len() as u64, "1 connector", &format!("{} connectors", old.len())), c.origin_ip),
+                    title: format!(
+                        "Tunnel {} runs cloudflared {}; the latest is {}",
+                        t.name, c.version, latest
+                    ),
+                    detail: format!(
+                        "{} from {}. Update and restart it: releases often carry security fixes.",
+                        plural(
+                            old.len() as u64,
+                            "1 connector",
+                            &format!("{} connectors", old.len())
+                        ),
+                        c.origin_ip
+                    ),
                     subject: Subject::Tunnel(t.name.clone()),
                 });
             }
@@ -217,13 +293,22 @@ impl Snapshot {
             out.push(Issue {
                 high: false,
                 bots: false,
-                title: format!("cloudflared on this machine is {}; the latest is {latest}", local.installed),
-                detail: "Update it before you run a Tunnel or share a local server from here.".into(),
+                title: format!(
+                    "cloudflared on this machine is {}; the latest is {latest}",
+                    local.installed
+                ),
+                detail: "Update it before you run a Tunnel or share a local server from here."
+                    .into(),
                 subject: Subject::Cloudflared,
             });
         }
         for z in &self.zones {
-            let dangling: Vec<String> = self.dangling_tunnel_records().into_iter().filter(|r| z.dns.iter().any(|x| std::ptr::eq(x, *r))).map(|r| r.name.clone()).collect();
+            let dangling: Vec<String> = self
+                .dangling_tunnel_records()
+                .into_iter()
+                .filter(|r| z.dns.iter().any(|x| std::ptr::eq(x, *r)))
+                .map(|r| r.name.clone())
+                .collect();
             if !dangling.is_empty() {
                 out.push(Issue {
                     high: false,
@@ -238,7 +323,9 @@ impl Snapshot {
                     high: false,
                     bots: false,
                     title: format!("{} isn't active yet", z.name),
-                    detail: "Its nameservers still point elsewhere, so Cloudflare doesn't serve it.".into(),
+                    detail:
+                        "Its nameservers still point elsewhere, so Cloudflare doesn't serve it."
+                            .into(),
                     subject: Subject::Dns(z.name.clone()),
                 });
             }
@@ -257,7 +344,8 @@ impl Snapshot {
                     high: false,
                     bots: false,
                     title: format!("{} has Development Mode on", z.name),
-                    detail: "Nothing is cached while it's on; it turns itself off after 3 hours.".into(),
+                    detail: "Nothing is cached while it's on; it turns itself off after 3 hours."
+                        .into(),
                     subject: Subject::Ssl(z.name.clone()),
                 });
             }
@@ -278,8 +366,24 @@ impl Snapshot {
             out.push(Issue {
                 high: false,
                 bots: false,
-                title: format!("Pages {}: the last deploy failed at {}", p.name, if p.stage.is_empty() { "an unknown stage" } else { &p.stage }),
-                detail: format!("{}{}", if p.branch.is_empty() { String::new() } else { format!("Branch {} · ", p.branch) }, ago(p.deployed, self.fetched)),
+                title: format!(
+                    "Pages {}: the last deploy failed at {}",
+                    p.name,
+                    if p.stage.is_empty() {
+                        "an unknown stage"
+                    } else {
+                        &p.stage
+                    }
+                ),
+                detail: format!(
+                    "{}{}",
+                    if p.branch.is_empty() {
+                        String::new()
+                    } else {
+                        format!("Branch {} · ", p.branch)
+                    },
+                    ago(p.deployed, self.fetched)
+                ),
                 subject: Subject::Pages(p.name.clone()),
             });
         }
@@ -290,7 +394,11 @@ impl Snapshot {
         match subject {
             Subject::Worker(name) => {
                 let w = self.worker(name)?;
-                Some(Ask { title: format!("Worker {name}"), prompt: worker_prompt(w, mcp, now), workers: vec![name.clone()] })
+                Some(Ask {
+                    title: format!("Worker {name}"),
+                    prompt: worker_prompt(w, mcp, now),
+                    workers: vec![name.clone()],
+                })
             }
             Subject::Zone(name) => {
                 let z = self.zones.iter().find(|z| &z.name == name)?;
@@ -303,7 +411,11 @@ impl Snapshot {
             }
             Subject::Gateway(id) => {
                 let g = self.gateways.iter().find(|g| &g.id == id)?;
-                Some(Ask { title: format!("AI Gateway {id}"), prompt: gateway_prompt(g, mcp, now), workers: Vec::new() })
+                Some(Ask {
+                    title: format!("AI Gateway {id}"),
+                    prompt: gateway_prompt(g, mcp, now),
+                    workers: Vec::new(),
+                })
             }
             Subject::Workflow(name) => {
                 let f = self.flows.iter().find(|f| &f.name == name)?;
@@ -314,17 +426,34 @@ impl Snapshot {
                     f.errored,
                     f.complete,
                     f.running,
-                    tools_hint(mcp, &format!("list the errored instances of the workflow `{}` and read their step errors", f.name))
+                    tools_hint(
+                        mcp,
+                        &format!(
+                            "list the errored instances of the workflow `{}` and read their step errors",
+                            f.name
+                        )
+                    )
                 );
-                Some(Ask { title: format!("Workflow {name}"), prompt, workers: vec![f.script.clone()] })
+                Some(Ask {
+                    title: format!("Workflow {name}"),
+                    prompt,
+                    workers: vec![f.script.clone()],
+                })
             }
             Subject::Tunnel(name) => {
                 let t = self.tunnel(name)?;
-                Some(Ask { title: format!("Tunnel {name}"), prompt: tunnel_prompt(t, &self.latest_cloudflared(), now), workers: Vec::new() })
+                Some(Ask {
+                    title: format!("Tunnel {name}"),
+                    prompt: tunnel_prompt(t, &self.latest_cloudflared(), now),
+                    workers: Vec::new(),
+                })
             }
             Subject::Dns(zone) => {
                 let z = self.zone(zone)?;
-                let mut p = format!("Check the DNS of my Cloudflare zone `{}` (status {}). Records:\n", z.name, z.status);
+                let mut p = format!(
+                    "Check the DNS of my Cloudflare zone `{}` (status {}). Records:\n",
+                    z.name, z.status
+                );
                 for r in z.dns.iter().take(60) {
                     let note = match r.tunnel() {
                         Some(id) => match self.tunnels.iter().find(|t| t.id == id) {
@@ -334,10 +463,21 @@ impl Snapshot {
                         },
                         None => String::new(),
                     };
-                    p.push_str(&format!("- {} {} → {}{}{}\n", r.kind, r.name, r.content, if r.proxied { " · proxied" } else { "" }, note));
+                    p.push_str(&format!(
+                        "- {} {} → {}{}{}\n",
+                        r.kind,
+                        r.name,
+                        r.content,
+                        if r.proxied { " · proxied" } else { "" },
+                        note
+                    ));
                 }
                 p.push_str("\nFind records that route nowhere (deleted Tunnels, Workers or hosts that no longer answer), records that expose an origin IP without the proxy, and anything missing (like www, or mail records). Say what each finding breaks and the exact change. Don't change DNS without asking me first.");
-                Some(Ask { title: format!("DNS of {zone}"), prompt: with_tools(p, mcp), workers: Vec::new() })
+                Some(Ask {
+                    title: format!("DNS of {zone}"),
+                    prompt: with_tools(p, mcp),
+                    workers: Vec::new(),
+                })
             }
             Subject::Ssl(zone) => {
                 let z = self.zone(zone)?;
@@ -347,10 +487,18 @@ impl Snapshot {
                     z.name,
                     st.ssl_label(),
                     on_off(st.always_https),
-                    if st.min_tls.is_empty() { "unknown" } else { &st.min_tls },
+                    if st.min_tls.is_empty() {
+                        "unknown"
+                    } else {
+                        &st.min_tls
+                    },
                     on_off(st.dev_mode)
                 );
-                Some(Ask { title: format!("SSL of {zone}"), prompt: with_tools(p, mcp), workers: Vec::new() })
+                Some(Ask {
+                    title: format!("SSL of {zone}"),
+                    prompt: with_tools(p, mcp),
+                    workers: Vec::new(),
+                })
             }
             Subject::Registration(name) => {
                 let r = self.registrations.iter().find(|r| &r.name == name)?;
@@ -360,19 +508,31 @@ impl Snapshot {
                     date(r.expires),
                     on_off(r.auto_renew)
                 );
-                Some(Ask { title: format!("Domain {name}"), prompt: with_tools(p, mcp), workers: Vec::new() })
+                Some(Ask {
+                    title: format!("Domain {name}"),
+                    prompt: with_tools(p, mcp),
+                    workers: Vec::new(),
+                })
             }
             Subject::Pages(name) => {
                 let pr = self.pages.iter().find(|p| &p.name == name)?;
                 let p = format!(
                     "The latest deployment of my Cloudflare Pages project `{}`{} ended with status {} at the {} stage ({}).\n\nRead its build log, find why it failed and fix the cause in this project if the code lives here.",
                     pr.name,
-                    if pr.repo.is_empty() { String::new() } else { format!(" (repo {}, branch {})", pr.repo, pr.branch) },
+                    if pr.repo.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (repo {}, branch {})", pr.repo, pr.branch)
+                    },
                     pr.status,
                     pr.stage,
                     ago(pr.deployed, now)
                 );
-                Some(Ask { title: format!("Pages {name}"), prompt: with_tools(p, mcp), workers: Vec::new() })
+                Some(Ask {
+                    title: format!("Pages {name}"),
+                    prompt: with_tools(p, mcp),
+                    workers: Vec::new(),
+                })
             }
             Subject::Cloudflared => {
                 let p = format!(
@@ -380,7 +540,11 @@ impl Snapshot {
                     self.cloudflared.installed,
                     self.latest_cloudflared()
                 );
-                Some(Ask { title: "Update cloudflared".into(), prompt: p, workers: Vec::new() })
+                Some(Ask {
+                    title: "Update cloudflared".into(),
+                    prompt: p,
+                    workers: Vec::new(),
+                })
             }
             Subject::Queue(name) => {
                 let q = self.queues.iter().find(|q| &q.name == name)?;
@@ -390,14 +554,21 @@ impl Snapshot {
                     list_or_none(&q.producers),
                     list_or_none(&q.consumers)
                 );
-                Some(Ask { title: format!("Queue {name}"), prompt, workers: q.consumers.clone() })
+                Some(Ask {
+                    title: format!("Queue {name}"),
+                    prompt,
+                    workers: q.consumers.clone(),
+                })
             }
         }
     }
 
     /// A session that reviews the whole account.
     pub fn review(&self, mcp: bool, now: u64) -> Ask {
-        let mut p = format!("Review my Cloudflare account \"{}\". What Arakun sees right now:\n\n", self.account_name);
+        let mut p = format!(
+            "Review my Cloudflare account \"{}\". What Arakun sees right now:\n\n",
+            self.account_name
+        );
         let issues = self.issues();
         if issues.is_empty() {
             p.push_str("- No open problems.\n");
@@ -405,7 +576,9 @@ impl Snapshot {
         for i in &issues {
             p.push_str(&format!("- {}: {}\n", i.title, i.detail));
         }
-        p.push_str("\nDomains (requests in 7 days · 5xx in 24 h · cache hit · SSL mode · DNS records):\n");
+        p.push_str(
+            "\nDomains (requests in 7 days · 5xx in 24 h · cache hit · SSL mode · DNS records):\n",
+        );
         for z in &self.zones {
             p.push_str(&format!(
                 "- {} ({}): {} · {} · {}% · {} · {}\n",
@@ -422,18 +595,42 @@ impl Snapshot {
             p.push_str("\nTunnels (status · hostnames routed · connector versions):\n");
             for t in &self.tunnels {
                 let versions: Vec<&str> = t.connectors.iter().map(|c| c.version.as_str()).collect();
-                p.push_str(&format!("- {}: {} · {} · {}\n", t.name, t.status, list_or_none(&t.hostnames), if versions.is_empty() { "none".into() } else { versions.join(", ") }));
+                p.push_str(&format!(
+                    "- {}: {} · {} · {}\n",
+                    t.name,
+                    t.status,
+                    list_or_none(&t.hostnames),
+                    if versions.is_empty() {
+                        "none".into()
+                    } else {
+                        versions.join(", ")
+                    }
+                ));
             }
         }
         p.push_str("\nBusiest Workers in 24 h (requests · CPU p99):\n");
         for w in self.workers.iter().filter(|w| w.requests > 0).take(8) {
-            p.push_str(&format!("- {}: {} · {}\n", w.name, count(w.requests), ms(w.cpu_p99)));
+            p.push_str(&format!(
+                "- {}: {} · {}\n",
+                w.name,
+                count(w.requests),
+                ms(w.cpu_p99)
+            ));
         }
         let stored = self.r2_bytes();
         if stored > 0 {
-            p.push_str(&format!("\nR2 stores {} (≈ ${:.0}/month at Standard rates); largest:\n", bytes(stored), self.r2_monthly()));
+            p.push_str(&format!(
+                "\nR2 stores {} (≈ ${:.0}/month at Standard rates); largest:\n",
+                bytes(stored),
+                self.r2_monthly()
+            ));
             for b in self.buckets.iter().take(4) {
-                p.push_str(&format!("- {}: {} in {} objects\n", b.name, bytes(b.size), count(b.objects)));
+                p.push_str(&format!(
+                    "- {}: {} in {} objects\n",
+                    b.name,
+                    bytes(b.size),
+                    count(b.objects)
+                ));
             }
         }
         let _ = now;
@@ -446,7 +643,11 @@ impl Snapshot {
         p.push_str(CF_CLI);
         p.push(' ');
         p.push_str("This is a review: don't change anything in Cloudflare.");
-        Ask { title: "Cloudflare review".into(), prompt: p, workers: Vec::new() }
+        Ask {
+            title: "Cloudflare review".into(),
+            prompt: p,
+            workers: Vec::new(),
+        }
     }
 }
 
@@ -455,11 +656,20 @@ fn plural<'a>(n: u64, one: &'a str, many: &'a str) -> &'a str {
 }
 
 fn one_line(s: &str) -> String {
-    s.lines().next().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ")
+    s.lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn list_or_none(v: &[String]) -> String {
-    if v.is_empty() { "none".into() } else { v.join(", ") }
+    if v.is_empty() {
+        "none".into()
+    } else {
+        v.join(", ")
+    }
 }
 
 /// What a session can use to read the account.
@@ -498,16 +708,26 @@ fn plural_list(v: &[String]) -> String {
 
 /// The prompt about a Tunnel: down with hostnames routed to it, or connectors behind.
 pub fn tunnel_prompt(t: &Tunnel, latest: &str, now: u64) -> String {
-    let mut p = format!("My Cloudflare Tunnel `{}` ({}) is {}.", t.name, t.id, t.status);
+    let mut p = format!(
+        "My Cloudflare Tunnel `{}` ({}) is {}.",
+        t.name, t.id, t.status
+    );
     if t.hostnames.is_empty() {
         p.push_str(" No DNS record routes to it.");
     } else {
         p.push_str(&format!(" DNS routes {} to it.", t.hostnames.join(", ")));
     }
     if t.inactive_at > 0 && !t.up() {
-        p.push_str(&format!(" Its last connector left {}.", ago(t.inactive_at, now)));
+        p.push_str(&format!(
+            " Its last connector left {}.",
+            ago(t.inactive_at, now)
+        ));
     }
-    p.push_str(if t.remote { " It's configured from the dashboard." } else { " It's configured by a local config file (look in ~/.cloudflared)." });
+    p.push_str(if t.remote {
+        " It's configured from the dashboard."
+    } else {
+        " It's configured by a local config file (look in ~/.cloudflared)."
+    });
     p.push('\n');
     for c in &t.connectors {
         p.push_str(&format!(
@@ -516,7 +736,11 @@ pub fn tunnel_prompt(t: &Tunnel, latest: &str, now: u64) -> String {
             c.origin_ip,
             ago(c.opened, now),
             c.colos.join(", "),
-            if outdated(&c.version, latest) { format!(" — older than the latest {latest}") } else { String::new() }
+            if outdated(&c.version, latest) {
+                format!(" — older than the latest {latest}")
+            } else {
+                String::new()
+            }
         ));
     }
     p.push_str("\n\nIf it's down: find which machine or container should run it and why it stopped; if it's no longer needed, say which DNS records to delete. If connectors are outdated: say how to update each one without dropping traffic. Don't delete Tunnels or DNS records without asking me first.\n\n");
@@ -527,7 +751,10 @@ pub fn tunnel_prompt(t: &Tunnel, latest: &str, now: u64) -> String {
 /// The prompt that hands a Worker's errors to Droid.
 pub fn worker_prompt(w: &Worker, mcp: bool, now: u64) -> String {
     let mut p = if w.errors > 0 {
-        format!("The Cloudflare Worker `{}` logged {} errors in the last 24 hours.", w.name, w.errors)
+        format!(
+            "The Cloudflare Worker `{}` logged {} errors in the last 24 hours.",
+            w.name, w.errors
+        )
     } else {
         format!("Check the health of the Cloudflare Worker `{}`.", w.name)
     };
@@ -535,7 +762,12 @@ pub fn worker_prompt(w: &Worker, mcp: bool, now: u64) -> String {
         p.push_str(&format!(" It serves {}.", w.domains.join(", ")));
     }
     if w.requests > 0 {
-        p.push_str(&format!(" In 24 h it handled {} requests; CPU per request p50 {}, p99 {}.", w.requests, ms(w.cpu_p50), ms(w.cpu_p99)));
+        p.push_str(&format!(
+            " In 24 h it handled {} requests; CPU per request p50 {}, p99 {}.",
+            w.requests,
+            ms(w.cpu_p50),
+            ms(w.cpu_p99)
+        ));
     }
     if w.bot_noise() {
         p.push_str(&format!(
@@ -545,10 +777,22 @@ pub fn worker_prompt(w: &Worker, mcp: bool, now: u64) -> String {
     }
     p.push('\n');
     for (i, s) in w.samples.iter().take(3).enumerate() {
-        let what = if s.url.is_empty() { s.trigger.clone() } else { format!("{} {}", s.trigger.split(' ').next().unwrap_or_default(), s.url) };
+        let what = if s.url.is_empty() {
+            s.trigger.clone()
+        } else {
+            format!(
+                "{} {}",
+                s.trigger.split(' ').next().unwrap_or_default(),
+                s.url
+            )
+        };
         p.push_str(&format!(
             "\n{} ({}, {}):\n```\n{}\n```\n",
-            if i == 0 { "Latest error" } else { "Earlier error" },
+            if i == 0 {
+                "Latest error"
+            } else {
+                "Earlier error"
+            },
             ago(s.when, now),
             what.trim(),
             s.message
@@ -562,7 +806,10 @@ pub fn worker_prompt(w: &Worker, mcp: bool, now: u64) -> String {
     if mcp {
         p.push_str(" The Cloudflare MCP server is connected: use it to query this Worker's logs (Workers Observability) for more context.");
     } else {
-        p.push_str(&format!(" For live logs you can run `npx wrangler tail {} --format pretty`.", w.name));
+        p.push_str(&format!(
+            " For live logs you can run `npx wrangler tail {} --format pretty`.",
+            w.name
+        ));
     }
     p.push(' ');
     p.push_str(CF_CLI);
@@ -584,7 +831,10 @@ pub fn zone_prompt(z: &Zone, workers: &[&Worker], mcp: bool) -> String {
     if !z.failing.is_empty() {
         p.push_str("\nURLs with the most 5xx:\n");
         for f in &z.failing {
-            p.push_str(&format!("- {} × {} https://{}{}\n", f.count, f.status, f.host, f.path));
+            p.push_str(&format!(
+                "- {} × {} https://{}{}\n",
+                f.count, f.status, f.host, f.path
+            ));
         }
     }
     if !workers.is_empty() {
@@ -612,17 +862,30 @@ pub fn gateway_prompt(g: &Gateway, mcp: bool, now: u64) -> String {
         g.logged
     );
     for c in g.recent.iter().take(8) {
-        p.push_str(&format!("- {} {} → {} ({})\n", c.provider, c.model, c.status, ago(c.when, now)));
+        p.push_str(&format!(
+            "- {} {} → {} ({})\n",
+            c.provider,
+            c.model,
+            c.status,
+            ago(c.when, now)
+        ));
     }
     p.push_str("\nFind which app sends these requests and why they fail (for example, 401 is a bad key, 402 missing credits or billing, 429 a rate limit), then fix it if the cause is in this project. ");
-    p.push_str(&tools_hint(mcp, &format!("read the gateway `{}`'s logs and settings", g.id)));
+    p.push_str(&tools_hint(
+        mcp,
+        &format!("read the gateway `{}`'s logs and settings", g.id),
+    ));
     p
 }
 
 /// "just now", "4m ago", "2h ago", "3d ago".
 pub fn ago(t: u64, now: u64) -> String {
     let d = now.saturating_sub(t);
-    if d >= 86_400 { format!("{}d ago", d / 86_400) } else { crate::account::ago(t, now) }
+    if d >= 86_400 {
+        format!("{}d ago", d / 86_400)
+    } else {
+        crate::account::ago(t, now)
+    }
 }
 
 /// 950 → "950", 12_643 → "12.6k", 3_400_000 → "3.4M".
@@ -656,7 +919,11 @@ pub fn ms(v: f64) -> String {
 }
 
 fn trim_unit(v: f64, unit: &str) -> String {
-    if v >= 100. { format!("{v:.0}{unit}") } else { format!("{}{unit}", format!("{v:.1}").trim_end_matches(".0")) }
+    if v >= 100. {
+        format!("{v:.0}{unit}")
+    } else {
+        format!("{}{unit}", format!("{v:.1}").trim_end_matches(".0"))
+    }
 }
 
 #[cfg(test)]
@@ -672,26 +939,50 @@ mod tests {
                     name: "example.com".into(),
                     plan: "Free".into(),
                     statuses: vec![(200, 2329), (530, 1446), (504, 259)],
-                    failing: vec![Failing { host: "dev.example.com".into(), path: "/x".into(), status: 530, count: 37 }],
+                    failing: vec![Failing {
+                        host: "dev.example.com".into(),
+                        path: "/x".into(),
+                        status: 530,
+                        count: 37,
+                    }],
                     ..Default::default()
                 },
-                Zone { name: "quiet.dev".into(), statuses: vec![(200, 1000), (500, 3)], ..Default::default() },
+                Zone {
+                    name: "quiet.dev".into(),
+                    statuses: vec![(200, 1000), (500, 3)],
+                    ..Default::default()
+                },
             ],
             workers: vec![
                 Worker {
                     name: "blog".into(),
                     errors: 108,
                     domains: vec!["blog.example.com".into()],
-                    samples: vec![ErrorSample { message: "boom   at x\nmore".into(), when: 999_880, trigger: "GET /p".into(), url: "https://blog.example.com/p".into() }],
+                    samples: vec![ErrorSample {
+                        message: "boom   at x\nmore".into(),
+                        when: 999_880,
+                        trigger: "GET /p".into(),
+                        url: "https://blog.example.com/p".into(),
+                    }],
                     ..Default::default()
                 },
-                Worker { name: "api".into(), errors: 1, ..Default::default() },
+                Worker {
+                    name: "api".into(),
+                    errors: 1,
+                    ..Default::default()
+                },
                 Worker {
                     name: "site".into(),
                     errors: 40,
                     samples: vec![
-                        ErrorSample { url: "https://k.xyz/.env".into(), ..Default::default() },
-                        ErrorSample { url: "https://k.xyz/wp-login.php".into(), ..Default::default() },
+                        ErrorSample {
+                            url: "https://k.xyz/.env".into(),
+                            ..Default::default()
+                        },
+                        ErrorSample {
+                            url: "https://k.xyz/wp-login.php".into(),
+                            ..Default::default()
+                        },
                     ],
                     ..Default::default()
                 },
@@ -699,7 +990,13 @@ mod tests {
             gateways: vec![Gateway {
                 id: "default".into(),
                 logged: 8,
-                recent: vec![AiCall { model: "claude".into(), provider: "anthropic".into(), status: 402, when: 999_000, ..Default::default() }],
+                recent: vec![AiCall {
+                    model: "claude".into(),
+                    provider: "anthropic".into(),
+                    status: 402,
+                    when: 999_000,
+                    ..Default::default()
+                }],
             }],
             ..Default::default()
         }
@@ -720,42 +1017,101 @@ mod tests {
                 "site: 40 errors in 24 h, from bots probing for files",
             ]
         );
-        assert_eq!(issues[4].detail, "Scanners asked for /.env, /wp-login.php. Visitors aren't affected.");
-        let site = s.ask(&Subject::Worker("site".into()), true, s.fetched).unwrap();
-        assert!(site.prompt.contains("bots probing for files that don't exist (/.env, /wp-login.php)"));
+        assert_eq!(
+            issues[4].detail,
+            "Scanners asked for /.env, /wp-login.php. Visitors aren't affected."
+        );
+        let site = s
+            .ask(&Subject::Worker("site".into()), true, s.fetched)
+            .unwrap();
+        assert!(
+            site.prompt
+                .contains("bots probing for files that don't exist (/.env, /wp-login.php)")
+        );
         assert!(site.prompt.contains("WAF custom rule"));
         assert_eq!(issues[0].detail, "boom at x");
-        assert!(issues[1].detail.starts_with("1.4k × 530 (the origin can't be reached"));
-        assert!(issues[3].detail.ends_with("Out of credit: add funds or use your own provider key."));
+        assert!(
+            issues[1]
+                .detail
+                .starts_with("1.4k × 530 (the origin can't be reached")
+        );
+        assert!(
+            issues[3]
+                .detail
+                .ends_with("Out of credit: add funds or use your own provider key.")
+        );
     }
 
     #[test]
     fn network_issues() {
-        let record = |name: &str, content: &str| DnsRecord { id: String::new(), kind: "CNAME".into(), name: name.into(), content: content.into(), proxied: true };
+        let record = |name: &str, content: &str| DnsRecord {
+            id: String::new(),
+            kind: "CNAME".into(),
+            name: name.into(),
+            content: content.into(),
+            proxied: true,
+        };
         let s = Snapshot {
             fetched: 1_000_000,
             tunnels_read: true,
-            cloudflared: LocalCloudflared { installed: "2026.9.3".into(), latest: "2026.10.4".into() },
+            cloudflared: LocalCloudflared {
+                installed: "2026.9.3".into(),
+                latest: "2026.10.4".into(),
+            },
             tunnels: vec![
-                Tunnel { id: "t1".into(), name: "dev".into(), status: "down".into(), hostnames: vec!["dev.a.mx".into()], inactive_at: 1_000_000 - 3600, ..Default::default() },
-                Tunnel { id: "t4".into(), name: "stale".into(), status: "down".into(), hostnames: vec!["s.a.mx".into()], inactive_at: 1_000_000 - 9 * 86_400, ..Default::default() },
+                Tunnel {
+                    id: "t1".into(),
+                    name: "dev".into(),
+                    status: "down".into(),
+                    hostnames: vec!["dev.a.mx".into()],
+                    inactive_at: 1_000_000 - 3600,
+                    ..Default::default()
+                },
+                Tunnel {
+                    id: "t4".into(),
+                    name: "stale".into(),
+                    status: "down".into(),
+                    hostnames: vec!["s.a.mx".into()],
+                    inactive_at: 1_000_000 - 9 * 86_400,
+                    ..Default::default()
+                },
                 Tunnel {
                     id: "t2".into(),
                     name: "web".into(),
                     status: "healthy".into(),
-                    connectors: vec![Connector { version: "2026.9.0".into(), origin_ip: "1.2.3.4".into(), ..Default::default() }],
+                    connectors: vec![Connector {
+                        version: "2026.9.0".into(),
+                        origin_ip: "1.2.3.4".into(),
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 },
-                Tunnel { id: "t3".into(), name: "old".into(), status: "inactive".into(), ..Default::default() },
+                Tunnel {
+                    id: "t3".into(),
+                    name: "old".into(),
+                    status: "inactive".into(),
+                    ..Default::default()
+                },
             ],
             zones: vec![Zone {
                 name: "a.mx".into(),
                 status: "active".into(),
-                dns: vec![record("dev.a.mx", "t1.cfargotunnel.com"), record("gone.a.mx", "t9.cfargotunnel.com")],
-                settings: ZoneSettings { read: true, ssl: "flexible".into(), ..Default::default() },
+                dns: vec![
+                    record("dev.a.mx", "t1.cfargotunnel.com"),
+                    record("gone.a.mx", "t9.cfargotunnel.com"),
+                ],
+                settings: ZoneSettings {
+                    read: true,
+                    ssl: "flexible".into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             }],
-            registrations: vec![Registration { name: "a.mx".into(), expires: 1_000_000 + 10 * 86_400, auto_renew: false }],
+            registrations: vec![Registration {
+                name: "a.mx".into(),
+                expires: 1_000_000 + 10 * 86_400,
+                auto_renew: false,
+            }],
             ..Default::default()
         };
         let titles: Vec<String> = s.issues().into_iter().map(|i| i.title).collect();
@@ -771,41 +1127,92 @@ mod tests {
                 "a.mx uses SSL mode Flexible",
             ]
         );
-        let ask = s.ask(&Subject::Tunnel("dev".into()), false, s.fetched).unwrap();
-        assert!(ask.prompt.contains("DNS routes dev.a.mx to it") && ask.prompt.contains("`cf` CLI"));
-        assert!(s.ask(&Subject::Dns("a.mx".into()), false, s.fetched).unwrap().prompt.contains("(a Tunnel that no longer exists)"));
+        let ask = s
+            .ask(&Subject::Tunnel("dev".into()), false, s.fetched)
+            .unwrap();
+        assert!(
+            ask.prompt.contains("DNS routes dev.a.mx to it") && ask.prompt.contains("`cf` CLI")
+        );
+        assert!(
+            s.ask(&Subject::Dns("a.mx".into()), false, s.fetched)
+                .unwrap()
+                .prompt
+                .contains("(a Tunnel that no longer exists)")
+        );
     }
 
     #[test]
     fn old_gateway_failures_are_not_issues() {
         let mut s = snapshot();
         s.gateways[0].recent[0].when = s.fetched - 8 * 86_400;
-        assert!(s.issues().iter().all(|i| i.subject != Subject::Gateway("default".into())));
+        assert!(
+            s.issues()
+                .iter()
+                .all(|i| i.subject != Subject::Gateway("default".into()))
+        );
     }
 
     #[test]
     fn prompts_carry_the_evidence() {
         let s = snapshot();
-        let zone = s.ask(&Subject::Zone("example.com".into()), true, s.fetched).unwrap();
+        let zone = s
+            .ask(&Subject::Zone("example.com".into()), true, s.fetched)
+            .unwrap();
         assert_eq!(zone.workers, vec!["blog".to_string()]);
         assert!(zone.prompt.contains("1446 × 530"));
         assert!(zone.prompt.contains("37 × 530 https://dev.example.com/x"));
         assert!(zone.prompt.contains("Cloudflare Tunnels"));
-        let worker = s.ask(&Subject::Worker("blog".into()), false, s.fetched).unwrap();
+        let worker = s
+            .ask(&Subject::Worker("blog".into()), false, s.fetched)
+            .unwrap();
         assert!(worker.prompt.contains("`blog` logged 108 errors"));
-        assert!(worker.prompt.contains("2m ago, GET https://blog.example.com/p"));
+        assert!(
+            worker
+                .prompt
+                .contains("2m ago, GET https://blog.example.com/p")
+        );
         assert!(worker.prompt.contains("wrangler tail blog"));
-        let gw = s.ask(&Subject::Gateway("default".into()), true, s.fetched).unwrap();
+        let gw = s
+            .ask(&Subject::Gateway("default".into()), true, s.fetched)
+            .unwrap();
         assert!(gw.prompt.contains("anthropic claude → 402"));
         let review = s.review(true, s.fetched);
         assert!(review.prompt.contains("example.com (Free)"));
-        assert!(review.prompt.ends_with("don't change anything in Cloudflare."));
+        assert!(
+            review
+                .prompt
+                .ends_with("don't change anything in Cloudflare.")
+        );
     }
 
     #[test]
     fn formatting() {
-        assert_eq!((count(950), count(12_643), count(3_400_000), count(1_000)), ("950".into(), "12.6k".into(), "3.4M".into(), "1k".into()));
-        assert_eq!((bytes(89_526_865), bytes(887_226_369_364), bytes(1_735_000_000_000), bytes(0)), ("89.5 MB".into(), "887 GB".into(), "1.7 TB".into(), "0 B".into()));
-        assert_eq!((ms(0.42), ms(19.98), ms(525.6), ms(1240.)), ("0.4 ms".into(), "20 ms".into(), "526 ms".into(), "1.2 s".into()));
+        assert_eq!(
+            (count(950), count(12_643), count(3_400_000), count(1_000)),
+            ("950".into(), "12.6k".into(), "3.4M".into(), "1k".into())
+        );
+        assert_eq!(
+            (
+                bytes(89_526_865),
+                bytes(887_226_369_364),
+                bytes(1_735_000_000_000),
+                bytes(0)
+            ),
+            (
+                "89.5 MB".into(),
+                "887 GB".into(),
+                "1.7 TB".into(),
+                "0 B".into()
+            )
+        );
+        assert_eq!(
+            (ms(0.42), ms(19.98), ms(525.6), ms(1240.)),
+            (
+                "0.4 ms".into(),
+                "20 ms".into(),
+                "526 ms".into(),
+                "1.2 s".into()
+            )
+        );
     }
 }

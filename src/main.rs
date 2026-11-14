@@ -1,24 +1,26 @@
 mod account;
 mod account_view;
 mod agent;
-mod ascii_face;
-mod branches;
-mod branches_view;
 mod app_menu;
+mod ascii_face;
 mod assets;
 mod attach_picker;
 mod automations_view;
+mod branches;
+mod branches_view;
 mod browser;
-mod ci;
-mod cloudflare;
-mod cloudflare_view;
 #[cfg(feature = "coderlabs")]
 mod canvas;
 #[cfg(feature = "coderlabs")]
 mod canvas_view;
+mod ci;
+mod cloudflare;
+mod cloudflare_view;
 #[cfg(feature = "coderlabs")]
 mod coderspace;
 mod control;
+#[cfg(test)]
+mod design_lint;
 mod dev;
 mod dialogs;
 mod draft;
@@ -26,6 +28,7 @@ mod durable;
 mod explorer;
 mod extensions_view;
 mod fetch;
+mod gallery_view;
 mod git;
 mod git_dialogs;
 mod headless;
@@ -34,13 +37,14 @@ mod history;
 mod input;
 mod island;
 mod island_host;
+mod iso;
+mod iso_view;
 #[cfg(feature = "coderlabs")]
 mod lab;
 mod logos;
-mod iso;
-mod iso_view;
 mod mascot;
 mod memory;
+mod memory_view;
 mod model;
 mod phone;
 mod phone_view;
@@ -49,9 +53,9 @@ mod platform;
 mod posthog;
 mod posthog_view;
 mod prompts;
-mod memory_view;
 mod runs_view;
 mod schedule;
+mod settings_view;
 mod sheet;
 mod shell;
 mod sidebar;
@@ -60,7 +64,6 @@ mod signals;
 mod site;
 #[cfg(feature = "coderlabs")]
 mod site_view;
-mod settings_view;
 mod state;
 mod switcher;
 #[cfg(feature = "coderlabs")]
@@ -73,9 +76,6 @@ mod terminal;
 mod theme;
 mod ui;
 mod ui_zoom;
-#[cfg(test)]
-mod design_lint;
-mod gallery_view;
 mod usage_history;
 mod usage_view;
 mod voice;
@@ -132,7 +132,11 @@ fn main() {
                 bind("ctrl-k", shell::QuickSwitch, "Shell && !Terminal"),
                 bind("ctrl-p", shell::QuickSwitch, "Shell && !Terminal"),
                 bind("ctrl-b", shell::ToggleSidebar, "Shell && !Terminal"),
-                bind("ctrl-f", shell::FindInChat, "Shell && !Terminal && !Browser"),
+                bind(
+                    "ctrl-f",
+                    shell::FindInChat,
+                    "Shell && !Terminal && !Browser",
+                ),
                 bind("ctrl-,", shell::OpenSettings, "Shell"),
                 bind("alt-left", shell::GoBackTab, "Shell && !Terminal"),
                 bind("alt-right", shell::GoForwardTab, "Shell && !Terminal"),
@@ -153,13 +157,29 @@ fn main() {
                 bind("ctrl-shift-d", shell::SplitDown, "Shell && !Terminal"),
                 bind("ctrl-alt-d", shell::ToggleDance, "Shell && !Terminal"),
                 bind("ctrl-alt-left", shell::FocusOtherPane, "Shell && !Terminal"),
-                bind("ctrl-alt-right", shell::FocusOtherPane, "Shell && !Terminal"),
+                bind(
+                    "ctrl-alt-right",
+                    shell::FocusOtherPane,
+                    "Shell && !Terminal",
+                ),
                 bind("ctrl-alt-up", shell::FocusOtherPane, "Shell && !Terminal"),
                 bind("ctrl-alt-down", shell::FocusOtherPane, "Shell && !Terminal"),
-                bind("ctrl-alt-shift-left", shell::SwapPanes, "Shell && !Terminal"),
-                bind("ctrl-alt-shift-right", shell::SwapPanes, "Shell && !Terminal"),
+                bind(
+                    "ctrl-alt-shift-left",
+                    shell::SwapPanes,
+                    "Shell && !Terminal",
+                ),
+                bind(
+                    "ctrl-alt-shift-right",
+                    shell::SwapPanes,
+                    "Shell && !Terminal",
+                ),
                 bind("ctrl-alt-shift-up", shell::SwapPanes, "Shell && !Terminal"),
-                bind("ctrl-alt-shift-down", shell::SwapPanes, "Shell && !Terminal"),
+                bind(
+                    "ctrl-alt-shift-down",
+                    shell::SwapPanes,
+                    "Shell && !Terminal",
+                ),
                 // A browser tab keeps these for the page's own zoom.
                 bind("ctrl-=", shell::ZoomIn, "Shell && !Terminal && !Browser"),
                 bind("ctrl-+", shell::ZoomIn, "Shell && !Terminal && !Browser"),
@@ -180,23 +200,27 @@ fn main() {
                 Some((w, h)) => Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))),
                 None => Bounds::centered(None, size(px(1280.), px(800.)), cx),
             };
-            let shell = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Arakun".into()),
-                        appears_transparent: true,
-                        traffic_light_position: Some(point(px(ui::TRAFFIC_LIGHTS.0), px(ui::TRAFFIC_LIGHTS.1))),
-                    }),
-                    window_decorations: Some(WindowDecorations::Client),
-                    window_background: WindowBackgroundAppearance::Opaque,
-                    window_min_size: Some(size(px(800.), px(520.))),
-                    app_id: Some("arakun".into()),
-                    ..Default::default()
-                },
-                |window, cx| cx.new(|cx| shell::Shell::new(window, cx)),
-            )
-            .unwrap();
+            let shell = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Arakun".into()),
+                            appears_transparent: true,
+                            traffic_light_position: Some(point(
+                                px(ui::TRAFFIC_LIGHTS.0),
+                                px(ui::TRAFFIC_LIGHTS.1),
+                            )),
+                        }),
+                        window_decorations: Some(WindowDecorations::Client),
+                        window_background: WindowBackgroundAppearance::Opaque,
+                        window_min_size: Some(size(px(800.), px(520.))),
+                        app_id: Some("arakun".into()),
+                        ..Default::default()
+                    },
+                    |window, cx| cx.new(|cx| shell::Shell::new(window, cx)),
+                )
+                .unwrap();
             let _ = shell.update(cx, |shell, window, cx| {
                 shell.sync_island(window, cx);
                 #[cfg(feature = "team")]

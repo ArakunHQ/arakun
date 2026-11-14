@@ -7,14 +7,60 @@ use std::path::Path;
 
 /// Directories never worth reading for a key.
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", "target", ".git", "dist", "build", ".next", ".nuxt", ".svelte-kit", ".output", ".turbo",
-    ".vercel", ".wrangler", "vendor", ".venv", "venv", "__pycache__", ".cache", "coverage", "Pods", ".gradle",
+    "node_modules",
+    "target",
+    ".git",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".output",
+    ".turbo",
+    ".vercel",
+    ".wrangler",
+    "vendor",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".cache",
+    "coverage",
+    "Pods",
+    ".gradle",
 ];
 
 /// Files whose text may hold a key.
 const EXTENSIONS: &[&str] = &[
-    "env", "js", "jsx", "ts", "tsx", "mjs", "cjs", "json", "jsonc", "toml", "yaml", "yml", "html", "vue", "svelte",
-    "astro", "py", "rb", "go", "rs", "swift", "kt", "java", "dart", "php", "ex", "exs", "plist", "xml", "properties",
+    "env",
+    "js",
+    "jsx",
+    "ts",
+    "tsx",
+    "mjs",
+    "cjs",
+    "json",
+    "jsonc",
+    "toml",
+    "yaml",
+    "yml",
+    "html",
+    "vue",
+    "svelte",
+    "astro",
+    "py",
+    "rb",
+    "go",
+    "rs",
+    "swift",
+    "kt",
+    "java",
+    "dart",
+    "php",
+    "ex",
+    "exs",
+    "plist",
+    "xml",
+    "properties",
 ];
 
 const MAX_FILES: usize = 5000;
@@ -30,7 +76,9 @@ pub fn keys(root: &Path) -> Vec<String> {
         .sort_by_file_name(|a, b| a.cmp(b))
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
-            !(e.file_type().is_some_and(|t| t.is_dir()) && e.depth() > 0 && SKIP_DIRS.contains(&name.as_ref()))
+            !(e.file_type().is_some_and(|t| t.is_dir())
+                && e.depth() > 0
+                && SKIP_DIRS.contains(&name.as_ref()))
         })
         .build();
     let mut env_keys = Vec::new();
@@ -43,8 +91,14 @@ pub fn keys(root: &Path) -> Vec<String> {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy();
         let env = name.starts_with(".env") || name.ends_with(".env");
-        let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-        if !env && !EXTENSIONS.contains(&ext.as_str()) || name.ends_with(".lock") || name == "package-lock.json" {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !env && !EXTENSIONS.contains(&ext.as_str())
+            || name.ends_with(".lock")
+            || name == "package-lock.json"
+        {
             continue;
         }
         seen += 1;
@@ -54,7 +108,9 @@ pub fn keys(root: &Path) -> Vec<String> {
         if entry.metadata().is_ok_and(|m| m.len() > MAX_BYTES) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
         let text = String::from_utf8_lossy(&bytes);
         for k in find(&text) {
             let into = if env { &mut env_keys } else { &mut other };
@@ -83,7 +139,10 @@ pub fn find(text: &str) -> Vec<String> {
         if start > 0 && is_key_char(bytes[start - 1]) {
             continue;
         }
-        let end = bytes[start + 4..].iter().position(|b| !is_key_char(*b)).map_or(bytes.len(), |n| start + 4 + n);
+        let end = bytes[start + 4..]
+            .iter()
+            .position(|b| !is_key_char(*b))
+            .map_or(bytes.len(), |n| start + 4 + n);
         if end - start - 4 >= 20 {
             let k = text[start..end].to_string();
             if !out.contains(&k) {
@@ -108,7 +167,10 @@ mod tests {
 
     #[test]
     fn finds_keys_in_text() {
-        let text = format!("NEXT_PUBLIC_POSTHOG_KEY={K1}\nposthog.init('{K2}', {{}})\nphc_short\nxphc_{}\n{K1}", &K2[4..]);
+        let text = format!(
+            "NEXT_PUBLIC_POSTHOG_KEY={K1}\nposthog.init('{K2}', {{}})\nphc_short\nxphc_{}\n{K1}",
+            &K2[4..]
+        );
         assert_eq!(find(&text), vec![K1.to_string(), K2.to_string()]);
         assert!(find("no keys here, phc_ alone").is_empty());
     }
@@ -122,7 +184,11 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::write(root.join("node_modules/posthog-js/x.js"), format!("'{K2}'")).unwrap();
         std::fs::write(root.join(".git/config"), K2).unwrap();
-        std::fs::write(root.join("src/analytics.ts"), format!("posthog.init('{K2}')")).unwrap();
+        std::fs::write(
+            root.join("src/analytics.ts"),
+            format!("posthog.init('{K2}')"),
+        )
+        .unwrap();
         std::fs::write(root.join(".env.local"), format!("POSTHOG_KEY={K1}\n")).unwrap();
         std::fs::write(root.join("logo.png"), K1).unwrap();
         // The .env key comes first, then the one in source; node_modules and .git are skipped.

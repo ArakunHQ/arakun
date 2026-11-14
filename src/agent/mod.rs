@@ -15,18 +15,18 @@ pub mod chart;
 pub mod claude_ext;
 pub mod diff;
 pub mod extensions;
-pub mod marketplace;
-pub mod publishers;
 mod kind;
 mod knobs;
 mod launch;
 pub mod ledger;
 mod loops;
 pub mod markdown;
+pub mod marketplace;
 pub mod notes;
 pub mod opencode_plan;
 pub mod plan;
 pub mod plugins;
+pub mod publishers;
 mod rpc;
 mod search;
 mod selection;
@@ -39,24 +39,23 @@ pub mod workers_ai;
 pub use kind::AgentKind;
 #[allow(unused_imports)]
 pub use launch::{
-    droid_bin, login_command, logout_command, opencode_all_models, opencode_go_login_command, opencode_models,
-    opencode_providers, which,
+    droid_bin, login_command, logout_command, opencode_all_models, opencode_go_login_command,
+    opencode_models, opencode_providers, which,
 };
-#[allow(unused_imports)]
-pub use thread::{
-    AskUserRequest, Backend, CheckAnswer, Choice, ConfigOption, Entry, ModelInfo, NativeSettings, NoticeMark, NoticePlace,
-    PermissionOption, PermissionRequest, PlanEntry, Question, RewindPlan, SessionMeta, Setting,
-    SettingOption,
-    SpecPlan, Subagent, SubagentRecord, SubagentState, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent,
-    ToolStatus, Transcript,
-    PlanLimit, Usage, acp_label, acp_option, acp_setting_options, apply_setting, fmt_cost, fmt_count,
-    setting_label, setting_options,
-};
-#[allow(unused_imports)]
-pub use shell_diff::ShellChange;
-#[allow(unused_imports)]
-pub use view::{ThreadView, ThreadViewEvent};
 #[allow(unused_imports)]
 pub use markdown::{copy_with_feedback, was_copied};
 #[allow(unused_imports)]
 pub use selection::{TextMap, mark_color};
+#[allow(unused_imports)]
+pub use shell_diff::ShellChange;
+#[allow(unused_imports)]
+pub use thread::{
+    AskUserRequest, Backend, CheckAnswer, Choice, ConfigOption, Entry, ModelInfo, NativeSettings,
+    NoticeMark, NoticePlace, PermissionOption, PermissionRequest, PlanEntry, PlanLimit, Question,
+    RewindPlan, SessionMeta, Setting, SettingOption, SpecPlan, Subagent, SubagentRecord,
+    SubagentState, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus,
+    Transcript, Usage, acp_label, acp_option, acp_setting_options, apply_setting, fmt_cost,
+    fmt_count, setting_label, setting_options,
+};
+#[allow(unused_imports)]
+pub use view::{ThreadView, ThreadViewEvent};

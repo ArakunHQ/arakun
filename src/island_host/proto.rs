@@ -15,26 +15,42 @@ use crate::island::{Alert, AlertKind, Feed, Phase};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToIsland {
     /// The app, staying connected; it goes on in the background when the app quits.
-    Hello { pid: u32 },
+    Hello {
+        pid: u32,
+    },
     /// What every session is up to, sent when it changes.
-    Feed { feed: Feed },
-    Alert { alert: Alert },
+    Feed {
+        feed: Feed,
+    },
+    Alert {
+        alert: Alert,
+    },
     /// Shows a phase whatever the agents do (`None`: follow them again); unpins the list.
-    Hold { phase: Option<Phase> },
+    Hold {
+        phase: Option<Phase>,
+    },
     /// Pins the list; `None` flips it.
-    Pin { on: Option<bool> },
+    Pin {
+        on: Option<bool>,
+    },
     /// Presses a button of the card showing.
-    Press { button: Button },
+    Press {
+        button: Button,
+    },
     /// The phase it shows.
     State,
     /// Frames painted in the last two seconds.
     Fps,
     /// Starts or ends a voice call; `None` flips it.
     #[cfg(feature = "coderlabs")]
-    Voice { on: Option<bool> },
+    Voice {
+        on: Option<bool>,
+    },
     /// What the wake listener says ("maybe", "yes", "no"), for testing that path by hand.
     #[cfg(feature = "coderlabs")]
-    Wake { state: String },
+    Wake {
+        state: String,
+    },
     /// Starts or ends recording a meeting; `None` flips it. `people`: how many
     /// voices the others are, when known, to split them better.
     #[cfg(feature = "coderlabs")]
@@ -59,10 +75,16 @@ pub enum Button {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromIsland {
     /// The card's "Ver".
-    Ver { key: SharedString },
-    Luego { key: SharedString },
+    Ver {
+        key: SharedString,
+    },
+    Luego {
+        key: SharedString,
+    },
     /// A row of the list.
-    Row { key: SharedString },
+    Row {
+        key: SharedString,
+    },
 }
 
 /// `$XDG_RUNTIME_DIR/arakun/island.sock`; a test instance's own with
@@ -99,7 +121,12 @@ pub fn from_args(args: &[String]) -> Option<ToIsland> {
                 key: SharedString::default(),
                 kind: AlertKind::Finished,
                 title: title.to_string().into(),
-                subtitle: subtitle.first().copied().unwrap_or_default().to_string().into(),
+                subtitle: subtitle
+                    .first()
+                    .copied()
+                    .unwrap_or_default()
+                    .to_string()
+                    .into(),
                 req: SharedString::default(),
                 image: SharedString::default(),
             },
@@ -112,7 +139,9 @@ pub fn from_args(args: &[String]) -> Option<ToIsland> {
         ["fps"] => Some(ToIsland::Fps),
         ["auto"] => Some(ToIsland::Hold { phase: None }),
         #[cfg(feature = "coderlabs")]
-        ["wake", s @ ("maybe" | "yes" | "no")] => Some(ToIsland::Wake { state: s.to_string() }),
+        ["wake", s @ ("maybe" | "yes" | "no")] => Some(ToIsland::Wake {
+            state: s.to_string(),
+        }),
         [name] => Phase::from_name(name).map(|phase| ToIsland::Hold { phase: Some(phase) }),
         _ => None,
     }
@@ -122,7 +151,11 @@ pub fn from_args(args: &[String]) -> Option<ToIsland> {
 #[cfg(feature = "coderlabs")]
 pub fn reunion_args(args: &[String]) -> Option<ToIsland> {
     let people = args.iter().find_map(|a| a.parse::<u32>().ok());
-    let rest: Vec<&str> = args.iter().map(String::as_str).filter(|a| a.parse::<u32>().is_err()).collect();
+    let rest: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| a.parse::<u32>().is_err())
+        .collect();
     let on = match rest.as_slice() {
         [] | ["toggle"] => None,
         ["on"] => Some(true),
@@ -135,7 +168,12 @@ pub fn reunion_args(args: &[String]) -> Option<ToIsland> {
 /// `arakun voz [on|off]`.
 #[cfg(feature = "coderlabs")]
 pub fn voz_args(args: &[String]) -> Option<ToIsland> {
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         [] | ["toggle"] => Some(ToIsland::Voice { on: None }),
         ["on"] => Some(ToIsland::Voice { on: Some(true) }),
         ["off"] => Some(ToIsland::Voice { on: Some(false) }),
@@ -182,9 +220,13 @@ mod tests {
         let all = [
             ToIsland::Hello { pid: 42 },
             ToIsland::Feed { feed },
-            ToIsland::Hold { phase: Some(Phase::Listening) },
+            ToIsland::Hold {
+                phase: Some(Phase::Listening),
+            },
             ToIsland::Pin { on: None },
-            ToIsland::Press { button: Button::Aprobar },
+            ToIsland::Press {
+                button: Button::Aprobar,
+            },
             ToIsland::State,
             ToIsland::Fps,
         ];
@@ -193,12 +235,20 @@ mod tests {
             assert!(line.ends_with('\n') && !line[..line.len() - 1].contains('\n'));
             assert_eq!(decode::<ToIsland>(&line).unwrap(), msg);
         }
-        assert_eq!(encode(&ToIsland::Hello { pid: 1 }), "{\"type\":\"hello\",\"pid\":1}\n");
-        let line = encode(&ToIsland::Feed { feed: Feed::default() });
+        assert_eq!(
+            encode(&ToIsland::Hello { pid: 1 }),
+            "{\"type\":\"hello\",\"pid\":1}\n"
+        );
+        let line = encode(&ToIsland::Feed {
+            feed: Feed::default(),
+        });
         assert!(line.contains("\"type\":\"feed\""));
         let back = encode(&FromIsland::Row { key: "s1".into() });
         assert_eq!(back, "{\"type\":\"row\",\"key\":\"s1\"}\n");
-        assert_eq!(decode::<FromIsland>(&back).unwrap(), FromIsland::Row { key: "s1".into() });
+        assert_eq!(
+            decode::<FromIsland>(&back).unwrap(),
+            FromIsland::Row { key: "s1".into() }
+        );
         // A notice that isn't a session's, and "Ver" coming back with what it opens.
         let notice = ToIsland::Alert {
             alert: Alert {
@@ -212,24 +262,47 @@ mod tests {
         };
         assert_eq!(decode::<ToIsland>(&encode(&notice)).unwrap(), notice);
         assert!(encode(&notice).contains("\"kind\":\"failure\""));
-        let ver = FromIsland::Ver { key: "open:run:42:/home/k/app".into() };
+        let ver = FromIsland::Ver {
+            key: "open:run:42:/home/k/app".into(),
+        };
         assert_eq!(decode::<FromIsland>(&encode(&ver)).unwrap(), ver);
         // An alert from before confirmations has no request.
-        let a: ToIsland = decode(r#"{"type":"alert","alert":{"key":"","kind":"input","title":"t","subtitle":""}}"#).unwrap();
-        assert!(matches!(a, ToIsland::Alert { alert } if alert.kind == AlertKind::Input && alert.req.is_empty()));
+        let a: ToIsland = decode(
+            r#"{"type":"alert","alert":{"key":"","kind":"input","title":"t","subtitle":""}}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(a, ToIsland::Alert { alert } if alert.kind == AlertKind::Input && alert.req.is_empty())
+        );
         assert!(decode::<ToIsland>("{\"type\":\"dance\"}").is_err());
     }
 
     #[test]
     fn cli_words_become_requests() {
         assert_eq!(from_args(&s(&[])), Some(ToIsland::State));
-        assert_eq!(from_args(&s(&["working"])), Some(ToIsland::Hold { phase: Some(Phase::Working) }));
-        assert_eq!(from_args(&s(&["auto"])), Some(ToIsland::Hold { phase: None }));
+        assert_eq!(
+            from_args(&s(&["working"])),
+            Some(ToIsland::Hold {
+                phase: Some(Phase::Working)
+            })
+        );
+        assert_eq!(
+            from_args(&s(&["auto"])),
+            Some(ToIsland::Hold { phase: None })
+        );
         assert_eq!(from_args(&s(&["list"])), Some(ToIsland::Pin { on: None }));
-        assert_eq!(from_args(&s(&["rechazar"])), Some(ToIsland::Press { button: Button::Rechazar }));
+        assert_eq!(
+            from_args(&s(&["rechazar"])),
+            Some(ToIsland::Press {
+                button: Button::Rechazar
+            })
+        );
         assert_eq!(from_args(&s(&["fps"])), Some(ToIsland::Fps));
         match from_args(&s(&["alert", "GLM terminó", "listo"])) {
-            Some(ToIsland::Alert { alert }) => assert_eq!((alert.title.as_ref(), alert.subtitle.as_ref()), ("GLM terminó", "listo")),
+            Some(ToIsland::Alert { alert }) => assert_eq!(
+                (alert.title.as_ref(), alert.subtitle.as_ref()),
+                ("GLM terminó", "listo")
+            ),
             other => panic!("{other:?}"),
         }
         assert_eq!(from_args(&s(&["dancing"])), None);
@@ -239,13 +312,25 @@ mod tests {
     #[cfg(feature = "coderlabs")]
     fn voz_toggles_or_sets_the_call() {
         assert_eq!(voz_args(&s(&[])), Some(ToIsland::Voice { on: None }));
-        assert_eq!(voz_args(&s(&["toggle"])), Some(ToIsland::Voice { on: None }));
-        assert_eq!(voz_args(&s(&["on"])), Some(ToIsland::Voice { on: Some(true) }));
-        assert_eq!(voz_args(&s(&["off"])), Some(ToIsland::Voice { on: Some(false) }));
+        assert_eq!(
+            voz_args(&s(&["toggle"])),
+            Some(ToIsland::Voice { on: None })
+        );
+        assert_eq!(
+            voz_args(&s(&["on"])),
+            Some(ToIsland::Voice { on: Some(true) })
+        );
+        assert_eq!(
+            voz_args(&s(&["off"])),
+            Some(ToIsland::Voice { on: Some(false) })
+        );
         assert_eq!(voz_args(&s(&["on", "off"])), None);
         assert_eq!(voz_args(&s(&["maybe"])), None);
         let line = encode(&ToIsland::Voice { on: Some(true) });
         assert_eq!(line, "{\"type\":\"voice\",\"on\":true}\n");
-        assert_eq!(decode::<ToIsland>(&line).unwrap(), ToIsland::Voice { on: Some(true) });
+        assert_eq!(
+            decode::<ToIsland>(&line).unwrap(),
+            ToIsland::Voice { on: Some(true) }
+        );
     }
 }

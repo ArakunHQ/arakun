@@ -3,7 +3,11 @@
 use super::*;
 
 impl Shell {
-    pub(super) fn render_env_menu(&self, viewport_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_env_menu(
+        &self,
+        viewport_h: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let project = self.project();
         let pi = self.active_project;
         let at = self.env_menu_at;
@@ -104,15 +108,22 @@ impl Shell {
                     .hover(|s| s.bg(theme::selection_hover()).text_color(theme::content()))
                     .child(icon("add01", 14.).text_color(theme::text_subtle()))
                     .child("New environment (worktree)…")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_create_env(pi, window, cx)
-                    })),
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_create_env(pi, window, cx)
+                        }),
+                    ),
             )
     }
 
     // ---- composer menus: agent, model and permissions -------------------------
 
-    pub(super) fn open_composer_menu(&mut self, target: MenuTarget, at: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+    pub(super) fn open_composer_menu(
+        &mut self,
+        target: MenuTarget,
+        at: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         self.menu_sub = None;
         self.menu_in_sub = false;
         self.menu_cursor = None;
@@ -128,19 +139,30 @@ impl Shell {
         match self.composer_agent() {
             model::Agent::Claude => {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
-                Some((label, current(Setting::Mode).as_deref() == Some("bypassPermissions")))
+                Some((
+                    label,
+                    current(Setting::Mode).as_deref() == Some("bypassPermissions"),
+                ))
             }
             // Build or Plan; what Build may do without asking is OpenCode's own config.
-            model::Agent::OpenCode => self.setting_value_label(Setting::Mode, cx).map(|l| (l, false)),
+            model::Agent::OpenCode => self
+                .setting_value_label(Setting::Mode, cx)
+                .map(|l| (l, false)),
             // It asks before commands and edits; `arakun agent new` sessions don't.
             model::Agent::WorkersAi => None,
             model::Agent::Droid => {
                 let Some(autonomy) = self.setting_value_label(Setting::Autonomy, cx) else {
                     // Droid over ACP: its modes carry the autonomy.
-                    return self.setting_value_label(Setting::Mode, cx).map(|l| (l, false));
+                    return self
+                        .setting_value_label(Setting::Mode, cx)
+                        .map(|l| (l, false));
                 };
                 let level = current(Setting::Autonomy).unwrap_or_default();
-                let auto = if level == "off" { autonomy } else { format!("Auto {autonomy}") };
+                let auto = if level == "off" {
+                    autonomy
+                } else {
+                    format!("Auto {autonomy}")
+                };
                 let label = if current(Setting::Mode).as_deref() == Some("spec") {
                     format!("Spec · {auto}")
                 } else {
@@ -157,11 +179,16 @@ impl Shell {
     /// submenu's choices when the keys went into it, else the menu's own rows.
     pub(super) fn menu_keys(&self, cx: &App) -> Vec<MenuKey> {
         use crate::agent::{AgentKind, Setting};
-        let Some(menu) = &self.menu else { return Vec::new() };
+        let Some(menu) = &self.menu else {
+            return Vec::new();
+        };
         let choices = |s: Setting| -> Vec<MenuKey> {
             self.setting_choices(s, cx)
                 .map(|(_, options)| {
-                    options.into_iter().map(|o| MenuKey::Choice(s, o.id.clone(), o.disabled.is_none())).collect()
+                    options
+                        .into_iter()
+                        .map(|o| MenuKey::Choice(s, o.id.clone(), o.disabled.is_none()))
+                        .collect()
                 })
                 .unwrap_or_default()
         };
@@ -181,9 +208,17 @@ impl Shell {
                     keys
                 }
             },
-            MenuTarget::PermissionMenu => self.permission_sections(cx).into_iter().flat_map(choices).collect(),
+            MenuTarget::PermissionMenu => self
+                .permission_sections(cx)
+                .into_iter()
+                .flat_map(choices)
+                .collect(),
             MenuTarget::AgentMenu => model::Agent::ALL.into_iter().map(MenuKey::Agent).collect(),
-            MenuTarget::RailUsage => AgentKind::ALL.into_iter().map(MenuKey::Rail).chain([MenuKey::OpenUsage]).collect(),
+            MenuTarget::RailUsage => AgentKind::ALL
+                .into_iter()
+                .map(MenuKey::Rail)
+                .chain([MenuKey::OpenUsage])
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -203,7 +238,11 @@ impl Shell {
                 let (current, options) = self.setting_choices(s, cx).unwrap_or_default();
                 self.menu_cursor = Some(options.iter().position(|o| o.id == current).unwrap_or(0));
             }
-            MenuKey::Fast(on) => self.choose_setting(crate::agent::Setting::Fast, if on { "off" } else { "on" }, cx),
+            MenuKey::Fast(on) => self.choose_setting(
+                crate::agent::Setting::Fast,
+                if on { "off" } else { "on" },
+                cx,
+            ),
             MenuKey::Reset => {
                 self.menu = None;
                 self.reset_settings(cx);
@@ -232,7 +271,12 @@ impl Shell {
 
     /// Arrows, Enter and Space in a composer or rail menu. True when the key
     /// was the menu's.
-    pub(super) fn menu_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn menu_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let keys = self.menu_keys(cx);
         if keys.is_empty() {
             return false;
@@ -269,7 +313,11 @@ impl Shell {
             "left" if self.menu_in_sub => {
                 let sub = self.menu_sub;
                 self.menu_in_sub = false;
-                self.menu_cursor = sub.and_then(|s| self.menu_keys(cx).iter().position(|k| *k == MenuKey::Sub(s)));
+                self.menu_cursor = sub.and_then(|s| {
+                    self.menu_keys(cx)
+                        .iter()
+                        .position(|k| *k == MenuKey::Sub(s))
+                });
             }
             "enter" | "space" => {
                 if let Some(k) = self.menu_cursor.and_then(|i| keys.get(i)).cloned() {
@@ -289,7 +337,9 @@ impl Shell {
 
     fn menu_key_is_current(&self, k: &MenuKey, cx: &App) -> bool {
         match k {
-            MenuKey::Choice(s, id, _) => self.setting_choices(*s, cx).is_some_and(|(c, _)| c == *id),
+            MenuKey::Choice(s, id, _) => {
+                self.setting_choices(*s, cx).is_some_and(|(c, _)| c == *id)
+            }
             MenuKey::Agent(a) => self.composer_agent() == *a,
             _ => false,
         }
@@ -315,7 +365,11 @@ impl Shell {
 
     pub(super) fn render_agent_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.composer_agent();
-        let heading = if self.composer_in_session() { "Continue with" } else { "Agent" };
+        let heading = if self.composer_in_session() {
+            "Continue with"
+        } else {
+            "Agent"
+        };
         ui::menu_panel("agent-menu", 220.)
             .child(ui::menu_heading(heading))
             .children(model::Agent::ALL.into_iter().enumerate().map(|(i, agent)| {
@@ -323,7 +377,9 @@ impl Shell {
                     .when(self.menu_focus(i, false), |d| d.bg(theme::fill_hover()))
                     .child(agent_icon(agent, 14.))
                     .child(div().flex_1().min_w_0().truncate().child(agent.label()))
-                    .on_click(cx.listener(move |this, _, window, cx| this.menu_run(MenuKey::Agent(agent), window, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(MenuKey::Agent(agent), window, cx)
+                    }))
             }))
     }
 
@@ -333,15 +389,33 @@ impl Shell {
         ui::menu_panel("rail-usage-menu", 220.)
             .child(ui::menu_heading("Show in sidebar"))
             .children(AgentKind::ALL.into_iter().enumerate().map(|(i, agent)| {
-                ui::switch_row(("rail-usage-opt", i), agent.label(), account_view::rail_shows(agent))
-                    .when(self.menu_focus(i, false), |d| d.bg(theme::fill_hover()))
-                    .on_click(cx.listener(move |this, _, window, cx| this.menu_run(MenuKey::Rail(agent), window, cx)))
+                ui::switch_row(
+                    ("rail-usage-opt", i),
+                    agent.label(),
+                    account_view::rail_shows(agent),
+                )
+                .when(self.menu_focus(i, false), |d| d.bg(theme::fill_hover()))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.menu_run(MenuKey::Rail(agent), window, cx)
+                }))
             }))
             .child(ui::menu_divider())
             .child(
-                ui::menu_item("rail-usage-open", "dashboard-square01", "Open Usage", false, true)
-                    .when(self.menu_focus(AgentKind::ALL.len(), false), |d| d.bg(theme::fill_hover()))
-                    .on_click(cx.listener(|this, _, window, cx| this.menu_run(MenuKey::OpenUsage, window, cx))),
+                ui::menu_item(
+                    "rail-usage-open",
+                    "dashboard-square01",
+                    "Open Usage",
+                    false,
+                    true,
+                )
+                .when(self.menu_focus(AgentKind::ALL.len(), false), |d| {
+                    d.bg(theme::fill_hover())
+                })
+                .on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.menu_run(MenuKey::OpenUsage, window, cx)
+                    }),
+                ),
             )
     }
 
@@ -355,7 +429,9 @@ impl Shell {
             .filter_map(|s| Some((s, self.setting_value_label(s, cx)?)))
             .collect();
         let n_rows = rows.len();
-        let fast = self.setting_choices(Setting::Fast, cx).map(|(c, _)| c == "on");
+        let fast = self
+            .setting_choices(Setting::Fast, cx)
+            .map(|(c, _)| c == "on");
         let reset_ix = n_rows + usize::from(fast.is_some());
         let open = self.menu_sub.filter(|s| rows.iter().any(|(r, _)| r == s));
         let leave_sub = |this: &mut Self, hovered: &bool, cx: &mut Context<Self>| {
@@ -369,30 +445,53 @@ impl Shell {
             .relative()
             .children(rows.into_iter().enumerate().map(|(i, (s, value))| {
                 let open_here = open == Some(s);
-                ui::submenu_row(("model-row", s as usize), s.label(), value, open_here || self.menu_focus(i, false))
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        if *hovered && this.menu_sub != Some(s) {
-                            this.menu_sub = Some(s);
-                            this.menu_in_sub = false;
-                            cx.notify();
-                        }
-                    }))
-                    .on_click(cx.listener(move |this, _, window, cx| this.menu_run(MenuKey::Sub(s), window, cx)))
+                ui::submenu_row(
+                    ("model-row", s as usize),
+                    s.label(),
+                    value,
+                    open_here || self.menu_focus(i, false),
+                )
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if *hovered && this.menu_sub != Some(s) {
+                        this.menu_sub = Some(s);
+                        this.menu_in_sub = false;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.menu_run(MenuKey::Sub(s), window, cx)
+                }))
             }))
             .when_some(fast, |d, on| {
                 d.child(
                     ui::switch_row("model-fast", Setting::Fast.label(), on)
-                        .when(self.menu_focus(n_rows, false), |d| d.bg(theme::fill_hover()))
-                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| leave_sub(this, hovered, cx)))
-                        .on_click(cx.listener(move |this, _, window, cx| this.menu_run(MenuKey::Fast(on), window, cx))),
+                        .when(self.menu_focus(n_rows, false), |d| {
+                            d.bg(theme::fill_hover())
+                        })
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            leave_sub(this, hovered, cx)
+                        }))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(MenuKey::Fast(on), window, cx)
+                        })),
                 )
             })
             .child(ui::menu_divider())
             .child(
                 ui::menu_item("model-reset", "undo", "Reset to default", false, true)
-                    .when(self.menu_focus(reset_ix, false), |d| d.bg(theme::fill_hover()))
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| leave_sub(this, hovered, cx)))
-                    .on_click(cx.listener(|this, _, window, cx| this.menu_run(MenuKey::Reset, window, cx))),
+                    .when(self.menu_focus(reset_ix, false), |d| {
+                        d.bg(theme::fill_hover())
+                    })
+                    .on_hover(
+                        cx.listener(move |this, hovered: &bool, _, cx| {
+                            leave_sub(this, hovered, cx)
+                        }),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.menu_run(MenuKey::Reset, window, cx)
+                        }),
+                    ),
             )
             .when_some(open, |d, s| {
                 d.child(
@@ -429,7 +528,12 @@ impl Shell {
     }
 
     /// A setting's choices as their own little menu, beside the model menu.
-    fn render_choice_list(&self, s: crate::agent::Setting, describe: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_choice_list(
+        &self,
+        s: crate::agent::Setting,
+        describe: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         use crate::agent::Setting;
         let width = if s == Setting::Model { 290. } else { 200. };
         ui::menu_panel(("choice-list", s as usize), width)
@@ -442,7 +546,14 @@ impl Shell {
 
     /// The choices of a setting as radio rows; `offset` is where they start in
     /// the keyboard's order, `sub` whether they are a submenu's.
-    fn choice_rows(&self, s: crate::agent::Setting, describe: bool, offset: usize, sub: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn choice_rows(
+        &self,
+        s: crate::agent::Setting,
+        describe: bool,
+        offset: usize,
+        sub: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         use crate::agent::Setting;
         let (current, options) = self.setting_choices(s, cx).unwrap_or_default();
         options
@@ -453,11 +564,15 @@ impl Shell {
                 let key = MenuKey::Choice(s, o.id.clone(), enabled);
                 // Claude's "Default (recommended)" model says which model it is.
                 let note = o.disabled.clone().or(o.detail.clone()).or_else(|| {
-                    (s == Setting::Model && o.id == "default").then(|| o.description.clone()).flatten()
+                    (s == Setting::Model && o.id == "default")
+                        .then(|| o.description.clone())
+                        .flatten()
                 });
                 let description = o.description.filter(|_| describe);
                 ui::choice_row(("choice", s as usize * 1000 + i), o.id == current)
-                    .when(self.menu_focus(offset + i, sub), |d| d.bg(theme::fill_hover()))
+                    .when(self.menu_focus(offset + i, sub), |d| {
+                        d.bg(theme::fill_hover())
+                    })
                     .when(!enabled, |d| d.opacity(0.45).cursor_default())
                     .child(
                         div()
@@ -467,7 +582,12 @@ impl Shell {
                             .flex_col()
                             .child(div().truncate().child(o.name))
                             .when_some(description, |d, text| {
-                                d.child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(text))
+                                d.child(
+                                    div()
+                                        .text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::text_subtle())
+                                        .child(text),
+                                )
                             }),
                     )
                     .when_some(note, |d, note| {
@@ -481,18 +601,32 @@ impl Shell {
                                 .child(note),
                         )
                     })
-                    .when(enabled, |d| d.on_click(cx.listener(move |this, _, window, cx| this.menu_run(key.clone(), window, cx))))
+                    .when(enabled, |d| {
+                        d.on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(key.clone(), window, cx)
+                        }))
+                    })
                     .into_any_element()
             })
             .collect()
     }
 
-    pub(super) fn render_context_menu(&self, menu: &ContextMenu, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut panel = ui::menu_panel("context-menu", 220.).min_h_0().overflow_y_scroll();
+    pub(super) fn render_context_menu(
+        &self,
+        menu: &ContextMenu,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut panel = ui::menu_panel("context-menu", 220.)
+            .min_h_0()
+            .overflow_y_scroll();
         match menu.target {
             MenuTarget::Inbox => return self.render_inbox(cx).into_any_element(),
             MenuTarget::Project(pi) => {
-                let path = self.projects.get(pi).map(|p| p.path.clone()).unwrap_or_default();
+                let path = self
+                    .projects
+                    .get(pi)
+                    .map(|p| p.path.clone())
+                    .unwrap_or_default();
                 let reveal = path.clone();
                 panel = panel
                     .child(
@@ -502,12 +636,18 @@ impl Shell {
                             })),
                     )
                     .child(
-                        ui::menu_item("cm-reveal", "folder-open", "Open in file manager", false, true)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.menu = None;
-                                open_external(&reveal);
-                                cx.notify();
-                            })),
+                        ui::menu_item(
+                            "cm-reveal",
+                            "folder-open",
+                            "Open in file manager",
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.menu = None;
+                            open_external(&reveal);
+                            cx.notify();
+                        })),
                     )
                     .child(
                         ui::menu_item("cm-copy", "copy01", "Copy path", false, true).on_click(
@@ -521,23 +661,45 @@ impl Shell {
                         ),
                     )
                     .child(
-                        ui::menu_item("cm-setup", "computer-terminal01", "Setup script…", false, true)
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                        ui::menu_item(
+                            "cm-setup",
+                            "computer-terminal01",
+                            "Setup script…",
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 this.open_project_command(pi, false, None, window, cx)
-                            })),
+                            },
+                        )),
                     )
                     .child(
-                        ui::menu_item("cm-check", "checkmark-circle02", "Check command…", false, true)
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                        ui::menu_item(
+                            "cm-check",
+                            "checkmark-circle02",
+                            "Check command…",
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 this.open_project_command(pi, true, None, window, cx)
-                            })),
+                            },
+                        )),
                     )
                     .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
                     .child(
-                        ui::menu_item("cm-remove", "cancel-circle", "Remove from Arakun", true, true)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.remove_project(pi, window, cx)
-                            })),
+                        ui::menu_item(
+                            "cm-remove",
+                            "cancel-circle",
+                            "Remove from Arakun",
+                            true,
+                            true,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.remove_project(pi, window, cx),
+                        )),
                     );
             }
             MenuTarget::Automations => {
@@ -553,15 +715,21 @@ impl Shell {
                         panel = panel.child(
                             ui::menu_item(
                                 id,
-                                if automation.agent.is_some() { "play" } else { "flash" },
+                                if automation.agent.is_some() {
+                                    "play"
+                                } else {
+                                    "flash"
+                                },
                                 format!("{}  ·  {when}", automation.name),
                                 false,
                                 true,
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.menu = None;
-                                this.run_automation(this.active_project, ai, true, window, cx);
-                            })),
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.menu = None;
+                                    this.run_automation(this.active_project, ai, true, window, cx);
+                                },
+                            )),
                         );
                     }
                     if count > 0 {
@@ -575,15 +743,23 @@ impl Shell {
                                 })),
                         )
                         .child(
-                            ui::menu_item("cm-auto-manage", "clock01", "Manage automations…", false, true)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_automations(false, window, cx)
-                                })),
+                            ui::menu_item(
+                                "cm-auto-manage",
+                                "clock01",
+                                "Manage automations…",
+                                false,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| this.open_automations(false, window, cx),
+                            )),
                         );
                 }
             }
             MenuTarget::ModelMenu => return self.render_model_menu(cx).into_any_element(),
-            MenuTarget::PermissionMenu => return self.render_permission_menu(cx).into_any_element(),
+            MenuTarget::PermissionMenu => {
+                return self.render_permission_menu(cx).into_any_element();
+            }
             MenuTarget::AgentMenu => return self.render_agent_menu(cx).into_any_element(),
             MenuTarget::RailUsage => return self.render_rail_usage_menu(cx).into_any_element(),
             MenuTarget::Session(i) => return self.render_session_menu(i, cx),
@@ -594,7 +770,10 @@ impl Shell {
             MenuTarget::RailSection(i) => return self.render_rail_section_menu(i, cx),
             MenuTarget::ProjectSwitch => return self.render_project_switch_menu(cx),
             MenuTarget::Change(i) => {
-                let change = self.has_projects().then(|| self.env().changes.get(i).cloned()).flatten();
+                let change = self
+                    .has_projects()
+                    .then(|| self.env().changes.get(i).cloned())
+                    .flatten();
                 let Some(change) = change else {
                     return panel.into_any_element();
                 };
@@ -602,8 +781,8 @@ impl Shell {
                 let staged = change.fully_staged();
                 panel = panel
                     .child(
-                        ui::menu_item("cm-open-diff", "file-diff", "Open diff", false, true).on_click(
-                            cx.listener(move |this, _, window, cx| {
+                        ui::menu_item("cm-open-diff", "file-diff", "Open diff", false, true)
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.menu = None;
                                 this.open_doc_tab(
                                     TabKind::Diff {
@@ -613,8 +792,7 @@ impl Shell {
                                     window,
                                     cx,
                                 )
-                            }),
-                        ),
+                            })),
                     )
                     .child(
                         ui::menu_item(
@@ -631,11 +809,10 @@ impl Shell {
                     )
                     .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
                     .child(
-                        ui::menu_item("cm-discard", "undo", "Discard changes…", true, true).on_click(
-                            cx.listener(move |this, _, window, cx| {
+                        ui::menu_item("cm-discard", "undo", "Discard changes…", true, true)
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_discard(discard.clone(), window, cx)
-                            }),
-                        ),
+                            })),
                     );
             }
             MenuTarget::Env(pi, ei) => {
@@ -645,12 +822,18 @@ impl Shell {
                 let reveal = path.clone();
                 panel = panel
                     .child(
-                        ui::menu_item("cm-reveal", "folder-open", "Open in file manager", false, true)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.menu = None;
-                                open_external(&reveal);
-                                cx.notify();
-                            })),
+                        ui::menu_item(
+                            "cm-reveal",
+                            "folder-open",
+                            "Open in file manager",
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.menu = None;
+                            open_external(&reveal);
+                            cx.notify();
+                        })),
                     )
                     .child(
                         ui::menu_item("cm-copy", "copy01", "Copy path", false, true).on_click(
@@ -668,7 +851,11 @@ impl Shell {
                         ui::menu_item(
                             "cm-delete",
                             "delete02",
-                            if deletable { "Delete environment…" } else { "Main checkout can't be deleted" },
+                            if deletable {
+                                "Delete environment…"
+                            } else {
+                                "Main checkout can't be deleted"
+                            },
                             true,
                             deletable,
                         )

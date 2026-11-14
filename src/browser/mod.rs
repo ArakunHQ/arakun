@@ -15,20 +15,38 @@ mod home;
 mod text_field;
 pub mod url;
 
+#[cfg(all(
+    feature = "browser",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+mod client;
 #[cfg(all(feature = "browser", target_os = "linux"))]
 mod clipboard;
-#[cfg(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)))]
-mod client;
-#[cfg(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(
+    feature = "browser",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod keys;
-#[cfg(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(
+    feature = "browser",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod loader;
-#[cfg(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(
+    feature = "browser",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod runtime;
-#[cfg(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(
+    feature = "browser",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod view;
 
-#[cfg(not(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows))))]
+#[cfg(not(all(
+    feature = "browser",
+    any(target_os = "linux", target_os = "macos", windows)
+)))]
 #[path = "placeholder.rs"]
 mod view;
 
@@ -80,8 +98,14 @@ pub struct PageState {
 /// Runs CEF's child processes (re-executions of this binary with `--type=...`) and exits;
 /// returns immediately for the app process. Call it first thing in `main`.
 pub fn handle_subprocess() {
-    #[cfg(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)))]
-    if std::env::args_os().skip(1).any(|a| a.as_encoded_bytes().starts_with(b"--type=")) {
+    #[cfg(all(
+        feature = "browser",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
+    if std::env::args_os()
+        .skip(1)
+        .any(|a| a.as_encoded_bytes().starts_with(b"--type="))
+    {
         // arakun.exe is a console program: a child started by a arakun without a console
         // gets a console window of its own, which would stay open as long as the
         // renderer lives.
@@ -92,8 +116,15 @@ pub fn handle_subprocess() {
         }
         let _ = cef::api_hash(cef::sys::CEF_API_VERSION_LAST, 0);
         let args = cef::args::Args::new();
-        let mut app = client::app(client::AppState { pump: None, cdp_port: 0 });
-        let code = cef::execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut());
+        let mut app = client::app(client::AppState {
+            pump: None,
+            cdp_port: 0,
+        });
+        let code = cef::execute_process(
+            Some(args.as_main_args()),
+            Some(&mut app),
+            std::ptr::null_mut(),
+        );
         std::process::exit(code.max(0));
     }
 }
@@ -101,11 +132,20 @@ pub fn handle_subprocess() {
 /// The Chrome DevTools Protocol port (bound to 127.0.0.1) once CEF is running: agents can
 /// list tabs at `http://127.0.0.1:<port>/json/list`. `None` before the first tab.
 pub fn cdp_port() -> Option<u16> {
-    #[cfg(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(all(
+        feature = "browser",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
     return runtime::cdp_port();
-    #[cfg(not(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows))))]
+    #[cfg(not(all(
+        feature = "browser",
+        any(target_os = "linux", target_os = "macos", windows)
+    )))]
     None
 }
 
 /// Whether this build can show real pages.
-pub const ENABLED: bool = cfg!(all(feature = "browser", any(target_os = "linux", target_os = "macos", windows)));
+pub const ENABLED: bool = cfg!(all(
+    feature = "browser",
+    any(target_os = "linux", target_os = "macos", windows)
+));

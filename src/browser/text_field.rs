@@ -93,7 +93,11 @@ impl TextField {
     }
 
     fn cursor(&self) -> usize {
-        if self.reversed { self.selected.start } else { self.selected.end }
+        if self.reversed {
+            self.selected.start
+        } else {
+            self.selected.end
+        }
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -141,7 +145,9 @@ impl TextField {
     fn next_word(&self, offset: usize) -> usize {
         self.content
             .split_word_bound_indices()
-            .find_map(|(i, w)| (i + w.len() > offset && !w.trim().is_empty()).then_some(i + w.len()))
+            .find_map(|(i, w)| {
+                (i + w.len() > offset && !w.trim().is_empty()).then_some(i + w.len())
+            })
             .unwrap_or(self.content.len())
     }
 
@@ -166,7 +172,11 @@ impl TextField {
             "escape" => cx.emit(TextFieldEvent::Cancel),
             "backspace" => {
                 if self.selected.is_empty() {
-                    let to = if ctrl { self.prev_word(cursor) } else { self.prev_boundary(cursor) };
+                    let to = if ctrl {
+                        self.prev_word(cursor)
+                    } else {
+                        self.prev_boundary(cursor)
+                    };
                     self.replace(to..cursor, "", cx);
                 } else {
                     self.replace(self.selected.clone(), "", cx);
@@ -174,7 +184,11 @@ impl TextField {
             }
             "delete" => {
                 if self.selected.is_empty() {
-                    let to = if ctrl { self.next_word(cursor) } else { self.next_boundary(cursor) };
+                    let to = if ctrl {
+                        self.next_word(cursor)
+                    } else {
+                        self.next_boundary(cursor)
+                    };
                     self.replace(cursor..to, "", cx);
                 } else {
                     self.replace(self.selected.clone(), "", cx);
@@ -191,7 +205,11 @@ impl TextField {
                     "home" => 0,
                     _ => self.content.len(),
                 };
-                if m.shift { self.select_to(to, cx) } else { self.move_to(to, cx) }
+                if m.shift {
+                    self.select_to(to, cx)
+                } else {
+                    self.move_to(to, cx)
+                }
             }
             "a" if ctrl => self.select_all(cx),
             "c" | "x" if ctrl => {
@@ -228,7 +246,11 @@ impl TextField {
         }
         self.selecting = true;
         let index = self.index_for_position(ev.position);
-        if ev.modifiers.shift { self.select_to(index, cx) } else { self.move_to(index, cx) }
+        if ev.modifiers.shift {
+            self.select_to(index, cx)
+        } else {
+            self.move_to(index, cx)
+        }
     }
 
     fn mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
@@ -266,7 +288,9 @@ impl TextField {
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        self.content[..offset.min(self.content.len())].encode_utf16().count()
+        self.content[..offset.min(self.content.len())]
+            .encode_utf16()
+            .count()
     }
 
     fn range_from_utf16(&self, r: &Range<usize>) -> Range<usize> {
@@ -291,8 +315,16 @@ impl EntityInputHandler for TextField {
         Some(self.content[range].to_string())
     }
 
-    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
-        Some(UTF16Selection { range: self.range_to_utf16(&self.selected), reversed: self.reversed })
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: self.range_to_utf16(&self.selected),
+            reversed: self.reversed,
+        })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
@@ -355,7 +387,12 @@ impl EntityInputHandler for TextField {
         ))
     }
 
-    fn character_index_for_point(&mut self, p: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+    fn character_index_for_point(
+        &mut self,
+        p: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
         let bounds = self.last_bounds?;
         let line = self.last_layout.as_ref()?;
         let index = line.index_for_x(p.x - bounds.left() + self.scroll_x)?;
@@ -441,7 +478,14 @@ impl Element for TextLine {
         let (text, color): (SharedString, Hsla) = if field.content.is_empty() {
             (field.placeholder.clone(), theme::mix(0.35))
         } else {
-            (field.content.clone().into(), if focused { theme::content() } else { theme::mix(0.7) })
+            (
+                field.content.clone().into(),
+                if focused {
+                    theme::content()
+                } else {
+                    theme::mix(0.7)
+                },
+            )
         };
         let run = TextRun {
             len: text.len(),
@@ -453,13 +497,23 @@ impl Element for TextLine {
         };
         let runs = match field.marked.as_ref().filter(|_| !field.content.is_empty()) {
             Some(m) => [
-                TextRun { len: m.start, ..run.clone() },
                 TextRun {
-                    len: m.end - m.start,
-                    underline: Some(UnderlineStyle { color: Some(color), thickness: px(1.), wavy: false }),
+                    len: m.start,
                     ..run.clone()
                 },
-                TextRun { len: text.len() - m.end, ..run },
+                TextRun {
+                    len: m.end - m.start,
+                    underline: Some(UnderlineStyle {
+                        color: Some(color),
+                        thickness: px(1.),
+                        wavy: false,
+                    }),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: text.len() - m.end,
+                    ..run
+                },
             ]
             .into_iter()
             .filter(|r| r.len > 0)
@@ -467,10 +521,16 @@ impl Element for TextLine {
             None => vec![run],
         };
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window.text_system().shape_line(text, font_size, &runs, None);
+        let line = window
+            .text_system()
+            .shape_line(text, font_size, &runs, None);
 
         let content_len = field.content.len();
-        let cursor_x = if content_len == 0 { px(0.) } else { line.x_for_index(field.cursor()) };
+        let cursor_x = if content_len == 0 {
+            px(0.)
+        } else {
+            line.x_for_index(field.cursor())
+        };
         let width = bounds.size.width;
         let mut scroll_x = if focused { field.scroll_x } else { px(0.) };
         if focused {
@@ -479,21 +539,40 @@ impl Element for TextLine {
             } else if cursor_x < scroll_x {
                 scroll_x = cursor_x;
             }
-            scroll_x = scroll_x.min((line.width - width + px(2.)).max(px(0.))).max(px(0.));
+            scroll_x = scroll_x
+                .min((line.width - width + px(2.)).max(px(0.)))
+                .max(px(0.));
         }
         let x0 = bounds.left() - scroll_x;
         let (cursor, selection) = if !focused {
             (None, None)
         } else if field.selected.is_empty() {
-            (Some(Bounds::new(point(x0 + cursor_x, bounds.top()), size(px(1.5), bounds.size.height))), None)
+            (
+                Some(Bounds::new(
+                    point(x0 + cursor_x, bounds.top()),
+                    size(px(1.5), bounds.size.height),
+                )),
+                None,
+            )
         } else if content_len > 0 {
             let a = line.x_for_index(field.selected.start);
             let b = line.x_for_index(field.selected.end);
-            (None, Some(Bounds::from_corners(point(x0 + a, bounds.top()), point(x0 + b, bounds.bottom()))))
+            (
+                None,
+                Some(Bounds::from_corners(
+                    point(x0 + a, bounds.top()),
+                    point(x0 + b, bounds.bottom()),
+                )),
+            )
         } else {
             (None, None)
         };
-        LinePrepaint { line, scroll_x, cursor, selection }
+        LinePrepaint {
+            line,
+            scroll_x,
+            cursor,
+            selection,
+        }
     }
 
     fn paint(
@@ -507,13 +586,24 @@ impl Element for TextLine {
         cx: &mut App,
     ) {
         let focus = self.field.read(cx).focus.clone();
-        window.handle_input(&focus, ElementInputHandler::new(bounds, self.field.clone()), cx);
+        window.handle_input(
+            &focus,
+            ElementInputHandler::new(bounds, self.field.clone()),
+            cx,
+        );
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             if let Some(sel) = p.selection {
                 window.paint_quad(fill(sel, theme::text_selection()));
             }
             let origin = point(bounds.left() - p.scroll_x, bounds.top());
-            let _ = p.line.paint(origin, window.line_height(), gpui::TextAlign::Left, None, window, cx);
+            let _ = p.line.paint(
+                origin,
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
             if let Some(cursor) = p.cursor {
                 window.paint_quad(fill(cursor, theme::content()));
             }

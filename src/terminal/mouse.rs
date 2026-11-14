@@ -46,7 +46,8 @@ impl Button {
 }
 
 pub fn wants_motion(mode: TermMode, button: Option<MouseButton>) -> bool {
-    mode.contains(TermMode::MOUSE_MOTION) || (mode.contains(TermMode::MOUSE_DRAG) && button.is_some())
+    mode.contains(TermMode::MOUSE_MOTION)
+        || (mode.contains(TermMode::MOUSE_DRAG) && button.is_some())
 }
 
 pub fn report(

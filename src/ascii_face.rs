@@ -108,7 +108,12 @@ impl Img {
         let (x0, y0) = (x.floor(), y.floor());
         let (fx, fy) = (x - x0, y - y0);
         let (x0, y0) = (x0 as isize, y0 as isize);
-        let (a, b, c, d) = (self.at(x0, y0), self.at(x0 + 1, y0), self.at(x0, y0 + 1), self.at(x0 + 1, y0 + 1));
+        let (a, b, c, d) = (
+            self.at(x0, y0),
+            self.at(x0 + 1, y0),
+            self.at(x0, y0 + 1),
+            self.at(x0 + 1, y0 + 1),
+        );
         [0, 1, 2].map(|i| lerp(lerp(a[i], b[i], fx), lerp(c[i], d[i], fx), fy))
     }
 }
@@ -163,7 +168,10 @@ impl Pose {
     /// Image point to canvas point.
     fn forward(&self, u: f32, v: f32) -> [f32; 2] {
         let img = img();
-        let (x, y) = ((u - img.w as f32 / 2.) * self.k, (v - img.h as f32 / 2.) * self.k * self.stretch);
+        let (x, y) = (
+            (u - img.w as f32 / 2.) * self.k,
+            (v - img.h as f32 / 2.) * self.k * self.stretch,
+        );
         let (s, c) = self.turn.sin_cos();
         [self.at[0] + c * x - s * y, self.at[1] + s * x + c * y]
     }
@@ -216,7 +224,11 @@ struct Grid {
 impl Grid {
     fn new(w: f32) -> Self {
         let cols = (w / CELL_W).floor().max(0.) as usize;
-        Grid { cols, rows: (HEIGHT / CELL_H).floor() as usize, x0: (w - cols as f32 * CELL_W) / 2. }
+        Grid {
+            cols,
+            rows: (HEIGHT / CELL_H).floor() as usize,
+            x0: (w - cols as f32 * CELL_W) / 2.,
+        }
     }
 }
 
@@ -237,7 +249,12 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
     let span = |lo: f32, hi: f32, size: f32, n: usize| {
         ((lo / size).floor().max(0.) as usize).min(n)..((hi / size).ceil().max(0.) as usize).min(n)
     };
-    let cols = span(pose.at[0] - r - grid.x0, pose.at[0] + r - grid.x0, CELL_W, grid.cols);
+    let cols = span(
+        pose.at[0] - r - grid.x0,
+        pose.at[0] + r - grid.x0,
+        CELL_W,
+        grid.cols,
+    );
     let rows = span(pose.at[1] - r, pose.at[1] + r, CELL_H, grid.rows);
     let eyes = pose.eyes_at();
     let mut out = Vec::new();
@@ -267,12 +284,23 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
                 continue;
             }
             let ch = if amber {
-                if l > 0.38 { '█' } else if l > 0.2 { '▓' } else { '░' }
+                if l > 0.38 {
+                    '█'
+                } else if l > 0.2 {
+                    '▓'
+                } else {
+                    '░'
+                }
             } else {
                 RAMP[((l.powf(0.75) * RAMP.len() as f32) as usize).min(RAMP.len() - 1)]
             };
             let gain = (0.55 / l.max(0.12) + 0.9).min(2.2) * k;
-            out.push(FaceCell { col, row, ch, rgb: c.map(|v| (v * gain).min(255.)) });
+            out.push(FaceCell {
+                col,
+                row,
+                ch,
+                rgb: c.map(|v| (v * gain).min(255.)),
+            });
         }
     }
     out
@@ -287,7 +315,13 @@ fn dot_alpha(grid: Grid, col: usize, row: usize) -> f32 {
 }
 
 fn rgb(c: [f32; 3], a: f32) -> Hsla {
-    Rgba { r: c[0] / 255., g: c[1] / 255., b: c[2] / 255., a }.into()
+    Rgba {
+        r: c[0] / 255.,
+        g: c[1] / 255.,
+        b: c[2] / 255.,
+        a,
+    }
+    .into()
 }
 
 struct Glyphs {
@@ -314,7 +348,9 @@ fn glyphs(window: &Window) -> Glyphs {
         underline: None,
         strikethrough: None,
     };
-    let line = window.text_system().layout_line(CHARS, px(FONT_SIZE), &[run], None);
+    let line = window
+        .text_system()
+        .layout_line(CHARS, px(FONT_SIZE), &[run], None);
     let at: HashMap<usize, char> = CHARS.char_indices().collect();
     let mut ids = HashMap::new();
     for r in &line.runs {
@@ -326,7 +362,11 @@ fn glyphs(window: &Window) -> Glyphs {
     }
     let n = CHARS.chars().count() as f32;
     let (ascent, descent) = (line.ascent.as_f32(), line.descent.as_f32().abs());
-    Glyphs { ids, advance: line.width.as_f32() / n, baseline: (CELL_H - ascent - descent) / 2. + ascent }
+    Glyphs {
+        ids,
+        advance: line.width.as_f32() / n,
+        baseline: (CELL_H - ascent - descent) / 2. + ascent,
+    }
 }
 
 struct Frame {
@@ -379,7 +419,9 @@ impl AsciiFace {
         // not on screen never paints, so it is known hidden and costs nothing.
         let tick = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(33)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
                 let alive = this.update(cx, |f, cx| {
                     let now = f.now();
                     if !f.rendered {
@@ -462,21 +504,35 @@ impl AsciiFace {
         let t = self.time;
         if t > self.blink.next {
             self.blink.at = t;
-            self.blink.next = t + if self.rnd(0., 1.) < 0.2 { 0.25 } else { self.rnd(2.2, 5.5) };
+            self.blink.next = t + if self.rnd(0., 1.) < 0.2 {
+                0.25
+            } else {
+                self.rnd(2.2, 5.5)
+            };
         }
         let q = (t - self.blink.at) / 0.16;
         if q >= 1. {
             return 1.;
         }
-        let v = if q < 0.45 { 1. - q / 0.45 } else { (q - 0.45) / 0.55 };
+        let v = if q < 0.45 {
+            1. - q / 0.45
+        } else {
+            (q - 0.45) / 0.55
+        };
         smooth(v).max(0.06)
     }
 
     /// Where the eyes want to be, -1..1 each way.
     fn target(&self, now: f64) -> ([f32; 2], f32) {
         let toward = |p: Point<Pixels>, sx: f32, sy: f32| {
-            let (x, y) = ((p.x - self.origin.x).as_f32(), (p.y - self.origin.y).as_f32());
-            [((x - self.eyes[0]) / sx).clamp(-1., 1.), ((y - self.eyes[1]) / sy).clamp(-1., 1.)]
+            let (x, y) = (
+                (p.x - self.origin.x).as_f32(),
+                (p.y - self.origin.y).as_f32(),
+            );
+            [
+                ((x - self.eyes[0]) / sx).clamp(-1., 1.),
+                ((y - self.eyes[1]) / sy).clamp(-1., 1.),
+            ]
         };
         let u = FACE_W / img().w as f32 / PROTO_K;
         if self.intro.is_some() {
@@ -531,7 +587,10 @@ impl AsciiFace {
         let [lx, ly] = [self.look[0].x, self.look[1].x];
         let br = (self.time * 2.4).sin();
         let u = pose.k / PROTO_K;
-        pose.at = [pose.at[0] + lx * 14. * u, pose.at[1] + (ly * 8. + 3. * br) * u];
+        pose.at = [
+            pose.at[0] + lx * 14. * u,
+            pose.at[1] + (ly * 8. + 3. * br) * u,
+        ];
         pose.turn = self.tilt.x.to_radians();
         pose.stretch = 1. + 0.006 * br;
         pose.gaze = [lx * 7., ly * 5.];
@@ -540,7 +599,11 @@ impl AsciiFace {
             let lit = smooth((t - 2.) / 2.4);
             pose.k *= lerp(0.84, 1., smooth((t - 1.8) / 2.8));
             pose.glow = lerp(1., 0.2, smooth((t - 2.4) / 2.));
-            pose.reveal = Some((smooth((t - 0.5) / 0.9), lerp(0., 700., lit) * u, lerp(0.35, 1., lit)));
+            pose.reveal = Some((
+                smooth((t - 0.5) / 0.9),
+                lerp(0., 700., lit) * u,
+                lerp(0.35, 1., lit),
+            ));
         }
         pose.fade = self.fade.map_or(1., |t| smooth(t / FADE_LEN));
         pose
@@ -555,12 +618,20 @@ impl AsciiFace {
         let pose = self.pose(w, dt);
         self.eyes = pose.eyes_at();
         let grid = Grid::new(w);
-        let glyphs = self.glyphs.get_or_insert_with(|| Rc::new(glyphs(window))).clone();
+        let glyphs = self
+            .glyphs
+            .get_or_insert_with(|| Rc::new(glyphs(window)))
+            .clone();
         let dots = match self.intro {
             Some(t) => smooth((t - 3.) / 1.4),
             None => pose.fade,
         };
-        Frame { grid, cells: face_cells(&pose, grid), dots, glyphs }
+        Frame {
+            grid,
+            cells: face_cells(&pose, grid),
+            dots,
+            glyphs,
+        }
     }
 }
 
@@ -584,7 +655,9 @@ fn paint(frame: &Frame, b: Bounds<Pixels>, window: &mut Window) {
     if frame.dots <= 0. {
         return;
     }
-    let Some(&(font, id)) = g.ids.get(&DOT) else { return };
+    let Some(&(font, id)) = g.ids.get(&DOT) else {
+        return;
+    };
     for row in 0..grid.rows {
         for col in 0..grid.cols {
             let a = dot_alpha(grid, col, row) * frame.dots;
@@ -619,7 +692,8 @@ impl Render for AsciiFace {
                     }
                     window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble {
-                            let _ = moves.update(cx, |f, _| f.pointer = Some((e.position, f.now())));
+                            let _ =
+                                moves.update(cx, |f, _| f.pointer = Some((e.position, f.now())));
                         }
                     });
                 },
@@ -637,7 +711,10 @@ mod tests {
 
     fn lit(pose: &Pose) -> (usize, usize) {
         let cells = face_cells(pose, Grid::new(W));
-        let eyes = cells.iter().filter(|c| matches!(c.ch, '█' | '▓' | '░')).count();
+        let eyes = cells
+            .iter()
+            .filter(|c| matches!(c.ch, '█' | '▓' | '░'))
+            .count();
         (eyes, cells.len() - eyes)
     }
 
@@ -670,11 +747,18 @@ mod tests {
 
     #[test]
     fn the_intro_starts_with_only_the_eyes() {
-        let pose = Pose { reveal: Some((1., 0., 0.35)), glow: 1., ..Pose::still(W) };
+        let pose = Pose {
+            reveal: Some((1., 0., 0.35)),
+            glow: 1.,
+            ..Pose::still(W)
+        };
         let (eyes, fur) = lit(&pose);
         assert!(eyes > 10);
         assert!(fur < eyes / 2, "almost nothing but the eyes: {fur}");
-        let dark = Pose { reveal: Some((0., 0., 0.35)), ..pose };
+        let dark = Pose {
+            reveal: Some((0., 0., 0.35)),
+            ..pose
+        };
         assert_eq!(lit(&dark), (0, 0));
     }
 }

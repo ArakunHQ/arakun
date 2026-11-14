@@ -211,7 +211,10 @@ pub fn mac_key_code(key: &str) -> i32 {
         (125, 0x37), // platform (command)
     ];
     let evdev = xkb_keycode(key) - 8;
-    BY_EVDEV.iter().find(|(e, _)| *e == evdev).map_or(0xFFFF, |(_, code)| *code)
+    BY_EVDEV
+        .iter()
+        .find(|(e, _)| *e == evdev)
+        .map_or(0xFFFF, |(_, code)| *code)
 }
 
 /// The `WM_KEYDOWN` lParam Windows would send for a GPUI key name: repeat count 1, the

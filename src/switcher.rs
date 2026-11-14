@@ -3,8 +3,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
 use crate::input::{InputEvent, TextInput};
@@ -105,7 +105,17 @@ impl Switcher {
                     .iter()
                     .all(|w| hay.contains(w))
                     // Matches at the start of the label first.
-                    .then(|| (usize::from(!item.label.to_lowercase().starts_with(words.first().copied().unwrap_or(""))), i))
+                    .then(|| {
+                        (
+                            usize::from(
+                                !item
+                                    .label
+                                    .to_lowercase()
+                                    .starts_with(words.first().copied().unwrap_or("")),
+                            ),
+                            i,
+                        )
+                    })
             })
             .collect();
         scored.sort();

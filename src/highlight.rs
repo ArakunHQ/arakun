@@ -54,7 +54,9 @@ pub fn highlight_lang(lang: &str, lines: &[String]) -> Option<Vec<LineSpans>> {
     let lang = lang.trim().to_ascii_lowercase();
     // syntect's default set has no TypeScript or TOML; the nearest grammars read well enough.
     let token = match lang.as_str() {
-        "" | "text" | "plaintext" | "txt" | "ts" | "tsx" | "typescript" | "jsx" | "mjs" | "cjs" => "js",
+        "" | "text" | "plaintext" | "txt" | "ts" | "tsx" | "typescript" | "jsx" | "mjs" | "cjs" => {
+            "js"
+        }
         "console" | "shell" | "zsh" | "fish" | "shellsession" | "terminal" => "sh",
         "jsonc" | "json5" => "json",
         "toml" | "ini" | "cfg" | "conf" => "yaml",
@@ -89,9 +91,11 @@ fn highlight_with(
             if len > 0 && !span_is_plain(colors, style) {
                 spans.push((
                     offset..offset + len,
-                    gpui::rgb((style.foreground.r as u32) << 16
-                        | (style.foreground.g as u32) << 8
-                        | style.foreground.b as u32)
+                    gpui::rgb(
+                        (style.foreground.r as u32) << 16
+                            | (style.foreground.g as u32) << 8
+                            | style.foreground.b as u32,
+                    )
                     .into(),
                 ));
             }

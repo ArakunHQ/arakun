@@ -30,8 +30,16 @@ pub struct ChatNote {
 impl ChatNote {
     /// The short text on the note's chip.
     pub fn label(&self) -> String {
-        let src = if self.note.trim().is_empty() { &self.quote } else { &self.note };
-        let line = src.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        let src = if self.note.trim().is_empty() {
+            &self.quote
+        } else {
+            &self.note
+        };
+        let line = src
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
         let mut s: String = line.chars().take(40).collect();
         if line.chars().count() > 40 {
             s.push('…');
@@ -49,11 +57,18 @@ fn short_path(p: &str) -> &str {
 }
 
 fn line_label((a, b): (usize, usize)) -> String {
-    if a == b { format!("{a}") } else { format!("{a}-{b}") }
+    if a == b {
+        format!("{a}")
+    } else {
+        format!("{a}-{b}")
+    }
 }
 
 fn quoted(text: &str, indent: &str) -> String {
-    text.lines().map(|l| format!("{indent}> {l}")).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(|l| format!("{indent}> {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn source(n: &ChatNote) -> Option<String> {
@@ -69,7 +84,10 @@ fn source(n: &ChatNote) -> Option<String> {
 /// each, review comments as a numbered list with `@path (lines)` references.
 pub fn format(notes: &[ChatNote]) -> String {
     let mut parts = Vec::new();
-    let annotations: Vec<&ChatNote> = notes.iter().filter(|n| n.kind == NoteKind::Annotation).collect();
+    let annotations: Vec<&ChatNote> = notes
+        .iter()
+        .filter(|n| n.kind == NoteKind::Annotation)
+        .collect();
     if !annotations.is_empty() {
         let mut s = String::from(if annotations.len() == 1 {
             "About this part of your reply:"
@@ -90,7 +108,10 @@ pub fn format(notes: &[ChatNote]) -> String {
         }
         parts.push(s);
     }
-    let reviews: Vec<&ChatNote> = notes.iter().filter(|n| n.kind == NoteKind::Review).collect();
+    let reviews: Vec<&ChatNote> = notes
+        .iter()
+        .filter(|n| n.kind == NoteKind::Review)
+        .collect();
     if !reviews.is_empty() {
         let mut s = String::from("Review comments. Address each one:");
         for (i, n) in reviews.iter().enumerate() {
@@ -116,7 +137,9 @@ fn messages(entries: &[super::Entry], tools: bool) -> Vec<String> {
         .iter()
         .filter_map(|e| match e {
             Entry::User { text, .. } => Some(format!("User: {}", text.trim())),
-            Entry::Agent { text } if !text.trim().is_empty() => Some(format!("Agent: {}", text.trim())),
+            Entry::Agent { text } if !text.trim().is_empty() => {
+                Some(format!("Agent: {}", text.trim()))
+            }
             Entry::Tool(t) if tools => Some(format!("[tool] {}", t.title.trim())),
             _ => None,
         })
@@ -166,7 +189,13 @@ pub fn transcript_markdown(title: &str, agent: &str, entries: &[super::Entry]) -
 /// What an agent taking over `from`'s conversation is told with its first
 /// prompt: the newest messages that fit in `budget` bytes, and where the whole
 /// transcript is.
-pub fn handoff(from: &str, title: &str, entries: &[super::Entry], transcript: &str, budget: usize) -> String {
+pub fn handoff(
+    from: &str,
+    title: &str,
+    entries: &[super::Entry],
+    transcript: &str,
+    budget: usize,
+) -> String {
     format!(
         "<handoff from=\"{from}\">\n\
          This conversation started with {from} in Arakun and you are taking it over; \
@@ -186,10 +215,28 @@ mod tests {
     fn keeps_the_newest_messages_in_context() {
         use super::super::Entry;
         let entries = vec![
-            Entry::User { text: "first question".into(), at: 0, elapsed_ms: None, message_id: None, tokens: None, shell_changes: Vec::new() },
-            Entry::Agent { text: "a long first answer".into() },
-            Entry::User { text: "second".into(), at: 0, elapsed_ms: None, message_id: None, tokens: None, shell_changes: Vec::new() },
-            Entry::Agent { text: "done".into() },
+            Entry::User {
+                text: "first question".into(),
+                at: 0,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
+            Entry::Agent {
+                text: "a long first answer".into(),
+            },
+            Entry::User {
+                text: "second".into(),
+                at: 0,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
+            Entry::Agent {
+                text: "done".into(),
+            },
         ];
         let block = context_block("Fix \"auth\"", "Droid", &entries, 30);
         assert_eq!(
@@ -203,12 +250,23 @@ mod tests {
     fn hands_the_conversation_over() {
         use super::super::Entry;
         let entries = vec![
-            Entry::User { text: "fix the login".into(), at: 0, elapsed_ms: None, message_id: None, tokens: None, shell_changes: Vec::new() },
-            Entry::Agent { text: "fixed".into() },
+            Entry::User {
+                text: "fix the login".into(),
+                at: 0,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
+            Entry::Agent {
+                text: "fixed".into(),
+            },
         ];
         let text = handoff("Droid", "Login", &entries, "/data/linked/s1.md", 1024);
-        assert!(text.starts_with("<handoff from=\"Droid\">
-This conversation started with Droid in Arakun"));
+        assert!(text.starts_with(
+            "<handoff from=\"Droid\">
+This conversation started with Droid in Arakun"
+        ));
         assert!(text.contains("is in @/data/linked/s1.md."), "{text}");
         assert!(text.contains("include Droid's work."));
         assert!(text.ends_with(
@@ -221,16 +279,47 @@ Agent: fixed
         ));
     }
 
-    fn note(kind: NoteKind, quote: &str, note: &str, path: Option<&str>, lines: Option<(usize, usize)>) -> ChatNote {
-        ChatNote { kind, quote: quote.into(), note: note.into(), path: path.map(Into::into), lines, mark: None }
+    fn note(
+        kind: NoteKind,
+        quote: &str,
+        note: &str,
+        path: Option<&str>,
+        lines: Option<(usize, usize)>,
+    ) -> ChatNote {
+        ChatNote {
+            kind,
+            quote: quote.into(),
+            note: note.into(),
+            path: path.map(Into::into),
+            lines,
+            mark: None,
+        }
     }
 
     #[test]
     fn formats_annotations_and_reviews() {
         let notes = [
-            note(NoteKind::Annotation, "use a mutex\nhere", "why not a channel?", None, None),
-            note(NoteKind::Review, "let x = 1;", "rename x", Some("src/a b.rs"), Some((12, 12))),
-            note(NoteKind::Review, "", "split this", Some("lib.rs"), Some((3, 5))),
+            note(
+                NoteKind::Annotation,
+                "use a mutex\nhere",
+                "why not a channel?",
+                None,
+                None,
+            ),
+            note(
+                NoteKind::Review,
+                "let x = 1;",
+                "rename x",
+                Some("src/a b.rs"),
+                Some((12, 12)),
+            ),
+            note(
+                NoteKind::Review,
+                "",
+                "split this",
+                Some("lib.rs"),
+                Some((3, 5)),
+            ),
         ];
         assert_eq!(
             format(&notes),

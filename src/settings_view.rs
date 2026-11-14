@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
@@ -119,15 +119,25 @@ impl Section {
     fn keywords(self) -> &'static str {
         match self {
             #[cfg(feature = "coderlabs")]
-            Section::General => "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone",
+            Section::General => {
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+            }
             #[cfg(not(feature = "coderlabs"))]
-            Section::General => "raccoon mascot animation motion new session dynamic island notch top bar agents alerts",
-            Section::Appearance => "theme diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system",
+            Section::General => {
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts"
+            }
+            Section::Appearance => {
+                "theme diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
+            }
             Section::Account => "plan usage api key credits factory",
-            Section::Claude => "claude code anthropic plan usage limits weekly monthly window sign in logout",
+            Section::Claude => {
+                "claude code anthropic plan usage limits weekly monthly window sign in logout"
+            }
             Section::Droid => "skills mcp servers extensions",
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
-            Section::Voice => "elevenlabs speech speak tts read aloud audio sound api key questions",
+            Section::Voice => {
+                "elevenlabs speech speak tts read aloud audio sound api key questions"
+            }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "tasks sign in sign out email",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
@@ -142,25 +152,65 @@ static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
 type Shortcut = (&'static str, &'static str, &'static str);
 
 const SHORTCUTS: &[Shortcut] = &[
-    ("Navigate", "Ctrl+K / Ctrl+P", "Jump to a session, environment or command"),
+    (
+        "Navigate",
+        "Ctrl+K / Ctrl+P",
+        "Jump to a session, environment or command",
+    ),
     ("Navigate", "Alt+↑ / Alt+↓", "Previous / next environment"),
-    ("Navigate", "Ctrl+B", "Hide or show the sidebar and workspace panel"),
+    (
+        "Navigate",
+        "Ctrl+B",
+        "Hide or show the sidebar and workspace panel",
+    ),
     ("Navigate", "Ctrl+,", "Settings"),
-    ("Navigate", "Ctrl+= / Ctrl+- / Ctrl+0", "Zoom the interface in / out / back to 100%"),
+    (
+        "Navigate",
+        "Ctrl+= / Ctrl+- / Ctrl+0",
+        "Zoom the interface in / out / back to 100%",
+    ),
     ("Sessions", "Ctrl+T", "New session"),
     ("Sessions", "Esc", "Stop the running agent turn"),
     ("Sessions", "Ctrl+S", "Save the draft as a ! prompt"),
     ("Projects", "Ctrl+O", "Add project"),
     ("Projects", "Ctrl+Shift+N", "New environment"),
     ("Tabs and panes", "Ctrl+W", "Close tab"),
-    ("Tabs and panes", "Alt+← / Alt+→", "Back / forward through tabs"),
-    ("Tabs and panes", "Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab (also Ctrl+PgDn / PgUp)"),
-    ("Tabs and panes", "Ctrl+1 … Ctrl+9", "Go to tab 1–8, or the last tab"),
-    ("Tabs and panes", "Ctrl+D / Ctrl+Shift+D", "Split right / down (again to unsplit)"),
-    ("Tabs and panes", "Ctrl+Alt+Arrows", "Move focus to the other pane"),
-    ("Terminal and browser", "Ctrl+J / Ctrl+`", "Toggle terminal dock"),
+    (
+        "Tabs and panes",
+        "Alt+← / Alt+→",
+        "Back / forward through tabs",
+    ),
+    (
+        "Tabs and panes",
+        "Ctrl+Tab / Ctrl+Shift+Tab",
+        "Next / previous tab (also Ctrl+PgDn / PgUp)",
+    ),
+    (
+        "Tabs and panes",
+        "Ctrl+1 … Ctrl+9",
+        "Go to tab 1–8, or the last tab",
+    ),
+    (
+        "Tabs and panes",
+        "Ctrl+D / Ctrl+Shift+D",
+        "Split right / down (again to unsplit)",
+    ),
+    (
+        "Tabs and panes",
+        "Ctrl+Alt+Arrows",
+        "Move focus to the other pane",
+    ),
+    (
+        "Terminal and browser",
+        "Ctrl+J / Ctrl+`",
+        "Toggle terminal dock",
+    ),
     ("Terminal and browser", "Ctrl+Shift+T", "New terminal"),
-    ("Terminal and browser", "Ctrl+Shift+F", "Find in the terminal (Enter older, ↓ newer)"),
+    (
+        "Terminal and browser",
+        "Ctrl+Shift+F",
+        "Find in the terminal (Enter older, ↓ newer)",
+    ),
     ("Terminal and browser", "Ctrl+Shift+B", "New browser tab"),
 ];
 
@@ -205,7 +255,8 @@ impl SettingsDialog {
         let input = cx.new(|cx| TextInput::new("Search settings and shortcuts", cx));
         let sub = cx.subscribe_in(&input, window, Self::on_input);
         window.focus(&input.focus_handle(cx), cx);
-        let section = Section::ALL[LAST_SECTION.load(Ordering::Relaxed) as usize % Section::ALL.len()];
+        let section =
+            Section::ALL[LAST_SECTION.load(Ordering::Relaxed) as usize % Section::ALL.len()];
 
         let voice = voice::settings();
         let key_input = cx.new(|cx| TextInput::new("sk_…", cx).mono().secret());
@@ -214,16 +265,25 @@ impl SettingsDialog {
             i.set_text(voice.voice_id.clone(), cx);
             i
         });
-        let key_sub = cx.subscribe_in(&key_input, window, |this: &mut Self, _, ev, _, cx| match ev {
-            InputEvent::Submit => this.save_key(cx),
-            InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
-            _ => {}
-        });
-        let voice_sub = cx.subscribe_in(&voice_input, window, |this: &mut Self, _, ev, _, cx| match ev {
-            InputEvent::Changed => this.voice_id_changed(cx),
-            InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
-            _ => {}
-        });
+        let key_sub = cx.subscribe_in(
+            &key_input,
+            window,
+            |this: &mut Self, _, ev, _, cx| match ev {
+                InputEvent::Submit => this.save_key(cx),
+                InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
+                _ => {}
+            },
+        );
+        let voice_sub =
+            cx.subscribe_in(
+                &voice_input,
+                window,
+                |this: &mut Self, _, ev, _, cx| match ev {
+                    InputEvent::Changed => this.voice_id_changed(cx),
+                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
+                    _ => {}
+                },
+            );
         cx.spawn(async move |this, cx| {
             let plan = cx.background_spawn(async move { plan::refresh() }).await;
             let _ = this.update(cx, |this, cx| {
@@ -233,7 +293,9 @@ impl SettingsDialog {
         })
         .detach();
         cx.spawn(async move |this, cx| {
-            let set = cx.background_spawn(async move { voice::api_key().is_some() }).await;
+            let set = cx
+                .background_spawn(async move { voice::api_key().is_some() })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_key = Some(set);
                 cx.notify();
@@ -277,16 +339,22 @@ impl SettingsDialog {
         self.voice_note = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let saved = cx.background_spawn(async move { voice::store_api_key(&key) }).await;
+            let saved = cx
+                .background_spawn(async move { voice::store_api_key(&key) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
                 match saved {
                     Ok(()) => {
                         this.voice_key = Some(true);
                         this.key_input.update(cx, |i, cx| i.set_text("", cx));
-                        this.voice_note = Some(("Key saved. Try it with Test voice.".into(), false));
+                        this.voice_note =
+                            Some(("Key saved. Try it with Test voice.".into(), false));
                     }
-                    Err(e) => this.voice_note = Some((format!("Could not save the key: {e}").into(), true)),
+                    Err(e) => {
+                        this.voice_note =
+                            Some((format!("Could not save the key: {e}").into(), true))
+                    }
                 }
                 cx.notify();
             });
@@ -300,7 +368,8 @@ impl SettingsDialog {
         }
         self.voice_busy = true;
         cx.spawn(async move |this, cx| {
-            cx.background_spawn(async move { voice::clear_api_key() }).await;
+            cx.background_spawn(async move { voice::clear_api_key() })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
                 this.voice_key = Some(false);
@@ -339,7 +408,8 @@ impl SettingsDialog {
         cx.spawn(async move |this, cx| {
             let wav = cx
                 .background_spawn(async move {
-                    let key = voice::api_key().ok_or_else(|| "Save your ElevenLabs API key first.".to_string())?;
+                    let key = voice::api_key()
+                        .ok_or_else(|| "Save your ElevenLabs API key first.".to_string())?;
                     voice::fetch(&key, &id, tone, voice::sample(lang), lang)
                 })
                 .await;
@@ -355,7 +425,13 @@ impl SettingsDialog {
         .detach();
     }
 
-    fn on_input(&mut self, _: &Entity<TextInput>, event: &InputEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_input(
+        &mut self,
+        _: &Entity<TextInput>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             InputEvent::Changed => {
                 let shown = self.shown(cx);
@@ -387,7 +463,9 @@ impl SettingsDialog {
         query.is_empty()
             || what.to_lowercase().contains(query)
             || keys.to_lowercase().contains(query)
-            || crate::platform::shortcut_label(keys).to_lowercase().contains(query)
+            || crate::platform::shortcut_label(keys)
+                .to_lowercase()
+                .contains(query)
             || group.to_lowercase().contains(query)
     }
 
@@ -397,13 +475,19 @@ impl SettingsDialog {
         }
         let text = format!("{} {} {}", s.title(), s.description(), s.keywords()).to_lowercase();
         let words = query.split_whitespace().all(|w| text.contains(w));
-        words || (s == Section::Shortcuts && SHORTCUTS.iter().any(|sc| Self::shortcut_matches(query, sc)))
+        words
+            || (s == Section::Shortcuts
+                && SHORTCUTS.iter().any(|sc| Self::shortcut_matches(query, sc)))
     }
 
     /// The sections the search leaves, in order.
     fn shown(&self, cx: &App) -> Vec<Section> {
         let q = self.query(cx);
-        Section::ALL.iter().copied().filter(|s| self.section_matches(*s, &q)).collect()
+        Section::ALL
+            .iter()
+            .copied()
+            .filter(|s| self.section_matches(*s, &q))
+            .collect()
     }
 
     fn select(&mut self, s: Section, cx: &mut Context<Self>) {
@@ -429,11 +513,20 @@ impl SettingsDialog {
         match s {
             Section::General => format!("Raccoon animation {}", on_off(self.arcade)),
             Section::Appearance => {
-                format!("{} grays · {} diffs · Glass {}", theme::grays().label(), theme::diff_palette().label(), on_off(theme::glass()))
+                format!(
+                    "{} grays · {} diffs · Glass {}",
+                    theme::grays().label(),
+                    theme::diff_palette().label(),
+                    on_off(theme::glass())
+                )
             }
             Section::Account => "Plan usage and API key".into(),
             Section::Claude => match &self.claude {
-                Some(p) => [p.plan_label(), p.windows_summary()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
+                Some(p) => [p.plan_label(), p.windows_summary()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · "),
                 None => "Not signed in".into(),
             },
             Section::Droid => "Skills and MCP servers".into(),
@@ -475,7 +568,13 @@ impl SettingsDialog {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(s.title()))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_MD))
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(s.title()),
+                    )
                     .child(
                         div()
                             .text_size(px(ui::TEXT_XS))
@@ -484,7 +583,9 @@ impl SettingsDialog {
                             .child(self.summary(s)),
                     ),
             )
-            .when(selected, |d| d.child(icon("arrow-right01", 12.).text_color(theme::text_faint())))
+            .when(selected, |d| {
+                d.child(icon("arrow-right01", 12.).text_color(theme::text_faint()))
+            })
             .on_click(cx.listener(move |this, _, _, cx| this.select(s, cx)))
             .into_any_element()
     }
@@ -504,7 +605,12 @@ impl SettingsDialog {
                     .gap(px(2.))
                     .min_w_0()
                     .child(div().ty(ui::Type::Subtitle).child(s.title()))
-                    .child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(s.description())),
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_subtle())
+                            .child(s.description()),
+                    ),
             );
         let body: AnyElement = match s {
             Section::General => group(vec![
@@ -746,37 +852,49 @@ impl SettingsDialog {
     fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = theme::diff_palette();
         let glass = theme::glass();
-        let segments = ui::segmented()
-            .children(DiffPalette::ALL.into_iter().map(|p| {
-                let active = p == palette;
-                let (add, del) = p.swatch();
-                div()
-                    .id(p.id())
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(4.))
-                    .h(px(ui::CONTROL_H - 4.))
-                    .px(px(8.))
-                    .rounded(px(ui::RADIUS_SM))
-                    .text_size(px(ui::TEXT_SM))
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .when(active, |d| d.bg(theme::fill_selected()).text_color(theme::content()))
-                    .when(!active, |d| d.text_color(theme::text_subtle()).hover(|st| st.text_color(theme::content())))
-                    .child(div().size(px(8.)).rounded_full().bg(add))
-                    .child(div().size(px(8.)).rounded_full().bg(del))
-                    .child(div().ml(px(2.)).child(p.label()))
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(SettingsEvent::DiffPalette(p));
-                        cx.notify();
-                    }))
-            }));
+        let segments = ui::segmented().children(DiffPalette::ALL.into_iter().map(|p| {
+            let active = p == palette;
+            let (add, del) = p.swatch();
+            div()
+                .id(p.id())
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(4.))
+                .h(px(ui::CONTROL_H - 4.))
+                .px(px(8.))
+                .rounded(px(ui::RADIUS_SM))
+                .text_size(px(ui::TEXT_SM))
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .when(active, |d| {
+                    d.bg(theme::fill_selected()).text_color(theme::content())
+                })
+                .when(!active, |d| {
+                    d.text_color(theme::text_subtle())
+                        .hover(|st| st.text_color(theme::content()))
+                })
+                .child(div().size(px(8.)).rounded_full().bg(add))
+                .child(div().size(px(8.)).rounded_full().bg(del))
+                .child(div().ml(px(2.)).child(p.label()))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(SettingsEvent::DiffPalette(p));
+                    cx.notify();
+                }))
+        }));
         let preview_line = |mark: &'static str, text: &'static str, add: bool| {
             let (fg, bg, bar) = if add {
-                (theme::diff_add(), theme::diff_add_bg(), theme::diff_add_bar())
+                (
+                    theme::diff_add(),
+                    theme::diff_add_bg(),
+                    theme::diff_add_bar(),
+                )
             } else {
-                (theme::diff_del(), theme::diff_del_bg(), theme::diff_del_bar())
+                (
+                    theme::diff_del(),
+                    theme::diff_del_bg(),
+                    theme::diff_del_bar(),
+                )
             };
             div()
                 .flex()
@@ -785,7 +903,15 @@ impl SettingsDialog {
                 .bg(bg)
                 .border_l_2()
                 .border_color(bar)
-                .child(div().w(px(20.)).flex().justify_center().font_weight(FontWeight::BOLD).text_color(fg).child(mark))
+                .child(
+                    div()
+                        .w(px(20.))
+                        .flex()
+                        .justify_center()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(fg)
+                        .child(mark),
+                )
                 .child(div().text_color(theme::text_muted()).child(text))
         };
         let preview = div()
@@ -799,10 +925,30 @@ impl SettingsDialog {
             .bg(theme::background())
             .font_family(theme::FONT_MONO)
             .text_size(px(ui::TEXT_XS))
-            .child(div().h(px(20.)).border_l_2().border_color(gpui::transparent_black()).pl(px(20.)).flex().items_center().text_color(theme::text_subtle()).child("fn retry(n: u32) {"))
+            .child(
+                div()
+                    .h(px(20.))
+                    .border_l_2()
+                    .border_color(gpui::transparent_black())
+                    .pl(px(20.))
+                    .flex()
+                    .items_center()
+                    .text_color(theme::text_subtle())
+                    .child("fn retry(n: u32) {"),
+            )
             .child(preview_line("−", "    let wait = 100;", false))
             .child(preview_line("+", "    let wait = 100 * 2u64.pow(n);", true))
-            .child(div().h(px(20.)).border_l_2().border_color(gpui::transparent_black()).pl(px(20.)).flex().items_center().text_color(theme::text_subtle()).child("}"));
+            .child(
+                div()
+                    .h(px(20.))
+                    .border_l_2()
+                    .border_color(gpui::transparent_black())
+                    .pl(px(20.))
+                    .flex()
+                    .items_center()
+                    .text_color(theme::text_subtle())
+                    .child("}"),
+            );
         div()
             .flex()
             .flex_col()
@@ -909,7 +1055,9 @@ impl SettingsDialog {
         let key_hint = match self.voice_key {
             None => "Checking the system keyring…",
             Some(true) => "Saved in the system keyring. Paste a new one and Save to replace it.",
-            Some(false) => "From elevenlabs.io › Developers › API Keys. Arakun keeps it in the system keyring.",
+            Some(false) => {
+                "From elevenlabs.io › Developers › API Keys. Arakun keeps it in the system keyring."
+            }
         };
         let id_hint = if typed_id.is_empty() || id_ok {
             "Add a voice from the Voice Library to My Voices, then copy its ID."
@@ -918,31 +1066,50 @@ impl SettingsDialog {
         };
 
         let tone = self.voice.tone;
-        let tones = ui::segmented()
-            .children(Tone::ALL.into_iter().map(|t| {
-                ui::segment(t.label(), None, t.label(), t == tone)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_tone(t, cx)))
-            }));
+        let tones = ui::segmented().children(Tone::ALL.into_iter().map(|t| {
+            ui::segment(t.label(), None, t.label(), t == tone)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_tone(t, cx)))
+        }));
 
         let test_control = div()
             .flex()
             .flex_none()
             .items_center()
             .gap(px(6.))
-            .when(busy, |d| d.child(ui::spinner("set-voice-busy", 12., theme::mix(0.5))))
+            .when(busy, |d| {
+                d.child(ui::spinner("set-voice-busy", 12., theme::mix(0.5)))
+            })
             .child(
-                ui::button("set-voice-test-es", "Español", ButtonKind::Outline, can_test)
-                    .when(can_test, |b| b.on_click(cx.listener(|this, _, _, cx| this.test_voice(Lang::Es, cx)))),
+                ui::button(
+                    "set-voice-test-es",
+                    "Español",
+                    ButtonKind::Outline,
+                    can_test,
+                )
+                .when(can_test, |b| {
+                    b.on_click(cx.listener(|this, _, _, cx| this.test_voice(Lang::Es, cx)))
+                }),
             )
             .child(
-                ui::button("set-voice-test-en", "English", ButtonKind::Outline, can_test)
-                    .when(can_test, |b| b.on_click(cx.listener(|this, _, _, cx| this.test_voice(Lang::En, cx)))),
+                ui::button(
+                    "set-voice-test-en",
+                    "English",
+                    ButtonKind::Outline,
+                    can_test,
+                )
+                .when(can_test, |b| {
+                    b.on_click(cx.listener(|this, _, _, cx| this.test_voice(Lang::En, cx)))
+                }),
             );
 
-        let note = self
-            .voice_note
-            .clone()
-            .or_else(|| voice::last_error().map(|e| (format!("The last question could not be read. {e}").into(), true)));
+        let note = self.voice_note.clone().or_else(|| {
+            voice::last_error().map(|e| {
+                (
+                    format!("The last question could not be read. {e}").into(),
+                    true,
+                )
+            })
+        });
 
         div()
             .flex()
@@ -1032,7 +1199,14 @@ impl SettingsDialog {
                                     .min_h(px(32.))
                                     .px(px(12.))
                                     .py(px(4.))
-                                    .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_SM)).text_color(theme::text_muted()).child(*what))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_size(px(ui::TEXT_SM))
+                                            .text_color(theme::text_muted())
+                                            .child(*what),
+                                    )
                                     .child(keycaps(keys))
                                     .into_any_element()
                             })
@@ -1057,9 +1231,21 @@ fn tile(name: &str, size: f32, lit: bool) -> gpui::Div {
         .items_center()
         .justify_center()
         .size(px(size))
-        .rounded(px(if size > 32. { ui::RADIUS_LG } else { ui::RADIUS }))
-        .bg(if lit { theme::accent().opacity(0.14) } else { theme::mix(0.05) })
-        .child(icon(name, size * 0.5).text_color(if lit { theme::accent() } else { theme::mix(0.55) }))
+        .rounded(px(if size > 32. {
+            ui::RADIUS_LG
+        } else {
+            ui::RADIUS
+        }))
+        .bg(if lit {
+            theme::accent().opacity(0.14)
+        } else {
+            theme::mix(0.05)
+        })
+        .child(icon(name, size * 0.5).text_color(if lit {
+            theme::accent()
+        } else {
+            theme::mix(0.55)
+        }))
 }
 
 /// A text field sized for a settings row.
@@ -1090,11 +1276,11 @@ fn group(rows: Vec<AnyElement>) -> AnyElement {
         .border_color(theme::stroke())
         .bg(theme::fill_raised())
         .overflow_hidden()
-        .children(
-            rows.into_iter()
-                .enumerate()
-                .map(|(i, r)| div().when(i > 0, |d| d.border_t_1().border_color(theme::stroke())).child(r)),
-        )
+        .children(rows.into_iter().enumerate().map(|(i, r)| {
+            div()
+                .when(i > 0, |d| d.border_t_1().border_color(theme::stroke()))
+                .child(r)
+        }))
         .into_any_element()
 }
 
@@ -1106,11 +1292,21 @@ fn label_block(title: impl Into<SharedString>, hint: impl Into<SharedString>) ->
         .min_w_0()
         .gap(px(2.))
         .child(div().text_size(px(ui::TEXT_MD)).child(title.into()))
-        .child(div().text_size(px(ui::TEXT_XS)).line_height(px(15.)).text_color(theme::text_subtle()).child(hint.into()))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_XS))
+                .line_height(px(15.))
+                .text_color(theme::text_subtle())
+                .child(hint.into()),
+        )
 }
 
 /// One setting: what it is on the left, its control on the right.
-fn row(title: impl Into<SharedString>, hint: impl Into<SharedString>, control: AnyElement) -> gpui::Div {
+fn row(
+    title: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+    control: AnyElement,
+) -> gpui::Div {
     div()
         .flex()
         .items_center()
@@ -1142,7 +1338,13 @@ fn keycaps(keys: &str) -> AnyElement {
             .text_color(theme::text_muted())
             .child(k.to_string())
     };
-    let sep = |s: &str| div().px(px(2.)).text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child(s.to_string());
+    let sep = |s: &str| {
+        div()
+            .px(px(2.))
+            .text_size(px(ui::TEXT_XS))
+            .text_color(theme::text_faint())
+            .child(s.to_string())
+    };
     let mut out = div().flex().flex_none().items_center().gap(px(4.));
     for (i, alt) in keys.split(" / ").enumerate() {
         if i > 0 {
@@ -1158,7 +1360,10 @@ fn keycaps(keys: &str) -> AnyElement {
                 // macOS writes "⇧⌘T": one cap per modifier symbol, then the key.
                 let key = part.trim_start_matches(['⌃', '⌥', '⇧', '⌘']);
                 let mods = &part[..part.len() - key.len()];
-                mods.char_indices().map(|(i, c)| &mods[i..i + c.len_utf8()]).chain([key]).collect()
+                mods.char_indices()
+                    .map(|(i, c)| &mods[i..i + c.len_utf8()])
+                    .chain([key])
+                    .collect()
             } else {
                 part.split('+').collect()
             };
@@ -1234,10 +1439,17 @@ impl Render for SettingsDialog {
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
                 .child(icon("search01", 20.).text_color(theme::text_faint()))
-                .child(crate::platform::shortcut_label("Nothing matches. Try “diff”, “glass” or a key like “Ctrl+T”."))
+                .child(crate::platform::shortcut_label(
+                    "Nothing matches. Try “diff”, “glass” or a key like “Ctrl+T”.",
+                ))
                 .into_any_element()
         } else {
-            div().flex().size_full().child(list).child(self.render_pane(cx)).into_any_element()
+            div()
+                .flex()
+                .size_full()
+                .child(list)
+                .child(self.render_pane(cx))
+                .into_any_element()
         };
 
         let hint = |key: &str, label: &str| {
@@ -1263,9 +1475,17 @@ impl Render for SettingsDialog {
             .child(ui::modal_header(
                 "Settings",
                 Some("Preferences save as you change them.".into()),
-                ui::close_button("settings-close").on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Dismissed))),
+                ui::close_button("settings-close")
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Dismissed))),
             ))
-            .child(div().flex().items_center().px(px(16.)).pt(px(12.)).child(field))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(px(16.))
+                    .pt(px(12.))
+                    .child(field),
+            )
             .child(
                 div()
                     .flex()
@@ -1278,7 +1498,14 @@ impl Render for SettingsDialog {
                     .child(div().flex_1().min_w_0().truncate().child(crumb))
                     .child(count),
             )
-            .child(div().flex().h(px(BODY_H)).min_h_0().overflow_hidden().child(body))
+            .child(
+                div()
+                    .flex()
+                    .h(px(BODY_H))
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(body),
+            )
             .child(
                 div()
                     .flex()
@@ -1292,7 +1519,14 @@ impl Render for SettingsDialog {
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_subtle())
                     .when(viewport_w >= 640., |d| {
-                        d.child(hint("↑↓", "section")).child(hint("Esc", if q.is_empty() { "close" } else { "clear search" }))
+                        d.child(hint("↑↓", "section")).child(hint(
+                            "Esc",
+                            if q.is_empty() {
+                                "close"
+                            } else {
+                                "clear search"
+                            },
+                        ))
                     })
                     .child(div().flex_1())
                     .child(

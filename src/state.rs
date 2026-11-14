@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{SessionMeta, Setting};
-use crate::model::{Agent, Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab, TabKind};
+use crate::model::{
+    Agent, Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab,
+    TabKind,
+};
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct State {
@@ -230,7 +233,10 @@ fn is_session(t: &Tab) -> bool {
 /// Position of the active tab among the session tabs (0 when another tab is active).
 fn active_session_tab(e: &Environment) -> usize {
     match e.tabs.get(e.active_tab) {
-        Some(t) if is_session(t) => e.tabs[..e.active_tab].iter().filter(|t| is_session(t)).count(),
+        Some(t) if is_session(t) => e.tabs[..e.active_tab]
+            .iter()
+            .filter(|t| is_session(t))
+            .count(),
         _ => 0,
     }
 }
@@ -313,7 +319,10 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
             // their project stays once it holds sessions the app took over.
             .filter(|p| {
                 p.path != crate::headless::root()
-                    || p.environments.iter().flat_map(|e| &e.sessions).any(|s| !crate::headless::shown(&s.id))
+                    || p.environments
+                        .iter()
+                        .flat_map(|e| &e.sessions)
+                        .any(|s| !crate::headless::shown(&s.id))
             })
             .map(|p| ProjectState {
                 path: p.path.clone(),
@@ -390,7 +399,9 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                             .iter()
                             .filter_map(|t| match &t.kind {
                                 // Blank tabs are not worth reopening.
-                                TabKind::Browser { url } if is_saved_browser(t) => Some(url.to_string()),
+                                TabKind::Browser { url } if is_saved_browser(t) => {
+                                    Some(url.to_string())
+                                }
                                 _ => None,
                             })
                             .collect(),
@@ -416,11 +427,15 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
         glass: layout.glass,
         grays: layout.grays.id().to_string(),
         type_scale: layout.type_scale.id().to_string(),
-        rail_hidden: [("claude", layout.rail_usage[0]), ("droid", layout.rail_usage[1]), ("opencode", layout.rail_usage[2])]
-            .into_iter()
-            .filter(|(_, shown)| !shown)
-            .map(|(k, _)| k.to_string())
-            .collect(),
+        rail_hidden: [
+            ("claude", layout.rail_usage[0]),
+            ("droid", layout.rail_usage[1]),
+            ("opencode", layout.rail_usage[2]),
+        ]
+        .into_iter()
+        .filter(|(_, shown)| !shown)
+        .map(|(k, _)| k.to_string())
+        .collect(),
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().key().to_string(),
         island_off: !crate::island::enabled(),
@@ -469,8 +484,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                         .sessions
                         .into_iter()
                         .map(|s| {
-                            let mut session =
-                                Session::new(s.id.into(), s.title.into(), Agent::from_key(&s.agent));
+                            let mut session = Session::new(
+                                s.id.into(),
+                                s.title.into(),
+                                Agent::from_key(&s.agent),
+                            );
                             session.updated = s.updated;
                             session.added = s.added;
                             session.removed = s.removed;
@@ -504,7 +522,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                     let mut tabs = tabs;
                     let sessions_open = tabs.len();
                     tabs.extend(e.browsers.into_iter().map(|url| {
-                        let title = if url.is_empty() { "New tab".to_string() } else { url.clone() };
+                        let title = if url.is_empty() {
+                            "New tab".to_string()
+                        } else {
+                            url.clone()
+                        };
                         Tab::new(title, TabKind::Browser { url: url.into() })
                     }));
                     if !tabs.is_empty() {
@@ -519,7 +541,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                         let other = env.tabs.get(s.tab).filter(|_| s.tab != env.active_tab)?;
                         Some(Split {
                             other: other.id,
-                            dir: if s.down { SplitDir::Down } else { SplitDir::Right },
+                            dir: if s.down {
+                                SplitDir::Down
+                            } else {
+                                SplitDir::Right
+                            },
                             ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
                             focus_first: s.focus_first,
                         })
@@ -567,12 +593,22 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         glass: state.glass,
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
-        rail_usage: ["claude", "droid", "opencode"].map(|k| !state.rail_hidden.iter().any(|h| h == k)),
+        rail_usage: ["claude", "droid", "opencode"]
+            .map(|k| !state.rail_hidden.iter().any(|h| h == k)),
         // 0 only comes from `State::default()`, when there is no state file.
-        ui_zoom: if state.ui_zoom == 0 { 100 } else { state.ui_zoom },
+        ui_zoom: if state.ui_zoom == 0 {
+            100
+        } else {
+            state.ui_zoom
+        },
     };
     // State from before `last_agent` was kept: the agent of the latest session.
-    let latest = projects.iter().flat_map(|p| &p.environments).flat_map(|e| &e.sessions).max_by_key(|s| s.updated).map(|s| s.agent);
+    let latest = projects
+        .iter()
+        .flat_map(|p| &p.environments)
+        .flat_map(|e| &e.sessions)
+        .max_by_key(|s| s.updated)
+        .map(|s| s.agent);
     match (last_agent.is_empty(), latest) {
         (false, _) => crate::model::set_default_agent(Agent::from_key(&last_agent)),
         (true, Some(agent)) => crate::model::set_default_agent(agent),
@@ -607,20 +643,38 @@ mod tests {
 
     #[test]
     fn continued_sessions_keep_what_they_took_over() {
-        let old: SessionState = serde_json::from_str(r#"{"id":"s1","title":"T","agent":"droid","updated":1}"#).unwrap();
-        assert!(old.continues.is_empty(), "older state files have no earlier sessions");
+        let old: SessionState =
+            serde_json::from_str(r#"{"id":"s1","title":"T","agent":"droid","updated":1}"#).unwrap();
+        assert!(
+            old.continues.is_empty(),
+            "older state files have no earlier sessions"
+        );
         let json = r#"{"id":"s2","title":"T","agent":"claude","updated":1,"continues":[{"id":"s1","agent_session":"d-1"},{"id":"s0"}]}"#;
         let s: SessionState = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.continues,
             vec![
-                crate::model::Earlier { id: "s1".into(), agent_session: Some("d-1".into()) },
-                crate::model::Earlier { id: "s0".into(), agent_session: None },
+                crate::model::Earlier {
+                    id: "s1".into(),
+                    agent_session: Some("d-1".into())
+                },
+                crate::model::Earlier {
+                    id: "s0".into(),
+                    agent_session: None
+                },
             ]
         );
         let saved = serde_json::to_value(&s).unwrap();
-        assert_eq!(saved["continues"], serde_json::json!([{"id": "s1", "agent_session": "d-1"}, {"id": "s0"}]));
-        assert!(serde_json::to_value(&old).unwrap().get("continues").is_none());
+        assert_eq!(
+            saved["continues"],
+            serde_json::json!([{"id": "s1", "agent_session": "d-1"}, {"id": "s0"}])
+        );
+        assert!(
+            serde_json::to_value(&old)
+                .unwrap()
+                .get("continues")
+                .is_none()
+        );
     }
 
     #[test]
@@ -638,8 +692,27 @@ mod tests {
     fn hidden_rail_survives_a_restart() {
         let state: State = serde_json::from_str("{}").unwrap();
         assert!(state.rail_open, "older state files show the rail");
-        assert_eq!(state.rail_w, RAIL_W, "older state files get the default rail width");
-        let layout = Layout { dock_open: false, dock_height: DOCK_HEIGHT, rail_open: false, panel_open: false, rail_w: RAIL_W, panel_w: PANEL_W, subagents_open: false, subagents_w: SUBAGENTS_W, arcade: false, diff_palette: crate::theme::DiffPalette::Default, glass: false, grays: crate::theme::Grays::Crisp, type_scale: crate::ui::TypeScale::Compact, rail_usage: [true, true, true], ui_zoom: 100 };
+        assert_eq!(
+            state.rail_w, RAIL_W,
+            "older state files get the default rail width"
+        );
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: false,
+            panel_open: false,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true],
+            ui_zoom: 100,
+        };
         let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
     }
@@ -647,11 +720,33 @@ mod tests {
     #[test]
     fn rail_usage_choice_survives_a_restart() {
         let state: State = serde_json::from_str("{}").unwrap();
-        assert!(state.rail_hidden.is_empty(), "older state files show both providers");
-        let layout = Layout { dock_open: false, dock_height: DOCK_HEIGHT, rail_open: true, panel_open: true, rail_w: RAIL_W, panel_w: PANEL_W, subagents_open: false, subagents_w: SUBAGENTS_W, arcade: false, diff_palette: crate::theme::DiffPalette::Default, glass: false, grays: crate::theme::Grays::Soft, type_scale: crate::ui::TypeScale::Comfortable, rail_usage: [true, false, true], ui_zoom: 100 };
+        assert!(
+            state.rail_hidden.is_empty(),
+            "older state files show both providers"
+        );
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Soft,
+            type_scale: crate::ui::TypeScale::Comfortable,
+            rail_usage: [true, false, true],
+            ui_zoom: 100,
+        };
         let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert_eq!(layout.rail_usage, [true, false, true]);
-        assert_eq!((layout.grays, layout.type_scale), (crate::theme::Grays::Soft, crate::ui::TypeScale::Comfortable));
+        assert_eq!(
+            (layout.grays, layout.type_scale),
+            (crate::theme::Grays::Soft, crate::ui::TypeScale::Comfortable)
+        );
     }
 
     #[test]
@@ -664,7 +759,23 @@ mod tests {
 
         let mut project = new_project(Path::new("/tmp/arakun-cs-test"));
         project.coderspace = Some("rp7".into());
-        let layout = Layout { dock_open: false, dock_height: DOCK_HEIGHT, rail_open: true, panel_open: true, rail_w: RAIL_W, panel_w: PANEL_W, subagents_open: false, subagents_w: SUBAGENTS_W, arcade: false, diff_palette: crate::theme::DiffPalette::Default, glass: false, grays: crate::theme::Grays::Crisp, type_scale: crate::ui::TypeScale::Compact, rail_usage: [true, true, true], ui_zoom: 100 };
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true],
+            ui_zoom: 100,
+        };
         let bytes = snapshot(&[project], 0, layout);
         let state: State = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(state.projects[0].coderspace.as_deref(), Some("rp7"));
@@ -675,15 +786,39 @@ mod tests {
         let mut project = new_project(Path::new("/tmp/arakun-draft-test"));
         project.environments[0].draft.set("fix the tests\nplease");
         project.environments[0].draft.move_to(3, false);
-        project.environments.push(Environment::new("/tmp/arakun-draft-test-2".into(), None, false));
-        let layout = Layout { dock_open: false, dock_height: DOCK_HEIGHT, rail_open: true, panel_open: true, rail_w: RAIL_W, panel_w: PANEL_W, subagents_open: false, subagents_w: SUBAGENTS_W, arcade: false, diff_palette: crate::theme::DiffPalette::Default, glass: false, grays: crate::theme::Grays::Crisp, type_scale: crate::ui::TypeScale::Compact, rail_usage: [true, true, true], ui_zoom: 100 };
+        project.environments.push(Environment::new(
+            "/tmp/arakun-draft-test-2".into(),
+            None,
+            false,
+        ));
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true],
+            ui_zoom: 100,
+        };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let draft = &projects[0].environments[0].draft;
         assert_eq!((&**draft, draft.head()), ("fix the tests\nplease", 3));
         assert!(projects[0].environments[1].draft.is_empty());
         let empty = String::from_utf8(bytes).unwrap();
-        assert_eq!(empty.matches("\"draft\"").count(), 1, "empty drafts are not written");
+        assert_eq!(
+            empty.matches("\"draft\"").count(),
+            1,
+            "empty drafts are not written"
+        );
     }
 
     #[test]
@@ -692,14 +827,46 @@ mod tests {
         let env = &mut project.environments[0];
         env.sessions = vec![Session::new("s1".into(), "One".into(), Agent::Droid)];
         env.tabs = vec![
-            Tab::new("One", TabKind::Session { agent: Agent::Droid, id: "s1".into() }),
+            Tab::new(
+                "One",
+                TabKind::Session {
+                    agent: Agent::Droid,
+                    id: "s1".into(),
+                },
+            ),
             Tab::new("New tab", TabKind::Browser { url: "".into() }),
-            Tab::new("Docs", TabKind::Browser { url: "https://example.com".into() }),
+            Tab::new(
+                "Docs",
+                TabKind::Browser {
+                    url: "https://example.com".into(),
+                },
+            ),
         ];
         env.active_tab = 0;
-        env.split = Some(Split { other: env.tabs[2].id, dir: SplitDir::Down, ratio: 0.35, focus_first: true });
+        env.split = Some(Split {
+            other: env.tabs[2].id,
+            dir: SplitDir::Down,
+            ratio: 0.35,
+            focus_first: true,
+        });
 
-        let layout = Layout { dock_open: false, dock_height: DOCK_HEIGHT, rail_open: true, panel_open: true, rail_w: RAIL_W, panel_w: PANEL_W, subagents_open: false, subagents_w: SUBAGENTS_W, arcade: false, diff_palette: crate::theme::DiffPalette::Default, glass: false, grays: crate::theme::Grays::Crisp, type_scale: crate::ui::TypeScale::Compact, rail_usage: [true, true, true], ui_zoom: 100 };
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true],
+            ui_zoom: 100,
+        };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let env = &projects[0].environments[0];

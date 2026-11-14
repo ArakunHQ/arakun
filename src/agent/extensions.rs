@@ -49,7 +49,11 @@ pub struct Extensions {
     pub skills: Vec<Skill>,
 }
 
-const LISTS: [&str; 3] = ["droid.list_mcp_tools", "droid.list_skills", "droid.list_mcp_servers"];
+const LISTS: [&str; 3] = [
+    "droid.list_mcp_tools",
+    "droid.list_skills",
+    "droid.list_mcp_servers",
+];
 
 pub fn load(cwd: &Path) -> Result<Extensions> {
     run(cwd, None)
@@ -69,7 +73,10 @@ fn cache_file(cwd: &Path) -> std::path::PathBuf {
     use std::hash::{Hash as _, Hasher as _};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cwd.hash(&mut h);
-    crate::platform::app_dir().join("cache").join("extensions").join(format!("droid-{:016x}.json", h.finish()))
+    crate::platform::app_dir()
+        .join("cache")
+        .join("extensions")
+        .join(format!("droid-{:016x}.json", h.finish()))
 }
 
 /// What the last `load` found in `cwd`, to show while a new one runs.
@@ -130,7 +137,10 @@ fn parse(tools: &Value, skills: &Value, servers: &Value) -> Extensions {
             server_type: s(v, "serverType"),
             status: s(v, "status"),
             managed: v["isManaged"].as_bool().unwrap_or(false),
-            tools: counts.get(v["name"].as_str().unwrap_or_default()).copied().unwrap_or(0),
+            tools: counts
+                .get(v["name"].as_str().unwrap_or_default())
+                .copied()
+                .unwrap_or(0),
         })
         .collect();
     servers.sort_by_key(|a| a.name.to_lowercase());
@@ -235,7 +245,8 @@ mod tests {
 
     #[test]
     fn parses_lists() {
-        let tools = json!({"tools": [{"serverName": "gh"}, {"serverName": "gh"}, {"serverName": "x"}]});
+        let tools =
+            json!({"tools": [{"serverName": "gh"}, {"serverName": "gh"}, {"serverName": "x"}]});
         let skills = json!({"skills": [
             {"name": "b", "description": "B", "location": "personal", "enabled": false},
             {"name": "a", "description": "A", "location": "project", "enabled": true}

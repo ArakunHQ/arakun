@@ -56,19 +56,22 @@ mod imp {
             }
         }
         let (tx, rx) = oneshot::channel::<()>();
-        let _ = std::thread::Builder::new().name("arakun-signals".into()).spawn(move || {
-            let mut byte = 0u8;
-            // SAFETY: reads into a local byte; restoring the default handlers is plain libc.
-            unsafe {
-                while libc::read(fds[0], (&mut byte as *mut u8).cast(), 1) < 0
-                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
-                {}
-                for sig in SIGNALS {
-                    libc::signal(sig, libc::SIG_DFL);
+        let _ = std::thread::Builder::new()
+            .name("arakun-signals".into())
+            .spawn(move || {
+                let mut byte = 0u8;
+                // SAFETY: reads into a local byte; restoring the default handlers is plain libc.
+                unsafe {
+                    while libc::read(fds[0], (&mut byte as *mut u8).cast(), 1) < 0
+                        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                    {
+                    }
+                    for sig in SIGNALS {
+                        libc::signal(sig, libc::SIG_DFL);
+                    }
                 }
-            }
-            let _ = tx.send(());
-        });
+                let _ = tx.send(());
+            });
         Some(rx)
     }
 }
@@ -78,8 +81,10 @@ mod imp {
     use std::sync::Mutex;
 
     use futures::channel::oneshot;
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler,
+    };
     use windows_sys::core::BOOL;
-    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
 
     static TX: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
 

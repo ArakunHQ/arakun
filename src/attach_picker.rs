@@ -11,10 +11,10 @@ use std::time::UNIX_EPOCH;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render, RenderImage, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, UniformListScrollHandle,
-    Window, div, img, px, uniform_list,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render,
+    RenderImage, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Subscription, UniformListScrollHandle, Window, div, img, px, uniform_list,
 };
 
 use crate::agent::attach::{MAX_IMAGE_BYTES, mime_type};
@@ -66,7 +66,11 @@ struct Item {
 
 enum Thumb {
     Loading,
-    Ready { image: Arc<RenderImage>, width: u32, height: u32 },
+    Ready {
+        image: Arc<RenderImage>,
+        width: u32,
+        height: u32,
+    },
     Failed,
 }
 
@@ -101,7 +105,11 @@ impl AttachPicker {
         let input = cx.new(|cx| TextInput::new("Search files or type a path (~/…)", cx));
         let sub = cx.subscribe_in(&input, window, Self::on_input);
         window.focus(&input.focus_handle(cx), cx);
-        let source = if LAST_WAS_PROJECT.load(Ordering::Relaxed) { Source::Project } else { Source::Images };
+        let source = if LAST_WAS_PROJECT.load(Ordering::Relaxed) {
+            Source::Project
+        } else {
+            Source::Images
+        };
         let mut this = Self {
             input,
             env_name: dir_name(&env_path).into(),
@@ -120,7 +128,9 @@ impl AttachPicker {
         };
         this.refilter(cx);
         cx.spawn(async move |this, cx| {
-            let items = cx.background_spawn(async move { project_items(&env_path) }).await;
+            let items = cx
+                .background_spawn(async move { project_items(&env_path) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.project = Some(items);
                 this.refilter(cx);
@@ -138,7 +148,13 @@ impl AttachPicker {
         this
     }
 
-    fn on_input(&mut self, _: &Entity<TextInput>, event: &InputEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_input(
+        &mut self,
+        _: &Entity<TextInput>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             InputEvent::Changed => {
                 self.cursor = 0;
@@ -150,7 +166,11 @@ impl AttachPicker {
             InputEvent::Submit | InputEvent::SubmitAlt => self.activate(self.cursor, cx),
             InputEvent::Complete => {
                 self.toggle(self.cursor, cx);
-                if self.rows.get(self.cursor).is_some_and(|r| r.kind != Kind::Folder) {
+                if self
+                    .rows
+                    .get(self.cursor)
+                    .is_some_and(|r| r.kind != Kind::Folder)
+                {
                     self.move_cursor(1, cx);
                 }
             }
@@ -209,7 +229,8 @@ impl AttachPicker {
         }
         let n = self.rows.len() as isize;
         self.cursor = (self.cursor as isize + delta).rem_euclid(n) as usize;
-        self.scroll.scroll_to_item(self.cursor, gpui::ScrollStrategy::Nearest);
+        self.scroll
+            .scroll_to_item(self.cursor, gpui::ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -227,7 +248,9 @@ impl AttachPicker {
 
     /// Tab or a click: put a file in the tray (or take it out); folders open.
     fn toggle(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(item) = self.rows.get(ix).cloned() else { return };
+        let Some(item) = self.rows.get(ix).cloned() else {
+            return;
+        };
         self.cursor = ix;
         if item.kind == Kind::Folder {
             self.browse_into(&item.path, cx);
@@ -246,7 +269,9 @@ impl AttachPicker {
         match self.rows.get(ix).cloned() {
             Some(item) if item.kind == Kind::Folder => self.browse_into(&item.path, cx),
             Some(item) if self.chosen.is_empty() => self.finish(vec![item.path], cx),
-            _ if !self.chosen.is_empty() => self.finish(self.chosen.iter().map(|c| c.path.clone()).collect(), cx),
+            _ if !self.chosen.is_empty() => {
+                self.finish(self.chosen.iter().map(|c| c.path.clone()).collect(), cx)
+            }
             _ => {}
         }
     }
@@ -272,7 +297,11 @@ impl AttachPicker {
 
     /// The decoded thumbnail of `path`, starting the decode on first ask.
     fn thumb(&mut self, path: &Path, large: bool, cx: &mut Context<Self>) -> Option<&Thumb> {
-        let map = if large { &mut self.previews } else { &mut self.thumbs };
+        let map = if large {
+            &mut self.previews
+        } else {
+            &mut self.thumbs
+        };
         if !map.contains_key(path) {
             if large && map.len() >= 6 {
                 // Only the last few previews are worth keeping in the atlas.
@@ -287,9 +316,15 @@ impl AttachPicker {
             cx.spawn(async move |this, cx| {
                 let decode = p.clone();
                 let max = if large { PREVIEW_PX } else { THUMB_PX };
-                let result = cx.background_spawn(async move { decode_thumb(&decode, max) }).await;
+                let result = cx
+                    .background_spawn(async move { decode_thumb(&decode, max) })
+                    .await;
                 let _ = this.update(cx, |this, cx| {
-                    let map = if large { &mut this.previews } else { &mut this.thumbs };
+                    let map = if large {
+                        &mut this.previews
+                    } else {
+                        &mut this.thumbs
+                    };
                     // Dropped by `release` or the preview eviction meanwhile.
                     if !map.contains_key(&p) {
                         return;
@@ -297,7 +332,11 @@ impl AttachPicker {
                     map.insert(
                         p,
                         match result {
-                            Some((image, width, height)) => Thumb::Ready { image, width, height },
+                            Some((image, width, height)) => Thumb::Ready {
+                                image,
+                                width,
+                                height,
+                            },
                             None => Thumb::Failed,
                         },
                     );
@@ -315,7 +354,9 @@ impl AttachPicker {
             return;
         }
         let peek = match item.kind {
-            Kind::Folder => Peek::Folder(std::fs::read_dir(&item.path).map_or(0, |r| r.take(1000).count())),
+            Kind::Folder => {
+                Peek::Folder(std::fs::read_dir(&item.path).map_or(0, |r| r.take(1000).count()))
+            }
             Kind::Image => return,
             Kind::File => read_text_head(&item.path).map_or(Peek::Binary, Peek::Text),
         };
@@ -337,14 +378,17 @@ impl AttachPicker {
         if item.kind == Kind::Image
             && let Some(Thumb::Ready { image, .. }) = self.thumb(&item.path, false, cx)
         {
-            return base.child(img(image.clone()).size_full().object_fit(ObjectFit::Cover)).into_any_element();
+            return base
+                .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
+                .into_any_element();
         }
         let color = match item.kind {
             Kind::Folder => theme::mix(0.55),
             Kind::Image => theme::accent().opacity(0.8),
             Kind::File => theme::mix(0.5),
         };
-        base.child(icon(icon_for(item), size * 0.5).text_color(color)).into_any_element()
+        base.child(icon(icon_for(item), size * 0.5).text_color(color))
+            .into_any_element()
     }
 
     fn render_row(&mut self, ix: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {
@@ -352,11 +396,17 @@ impl AttachPicker {
         let chosen = self.is_chosen(&item.path);
         let tile = self.tile(item, 28., cx);
         let trailing: AnyElement = if item.kind == Kind::Folder {
-            icon("arrow-right01", 12.).text_color(theme::text_faint()).into_any_element()
+            icon("arrow-right01", 12.)
+                .text_color(theme::text_faint())
+                .into_any_element()
         } else if chosen {
-            icon("checkmark-circle02", 16.).text_color(theme::accent()).into_any_element()
+            icon("checkmark-circle02", 16.)
+                .text_color(theme::accent())
+                .into_any_element()
         } else {
-            icon("circle", 16.).text_color(theme::text_faint()).into_any_element()
+            icon("circle", 16.)
+                .text_color(theme::text_faint())
+                .into_any_element()
         };
         let too_big = item.kind == Kind::Image && item.size > MAX_IMAGE_BYTES;
         div()
@@ -370,7 +420,9 @@ impl AttachPicker {
             .rounded(px(ui::RADIUS))
             .cursor_pointer()
             .when(at_cursor, |d| d.bg(theme::selection()))
-            .when(!at_cursor && chosen, |d| d.bg(theme::accent().opacity(0.08)))
+            .when(!at_cursor && chosen, |d| {
+                d.bg(theme::accent().opacity(0.08))
+            })
             .when(!at_cursor && !chosen, |d| d.hover(|s| s.bg(theme::hover())))
             .child(tile)
             .child(
@@ -379,7 +431,13 @@ impl AttachPicker {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(item.name.clone()))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_MD))
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(item.name.clone()),
+                    )
                     .child(
                         div()
                             .text_size(px(ui::TEXT_XS))
@@ -390,16 +448,38 @@ impl AttachPicker {
                     ),
             )
             .when(too_big, |d| {
-                d.child(div().flex_none().text_size(px(ui::TEXT_XS)).text_color(theme::warn()).child("> 5 MB"))
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::warn())
+                        .child("> 5 MB"),
+                )
             })
             .when(item.modified > 0 && item.kind != Kind::Folder, |d| {
-                d.child(div().flex_none().text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child(age(item.modified)))
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child(age(item.modified)),
+                )
             })
-            .child(div().flex_none().w(px(16.)).flex().justify_center().child(trailing))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(16.))
+                    .flex()
+                    .justify_center()
+                    .child(trailing),
+            )
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                let Some(item) = this.rows.get(ix).cloned() else { return };
+                let Some(item) = this.rows.get(ix).cloned() else {
+                    return;
+                };
                 if ev.click_count() >= 2 && item.kind != Kind::Folder {
-                    let mut paths: Vec<PathBuf> = this.chosen.iter().map(|c| c.path.clone()).collect();
+                    let mut paths: Vec<PathBuf> =
+                        this.chosen.iter().map(|c| c.path.clone()).collect();
                     if !paths.contains(&item.path) {
                         paths.push(item.path);
                     }
@@ -449,16 +529,29 @@ impl AttachPicker {
         let mut dims = None;
         let shown: AnyElement = match item.kind {
             Kind::Image => match self.thumb(&item.path, true, cx) {
-                Some(Thumb::Ready { image, width, height }) => {
+                Some(Thumb::Ready {
+                    image,
+                    width,
+                    height,
+                }) => {
                     dims = Some((*width, *height));
-                    frame.p(px(6.)).child(img(image.clone()).size_full().object_fit(ObjectFit::Contain)).into_any_element()
+                    frame
+                        .p(px(6.))
+                        .child(
+                            img(image.clone())
+                                .size_full()
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .into_any_element()
                 }
                 Some(Thumb::Failed) => frame
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_faint())
                     .child("Can't preview this image")
                     .into_any_element(),
-                _ => frame.child(ui::spinner("attach-preview-spin", 16., theme::mix(0.4))).into_any_element(),
+                _ => frame
+                    .child(ui::spinner("attach-preview-spin", 16., theme::mix(0.4)))
+                    .into_any_element(),
             },
             _ => match &self.peek {
                 Some((_, Peek::Text(lines))) => frame
@@ -470,7 +563,11 @@ impl AttachPicker {
                     .text_size(px(ui::TEXT_XS))
                     .line_height(px(14.))
                     .text_color(theme::text_muted())
-                    .children(lines.iter().map(|l| div().w_full().truncate().child(l.clone())))
+                    .children(
+                        lines
+                            .iter()
+                            .map(|l| div().w_full().truncate().child(l.clone())),
+                    )
                     .into_any_element(),
                 Some((_, Peek::Folder(n))) => frame
                     .flex_col()
@@ -492,7 +589,12 @@ impl AttachPicker {
                     .flex_col()
                     .gap(px(8.))
                     .child(icon(icon_for(&item), 32.).text_color(theme::text_subtle()))
-                    .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child("No preview"))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child("No preview"),
+                    )
                     .into_any_element(),
             },
         };
@@ -502,8 +604,21 @@ impl AttachPicker {
                 .flex()
                 .gap(px(8.))
                 .text_size(px(ui::TEXT_XS))
-                .child(div().w(px(72.)).flex_none().text_color(theme::text_faint()).child(label.to_string()))
-                .child(div().flex_1().min_w_0().truncate().text_color(theme::text_muted()).child(value))
+                .child(
+                    div()
+                        .w(px(72.))
+                        .flex_none()
+                        .text_color(theme::text_faint())
+                        .child(label.to_string()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme::text_muted())
+                        .child(value),
+                )
         };
         let mut facts: Vec<gpui::Div> = vec![fact("Type", kind_label(&item))];
         if item.kind != Kind::Folder {
@@ -513,12 +628,17 @@ impl AttachPicker {
             facts.push(fact("Dimensions", format!("{w} × {h}")));
         }
         if item.modified > 0 {
-            facts.push(fact("Modified", format!("{} ago", age(item.modified)).replace("now ago", "just now")));
+            facts.push(fact(
+                "Modified",
+                format!("{} ago", age(item.modified)).replace("now ago", "just now"),
+            ));
         }
         let note: Option<(&str, gpui::Hsla, &str)> = match item.kind {
-            Kind::Image if item.size > MAX_IMAGE_BYTES => {
-                Some(("alert-circle", theme::warn().into(), "Over 5 MB: only the path is sent."))
-            }
+            Kind::Image if item.size > MAX_IMAGE_BYTES => Some((
+                "alert-circle",
+                theme::warn().into(),
+                "Over 5 MB: only the path is sent.",
+            )),
             Kind::Image => Some(("image01", theme::accent(), "Sent along with your prompt.")),
             Kind::File => Some(("attachment01", theme::mix(0.5), "Added as an @ mention.")),
             Kind::Folder => None,
@@ -531,7 +651,13 @@ impl AttachPicker {
                     .flex_none()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(item.name.clone()))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_MD))
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(item.name.clone()),
+                    )
                     .child(
                         div()
                             .text_size(px(ui::TEXT_XS))
@@ -541,7 +667,14 @@ impl AttachPicker {
                             .child(pretty_path(&item.path)),
                     ),
             )
-            .child(div().flex().flex_none().flex_col().gap(px(4.)).children(facts))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .flex_col()
+                    .gap(px(4.))
+                    .children(facts),
+            )
             .when_some(note, |d, (glyph, color, text)| {
                 d.child(
                     div()
@@ -601,7 +734,13 @@ impl AttachPicker {
                             .rounded(px(ui::RADIUS_SM))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::fill_selected()))
-                            .child(ui::hover_icon("cancel01", 10., theme::text_faint(), theme::content(), "attach-chip"))
+                            .child(ui::hover_icon(
+                                "cancel01",
+                                10.,
+                                theme::text_faint(),
+                                theme::content(),
+                                "attach-chip",
+                            ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.chosen.retain(|c| c.path != path);
                                 cx.notify();
@@ -639,9 +778,13 @@ impl Render for AttachPicker {
         let query_empty = self.query(cx).trim().is_empty();
         let section: SharedString = match (&self.browsing, self.source) {
             (Some(dir), _) => pretty_path(dir).into(),
-            (None, Source::Project) if query_empty => format!("Recently changed in {}", self.env_name).into(),
+            (None, Source::Project) if query_empty => {
+                format!("Recently changed in {}", self.env_name).into()
+            }
             (None, Source::Project) => format!("Files in {}", self.env_name).into(),
-            (None, Source::Images) if query_empty => "Recent images from Pictures, Downloads and Desktop".into(),
+            (None, Source::Images) if query_empty => {
+                "Recent images from Pictures, Downloads and Desktop".into()
+            }
             (None, Source::Images) => "Images".into(),
         };
         let count: SharedString = if self.loading() {
@@ -654,14 +797,31 @@ impl Render for AttachPicker {
             }
         };
 
-        let segment = |id: &'static str, label: &'static str, glyph: &'static str, source: Source, cx: &mut Context<Self>| {
+        let segment = |id: &'static str,
+                       label: &'static str,
+                       glyph: &'static str,
+                       source: Source,
+                       cx: &mut Context<Self>| {
             let active = !path_mode && self.source == source;
-            ui::segment(id, Some(glyph), label, active)
-                .on_click(cx.listener(move |this, _, window, cx| this.set_source(source, window, cx)))
+            ui::segment(id, Some(glyph), label, active).on_click(
+                cx.listener(move |this, _, window, cx| this.set_source(source, window, cx)),
+            )
         };
         let segments = ui::segmented()
-            .child(segment("attach-src-images", "Images", "image01", Source::Images, cx))
-            .child(segment("attach-src-project", "Project", "folder01", Source::Project, cx));
+            .child(segment(
+                "attach-src-images",
+                "Images",
+                "image01",
+                Source::Images,
+                cx,
+            ))
+            .child(segment(
+                "attach-src-project",
+                "Project",
+                "folder01",
+                Source::Project,
+                cx,
+            ));
 
         let field = div()
             .flex()
@@ -677,13 +837,23 @@ impl Render for AttachPicker {
             .bg(theme::background())
             .text_size(px(ui::TEXT_MD))
             .line_height(px(20.))
-            .child(icon(if path_mode { "folder-open" } else { "search01" }, 14.).text_color(theme::text_subtle()))
+            .child(
+                icon(if path_mode { "folder-open" } else { "search01" }, 14.)
+                    .text_color(theme::text_subtle()),
+            )
             .child(self.input.clone());
 
         let list_h = ROW_H * VISIBLE_ROWS;
         let list: AnyElement = if self.rows.is_empty() {
             let (msg, spin) = if self.loading() {
-                (if self.source == Source::Project { "Indexing files…" } else { "Looking for images…" }, true)
+                (
+                    if self.source == Source::Project {
+                        "Indexing files…"
+                    } else {
+                        "Looking for images…"
+                    },
+                    true,
+                )
             } else if path_mode {
                 ("Nothing here.", false)
             } else if !query_empty {
@@ -703,7 +873,9 @@ impl Render for AttachPicker {
                 .px(px(24.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
-                .when(spin, |d| d.child(ui::spinner("attach-list-spin", 16., theme::mix(0.4))))
+                .when(spin, |d| {
+                    d.child(ui::spinner("attach-list-spin", 16., theme::mix(0.4)))
+                })
                 .child(msg)
                 .into_any_element()
         } else {
@@ -712,7 +884,9 @@ impl Render for AttachPicker {
                 "attach-list",
                 rows.len(),
                 cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                    range.map(|ix| this.render_row(ix, &rows[ix], cx)).collect::<Vec<_>>()
+                    range
+                        .map(|ix| this.render_row(ix, &rows[ix], cx))
+                        .collect::<Vec<_>>()
                 }),
             )
             .track_scroll(&self.scroll)
@@ -740,7 +914,10 @@ impl Render for AttachPicker {
                 )
                 .child(label.to_string())
         };
-        let cursor_on_file = self.rows.get(self.cursor).is_some_and(|r| r.kind != Kind::Folder);
+        let cursor_on_file = self
+            .rows
+            .get(self.cursor)
+            .is_some_and(|r| r.kind != Kind::Folder);
         let attach_label: SharedString = match self.chosen.len() {
             0 => "Attach".into(),
             n => format!("Attach {n}").into(),
@@ -751,9 +928,19 @@ impl Render for AttachPicker {
             .child(ui::modal_header(
                 "Attach files",
                 Some("Images travel with your prompt; other files are added as @ mentions.".into()),
-                ui::close_button("attach-close").on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))),
+                ui::close_button("attach-close")
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))),
             ))
-            .child(div().flex().items_center().gap(px(10.)).px(px(16.)).pt(px(12.)).child(field).child(segments))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(16.))
+                    .pt(px(12.))
+                    .child(field)
+                    .child(segments),
+            )
             .child(
                 div()
                     .flex()
@@ -772,7 +959,15 @@ impl Render for AttachPicker {
                     .h(px(list_h + 8.))
                     .min_h_0()
                     .overflow_hidden()
-                    .child(div().flex_1().min_w_0().h_full().px(px(8.)).pb(px(8.)).child(list))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .px(px(8.))
+                            .pb(px(8.))
+                            .child(list),
+                    )
                     .children(preview),
             )
             .children(tray)
@@ -789,18 +984,26 @@ impl Render for AttachPicker {
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_subtle())
                     .when(viewport_w >= 640., |d| {
-                        d.child(hint("↑↓", "navigate")).child(hint("Tab", "select")).child(hint("Enter", "attach"))
+                        d.child(hint("↑↓", "navigate"))
+                            .child(hint("Tab", "select"))
+                            .child(hint("Enter", "attach"))
                     })
                     .child(div().flex_1())
-                    .child(ui::button("attach-browse", "Browse…", ButtonKind::Ghost, true).on_click(cx.listener(
-                        |this, _, window, cx| {
-                            this.input.update(cx, |i, cx| i.set_text("~/", cx));
-                            window.focus(&this.input.focus_handle(cx), cx);
-                        },
-                    )))
+                    .child(
+                        ui::button("attach-browse", "Browse…", ButtonKind::Ghost, true).on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.input.update(cx, |i, cx| i.set_text("~/", cx));
+                                window.focus(&this.input.focus_handle(cx), cx);
+                            }),
+                        ),
+                    )
                     .child(
                         ui::button("attach-ok", attach_label, ButtonKind::Primary, can_attach)
-                            .when(can_attach, |b| b.on_click(cx.listener(|this, _, _, cx| this.activate(this.cursor, cx)))),
+                            .when(can_attach, |b| {
+                                b.on_click(
+                                    cx.listener(|this, _, _, cx| this.activate(this.cursor, cx)),
+                                )
+                            }),
                     ),
             )
     }
@@ -822,7 +1025,11 @@ fn item_for(path: PathBuf, detail: String, meta: &std::fs::Metadata) -> Item {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs());
     Item {
-        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into(),
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .into(),
         detail: detail.into(),
         kind,
         modified,
@@ -839,7 +1046,12 @@ fn project_items(root: &Path) -> Vec<Item> {
             .build()
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-            .filter_map(|e| e.path().strip_prefix(root).ok().map(|p| p.to_string_lossy().into_owned()))
+            .filter_map(|e| {
+                e.path()
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
             .take(20_000)
             .collect()
     });
@@ -867,7 +1079,10 @@ fn xdg_dir(key: &str) -> Option<PathBuf> {
 
 fn parse_user_dir(text: &str, key: &str, home: &Path) -> Option<PathBuf> {
     let prefix = format!("XDG_{key}_DIR=");
-    let line = text.lines().map(str::trim).find(|l| l.starts_with(&prefix))?;
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with(&prefix))?;
     let value = line[prefix.len()..].trim_matches('"');
     let path = match value.strip_prefix("$HOME") {
         Some(rest) => home.join(rest.trim_start_matches('/')),
@@ -898,12 +1113,16 @@ fn recent_images() -> Vec<Item> {
             .hidden(true)
             .build();
         for entry in walk.filter_map(Result::ok).take(20_000) {
-            if !entry.file_type().is_some_and(|t| t.is_file()) || mime_type(entry.path()).is_none() {
+            if !entry.file_type().is_some_and(|t| t.is_file()) || mime_type(entry.path()).is_none()
+            {
                 continue;
             }
             let Ok(meta) = entry.metadata() else { continue };
             let path = entry.into_path();
-            let detail = path.parent().map(|p| format!("{}/", pretty_path(p))).unwrap_or_default();
+            let detail = path
+                .parent()
+                .map(|p| format!("{}/", pretty_path(p)))
+                .unwrap_or_default();
             items.push(item_for(path, detail, &meta));
         }
     }
@@ -926,12 +1145,18 @@ fn filter_items(items: &[Item], query: &str) -> Vec<Item> {
         })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.modified.cmp(&a.1.modified)));
-    scored.into_iter().take(MAX_ROWS).map(|(_, it)| it.clone()).collect()
+    scored
+        .into_iter()
+        .take(MAX_ROWS)
+        .map(|(_, it)| it.clone())
+        .collect()
 }
 
 /// Folders first, then files; prefix matches before the rest.
 fn list_dir(dir: &Path, filter: &str) -> Vec<Item> {
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let f = filter.to_lowercase();
     let show_hidden = filter.starts_with('.');
     let mut rows: Vec<(bool, bool, String, Item)> = read
@@ -948,7 +1173,12 @@ fn list_dir(dir: &Path, filter: &str) -> Vec<Item> {
             // Follows symlinks, so a linked folder browses like a folder.
             let meta = std::fs::metadata(e.path()).ok()?;
             let item = item_for(e.path(), format!("{}/", pretty_path(dir)), &meta);
-            Some((item.kind != Kind::Folder, !lower.starts_with(&f), lower, item))
+            Some((
+                item.kind != Kind::Folder,
+                !lower.starts_with(&f),
+                lower,
+                item,
+            ))
         })
         .collect();
     rows.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
@@ -962,8 +1192,15 @@ fn decode_thumb(path: &Path, max: u32) -> Option<(Arc<RenderImage>, u32, u32)> {
     if std::fs::metadata(path).ok()?.len() > MAX_DECODE_BYTES {
         return None;
     }
-    let mut decoder = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_decoder().ok()?;
-    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
     image.apply_orientation(orientation);
     let (width, height) = (image.width(), image.height());
@@ -972,7 +1209,11 @@ fn decode_thumb(path: &Path, max: u32) -> Option<(Arc<RenderImage>, u32, u32)> {
     for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    Some((Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])), width, height))
+    Some((
+        Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
+        width,
+        height,
+    ))
 }
 
 /// The first lines of a text file, or `None` for binary ones.
@@ -991,13 +1232,18 @@ fn read_text_head(path: &Path) -> Option<Vec<SharedString>> {
     Some(
         text.lines()
             .take(11)
-            .map(|l| SharedString::from(l.replace('\t', "    ").chars().take(80).collect::<String>()))
+            .map(|l| {
+                SharedString::from(l.replace('\t', "    ").chars().take(80).collect::<String>())
+            })
             .collect(),
     )
 }
 
 fn extension(item: &Item) -> String {
-    item.path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+    item.path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 fn icon_for(item: &Item) -> &'static str {
@@ -1013,9 +1259,10 @@ fn icon_for(item: &Item) -> &'static str {
         "mp4" | "mkv" | "webm" | "mov" | "avi" => "video01",
         "mp3" | "wav" | "flac" | "ogg" | "m4a" | "opus" => "music-note01",
         "zip" | "tar" | "gz" | "xz" | "zst" | "7z" | "rar" | "bz2" => "zip01",
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "h" | "cc" | "cpp" | "hpp" | "java" | "kt"
-        | "swift" | "rb" | "php" | "sh" | "zsh" | "fish" | "lua" | "toml" | "json" | "yaml" | "yml" | "html"
-        | "css" | "scss" | "sql" | "vue" | "svelte" | "zig" | "nix" => "file-code",
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "h" | "cc" | "cpp" | "hpp"
+        | "java" | "kt" | "swift" | "rb" | "php" | "sh" | "zsh" | "fish" | "lua" | "toml"
+        | "json" | "yaml" | "yml" | "html" | "css" | "scss" | "sql" | "vue" | "svelte" | "zig"
+        | "nix" => "file-code",
         _ => "file01",
     }
 }
@@ -1063,17 +1310,34 @@ mod tests {
     fn user_dirs_are_parsed() {
         let text = "# comment\nXDG_PICTURES_DIR=\"$HOME/Imágenes\"\nXDG_DESKTOP_DIR=\"$HOME/\"\nXDG_DOWNLOAD_DIR=\"/data/dl\"\n";
         let home = Path::new("/home/k");
-        assert_eq!(parse_user_dir(text, "PICTURES", home), Some(PathBuf::from("/home/k/Imágenes")));
+        assert_eq!(
+            parse_user_dir(text, "PICTURES", home),
+            Some(PathBuf::from("/home/k/Imágenes"))
+        );
         assert_eq!(parse_user_dir(text, "DESKTOP", home), None);
-        assert_eq!(parse_user_dir(text, "DOWNLOAD", home), Some(PathBuf::from("/data/dl")));
+        assert_eq!(
+            parse_user_dir(text, "DOWNLOAD", home),
+            Some(PathBuf::from("/data/dl"))
+        );
         assert_eq!(parse_user_dir(text, "MUSIC", home), None);
     }
 
     #[test]
     fn filtering_ranks_names_first_and_keeps_recency_order() {
-        let items = vec![item("main.rs", "src/", 30), item("shell.rs", "src/", 20), item("readme.md", "./", 10)];
-        let names = |v: Vec<Item>| v.into_iter().map(|i| i.name.to_string()).collect::<Vec<_>>();
-        assert_eq!(names(filter_items(&items, "")), ["main.rs", "shell.rs", "readme.md"]);
+        let items = vec![
+            item("main.rs", "src/", 30),
+            item("shell.rs", "src/", 20),
+            item("readme.md", "./", 10),
+        ];
+        let names = |v: Vec<Item>| {
+            v.into_iter()
+                .map(|i| i.name.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(filter_items(&items, "")),
+            ["main.rs", "shell.rs", "readme.md"]
+        );
         assert_eq!(names(filter_items(&items, "she")), ["shell.rs"]);
         assert_eq!(names(filter_items(&items, "src")), ["main.rs", "shell.rs"]);
     }

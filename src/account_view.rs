@@ -109,33 +109,43 @@ pub fn pool_rows(id: &'static str, title: &str, pool: &Pool, now: u64) -> impl I
                 .text_color(theme::text_subtle())
                 .child(title.to_string()),
         )
-        .children(pool.buckets().into_iter().enumerate().map(|(i, (label, b))| {
-            let pct = b.current(now);
-            div()
-                .id((id, i))
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .text_size(px(ui::TEXT_SM))
-                .child(div().w(px(56.)).text_color(theme::text_muted()).child(label))
-                .child(bar(pct, 6.))
-                .child(
+        .children(
+            pool.buckets()
+                .into_iter()
+                .enumerate()
+                .map(|(i, (label, b))| {
+                    let pct = b.current(now);
                     div()
-                        .w(px(40.))
+                        .id((id, i))
                         .flex()
-                        .justify_end()
-                        .font_family(theme::FONT_MONO)
-                        .text_color(theme::content())
-                        .child(format!("{:.0}%", pct.ceil())),
-                )
-                .child(
-                    div()
-                        .w(px(96.))
-                        .text_size(px(ui::TEXT_XS))
-                        .text_color(theme::text_subtle())
-                        .child(reset_label(&b, now)),
-                )
-        }))
+                        .items_center()
+                        .gap(px(10.))
+                        .text_size(px(ui::TEXT_SM))
+                        .child(
+                            div()
+                                .w(px(56.))
+                                .text_color(theme::text_muted())
+                                .child(label),
+                        )
+                        .child(bar(pct, 6.))
+                        .child(
+                            div()
+                                .w(px(40.))
+                                .flex()
+                                .justify_end()
+                                .font_family(theme::FONT_MONO)
+                                .text_color(theme::content())
+                                .child(format!("{:.0}%", pct.ceil())),
+                        )
+                        .child(
+                            div()
+                                .w(px(96.))
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .child(reset_label(&b, now)),
+                        )
+                }),
+        )
 }
 
 pub fn reset_label(b: &Bucket, now: u64) -> String {
@@ -186,12 +196,16 @@ impl Render for AccountDialog {
                                 .flex()
                                 .items_center()
                                 .text_size(px(ui::TEXT_SM))
-                                .child(div().flex_1().text_color(theme::text_muted()).child("Extra Usage balance"))
                                 .child(
                                     div()
-                                        .font_family(theme::FONT_MONO)
-                                        .child(format!("${:.2}", limits.extra_usage_cents as f64 / 100.)),
-                                ),
+                                        .flex_1()
+                                        .text_color(theme::text_muted())
+                                        .child("Extra Usage balance"),
+                                )
+                                .child(div().font_family(theme::FONT_MONO).child(format!(
+                                    "${:.2}",
+                                    limits.extra_usage_cents as f64 / 100.
+                                ))),
                         )
                         .child(
                             div()
@@ -259,7 +273,12 @@ impl Render for AccountDialog {
         }
 
         if let Some(e) = error {
-            body = body.child(div().text_size(px(ui::TEXT_SM)).text_color(theme::danger()).child(e));
+            body = body.child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::danger())
+                    .child(e),
+            );
         }
 
         let source = account.key_source();
@@ -277,17 +296,22 @@ impl Render for AccountDialog {
             .text_color(theme::text_subtle());
         if connected {
             footer = footer
-                .child(
-                    div().flex_1().child(match (source, fetched) {
-                        (Some(KeySource::Env), Some(t)) => format!("Key from FACTORY_API_KEY · updated {}", account::ago(t, now)),
-                        (Some(KeySource::Droid), Some(t)) => format!("From droid's login · updated {}", account::ago(t, now)),
-                        (_, Some(t)) => format!("Updated {}", account::ago(t, now)),
-                        _ => String::new(),
-                    }),
-                )
+                .child(div().flex_1().child(match (source, fetched) {
+                    (Some(KeySource::Env), Some(t)) => format!(
+                        "Key from FACTORY_API_KEY · updated {}",
+                        account::ago(t, now)
+                    ),
+                    (Some(KeySource::Droid), Some(t)) => {
+                        format!("From droid's login · updated {}", account::ago(t, now))
+                    }
+                    (_, Some(t)) => format!("Updated {}", account::ago(t, now)),
+                    _ => String::new(),
+                }))
                 .child(
                     ui::button("acct-refresh", "Refresh", ButtonKind::Ghost, !busy)
-                        .when(busy, |d| d.child(ui::spinner("acct-refresh-spin", 11., theme::mix(0.6))))
+                        .when(busy, |d| {
+                            d.child(ui::spinner("acct-refresh-spin", 11., theme::mix(0.6)))
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.account.update(cx, |a, cx| a.refresh(cx))
                         })),
@@ -310,11 +334,16 @@ impl Render for AccountDialog {
                 );
         } else {
             footer = footer.child(div().flex_1()).child(
-                ui::button("acct-open-keys", "Open API Keys page", ButtonKind::Ghost, true)
-                    .child(icon("link-square02", 12.).text_color(theme::text_subtle()))
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.emit(AccountDialogEvent::OpenUrl(account::API_KEYS_URL.into()))
-                    })),
+                ui::button(
+                    "acct-open-keys",
+                    "Open API Keys page",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .child(icon("link-square02", 12.).text_color(theme::text_subtle()))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(AccountDialogEvent::OpenUrl(account::API_KEYS_URL.into()))
+                })),
             );
         }
 
@@ -402,7 +431,10 @@ pub fn rail_card(
     let show_droid = rail_shows(AgentKind::Droid);
     let show_go = rail_shows(AgentKind::OpenCode);
     #[cfg(feature = "coderlabs")]
-    let (own, borrowed) = (seats.and_then(|s| s.own.as_ref()), seats.and_then(|s| s.borrowed.as_ref()));
+    let (own, borrowed) = (
+        seats.and_then(|s| s.own.as_ref()),
+        seats.and_then(|s| s.borrowed.as_ref()),
+    );
     // One seat: the one Claude Code runs on.
     #[cfg(not(feature = "coderlabs"))]
     let (own, borrowed) = (plan, None::<&PlanUsage>);
@@ -410,10 +442,14 @@ pub fn rail_card(
     // then each provider's icon leads its first row instead, and a name only
     // shows when it says something (Droid's extra usage, Go's status, the
     // borrowed seat's own name).
-    let compact = [show_claude && (own.is_some() || borrowed.is_some()), show_droid, show_go && go.is_some()]
-        .iter()
-        .filter(|b| **b)
-        .count()
+    let compact = [
+        show_claude && (own.is_some() || borrowed.is_some()),
+        show_droid,
+        show_go && go.is_some(),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count()
         >= 3;
 
     let options = div()
@@ -442,57 +478,76 @@ pub fn rail_card(
         .text_color(theme::text_subtle())
         .child(icon("gauge", 14.).text_color(theme::text_faint()))
         .child(div().flex_1().truncate().child("Usage"))
-        .when(account.busy() && show_droid, |d| d.child(ui::spinner("rail-usage-spin", 10., theme::text_faint())))
-        .when(account.error().is_some() && !account.busy() && show_droid, |d| {
-            d.child(icon("alert-circle", 12.).text_color(theme::warn()))
+        .when(account.busy() && show_droid, |d| {
+            d.child(ui::spinner("rail-usage-spin", 10., theme::text_faint()))
         })
+        .when(
+            account.error().is_some() && !account.busy() && show_droid,
+            |d| d.child(icon("alert-circle", 12.).text_color(theme::warn())),
+        )
         .child(options);
 
     let lead = move |agent: AgentKind, first: bool| {
-        compact.then(|| div().w(px(10.)).flex_none().flex().items_center().when(first, |d| d.child(agent.icon(9.))))
+        compact.then(|| {
+            div()
+                .w(px(10.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .when(first, |d| d.child(agent.icon(9.)))
+        })
     };
-    let row = |agent: AgentKind, i: usize, label: String, pct: f32, dim: bool, resets: Option<u64>| {
-        div()
-            .id((agent.id(), i))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .h(px(14.))
-            .text_size(px(ui::TEXT_XS))
-            .text_color(if dim { theme::text_faint() } else { theme::text_subtle() })
-            .when(compact && i == 0, |d| d.mt(px(3.)))
-            .child(
-                div()
-                    .w(px(if compact { 56. } else { 46. }))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .children(lead(agent, i == 0))
-                    .child(div().min_w_0().truncate().child(label)),
-            )
-            .child(bar(pct, 4.))
-            .child(
-                div()
-                    .w(px(30.))
-                    .flex()
-                    .justify_end()
-                    .font_family(theme::FONT_MONO)
-                    .text_color(if !dim && pct >= 70. { bar_color(pct) } else { theme::text_muted() })
-                    .child(format!("{:.0}%", pct.ceil())),
-            )
-            .child(
-                div()
-                    .w(px(44.))
-                    .flex_none()
-                    .ml(px(2.))
-                    .flex()
-                    .justify_end()
-                    .font_family(theme::FONT_MONO)
-                    .text_color(theme::text_faint())
-                    .child(resets.map(|at| reset_in(at, now)).unwrap_or_default()),
-            )
-    };
+    let row =
+        |agent: AgentKind, i: usize, label: String, pct: f32, dim: bool, resets: Option<u64>| {
+            div()
+                .id((agent.id(), i))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .h(px(14.))
+                .text_size(px(ui::TEXT_XS))
+                .text_color(if dim {
+                    theme::text_faint()
+                } else {
+                    theme::text_subtle()
+                })
+                .when(compact && i == 0, |d| d.mt(px(3.)))
+                .child(
+                    div()
+                        .w(px(if compact { 56. } else { 46. }))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .children(lead(agent, i == 0))
+                        .child(div().min_w_0().truncate().child(label)),
+                )
+                .child(bar(pct, 4.))
+                .child(
+                    div()
+                        .w(px(30.))
+                        .flex()
+                        .justify_end()
+                        .font_family(theme::FONT_MONO)
+                        .text_color(if !dim && pct >= 70. {
+                            bar_color(pct)
+                        } else {
+                            theme::text_muted()
+                        })
+                        .child(format!("{:.0}%", pct.ceil())),
+                )
+                .child(
+                    div()
+                        .w(px(44.))
+                        .flex_none()
+                        .ml(px(2.))
+                        .flex()
+                        .justify_end()
+                        .font_family(theme::FONT_MONO)
+                        .text_color(theme::text_faint())
+                        .child(resets.map(|at| reset_in(at, now)).unwrap_or_default()),
+                )
+        };
     // A provider's name over its rows.
     let provider = |agent: AgentKind, name: String| {
         div()
@@ -519,7 +574,15 @@ pub fn rail_card(
             .child(div().flex_1().min_w_0().child(text))
     };
 
-    let mut card = base.hover(|s| s.bg(theme::fill_hover())).flex().flex_col().gap(px(3.)).px(px(8.)).pt(px(4.)).pb(px(6.)).child(header);
+    let mut card = base
+        .hover(|s| s.bg(theme::fill_hover()))
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .px(px(8.))
+        .pt(px(4.))
+        .pb(px(6.))
+        .child(header);
     if show_claude {
         // The machine's own sign-in, then a borrowed seat under its own name:
         // two accounts, each with its own 5-hour and weekly windows.
@@ -528,16 +591,34 @@ pub fn rail_card(
                 card = card.child(provider(AgentKind::Claude, "Claude Code".into()));
             }
             for (i, w) in plan.windows.iter().take(3).enumerate() {
-                card = card.child(row(AgentKind::Claude, i, w.short_label(), w.percent as f32, !w.active, w.resets_at));
+                card = card.child(row(
+                    AgentKind::Claude,
+                    i,
+                    w.short_label(),
+                    w.percent as f32,
+                    !w.active,
+                    w.resets_at,
+                ));
             }
         }
         #[cfg(feature = "coderlabs")]
         if let Some(plan) = borrowed {
             let in_use = crate::agent::plan::active_is_borrowed();
-            let name = if in_use { "Claude Code · borrowed, in use" } else { "Claude Code · borrowed" };
+            let name = if in_use {
+                "Claude Code · borrowed, in use"
+            } else {
+                "Claude Code · borrowed"
+            };
             card = card.child(provider(AgentKind::Claude, name.into()));
             for (i, w) in plan.windows.iter().take(3).enumerate() {
-                card = card.child(row(AgentKind::Claude, i + 10, w.short_label(), w.percent as f32, !w.active, w.resets_at));
+                card = card.child(row(
+                    AgentKind::Claude,
+                    i + 10,
+                    w.short_label(),
+                    w.percent as f32,
+                    !w.active,
+                    w.resets_at,
+                ));
             }
         }
     }
@@ -559,7 +640,14 @@ pub fn rail_card(
             });
             if let Some(pool) = pool {
                 for (i, (label, b)) in pool.buckets().into_iter().enumerate() {
-                    card = card.child(row(AgentKind::Droid, i, label.to_string(), b.current(now), false, b.window_end.filter(|_| b.active(now))));
+                    card = card.child(row(
+                        AgentKind::Droid,
+                        i,
+                        label.to_string(),
+                        b.current(now),
+                        false,
+                        b.window_end.filter(|_| b.active(now)),
+                    ));
                 }
             } else if let Some(e) = account.error() {
                 card = card.child(note(AgentKind::Droid, e.to_string()));
@@ -570,17 +658,34 @@ pub fn rail_card(
     }
     if show_go && let Some(go) = go {
         // A status other than "ok" is the endpoint's own word; say it as is.
-        let status = go.windows.iter().find_map(crate::agent::opencode_plan::status);
+        let status = go
+            .windows
+            .iter()
+            .find_map(crate::agent::opencode_plan::status);
         if !compact || status.is_some() {
-            let name = status.map_or_else(|| "OpenCode Go".into(), |s| format!("OpenCode Go · {s}"));
+            let name =
+                status.map_or_else(|| "OpenCode Go".into(), |s| format!("OpenCode Go · {s}"));
             card = card.child(provider(AgentKind::OpenCode, name));
         }
         for (i, w) in go.windows.iter().enumerate() {
-            card = card.child(row(AgentKind::OpenCode, i, w.short_label(), w.percent as f32, false, w.resets_at));
+            card = card.child(row(
+                AgentKind::OpenCode,
+                i,
+                w.short_label(),
+                w.percent as f32,
+                false,
+                w.resets_at,
+            ));
         }
     }
     if !show_claude && !show_droid && !show_go {
-        card = card.child(div().text_size(px(ui::TEXT_XS)).line_height(px(14.)).text_color(theme::text_faint()).child("All providers hidden here"));
+        card = card.child(
+            div()
+                .text_size(px(ui::TEXT_XS))
+                .line_height(px(14.))
+                .text_color(theme::text_faint())
+                .child("All providers hidden here"),
+        );
     }
     Some(card.into_any_element())
 }

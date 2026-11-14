@@ -7,9 +7,9 @@ use std::time::{Duration, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, Window, div, px, rgb,
+    App, AppContext as _, Context, Entity, EventEmitter, Focusable as _, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px, rgb,
 };
 
 use crate::input::{InputEvent, TextInput};
@@ -35,14 +35,22 @@ struct Source {
 
 impl Source {
     fn new(file: PathBuf, owner: String) -> Self {
-        let mut s = Self { file, owner, stamp: None, loaded: false, items: Vec::new() };
+        let mut s = Self {
+            file,
+            owner,
+            stamp: None,
+            loaded: false,
+            items: Vec::new(),
+        };
         s.reload();
         s
     }
 
     /// Re-reads the file if it changed since the last read; says whether it did.
     fn reload(&mut self) -> bool {
-        let stamp = std::fs::metadata(&self.file).and_then(|m| m.modified()).ok();
+        let stamp = std::fs::metadata(&self.file)
+            .and_then(|m| m.modified())
+            .ok();
         if self.loaded && stamp == self.stamp {
             return false;
         }
@@ -115,10 +123,28 @@ impl MemoryView {
         self.dir = Some(dir.to_path_buf());
         let project = memory::project_of(dir);
         let root = memory::root();
-        self.name = project.file_name().map_or_else(|| project.display().to_string(), |n| n.to_string_lossy().to_string()).into();
+        self.name = project
+            .file_name()
+            .map_or_else(
+                || project.display().to_string(),
+                |n| n.to_string_lossy().to_string(),
+            )
+            .into();
         self.sources = vec![
-            (Scope::Project, Source::new(memory::store_file(&root, Scope::Project, &project), project.display().to_string())),
-            (Scope::Global, Source::new(memory::store_file(&root, Scope::Global, &project), String::new())),
+            (
+                Scope::Project,
+                Source::new(
+                    memory::store_file(&root, Scope::Project, &project),
+                    project.display().to_string(),
+                ),
+            ),
+            (
+                Scope::Global,
+                Source::new(
+                    memory::store_file(&root, Scope::Global, &project),
+                    String::new(),
+                ),
+            ),
         ];
         self.confirm = None;
         self.error = None;
@@ -144,11 +170,24 @@ impl MemoryView {
         cx.notify();
     }
 
-    fn render_memory(&self, scope: Scope, m: &Memory, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_memory(
+        &self,
+        scope: Scope,
+        m: &Memory,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let key = (scope, m.id);
-        let group: SharedString = format!("mem-{}{}", if scope == Scope::Global { "g" } else { "" }, m.id).into();
+        let group: SharedString = format!(
+            "mem-{}{}",
+            if scope == Scope::Global { "g" } else { "" },
+            m.id
+        )
+        .into();
         let confirming = self.confirm == Some(key);
-        let mut meta = vec![format!("#{}{}", if scope == Scope::Global { "g" } else { "" }, m.id), memory::ago(m.updated, memory::now())];
+        let mut meta = vec![
+            format!("#{}{}", if scope == Scope::Global { "g" } else { "" }, m.id),
+            memory::ago(m.updated, memory::now()),
+        ];
         if let Some(t) = &m.topic {
             meta.push(t.clone());
         }
@@ -203,11 +242,15 @@ impl MemoryView {
                             .h(px(20.))
                             .rounded(px(ui::RADIUS_SM))
                             .cursor_pointer()
-                            .when(!confirming, |d| d.invisible().group_hover(group.clone(), |s| s.visible()))
+                            .when(!confirming, |d| {
+                                d.invisible().group_hover(group.clone(), |s| s.visible())
+                            })
                             .hover(|s| s.bg(theme::fill_selected()))
                             .map(|d| {
                                 if confirming {
-                                    d.text_size(px(ui::TEXT_XS)).text_color(theme::error()).child("Delete?")
+                                    d.text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::error())
+                                        .child("Delete?")
                                 } else {
                                     d.child(icon("delete02", 13.).text_color(theme::text_subtle()))
                                 }
@@ -222,7 +265,12 @@ impl MemoryView {
                             })),
                     ),
             )
-            .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(meta.join(" · ")))
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_subtle())
+                    .child(meta.join(" · ")),
+            )
             .when(!m.body.is_empty(), |d| {
                 d.child(
                     div()
@@ -234,7 +282,12 @@ impl MemoryView {
             })
     }
 
-    fn render_section(&self, title: String, scope: Scope, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+    fn render_section(
+        &self,
+        title: String,
+        scope: Scope,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
         let (_, source) = self.sources.iter().find(|(s, _)| *s == scope)?;
         let query = self.query.read(cx).text().trim().to_string();
         let mut items: Vec<&Memory> = if query.is_empty() {
@@ -242,7 +295,10 @@ impl MemoryView {
             all.sort_by_key(|m| std::cmp::Reverse(m.updated));
             all
         } else {
-            memory::search(&source.items, &query).into_iter().map(|(_, m)| m).collect()
+            memory::search(&source.items, &query)
+                .into_iter()
+                .map(|(_, m)| m)
+                .collect()
         };
         if !query.is_empty() && items.is_empty() {
             return None;
@@ -277,12 +333,23 @@ impl MemoryView {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme::text_subtle())
                         .child(div().min_w_0().truncate().child(title))
-                        .child(div().flex_none().text_color(theme::text_faint()).child(count.to_string()))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme::text_faint())
+                                .child(count.to_string()),
+                        )
                         .child(div().flex_1())
                         .when(editable, |d| {
                             d.child(
-                                icon_button(SharedString::from(format!("mem-edit-{scope:?}")), "pencil-edit01", 13.)
-                                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(MemoryEvent::Edit(file.clone())))),
+                                icon_button(
+                                    SharedString::from(format!("mem-edit-{scope:?}")),
+                                    "pencil-edit01",
+                                    13.,
+                                )
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| cx.emit(MemoryEvent::Edit(file.clone())),
+                                )),
                             )
                         }),
                 )
@@ -308,7 +375,8 @@ impl Render for MemoryView {
         let project = self.render_section(format!("{}", self.name), Scope::Project, cx);
         let global = self.render_section("About you, in every project".into(), Scope::Global, cx);
         let nothing = project.is_none() && global.is_none();
-        let blank = self.query.read(cx).text().trim().is_empty() && self.sources.iter().all(|(_, s)| s.items.is_empty());
+        let blank = self.query.read(cx).text().trim().is_empty()
+            && self.sources.iter().all(|(_, s)| s.items.is_empty());
         div()
             .flex()
             .flex_col()

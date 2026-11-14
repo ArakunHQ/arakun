@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ClipboardItem, ElementId, FontStyle, FontWeight, Hsla, InteractiveElement as _,
-    InteractiveText, IntoElement, RenderOnce, ObjectFit, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, StrikethroughStyle, Styled as _, StyledImage as _, StyledText,
-    TextRun, UnderlineStyle, Window, div, font, img, px,
+    AnyElement, App, ClipboardItem, ElementId, FontStyle, FontWeight, Hsla,
+    InteractiveElement as _, InteractiveText, IntoElement, ObjectFit, ParentElement as _,
+    RenderOnce, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
+    StyledImage as _, StyledText, TextRun, UnderlineStyle, Window, div, font, img, px,
 };
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -51,7 +51,10 @@ fn longest_word_px(cell: &Inline) -> f32 {
             word = 0.;
             continue;
         }
-        let code = cell.spans.iter().any(|s| s.style.code && s.range.contains(&i));
+        let code = cell
+            .spans
+            .iter()
+            .any(|s| s.style.code && s.range.contains(&i));
         word += if code { 7.8 } else { 7. };
     }
     // Rounding in the shaper; a word a pixel short still wraps.
@@ -75,7 +78,12 @@ pub struct OpenLink {
 /// with the system.
 pub fn open_link(url: &str, window: &mut Window, cx: &mut App) {
     if url.starts_with("https://") || url.starts_with("http://") {
-        window.dispatch_action(Box::new(OpenLink { url: url.to_string() }), cx);
+        window.dispatch_action(
+            Box::new(OpenLink {
+                url: url.to_string(),
+            }),
+            cx,
+        );
     } else {
         cx.open_url(url);
     }
@@ -147,7 +155,14 @@ impl Inline {
         }
         self.push(PAD, pad, link);
         let lead = self.text.len() - start;
-        self.push(code, Style { code: true, ..style }, link);
+        self.push(
+            code,
+            Style {
+                code: true,
+                ..style
+            },
+            link,
+        );
         self.push(PAD, pad, link);
         let icon = match (file, folder_like(code)) {
             (false, _) => None,
@@ -184,14 +199,24 @@ impl Inline {
             for url in bare_urls(&self.text[span.range.clone()]) {
                 let url = base + url.start..base + url.end;
                 if url.start > at {
-                    spans.push(Span { range: at..url.start, ..span.clone() });
+                    spans.push(Span {
+                        range: at..url.start,
+                        ..span.clone()
+                    });
                 }
                 let link = SharedString::from(self.text[url.clone()].to_string());
-                spans.push(Span { range: url.clone(), style: span.style, link: Some(link) });
+                spans.push(Span {
+                    range: url.clone(),
+                    style: span.style,
+                    link: Some(link),
+                });
                 at = url.end;
             }
             if at < span.range.end {
-                spans.push(Span { range: at..span.range.end, ..span });
+                spans.push(Span {
+                    range: at..span.range.end,
+                    ..span
+                });
             }
         }
         self.spans = spans;
@@ -359,13 +384,19 @@ fn bare_urls(text: &str) -> Vec<Range<usize>> {
             from = start + 4;
             continue;
         };
-        if text[..start].chars().next_back().is_some_and(|c| c.is_alphanumeric()) {
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric())
+        {
             from = start + scheme;
             continue;
         }
         let mut end = start
             + rest
-                .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`' | '«' | '»' | '“' | '”'))
+                .find(|c: char| {
+                    c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`' | '«' | '»' | '“' | '”')
+                })
                 .unwrap_or(rest.len());
         while let Some(last) = text[start..end].chars().next_back() {
             let url = &text[start..end];
@@ -432,7 +463,8 @@ fn parse_with_marks(src: &str, marks: &mut Vec<(usize, usize)>) -> Vec<Block> {
             match event {
                 Event::Text(t) | Event::Code(t) => alt.push_str(&t),
                 Event::End(TagEnd::Image) => {
-                    let (url, alt, standalone) = (std::mem::take(url), std::mem::take(alt), *standalone);
+                    let (url, alt, standalone) =
+                        (std::mem::take(url), std::mem::take(alt), *standalone);
                     b.image = None;
                     if standalone {
                         b.push_block(Block::Image { url, alt });
@@ -514,7 +546,8 @@ fn parse_with_marks(src: &str, marks: &mut Vec<(usize, usize)>) -> Vec<Block> {
                     Tag::Strikethrough => b.style.strike = true,
                     Tag::Link { dest_url, .. } => b.links.push(dest_url.to_string()),
                     Tag::Image { dest_url, .. } => {
-                        let standalone = matches!(b.inline, None | Some((InlineKind::Paragraph, _)));
+                        let standalone =
+                            matches!(b.inline, None | Some((InlineKind::Paragraph, _)));
                         if standalone {
                             if let Some((_, i)) = b.inline.as_mut() {
                                 let n = i.text.trim_end_matches([' ', '\n']).len();
@@ -698,9 +731,22 @@ impl Doc {
 /// Whether inline code names a file: `src/main.rs`, `Cargo.toml`, `view.rs:120`.
 /// Files without an extension that `file_like` still takes for files.
 const KNOWN_FILES: &[&str] = &[
-    "Makefile", "Dockerfile", "Containerfile", "Justfile", "LICENSE", "README", "CHANGELOG",
-    "CODEOWNERS", "Gemfile", "Rakefile", "Procfile", "Brewfile", "Vagrantfile", "Pipfile",
-    "go.mod", "go.sum",
+    "Makefile",
+    "Dockerfile",
+    "Containerfile",
+    "Justfile",
+    "LICENSE",
+    "README",
+    "CHANGELOG",
+    "CODEOWNERS",
+    "Gemfile",
+    "Rakefile",
+    "Procfile",
+    "Brewfile",
+    "Vagrantfile",
+    "Pipfile",
+    "go.mod",
+    "go.sum",
 ];
 
 /// A path that names a folder rather than a file, as far as its text tells:
@@ -716,27 +762,44 @@ fn folder_like(s: &str) -> bool {
 
 pub fn file_like(s: &str) -> bool {
     const EXTS: &[&str] = &[
-        "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonc", "md", "mdx", "toml",
-        "yaml", "yml", "py", "go", "c", "h", "cc", "cpp", "hpp", "css", "scss", "html", "sh",
-        "bash", "zsh", "fish", "txt", "lock", "svg", "png", "jpg", "sql", "java", "kt", "swift",
-        "rb", "php", "vue", "svelte", "lua", "zig", "nix", "cfg", "ini", "conf", "xml", "env",
-        "gradle", "dart", "ex", "exs", "hs", "ml", "cs", "proto", "graphql", "wgsl", "glsl",
-        "log", "csv", "pdf", "desktop", "service",
+        "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonc", "md", "mdx", "toml", "yaml",
+        "yml", "py", "go", "c", "h", "cc", "cpp", "hpp", "css", "scss", "html", "sh", "bash",
+        "zsh", "fish", "txt", "lock", "svg", "png", "jpg", "sql", "java", "kt", "swift", "rb",
+        "php", "vue", "svelte", "lua", "zig", "nix", "cfg", "ini", "conf", "xml", "env", "gradle",
+        "dart", "ex", "exs", "hs", "ml", "cs", "proto", "graphql", "wgsl", "glsl", "log", "csv",
+        "pdf", "desktop", "service",
         // Pictures, media, documents and archives: arakun shows or hands them off.
         "jpeg", "webp", "gif", "bmp", "ico", "tif", "tiff", "avif", "heic", "mp4", "m4v", "mov",
         "webm", "mkv", "avi", "mp3", "wav", "ogg", "opus", "flac", "m4a", "doc", "docx", "xls",
         "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "epub", "zip", "tar", "gz", "tgz",
         "bz2", "xz", "zst", "7z", "rar", "ttf", "otf", "woff", "woff2", "psd", "sqlite", "wasm",
         // More text.
-        "tsv", "jsonl", "ndjson", "ipynb", "org", "rst", "adoc", "tex", "bib", "scala", "jl",
-        "erl", "clj", "elm", "ps1", "bat", "cmd", "mk", "cmake", "tf", "hcl", "prisma", "astro",
-        "gql", "plist", "patch", "diff", "pem", "crt", "sass", "less", "styl", "kts", "groovy",
+        "tsv", "jsonl", "ndjson", "ipynb", "org", "rst", "adoc", "tex", "bib", "scala", "jl", "erl",
+        "clj", "elm", "ps1", "bat", "cmd", "mk", "cmake", "tf", "hcl", "prisma", "astro", "gql",
+        "plist", "patch", "diff", "pem", "crt", "sass", "less", "styl", "kts", "groovy",
     ];
     /// Dotfiles, which have no extension to go by.
     const DOTFILES: &[&str] = &[
-        ".git", ".env", ".editorconfig", ".npmrc", ".nvmrc", ".prettier", ".eslint", ".babelrc",
-        ".docker", ".bash", ".zsh", ".profile", ".vimrc", ".tool-versions", ".node-version",
-        ".python-version", ".ruby-version", ".stylelint", ".swcrc", ".envrc",
+        ".git",
+        ".env",
+        ".editorconfig",
+        ".npmrc",
+        ".nvmrc",
+        ".prettier",
+        ".eslint",
+        ".babelrc",
+        ".docker",
+        ".bash",
+        ".zsh",
+        ".profile",
+        ".vimrc",
+        ".tool-versions",
+        ".node-version",
+        ".python-version",
+        ".ruby-version",
+        ".stylelint",
+        ".swcrc",
+        ".envrc",
     ];
     let path = file_path(s);
     if path.is_empty()
@@ -767,8 +830,13 @@ pub fn local_link(url: &str) -> Option<String> {
         None => {
             let scheme = url.split_once(':').map(|(s, _)| s);
             let has_scheme = scheme.is_some_and(|s| {
-                s.len() > 1 && !s.contains('/') && s.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
-            }) && !url.split_once(':').is_some_and(|(_, rest)| rest.starts_with(|c: char| c.is_ascii_digit()));
+                s.len() > 1
+                    && !s.contains('/')
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+            }) && !url
+                .split_once(':')
+                .is_some_and(|(_, rest)| rest.starts_with(|c: char| c.is_ascii_digit()));
             if has_scheme || url.starts_with('#') || url.starts_with("www.") || url.is_empty() {
                 return None;
             }
@@ -796,7 +864,9 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
-            && let Some(b) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+            && let Some(b) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             out.push(b);
             i += 3;
@@ -826,7 +896,12 @@ pub fn file_path(s: &str) -> &str {
 pub fn file_line(s: &str) -> Option<usize> {
     let s = s.trim();
     let rest = &s[file_path(s).len()..];
-    rest.strip_prefix(':')?.split(':').next()?.parse().ok().filter(|&n| n > 0)
+    rest.strip_prefix(':')?
+        .split(':')
+        .next()?
+        .parse()
+        .ok()
+        .filter(|&n| n > 0)
 }
 
 /// Text sizes and colors for one markdown surface (a reply, a thought, ...).
@@ -930,10 +1005,18 @@ pub fn copy_button_sized(
         .cursor_pointer()
         .hover(|s| s.bg(theme::fill_selected()))
         .child(if copied {
-            icon("tick02", icon_size).text_color(theme::content()).into_any_element()
-        } else {
-            hover_icon("copy01", icon_size, theme::text_subtle(), theme::content(), "md-copy")
+            icon("tick02", icon_size)
+                .text_color(theme::content())
                 .into_any_element()
+        } else {
+            hover_icon(
+                "copy01",
+                icon_size,
+                theme::text_subtle(),
+                theme::content(),
+                "md-copy",
+            )
+            .into_any_element()
         })
         .on_click(move |_, window, cx| copy_with_feedback(&text, window, cx))
         .into_any_element()
@@ -970,7 +1053,12 @@ fn fade_runs(runs: Vec<TextRun>, text: &str, fade: &Fade) -> Vec<TextRun> {
     let spans: Vec<(Range<usize>, f32)> = fade
         .0
         .iter()
-        .map(|&(far, near, o)| (snap(len.saturating_sub(far))..snap(len.saturating_sub(near)), o))
+        .map(|&(far, near, o)| {
+            (
+                snap(len.saturating_sub(far))..snap(len.saturating_sub(near)),
+                o,
+            )
+        })
         .filter(|(r, _)| r.start < r.end)
         .collect();
     if spans.is_empty() {
@@ -1033,8 +1121,9 @@ impl Ctx<'_> {
         let start = self.next.get();
         self.next.set(start + text.len() + 1);
         // Links to files open them in arakun, through the surface's file clicks.
-        let (local, links): (Vec<_>, Vec<_>) =
-            links.into_iter().partition(|(_, url)| local_link(url).is_some());
+        let (local, links): (Vec<_>, Vec<_>) = links
+            .into_iter()
+            .partition(|(_, url)| local_link(url).is_some());
         for (r, url) in local {
             if let Some(path) = local_link(&url) {
                 self.map.file(start + r.start..start + r.end, path);
@@ -1055,7 +1144,9 @@ impl Ctx<'_> {
                 .into_any_element()
         };
         let bounds = Rc::new(Cell::new(None));
-        let (pads, chips) = inline.map_or((Vec::new(), Vec::new()), |i| (i.pads.clone(), i.chips.clone()));
+        let (pads, chips) = inline.map_or((Vec::new(), Vec::new()), |i| {
+            (i.pads.clone(), i.chips.clone())
+        });
         if let Some(i) = inline {
             for (r, path) in &i.files {
                 self.map.file(start + r.start..start + r.end, path.clone());
@@ -1080,8 +1171,17 @@ impl Ctx<'_> {
             .filter(|m| m.start < end && m.end > start)
             .map(|m| m.start.max(start) - start..m.end.min(end) - start)
             .collect();
-        let sel = SelText::new(inner, text.clone(), layout, bounds, chips, local, theme::mix(0.08), theme::mix(0.5))
-            .marks(marks);
+        let sel = SelText::new(
+            inner,
+            text.clone(),
+            layout,
+            bounds,
+            chips,
+            local,
+            theme::mix(0.08),
+            theme::mix(0.5),
+        )
+        .marks(marks);
         match self.find {
             Some(f) => {
                 let hits = search::find_all(&text, f.query);
@@ -1186,7 +1286,13 @@ impl Ctx<'_> {
                     .when(ix > 0, |d| d.mt(px(6.)))
                     .text_size(px(size))
                     .line_height(px(lh))
-                    .child(self.inline(("h", ix).into(), inline, st, FontWeight::SEMIBOLD, st.heading))
+                    .child(self.inline(
+                        ("h", ix).into(),
+                        inline,
+                        st,
+                        FontWeight::SEMIBOLD,
+                        st.heading,
+                    ))
                     .into_any_element()
             }
             Block::Code {
@@ -1253,7 +1359,11 @@ impl Ctx<'_> {
                     .children(self.blocks(blocks, inner))
                     .into_any_element()
             }
-            Block::Rule => div().h(px(1.)).my(px(4.)).bg(theme::fill_selected()).into_any_element(),
+            Block::Rule => div()
+                .h(px(1.))
+                .my(px(4.))
+                .bg(theme::fill_selected())
+                .into_any_element(),
             Block::Table { align, rows } => self.table(ix, align, rows, st),
             Block::Image { url, alt } => self.image(ix, url, alt, st),
         }
@@ -1263,7 +1373,11 @@ impl Ctx<'_> {
     /// Ctrl+wheel zooms it in place, a click opens it full screen, and dragging
     /// a local one drops it beside the chat. One that cannot be loaded is a link.
     fn image(&self, ix: usize, url: &str, alt: &str, st: MdStyle) -> AnyElement {
-        let label = if alt.trim().is_empty() { url.to_string() } else { alt.trim().to_string() };
+        let label = if alt.trim().is_empty() {
+            url.to_string()
+        } else {
+            alt.trim().to_string()
+        };
         let link = {
             let (url, label) = (url.to_string(), label.clone());
             move || image_link(&url, &label)
@@ -1372,7 +1486,9 @@ impl Ctx<'_> {
                             .id(("tr", r))
                             .flex()
                             .when(r == 0, |d| d.bg(theme::fill_hover()))
-                            .when(r > 0, |d| d.border_t_1().border_color(theme::border_subtle()))
+                            .when(r > 0, |d| {
+                                d.border_t_1().border_color(theme::border_subtle())
+                            })
                             .children((0..cols).map(|c| {
                                 let weight = weights[c];
                                 div()
@@ -1385,7 +1501,9 @@ impl Ctx<'_> {
                                     })
                                     .px(px(TABLE_CELL_PAD))
                                     .py(px(8.))
-                                    .when(c > 0, |d| d.border_l_1().border_color(theme::border_subtle()))
+                                    .when(c > 0, |d| {
+                                        d.border_l_1().border_color(theme::border_subtle())
+                                    })
                                     // Aligned by the box, not text-align: code chips are
                                     // drawn from the left edge of each line.
                                     .map(|d| match align.get(c) {
@@ -1456,8 +1574,15 @@ impl Ctx<'_> {
                     .border_b_1()
                     .border_color(theme::border_subtle())
                     .child(
-                        icon(if shell { "computer-terminal01" } else { "file-code" }, 14.)
-                            .text_color(theme::text_subtle()),
+                        icon(
+                            if shell {
+                                "computer-terminal01"
+                            } else {
+                                "file-code"
+                            },
+                            14.,
+                        )
+                        .text_color(theme::text_subtle()),
                     )
                     .child(
                         div()
@@ -1614,11 +1739,15 @@ pub fn pieces<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
     for block in blocks {
         match block {
             Block::Paragraph(inline) | Block::Heading(_, inline) => out.push(&inline.text),
-            Block::Code { diagram: Some(_), .. } => {}
+            Block::Code {
+                diagram: Some(_), ..
+            } => {}
             Block::Code { shown, .. } => out.push(shown),
             Block::List { items, .. } => items.iter().for_each(|item| pieces(item, out)),
             Block::Quote(inner) => pieces(inner, out),
-            Block::Table { rows, .. } => out.extend(rows.iter().flatten().map(|cell| cell.text.as_str())),
+            Block::Table { rows, .. } => {
+                out.extend(rows.iter().flatten().map(|cell| cell.text.as_str()))
+            }
             Block::Rule | Block::Image { .. } => {}
         }
     }
@@ -1673,7 +1802,9 @@ impl RenderOnce for InlineImage {
             self.id,
             self.source,
             self.file,
-            Some(Rc::new(move |window: &mut Window, _: &mut App| open_preview(open.clone(), window))),
+            Some(Rc::new(move |window: &mut Window, _: &mut App| {
+                open_preview(open.clone(), window)
+            })),
             window,
             cx,
         )
@@ -1756,19 +1887,25 @@ pub fn render_preview(image: ImageRef, window: &mut Window, cx: &mut App) -> Any
         .on_click(|_, window, _| {
             close_preview(window);
         })
-        .child(div().flex_1().min_h_0().w_full().child(crate::zoom::zoom_image(
-            SharedString::from(format!("zoom-preview-{name}")),
-            image.clone(),
-            match &image {
-                ImageRef::File(p) => Some(p.clone()),
-                ImageRef::Web(_) => None,
-            },
-            Some(Rc::new(|window: &mut Window, _: &mut App| {
-                close_preview(window);
-            })),
-            window,
-            cx,
-        )))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(crate::zoom::zoom_image(
+                    SharedString::from(format!("zoom-preview-{name}")),
+                    image.clone(),
+                    match &image {
+                        ImageRef::File(p) => Some(p.clone()),
+                        ImageRef::Web(_) => None,
+                    },
+                    Some(Rc::new(|window: &mut Window, _: &mut App| {
+                        close_preview(window);
+                    })),
+                    window,
+                    cx,
+                )),
+        )
         .child(
             div()
                 .flex()
@@ -1802,28 +1939,63 @@ mod tests {
 
     #[test]
     fn bare_urls_leave_out_trailing_punctuation() {
-        let found = |t: &str| bare_urls(t).into_iter().map(|r| t[r].to_string()).collect::<Vec<_>>();
-        assert_eq!(found("Mira https://aws.amazon.com/startups."), ["https://aws.amazon.com/startups"]);
+        let found = |t: &str| {
+            bare_urls(t)
+                .into_iter()
+                .map(|r| t[r].to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            found("Mira https://aws.amazon.com/startups."),
+            ["https://aws.amazon.com/startups"]
+        );
         assert_eq!(found("(ver https://a.dev/x)"), ["https://a.dev/x"]);
-        assert_eq!(found("https://en.wikipedia.org/wiki/Rust_(language)"), ["https://en.wikipedia.org/wiki/Rust_(language)"]);
-        assert_eq!(found("dos: http://a.io, https://b.io?q=1"), ["http://a.io", "https://b.io?q=1"]);
+        assert_eq!(
+            found("https://en.wikipedia.org/wiki/Rust_(language)"),
+            ["https://en.wikipedia.org/wiki/Rust_(language)"]
+        );
+        assert_eq!(
+            found("dos: http://a.io, https://b.io?q=1"),
+            ["http://a.io", "https://b.io?q=1"]
+        );
         assert!(found("xhttps://a.io https:// nada").is_empty());
     }
 
     #[test]
     fn bare_urls_become_links() {
         let blocks = parse("Abre https://example.com/x. o [esto](https://a.io)");
-        let Some(Block::Paragraph(inline)) = blocks.first() else { panic!("no paragraph") };
-        let links: Vec<_> = inline.spans.iter().filter_map(|s| s.link.as_ref().map(|l| (&inline.text[s.range.clone()], l.to_string()))).collect();
-        assert_eq!(links, [("https://example.com/x", "https://example.com/x".to_string()), ("esto", "https://a.io".to_string())]);
+        let Some(Block::Paragraph(inline)) = blocks.first() else {
+            panic!("no paragraph")
+        };
+        let links: Vec<_> = inline
+            .spans
+            .iter()
+            .filter_map(|s| {
+                s.link
+                    .as_ref()
+                    .map(|l| (&inline.text[s.range.clone()], l.to_string()))
+            })
+            .collect();
+        assert_eq!(
+            links,
+            [
+                ("https://example.com/x", "https://example.com/x".to_string()),
+                ("esto", "https://a.io".to_string())
+            ]
+        );
     }
 
     #[test]
     fn pieces_follow_reading_order() {
-        let blocks = parse("# Top\n\n- one\n- two\n\n> said\n\n```\ncode\n```\n\n| a | b |\n|---|---|\n| c | d |");
+        let blocks = parse(
+            "# Top\n\n- one\n- two\n\n> said\n\n```\ncode\n```\n\n| a | b |\n|---|---|\n| c | d |",
+        );
         let mut out = Vec::new();
         pieces(&blocks, &mut out);
-        assert_eq!(out, ["Top", "one", "two", "said", "code", "a", "b", "c", "d"]);
+        assert_eq!(
+            out,
+            ["Top", "one", "two", "said", "code", "a", "b", "c", "d"]
+        );
     }
 
     fn shape(blocks: &[Block]) -> String {
@@ -1868,11 +2040,16 @@ mod tests {
     #[test]
     fn inline_code_becomes_a_padded_chip() {
         let blocks = parse("see `src/main.rs:12` and `x`");
-        let Block::Paragraph(i) = &blocks[0] else { panic!() };
+        let Block::Paragraph(i) = &blocks[0] else {
+            panic!()
+        };
         assert_eq!(i.chips.len(), 2);
         assert!(i.chips[0].icon.is_some());
         assert!(i.chips[1].icon.is_none());
-        assert_eq!(i.files, vec![(i.files[0].0.clone(), "src/main.rs:12".to_string())]);
+        assert_eq!(
+            i.files,
+            vec![(i.files[0].0.clone(), "src/main.rs:12".to_string())]
+        );
         let mut plain = i.text.clone();
         for p in i.pads.iter().rev() {
             plain.replace_range(p.clone(), "");
@@ -1883,14 +2060,34 @@ mod tests {
     #[test]
     fn file_references() {
         for yes in [
-            "src/main.rs", "Cargo.toml", "view.rs:120", "src/agent/", "./a/b", "Makefile", "logo.webp", "demo.MP4",
-            "informe.docx", ".gitignore", ".env.local", "go.mod", "Gemfile",
+            "src/main.rs",
+            "Cargo.toml",
+            "view.rs:120",
+            "src/agent/",
+            "./a/b",
+            "Makefile",
+            "logo.webp",
+            "demo.MP4",
+            "informe.docx",
+            ".gitignore",
+            ".env.local",
+            "go.mod",
+            "Gemfile",
         ] {
             assert!(file_like(yes), "{yes}");
         }
         for no in [
-            "cx.notify", "self.open", "v1.2.3", "std::fs", "foo()", "a b.rs", "https://x.io/a.rs", "--release",
-            ".map", ".len", "self.key",
+            "cx.notify",
+            "self.open",
+            "v1.2.3",
+            "std::fs",
+            "foo()",
+            "a b.rs",
+            "https://x.io/a.rs",
+            "--release",
+            ".map",
+            ".len",
+            "self.key",
         ] {
             assert!(!file_like(no), "{no}");
         }
@@ -1906,7 +2103,14 @@ mod tests {
         for yes in ["src/agent/", "/home/u/proj", "./a/b", "assets/icons"] {
             assert!(folder_like(yes), "{yes}");
         }
-        for no in ["src/main.rs", "Cargo.toml", "view.rs:120", "docker/Dockerfile", "a/.gitignore", "Makefile"] {
+        for no in [
+            "src/main.rs",
+            "Cargo.toml",
+            "view.rs:120",
+            "docker/Dockerfile",
+            "a/.gitignore",
+            "Makefile",
+        ] {
             assert!(!folder_like(no), "{no}");
         }
     }
@@ -1914,19 +2118,40 @@ mod tests {
     #[test]
     fn links_to_local_files() {
         assert_eq!(local_link("src/main.rs").as_deref(), Some("src/main.rs"));
-        assert_eq!(local_link("/home/k/a%20b.png").as_deref(), Some("/home/k/a b.png"));
-        assert_eq!(local_link("file:///tmp/x.pdf").as_deref(), Some("/tmp/x.pdf"));
-        assert_eq!(local_link("src/a.rs#L12-L20").as_deref(), Some("src/a.rs:12"));
+        assert_eq!(
+            local_link("/home/k/a%20b.png").as_deref(),
+            Some("/home/k/a b.png")
+        );
+        assert_eq!(
+            local_link("file:///tmp/x.pdf").as_deref(),
+            Some("/tmp/x.pdf")
+        );
+        assert_eq!(
+            local_link("src/a.rs#L12-L20").as_deref(),
+            Some("src/a.rs:12")
+        );
         assert_eq!(local_link("view.rs:42").as_deref(), Some("view.rs:42"));
-        assert_eq!(local_link("<docs/guía.md>").as_deref(), Some("docs/guía.md"));
-        for web in ["https://x.io/a.rs", "mailto:a@b.c", "#section", "vscode://file/x", "www.x.io", ""] {
+        assert_eq!(
+            local_link("<docs/guía.md>").as_deref(),
+            Some("docs/guía.md")
+        );
+        for web in [
+            "https://x.io/a.rs",
+            "mailto:a@b.c",
+            "#section",
+            "vscode://file/x",
+            "www.x.io",
+            "",
+        ] {
             assert_eq!(local_link(web), None, "{web}");
         }
     }
 
     #[test]
     fn images_stand_as_their_own_blocks() {
-        let blocks = parse("Here it is:\n![the chart](out/chart.png)\nand more text\n\n# A ![b](c.png) title");
+        let blocks = parse(
+            "Here it is:\n![the chart](out/chart.png)\nand more text\n\n# A ![b](c.png) title",
+        );
         assert_eq!(
             shape(&blocks),
             "p(Here it is:) img(the chart|out/chart.png) p(and more text) h1(A b title)"
@@ -1935,7 +2160,11 @@ mod tests {
         let mut doc = Doc::parse("");
         for cut in 1..=streamed.len() {
             doc.update(&streamed[..cut]);
-            assert_eq!(shape(&doc.blocks), shape(&parse(&streamed[..cut])), "at {cut}");
+            assert_eq!(
+                shape(&doc.blocks),
+                shape(&parse(&streamed[..cut])),
+                "at {cut}"
+            );
         }
     }
 
@@ -1944,9 +2173,15 @@ mod tests {
         let dir = std::env::temp_dir();
         let name = "arakun-md-image-test.png";
         std::fs::write(dir.join(name), b"x").unwrap();
-        assert_eq!(image_source(name, Some(&dir)), Some(ImageRef::File(dir.join(name))));
+        assert_eq!(
+            image_source(name, Some(&dir)),
+            Some(ImageRef::File(dir.join(name)))
+        );
         assert_eq!(image_source("missing-arakun.png", Some(&dir)), None);
-        assert!(matches!(image_source("https://x.io/a.png", None), Some(ImageRef::Web(_))));
+        assert!(matches!(
+            image_source("https://x.io/a.png", None),
+            Some(ImageRef::Web(_))
+        ));
     }
 
     #[test]
@@ -1959,7 +2194,11 @@ mod tests {
             underline: None,
             strikethrough: None,
         };
-        let out = fade_runs(vec![run(6), run(5)], "hello world", &Fade(vec![(6, 2, 0.5)]));
+        let out = fade_runs(
+            vec![run(6), run(5)],
+            "hello world",
+            &Fade(vec![(6, 2, 0.5)]),
+        );
         let shape: Vec<(usize, f32)> = out.iter().map(|r| (r.len, r.color.a)).collect();
         assert_eq!(shape, [(5, 1.), (1, 0.5), (3, 0.5), (2, 1.)]);
     }
@@ -1967,7 +2206,9 @@ mod tests {
     #[test]
     fn table_alignment() {
         let blocks = parse("| a | b | c |\n|:-|:-:|-:|\n| 1 | 2 | 3 |");
-        let Block::Table { align, rows } = &blocks[0] else { panic!() };
+        let Block::Table { align, rows } = &blocks[0] else {
+            panic!()
+        };
         assert!(*align == [Align::Left, Align::Center, Align::Right]);
         assert_eq!(rows.len(), 2);
     }

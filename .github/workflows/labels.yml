@@ -1,0 +1,40 @@
+name: Labels
+
+# Creates and updates the repository's labels from .github/labels.yml. A pull
+# request that changes the file gets a dry run, which logs what would change.
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/labels.yml", ".github/workflows/labels.yml"]
+  pull_request:
+    paths: [".github/labels.yml", ".github/workflows/labels.yml"]
+  # To apply the file by hand, e.g. after a label was edited in the web UI.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: labels-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync labels
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      contents: read
+      # Pull requests from forks get a read-only token whatever this says; the
+      # dry run only reads labels.
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: crazy-max/ghaction-github-labeler@548a7c3603594ec17c819e1239f281a3b801ab4d # v6.0.0
+        with:
+          yaml-file: .github/labels.yml
+          dry-run: ${{ github.event_name == 'pull_request' }}
+          # Never delete: that would strip the label from every issue and PR.
+          skip-delete: true

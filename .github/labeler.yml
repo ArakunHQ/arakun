@@ -1,0 +1,38 @@
+# Area labels for pull requests, by changed paths. Read by actions/labeler in
+# .github/workflows/labeler.yml, always from the base branch: a change here
+# takes effect once it is merged. Labels must exist (see .github/labels.yml).
+#
+# The workflow uses sync-labels, so a label listed here is also removed from a
+# pull request that no longer touches its paths, even if someone set it by hand.
+
+"area: app":
+  - changed-files:
+      - any-glob-to-any-file: ["src/**", "examples/**", "assets/**", "build.rs", "Cargo.toml"]
+"area: browser":
+  - changed-files:
+      - any-glob-to-any-file: ["src/browser/**", "src/bin/arakun-helper*", "tools/install-cef.sh"]
+"area: relay":
+  - changed-files:
+      - any-glob-to-any-file: ["relay/**"]
+"area: phone":
+  - changed-files:
+      - any-glob-to-any-file: ["phone/**", "src/phone/**"]
+"area: iso":
+  - changed-files:
+      - any-glob-to-any-file: ["iso/**", "src/iso/**", "src/iso_view.rs", "tools/iso-*"]
+# Workflows, plus the files they read from .github/ (these label configs,
+# release.yml, a future dependabot.yml). Not ISSUE_TEMPLATE/: that is a subdirectory.
+"area: ci":
+  - changed-files:
+      - any-glob-to-any-file: [".github/workflows/**", ".github/*.yml"]
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ["**/*.md", "docs/**"]
+# Only pull requests that change nothing but manifests and lockfiles, with at
+# least one lockfile among them: a feature that adds a crate also changes
+# Cargo.lock, and would otherwise be listed under Dependencies in the notes.
+dependencies:
+  - all:
+      - changed-files:
+          - any-glob-to-any-file: ["Cargo.lock", "relay/package-lock.json"]
+          - any-glob-to-all-files: ["Cargo.lock", "Cargo.toml", "relay/package-lock.json", "relay/package.json"]

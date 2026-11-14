@@ -1,0 +1,36 @@
+name: Issue labeler
+
+# Sets the area labels of an issue from its title prefix ("CI:", "Relay:", ...)
+# and the Area dropdown of the issue forms (.github/issue-labeler.yml).
+#
+# Labels are only added: a maintainer's own labels stay, and an edit that drops
+# a prefix leaves the label for a person to remove. The issue text is matched
+# against regexes and never executed; the config comes from the default branch.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions: {}
+
+concurrency:
+  group: issue-labeler-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Label by title and Area
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # No checkout: without a local file the action fetches the config through
+      # the API, at the default branch's head.
+      - uses: github/issue-labeler@ccca1e16fcb66762200e616fc29b57b940c1cb67 # v3.5
+        with:
+          configuration-path: .github/issue-labeler.yml
+          enable-versioned-regex: 0
+          include-title: 1
+          include-body: 1
+          sync-labels: 0

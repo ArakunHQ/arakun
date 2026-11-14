@@ -31,6 +31,19 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Arakun this is about, if you know. It sets the issue's area label.
+      multiple: true
+      options:
+        - App
+        - Browser
+        - Relay
+        - Phone
+        - Isometric
+        - CI/release
+  - type: dropdown
     id: install
     attributes:
       label: How you installed it

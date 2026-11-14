@@ -1,0 +1,651 @@
+//! Finding (and, for Claude, installing) the entry point of each agent: ACP for
+//! Claude, Factory's native `stream-jsonrpc` for Droid unless `ARAKUN_DROID_ACP=1`,
+//! and OpenCode's own ACP server (`opencode acp`).
+
+use std::ffi::OsString;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use anyhow::{Context as _, Result, anyhow, bail};
+
+use super::AgentKind;
+
+/// Pinned so an adapter release can't change the protocol under us; bump deliberately.
+pub const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.102.0";
+
+pub struct LaunchSpec {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub env: Vec<(String, OsString)>,
+}
+
+impl LaunchSpec {
+    pub fn display(&self) -> String {
+        let mut s = self.program.display().to_string();
+        for a in &self.args {
+            s.push(' ');
+            s.push_str(a);
+        }
+        s
+    }
+}
+
+pub(crate) fn home() -> PathBuf {
+    crate::platform::home()
+}
+
+/// `~/.local/share/arakun/agents` (`%LOCALAPPDATA%\arakun\agents` on Windows), where adapters
+/// are installed and agent stderr is logged.
+pub fn agents_dir() -> PathBuf {
+    crate::platform::app_dir().join("agents")
+}
+
+pub fn log_path(kind: AgentKind) -> PathBuf {
+    agents_dir().join(format!("{}.log", kind.id()))
+}
+
+/// Opens the agent's log for appending, starting over once it passes 8 MB.
+pub fn open_log(kind: AgentKind) -> Option<std::fs::File> {
+    let path = log_path(kind);
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > 8 << 20);
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(!too_big)
+        .write(true)
+        .truncate(too_big)
+        .open(&path)
+        .ok()
+}
+
+/// Apps started from a compositor keybinding often get a bare PATH without
+/// `~/.local/bin`, which is where both CLIs install themselves.
+fn search_path() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    for extra in extra_dirs() {
+        if !dirs.contains(&extra) {
+            dirs.push(extra);
+        }
+    }
+    dirs
+}
+
+#[cfg(not(windows))]
+fn extra_dirs() -> Vec<PathBuf> {
+    vec![
+        home().join(".local/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+    ]
+}
+
+/// Where the CLIs land on Windows when the installer's PATH change has not reached arakun
+/// yet: Factory's installer, `npm install -g`, and Claude Code's native installer.
+#[cfg(windows)]
+fn extra_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![home().join(".local").join("bin"), home().join("bin")];
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(appdata).join("npm"));
+    }
+    dirs
+}
+
+pub fn child_path_env() -> OsString {
+    std::env::join_paths(search_path()).unwrap_or_default()
+}
+
+fn is_executable(path: &Path) -> bool {
+    crate::platform::is_executable(path)
+}
+
+/// The interactive sign-in for `kind`, to run in a terminal: Claude Code's
+/// `/login` (the user's `claude`, else the binary bundled with the adapter's
+/// SDK; both share `~/.claude`), plain `droid`, which asks to sign in, or
+/// `opencode auth login`, which asks for a provider and its key.
+pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
+    match kind {
+        AgentKind::Claude => {
+            let bin = which("claude").or_else(|| {
+                bundled_claude_candidates()?.into_iter().find(|p| is_executable(p))
+            })?;
+            Some(vec![bin.display().to_string(), "/login".into()])
+        }
+        AgentKind::Droid => {
+            let bin = droid_bin().ok()?;
+            Some(vec![bin.display().to_string()])
+        }
+        AgentKind::OpenCode | AgentKind::WorkersAi => {
+            let bin = opencode_bin().ok()?;
+            Some(vec![bin.display().to_string(), "auth".into(), "login".into()])
+        }
+    }
+}
+
+/// The interactive sign-out for `kind`, to run in a terminal: Claude's `/logout`,
+/// or `opencode auth logout`, which asks which provider. Droid's CLI is signed
+/// out from Factory's side.
+pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
+    match kind {
+        AgentKind::Claude => {
+            let bin = which("claude").or_else(|| {
+                bundled_claude_candidates()?.into_iter().find(|p| is_executable(p))
+            })?;
+            Some(vec![bin.display().to_string(), "/logout".into()])
+        }
+        AgentKind::Droid | AgentKind::WorkersAi => None,
+        AgentKind::OpenCode => {
+            let bin = opencode_bin().ok()?;
+            Some(vec![bin.display().to_string(), "auth".into(), "logout".into()])
+        }
+    }
+}
+
+/// Where the adapter's SDK keeps the Claude Code binary for this platform: one
+/// npm optional dependency per platform, with a musl twin on Linux. `None` when
+/// arakun does not know the package name for this OS or CPU.
+fn bundled_claude_candidates() -> Option<Vec<PathBuf>> {
+    let os = match std::env::consts::OS {
+        "windows" => "win32",
+        "macos" => "darwin",
+        "linux" => "linux",
+        _ => return None,
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        _ => return None,
+    };
+    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let base = agents_dir().join("node_modules").join("@anthropic-ai");
+    let mut pkgs = vec![format!("claude-agent-sdk-{os}-{arch}")];
+    if os == "linux" {
+        pkgs.push(format!("claude-agent-sdk-{os}-{arch}-musl"));
+    }
+    Some(pkgs.into_iter().map(|p| base.join(p).join(exe)).collect())
+}
+
+/// Whether the adapter will find a Claude Code binary to run. npm skips optional
+/// dependencies under `omit=optional`, and antivirus software sometimes removes
+/// the `.exe`; the adapter then fails every session with "native binary not found".
+fn claude_binary_ok() -> bool {
+    std::env::var_os("CLAUDE_CODE_EXECUTABLE").is_some()
+        || bundled_claude_candidates()
+            .is_none_or(|c| c.iter().any(|p| is_executable(p)))
+}
+
+pub fn which(name: &str) -> Option<PathBuf> {
+    if crate::platform::is_path(name) {
+        let p = PathBuf::from(name);
+        let dir = p.parent().map(Path::to_path_buf).unwrap_or_default();
+        let file = p.file_name()?.to_string_lossy().into_owned();
+        return crate::platform::find_in([dir], &file);
+    }
+    crate::platform::find_in(search_path(), name)
+}
+
+fn from_override(var: &str) -> Option<Result<LaunchSpec>> {
+    let raw = std::env::var(var).ok()?;
+    let mut parts = raw.split_whitespace();
+    let program = parts.next()?;
+    let args = parts.map(str::to_string).collect();
+    Some(
+        which(program)
+            .ok_or_else(|| anyhow!("{var}={raw}: `{program}` is not an executable"))
+            .map(|program| LaunchSpec {
+                program,
+                args,
+                env: Vec::new(),
+            }),
+    )
+}
+
+/// Droid speaks its own `stream-jsonrpc` protocol unless `ARAKUN_DROID_ACP` asks
+/// for the old ACP bridge (`droid exec --output-format acp`).
+pub fn droid_native() -> bool {
+    !std::env::var_os("ARAKUN_DROID_ACP").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+pub fn droid_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_DROID_BIN").unwrap_or_else(|_| "droid".into());
+    which(&name).ok_or_else(|| {
+        anyhow!("`{name}` was not found on PATH or in ~/.local/bin. Install Factory's CLI first.")
+    })
+}
+
+/// `droid exec` in stream-jsonrpc mode. `ARAKUN_DROID_BIN` picks another binary.
+/// `cwd` is where the session works: its project's memory goes in the hint.
+pub fn resolve_droid_native(cwd: Option<&Path>) -> Result<LaunchSpec> {
+    Ok(LaunchSpec {
+        program: droid_bin()?,
+        args: [
+            "exec",
+            "--input-format",
+            "stream-jsonrpc",
+            "--output-format",
+            "stream-jsonrpc",
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain(droid_hint_args(cwd))
+        .collect(),
+        env: vec![("PATH".into(), child_path_env())],
+    })
+}
+
+/// Told to the agents arakun starts, so they can show their work in the window,
+/// and, for a session working in `cwd`, what its project's memory holds.
+/// `ARAKUN_AGENT_HINT=off` leaves their prompts alone; `ARAKUN_MEMORY=off` keeps
+/// memory out of them.
+pub fn agent_hint(cwd: Option<&Path>) -> Option<String> {
+    if std::env::var_os("ARAKUN_AGENT_HINT").is_some_and(|v| v == "off") {
+        if std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "on") {
+            return cwd.map(crate::memory::prompt_for);
+        }
+        return None;
+    }
+    let memory = cwd
+        .filter(|_| !std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "off"))
+        .map(|dir| format!("\n\n{}", crate::memory::prompt_for(dir)))
+        .unwrap_or_default();
+    Some(format!("{HINT}{memory}"))
+}
+
+const HINT: &str =
+        "You are running inside arakun, a desktop app where the user reads this conversation. \
+         The `arakun` command on your PATH controls its window, acting on this project:\n\
+         - `arakun browse -s <url>` shows a web page (for example a dev server you started) beside the chat.\n\
+         - `arakun open -s <file[:line]>` shows a file beside the chat, at that line.\n\
+         - `arakun run <command>` starts a long-running command (dev server, watcher) in a terminal \
+         the user can see, instead of blocking your own shell. To wait until it is up, put \
+         `--port <n>` and/or `--ready <text>` before the command (`arakun run --port 5173 npm run dev`): \
+         it returns once the port answers or the text shows in its output, and fails with the output \
+         if the command exits first or is not up within `--timeout <secs>` (default 60).\n\
+         - `arakun logs [terminal]` prints the recent output of a terminal in that dock (one you started \
+         or the user's dev server), to read errors without asking; alone it lists the terminals. \
+         `arakun logs <terminal> --until <text> [--timeout <secs>]` waits until the terminal prints the text \
+         (a watcher's `compiled` line after an edit) and prints what it printed meanwhile.\n\
+         - `arakun page <command>` works with this project's browser tabs the way the user would: \
+         `screenshot` (prints a PNG path to look at), `console` (errors and logs since the page loaded), \
+         `text`, `open <url>`, `reload`, and on local pages `click <selector|text>`, \
+         `type <field> <text>`, `press <key>`, `eval <js>`. Use it to check UI changes you made; \
+         `arakun page` alone lists the tabs.\n\
+         - `arakun check` runs the project's check command, if the user set one. arakun also runs it after \
+         each of your turns that edits files and sends you the output when it fails.\n\
+         - `arakun fetch <url>` prints a web page as Markdown (`--html` for HTML, `--links` for its links), \
+         loaded in a real browser on Cloudflare (Browser Run), so sites that block curl still answer; \
+         `arakun crawl [--limit N] [--depth N] <url>` reads a whole site the same way. Prefer them to curl \
+         for reading the web; at most one fetch every 10 s.\n\
+         - `arakun notify <message>` sends the user a desktop notification.\n\
+         - `arakun lab` shows the harness lab dashboard (Arakun Lab evals and experiments).\n\
+         - `arakun agent new [--model <provider/model>] [--effort <level>] <prompt>` starts a background agent in this \
+         project that the user can watch in the sidebar: OpenCode, or arakun's own Workers AI agent with \
+         `--model workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017` or `--model workers-ai/@cf/zai-org/glm-5.3` \
+         (an unknown `--model` or `--effort` prints the ones on offer); \
+         `arakun agent wait <id>`, `arakun agent log <id>`, `arakun agent send <id> <text>`, \
+         `arakun agent stop <id>` and `arakun agent ls` follow it up.\n\
+         Use them when showing something helps the user; they are optional.";
+
+fn droid_hint_args(cwd: Option<&Path>) -> Vec<String> {
+    agent_hint(cwd)
+        .map(|hint| vec!["--append-system-prompt".to_string(), hint.to_string()])
+        .unwrap_or_default()
+}
+
+/// `opencode auth login -p opencode-go`: skips the provider list and asks only for the
+/// OpenCode Go API key.
+pub fn opencode_go_login_command() -> Option<Vec<String>> {
+    let bin = opencode_bin().ok()?;
+    Some(
+        [bin.display().to_string(), "auth".into(), "login".into(), "-p".into(), "opencode-go".into()].into(),
+    )
+}
+
+pub fn opencode_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_OPENCODE_BIN").unwrap_or_else(|_| "opencode".into());
+    which(&name).ok_or_else(|| {
+        anyhow!("`{name}` was not found on PATH or in ~/.local/bin. Install OpenCode first (https://opencode.ai).")
+    })
+}
+
+/// The providers OpenCode keeps credentials for (`opencode auth login`), by
+/// name only: the keys of its `auth.json`, never the secrets.
+pub fn opencode_providers() -> Vec<String> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home().join(".local").join("share"));
+    let Some(v) = std::fs::read(data.join("opencode").join("auth.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return Vec::new();
+    };
+    v.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default()
+}
+
+/// OpenCode takes no system prompt over ACP or its command line, but its config
+/// takes `instructions` (files added to the system prompt), and it merges
+/// `OPENCODE_CONFIG_CONTENT` over the user's own config, concatenating arrays.
+/// So the hint goes to a file per working directory, named in that variable;
+/// a value the user set themselves keeps its keys and gets the file appended.
+/// The same variable pins the model list to [`OPENCODE_MODELS`].
+fn opencode_hint_env(cwd: Option<&Path>) -> Option<(String, OsString)> {
+    use std::hash::{Hash as _, Hasher as _};
+    const VAR: &str = "OPENCODE_CONFIG_CONTENT";
+    let mut config = match std::env::var(VAR) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) if v.is_object() => v,
+            // Not plain JSON (JSONC, say): theirs wins over the hint.
+            _ => return None,
+        },
+        Err(_) => serde_json::json!({}),
+    };
+    pin_opencode_models(&mut config);
+    let Some(hint) = agent_hint(cwd) else {
+        return Some((VAR.to_string(), config.to_string().into()));
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cwd.hash(&mut hasher);
+    let path = agents_dir().join("opencode").join(format!("hint-{:016x}.md", hasher.finish()));
+    let wrote = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|_| std::fs::write(&path, hint));
+    if let Err(e) = wrote {
+        if let Some(mut log) = open_log(AgentKind::OpenCode) {
+            let _ = writeln!(log, "=== could not write the arakun hint to {}: {e}", path.display());
+        }
+        return None;
+    }
+    let path = serde_json::Value::String(path.display().to_string());
+    match config["instructions"].as_array_mut() {
+        Some(list) => list.push(path),
+        None => config["instructions"] = serde_json::json!([path]),
+    }
+    Some((VAR.to_string(), config.to_string().into()))
+}
+
+/// The only models arakun's OpenCode sessions offer, for now, by provider:
+/// OpenCode Go's Gemini Argon (the default) and Kimi K3.1 Pro, and two
+/// Cloudflare Workers AI models. `ARAKUN_OPENCODE_ALL_MODELS=1` brings back every provider.
+const OPENCODE_MODELS: &[(&str, &[&str])] = &[
+    ("opencode-go", &["gemini-4-argon", "kimi-k3.1-pro"]),
+    ("cloudflare-workers-ai", &["@cf/deepseek-ai/deepseek-v4.1-flash-1017", "@cf/zai-org/glm-5.3"]),
+];
+
+/// `ARAKUN_OPENCODE_ALL_MODELS` lifts the pin.
+pub fn opencode_all_models() -> bool {
+    std::env::var_os("ARAKUN_OPENCODE_ALL_MODELS").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The pinned models as OpenCode names them, `provider/model`; the provider
+/// ends at the first `/`. The first one is the default.
+pub fn opencode_models() -> Vec<String> {
+    OPENCODE_MODELS
+        .iter()
+        .flat_map(|(provider, models)| models.iter().map(move |m| format!("{provider}/{m}")))
+        .collect()
+}
+
+fn pin_opencode_models(config: &mut serde_json::Value) {
+    if !opencode_all_models() {
+        pin_models(config, OPENCODE_MODELS);
+    }
+}
+
+/// `enabled_providers` drops the other providers and each `whitelist` the
+/// provider's other models, so the ACP model menu lists only these. Keys the
+/// user already set win.
+fn pin_models(config: &mut serde_json::Value, pins: &[(&str, &[&str])]) {
+    let Some(obj) = config.as_object_mut() else { return };
+    let providers: Vec<&str> = pins.iter().map(|(p, _)| *p).collect();
+    obj.entry("enabled_providers").or_insert_with(|| serde_json::json!(providers));
+    if let Some((provider, models)) = pins.first() {
+        obj.entry("model").or_insert_with(|| format!("{provider}/{}", models[0]).into());
+    }
+    let table = obj.entry("provider").or_insert_with(|| serde_json::json!({}));
+    if !table.is_object() {
+        return;
+    }
+    for (provider, models) in pins {
+        let entry = &mut table[*provider];
+        if entry.is_null() || (entry.is_object() && entry.get("whitelist").is_none()) {
+            entry["whitelist"] = serde_json::json!(models);
+        }
+    }
+}
+
+fn claude_adapter_bin() -> PathBuf {
+    // npm writes a `.cmd` launcher for every bin on Windows; the bare name there is a sh script.
+    let name = if cfg!(windows) { "claude-agent-acp.cmd" } else { "claude-agent-acp" };
+    agents_dir().join("node_modules/.bin").join(name)
+}
+
+/// Resolves how to start `kind` in ACP mode. Blocking: on the first Claude launch
+/// this runs `npm install` into [`agents_dir`]. `progress` gets a short status line.
+/// `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP` and `ARAKUN_OPENCODE_ACP` replace the command.
+pub fn resolve(kind: AgentKind, cwd: Option<&Path>, progress: &dyn Fn(String)) -> Result<LaunchSpec> {
+    let mut spec = match kind {
+        AgentKind::Droid => match from_override("ARAKUN_DROID") {
+            Some(spec) => spec?,
+            None => LaunchSpec {
+                program: droid_bin()?,
+                args: ["exec", "--output-format", "acp"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain(droid_hint_args(cwd))
+                    .collect(),
+                env: Vec::new(),
+            },
+        },
+        AgentKind::Claude => match from_override("ARAKUN_CLAUDE_ACP") {
+            Some(spec) => spec?,
+            None => {
+                let bin = claude_adapter_bin();
+                // One repair per run: when an antivirus keeps deleting the binary,
+                // reinstalling on every session start would only make each one slow.
+                if !is_executable(&bin)
+                    || (!claude_binary_ok() && !REPAIR_TRIED.swap(true, Ordering::Relaxed))
+                {
+                    progress("Installing the Claude Code ACP adapter…".into());
+                    install_claude_adapter()?;
+                } else if !claude_adapter_current() && !UPGRADE_TRIED.swap(true, Ordering::Relaxed) {
+                    // A bumped pin: without this the first install would stay forever.
+                    // If npm fails, the old adapter still works, so keep it.
+                    progress("Updating the Claude Code ACP adapter…".into());
+                    if let Err(e) = install_claude_adapter()
+                        && let Some(mut log) = open_log(AgentKind::Claude)
+                    {
+                        let _ = writeln!(log, "=== updating to {CLAUDE_ACP_PACKAGE} failed, keeping the old one: {e:#}");
+                    }
+                }
+                let mut env = Vec::new();
+                if !claude_binary_ok() {
+                    let name = if cfg!(windows) { "claude.exe" } else { "claude" };
+                    let cli = which(name).ok_or_else(|| anyhow!(missing_claude_binary()))?;
+                    env.push(("CLAUDE_CODE_EXECUTABLE".to_string(), cli.into_os_string()));
+                }
+                env.extend(claude_extra_model_env());
+                LaunchSpec {
+                    program: bin,
+                    args: Vec::new(),
+                    env,
+                }
+            }
+        },
+        AgentKind::OpenCode => {
+            let mut spec = match from_override("ARAKUN_OPENCODE_ACP") {
+                Some(spec) => spec?,
+                None => LaunchSpec {
+                    program: opencode_bin()?,
+                    args: vec!["acp".into()],
+                    env: Vec::new(),
+                },
+            };
+            spec.env.extend(opencode_hint_env(cwd));
+            spec
+        }
+        // Nothing to start: it runs in arakun (`Connection::in_process`).
+        AgentKind::WorkersAi => LaunchSpec { program: PathBuf::from("arakun"), args: Vec::new(), env: Vec::new() },
+    };
+    spec.env.push(("PATH".into(), child_path_env()));
+    Ok(spec)
+}
+
+static INSTALL: Mutex<()> = Mutex::new(());
+static REPAIR_TRIED: AtomicBool = AtomicBool::new(false);
+static UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
+
+/// A model Claude Code can run but doesn't list yet, offered as its one custom
+/// option (the adapter refuses any value outside the list). Drop it once the
+/// list has it; a custom option of the user's own wins.
+const CLAUDE_EXTRA_MODEL: (&str, &str) = ("claude-fable-5-2[1m]", "Fable 5.2");
+
+fn claude_extra_model_env() -> Vec<(String, OsString)> {
+    if std::env::var_os("ANTHROPIC_CUSTOM_MODEL_OPTION").is_some() {
+        return Vec::new();
+    }
+    let (id, name) = CLAUDE_EXTRA_MODEL;
+    vec![
+        ("ANTHROPIC_CUSTOM_MODEL_OPTION".into(), id.into()),
+        ("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME".into(), name.into()),
+        (
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION".into(),
+            format!("{name} · Most capable for your hardest and longest-running tasks").into(),
+        ),
+    ]
+}
+
+/// Whether the installed adapter is the pinned [`CLAUDE_ACP_PACKAGE`] version.
+fn claude_adapter_current() -> bool {
+    let (name, want) = CLAUDE_ACP_PACKAGE.rsplit_once('@').unwrap_or((CLAUDE_ACP_PACKAGE, ""));
+    std::fs::read_to_string(agents_dir().join("node_modules").join(name).join("package.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some_and(|j| j["version"] == want)
+}
+
+fn missing_claude_binary() -> String {
+    let path = bundled_claude_candidates()
+        .and_then(|c| c.into_iter().next())
+        .unwrap_or_else(agents_dir);
+    format!(
+        "Claude Code's own binary is missing: {} is not there, even after reinstalling the adapter. \
+         An antivirus may have removed it (allow the folder {} and restart Arakun), \
+         or set CLAUDE_CODE_EXECUTABLE to a claude binary. Details are in {}.",
+        path.display(),
+        agents_dir().display(),
+        log_path(AgentKind::Claude).display()
+    )
+}
+
+fn install_claude_adapter() -> Result<()> {
+    let _guard = INSTALL.lock().unwrap_or_else(|e| e.into_inner());
+    if is_executable(&claude_adapter_bin()) && claude_binary_ok() && claude_adapter_current() {
+        return Ok(());
+    }
+    let npm = which("npm").ok_or_else(|| {
+        anyhow!("npm was not found; it is needed once to install {CLAUDE_ACP_PACKAGE}. Install nodejs and npm, or set ARAKUN_CLAUDE_ACP.")
+    })?;
+    let dir = agents_dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    npm_install(&npm, &dir)?;
+    if !claude_binary_ok() {
+        // A lockfile written without this platform's package keeps npm from ever
+        // adding it (npm/cli#4828), so start over from nothing once.
+        if let Some(mut log) = open_log(AgentKind::Claude) {
+            let _ = writeln!(log, "=== the Claude Code binary is still missing; reinstalling from scratch");
+        }
+        let _ = std::fs::remove_file(dir.join("package-lock.json"));
+        let _ = std::fs::remove_dir_all(dir.join("node_modules"));
+        npm_install(&npm, &dir)?;
+    }
+    if !is_executable(&claude_adapter_bin()) {
+        bail!(
+            "npm finished but {} is missing",
+            claude_adapter_bin().display()
+        );
+    }
+    Ok(())
+}
+
+/// `--include=optional` beats an `omit=optional` in the user's npm config: the
+/// Claude Code binary is an optional dependency.
+fn npm_install(npm: &Path, dir: &Path) -> Result<()> {
+    let out = crate::platform::command(npm)
+        .args(["install", "--prefix"])
+        .arg(dir)
+        .args([
+            "--include=optional",
+            "--no-audit",
+            "--no-fund",
+            "--loglevel=error",
+            CLAUDE_ACP_PACKAGE,
+        ])
+        .env("PATH", child_path_env())
+        .stdin(Stdio::null())
+        .output()
+        .context("running npm install")?;
+    if let Some(mut log) = open_log(AgentKind::Claude) {
+        let _ = writeln!(log, "=== npm install {CLAUDE_ACP_PACKAGE} ({})", out.status);
+        let _ = log.write_all(&out.stdout);
+        let _ = log.write_all(&out.stderr);
+    }
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = err.lines().rev().take(6).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        bail!(
+            "Installing {CLAUDE_ACP_PACKAGE} failed ({}):\n{}",
+            out.status,
+            tail.join("\n")
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pinned_models_fill_only_what_the_user_left_out() {
+        let mut config = serde_json::json!({});
+        pin_models(&mut config, OPENCODE_MODELS);
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "enabled_providers": ["opencode-go", "cloudflare-workers-ai"],
+                "model": "opencode-go/gemini-4-argon",
+                "provider": {
+                    "opencode-go": { "whitelist": ["gemini-4-argon", "kimi-k3.1-pro"] },
+                    "cloudflare-workers-ai": {
+                        "whitelist": ["@cf/deepseek-ai/deepseek-v4.1-flash-1017", "@cf/zai-org/glm-5.3"]
+                    },
+                },
+            })
+        );
+        let mut theirs = serde_json::json!({
+            "model": "anthropic/x",
+            "provider": { "opencode-go": { "whitelist": ["y"] } },
+        });
+        pin_models(&mut theirs, OPENCODE_MODELS);
+        assert_eq!(theirs["model"], "anthropic/x");
+        assert_eq!(theirs["provider"]["opencode-go"]["whitelist"], serde_json::json!(["y"]));
+        assert_eq!(theirs["provider"]["cloudflare-workers-ai"]["whitelist"][1], "@cf/zai-org/glm-5.3");
+        assert_eq!(
+            opencode_models(),
+            [
+                "opencode-go/gemini-4-argon",
+                "opencode-go/kimi-k3.1-pro",
+                "cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+                "cloudflare-workers-ai/@cf/zai-org/glm-5.3",
+            ]
+        );
+    }
+}

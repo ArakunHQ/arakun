@@ -1,0 +1,37 @@
+{
+  "note": "Written by `WRITE_VECTORS=1 cargo test phone::e2e::vectors`; checked by phone/test/e2e.test.mjs.",
+  "label": "lmx5lt63vsxoyes4",
+  "channel": 7,
+  "pc_pub": "BFLuOS7pGD84BjXShEnuNT6EOx0OJh3rvl2gsOaTFN7CYyy8GZLgSZEP5a3Dj3bG2kQlJv0dQvcw7ZinDCyLk54",
+  "e_phone": "BMf_5UE3YGYrag60aFYhTCxCviGhwO3JNfz9ldzOOa3jz7wa4tov4H9gtwGGvk_5yztHAOC02ghGkHpotCCmgmc",
+  "e_pc": "BCb7XX7lIL_daAhiKqA9bYhNTp0fL3oRVtg_hb9FjkdNoAC6g4ypzNB1CVtHdpk8vIi790RIey0ggZyiuMnVV6s",
+  "nonce_phone": "xci9i6UswftXHN_jrUqTSA",
+  "nonce_pc": "lALyRO7n7B4tP3MpNn1hOQ",
+  "hello_phone": "{\"v\":1,\"e\":\"BMf_5UE3YGYrag60aFYhTCxCviGhwO3JNfz9ldzOOa3jz7wa4tov4H9gtwGGvk_5yztHAOC02ghGkHpotCCmgmc\",\"nonce\":\"xci9i6UswftXHN_jrUqTSA\"}",
+  "hello_pc": "{\"v\":1,\"pub\":\"BFLuOS7pGD84BjXShEnuNT6EOx0OJh3rvl2gsOaTFN7CYyy8GZLgSZEP5a3Dj3bG2kQlJv0dQvcw7ZinDCyLk54\",\"e\":\"BCb7XX7lIL_daAhiKqA9bYhNTp0fL3oRVtg_hb9FjkdNoAC6g4ypzNB1CVtHdpk8vIi790RIey0ggZyiuMnVV6s\",\"nonce\":\"lALyRO7n7B4tP3MpNn1hOQ\",\"sig\":\"gvBUFdFglbGVH6gAgZx737ZXBmdT7gvyqBafFCgdVVY7H8Jknt4iKZO3ICdlI9YZjH-lY7xQ1utXisNT29utTw\",\"arakun\":\"0.0.0-vectors\"}",
+  "shared": "PuYAoRYsED7DVVc533dyKKPCEF7W5LKFnkAPmSHw74k",
+  "key_phone_to_pc": "DaJab8nimcbl-7Fvwc_7PvF5kJA59q5eraUfzffd7i8",
+  "key_pc_to_phone": "JWo1mp1YVk1pF6lft8SJ6SAFPLPTodv8rX4TQRTm4os",
+  "frames": [
+    {
+      "from": "phone",
+      "plain": "{\"pair\":{\"secret\":\"s3cr3t\",\"name\":\"Pixel\"}}",
+      "sealed": "AAAAAAAAAABDahTjdjwy5W1jWUn58044SAYCJ_jcmwHsqXWzxzozbPF7wQa7xluX9w55YWin0W0LftpNPLT3HEnStg"
+    },
+    {
+      "from": "pc",
+      "plain": "{\"paired\":{\"id\":\"ab12\",\"ticket\":\"t\",\"token\":\"k\"}}",
+      "sealed": "AAAAAAAAAADbLkNirzI4vHxDTxmLPdVuhGx3xQb-Bmx6sCqbt0VF-2Jb6g1A7tjSe1DfjXJp6bL9xGr-m-cTpRlsBtOEA2FGKQ"
+    },
+    {
+      "from": "phone",
+      "plain": "{\"type\":\"ping\"}",
+      "sealed": "AAAAAAAAAAGuvXS-BnwzU-QCpA3sICPtusIcxP6XBZtNCBmDfSxX"
+    },
+    {
+      "from": "pc",
+      "plain": "",
+      "sealed": "AAAAAAAAAAHSy9yAT9nVxbv99AOmrhmp"
+    }
+  ]
+}

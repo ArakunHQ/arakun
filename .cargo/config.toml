@@ -1,0 +1,6 @@
+[env]
+# Build-time CEF "SDK" for the `cef` crate (headers + archive.json + an empty stub
+# libcef.so), linked here by tools/install-cef.sh. The real libcef.so is dlopened at run
+# time. On Windows nothing is there at first: the `cef` build script downloads the
+# Windows distribution into .cef-sdk/<version>/ and copies its runtime next to arakun.exe.
+CEF_PATH = { value = ".cef-sdk", relative = true }

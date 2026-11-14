@@ -1,0 +1,6 @@
+{
+  "note": "A fixed P-256 public key (raw point, 65 bytes) and the label it derives: base32 lower case of the first 10 bytes of its SHA-256.",
+  "public_key_hex": "0429c2085bf06ab5b9d68497458fa762aff92c26c6bbc68fecc17f9c0ef68242fb4f49970fb31b57b8c43ef1477cd38912d14baebd1495f93eb09612cd9f97c3e2",
+  "sha256_hex": "ebd811bffe9782e5f8173995b8ae8dc97cdd4bfa67ba6ddee4610021ba59cd61",
+  "label": "5pmbdp76s6bol6ax"
+}

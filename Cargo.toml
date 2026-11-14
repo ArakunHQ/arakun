@@ -1,0 +1,148 @@
+[package]
+name = "arakun"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+# src/bin/arakun-helper.rs is CEF's child process on Windows
+default-run = "arakun"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "526c95d474b2bf800e95aab30222fa0341f08e19" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "526c95d474b2bf800e95aab30222fa0341f08e19", features = ["font-kit", "wayland", "x11"] }
+rust-embed = "8"
+anyhow = "1"
+image = { version = "0.25.1", default-features = false, features = ["png"] }
+imagesize = "0.14"
+# `arakun dev` screenshots its virtual X display (src/dev.rs)
+x11rb = "0.13"
+# projects, environments, explorer
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Cloudflare's API: one client that keeps its connections (src/cloudflare).
+ureq = "3"
+ignore = "0.4"
+unicode-segmentation = "1"
+# terminal
+alacritty_terminal = { version = "0.26", default-features = false }
+futures = "0.3"
+# canonical paths without Windows' `\\?\` prefix (a no-op elsewhere)
+dunce = "1"
+# agent transcripts (src/agent)
+pulldown-cmark = { version = "0.13", default-features = false }
+# image attachments sent to ACP agents (src/agent/attach.rs)
+base64 = "0.22"
+# droid's login at ~/.factory is AES-256-GCM (src/account.rs)
+aes-gcm = "0.10"
+# file and diff tab colors (src/highlight.rs); fancy-regex keeps it pure Rust
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# round line joins for the mascot's eyes (src/mascot.rs); gpui only re-exports StrokeOptions
+lyon_tessellation = "1.0"
+# UI zoom wraps gpui's platform window (src/ui_zoom.rs); these name types in its traits
+raw-window-handle = "0.6"
+smallvec = "1"
+# the Isometric tab rasterizes its frames with exact coverage (src/iso/raster.rs); gpui already pulls it in
+tiny-skia = "0.11"
+# Isometric scenes are scripts (src/iso/script.rs): sandboxed, pure Rust, f32 like the engine
+rhai = { version = "1", features = ["f32_float"] }
+# glyph outlines for labels in isometric scenes (src/iso/text.rs); gpui already pulls it in
+ttf-parser = "0.25"
+# the Canvas tab (src/canvas): Doop's HTML frames rendered natively, without a browser
+# (private crate: only the `coderlabs` build has it)
+# its renders run on a pool of their own, below the UI thread (gpui already pulls it in)
+rayon = "1"
+# spreadsheets shown in file tabs (src/sheet.rs): xlsx, xls, xlsb and ods, pure Rust
+calamine = { version = "0.37", features = ["dates"] }
+
+# the phone's remote control (src/phone): WebSocket over plain TCP on the LAN,
+# the QR code the Phone tab shows to open it, and the key in that link (0.3 is
+# the version other dependencies already pull in)
+# rustls with the webpki roots: the phone relay is reached over wss://
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+qrcode = { version = "0.14.1", default-features = false }
+getrandom = "0.3"
+sha2 = "0.10"
+# Web Push to the phones (src/phone/push.rs): VAPID signing, ECDH and
+# aes128gcm with the ring rustls already pulls in
+ring = "0.17"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
+# browser tabs (src/browser): CEF, loaded on the first tab. Linux: dlopened from
+# ~/.local/share/arakun/cef, and the build needs CEF_PATH (.cargo/config.toml points it at
+# .cef-sdk) -> run tools/install-cef.sh once. Windows: the build downloads CEF into
+# .cef-sdk and copies its runtime next to arakun.exe; libcef.dll is delay-loaded (build.rs).
+cef = { version = "=156.3.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Metal shaders compiled when the window opens: precompiling them needs the full Xcode
+# (`xcrun metal`), and the Command Line Tools alone are enough to build this way.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "526c95d474b2bf800e95aab30222fa0341f08e19", features = ["runtime_shaders"] }
+
+[target.'cfg(windows)'.dependencies]
+# `arakun <command>`: Windows 10+ has AF_UNIX sockets; std only exposes them on Unix.
+uds_windows = "1.2"
+# gpui's PlatformWindow::get_raw_handle returns this HWND (src/ui_zoom.rs)
+windows = { version = "0.62", features = ["Win32_Foundation"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_Security_Cryptography",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+] }
+
+[[bin]]
+name = "arakun-helper"
+required-features = ["browser"]
+
+[features]
+default = ["browser"]
+browser = ["dep:cef"]
+# The private team hub (src/team*, src/team_view*, src/shell/team.rs). Not in the public build.
+team = []
+# CoderLabs/owner-only parts (Lab, site analytics, X log, CoderSpace tasks, OKC, voice call,
+# meeting recorder, the borrowed Claude seat, the Canvas tab). Not in the public build.
+coderlabs = []
+
+[profile.release]
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Patched GPUI (src/browser: a browser frame updated in place in the sprite atlas, and
+# Chromium's DMA-BUF frames copied into it on the GPU) and wgpu-hal (enables
+# VK_EXT_image_drm_format_modifier to import those frames).
+[patch."https://github.com/zed-industries/zed"]
+collections = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+derive_refineable = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5", version = "=0.2.2" }
+gpui_apple = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_linux = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_macos = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_macros = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_platform = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_shared_string = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5", version = "=0.1.0" }
+gpui_util = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_web = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_wgpu = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+gpui_windows = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+http_client = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+perf = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+refineable = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+scheduler = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+sum_tree = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+util_macros = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+zlog = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+ztracing = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+ztracing_macro = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/arakunhq/wgpu-hal-fork", rev = "97c3ab65c0b663b91c370a16ee5f3462aa01f0aa" }

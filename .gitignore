@@ -1,0 +1,13 @@
+/target
+/target-*
+/tools/hugeicons/node_modules
+/relay/node_modules
+/relay/.wrangler
+/relay/.dev.vars
+/relay/.peers-key.json
+__pycache__/
+/shots
+/.cef-sdk
+mpv-shot*.jpg
+relay/wrangler.karlo.toml
+relay/bun.lock

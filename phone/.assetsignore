@@ -1,0 +1,2 @@
+# What the relay must not serve from this folder (wrangler reads this file).
+test/

@@ -1,0 +1,2 @@
+# cef's wrap_client! generates 9-argument handlers; views pass window, cx and a few ids.
+too-many-arguments-threshold = 9

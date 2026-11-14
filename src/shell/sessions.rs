@@ -1,0 +1,1426 @@
+//! Agent sessions: starting, reviving and retiring the ACP threads behind the
+//! session tabs. An agent process only runs while its session is open in a tab
+//! or still busy; everything else lives in its saved transcript.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use gpui::{AppContext as _, Context, Entity, SharedString, Window};
+
+use super::Shell;
+use crate::agent::catalog;
+use crate::agent::{
+    AgentKind, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, ThreadView,
+    ThreadViewEvent,
+};
+use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
+use crate::state;
+
+pub fn status_of(t: &Thread) -> Status {
+    match t.status() {
+        ThreadStatus::NeedsInput => Status::NeedsInput,
+        ThreadStatus::Working | ThreadStatus::Connecting if t.is_busy() => Status::Working,
+        ThreadStatus::Working => Status::Working,
+        ThreadStatus::Error(_) => Status::Error,
+        ThreadStatus::Connecting | ThreadStatus::Idle => Status::Idle,
+    }
+}
+
+/// How much of the conversation an agent taking it over gets inline; the rest
+/// it reads from the linked transcript.
+const HANDOFF_BUDGET: usize = 16 * 1024;
+
+fn new_session_id() -> SharedString {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{millis:x}-{n}").into()
+}
+
+pub(super) fn summary(text: &str) -> SharedString {
+    let text = crate::agent::attach::title_text(text);
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    match line.char_indices().nth(80) {
+        Some((i, _)) => format!("{}…", &line[..i]).into(),
+        None => line.to_string().into(),
+    }
+}
+
+impl Shell {
+    pub(super) fn session_mut(&mut self, env_path: &Path, id: &str) -> Option<&mut Session> {
+        let env = self.find_env_mut(env_path)?;
+        let i = env.session_index(id)?;
+        Some(&mut env.sessions[i])
+    }
+
+    pub(super) fn active_session_id(&self) -> Option<SharedString> {
+        if !self.has_projects() {
+            return None;
+        }
+        let env = self.env();
+        match env.tabs.get(env.active_tab).map(|t| &t.kind) {
+            Some(TabKind::Session { id, .. }) => Some(id.clone()),
+            _ => None,
+        }
+    }
+
+    pub(super) fn active_thread(&self, _cx: &gpui::App) -> Option<Entity<Thread>> {
+        let id = self.active_session_id()?;
+        let env = self.env();
+        env.sessions[env.session_index(&id)?]
+            .live
+            .as_ref()
+            .map(|l| l.thread.clone())
+    }
+
+    pub(super) fn active_thread_view(&self) -> Option<Entity<crate::agent::ThreadView>> {
+        let id = self.active_session_id()?;
+        let env = self.env();
+        env.sessions[env.session_index(&id)?]
+            .live
+            .as_ref()
+            .map(|l| l.view.clone())
+    }
+
+    /// Makes sure the sessions on screen (active tab and other pane) have their agent running.
+    pub(super) fn ensure_active_live(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
+        }
+        let env = self.env();
+        let path = env.path.clone();
+        let ids: Vec<SharedString> = self
+            .visible_tabs()
+            .into_iter()
+            .filter_map(|i| match &env.tabs.get(i)?.kind {
+                TabKind::Session { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        for id in ids {
+            self.ensure_live(&path, &id, window, cx);
+        }
+    }
+
+    pub(super) fn ensure_live(&mut self, env_path: &Path, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.session_mut(env_path, id) else {
+            return;
+        };
+        if session.live.is_some() {
+            return;
+        }
+        if crate::headless::shown(id) {
+            return self.view_headless(env_path, id, window, cx);
+        }
+        let (kind, meta, title) = (session.agent.kind(), session.meta.clone(), session.title.clone());
+        let transcript = state::transcript_path(id);
+        let thread = transcript
+            .exists()
+            .then(|| Thread::restore(&transcript, cx))
+            .and_then(|r| r.map_err(|e| eprintln!("arakun: transcript {id}: {e:#}")).ok())
+            .unwrap_or_else(|| Thread::start(kind, env_path.to_path_buf(), meta, cx));
+        // A rename made while the agent was not running reaches it now.
+        if !title.is_empty() && thread.read(cx).title() != title {
+            thread.update(cx, |t, cx| t.rename(&title, cx));
+        }
+        // Counts saved by older versions may be off; the transcript has the truth.
+        let t = thread.read(cx);
+        if !t.entries().is_empty() {
+            let (added, removed) = t.diff_stats();
+            if let Some(s) = self.session_mut(env_path, id) {
+                (s.added, s.removed) = (added, removed);
+            }
+        }
+        self.attach(env_path, id, thread, window, cx);
+    }
+
+    pub(super) fn attach(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        thread: Entity<Thread>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.new(|cx| ThreadView::new(thread.clone(), window, cx));
+        let (path, sid): (PathBuf, SharedString) = (env_path.to_path_buf(), id.to_string().into());
+        let events = cx.subscribe_in(&thread, window, move |this, thread, ev, window, cx| {
+            this.thread_event(&path, &sid, thread, ev, window, cx)
+        });
+        let env = env_path.to_path_buf();
+        let sid_for_notes: SharedString = id.to_string().into();
+        let view_events = cx.subscribe_in(&view, window, move |this, _, ev: &ThreadViewEvent, window, cx| {
+            match ev {
+                ThreadViewEvent::OpenFile(file, line) => this.open_file_beside(&env, file, *line, window, cx),
+                ThreadViewEvent::OpenSubagent(subagent) => {
+                    this.open_subagent(sid_for_notes.clone(), subagent.clone(), window, cx)
+                }
+                ThreadViewEvent::AddNote { surface, range, quote, note } => {
+                    let n = crate::agent::notes::ChatNote {
+                        kind: crate::agent::notes::NoteKind::Annotation,
+                        quote: quote.clone(),
+                        note: note.clone(),
+                        path: None,
+                        lines: None,
+                        mark: Some((sid_for_notes.to_string(), *surface, range.clone())),
+                    };
+                    this.add_note(&env, n, window, cx);
+                }
+            }
+        });
+        if let Some(session) = self.session_mut(env_path, id) {
+            // Each new agent process of the session answers its permissions the same way.
+            if session.auto_allow {
+                thread.update(cx, |t, _| t.set_auto_allow(true));
+            }
+            session.status = status_of(thread.read(cx));
+            session.live = Some(LiveSession {
+                thread,
+                view,
+                _events: events,
+                _view_events: view_events,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Shows a file beside the chat in `env_path`, at `line`; files arakun
+    /// cannot show open in their default app.
+    pub(super) fn open_file_beside(
+        &mut self,
+        env_path: &Path,
+        file: &Path,
+        line: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::explorer::file_kind(file) == crate::explorer::FileKind::External {
+            cx.open_with_system(file);
+            return;
+        }
+        let kind = TabKind::File { path: file.to_path_buf() };
+        if let Some(id) = self.open_doc_in(env_path, kind, false, cx) {
+            if let Some(line) = line {
+                self.reveal_line(env_path, id, line, cx);
+            }
+            self.show_beside(env_path, id, window, cx);
+        }
+    }
+
+    fn thread_event(
+        &mut self,
+        env_path: &Path,
+        id: &SharedString,
+        thread: &Entity<Thread>,
+        ev: &ThreadEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.phone_thread_event(id, ev, cx);
+        // A turn whose check is about to run is announced once the check is done.
+        self.speak_question(env_path, id, thread, cx);
+        let checking = matches!(ev, ThreadEvent::Finished { stop_reason }
+            if self.check_for_turn(env_path, thread, stop_reason, cx).is_some());
+        if !checking {
+            self.notify_desktop(env_path, id, thread, ev, window, cx);
+        }
+        match ev {
+            ThreadEvent::Forked(meta) => {
+                let meta = meta.clone();
+                self.add_forked_session(env_path, meta, window, cx);
+            }
+            ThreadEvent::ShellChanges => {
+                let stats = thread.read(cx).diff_stats();
+                if let Some(s) = self.session_mut(env_path, id) {
+                    (s.added, s.removed) = stats;
+                }
+                self.save_transcript(env_path, id, cx);
+                self.save(cx);
+                cx.notify();
+            }
+            ThreadEvent::CheckOffer { command, answer } => {
+                self.check_offer_answered(env_path, id, thread, command.clone(), *answer, window, cx);
+            }
+            ThreadEvent::SubagentsChanged { spawned } => {
+                if spawned.is_some() {
+                    self.subagent_spawned(id, cx);
+                }
+                // The background work is done: keep what it did, and let the agent go if hidden.
+                if !thread.read(cx).in_background() {
+                    self.save_transcript(env_path, id, cx);
+                    self.retire_if_hidden(env_path, id, cx);
+                }
+                cx.notify();
+            }
+            ThreadEvent::LoginRequested => {
+                let kind = thread.read(cx).kind();
+                match crate::agent::login_command(kind) {
+                    Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
+                    None => eprintln!("arakun: no sign-in command found for {}", kind.label()),
+                }
+            }
+            ThreadEvent::Rewound { meta, prompt } => {
+                let meta = meta.clone();
+                self.add_forked_session(env_path, meta, window, cx);
+                if let Some(env) = self.find_env_mut(env_path) {
+                    env.draft.set(prompt.clone());
+                }
+                window.focus(&self.composer_focus, cx);
+                self.save(cx);
+                cx.notify();
+            }
+            ThreadEvent::TitleChanged => {
+                let title = thread.read(cx).title();
+                if title.is_empty() {
+                    return;
+                }
+                if let Some(env) = self.find_env_mut(env_path) {
+                    if let Some(i) = env.session_index(id) {
+                        env.sessions[i].title = title.clone();
+                    }
+                    for tab in &mut env.tabs {
+                        if matches!(&tab.kind, TabKind::Session { id: tid, .. } if tid == id) {
+                            tab.title = title.clone();
+                        }
+                    }
+                }
+                self.save(cx);
+                cx.notify();
+            }
+            ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
+                let status = status_of(thread.read(cx));
+                if let Some(s) = self.session_mut(env_path, id)
+                    && s.status != status
+                {
+                    s.status = status;
+                    s.updated = model::unix_now();
+                    cx.notify();
+                }
+            }
+            ThreadEvent::Finished { stop_reason } => {
+                let t = thread.read(cx);
+                let (status, (added, removed), meta) = (status_of(t), t.diff_stats(), t.meta());
+                let transcript = t.transcript(cx);
+                let mut turns: Vec<crate::memory::Turn> = Vec::new();
+                let mut since = None;
+                for e in t.entries() {
+                    match e {
+                        crate::agent::Entry::User { text, at, .. } => {
+                            since.get_or_insert(*at);
+                            turns.push(crate::memory::Turn { asked: text.clone(), reply: String::new() });
+                        }
+                        crate::agent::Entry::Agent { text } if !text.trim().is_empty() => {
+                            if let Some(turn) = turns.last_mut() {
+                                turn.reply = text.clone();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let since = since.unwrap_or_else(model::unix_now);
+                let record = (t.cwd().to_path_buf(), t.title().to_string(), turns, t.edited_files(), since);
+                if let Some(s) = self.session_mut(env_path, id) {
+                    s.status = status;
+                    s.added = added;
+                    s.removed = removed;
+                    s.meta = Some(meta);
+                    s.updated = model::unix_now();
+                }
+                let path = state::transcript_path(id);
+                let key = id.to_string();
+                cx.background_spawn(async move {
+                    if let Err(e) = write_transcript(&path, &transcript) {
+                        eprintln!("arakun: could not save {}: {e}", path.display());
+                    }
+                    let (cwd, title, turns, files, since) = record;
+                    if let Err(e) = crate::memory::record_session(&cwd, &key, &title, &turns, &files, since) {
+                        eprintln!("arakun: could not remember the session: {e}");
+                    }
+                })
+                .detach();
+                self.save(cx);
+                self.check_after_turn(env_path, id, thread, stop_reason, window, cx);
+                // The island keeps how the turn ended, for after the thread is retired.
+                self.feed_island(window, cx);
+                self.retire_if_hidden(env_path, id, cx);
+                // Edits show up in Changes without waiting for the next poll.
+                self.refresh_status(env_path, cx);
+                if thread.read(cx).kind() == AgentKind::Droid {
+                    self.account.update(cx, |a, cx| {
+                        a.refresh_if_stale(std::time::Duration::from_secs(30), cx)
+                    });
+                }
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    /// Stops the agent of a session nobody is looking at once it has nothing to do.
+    pub(super) fn retire_if_hidden(&mut self, env_path: &Path, id: &str, cx: &mut Context<Self>) {
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        let open = env
+            .tabs
+            .iter()
+            .any(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id));
+        let Some(i) = env.session_index(id) else {
+            return;
+        };
+        let busy = matches!(env.sessions[i].status, Status::Working | Status::NeedsInput)
+            || env.sessions[i].live.as_ref().is_some_and(|l| l.thread.read(cx).in_background());
+        if open || busy || self.check_running(id) || self.phone_watching(id) {
+            return;
+        }
+        let Some(session) = self.find_env_mut(env_path).map(|e| &mut e.sessions[i]) else {
+            return;
+        };
+        if let Some(live) = session.live.take() {
+            let t = live.thread.read(cx);
+            let transcript = t.transcript(cx);
+            session.meta = Some(t.meta());
+            let path = state::transcript_path(id);
+            cx.background_spawn(async move {
+                let _ = write_transcript(&path, &transcript);
+            })
+            .detach();
+            live.thread.update(cx, |t, _| t.shutdown());
+        }
+    }
+
+    /// Sends the composer text: to the open session, or as the first prompt of a new one.
+    pub(super) fn send_prompt(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.active_session_id() {
+            let path = self.env().path.clone();
+            if text.trim() == "/stage" {
+                self.stage_session(&path, &id, window, cx, |this, staged, path, id, _, cx| {
+                    let text = match staged {
+                        Ok(files) if files.is_empty() => ("Nothing this session changed is left to stage.".to_string(), false),
+                        Ok(files) => (
+                            format!(
+                                "Staged {} {} this session changed: {}",
+                                files.len(),
+                                if files.len() == 1 { "file" } else { "files" },
+                                files.join(", ")
+                            ),
+                            false,
+                        ),
+                        Err(e) => (format!("Staging failed: {e}"), true),
+                    };
+                    if let Some(thread) = this.session_mut(&path, &id).and_then(|s| s.live.as_ref().map(|l| l.thread.clone())) {
+                        thread.update(cx, |t, cx| t.post_notice(text.0, text.1, cx));
+                    }
+                });
+                return;
+            }
+            if crate::headless::shown(&id) && !self.adopt_headless(&path, &id, &text, window, cx) {
+                return;
+            }
+            self.ensure_live(&path, &id, window, cx);
+            self.user_took_over(&id);
+            if let Some(thread) = self.active_thread(cx) {
+                thread.update(cx, |t, cx| t.send(text, cx));
+            }
+            if let Some(s) = self.session_mut(&path, &id) {
+                s.updated = model::unix_now();
+            }
+            cx.notify();
+            return;
+        }
+
+        let (env_path, agent) = (self.env().path.clone(), self.env().agent);
+        self.start_session_in(&env_path, agent, summary(&text), text, true, window, cx);
+    }
+
+    /// Stages, with `git add`, only the files session `id` changed, then calls
+    /// `then` with the paths staged (relative to the environment).
+    pub(super) fn stage_session(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Result<Vec<String>, String>, PathBuf, SharedString, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        self.ensure_live(env_path, id, window, cx);
+        let files: Vec<String> = self
+            .session_mut(env_path, id)
+            .and_then(|s| s.live.as_ref().map(|l| l.thread.read(cx).edited_files()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| Some(p.strip_prefix(env_path).ok()?.to_string_lossy().into_owned()))
+            .filter(|p| !p.is_empty())
+            .collect();
+        let (dir, id) = (env_path.to_path_buf(), SharedString::from(id.to_string()));
+        cx.spawn_in(window, async move |this, cx| {
+            let d = dir.clone();
+            let staged = cx
+                .background_spawn(async move { crate::git::stage_only(&d, &files).map_err(|e| e.to_string()) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.refresh_status(&dir, cx);
+                then(this, staged, dir.clone(), id, window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Sends `text` to a session of any environment, starting its agent if it isn't running.
+    pub(super) fn send_to_session(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.ensure_live(env_path, id, window, cx);
+        let Some(s) = self.session_mut(env_path, id) else {
+            return false;
+        };
+        let Some(thread) = s.live.as_ref().map(|l| l.thread.clone()) else {
+            return false;
+        };
+        s.updated = model::unix_now();
+        s.status = Status::Working;
+        thread.update(cx, |t, cx| t.send(text, cx));
+        self.save(cx);
+        cx.notify();
+        true
+    }
+
+    /// Starts a session in any environment with `text` as its first prompt; `show`
+    /// opens it in a tab (the active one of that environment).
+    pub(super) fn start_session_in(
+        &mut self,
+        env_path: &Path,
+        agent: model::Agent,
+        title: SharedString,
+        text: String,
+        show: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<SharedString> {
+        self.start_session_with(env_path, agent, title, text, show, Vec::new(), window, cx)
+    }
+
+    /// [`Self::start_session_in`], with `extra` settings over the ones the
+    /// environment remembers, for this session only.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn start_session_with(
+        &mut self,
+        env_path: &Path,
+        agent: model::Agent,
+        title: SharedString,
+        text: String,
+        show: bool,
+        extra: Vec<(Setting, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<SharedString> {
+        let visible = self.has_projects() && self.env().path == env_path;
+        let id = new_session_id();
+        let env = self.find_env_mut(env_path)?;
+        let mut session = Session::new(id.clone(), title.clone(), agent);
+        session.status = Status::Working;
+        env.sessions.insert(0, session);
+        if show {
+            let tab = Tab::new(title, TabKind::Session { agent, id: id.clone() });
+            if matches!(env.tabs.get(env.active_tab).map(|t| &t.kind), Some(TabKind::NewSession)) {
+                env.tabs[env.active_tab] = tab;
+            } else {
+                env.tabs.push(tab);
+                env.active_tab = env.tabs.len() - 1;
+            }
+            if visible {
+                self.note_active_tab();
+            }
+        }
+        let env_path = env_path.to_path_buf();
+        let thread = Thread::start(agent.kind(), env_path.clone(), None, cx);
+        self.apply_env_settings(&env_path, agent, extra, &thread, cx);
+        thread.update(cx, |t, cx| t.send(text, cx));
+        self.attach(&env_path, &id, thread, window, cx);
+        self.save(cx);
+        cx.notify();
+        Some(id)
+    }
+
+    /// Gives a new session of `agent` the settings its environment remembers,
+    /// with `extra` over them.
+    fn apply_env_settings(
+        &self,
+        env_path: &Path,
+        agent: model::Agent,
+        extra: Vec<(Setting, String)>,
+        thread: &Entity<Thread>,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = (agent == model::Agent::Droid)
+            .then(|| self.draft_settings_for(env_path))
+            .flatten();
+        let mut claude_settings = match (agent, self.find_env(env_path)) {
+            (model::Agent::Claude, Some(env)) => env.claude_settings.clone(),
+            (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
+            (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
+            _ => Vec::new(),
+        };
+        if !extra.is_empty() {
+            for (s, v) in extra {
+                // The effort remembered went with the model remembered.
+                claude_settings.retain(|(d, _)| *d != s && !(s == Setting::Model && *d == Setting::Effort));
+                claude_settings.push((s, v));
+            }
+            claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
+        }
+        thread.update(cx, |t, cx| {
+            // Queued until the session exists, then sent with `initialize_session`
+            // (Droid) or one by one before the first prompt (Claude, OpenCode).
+            if let Some(settings) = &settings {
+                for s in Setting::ALL {
+                    let value = settings.get(s);
+                    if !value.is_empty() {
+                        t.set_setting(s, value, cx);
+                    }
+                }
+            }
+            for (s, value) in &claude_settings {
+                t.set_setting(*s, value, cx);
+            }
+        });
+    }
+
+    /// Hands the composer's session to `agent`, in the same tab and checkout: a
+    /// session of `agent` takes its place, showing the conversation so far and
+    /// told about it with the next prompt; the old agent stops.
+    pub(super) fn continue_with(&mut self, agent: model::Agent, window: &mut Window, cx: &mut Context<Self>) {
+        let env_path = self.env().path.clone();
+        let Some(TabKind::Session { agent: from, id: old_id }) = self.env().tabs.get(self.composer_tab()).map(|t| t.kind.clone()) else {
+            return;
+        };
+        if from == agent || crate::headless::shown(&old_id) {
+            return;
+        }
+        let entries = self.session_entries(&env_path, &old_id, cx);
+        let Some(ix) = self.env().session_index(&old_id) else {
+            return;
+        };
+        let old = self.env_mut().sessions.remove(ix);
+        let mut agent_session = old.meta.as_ref().and_then(|m| m.session_id.clone());
+        if let Some(live) = &old.live {
+            let t = live.thread.read(cx);
+            agent_session = t.meta().session_id.or(agent_session);
+            if let Err(e) = write_transcript(&state::transcript_path(&old_id), &t.transcript(cx)) {
+                eprintln!("arakun: could not save {old_id}: {e}");
+            }
+            live.thread.update(cx, |t, _| t.shutdown());
+        }
+        forget_alerts(&old_id);
+
+        let id = new_session_id();
+        let mut session = Session::new(id.clone(), old.title.clone(), agent);
+        (session.added, session.removed) = (old.added, old.removed);
+        session.ci_run = old.ci_run;
+        #[cfg(feature = "coderlabs")]
+        {
+            session.task = old.task.clone();
+        }
+        session.continues = old.continues.clone();
+        let talked = entries.iter().any(|e| matches!(e, crate::agent::Entry::User { .. }));
+        let thread = if talked {
+            session.continues.push(model::Earlier { id: old_id.to_string(), agent_session });
+            let linked = state::data_dir().join("linked").join(format!("{old_id}.md"));
+            let markdown = crate::agent::notes::transcript_markdown(&old.title, from.label(), &entries);
+            if let Err(e) = std::fs::create_dir_all(state::data_dir().join("linked")).and_then(|_| std::fs::write(&linked, markdown)) {
+                eprintln!("arakun: could not write {}: {e}", linked.display());
+            }
+            let handoff =
+                crate::agent::notes::handoff(from.label(), &old.title, &entries, &linked.to_string_lossy(), HANDOFF_BUDGET);
+            Thread::continued(agent.kind(), env_path.clone(), old.title.to_string(), entries, handoff, cx)
+        } else {
+            // Nothing was said yet: a fresh session of `agent` and nothing to keep.
+            let path = state::transcript_path(&old_id);
+            cx.background_spawn(async move {
+                let _ = std::fs::remove_file(path);
+            })
+            .detach();
+            Thread::start(agent.kind(), env_path.clone(), None, cx)
+        };
+        drop(old);
+        let env = self.env_mut();
+        env.sessions.insert(ix, session);
+        for tab in &mut env.tabs {
+            if matches!(&tab.kind, TabKind::Session { id: tid, .. } if *tid == old_id) {
+                tab.kind = TabKind::Session { agent, id: id.clone() };
+            }
+        }
+        self.apply_env_settings(&env_path, agent, Vec::new(), &thread, cx);
+        self.attach(&env_path, &id, thread, window, cx);
+        self.save_transcript(&env_path, &id, cx);
+        self.note_active_tab();
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Opens a session from the list in a tab (reusing its tab if it has one).
+    pub(super) fn open_session(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let env = self.env_mut();
+        let Some(i) = env.session_index(&id) else {
+            return;
+        };
+        let existing = env
+            .tabs
+            .iter()
+            .position(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if *tid == id));
+        env.active_tab = match existing {
+            Some(t) => t,
+            None => {
+                let s = &env.sessions[i];
+                let tab = Tab::new(s.title.clone(), TabKind::Session { agent: s.agent, id: id.clone() });
+                if matches!(env.tabs.get(env.active_tab).map(|t| &t.kind), Some(TabKind::NewSession))
+                    && env.tabs.len() == 1
+                {
+                    env.tabs[0] = tab;
+                    0
+                } else {
+                    env.tabs.push(tab);
+                    env.tabs.len() - 1
+                }
+            }
+        };
+        self.note_active_tab();
+        self.ensure_active_live(window, cx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    pub(super) fn cancel_active(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(thread) = self.active_thread(cx) else {
+            return false;
+        };
+        let busy = thread.read(cx).is_busy();
+        if busy {
+            thread.update(cx, |t, cx| t.cancel(cx));
+        }
+        busy
+    }
+
+    // ---- settings before the first message ---------------------------------
+
+    /// Loads Droid's defaults and model list off the main thread; the list is
+    /// cached, so Droid is only asked when the cache is missing or old.
+    /// Claude's and OpenCode's options are cached the same way; the agent is only
+    /// asked when none of its sessions has reported them yet.
+    pub(super) fn warm_droid_catalog(&mut self, cx: &mut Context<Self>) {
+        let droid = catalog::droid_native();
+        cx.spawn(async move |this, cx| {
+            if droid {
+                cx.background_spawn(async { catalog::refresh() }).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+            cx.background_spawn(async { catalog::refresh_claude() }).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(async { catalog::refresh_opencode() }).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// The settings the next native Droid session of the visible environment
+    /// starts with: Droid's defaults plus what was picked on the New session tab.
+    /// Values Droid would reject (an unknown model) are left empty.
+    pub(super) fn draft_settings(&self) -> Option<NativeSettings> {
+        if !self.has_projects() {
+            return None;
+        }
+        self.draft_settings_for(&self.env().path)
+    }
+
+    /// The Droid settings picked on an environment's New session tab, over the defaults.
+    pub(super) fn draft_settings_for(&self, env_path: &Path) -> Option<NativeSettings> {
+        if !catalog::droid_native() {
+            return None;
+        }
+        let env = self.find_env(env_path)?;
+        let catalog = catalog::current();
+        let mut settings = catalog.defaults.clone();
+        for (s, v) in &env.draft_settings {
+            crate::agent::apply_setting(&mut settings, &catalog.models, *s, v);
+        }
+        if !catalog.models.is_empty() {
+            let model = catalog
+                .models
+                .iter()
+                .find(|m| m.id == settings.model_id && m.disabled.is_none());
+            match model {
+                None => {
+                    settings.model_id.clear();
+                    settings.reasoning_effort.clear();
+                }
+                Some(m) if !m.efforts.is_empty() && !m.efforts.contains(&settings.reasoning_effort) => {
+                    settings.reasoning_effort = m.default_effort.clone().unwrap_or_default();
+                }
+                Some(_) => {}
+            }
+        }
+        Some(settings)
+    }
+
+    /// The session the composer writes to, when it is running.
+    pub(super) fn composer_thread(&self) -> Option<Entity<Thread>> {
+        if !self.has_projects() {
+            return None;
+        }
+        let env = self.env();
+        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind) else {
+            return None;
+        };
+        env.sessions[env.session_index(id)?].live.as_ref().map(|l| l.thread.clone())
+    }
+
+    /// The agent of the composer's session, or the one picked for the next session.
+    pub(super) fn composer_agent(&self) -> model::Agent {
+        let env = self.env();
+        match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+            Some(TabKind::Session { agent, .. }) => *agent,
+            _ => env.agent,
+        }
+    }
+
+    pub(super) fn composer_in_session(&self) -> bool {
+        let env = self.env();
+        matches!(env.tabs.get(self.composer_tab()).map(|t| &t.kind), Some(TabKind::Session { .. }))
+    }
+
+    /// A setting's value and choices: the running session's, or what the next
+    /// session of this environment starts with.
+    pub(super) fn setting_choices(&self, s: Setting, cx: &gpui::App) -> Option<(String, Vec<SettingOption>)> {
+        if let Some(thread) = self.composer_thread() {
+            return thread.read(cx).setting(s).filter(|(_, o)| !o.is_empty());
+        }
+        if !self.has_projects() || self.composer_in_session() {
+            return None;
+        }
+        self.draft_choices(&self.env().path, self.env().agent, s)
+    }
+
+    /// What the next `agent` session of the environment at `env_path` starts with
+    /// for a setting, and its choices.
+    pub(super) fn draft_choices(&self, env_path: &Path, agent: model::Agent, s: Setting) -> Option<(String, Vec<SettingOption>)> {
+        let env = self.find_env(env_path)?;
+        match agent {
+            model::Agent::Droid => {
+                if s == Setting::Fast {
+                    return None;
+                }
+                let settings = self.draft_settings_for(env_path)?;
+                let models = &catalog::current().models;
+                if s == Setting::Model && models.is_empty() {
+                    return None;
+                }
+                Some(crate::agent::setting_options(&settings, models, s))
+            }
+            model::Agent::Claude => {
+                let options = catalog::claude_options();
+                let o = crate::agent::acp_option(&options, s)?;
+                let (mut current, choices) = crate::agent::acp_setting_options(o, s);
+                if let Some((_, v)) = env.claude_settings.iter().find(|(d, _)| *d == s)
+                    && choices.iter().any(|c| c.id == *v)
+                {
+                    current = v.clone();
+                }
+                Some((current, choices))
+            }
+            model::Agent::OpenCode => {
+                let options = catalog::opencode_options();
+                let draft = opencode_draft(env);
+                let picked = |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v.clone());
+                // Reasoning levels are per model: the cached ones are the default model's.
+                if s == Setting::Effort
+                    && let Some(model) = picked(Setting::Model)
+                    && crate::agent::acp_option(&options, Setting::Model).is_some_and(|o| o.current != model)
+                {
+                    return None;
+                }
+                let o = crate::agent::acp_option(&options, s)?;
+                let (mut current, choices) = crate::agent::acp_setting_options(o, s);
+                if let Some(v) = picked(s).filter(|v| choices.iter().any(|c| c.id == *v)) {
+                    current = v;
+                }
+                Some((current, choices))
+            }
+            model::Agent::WorkersAi => {
+                let options = crate::agent::workers_ai::draft_options(&env.workers_ai_settings);
+                crate::agent::acp_option(&options, s).map(|o| crate::agent::acp_setting_options(o, s))
+            }
+        }
+    }
+
+    /// The label a chip shows for a setting's value.
+    pub(super) fn setting_value_label(&self, s: Setting, cx: &gpui::App) -> Option<String> {
+        if let Some(thread) = self.composer_thread() {
+            return thread.read(cx).setting_label(s);
+        }
+        let (current, options) = self.setting_choices(s, cx)?;
+        Some(match self.env().agent {
+            model::Agent::Droid => {
+                let settings = self.draft_settings()?;
+                if settings.get(s).is_empty() {
+                    "Default".to_string()
+                } else {
+                    crate::agent::setting_label(&settings, &catalog::current().models, s)
+                }
+            }
+            model::Agent::Claude | model::Agent::OpenCode | model::Agent::WorkersAi => {
+                crate::agent::acp_label(s, &current, &options)
+            }
+        })
+    }
+
+    /// Picks a setting for the composer's session, or for the next one. Either way
+    /// the environment remembers it, so its next session starts the same.
+    pub(super) fn choose_setting(&mut self, s: Setting, value: &str, cx: &mut Context<Self>) {
+        let agent = self.composer_agent();
+        if let Some(thread) = self.composer_thread() {
+            thread.update(cx, |t, cx| t.set_setting(s, value, cx));
+        } else if self.composer_in_session() {
+            return;
+        }
+        if self.has_projects() {
+            let path = self.env().path.clone();
+            self.remember_setting(&path, agent, s, value, cx);
+        }
+        cx.notify();
+    }
+
+    /// What the next `agent` session of the environment at `env_path` starts with.
+    pub(super) fn remember_setting(&mut self, env_path: &Path, agent: model::Agent, s: Setting, value: &str, cx: &mut Context<Self>) {
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        let draft = match agent {
+            model::Agent::Droid => &mut env.draft_settings,
+            model::Agent::Claude => &mut env.claude_settings,
+            model::Agent::OpenCode => &mut env.opencode_settings,
+            model::Agent::WorkersAi => &mut env.workers_ai_settings,
+        };
+        draft.retain(|(d, _)| *d != s);
+        draft.push((s, value.to_string()));
+        // A model change may drop the effort picked for the old model.
+        if s == Setting::Model {
+            draft.retain(|(d, _)| *d != Setting::Effort);
+        }
+        // Other environments' next OpenCode sessions start on this model too.
+        if agent == model::Agent::OpenCode && matches!(s, Setting::Model | Setting::Effort) {
+            let model_settings = opencode_draft(env).into_iter().filter(|(d, _)| matches!(d, Setting::Model | Setting::Effort));
+            catalog::remember_opencode_pick(model_settings.collect());
+        }
+        self.save(cx);
+    }
+
+    /// Back to the agent's defaults, for the composer's session and the next ones.
+    pub(super) fn reset_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
+        }
+        let agent = self.composer_agent();
+        {
+            let env = self.env_mut();
+            // Only what the model menu shows; the permission level stays.
+            let model_menu = |s: &Setting| matches!(s, Setting::Model | Setting::Effort | Setting::Fast);
+            match agent {
+                model::Agent::Droid => env.draft_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::Claude => env.claude_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::OpenCode => {
+                    env.opencode_settings.retain(|(s, _)| !model_menu(s));
+                    catalog::remember_opencode_pick(Vec::new());
+                }
+                model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
+            }
+        }
+        self.save(cx);
+        if let Some(thread) = self.composer_thread() {
+            let defaults: Vec<(Setting, String)> = match agent {
+                model::Agent::Droid => {
+                    let d = &catalog::current().defaults;
+                    [Setting::Model, Setting::Effort]
+                        .into_iter()
+                        .map(|s| (s, d.get(s).to_string()))
+                        .filter(|(_, v)| !v.is_empty())
+                        .collect()
+                }
+                model::Agent::Claude => {
+                    let options = catalog::claude_options();
+                    [Setting::Model, Setting::Effort, Setting::Fast]
+                        .into_iter()
+                        .filter_map(|s| Some((s, crate::agent::acp_option(&options, s)?.current.clone())))
+                        .collect()
+                }
+                // OpenCode's default model; its reasoning follows.
+                model::Agent::OpenCode => crate::agent::acp_option(&catalog::opencode_options(), Setting::Model)
+                    .map(|o| (Setting::Model, o.current.clone()))
+                    .into_iter()
+                    .collect(),
+                model::Agent::WorkersAi => crate::agent::workers_ai::draft_options(&[])
+                    .into_iter()
+                    .map(|o| (if o.category.as_deref() == Some("model") { Setting::Model } else { Setting::Effort }, o.current))
+                    .collect(),
+            };
+            thread.update(cx, |t, cx| {
+                for (s, v) in defaults {
+                    if t.setting(s).is_some_and(|(current, _)| current != v) {
+                        t.set_setting(s, &v, cx);
+                    }
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    /// Shift+Tab: the next permission level (Claude's mode, Droid's autonomy).
+    pub(super) fn cycle_permissions(&mut self, cx: &mut Context<Self>) {
+        let s = match self.composer_agent() {
+            model::Agent::Droid if self.setting_choices(Setting::Autonomy, cx).is_some() => Setting::Autonomy,
+            _ => Setting::Mode,
+        };
+        let Some((current, options)) = self.setting_choices(s, cx) else {
+            return;
+        };
+        let options: Vec<_> = options.into_iter().filter(|o| o.disabled.is_none()).collect();
+        let Some(next) = options
+            .iter()
+            .position(|o| o.id == current)
+            .map(|i| &options[(i + 1) % options.len()])
+            .or(options.first())
+        else {
+            return;
+        };
+        self.composer_flash = Some(format!("{}: {}", s.label(), next.name).into());
+        let id = next.id.clone();
+        self.choose_setting(s, &id, cx);
+    }
+
+    // ---- questions read aloud ----------------------------------------------------
+
+    /// Reads a session's new AskUser question aloud once, even while the session is on
+    /// screen, and stops reading a question that was answered or dismissed.
+    fn speak_question(&mut self, env_path: &Path, id: &SharedString, thread: &Entity<Thread>, cx: &mut Context<Self>) {
+        let pending = thread
+            .read(cx)
+            .pending_question()
+            .map(|q| (q.tool_call_id.clone(), q.questions.clone()));
+        let last = SPOKEN.with(|s| s.borrow().get(id.as_ref()).cloned());
+        if last.as_deref() == pending.as_ref().map(|(key, _)| key.as_str()) {
+            return;
+        }
+        if let Some(old) = &last {
+            crate::voice::cancel(old);
+        }
+        let Some((key, questions)) = pending else {
+            SPOKEN.with(|s| s.borrow_mut().remove(id.as_ref()));
+            return;
+        };
+        SPOKEN.with(|s| s.borrow_mut().insert(id.to_string(), key.clone()));
+        if !crate::voice::settings().enabled {
+            return;
+        }
+        let title = self
+            .find_env(env_path)
+            .and_then(|e| e.session_index(id).map(|i| e.sessions[i].title.to_string()))
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| thread.read(cx).title().to_string());
+        let (text, lang) = crate::voice::question_text(&title, &questions);
+        crate::voice::speak(key, text, lang);
+    }
+
+    // ---- desktop notifications ---------------------------------------------
+    /// One desktop notification when a session the user is not looking at finishes a
+    /// turn, wants an answer, or fails.
+    pub(super) fn notify_desktop(
+        &mut self,
+        env_path: &Path,
+        id: &SharedString,
+        thread: &Entity<Thread>,
+        ev: &ThreadEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let t = thread.read(cx);
+        let (kind, body): (Notice, String) = match ev {
+            ThreadEvent::Finished { stop_reason } => match stop_reason.as_str() {
+                "cancelled" => return,
+                "error" => (Notice::Error, error_text(t)),
+                _ => (Notice::Finished, "Finished its turn.".into()),
+            },
+            ThreadEvent::NeedsPermission => {
+                let body = if let Some(p) = t.pending_permission() {
+                    if p.plan.is_some() {
+                        "Has a plan ready for your approval.".to_string()
+                    } else {
+                        format!("Needs permission: {}", p.title)
+                    }
+                } else if t.pending_question().is_some() {
+                    "Has a question for you.".into()
+                } else {
+                    "Needs your input.".into()
+                };
+                (Notice::Input, body)
+            }
+            ThreadEvent::StatusChanged if matches!(t.status(), ThreadStatus::Error(_)) => {
+                (Notice::Error, error_text(t))
+            }
+            ThreadEvent::StatusChanged => {
+                // Back at work: the next turn end or question notifies again.
+                if t.status() == ThreadStatus::Working {
+                    NOTIFIED.with(|n| n.borrow_mut().remove(id.as_ref()));
+                }
+                return;
+            }
+            _ => return,
+        };
+        // A failing turn reports both a status change and its end; one notice is enough.
+        let repeated = NOTIFIED.with(|n| n.borrow_mut().insert(id.to_string(), kind) == Some(kind));
+        if repeated {
+            return;
+        }
+        let title = self
+            .find_env(env_path)
+            .and_then(|e| e.session_index(id).map(|i| e.sessions[i].title.clone()))
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| t.title());
+        // Phones hear when the user is away from this window; the desktop, when
+        // the session is not the one on screen.
+        let at_computer = window.is_window_active();
+        if !at_computer {
+            self.notify_phones(id, kind, &title, &body, cx);
+        }
+        let visible = at_computer
+            && self.has_projects()
+            && self.env().path == env_path
+            && self.active_session_id().as_ref() == Some(id);
+        if visible {
+            return;
+        }
+        // The island says more (model, last reply); the desktop only stands in for it.
+        if !self.island_alert(id, thread, kind, &title, cx) {
+            send_notification(&title, &body, kind == Notice::Error);
+        }
+    }
+
+    /// Writes a live session's transcript in the background.
+    pub(super) fn save_transcript(&mut self, env_path: &Path, id: &str, cx: &mut Context<Self>) {
+        let Some(thread) = self.session_mut(env_path, id).and_then(|s| s.live.as_ref().map(|l| l.thread.clone())) else {
+            return;
+        };
+        let (path, transcript) = (state::transcript_path(id), thread.read(cx).transcript(cx));
+        cx.background_spawn(async move {
+            if let Err(e) = write_transcript(&path, &transcript) {
+                eprintln!("arakun: could not save {}: {e}", path.display());
+            }
+        })
+        .detach();
+    }
+
+    pub(super) fn find_env(&self, path: &Path) -> Option<&model::Environment> {
+        self.projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .find(|e| e.path == path)
+    }
+
+    // ---- session actions -------------------------------------------------
+
+    /// A forked or rewound copy of a session, listed next to its source and opened in a tab.
+    fn add_forked_session(
+        &mut self,
+        env_path: &Path,
+        meta: crate::agent::SessionMeta,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = new_session_id();
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        let title: SharedString = meta.title.clone().into();
+        let agent = model::Agent::from_key(meta.agent.id());
+        let mut session = Session::new(id.clone(), title.clone(), agent);
+        session.meta = Some(meta);
+        env.sessions.insert(0, session);
+        let visible = self.has_projects() && self.env().path == env_path;
+        if visible {
+            self.open_session(id, window, cx);
+        } else {
+            // Forked from a session of another environment: its tab waits there.
+            if let Some(env) = self.find_env_mut(env_path) {
+                env.tabs.push(Tab::new(title, TabKind::Session { agent, id }));
+            }
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn rename_session(&mut self, id: &str, title: &str, cx: &mut Context<Self>) {
+        let title = title.trim();
+        if title.is_empty() || !self.has_projects() {
+            return;
+        }
+        let new_title: SharedString = title.to_string().into();
+        let env = self.env_mut();
+        let Some(i) = env.session_index(id) else {
+            return;
+        };
+        let session = &mut env.sessions[i];
+        // `meta` keeps the agent's title: `ensure_live` spots the difference and
+        // passes the rename on the next time the session starts.
+        session.title = new_title.clone();
+        let thread = session.live.as_ref().map(|l| l.thread.clone());
+        for tab in &mut env.tabs {
+            if matches!(&tab.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id) {
+                tab.title = new_title.clone();
+            }
+        }
+        if let Some(thread) = thread {
+            thread.update(cx, |t, cx| t.rename(title, cx));
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Fork or compact a native Droid session; the session opens in a tab so the
+    /// result is on screen, and the request waits there until Droid is ready.
+    pub(super) fn session_action(&mut self, id: SharedString, fork: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_session(id.clone(), window, cx);
+        let env = self.env();
+        let Some(thread) = env
+            .session_index(&id)
+            .and_then(|i| env.sessions[i].live.as_ref())
+            .map(|l| l.thread.clone())
+        else {
+            return;
+        };
+        thread.update(cx, |t, cx| {
+            if fork {
+                t.fork(cx)
+            } else {
+                t.compact(None, cx)
+            }
+        });
+    }
+
+    /// Takes a session off arakun's list (its tab too). Droid's own copy stays.
+    pub(super) fn remove_session(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
+        }
+        while let Some(i) = self
+            .env()
+            .tabs
+            .iter()
+            .position(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id))
+        {
+            self.close_tab(i, window, cx);
+        }
+        let env = self.env_mut();
+        let removed = env.session_index(id).map(|i| env.sessions.remove(i));
+        if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
+            live.thread.update(cx, |t, _| t.shutdown());
+        }
+        let mut paths = vec![state::transcript_path(id)];
+        for earlier in removed.iter().flat_map(|s| &s.continues) {
+            paths.push(state::transcript_path(&earlier.id));
+            paths.push(state::data_dir().join("linked").join(format!("{}.md", earlier.id)));
+        }
+        cx.background_spawn(async move {
+            for path in paths {
+                let _ = std::fs::remove_file(path);
+            }
+        })
+        .detach();
+        forget_alerts(id);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Droid session ids arakun already lists, in any environment.
+    pub(super) fn known_agent_ids(&self) -> std::collections::HashSet<String> {
+        self.projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .flat_map(|s| {
+                let own = s.meta.as_ref().and_then(|m| m.session_id.clone());
+                own.into_iter().chain(s.continues.iter().filter_map(|c| c.agent_session.clone()))
+            })
+            .collect()
+    }
+
+    pub(super) fn import_agent_sessions(&mut self, found: Vec<catalog::AgentSession>, cx: &mut Context<Self>) {
+        if !self.has_projects() || found.is_empty() {
+            return;
+        }
+        let known = self.known_agent_ids();
+        let env = self.env_mut();
+        let mut found = found;
+        found.retain(|d| !known.contains(&d.id));
+        found.sort_by_key(|a| a.updated);
+        for d in found {
+            let agent = match d.agent {
+                AgentKind::Claude => model::Agent::Claude,
+                AgentKind::Droid => model::Agent::Droid,
+                AgentKind::OpenCode => model::Agent::OpenCode,
+                AgentKind::WorkersAi => model::Agent::WorkersAi,
+            };
+            let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
+            session.updated = d.updated;
+            session.meta = Some(crate::agent::SessionMeta {
+                agent: d.agent,
+                session_id: Some(d.id),
+                title: d.title,
+                cwd: d.cwd,
+                created: d.updated,
+                updated: d.updated,
+                pr: None,
+            });
+            env.sessions.insert(0, session);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Writes every live transcript; called before the window goes away. When
+    /// arakun is restarting, turns cut off are marked to go on in the next one,
+    /// and their sessions are listed so it reopens them at once.
+    pub(super) fn save_transcripts(&self, cx: &gpui::App) {
+        let mut resume = Vec::new();
+        for env in self.projects.iter().flat_map(|p| &p.environments) {
+            for s in env.sessions.iter().filter(|s| !crate::headless::shown(&s.id)) {
+                if let Some(live) = &s.live {
+                    let mut t = live.thread.read(cx).transcript(cx);
+                    if self.restarting && t.interrupted {
+                        t.resume = true;
+                        resume.push(s.id.to_string());
+                    }
+                    let _ = write_transcript(&state::transcript_path(&s.id), &t);
+                }
+            }
+        }
+        if self.restarting {
+            let _ = std::fs::write(state::resume_path(), serde_json::to_vec(&resume).unwrap_or_default());
+        }
+    }
+
+    /// After `arakun restart`: brings back the sessions whose turns it cut off,
+    /// so they go on without being opened first.
+    pub(super) fn resume_after_restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let path = state::resume_path();
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        let _ = std::fs::remove_file(&path);
+        let ids: Vec<String> = serde_json::from_slice(&bytes).unwrap_or_default();
+        for id in ids {
+            let env_path = self
+                .projects
+                .iter()
+                .flat_map(|p| &p.environments)
+                .find(|e| e.session_index(&id).is_some())
+                .map(|e| e.path.clone());
+            if let Some(env_path) = env_path {
+                self.ensure_live(&env_path, &id, window, cx);
+            }
+        }
+    }
+}
+
+/// What a session did that deserves a word: on the desktop, and on the phones.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Notice {
+    Finished,
+    Input,
+    Error,
+}
+
+thread_local! {
+    /// The last desktop notice per session, so one event is announced once.
+    static NOTIFIED: RefCell<HashMap<String, Notice>> = RefCell::new(HashMap::new());
+    /// The AskUser question last read aloud per session, by tool call id.
+    static SPOKEN: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+fn error_text(t: &Thread) -> String {
+    match t.status() {
+        ThreadStatus::Error(msg) => {
+            let line = msg.lines().next().unwrap_or("").trim();
+            match line.char_indices().nth(160) {
+                Some((i, _)) => format!("{}…", &line[..i]),
+                None if line.is_empty() => "Stopped with an error.".into(),
+                None => line.to_string(),
+            }
+        }
+        _ => "Stopped with an error.".into(),
+    }
+}
+
+/// The installed `arakun` theme icon if there is one, else the one in the source tree.
+fn notification_icon() -> Option<String> {
+    let themed = ["/usr/share/icons/hicolor", "/usr/local/share/icons/hicolor"]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .chain(std::iter::once(model::home().join(".local/share/icons/hicolor")))
+        .any(|dir| ["48x48", "64x64", "128x128", "256x256", "scalable"].iter().any(|s| {
+            dir.join(s).join("apps/arakun.png").exists() || dir.join(s).join("apps/arakun.svg").exists()
+        }));
+    if themed {
+        return Some("arakun".into());
+    }
+    let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/brand/arakun.png");
+    bundled.exists().then(|| bundled.display().to_string())
+}
+
+pub(super) fn send_notification(title: &str, body: &str, critical: bool) {
+    if std::env::var_os("ARAKUN_NOTIFY").is_some_and(|v| v == "off") {
+        return;
+    }
+    let icon = if cfg!(windows) { None } else { notification_icon() };
+    crate::platform::notify(title, body, critical, icon.as_deref());
+}
+
+/// Drops what was remembered about a session's alerts, and any it is still speaking.
+fn forget_alerts(id: &str) {
+    NOTIFIED.with(|n| n.borrow_mut().remove(id));
+    if let Some(key) = SPOKEN.with(|s| s.borrow_mut().remove(id)) {
+        crate::voice::cancel(&key);
+    }
+}
+
+fn write_transcript(path: &Path, t: &crate::agent::Transcript) -> std::io::Result<()> {
+    crate::durable::write(path, &serde_json::to_vec(t)?)
+}
+
+/// The OpenCode settings an environment's next session starts with: its own
+/// picks, and where it has no model of its own, the model last picked anywhere.
+/// The model goes first: the reasoning levels on offer depend on it.
+pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    let mut draft = env.opencode_settings.clone();
+    if !draft.iter().any(|(s, _)| *s == Setting::Model) {
+        for (s, v) in catalog::opencode_picked() {
+            if !draft.iter().any(|(d, _)| *d == s) {
+                draft.push((s, v));
+            }
+        }
+    }
+    // A model OpenCode no longer offers (arakun now pins its list) would only fail.
+    let options = catalog::opencode_options();
+    if let Some(o) = crate::agent::acp_option(&options, Setting::Model) {
+        draft.retain(|(s, v)| *s != Setting::Model || o.options.iter().any(|c| c.id == *v));
+    }
+    draft.sort_by_key(|(s, _)| *s != Setting::Model);
+    draft
+}

@@ -1,0 +1,19 @@
+{
+  "name": "arakun-relay",
+  "private": true,
+  "description": "The relay phones reach a computer through: a Cloudflare Worker with one Durable Object per computer.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.11",
+    "@cloudflare/workers-types": "^5.20261031.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.156.0"
+  }
+}

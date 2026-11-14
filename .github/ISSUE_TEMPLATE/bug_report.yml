@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in Arakun does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For security issues, use a private advisory instead (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a project...
+        2. Start a Claude Code session...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Arakun version or commit
+      placeholder: v0.1.0, or the commit you built
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - GitHub Release
+        - Built from source without the browser (--no-default-features)
+        - Built from source with the browser (CEF)
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux (Wayland)
+        - Linux (X11)
+        - Windows
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS, desktop and GPU
+      placeholder: Arch Linux, Hyprland, AMD RX 7800 / Windows 11 23H2, NVIDIA
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent involved
+      multiple: true
+      options:
+        - None / not agent-related
+        - Claude Code
+        - Droid
+        - OpenCode
+        - Workers AI
+        - Headless agent (arakun agent run)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Terminal output (run arakun from a terminal with RUST_BACKTRACE=1), or on Windows %LOCALAPPDATA%\arakun\arakun.log. Remove tokens and private paths.
+      render: text

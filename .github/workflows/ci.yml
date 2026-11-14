@@ -87,7 +87,7 @@ jobs:
               tools/install-cef.sh) rust=true ;;
               # Nothing the Rust build or its tests read. Anything not listed
               # here, such as a new top-level folder, runs the Rust jobs.
-              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore) ;;
+              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml) ;;
               */*) rust=true ;;
               *.md) ;;
               *) rust=true ;;

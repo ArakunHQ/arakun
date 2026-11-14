@@ -1,0 +1,45 @@
+name: Dependencies
+
+# cargo-deny checks the crates in Cargo.lock against deny.toml: RustSec
+# advisories, licenses, duplicate versions and where crates come from.
+#
+# Pull requests run it only when they change the dependencies or this check.
+# Safe because it is not a required check, so a skipped run leaves nothing
+# pending (unlike ci.yml's jobs). New advisories appear without any change
+# here, so main is also checked for them every day.
+
+on:
+  push:
+    branches: [main]
+    paths: ["Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/deny.yml"]
+  pull_request:
+    paths: ["Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/deny.yml"]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deny-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: depot-ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
+
+      # Only advisories change on their own; the other checks need a change to
+      # Cargo.toml, Cargo.lock or deny.toml, and that runs them all.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          command-arguments: ${{ github.event_name == 'schedule' && 'advisories' || '' }}

@@ -56,13 +56,17 @@ off, and do not add code behind them.
 ## Checks
 
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
-`tools/` alone skips the Rust jobs, and the relay job runs only when `relay/`, `phone/`
-or CI itself changes. Run the ones that match what you changed before you push:
+`tools/` alone skips the Rust jobs, the relay job runs only when `relay/`, `phone/`
+or CI itself changes, and cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or
+`deny.toml` changes. Run the ones that match what you changed before you push:
 
 ```sh
 # the app (with CEF set up, you can leave out --no-default-features)
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
+
+# Cargo.toml, Cargo.lock or deny.toml changed (cargo install --locked cargo-deny)
+cargo deny check
 
 # relay/ or phone/ changed
 (cd relay && npm ci && npx tsc --noEmit && npx vitest run)
@@ -73,6 +77,9 @@ Some notes:
 
 - `--locked` fails if `Cargo.lock` would change. If you add or update a dependency,
   commit the new `Cargo.lock` in the same pull request.
+- `cargo deny check` reads [`deny.toml`](deny.toml). It fails on a crate with a
+  RustSec advisory, a license that is not allowed, or a git source that is not listed.
+  It also runs on `main` every day, because new advisories appear without any change.
 - Warnings fail clippy. Fix what causes them. Use `#[allow(...)]` only with a comment
   that says why the lint is wrong in that place.
 - Tests marked `#[ignore]` read this machine's own state (Claude Code, the Cloudflare
@@ -116,7 +123,10 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   it is for. Write plain, short sentences, as in the existing code and docs.
 - **New dependencies:** prefer pure Rust crates and crates GPUI already pulls in. Put a
   comment above each new entry in `Cargo.toml` that says what uses it, as the other
-  entries have.
+  entries have. Its license, and those of the crates it pulls in, must be on the
+  allow-list in [`deny.toml`](deny.toml): Arakun is also offered under commercial licenses,
+  so GPL, LGPL and AGPL crates can't be used, and MPL-2.0 is allowed one crate at a
+  time. Ask in the issue before you add a license to the list.
 - **Platforms.** Code for one platform goes behind `cfg(...)`, and the others must still
   build. If you can, run clippy for another target too (for example
   `--target x86_64-pc-windows-gnu`). In the pull request, say which platforms you tested

@@ -41,13 +41,16 @@ Run what CI runs for the parts you changed, and fix every warning:
 ```sh
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
+# Cargo.toml, Cargo.lock or deny.toml changed
+cargo deny check
 # relay/ or phone/ changed
 (cd relay && npm ci && npx tsc --noEmit && npx vitest run)
 (cd phone && node --test "test/*.test.mjs")
 ```
 
-If you add or update a dependency, commit `Cargo.lock` too. `lefthook install` runs
-these checks as Git hooks; see "Git hooks" in CONTRIBUTING.md.
+If you add or update a dependency, commit `Cargo.lock` too. Its license must be on the
+allow-list in `deny.toml`; do not add a license to that list without asking.
+`lefthook install` runs these checks as Git hooks; see "Git hooks" in CONTRIBUTING.md.
 
 ## Code
 

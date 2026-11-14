@@ -154,7 +154,8 @@ Some notes:
   request.
 - **Coding agents are welcome.** Arakun is a tool for working with them, after all. You
   are still responsible for the change: read the diff, run the checks, and make sure you
-  can explain it.
+  can explain it. [AGENTS.md](AGENTS.md) gives agents the rules from this guide
+  (`CLAUDE.md` loads it for Claude Code). If you change a rule here, change it there too.
 
 ## License
 

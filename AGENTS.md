@@ -46,7 +46,8 @@ cargo test --locked --no-default-features
 (cd phone && node --test "test/*.test.mjs")
 ```
 
-If you add or update a dependency, commit `Cargo.lock` too.
+If you add or update a dependency, commit `Cargo.lock` too. `lefthook install` runs
+these checks as Git hooks; see "Git hooks" in CONTRIBUTING.md.
 
 ## Code
 

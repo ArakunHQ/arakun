@@ -81,6 +81,29 @@ Some notes:
 - The phone tests check the phone's encryption against vectors the Rust side writes. If
   you change the format in `src/phone`, update both sides.
 
+### Git hooks
+
+[`lefthook.yml`](lefthook.yml) runs these checks for you, only for the parts you
+changed. Install [lefthook](https://lefthook.dev/installation/) (for example
+`brew install lefthook`, `npm install -g lefthook` or `winget install evilmartians.lefthook`),
+then turn the hooks on in your checkout:
+
+```sh
+lefthook install
+```
+
+- **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
+  and the phone tests if `phone/` or `src/phone/` changed. They check the files on
+  disk, not only what you staged.
+- **On push:** `cargo test` and the relay tests, if the commits you push change those
+  parts.
+- **On the commit message:** the Conventional Commits check (see
+  [Pull requests](#pull-requests)).
+
+Skip the hooks for one command with `LEFTHOOK=0 git commit ...`, or one job with
+`LEFTHOOK_EXCLUDE=clippy git commit ...`. Put your own changes in `lefthook-local.yml`,
+which git ignores. Turn the hooks off with `lefthook uninstall`.
+
 ## Writing code
 
 - **Tests** go in a `#[cfg(test)] mod tests` at the bottom of the file they test. Add a
@@ -153,10 +176,8 @@ Some notes:
   that does not follow it; edit the title and the check runs again by itself. GitHub's
   Revert button writes `Revert "…"`, so reword that to `revert: …`.
 
-  Commits inside the pull request are not checked, because they do not reach `main`. If
-  you want to check them as you write them, turn on the `commit-msg` hook with
-  `git config core.hooksPath tools/hooks` (undo it with
-  `git config --unset core.hooksPath`).
+  Commits inside the pull request are not checked, because they do not reach `main`. To
+  check them as you write them, turn on the [Git hooks](#git-hooks).
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

@@ -2,6 +2,7 @@
 /target-*
 /tools/hugeicons/node_modules
 /relay/node_modules
+/lefthook-local.yml
 /relay/.wrangler
 /relay/.dev.vars
 /relay/.peers-key.json

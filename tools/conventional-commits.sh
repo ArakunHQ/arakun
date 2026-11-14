@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks that a pull request title or commit message follows Conventional
 # Commits, with the types CONTRIBUTING.md lists. CI checks the title of every
-# pull request; tools/hooks/commit-msg checks commits for those who opt in.
+# pull request; the lefthook commit-msg hook checks commits for those who opt in.
 #
 #   tools/conventional-commits.sh title "fix(terminal): keep the tab name on resize"
 #   tools/conventional-commits.sh message .git/COMMIT_EDITMSG

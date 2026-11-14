@@ -132,8 +132,8 @@ Manager (Windows Credentials, Generic Credentials).
   name.
 - **Primary selection** (select to copy, middle click to paste) does not exist on Windows;
   in the terminal use `Ctrl+Shift+C`/`Ctrl+Shift+V`.
-- **No Windows CI.** The release workflow builds `arakun.exe` on Windows, but no tests run
-  there automatically.
+- **No Windows CI.** The release workflow builds `arakun.exe` on Windows and checks that
+  `arakun.exe --version` runs, but the tests run only on Linux.
 
 ## If something fails
 

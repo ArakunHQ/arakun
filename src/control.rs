@@ -206,6 +206,7 @@ arakun — command line for the running arakun window
 
 Usage:
   arakun                       start arakun
+  arakun --version             print the version (no window needed)
   arakun <dir> | add [dir]     add a project (or switch to it) and show it
   arakun browse [-s] <url>     open a browser tab (a path opens as file://)
   arakun open [-s] <file[:N]>  open a file tab, at line N
@@ -372,6 +373,11 @@ fn cli(args: Vec<String>) -> Cli {
     let (side, rest) = side_flag(first, &args[1..]);
     let request = |cmd: &str, args: Vec<String>| Request { cmd: cmd.into(), args, cwd: cwd.clone(), side };
     let req = match first.as_str() {
+        // Needs no display or running arakun, so the release workflow runs it as a smoke test.
+        "-V" | "--version" => {
+            println!("arakun {}", env!("CARGO_PKG_VERSION"));
+            return Cli::Exit(0);
+        }
         "help" | "-h" | "--help" => {
             let page = PAGE_USAGE.lines().map(|l| format!("  {l}\n")).collect::<String>();
             let extra: &[&str] = &[
@@ -958,6 +964,13 @@ mod tests {
         assert!(browse_target(&dir, "a.rs").starts_with("file:///"));
         assert_eq!(browse_target(&dir, "localhost:3000"), "localhost:3000");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn version_exits_without_the_app() {
+        for flag in ["--version", "-V"] {
+            assert!(matches!(cli(vec![flag.into()]), Cli::Exit(0)));
+        }
     }
 
     #[test]

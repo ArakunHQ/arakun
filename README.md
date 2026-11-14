@@ -75,6 +75,8 @@ freetype).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
 
+`arakun --version` prints the version without opening a window.
+
 Arakun does not bundle the agents. Install the ones you want to use:
 
 - Claude Code: Node.js with `npm` (Arakun installs the ACP adapter) and a signed-in

@@ -2,7 +2,7 @@
 //
 // Reads the "Runner usage" annotations that .github/actions/runner-usage leaves
 // on every job it runs in, groups the successful jobs of the last DAYS days by
-// workflow, job and runner label, and estimates for each group what a runner
+// workflow, job and runner label (runs from forks left out, see below), and estimates for each group what a runner
 // with half or double the CPUs would do to its duration and cost.
 //
 // The model, per 10% band of CPU use (time-weighted over all sampled runs):
@@ -90,9 +90,11 @@ async function usage(jobId) {
 }
 
 // Depot labels end in the CPU count ("depot-ubuntu-24.04-8"); none means 2.
+// Only the sizes Depot sells count as a suffix, so the year in a base label
+// ("depot-windows-2025") stays.
 function relabel(label, cpus) {
   if (!label.startsWith("depot-")) return `${cpus} CPUs`;
-  return `${label.replace(/-\d+$/, "")}${cpus === 2 ? "" : `-${cpus}`}`;
+  return `${label.replace(/-(?:4|8|16|32|64)$/, "")}${cpus === 2 ? "" : `-${cpus}`}`;
 }
 
 function analyze(group) {
@@ -171,7 +173,7 @@ function report(results, since, until) {
 
   if (measured.length) {
     lines.push(
-      "Successful jobs only, most CPU-minutes first. Half / double: estimated time and cost against today's runner (1.00x = the same).",
+      "Successful jobs of runs from this repository's own branches and tags (not forks), most CPU-minutes first. Half / double: estimated time and cost against today's runner (1.00x = the same).",
       "",
       "| Workflow / job | Runner | Runs | Median (p90) | CPU-min | CPU busy | At 90%+ | Memory peak | Half size | Double size | Verdict |",
       "|---|---|--:|--:|--:|--:|--:|--:|--:|--:|---|",
@@ -204,8 +206,14 @@ const until = new Date();
 const since = new Date(until - DAYS * 86400e3);
 const day = (d) => d.toISOString().slice(0, 10);
 
-const runs = await paged(`/repos/${REPO}/actions/runs?created=%3E%3D${since.toISOString()}`, "workflow_runs");
-console.log(`${runs.length} workflow runs since ${since.toISOString()}`);
+// A run from a fork pull request carries the fork's workflow and job names,
+// runs-on labels and annotations, and the report goes into an issue. So only
+// runs whose code is this repository's count: pushes, tags, and pull requests
+// from its own branches. pull_request_target runs from forks (CLA) go too;
+// they run on GitHub's runners and report nothing anyway.
+const allRuns = await paged(`/repos/${REPO}/actions/runs?created=%3E%3D${since.toISOString()}`, "workflow_runs");
+const runs = allRuns.filter((r) => r.head_repository?.full_name?.toLowerCase() === REPO.toLowerCase());
+console.log(`${allRuns.length} workflow runs since ${since.toISOString()}, ${allRuns.length - runs.length} from forks left out`);
 
 const jobs = (await pool(runs, 8, async (run) => {
   const list = await paged(`/repos/${REPO}/actions/runs/${run.id}/jobs`, "jobs");

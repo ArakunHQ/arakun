@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Checks that commit messages and pull request titles follow Conventional
-# Commits, with the types CONTRIBUTING.md lists. CI runs it on every pull
-# request; tools/hooks/commit-msg runs it locally for those who opt in.
+# Checks that a pull request title or commit message follows Conventional
+# Commits, with the types CONTRIBUTING.md lists. CI checks the title of every
+# pull request; tools/hooks/commit-msg checks commits for those who opt in.
 #
 #   tools/conventional-commits.sh title "fix(terminal): keep the tab name on resize"
-#   tools/conventional-commits.sh range origin/main..HEAD
 #   tools/conventional-commits.sh message .git/COMMIT_EDITMSG
 set -euo pipefail
 export LC_ALL=C
 
-TYPES='feat|fix|docs|refactor|perf|test|build|ci|chore'
+TYPES='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
 MAX_LENGTH=100
 # type, optional (scope), optional !, then ": " and a description.
 HEADER_RE="^($TYPES)(\([a-z0-9][a-z0-9._/-]*\))?!?: (.*)$"
@@ -17,8 +16,11 @@ HEADER_RE="^($TYPES)(\([a-z0-9][a-z0-9._/-]*\))?!?: (.*)$"
 # Prints why the header is wrong, or nothing when it is fine.
 problem() {
   local header=$1 description
-  if [[ $header == fixup!* || $header == squash!* || $header == amend!* ]]; then
-    echo "fold it into its commit first: git rebase -i --autosquash"
+  # What GitHub's Revert button and 'git revert' write.
+  if [[ $header =~ ^Revert\ \"(.*)\"$ ]]; then
+    description=${BASH_REMATCH[1]}
+    # Lower-cased by tr, not ${x,}: macOS still ships bash 3.2.
+    echo "write it as: revert: $(printf %s "${description:0:1}" | tr '[:upper:]' '[:lower:]')${description:1}"
     return
   fi
   if [[ ! $header =~ $HEADER_RE ]]; then
@@ -39,62 +41,43 @@ problem() {
   fi
 }
 
-# Checks one header; returns 1 and prints the reason when it fails.
+# Checks one header; exits 1 with the reason when it fails.
 check() {
   local what=$1 header=$2 why
   why=$(problem "$header")
   [[ -z $why ]] && return 0
-  echo "✗ $what: $header" >&2
-  echo "  $why" >&2
-  return 1
-}
+  cat >&2 <<EOF
+✗ $what: $header
+  $why
 
-hint() {
-  cat >&2 <<'EOF'
-
-Commit messages and pull request titles follow Conventional Commits, for example
+Pull request titles and commit messages follow Conventional Commits, for example
   fix(terminal): keep the tab name on resize
   feat(phone)!: answer permission prompts
 See "Pull requests" in CONTRIBUTING.md.
 EOF
+  exit 1
 }
 
-mode=${1:-}
-case $mode in
+case ${1:-} in
   title)
     [[ $# -eq 2 ]] || { echo "usage: $0 title <text>" >&2; exit 2; }
-    check "pull request title" "$2" || { hint; exit 1; }
-    ;;
-
-  range)
-    [[ $# -eq 2 ]] || { echo "usage: $0 range <base>..<head>" >&2; exit 2; }
-    failed=0
-    # Merge commits and bot commits (Dependabot and the like) are skipped.
-    while IFS=$'\t' read -r sha author subject; do
-      [[ $author == *'[bot]' ]] && continue
-      check "commit ${sha:0:9}" "$subject" || failed=1
-    done < <(git log --no-merges --reverse --format='%H%x09%an%x09%s' "$2")
-    if ((failed)); then
-      hint
-      echo "Reword them with 'git rebase -i' and force-push, or ask for a squash merge." >&2
-      exit 1
-    fi
+    check "pull request title" "$2"
     ;;
 
   message)
     [[ $# -eq 2 ]] || { echo "usage: $0 message <file>" >&2; exit 2; }
     # The first line that is not empty or a git comment, as git would keep it.
     header=$(grep -v '^#' "$2" | grep -m1 -v '^[[:space:]]*$' || true)
-    # Left for git to write: 'git commit --fixup', merges, 'git revert'.
-    # They are squashed or reworded before the pull request is merged.
+    # Left for git to write ('git commit --fixup', merges, 'git revert').
+    # Only the squashed pull request's title reaches main.
     case $header in
       'fixup! '* | 'squash! '* | 'amend! '* | 'Merge '* | 'Revert "'*) exit 0 ;;
     esac
-    check "commit message" "$header" || { hint; exit 1; }
+    check "commit message" "$header"
     ;;
 
   *)
-    sed -n '2,8s/^# \{0,1\}//p' "$0" >&2
+    sed -n '2,7s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac

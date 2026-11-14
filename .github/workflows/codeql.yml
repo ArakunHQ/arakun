@@ -15,7 +15,12 @@ name: CodeQL
 on:
   push:
     branches: [main]
+  # Skips pull requests that change no code CodeQL reads. Safe here because
+  # CodeQL is not a required check, so a skipped run leaves nothing pending
+  # (unlike ci.yml's jobs). Pushes to main always run, which keeps the results
+  # pull requests are compared against current.
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md", "iso/**"]
   # New queries ship with CodeQL releases, so main is checked weekly even when
   # nothing changes.
   schedule:

@@ -37,13 +37,23 @@ pub(super) struct DraggedSession {
 
 impl DraggedSession {
     pub fn new(env: PathBuf, id: SharedString, title: SharedString, agent: Agent) -> Self {
-        DraggedSession { env, id, title, agent, offset: Point::default() }
+        DraggedSession {
+            env,
+            id,
+            title,
+            agent,
+            offset: Point::default(),
+        }
     }
 }
 
 impl Render for DraggedSession {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let title = if self.title.is_empty() { SharedString::from("Untitled session") } else { self.title.clone() };
+        let title = if self.title.is_empty() {
+            SharedString::from("Untitled session")
+        } else {
+            self.title.clone()
+        };
         div()
             .relative()
             .left(-self.offset.x)
@@ -67,9 +77,20 @@ impl Render for DraggedSession {
                     .items_center()
                     .gap(px(6.))
                     .child(agent_icon(self.agent, 14.))
-                    .child(div().text_size(px(crate::ui::TEXT_XS)).text_color(theme::text_subtle()).child(self.agent.label())),
+                    .child(
+                        div()
+                            .text_size(px(crate::ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .child(self.agent.label()),
+                    ),
             )
-            .child(div().text_size(px(crate::ui::TEXT_MD)).font_weight(FontWeight::SEMIBOLD).truncate().child(title))
+            .child(
+                div()
+                    .text_size(px(crate::ui::TEXT_MD))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .truncate()
+                    .child(title),
+            )
             .with_animation(
                 "session-lift",
                 Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
@@ -88,7 +109,11 @@ pub(super) struct DraggedTab {
 
 impl DraggedTab {
     pub fn new(id: u64, title: SharedString) -> Self {
-        DraggedTab { id, title, offset: Point::default() }
+        DraggedTab {
+            id,
+            title,
+            offset: Point::default(),
+        }
     }
 }
 
@@ -177,7 +202,11 @@ impl Shell {
     }
 
     /// Esc during a drag: the card goes back where it was.
-    pub(super) fn cancel_session_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn cancel_session_drag(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !cx.has_active_drag() {
             return false;
         }
@@ -189,7 +218,12 @@ impl Shell {
         true
     }
 
-    pub(super) fn drop_session_on_row(&mut self, d: &DraggedSession, to: usize, cx: &mut Context<Self>) {
+    pub(super) fn drop_session_on_row(
+        &mut self,
+        d: &DraggedSession,
+        to: usize,
+        cx: &mut Context<Self>,
+    ) {
         self.lifted = None;
         let Some(env) = self.find_env_mut(&d.env) else {
             return;
@@ -208,11 +242,22 @@ impl Shell {
 
     fn slide(&mut self, moved: SharedString, from: usize, to: usize, cx: &mut Context<Self>) {
         let generation = self.slide.as_ref().map_or(0, |s| s.generation + 1);
-        self.slide = Some(SessionSlide { generation, moved, from, to });
+        self.slide = Some(SessionSlide {
+            generation,
+            moved,
+            from,
+            to,
+        });
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SLIDE + Duration::from_millis(60)).await;
+            cx.background_executor()
+                .timer(SLIDE + Duration::from_millis(60))
+                .await;
             let _ = this.update(cx, |this, cx| {
-                if this.slide.as_ref().is_some_and(|s| s.generation == generation) {
+                if this
+                    .slide
+                    .as_ref()
+                    .is_some_and(|s| s.generation == generation)
+                {
                     this.slide = None;
                     cx.notify();
                 }
@@ -224,7 +269,12 @@ impl Shell {
 
     /// Card `ix` (showing session `id`) sliding from where it was before the
     /// last reorder, or as is.
-    pub(super) fn sliding_card(&self, ix: usize, id: &SharedString, card: gpui::Stateful<gpui::Div>) -> AnyElement {
+    pub(super) fn sliding_card(
+        &self,
+        ix: usize,
+        id: &SharedString,
+        card: gpui::Stateful<gpui::Div>,
+    ) -> AnyElement {
         let Some(s) = &self.slide else {
             return card.into_any_element();
         };
@@ -248,21 +298,34 @@ impl Shell {
                 Animation::new(SLIDE).with_easing(ease_out_quint()),
                 move |el, t| {
                     let el = el.top(px(dy * (1. - t)));
-                    if landing { el.opacity(0.6 + 0.4 * t) } else { el }
+                    if landing {
+                        el.opacity(0.6 + 0.4 * t)
+                    } else {
+                        el
+                    }
                 },
             )
             .into_any_element()
     }
 
     /// A session dropped on the composer: ask what to do with it.
-    pub(super) fn drop_session_on_composer(&mut self, d: &DraggedSession, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn drop_session_on_composer(
+        &mut self,
+        d: &DraggedSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.lifted = None;
         if self.active_session_id().as_ref() == Some(&d.id) {
-            self.composer_flash = Some("That is this session. Drop it on another session's composer.".into());
+            self.composer_flash =
+                Some("That is this session. Drop it on another session's composer.".into());
             cx.notify();
             return;
         }
-        self.drop_menu = Some(DropMenu { dragged: d.clone(), at: window.mouse_position() });
+        self.drop_menu = Some(DropMenu {
+            dragged: d.clone(),
+            at: window.mouse_position(),
+        });
         cx.notify();
     }
 
@@ -287,11 +350,15 @@ impl Shell {
             self.composer_flash = Some("That session has no messages yet.".into());
             return;
         }
-        let block = crate::agent::notes::context_block(&d.title, d.agent.label(), &entries, CONTEXT_BUDGET);
+        let block =
+            crate::agent::notes::context_block(&d.title, d.agent.label(), &entries, CONTEXT_BUDGET);
         let env = self.env().path.clone();
         let list = self.attached.entry(env).or_default();
         list.retain(|c| c.title != d.title);
-        list.push(AttachedContext { title: d.title.clone(), block });
+        list.push(AttachedContext {
+            title: d.title.clone(),
+            block,
+        });
     }
 
     /// Writes the session out as markdown and mentions the file in the draft,
@@ -305,7 +372,11 @@ impl Shell {
             self.composer_flash = Some(format!("Could not link the session: {e}").into());
             return;
         }
-        let title = if d.title.is_empty() { "Untitled session" } else { d.title.as_ref() };
+        let title = if d.title.is_empty() {
+            "Untitled session"
+        } else {
+            d.title.as_ref()
+        };
         let line = format!(
             "Linked session \"{title}\" ({}), its full transcript: {} ",
             d.agent.label(),
@@ -317,28 +388,42 @@ impl Shell {
 
     pub(super) fn render_session_drop_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.drop_menu.as_ref()?;
-        let title = if menu.dragged.title.is_empty() { "this session".to_string() } else { format!("\"{}\"", menu.dragged.title) };
-        let item = |id: &'static str, icon_name: &'static str, label: &'static str, hint: &'static str| {
-            div()
-                .id(id)
-                .flex()
-                .items_start()
-                .gap(px(8.))
-                .px(px(8.))
-                .py(px(6.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::fill_selected()))
-                .child(div().pt(px(2.)).child(icon(icon_name, 14.).text_color(theme::text_subtle())))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .child(div().text_size(px(crate::ui::TEXT_MD)).child(label))
-                        .child(div().text_size(px(crate::ui::TEXT_XS)).text_color(theme::text_subtle()).child(hint)),
-                )
+        let title = if menu.dragged.title.is_empty() {
+            "this session".to_string()
+        } else {
+            format!("\"{}\"", menu.dragged.title)
         };
+        let item =
+            |id: &'static str, icon_name: &'static str, label: &'static str, hint: &'static str| {
+                div()
+                    .id(id)
+                    .flex()
+                    .items_start()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .py(px(6.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::fill_selected()))
+                    .child(
+                        div()
+                            .pt(px(2.))
+                            .child(icon(icon_name, 14.).text_color(theme::text_subtle())),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .child(div().text_size(px(crate::ui::TEXT_MD)).child(label))
+                            .child(
+                                div()
+                                    .text_size(px(crate::ui::TEXT_XS))
+                                    .text_color(theme::text_subtle())
+                                    .child(hint),
+                            ),
+                    )
+            };
         Some(
             deferred(
                 anchored()
@@ -380,13 +465,15 @@ impl Shell {
                                     "Add to context",
                                     "Its recent conversation goes along with your next message.",
                                 )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(m) = this.drop_menu.take() {
-                                        this.add_session_context(&m.dragged, cx);
-                                    }
-                                    window.focus(&this.composer_focus, cx);
-                                    cx.notify();
-                                })),
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        if let Some(m) = this.drop_menu.take() {
+                                            this.add_session_context(&m.dragged, cx);
+                                        }
+                                        window.focus(&this.composer_focus, cx);
+                                        cx.notify();
+                                    },
+                                )),
                             )
                             .child(
                                 item(
@@ -395,13 +482,15 @@ impl Shell {
                                     "Link sessions",
                                     "Mentions its full transcript so the agent can read it.",
                                 )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(m) = this.drop_menu.take() {
-                                        this.link_session(&m.dragged, cx);
-                                    }
-                                    window.focus(&this.composer_focus, cx);
-                                    cx.notify();
-                                })),
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        if let Some(m) = this.drop_menu.take() {
+                                            this.link_session(&m.dragged, cx);
+                                        }
+                                        window.focus(&this.composer_focus, cx);
+                                        cx.notify();
+                                    },
+                                )),
                             ),
                     ),
             )
@@ -411,7 +500,10 @@ impl Shell {
     }
 
     pub(super) fn render_context_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let list = self.attached.get(&self.env().path).filter(|v| !v.is_empty())?;
+        let list = self
+            .attached
+            .get(&self.env().path)
+            .filter(|v| !v.is_empty())?;
         Some(
             div()
                 .flex()
@@ -436,7 +528,13 @@ impl Shell {
                         .text_size(px(crate::ui::TEXT_SM))
                         .child(icon("chatting01", 12.).text_color(theme::accent()))
                         .child(div().text_color(theme::text_subtle()).child("Context"))
-                        .child(div().min_w_0().truncate().text_color(theme::text_muted()).child(c.title.clone()))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme::text_muted())
+                                .child(c.title.clone()),
+                        )
                         .child(
                             div()
                                 .text_color(theme::text_subtle())

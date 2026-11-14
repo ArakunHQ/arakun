@@ -68,7 +68,9 @@ impl Record {
 
     /// What the cache reads saved against paying for that input in full.
     pub fn cache_savings(&self) -> f64 {
-        let Some(p) = price(&self.model) else { return 0. };
+        let Some(p) = price(&self.model) else {
+            return 0.;
+        };
         let m = if self.fast { 2. } else { 1. } / 1e6;
         m * self.cache_read as f64 * (p.input - p.cache_read)
     }
@@ -86,32 +88,170 @@ pub struct Price {
 /// Anthropic's first-party prices, longest id first so `claude-opus-5-5`
 /// is not taken for `claude-opus-5`.
 const PRICES: &[(&str, Price)] = &[
-    ("claude-fable-5-2", Price { input: 8., output: 40., cache_read: 0.2 }),
-    ("claude-mythos-5-2", Price { input: 8., output: 40., cache_read: 0.2 }),
-    ("claude-fable-5-1", Price { input: 10., output: 50., cache_read: 0.25 }),
-    ("claude-mythos-5-1", Price { input: 10., output: 50., cache_read: 0.25 }),
-    ("claude-fable-5", Price { input: 10., output: 50., cache_read: 1. }),
-    ("claude-mythos-5", Price { input: 10., output: 50., cache_read: 1. }),
-    ("claude-opus-5-5", Price { input: 4., output: 20., cache_read: 0.2 }),
-    ("claude-opus-5", Price { input: 5., output: 25., cache_read: 0.5 }),
-    ("claude-opus-4-8", Price { input: 5., output: 25., cache_read: 0.5 }),
-    ("claude-opus-4-7", Price { input: 5., output: 25., cache_read: 0.5 }),
-    ("claude-opus-4-6", Price { input: 5., output: 25., cache_read: 0.5 }),
-    ("claude-opus-4-5", Price { input: 5., output: 25., cache_read: 0.5 }),
-    ("claude-sonnet-5-5", Price { input: 2., output: 10., cache_read: 0.1 }),
-    ("claude-sonnet-5", Price { input: 2., output: 10., cache_read: 0.2 }),
-    ("claude-sonnet-4-6", Price { input: 3., output: 15., cache_read: 0.3 }),
-    ("claude-sonnet-4-5", Price { input: 3., output: 15., cache_read: 0.3 }),
-    ("claude-sonnet-4", Price { input: 3., output: 15., cache_read: 0.3 }),
-    ("claude-haiku-5-5", Price { input: 0.1, output: 0.5, cache_read: 0.01 }),
-    ("claude-haiku-4-5", Price { input: 1., output: 5., cache_read: 0.1 }),
+    (
+        "claude-fable-5-2",
+        Price {
+            input: 8.,
+            output: 40.,
+            cache_read: 0.2,
+        },
+    ),
+    (
+        "claude-mythos-5-2",
+        Price {
+            input: 8.,
+            output: 40.,
+            cache_read: 0.2,
+        },
+    ),
+    (
+        "claude-fable-5-1",
+        Price {
+            input: 10.,
+            output: 50.,
+            cache_read: 0.25,
+        },
+    ),
+    (
+        "claude-mythos-5-1",
+        Price {
+            input: 10.,
+            output: 50.,
+            cache_read: 0.25,
+        },
+    ),
+    (
+        "claude-fable-5",
+        Price {
+            input: 10.,
+            output: 50.,
+            cache_read: 1.,
+        },
+    ),
+    (
+        "claude-mythos-5",
+        Price {
+            input: 10.,
+            output: 50.,
+            cache_read: 1.,
+        },
+    ),
+    (
+        "claude-opus-5-5",
+        Price {
+            input: 4.,
+            output: 20.,
+            cache_read: 0.2,
+        },
+    ),
+    (
+        "claude-opus-5",
+        Price {
+            input: 5.,
+            output: 25.,
+            cache_read: 0.5,
+        },
+    ),
+    (
+        "claude-opus-4-8",
+        Price {
+            input: 5.,
+            output: 25.,
+            cache_read: 0.5,
+        },
+    ),
+    (
+        "claude-opus-4-7",
+        Price {
+            input: 5.,
+            output: 25.,
+            cache_read: 0.5,
+        },
+    ),
+    (
+        "claude-opus-4-6",
+        Price {
+            input: 5.,
+            output: 25.,
+            cache_read: 0.5,
+        },
+    ),
+    (
+        "claude-opus-4-5",
+        Price {
+            input: 5.,
+            output: 25.,
+            cache_read: 0.5,
+        },
+    ),
+    (
+        "claude-sonnet-5-5",
+        Price {
+            input: 2.,
+            output: 10.,
+            cache_read: 0.1,
+        },
+    ),
+    (
+        "claude-sonnet-5",
+        Price {
+            input: 2.,
+            output: 10.,
+            cache_read: 0.2,
+        },
+    ),
+    (
+        "claude-sonnet-4-6",
+        Price {
+            input: 3.,
+            output: 15.,
+            cache_read: 0.3,
+        },
+    ),
+    (
+        "claude-sonnet-4-5",
+        Price {
+            input: 3.,
+            output: 15.,
+            cache_read: 0.3,
+        },
+    ),
+    (
+        "claude-sonnet-4",
+        Price {
+            input: 3.,
+            output: 15.,
+            cache_read: 0.3,
+        },
+    ),
+    (
+        "claude-haiku-5-5",
+        Price {
+            input: 0.1,
+            output: 0.5,
+            cache_read: 0.01,
+        },
+    ),
+    (
+        "claude-haiku-4-5",
+        Price {
+            input: 1.,
+            output: 5.,
+            cache_read: 0.1,
+        },
+    ),
 ];
 
 /// The price of a model id, a dated one (`claude-haiku-4-5-20251001`) included.
 pub fn price(model: &str) -> Option<Price> {
     PRICES
         .iter()
-        .find(|(id, _)| model == *id || model.strip_prefix(id).is_some_and(|rest| rest.starts_with('-')))
+        .find(|(id, _)| {
+            model == *id
+                || model
+                    .strip_prefix(id)
+                    .is_some_and(|rest| rest.starts_with('-'))
+        })
         .map(|(_, p)| *p)
 }
 
@@ -143,11 +283,22 @@ pub fn scan() -> Vec<Record> {
     let mut files: Vec<(PathBuf, AgentKind)> = Vec::new();
     let claude = home().join(".claude/projects");
     for dir in read_dir(&claude) {
-        files.extend(jsonl_files(&dir).into_iter().map(|f| (f, AgentKind::Claude)));
+        files.extend(
+            jsonl_files(&dir)
+                .into_iter()
+                .map(|f| (f, AgentKind::Claude)),
+        );
         // Subagent transcripts live one level down, next to the session's.
         for sub in read_dir(&dir) {
-            for inner in read_dir(&sub).into_iter().chain(std::iter::once(sub.clone())) {
-                files.extend(jsonl_files(&inner).into_iter().map(|f| (f, AgentKind::Claude)));
+            for inner in read_dir(&sub)
+                .into_iter()
+                .chain(std::iter::once(sub.clone()))
+            {
+                files.extend(
+                    jsonl_files(&inner)
+                        .into_iter()
+                        .map(|f| (f, AgentKind::Claude)),
+                );
             }
         }
     }
@@ -166,14 +317,21 @@ pub fn scan() -> Vec<Record> {
     let present: HashSet<&PathBuf> = files.iter().map(|(f, _)| f).collect();
     cache.retain(|p, _| present.contains(p));
     for (file, agent) in &files {
-        let Ok(meta) = std::fs::metadata(file) else { continue };
+        let Ok(meta) = std::fs::metadata(file) else {
+            continue;
+        };
         let modified = meta.modified().ok();
         // Droid's total is dated by its transcript, which changes on its own.
         let stamp = match agent {
-            AgentKind::Droid => droid_transcript(file).and_then(|t| std::fs::metadata(t).ok()?.modified().ok()).or(modified),
+            AgentKind::Droid => droid_transcript(file)
+                .and_then(|t| std::fs::metadata(t).ok()?.modified().ok())
+                .or(modified),
             AgentKind::Claude | AgentKind::OpenCode | AgentKind::WorkersAi => modified,
         };
-        if cache.get(file).is_some_and(|c| c.modified == stamp && c.len == meta.len()) {
+        if cache
+            .get(file)
+            .is_some_and(|c| c.modified == stamp && c.len == meta.len())
+        {
             continue;
         }
         let (records, keys) = match agent {
@@ -182,7 +340,15 @@ pub fn scan() -> Vec<Record> {
             // OpenCode keeps its history in a database arakun does not read.
             AgentKind::OpenCode | AgentKind::WorkersAi => (Vec::new(), Vec::new()),
         };
-        cache.insert(file.clone(), Cached { modified: stamp, len: meta.len(), records, keys });
+        cache.insert(
+            file.clone(),
+            Cached {
+                modified: stamp,
+                len: meta.len(),
+                records,
+                keys,
+            },
+        );
     }
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -229,7 +395,9 @@ fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
     let (mut custom, mut ai) = (None, None);
     for line in BufReader::new(file).lines() {
         let Ok(line) = line else { break };
-        if line.starts_with("{\"type\":\"custom-title\"") || line.starts_with("{\"type\":\"ai-title\"") {
+        if line.starts_with("{\"type\":\"custom-title\"")
+            || line.starts_with("{\"type\":\"ai-title\"")
+        {
             if let Ok(v) = serde_json::from_str::<Value>(&line) {
                 if let Some(t) = v["customTitle"].as_str() {
                     custom = Some(t.to_string());
@@ -243,7 +411,9 @@ fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
         if !line.contains("\"usage\"") || !line.contains("\"assistant\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         if v["type"].as_str() != Some("assistant") {
             continue;
         }
@@ -263,9 +433,15 @@ fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
         }
         let n = |k: &str| u[k].as_u64().unwrap_or(0);
         let write = n("cache_creation_input_tokens");
-        let write_1h = u["cache_creation"]["ephemeral_1h_input_tokens"].as_u64().unwrap_or(0).min(write);
+        let write_1h = u["cache_creation"]["ephemeral_1h_input_tokens"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(write);
         let (model, fast) = split_fast(model);
-        let Some(at) = v["timestamp"].as_str().and_then(crate::account::parse_rfc3339) else {
+        let Some(at) = v["timestamp"]
+            .as_str()
+            .and_then(crate::account::parse_rfc3339)
+        else {
             continue;
         };
         records.push(Record {
@@ -307,10 +483,16 @@ fn read_droid(path: &Path, stamp: Option<SystemTime>) -> Option<Record> {
     if credits == 0 && n("outputTokens") == 0 {
         return None;
     }
-    let at = stamp?.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+    let at = stamp?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
     let (model, fast) = split_fast(v["model"].as_str().unwrap_or("unknown"));
     let transcript = droid_transcript(path);
-    let (cwd, title) = transcript.as_deref().and_then(droid_start).unwrap_or_default();
+    let (cwd, title) = transcript
+        .as_deref()
+        .and_then(droid_start)
+        .unwrap_or_default();
     let session = path
         .file_name()?
         .to_str()?
@@ -337,7 +519,9 @@ fn read_droid(path: &Path, stamp: Option<SystemTime>) -> Option<Record> {
 fn droid_start(transcript: &Path) -> Option<(PathBuf, String)> {
     let file = std::fs::File::open(transcript).ok()?;
     let mut first = String::new();
-    BufReader::new(std::io::Read::take(file, 64 * 1024)).read_line(&mut first).ok()?;
+    BufReader::new(std::io::Read::take(file, 64 * 1024))
+        .read_line(&mut first)
+        .ok()?;
     let v: Value = serde_json::from_str(first.trim()).ok()?;
     let title = v["title"].as_str().unwrap_or_default().trim().to_string();
     Some((PathBuf::from(v["cwd"].as_str().unwrap_or_default()), title))
@@ -361,7 +545,10 @@ mod tests {
         assert_eq!(price("claude-sonnet-5-5").unwrap().cache_read, 0.1);
         assert!(price("kimi-k3").is_none());
         assert!(price("claude-opus-50").is_none());
-        assert_eq!(split_fast("claude-opus-5-5-fast"), ("claude-opus-5-5".into(), true));
+        assert_eq!(
+            split_fast("claude-opus-5-5-fast"),
+            ("claude-opus-5-5".into(), true)
+        );
     }
 
     #[test]
@@ -377,7 +564,17 @@ mod tests {
         };
         // 4 + 20 + 0.2 + 5 + 8
         assert!((r.cost().unwrap() - 37.2).abs() < 1e-9);
-        assert!((Record { fast: true, ..r.clone() }.cost().unwrap() - 74.4).abs() < 1e-9);
+        assert!(
+            (Record {
+                fast: true,
+                ..r.clone()
+            }
+            .cost()
+            .unwrap()
+                - 74.4)
+                .abs()
+                < 1e-9
+        );
         assert!((r.cache_savings() - 3.8).abs() < 1e-9);
     }
 
@@ -391,7 +588,16 @@ mod tests {
         let (records, _) = read_claude(&path);
         assert_eq!(records.len(), 1);
         let r = &records[0];
-        assert_eq!((r.input, r.output, r.cache_read, r.cache_write_5m, r.cache_write_1h), (10, 5, 100, 10, 30));
+        assert_eq!(
+            (
+                r.input,
+                r.output,
+                r.cache_read,
+                r.cache_write_5m,
+                r.cache_write_1h
+            ),
+            (10, 5, 100, 10, 30)
+        );
         assert_eq!(r.at, 1792922400);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -407,9 +613,17 @@ mod real {
             let t = std::time::Instant::now();
             let all = super::scan();
             let cost: f64 = all.iter().filter_map(|r| r.cost()).sum();
-            let unpriced = all.iter().filter(|r| r.cost().is_none()).map(|r| r.tokens()).sum::<u64>();
+            let unpriced = all
+                .iter()
+                .filter(|r| r.cost().is_none())
+                .map(|r| r.tokens())
+                .sum::<u64>();
             let tokens = all.iter().map(|r| r.tokens()).sum::<u64>();
-            println!("pass {pass}: {} records in {:?}, ${cost:.2}, {tokens} tokens, {unpriced} unpriced", all.len(), t.elapsed());
+            println!(
+                "pass {pass}: {} records in {:?}, ${cost:.2}, {tokens} tokens, {unpriced} unpriced",
+                all.len(),
+                t.elapsed()
+            );
         }
     }
 }

@@ -11,14 +11,15 @@
 
 use std::collections::VecDeque;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
-use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla, IntoElement, MouseButton,
-    MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder, PathStyle, Pixels, Point, Render, SharedString,
-    StrokeOptions, Styled as _, TextRun, TruncateFrom, Window, canvas, div, hsla, point, prelude::*, px, rgb, size,
+    App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla, IntoElement,
+    MouseButton, MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder, PathStyle,
+    Pixels, Point, Render, SharedString, StrokeOptions, Styled as _, TextRun, TruncateFrom, Window,
+    canvas, div, hsla, point, prelude::*, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin};
 
@@ -100,7 +101,19 @@ pub fn supported(cx: &App) -> bool {
 /// The screen the island lives on: the widest landscape one, so a monitor
 /// turned on its side isn't picked. `None` leaves it to the compositor.
 pub fn landscape_display(cx: &gpui::App) -> Option<gpui::DisplayId> {
-    let screens: Vec<_> = cx.displays().iter().map(|d| (d.id(), d.bounds().origin.x.as_f32(), d.bounds().origin.y.as_f32(), d.bounds().size.width.as_f32(), d.bounds().size.height.as_f32())).collect();
+    let screens: Vec<_> = cx
+        .displays()
+        .iter()
+        .map(|d| {
+            (
+                d.id(),
+                d.bounds().origin.x.as_f32(),
+                d.bounds().origin.y.as_f32(),
+                d.bounds().size.width.as_f32(),
+                d.bounds().size.height.as_f32(),
+            )
+        })
+        .collect();
     // gpui reports a monitor turned on its side at its unrotated size; Hyprland knows the rotation.
     if let Some((x, y)) = hyprland_landscape()
         && let Some(&(id, ..)) = screens.iter().find(|s| s.1 == x && s.2 == y)
@@ -113,7 +126,10 @@ pub fn landscape_display(cx: &gpui::App) -> Option<gpui::DisplayId> {
 /// Where the widest landscape monitor sits, by `hyprctl monitors -j`.
 fn hyprland_landscape() -> Option<(f32, f32)> {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
-    let out = std::process::Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
+    let out = std::process::Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok()?;
     let monitors: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).ok()?;
     hyprland_pick(&monitors)
 }
@@ -123,7 +139,11 @@ fn hyprland_pick(monitors: &[serde_json::Value]) -> Option<(f32, f32)> {
         .iter()
         .filter_map(|m| {
             let (w, h) = (m["width"].as_f64()?, m["height"].as_f64()?);
-            let (w, h) = if m["transform"].as_i64().unwrap_or(0) % 2 == 1 { (h, w) } else { (w, h) };
+            let (w, h) = if m["transform"].as_i64().unwrap_or(0) % 2 == 1 {
+                (h, w)
+            } else {
+                (w, h)
+            };
             let (x, y) = (m["x"].as_f64()? as f32, m["y"].as_f64()? as f32);
             (w > h).then_some((w, x, y))
         })
@@ -132,7 +152,10 @@ fn hyprland_pick(monitors: &[serde_json::Value]) -> Option<(f32, f32)> {
 }
 
 fn pick_landscape<I: Copy>(screens: impl Iterator<Item = (I, f32, f32)>) -> Option<I> {
-    screens.filter(|&(_, w, h)| w > h).max_by(|a, b| a.1.total_cmp(&b.1)).map(|(id, _, _)| id)
+    screens
+        .filter(|&(_, w, h)| w > h)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(id, _, _)| id)
 }
 
 pub fn window_options(keys: bool) -> gpui::WindowOptions {
@@ -164,7 +187,11 @@ fn window_kind(keys: bool) -> gpui::WindowKind {
         anchor: Anchor::TOP,
         exclusive_zone: None,
         margin: Some((px(0.), px(0.), px(0.), px(0.))),
-        keyboard_interactivity: if keys { KeyboardInteractivity::OnDemand } else { KeyboardInteractivity::None },
+        keyboard_interactivity: if keys {
+            KeyboardInteractivity::OnDemand
+        } else {
+            KeyboardInteractivity::None
+        },
         ..Default::default()
     })
 }
@@ -288,12 +315,21 @@ pub struct Feed {
 /// Most relevant first: needs input, errors, working, then recently finished,
 /// newest first within each.
 pub fn sort_rows(rows: &mut [Row]) {
-    rows.sort_by(|a, b| a.status.rank().cmp(&b.status.rank()).then(b.updated.cmp(&a.updated)));
+    rows.sort_by(|a, b| {
+        a.status
+            .rank()
+            .cmp(&b.status.rank())
+            .then(b.updated.cmp(&a.updated))
+    });
 }
 
 /// The working state's dots, at most `MAX_DOTS`, and how many more there are.
 pub fn dots(rows: &[Row]) -> (Vec<Status>, usize) {
-    let active: Vec<Status> = rows.iter().map(|r| r.status).filter(|s| s.active()).collect();
+    let active: Vec<Status> = rows
+        .iter()
+        .map(|r| r.status)
+        .filter(|s| s.active())
+        .collect();
     let more = active.len().saturating_sub(MAX_DOTS);
     (active.into_iter().take(MAX_DOTS).collect(), more)
 }
@@ -323,8 +359,14 @@ pub fn fmt_elapsed(d: Duration) -> String {
 
 /// One line of text for a row: markdown markers off, spaces collapsed, cut at 120 chars.
 pub fn one_line(text: &str) -> String {
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
-    let line = line.trim_start_matches(['#', '>', '-', '*', ' ']).replace(['`', '*'], "");
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let line = line
+        .trim_start_matches(['#', '>', '-', '*', ' '])
+        .replace(['`', '*'], "");
     let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
     match line.char_indices().nth(120) {
         Some((i, _)) => format!("{}…", &line[..i]),
@@ -352,7 +394,10 @@ pub enum AlertKind {
 impl AlertKind {
     /// About an agent session, with the raccoon on the card.
     pub fn session(self) -> bool {
-        matches!(self, AlertKind::Finished | AlertKind::Input | AlertKind::Error | AlertKind::Confirm)
+        matches!(
+            self,
+            AlertKind::Finished | AlertKind::Input | AlertKind::Error | AlertKind::Confirm
+        )
     }
 
     /// The badge a notice shows in the raccoon's place.
@@ -396,7 +441,11 @@ pub fn alert_for(alert: &Alert) -> Option<Duration> {
     if alert.kind == AlertKind::Confirm {
         return None;
     }
-    let base = if alert.buttons() { ALERT_FOR } else { NOTICE_FOR };
+    let base = if alert.buttons() {
+        ALERT_FOR
+    } else {
+        NOTICE_FOR
+    };
     let words = alert.title.split_whitespace().count() + alert.subtitle.split_whitespace().count();
     let reading = Duration::from_secs_f32(words.saturating_sub(12) as f32 / 15.);
     Some((base + reading).min(ALERT_MAX))
@@ -415,7 +464,11 @@ impl Alerts {
     pub fn push(&mut self, alert: Alert, now: Instant) {
         self.next += 1;
         let seq = self.next;
-        match self.queue.iter().position(|(_, a)| !a.key.is_empty() && a.key == alert.key) {
+        match self
+            .queue
+            .iter()
+            .position(|(_, a)| !a.key.is_empty() && a.key == alert.key)
+        {
             Some(0) => {
                 self.queue[0] = (seq, alert);
                 self.since = Some(now);
@@ -446,7 +499,9 @@ impl Alerts {
 
     /// Times the front alert out; hovering holds it. Returns whether it went.
     pub fn tick(&mut self, now: Instant, hovered: bool) -> bool {
-        let Some((_, front)) = self.front() else { return false };
+        let Some((_, front)) = self.front() else {
+            return false;
+        };
         let stay = alert_for(front);
         if stay.is_none() || hovered {
             self.since = Some(now);
@@ -472,7 +527,11 @@ pub enum IslandEvent {
     /// An alert went away, by "Luego" or its time.
     Dismissed,
     /// "Aprobar" or "Rechazar" on a `Confirm` card.
-    Answer { key: SharedString, req: SharedString, approve: bool },
+    Answer {
+        key: SharedString,
+        req: SharedString,
+        approve: bool,
+    },
     /// A click on the shape, off its buttons and rows.
     Pressed,
     /// A click on the small raccoon: starts or ends a call.
@@ -564,12 +623,20 @@ struct CardLayout {
 impl CardLayout {
     /// Where the text column starts: past the raccoon, or past the badge or picture.
     fn text_x(alert: &Alert) -> f32 {
-        if alert.kind.session() { 18. + BIG_W + 12. } else { 14. + Self::face(alert) + 12. }
+        if alert.kind.session() {
+            18. + BIG_W + 12.
+        } else {
+            14. + Self::face(alert) + 12.
+        }
     }
 
     /// The badge's or picture's side, on a notice.
     fn face(alert: &Alert) -> f32 {
-        if alert.image.is_empty() { BADGE } else { AVATAR }
+        if alert.image.is_empty() {
+            BADGE
+        } else {
+            AVATAR
+        }
     }
 
     fn measure(alert: &Alert, window: &Window, cx: &App) -> CardLayout {
@@ -577,40 +644,100 @@ impl CardLayout {
         let (title, body) = (flat(&alert.title), flat(&alert.subtitle));
         let session = alert.kind.session();
         let buttons = alert.buttons();
-        let bold = gpui::Font { weight: FontWeight::SEMIBOLD, ..gpui::font(theme::FONT_SANS) };
+        let bold = gpui::Font {
+            weight: FontWeight::SEMIBOLD,
+            ..gpui::font(theme::FONT_SANS)
+        };
         let plain = gpui::font(theme::FONT_SANS);
         let tx = Self::text_x(alert);
         if !buttons && !session {
             let room = PILL_W - tx - 18.;
             let wide = |text: &SharedString, font: &gpui::Font, size: f32| {
-                let run = TextRun { len: text.len(), font: font.clone(), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
-                window.text_system().shape_line(text.clone(), px(size), &[run], None).width.as_f32()
+                let run = TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color: gpui::white(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                window
+                    .text_system()
+                    .shape_line(text.clone(), px(size), &[run], None)
+                    .width
+                    .as_f32()
             };
             if wide(&title, &bold, TITLE_SIZE) <= room && wide(&body, &plain, BODY_SIZE) <= room {
-                return CardLayout { title, body, body_lines: 1, pill: true, w: PILL_W, h: PILL_H };
+                return CardLayout {
+                    title,
+                    body,
+                    body_lines: 1,
+                    pill: true,
+                    w: PILL_W,
+                    h: PILL_H,
+                };
             }
         }
         let room = CARD_W - tx - 18.;
         let title_lines = lines(&title, bold, TITLE_SIZE, room, TITLE_LINES, window, cx);
         let body_lines = lines(&body, plain, BODY_SIZE, room, BODY_LINES, window, cx);
-        let text_h = title_lines as f32 * TITLE_LH + if body_lines > 0 { 3. + body_lines as f32 * BODY_LH } else { 0. };
-        let face = if session { BIG_W * 166. / 212. } else { Self::face(alert) };
+        let text_h = title_lines as f32 * TITLE_LH
+            + if body_lines > 0 {
+                3. + body_lines as f32 * BODY_LH
+            } else {
+                0.
+            };
+        let face = if session {
+            BIG_W * 166. / 212.
+        } else {
+            Self::face(alert)
+        };
         let foot = if buttons { 10. + 26. + 14. } else { 14. };
-        CardLayout { title, body, body_lines, pill: false, w: CARD_W, h: 14. + face.max(text_h) + foot }
+        CardLayout {
+            title,
+            body,
+            body_lines,
+            pill: false,
+            w: CARD_W,
+            h: 14. + face.max(text_h) + foot,
+        }
     }
 }
 
 /// How many lines `text` takes wrapped to `width`, at most `max`: the same
 /// truncation and wrapping a div with `line_clamp(max).text_ellipsis()` does.
-fn lines(text: &SharedString, font: gpui::Font, size: f32, width: f32, max: usize, window: &Window, cx: &App) -> usize {
+fn lines(
+    text: &SharedString,
+    font: gpui::Font,
+    size: f32,
+    width: f32,
+    max: usize,
+    window: &Window,
+    cx: &App,
+) -> usize {
     if text.is_empty() {
         return 0;
     }
-    let runs = [TextRun { len: text.len(), font: font.clone(), color: gpui::white(), background_color: None, underline: None, strikethrough: None }];
+    let runs = [TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color: gpui::white(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }];
     let mut wrapper = cx.text_system().line_wrapper(font, px(size));
-    let (text, runs) = wrapper.truncate_wrapped_line(text.clone(), px(width), max, "…", &runs, TruncateFrom::End);
-    match window.text_system().shape_text(text, px(size), &runs, Some(px(width)), Some(max)) {
-        Ok(shaped) => shaped.iter().map(|l| l.wrap_boundaries().len() + 1).sum::<usize>().min(max),
+    let (text, runs) =
+        wrapper.truncate_wrapped_line(text.clone(), px(width), max, "…", &runs, TruncateFrom::End);
+    match window
+        .text_system()
+        .shape_text(text, px(size), &runs, Some(px(width)), Some(max))
+    {
+        Ok(shaped) => shaped
+            .iter()
+            .map(|l| l.wrap_boundaries().len() + 1)
+            .sum::<usize>()
+            .min(max),
         Err(_) => max,
     }
 }
@@ -649,13 +776,20 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 fn drip(w: f32, h: f32, iw: f32, ih: f32, t: f32) -> (f32, f32, f32) {
     let (fall, grow) = (spring(t, 130., 12.), spring(t - 0.07, 190., 19.));
     let (w0, h0) = (iw.min(w) * 0.55, 6.);
-    (lerp(w0, w, grow), lerp(h0, h, grow), lerp(ih - h0 - 4., ih + CARD_GAP, fall))
+    (
+        lerp(w0, w, grow),
+        lerp(h0, h, grow),
+        lerp(ih - h0 - 4., ih + CARD_GAP, fall),
+    )
 }
 
 /// When the neck snaps: the gap first reaches most of `CARD_GAP` (whatever the sizes).
 fn snap_at() -> f32 {
     static AT: LazyLock<f32> = LazyLock::new(|| {
-        (0..1500).map(|ms| ms as f32 / 1000.).find(|&t| drip(1., 1., 1., 0., t).2 >= 0.7 * CARD_GAP).unwrap_or(0.2)
+        (0..1500)
+            .map(|ms| ms as f32 / 1000.)
+            .find(|&t| drip(1., 1., 1., 0., t).2 >= 0.7 * CARD_GAP)
+            .unwrap_or(0.2)
     });
     *AT
 }
@@ -667,8 +801,16 @@ fn snap_at() -> f32 {
 fn card_geom(w: f32, h: f32, iw: f32, ih: f32, t: f32, melt: Option<f32>) -> CardGeom {
     let (mut cw, mut ch, mut top) = drip(w, h, iw, ih, t);
     let s = t - snap_at();
-    let mut join = if s < 0. { smoothstep(0., 0.12, t) } else { 1. - smoothstep(0., 0.09, s) };
-    let mut bulge = if s < 0. { 0. } else { 3.2 * (-s / 0.11).exp() * (TAU * 6.5 * s).cos() };
+    let mut join = if s < 0. {
+        smoothstep(0., 0.12, t)
+    } else {
+        1. - smoothstep(0., 0.09, s)
+    };
+    let mut bulge = if s < 0. {
+        0.
+    } else {
+        3.2 * (-s / 0.11).exp() * (TAU * 6.5 * s).cos()
+    };
     let mut alpha = smoothstep(0.02, 0.2, s);
     if let Some(m) = melt {
         let (rise, shrink) = (spring(m, 260., 20.), spring(m - 0.08, 300., 24.));
@@ -681,18 +823,31 @@ fn card_geom(w: f32, h: f32, iw: f32, ih: f32, t: f32, melt: Option<f32>) -> Car
         bulge = 0.;
         alpha *= 1. - smoothstep(0., 0.12, m);
     }
-    CardGeom { w: cw, h: ch, top, join, bulge, alpha }
+    CardGeom {
+        w: cw,
+        h: ch,
+        top,
+        join,
+        bulge,
+        alpha,
+    }
 }
 
 /// The island's little bounce `melt` s after a card started back in.
 fn bounce(melt: f32) -> f32 {
     let s = melt - 0.24;
-    if s <= 0. { 0. } else { 2.6 * (-s / 0.13).exp() * (TAU * 5. * s).sin() }
+    if s <= 0. {
+        0.
+    } else {
+        2.6 * (-s / 0.13).exp() * (TAU * 5. * s).sin()
+    }
 }
 
 /// The card's corner radius: a pill's for a short card, 26 for a tall one.
 fn card_radius(full_h: f32, w: f32, h: f32) -> f32 {
-    (if full_h > 60. { 26. } else { full_h / 2. }).min(h / 2.).min(w / 2.)
+    (if full_h > 60. { 26. } else { full_h / 2. })
+        .min(h / 2.)
+        .min(w / 2.)
 }
 
 /// A rounded rectangle centered on the window's middle (x = 0 here).
@@ -716,7 +871,10 @@ impl Rounded {
     /// The outline's nearest point to (x, y), which is outside.
     fn nearest(&self, x: f32, y: f32) -> (f32, f32) {
         let ix = x.clamp(-(self.hw - self.r), self.hw - self.r);
-        let iy = y.clamp(self.top + self.r, (self.bottom - self.r).max(self.top + self.r));
+        let iy = y.clamp(
+            self.top + self.r,
+            (self.bottom - self.r).max(self.top + self.r),
+        );
         let (dx, dy) = (x - ix, y - iy);
         let d = dx.hypot(dy).max(1e-4);
         (ix + dx / d * self.r, iy + dy / d * self.r)
@@ -724,7 +882,10 @@ impl Rounded {
 
     /// Narrowed toward its middle, `s` of its straight edges left.
     fn narrowed(self, s: f32) -> Rounded {
-        Rounded { hw: self.r + (self.hw - self.r) * s, ..self }
+        Rounded {
+            hw: self.r + (self.hw - self.r) * s,
+            ..self
+        }
     }
 }
 
@@ -747,9 +908,15 @@ fn wedge(island: Rounded, card: Rounded, r: f32) -> Option<[(f32, f32); 3]> {
             (s, island.bottom + r)
         } else if s <= flat + quarter {
             let a = (s - flat) / round;
-            (flat + round * a.sin(), island.bottom - island.r + round * a.cos())
+            (
+                flat + round * a.sin(),
+                island.bottom - island.r + round * a.cos(),
+            )
         } else {
-            (island.hw + r, island.bottom - island.r - (s - flat - quarter))
+            (
+                island.hw + r,
+                island.bottom - island.r - (s - flat - quarter),
+            )
         }
     };
     let off = |s: f32| {
@@ -822,7 +989,9 @@ impl Island {
         // Times alerts out and lets the raccoon doze off; redraws only on a change.
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(500)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
                 let alive = this.update(cx, |island, cx| {
                     if island.alerts.tick(Instant::now(), island.hovered) {
                         cx.emit(IslandEvent::Dismissed);
@@ -885,7 +1054,10 @@ impl Island {
         self.alerts.retain(now, |a| {
             a.kind == AlertKind::Confirm
                 || feed.viewing.as_ref() != Some(&a.key)
-                    && (a.kind != AlertKind::Input || rows.iter().any(|r| r.key == a.key && r.status == Status::Waiting))
+                    && (a.kind != AlertKind::Input
+                        || rows
+                            .iter()
+                            .any(|r| r.key == a.key && r.status == Status::Waiting))
         });
         if feed != self.feed {
             self.feed = feed;
@@ -1004,7 +1176,11 @@ impl Island {
     /// in once its alert went. The next drips only after the last is back in.
     fn sync_card(&mut self, cx: &mut Context<Self>) {
         let now = Instant::now();
-        let want = self.alerts.front().filter(|_| self.phase == Phase::Alert && !self.pinned).map(|(seq, a)| (seq, a.clone()));
+        let want = self
+            .alerts
+            .front()
+            .filter(|_| self.phase == Phase::Alert && !self.pinned)
+            .map(|(seq, a)| (seq, a.clone()));
         match &mut self.card {
             Some(card) => {
                 if card.gone.is_none() && want.as_ref().map(|w| w.0) != Some(card.seq) {
@@ -1025,7 +1201,13 @@ impl Island {
                         m.set_mood(Mood::Idle);
                         m.set_mood(mood);
                     });
-                    self.card = Some(Card { seq, alert, born: now, gone: None, layout: None });
+                    self.card = Some(Card {
+                        seq,
+                        alert,
+                        born: now,
+                        gone: None,
+                        layout: None,
+                    });
                     cx.notify();
                 }
             }
@@ -1038,7 +1220,11 @@ impl Island {
             Phase::Sleeping => Mood::Sleeping,
             Phase::Idle | Phase::Alert => Mood::Idle,
             Phase::Working if self.call.is_some() => Mood::Thinking,
-            Phase::Working if has(Status::Working) || !(has(Status::Waiting) || has(Status::Error)) => Mood::Working,
+            Phase::Working
+                if has(Status::Working) || !(has(Status::Waiting) || has(Status::Error)) =>
+            {
+                Mood::Working
+            }
             Phase::Working if has(Status::Waiting) => Mood::Waiting,
             Phase::Working => Mood::Error,
             Phase::Speaking => Mood::Thinking,
@@ -1067,13 +1253,19 @@ impl Island {
     /// Whether `seq` is the card out and its alert still the one in front:
     /// a melting card's buttons must not answer the next alert.
     fn showing(&self, seq: u64) -> bool {
-        self.card.as_ref().is_some_and(|c| c.seq == seq && c.gone.is_none())
+        self.card
+            .as_ref()
+            .is_some_and(|c| c.seq == seq && c.gone.is_none())
             && self.alerts.front().is_some_and(|(n, _)| n == seq)
     }
 
     /// The card's "Ver": its session in front, and the card away.
     pub fn see(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, a)) = self.alerts.front().filter(|(_, a)| a.kind != AlertKind::Confirm) {
+        if let Some((_, a)) = self
+            .alerts
+            .front()
+            .filter(|(_, a)| a.kind != AlertKind::Confirm)
+        {
             let key = a.key.clone();
             self.open(key, false, cx);
             self.dismiss(cx);
@@ -1082,7 +1274,11 @@ impl Island {
 
     /// The card's "Luego".
     pub fn later(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, a)) = self.alerts.front().filter(|(_, a)| a.kind != AlertKind::Confirm) {
+        if let Some((_, a)) = self
+            .alerts
+            .front()
+            .filter(|(_, a)| a.kind != AlertKind::Confirm)
+        {
             cx.emit(IslandEvent::Later(a.key.clone()));
             self.dismiss(cx);
         }
@@ -1093,8 +1289,16 @@ impl Island {
         if approve && !self.approvable(Instant::now()) {
             return;
         }
-        if let Some((_, a)) = self.alerts.front().filter(|(_, a)| a.kind == AlertKind::Confirm) {
-            cx.emit(IslandEvent::Answer { key: a.key.clone(), req: a.req.clone(), approve });
+        if let Some((_, a)) = self
+            .alerts
+            .front()
+            .filter(|(_, a)| a.kind == AlertKind::Confirm)
+        {
+            cx.emit(IslandEvent::Answer {
+                key: a.key.clone(),
+                req: a.req.clone(),
+                approve,
+            });
             self.dismiss(cx);
         }
     }
@@ -1107,7 +1311,10 @@ impl Island {
 
     /// The confirmation card out, once it is.
     fn confirm_front(&self) -> Option<u64> {
-        self.card.as_ref().filter(|c| c.alert.kind == AlertKind::Confirm && self.showing(c.seq)).map(|c| c.seq)
+        self.card
+            .as_ref()
+            .filter(|c| c.alert.kind == AlertKind::Confirm && self.showing(c.seq))
+            .map(|c| c.seq)
     }
 
     /// Notes when a confirmation card shows up, and whether the pointer was on the island then.
@@ -1117,7 +1324,11 @@ impl Island {
 
     fn open(&mut self, key: SharedString, row: bool, cx: &mut Context<Self>) {
         self.peek = false;
-        cx.emit(if row { IslandEvent::OpenRow(key) } else { IslandEvent::Open(key) });
+        cx.emit(if row {
+            IslandEvent::OpenRow(key)
+        } else {
+            IslandEvent::Open(key)
+        });
         cx.notify();
     }
 
@@ -1129,9 +1340,15 @@ impl Island {
         let n = self.list_rows();
         match self.base {
             // Working, in a call, is the assistant thinking.
-            Phase::Speaking | Phase::Listening | Phase::Working if self.call.is_some() && !self.pinned => View::Call,
+            Phase::Speaking | Phase::Listening | Phase::Working
+                if self.call.is_some() && !self.pinned =>
+            {
+                View::Call
+            }
             // The list would grow over a card: it waits until the card is back in.
-            _ if self.card.is_none() && ((self.hovered && self.peek) || self.pinned) && n > 0 => View::List(n),
+            _ if self.card.is_none() && ((self.hovered && self.peek) || self.pinned) && n > 0 => {
+                View::List(n)
+            }
             p => View::Compact(p),
         }
     }
@@ -1202,9 +1419,11 @@ impl Island {
 
     fn compact(&self, phase: Phase, t: f32) -> gpui::AnyElement {
         let right = match phase {
-            Phase::Sleeping | Phase::Idle | Phase::Alert => {
-                div().size(px(5.)).rounded_full().bg(hsla(0., 0., 1., 0.22)).into_any_element()
-            }
+            Phase::Sleeping | Phase::Idle | Phase::Alert => div()
+                .size(px(5.))
+                .rounded_full()
+                .bg(hsla(0., 0., 1., 0.22))
+                .into_any_element(),
             Phase::Working => {
                 let (dots, more) = dots(&self.feed.rows);
                 div()
@@ -1216,7 +1435,10 @@ impl Island {
                             Status::Working => 0.75 + 0.25 * (t * TAU / 1.6 + i as f32).sin(),
                             _ => 1.,
                         };
-                        div().size(px(7.)).rounded_full().bg(s.color().opacity(pulse))
+                        div()
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(s.color().opacity(pulse))
                     }))
                     .when(more > 0, |d| {
                         d.child(
@@ -1234,7 +1456,9 @@ impl Island {
         };
         // Recording shows over whatever the agents do; a call keeps its own wave.
         let right = match &self.recording {
-            Some((_, shown)) if !matches!(phase, Phase::Speaking | Phase::Listening) => bars(t, REC_GREEN, 1., Some(*shown), 9),
+            Some((_, shown)) if !matches!(phase, Phase::Speaking | Phase::Listening) => {
+                bars(t, REC_GREEN, 1., Some(*shown), 9)
+            }
             _ => right,
         };
         let label = match phase {
@@ -1250,7 +1474,10 @@ impl Island {
             .pl(px(12. + SMALL_W + 10.))
             .pr(px(16.))
             .child(div().when_some(label, |d, (text, color)| {
-                d.text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(color).child(text)
+                d.text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color)
+                    .child(text)
             }))
             .child(right)
             .into_any_element()
@@ -1260,12 +1487,23 @@ impl Island {
     /// and the text (up to four), and its buttons. Laid out at the card's full
     /// width, from its top down to its bottom as it is now (still growing or
     /// shrinking), so the buttons stay on it.
-    fn card_content(&self, card: &Card, layout: &CardLayout, top: f32, h: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn card_content(
+        &self,
+        card: &Card,
+        layout: &CardLayout,
+        top: f32,
+        h: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let a = &card.alert;
         let session = a.kind.session();
         let confirm = a.kind == AlertKind::Confirm;
         let seq = card.seq;
-        let (no, yes) = if confirm { ("Rechazar", "Aprobar") } else { ("Luego", "Ver") };
+        let (no, yes) = if confirm {
+            ("Rechazar", "Aprobar")
+        } else {
+            ("Luego", "Ver")
+        };
         let pill = |label: &'static str, strong: bool| {
             div()
                 .id(label)
@@ -1282,7 +1520,11 @@ impl Island {
                 .child(label)
         };
         let face = if session {
-            div().flex_none().w(px(BIG_W)).child(self.big.clone()).into_any_element()
+            div()
+                .flex_none()
+                .w(px(BIG_W))
+                .child(self.big.clone())
+                .into_any_element()
         } else if !a.image.is_empty() {
             avatar(a).into_any_element()
         } else {
@@ -1322,7 +1564,11 @@ impl Island {
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         if this.showing(seq) {
-                            if confirm { this.answer(false, cx) } else { this.later(cx) }
+                            if confirm {
+                                this.answer(false, cx)
+                            } else {
+                                this.later(cx)
+                            }
                         }
                     }),
                 ))
@@ -1331,7 +1577,11 @@ impl Island {
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         if this.showing(seq) {
-                            if confirm { this.answer(true, cx) } else { this.see(cx) }
+                            if confirm {
+                                this.answer(true, cx)
+                            } else {
+                                this.see(cx)
+                            }
                         }
                     }),
                 ))
@@ -1345,10 +1595,19 @@ impl Island {
             .flex()
             .flex_col()
             .when(layout.pill, |d| d.justify_center())
-            .when(!layout.pill, |d| d.justify_between().pt(px(14.)).pb(px(14.)))
+            .when(!layout.pill, |d| {
+                d.justify_between().pt(px(14.)).pb(px(14.))
+            })
             .pl(px(if session { 18. } else { 14. }))
             .pr(px(18.))
-            .child(div().flex().gap(px(12.)).when(layout.pill, |d| d.items_center()).child(face).child(text))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(12.))
+                    .when(layout.pill, |d| d.items_center())
+                    .child(face)
+                    .child(text),
+            )
             .children(buttons)
             .into_any_element()
     }
@@ -1374,75 +1633,114 @@ impl Island {
                     .text_size(px(13.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(gpui::white())
-                    .child(if n == 1 { "1 agente".to_string() } else { format!("{n} agentes") }),
+                    .child(if n == 1 {
+                        "1 agente".to_string()
+                    } else {
+                        format!("{n} agentes")
+                    }),
             )
             .when_some(self.feed.today.clone(), |d, today| {
-                d.child(div().font_family(theme::FONT_MONO).text_size(px(11.5)).text_color(dim).child(format!("{today} hoy")))
+                d.child(
+                    div()
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(11.5))
+                        .text_color(dim)
+                        .child(format!("{today} hoy")),
+                )
             });
-        let rows = self.feed.rows.iter().take(MAX_ROWS).enumerate().map(|(i, a)| {
-            let pulse = match a.status {
-                Status::Working => 0.75 + 0.25 * (t * TAU / 1.6).sin(),
-                _ => 1.,
-            };
-            let key = a.key.clone();
-            div()
-                .id(i)
-                .h(px(ROW_H))
-                .mx(px(ROW_INSET))
-                .px(px(12.))
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .rounded(px(10.))
-                .when(i + 1 == shown, |d| d.rounded_b(px(last_radius)))
-                .hover(|s| s.bg(hsla(0., 0., 1., 0.06)))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.open(key.clone(), true, cx);
-                    }),
-                )
-                .child(div().flex_none().size(px(7.)).rounded_full().bg(a.status.color().opacity(pulse)))
-                .child(
-                    div()
-                        .flex_none()
-                        .min_w(px(64.))
-                        .max_w(px(130.))
-                        .truncate()
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(gpui::white())
-                        .child(a.model.clone()),
-                )
-                .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(dim).truncate().child(a.doing.clone()))
-                .child(
-                    div()
-                        .flex_none()
-                        .font_family(theme::FONT_MONO)
-                        .text_size(px(11.))
-                        .text_color(hsla(0., 0., 1., 0.4))
-                        .child(a.elapsed.clone()),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(40.))
-                        .flex()
-                        .justify_end()
-                        .font_family(theme::FONT_MONO)
-                        .text_size(px(11.))
-                        .text_color(hsla(0., 0., 1., 0.75))
-                        .child(a.cost.clone()),
-                )
-        });
-        div().size_full().flex().flex_col().font_family(theme::FONT_SANS).child(head).children(rows).into_any_element()
+        let rows = self
+            .feed
+            .rows
+            .iter()
+            .take(MAX_ROWS)
+            .enumerate()
+            .map(|(i, a)| {
+                let pulse = match a.status {
+                    Status::Working => 0.75 + 0.25 * (t * TAU / 1.6).sin(),
+                    _ => 1.,
+                };
+                let key = a.key.clone();
+                div()
+                    .id(i)
+                    .h(px(ROW_H))
+                    .mx(px(ROW_INSET))
+                    .px(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(10.))
+                    .when(i + 1 == shown, |d| d.rounded_b(px(last_radius)))
+                    .hover(|s| s.bg(hsla(0., 0., 1., 0.06)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.open(key.clone(), true, cx);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(a.status.color().opacity(pulse)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .min_w(px(64.))
+                            .max_w(px(130.))
+                            .truncate()
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(gpui::white())
+                            .child(a.model.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(12.))
+                            .text_color(dim)
+                            .truncate()
+                            .child(a.doing.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(theme::FONT_MONO)
+                            .text_size(px(11.))
+                            .text_color(hsla(0., 0., 1., 0.4))
+                            .child(a.elapsed.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(40.))
+                            .flex()
+                            .justify_end()
+                            .font_family(theme::FONT_MONO)
+                            .text_size(px(11.))
+                            .text_color(hsla(0., 0., 1., 0.75))
+                            .child(a.cost.clone()),
+                    )
+            });
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(theme::FONT_SANS)
+            .child(head)
+            .children(rows)
+            .into_any_element()
     }
 
     /// The call: who has the turn and its waveform, the user's last words
     /// (their end, as they come) and the sentence the assistant is saying.
     fn call_card(&self, t: f32) -> gpui::AnyElement {
-        let Some(c) = &self.call else { return div().into_any_element() };
+        let Some(c) = &self.call else {
+            return div().into_any_element();
+        };
         let listening = c.phase == Phase::Listening;
         let (label, color) = match c.phase {
             Phase::Listening => ("Escuchando", theme::accent().opacity(0.8)),
@@ -1457,7 +1755,13 @@ impl Island {
             .justify_between()
             .pl(px(12. + SMALL_W + 10.))
             .pr(px(16.))
-            .child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(color).child(label))
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color)
+                    .child(label),
+            )
             .child(wave(t, listening, Some(c.shown)));
         div()
             .size_full()
@@ -1505,17 +1809,25 @@ impl Island {
 /// Audio bars, each an envelope of a few slow sines so they roll like a voice.
 /// With a live `level`, a call's: they rise with the voice and rest low in silence.
 /// The recording wave's green.
-const REC_GREEN: gpui::Hsla = gpui::Hsla { h: 142. / 360., s: 0.7, l: 0.5, a: 1. };
+const REC_GREEN: gpui::Hsla = gpui::Hsla {
+    h: 142. / 360.,
+    s: 0.7,
+    l: 0.5,
+    a: 1.,
+};
 
 fn wave(t: f32, listening: bool, level: Option<f32>) -> gpui::AnyElement {
-    let color = if listening { theme::accent() } else { gpui::white() };
+    let color = if listening {
+        theme::accent()
+    } else {
+        gpui::white()
+    };
     let speed = if listening { 0.8 } else { 1.25 };
     bars(t, color, speed, level, 14)
 }
 
 /// `n` bars moving like a voice; with `level`, as loud as it.
 fn bars(t: f32, color: gpui::Hsla, speed: f32, level: Option<f32>, n: usize) -> gpui::AnyElement {
-
     div()
         .h(px(22.))
         .flex()
@@ -1524,7 +1836,8 @@ fn bars(t: f32, color: gpui::Hsla, speed: f32, level: Option<f32>, n: usize) -> 
         .children((0..n).map(|i| {
             let x = i as f32 / (n - 1) as f32;
             let s = t * speed;
-            let v = 0.5 + 0.22 * (s * 7.1 + x * 5.3).sin()
+            let v = 0.5
+                + 0.22 * (s * 7.1 + x * 5.3).sin()
                 + 0.18 * (s * 11.3 - x * 9.7).sin()
                 + 0.1 * (s * 17.9 + x * 13.1).sin();
             // Taper toward both ends, and breathe as a whole.
@@ -1552,7 +1865,10 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 
 /// The radius of the island's bottom corners at this size.
 fn bottom_radius(w: f32, h: f32) -> f32 {
-    (12. + (h - 32.) * 0.2).clamp(11., 30.).min(h - SHOULDER.min(h / 2.)).min(w / 2.)
+    (12. + (h - 32.) * 0.2)
+        .clamp(11., 30.)
+        .min(h - SHOULDER.min(h / 2.))
+        .min(w / 2.)
 }
 
 /// The island: concave shoulders flaring into the top edge, straight sides,
@@ -1564,7 +1880,9 @@ fn shape(b: Bounds<Pixels>, w: f32, h: f32, bow: f32, window: &mut Window) {
     let (x0, x1) = (WIN_W / 2. - w / 2., WIN_W / 2. + w / 2.);
     let s = SHOULDER.min(h / 2.);
     let r = bottom_radius(w, h);
-    let arc = |pb: &mut PathBuilder, rad: f32, sweep: bool, to| pb.arc_to(point(px(rad), px(rad)), px(0.), false, sweep, to);
+    let arc = |pb: &mut PathBuilder, rad: f32, sweep: bool, to| {
+        pb.arc_to(point(px(rad), px(rad)), px(0.), false, sweep, to)
+    };
 
     let mut fill = PathBuilder::fill();
     fill.move_to(p(x0 - s, 0.));
@@ -1597,7 +1915,14 @@ fn shape(b: Bounds<Pixels>, w: f32, h: f32, bow: f32, window: &mut Window) {
 
 /// A horizontal edge from the current point at `xa` to `xb`, at height `y`,
 /// its middle pushed down by `bow`: flat at both ends, deepest in the middle.
-fn bowed(pb: &mut PathBuilder, p: &impl Fn(f32, f32) -> Point<Pixels>, xa: f32, xb: f32, y: f32, bow: f32) {
+fn bowed(
+    pb: &mut PathBuilder,
+    p: &impl Fn(f32, f32) -> Point<Pixels>,
+    xa: f32,
+    xb: f32,
+    y: f32,
+    bow: f32,
+) {
     if bow.abs() < 0.05 {
         pb.line_to(p(xb, y));
         return;
@@ -1612,9 +1937,17 @@ fn bowed(pb: &mut PathBuilder, p: &impl Fn(f32, f32) -> Point<Pixels>, xa: f32, 
 fn card_shape(b: Bounds<Pixels>, c: Rounded, bow: f32, edge: f32, window: &mut Window) {
     let o = b.origin;
     let p = |x: f32, y: f32| point(o.x + px(WIN_W / 2. + x), o.y + px(y));
-    let arc = |pb: &mut PathBuilder, rad: f32, to| pb.arc_to(point(px(rad), px(rad)), px(0.), false, true, to);
+    let arc = |pb: &mut PathBuilder, rad: f32, to| {
+        pb.arc_to(point(px(rad), px(rad)), px(0.), false, true, to)
+    };
     let outline = |pb: &mut PathBuilder, i: f32| {
-        let (x0, x1, y0, y1, r) = (-c.hw + i, c.hw - i, c.top + i, c.bottom - i, (c.r - i).max(0.));
+        let (x0, x1, y0, y1, r) = (
+            -c.hw + i,
+            c.hw - i,
+            c.top + i,
+            c.bottom - i,
+            (c.r - i).max(0.),
+        );
         pb.move_to(p(x0 + r, y0));
         bowed(pb, &p, x0 + r, x1 - r, y0, -bow);
         arc(pb, r, p(x1, y0 + r));
@@ -1644,11 +1977,24 @@ fn card_shape(b: Bounds<Pixels>, c: Rounded, bow: f32, edge: f32, window: &mut W
 /// radius `r` wedged between them, joined through both shapes' insides
 /// (`inset` deep, past their bowed edges). The same black as both, so no
 /// seam shows; it is painted over their hairlines, which end where it starts.
-fn neck(b: Bounds<Pixels>, island: Rounded, card: Rounded, r: f32, inset: f32, window: &mut Window) {
+fn neck(
+    b: Bounds<Pixels>,
+    island: Rounded,
+    card: Rounded,
+    r: f32,
+    inset: f32,
+    window: &mut Window,
+) {
     // Joined weakly, only the middle holds: the neck narrows to a thread before it snaps.
     let gap = card.top - island.bottom;
-    let hold = if gap <= 0. { 1. } else { smoothstep(0., 1., 1. - gap / (2. * r)) };
-    let Some([c, i, k]) = wedge(island.narrowed(hold), card.narrowed(hold), r) else { return };
+    let hold = if gap <= 0. {
+        1.
+    } else {
+        smoothstep(0., 1., 1. - gap / (2. * r))
+    };
+    let Some([c, i, k]) = wedge(island.narrowed(hold), card.narrowed(hold), r) else {
+        return;
+    };
     let o = b.origin;
     let p = |(x, y): (f32, f32)| point(o.x + px(WIN_W / 2. + x), o.y + px(y));
     let mirror = |(x, y): (f32, f32)| (-x, y);
@@ -1677,32 +2023,41 @@ fn neck(b: Bounds<Pixels>, island: Rounded, card: Rounded, r: f32, inset: f32, w
 /// teammate's win and their bug don't look the same.
 fn avatar(alert: &Alert) -> impl IntoElement {
     let kind = alert.kind;
-    let tinted = matches!(kind, AlertKind::Success | AlertKind::Warning | AlertKind::Failure);
+    let tinted = matches!(
+        kind,
+        AlertKind::Success | AlertKind::Warning | AlertKind::Failure
+    );
     let color = kind.badge();
     // A black gap between ring and picture, so the ring reads on any photo.
     let pic = gpui::img(std::path::PathBuf::from(alert.image.as_ref()))
         .size_full()
         .rounded_full()
         .when(tinted, |i| i.border_2().border_color(gpui::black()));
-    let mark = canvas(|_, _, _| {}, move |b, _, window, _| {
-        let c = b.center();
-        let p = |x: f32, y: f32| point(c.x + px(x), c.y + px(y));
-        let opts = StrokeOptions::default().with_line_width(1.8).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
-        let mut line = PathBuilder::fill().with_style(PathStyle::Stroke(opts));
-        if kind == AlertKind::Success {
-            line.move_to(p(-3., 0.3));
-            line.line_to(p(-0.9, 2.4));
-            line.line_to(p(3.2, -2.4));
-        } else {
-            line.move_to(p(0., -3.2));
-            line.line_to(p(0., 0.6));
-            line.move_to(p(0., 3.));
-            line.line_to(p(0., 3.1));
-        }
-        if let Ok(path) = line.build() {
-            window.paint_path(path, gpui::black());
-        }
-    });
+    let mark = canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let c = b.center();
+            let p = |x: f32, y: f32| point(c.x + px(x), c.y + px(y));
+            let opts = StrokeOptions::default()
+                .with_line_width(1.8)
+                .with_line_cap(LineCap::Round)
+                .with_line_join(LineJoin::Round);
+            let mut line = PathBuilder::fill().with_style(PathStyle::Stroke(opts));
+            if kind == AlertKind::Success {
+                line.move_to(p(-3., 0.3));
+                line.line_to(p(-0.9, 2.4));
+                line.line_to(p(3.2, -2.4));
+            } else {
+                line.move_to(p(0., -3.2));
+                line.line_to(p(0., 0.6));
+                line.move_to(p(0., 3.));
+                line.line_to(p(0., 3.1));
+            }
+            if let Ok(path) = line.build() {
+                window.paint_path(path, gpui::black());
+            }
+        },
+    );
     div()
         .flex_none()
         .relative()
@@ -1733,47 +2088,58 @@ fn avatar(alert: &Alert) -> impl IntoElement {
 /// A notice's badge: a check for a success, "!" for a warning or a failure, "i" otherwise.
 fn badge(kind: AlertKind) -> impl IntoElement {
     let color = kind.badge();
-    div().flex_none().size(px(BADGE)).rounded_full().bg(color.opacity(0.18)).child(
-        canvas(|_, _, _| {}, move |b, _, window, _| {
-            let c = b.center();
-            let p = |x: f32, y: f32| point(c.x + px(x), c.y + px(y));
-            let opts = StrokeOptions::default().with_line_width(2.2).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
-            let mut line = PathBuilder::fill().with_style(PathStyle::Stroke(opts));
-            let dot = match kind {
-                AlertKind::Success => {
-                    line.move_to(p(-5., 0.5));
-                    line.line_to(p(-1.5, 4.));
-                    line.line_to(p(5.5, -4.));
-                    None
-                }
-                AlertKind::Warning | AlertKind::Failure => {
-                    line.move_to(p(0., -5.5));
-                    line.line_to(p(0., 1.5));
-                    Some(5.)
-                }
-                _ => {
-                    line.move_to(p(0., -0.5));
-                    line.line_to(p(0., 5.5));
-                    Some(-4.5)
-                }
-            };
-            if let Ok(path) = line.build() {
-                window.paint_path(path, color);
-            }
-            if let Some(y) = dot {
-                let r = px(1.4);
-                let mut d = PathBuilder::fill();
-                d.move_to(p(1.4, y));
-                d.arc_to(point(r, r), px(0.), false, true, p(-1.4, y));
-                d.arc_to(point(r, r), px(0.), false, true, p(1.4, y));
-                d.close();
-                if let Ok(path) = d.build() {
-                    window.paint_path(path, color);
-                }
-            }
-        })
-        .size_full(),
-    )
+    div()
+        .flex_none()
+        .size(px(BADGE))
+        .rounded_full()
+        .bg(color.opacity(0.18))
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |b, _, window, _| {
+                    let c = b.center();
+                    let p = |x: f32, y: f32| point(c.x + px(x), c.y + px(y));
+                    let opts = StrokeOptions::default()
+                        .with_line_width(2.2)
+                        .with_line_cap(LineCap::Round)
+                        .with_line_join(LineJoin::Round);
+                    let mut line = PathBuilder::fill().with_style(PathStyle::Stroke(opts));
+                    let dot = match kind {
+                        AlertKind::Success => {
+                            line.move_to(p(-5., 0.5));
+                            line.line_to(p(-1.5, 4.));
+                            line.line_to(p(5.5, -4.));
+                            None
+                        }
+                        AlertKind::Warning | AlertKind::Failure => {
+                            line.move_to(p(0., -5.5));
+                            line.line_to(p(0., 1.5));
+                            Some(5.)
+                        }
+                        _ => {
+                            line.move_to(p(0., -0.5));
+                            line.line_to(p(0., 5.5));
+                            Some(-4.5)
+                        }
+                    };
+                    if let Ok(path) = line.build() {
+                        window.paint_path(path, color);
+                    }
+                    if let Some(y) = dot {
+                        let r = px(1.4);
+                        let mut d = PathBuilder::fill();
+                        d.move_to(p(1.4, y));
+                        d.arc_to(point(r, r), px(0.), false, true, p(-1.4, y));
+                        d.arc_to(point(r, r), px(0.), false, true, p(1.4, y));
+                        d.close();
+                        if let Ok(path) = d.build() {
+                            window.paint_path(path, color);
+                        }
+                    }
+                },
+            )
+            .size_full(),
+        )
 }
 
 fn may_approve(armed: Option<(u64, Instant, bool)>, front: Option<u64>, now: Instant) -> bool {
@@ -1781,7 +2147,12 @@ fn may_approve(armed: Option<(u64, Instant, bool)>, front: Option<u64>, now: Ins
 }
 
 /// The arming of the card in front: kept while it is the same card, reset for a new one.
-fn rearm(armed: Option<(u64, Instant, bool)>, front: Option<u64>, hovered: bool, now: Instant) -> Option<(u64, Instant, bool)> {
+fn rearm(
+    armed: Option<(u64, Instant, bool)>,
+    front: Option<u64>,
+    hovered: bool,
+    now: Instant,
+) -> Option<(u64, Instant, bool)> {
     match front {
         Some(n) if armed.map(|a| a.0) != Some(n) => Some((n, now, !hovered)),
         Some(_) => armed,
@@ -1793,9 +2164,22 @@ impl Island {
     /// Frames painted in the last two seconds and the longest gap between them.
     pub fn fps_report(&self) -> String {
         let now = Instant::now();
-        let recent: Vec<Instant> = self.frames.iter().copied().filter(|&t| now - t < Duration::from_secs(2)).collect();
-        let gap = recent.windows(2).map(|w| w[1] - w[0]).max().unwrap_or_default();
-        format!("{} frames in 2 s, longest gap {} ms", recent.len(), gap.as_millis())
+        let recent: Vec<Instant> = self
+            .frames
+            .iter()
+            .copied()
+            .filter(|&t| now - t < Duration::from_secs(2))
+            .collect();
+        let gap = recent
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .max()
+            .unwrap_or_default();
+        format!(
+            "{} frames in 2 s, longest gap {} ms",
+            recent.len(),
+            gap.as_millis()
+        )
     }
 }
 
@@ -1803,7 +2187,9 @@ impl Render for Island {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.arm(Instant::now());
         let now = Instant::now();
-        let dt = self.last.map_or(1. / 120., |l| (now - l).as_secs_f32().min(0.1));
+        let dt = self
+            .last
+            .map_or(1. / 120., |l| (now - l).as_secs_f32().min(0.1));
         self.last = Some(now);
         self.frames.push_back(now);
         while self.frames.len() > 400 {
@@ -1813,13 +2199,21 @@ impl Render for Island {
         if let Some(c) = &mut self.call {
             let live = c.levels.get(c.phase == Phase::Listening);
             // Up fast, down slow, like a meter.
-            let k = if live > c.shown { 1. - (-dt / 0.04).exp() } else { 1. - (-dt / 0.18).exp() };
+            let k = if live > c.shown {
+                1. - (-dt / 0.04).exp()
+            } else {
+                1. - (-dt / 0.18).exp()
+            };
             c.shown += (live - c.shown) * k;
         }
         if let Some((levels, shown)) = &mut self.recording {
             // Either side talking moves it.
             let live = levels.get(true).max(levels.get(false));
-            let k = if live > *shown { 1. - (-dt / 0.04).exp() } else { 1. - (-dt / 0.18).exp() };
+            let k = if live > *shown {
+                1. - (-dt / 0.04).exp()
+            } else {
+                1. - (-dt / 0.18).exp()
+            };
             *shown += (live - *shown) * k;
         }
         let t = self.start.elapsed().as_secs_f32();
@@ -1832,37 +2226,81 @@ impl Render for Island {
         {
             card.layout = Some(CardLayout::measure(&card.alert, window, cx));
         }
-        if self.card.as_ref().and_then(|c| c.gone).is_some_and(|at| at.elapsed().as_secs_f32() >= MELT_FOR) {
+        if self
+            .card
+            .as_ref()
+            .and_then(|c| c.gone)
+            .is_some_and(|at| at.elapsed().as_secs_f32() >= MELT_FOR)
+        {
             self.card = None;
             self.sync_card(cx);
         }
         let card = self.card.as_ref().and_then(|c| {
             let l = c.layout.as_ref()?;
-            let g = card_geom(l.w, l.h, w, h, c.born.elapsed().as_secs_f32(), c.gone.map(|at| at.elapsed().as_secs_f32()));
+            let g = card_geom(
+                l.w,
+                l.h,
+                w,
+                h,
+                c.born.elapsed().as_secs_f32(),
+                c.gone.map(|at| at.elapsed().as_secs_f32()),
+            );
             Some((c, l, g))
         });
-        let bounced = self.melted.map_or(0., |at| bounce(at.elapsed().as_secs_f32()));
+        let bounced = self
+            .melted
+            .map_or(0., |at| bounce(at.elapsed().as_secs_f32()));
         let ih = h + bounced;
-        let island = Rounded { hw: w / 2., top: -100., bottom: ih, r: bottom_radius(w, ih) };
+        let island = Rounded {
+            hw: w / 2.,
+            top: -100.,
+            bottom: ih,
+            r: bottom_radius(w, ih),
+        };
         let shapes = card.map(|(_, l, g)| {
-            let box_ = Rounded { hw: g.w / 2., top: g.top, bottom: g.top + g.h, r: card_radius(l.h, g.w, g.h) };
+            let box_ = Rounded {
+                hw: g.w / 2.,
+                top: g.top,
+                bottom: g.top + g.h,
+                r: card_radius(l.h, g.w, g.h),
+            };
             // The hairline shows only once the card hangs free.
             (box_, g, smoothstep(0., CARD_GAP, g.top - ih))
         });
-        let card_box = card.filter(|(c, ..)| c.gone.is_none()).map(|(_, _, g)| {
-            Bounds { origin: point(px(WIN_W / 2. - g.w / 2.), px(g.top)), size: size(px(g.w), px(g.h)) }
-        });
+        let card_box = card
+            .filter(|(c, ..)| c.gone.is_none())
+            .map(|(_, _, g)| Bounds {
+                origin: point(px(WIN_W / 2. - g.w / 2.), px(g.top)),
+                size: size(px(g.w), px(g.h)),
+            });
 
-        let mut region = vec![[x0.floor() as i32, 0, w.ceil() as i32 + 1, ih.ceil() as i32 + 1]];
+        let mut region = vec![[
+            x0.floor() as i32,
+            0,
+            w.ceil() as i32 + 1,
+            ih.ceil() as i32 + 1,
+        ]];
         if let Some(b) = card_box {
             let (x, y) = (b.origin.x.as_f32(), b.origin.y.as_f32());
-            region.push([x.floor() as i32, y.floor() as i32, b.size.width.as_f32().ceil() as i32 + 1, b.size.height.as_f32().ceil() as i32 + 1]);
+            region.push([
+                x.floor() as i32,
+                y.floor() as i32,
+                b.size.width.as_f32().ceil() as i32 + 1,
+                b.size.height.as_f32().ceil() as i32 + 1,
+            ]);
         }
         if self.region.as_ref() != Some(&region) {
-            let rects: Vec<_> = if passthrough() { vec![[0; 4]] } else { region.clone() }
-                .into_iter()
-                .map(|r| Bounds { origin: point(px(r[0] as f32), px(r[1] as f32)), size: size(px(r[2] as f32), px(r[3] as f32)) })
-                .collect();
+            let rects: Vec<_> = if passthrough() {
+                vec![[0; 4]]
+            } else {
+                region.clone()
+            }
+            .into_iter()
+            .map(|r| Bounds {
+                origin: point(px(r[0] as f32), px(r[1] as f32)),
+                size: size(px(r[2] as f32), px(r[3] as f32)),
+            })
+            .collect();
             window.set_input_region(Some(&rects));
             self.region = Some(region);
         }
@@ -1874,8 +2312,13 @@ impl Render for Island {
             View::Compact(Phase::Working) | View::List(_) => pulsing,
             _ => false,
         };
-        let card_moving = self.card.as_ref().is_some_and(|c| c.gone.is_some() || c.born.elapsed().as_secs_f32() < 1.5)
-            || self.melted.is_some_and(|at| at.elapsed().as_secs_f32() < 1.2);
+        let card_moving = self
+            .card
+            .as_ref()
+            .is_some_and(|c| c.gone.is_some() || c.born.elapsed().as_secs_f32() < 1.5)
+            || self
+                .melted
+                .is_some_and(|at| at.elapsed().as_secs_f32() < 1.2);
         if moving || animated || card_moving || self.prev_alpha().is_some() {
             window.request_animation_frame();
         } else {
@@ -1905,7 +2348,9 @@ impl Render for Island {
         // The card's text fades in once it let go, rising a little.
         let content = card.filter(|(.., g)| g.alpha > 0.01).map(|(c, l, g)| {
             let lift = (1. - g.alpha) * 4.;
-            div().opacity(g.alpha).child(self.card_content(c, l, g.top + lift, g.h - lift, cx))
+            div()
+                .opacity(g.alpha)
+                .child(self.card_content(c, l, g.top + lift, g.h - lift, cx))
         });
 
         let mh = SMALL_W * 166. / 212.;
@@ -1926,30 +2371,40 @@ impl Render for Island {
         div()
             .size_full()
             .font_family(theme::FONT_SANS)
-            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.emit(IslandEvent::Pressed)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _, _, cx| cx.emit(IslandEvent::Pressed)),
+            )
             .child(
-                canvas(|_, _, _| {}, move |b, _, window, _| {
-                    let bow = shapes.map_or(0., |(_, g, _)| 0.6 * g.bulge);
-                    shape(b, w, ih, bow, window);
-                    if let Some((c, g, edge)) = shapes {
-                        card_shape(b, c, g.bulge, edge, window);
-                        neck(b, island, c, NECK_R * g.join, 1.5 + g.bulge.abs(), window);
-                    }
-                    // Hover by hand: on leaving, gpui keeps the last pointer
-                    // position and a growing shape would claim it again.
-                    let inside = Bounds { origin: point(px(x0), px(0.)), size: size(px(w), px(h)) };
-                    let on_move = weak.clone();
-                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
-                        if phase == DispatchPhase::Bubble {
-                            let on = inside.contains(&e.position) || card_box.is_some_and(|c| c.contains(&e.position));
-                            let _ = on_move.update(cx, |this, cx| this.hover(on, cx));
+                canvas(
+                    |_, _, _| {},
+                    move |b, _, window, _| {
+                        let bow = shapes.map_or(0., |(_, g, _)| 0.6 * g.bulge);
+                        shape(b, w, ih, bow, window);
+                        if let Some((c, g, edge)) = shapes {
+                            card_shape(b, c, g.bulge, edge, window);
+                            neck(b, island, c, NECK_R * g.join, 1.5 + g.bulge.abs(), window);
                         }
-                    });
-                    let on_exit = weak.clone();
-                    window.on_mouse_event(move |_: &MouseExitEvent, _, _, cx| {
-                        let _ = on_exit.update(cx, |this, cx| this.hover(false, cx));
-                    });
-                })
+                        // Hover by hand: on leaving, gpui keeps the last pointer
+                        // position and a growing shape would claim it again.
+                        let inside = Bounds {
+                            origin: point(px(x0), px(0.)),
+                            size: size(px(w), px(h)),
+                        };
+                        let on_move = weak.clone();
+                        window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                let on = inside.contains(&e.position)
+                                    || card_box.is_some_and(|c| c.contains(&e.position));
+                                let _ = on_move.update(cx, |this, cx| this.hover(on, cx));
+                            }
+                        });
+                        let on_exit = weak.clone();
+                        window.on_mouse_event(move |_: &MouseExitEvent, _, _, cx| {
+                            let _ = on_exit.update(cx, |this, cx| this.hover(false, cx));
+                        });
+                    },
+                )
                 .absolute()
                 .size_full(),
             )
@@ -1976,15 +2431,28 @@ mod tests {
     }
 
     fn alert(key: &str, kind: AlertKind) -> Alert {
-        Alert { key: key.to_string().into(), kind, title: "t".into(), subtitle: "s".into(), req: SharedString::default(), image: SharedString::default() }
+        Alert {
+            key: key.to_string().into(),
+            kind,
+            title: "t".into(),
+            subtitle: "s".into(),
+            req: SharedString::default(),
+            image: SharedString::default(),
+        }
     }
 
     #[test]
     fn phase_follows_the_agents() {
         let done = [row("a", Status::Done, 1)];
         assert_eq!(phase_for(&[], false, None), Phase::Sleeping);
-        assert_eq!(phase_for(&done, false, Some(Duration::from_secs(30))), Phase::Idle);
-        assert_eq!(phase_for(&done, false, Some(Duration::from_secs(600))), Phase::Sleeping);
+        assert_eq!(
+            phase_for(&done, false, Some(Duration::from_secs(30))),
+            Phase::Idle
+        );
+        assert_eq!(
+            phase_for(&done, false, Some(Duration::from_secs(600))),
+            Phase::Sleeping
+        );
         let busy = [row("a", Status::Done, 1), row("b", Status::Waiting, 1)];
         assert_eq!(phase_for(&busy, false, None), Phase::Working);
         assert_eq!(phase_for(&busy, true, None), Phase::Alert);
@@ -2006,7 +2474,9 @@ mod tests {
 
     #[test]
     fn dots_cap_at_six() {
-        let mut rows: Vec<Row> = (0..8).map(|i| row(&i.to_string(), Status::Working, 0)).collect();
+        let mut rows: Vec<Row> = (0..8)
+            .map(|i| row(&i.to_string(), Status::Working, 0))
+            .collect();
         rows.push(row("x", Status::Done, 0));
         let (shown, more) = dots(&rows);
         assert_eq!((shown.len(), more), (6, 2));
@@ -2059,9 +2529,15 @@ mod tests {
 
     #[test]
     fn the_island_picks_the_landscape_screen() {
-        assert_eq!(pick_landscape([(0, 1080., 1920.), (1, 1920., 1080.)].into_iter()), Some(1));
+        assert_eq!(
+            pick_landscape([(0, 1080., 1920.), (1, 1920., 1080.)].into_iter()),
+            Some(1)
+        );
         assert_eq!(pick_landscape([(0, 1080., 1920.)].into_iter()), None);
-        assert_eq!(pick_landscape([(0, 1920., 1080.), (1, 2560., 1440.)].into_iter()), Some(1));
+        assert_eq!(
+            pick_landscape([(0, 1920., 1080.), (1, 2560., 1440.)].into_iter()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -2106,16 +2582,29 @@ mod tests {
         assert_eq!(alert_for(&a), Some(ALERT_MAX));
         // A notice with nothing to open goes sooner; one with a target stays like a session's.
         assert_eq!(alert_for(&alert("", AlertKind::Success)), Some(NOTICE_FOR));
-        assert_eq!(alert_for(&alert("open:runs", AlertKind::Failure)), Some(ALERT_FOR));
+        assert_eq!(
+            alert_for(&alert("open:runs", AlertKind::Failure)),
+            Some(ALERT_FOR)
+        );
         assert_eq!(alert_for(&alert("h1", AlertKind::Confirm)), None);
     }
 
     #[test]
     fn notices_get_buttons_only_with_something_to_open() {
-        for kind in [AlertKind::Finished, AlertKind::Input, AlertKind::Error, AlertKind::Confirm] {
+        for kind in [
+            AlertKind::Finished,
+            AlertKind::Input,
+            AlertKind::Error,
+            AlertKind::Confirm,
+        ] {
             assert!(alert("", kind).buttons());
         }
-        for kind in [AlertKind::Success, AlertKind::Warning, AlertKind::Failure, AlertKind::Info] {
+        for kind in [
+            AlertKind::Success,
+            AlertKind::Warning,
+            AlertKind::Failure,
+            AlertKind::Info,
+        ] {
             assert!(!alert("", kind).buttons());
             assert!(alert("open:runs", kind).buttons());
         }
@@ -2152,15 +2641,35 @@ mod tests {
         assert!(g.top + g.h < ih, "the card is inside: {g:?}");
         assert!(g.w < iw);
         // The neck lets go while the card goes in: none at the end.
-        let island = Rounded { hw: iw / 2., top: -100., bottom: ih, r: bottom_radius(iw, ih) };
-        let card = Rounded { hw: g.w / 2., top: g.top, bottom: g.top + g.h, r: card_radius(h, g.w, g.h) };
+        let island = Rounded {
+            hw: iw / 2.,
+            top: -100.,
+            bottom: ih,
+            r: bottom_radius(iw, ih),
+        };
+        let card = Rounded {
+            hw: g.w / 2.,
+            top: g.top,
+            bottom: g.top + g.h,
+            r: card_radius(h, g.w, g.h),
+        };
         assert!(wedge(island, card, NECK_R).is_none());
     }
 
     #[test]
     fn the_neck_joins_only_what_is_close() {
-        let island = Rounded { hw: 120., top: -100., bottom: 32., r: 12. };
-        let card = |top: f32| Rounded { hw: 220., top, bottom: top + 150., r: 26. };
+        let island = Rounded {
+            hw: 120.,
+            top: -100.,
+            bottom: 32.,
+            r: 12.,
+        };
+        let card = |top: f32| Rounded {
+            hw: 220.,
+            top,
+            bottom: top + 150.,
+            r: 26.,
+        };
         // Wider apart than the ball: nothing joins them.
         assert!(wedge(island, card(32. + 2. * NECK_R + 1.), NECK_R).is_none());
         // Close: the ball sits beside the island, touching both.
@@ -2169,7 +2678,12 @@ mod tests {
         let dist = |a: (f32, f32)| (a.0 - c.0).hypot(a.1 - c.1);
         assert!((dist(i) - NECK_R).abs() < 0.1 && (dist(k) - NECK_R).abs() < 0.1);
         // A small card poking out of the bottom gets fillets on its sides.
-        let drop = Rounded { hw: 60., top: 20., bottom: 60., r: 20. };
+        let drop = Rounded {
+            hw: 60.,
+            top: 20.,
+            bottom: 60.,
+            r: 20.,
+        };
         let [c, _, k] = wedge(island, drop, 8.).unwrap();
         assert!((c.0 - 68.).abs() < 0.5 && (k.0 - 60.).abs() < 0.5);
     }

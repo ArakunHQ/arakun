@@ -15,14 +15,14 @@
 
 #[path = "../src/agent/mod.rs"]
 mod agent;
+#[allow(dead_code)]
+#[path = "../src/headless/broker.rs"]
+mod broker;
 #[path = "../src/durable.rs"]
 mod durable;
 #[path = "../src/fetch.rs"]
 #[allow(dead_code)]
 mod fetch;
-#[allow(dead_code)]
-#[path = "../src/headless/broker.rs"]
-mod broker;
 #[allow(dead_code)]
 #[path = "../src/headless/sandbox.rs"]
 mod sandbox;
@@ -39,23 +39,23 @@ mod memory {
         String::new()
     }
 }
+#[path = "../src/assets.rs"]
+mod assets;
 #[allow(dead_code)]
 #[path = "../src/highlight.rs"]
 mod highlight;
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
-#[allow(dead_code)]
-#[path = "../src/schedule.rs"]
-mod schedule;
-#[path = "../src/assets.rs"]
-mod assets;
 #[allow(dead_code)]
 #[path = "../src/input.rs"]
 mod input;
 #[allow(dead_code)]
 #[path = "../src/mascot.rs"]
 mod mascot;
+#[allow(dead_code)]
+#[path = "../src/platform.rs"]
+mod platform;
+#[allow(dead_code)]
+#[path = "../src/schedule.rs"]
+mod schedule;
 #[allow(dead_code)]
 #[path = "../src/theme.rs"]
 mod theme;
@@ -70,10 +70,11 @@ use std::path::PathBuf;
 
 use agent::{AgentKind, SessionMeta, Thread, ThreadEvent, ThreadStatus, ThreadView};
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, Entity, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions,
-    div, prelude::FluentBuilder as _, px, size,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, prelude::FluentBuilder as _, px,
+    size,
 };
 use input::{InputEvent, TextInput};
 
@@ -96,7 +97,10 @@ fn parse_args() -> Args {
         std::process::exit(2)
     };
     let mut it = std::env::args().skip(1);
-    let kind = it.next().and_then(|k| AgentKind::parse(&k)).unwrap_or_else(|| usage());
+    let kind = it
+        .next()
+        .and_then(|k| AgentKind::parse(&k))
+        .unwrap_or_else(|| usage());
     let cwd = it.next().map(PathBuf::from).unwrap_or_else(|| usage());
     let cwd = cwd.canonicalize().unwrap_or(cwd);
     let mut args = Args {
@@ -311,8 +315,16 @@ impl Render for Demo {
                         .gap(px(4.))
                         .font_family(theme::FONT_MONO)
                         .text_size(px(12.))
-                        .child(div().text_color(theme::diff_add()).child(format!("+{added}")))
-                        .child(div().text_color(theme::diff_del()).child(format!("-{removed}"))),
+                        .child(
+                            div()
+                                .text_color(theme::diff_add())
+                                .child(format!("+{added}")),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme::diff_del())
+                                .child(format!("-{removed}")),
+                        ),
                 )
             })
             .child(

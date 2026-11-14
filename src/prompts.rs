@@ -34,7 +34,10 @@ pub fn load() -> Vec<SavedPrompt> {
 
 pub fn store(prompts: &[SavedPrompt]) {
     let path = file();
-    if let Err(e) = crate::durable::write(&path, &serde_json::to_vec_pretty(prompts).unwrap_or_default()) {
+    if let Err(e) = crate::durable::write(
+        &path,
+        &serde_json::to_vec_pretty(prompts).unwrap_or_default(),
+    ) {
         eprintln!("arakun: could not save {}: {e}", path.display());
     }
 }
@@ -43,11 +46,20 @@ pub fn store(prompts: &[SavedPrompt]) {
 pub fn name_for(text: &str, taken: &[SavedPrompt]) -> String {
     let words: Vec<String> = text
         .split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
         .filter(|w| !w.is_empty())
         .take(4)
         .collect();
-    let base = if words.is_empty() { "prompt".to_string() } else { words.join("-") };
+    let base = if words.is_empty() {
+        "prompt".to_string()
+    } else {
+        words.join("-")
+    };
     let mut name = base.clone();
     let mut n = 2;
     while taken.iter().any(|p| p.name == name) {
@@ -95,12 +107,22 @@ mod tests {
     use super::*;
 
     fn p(name: &str, text: &str, pinned: bool, uses: u32) -> SavedPrompt {
-        SavedPrompt { name: name.into(), text: text.into(), pinned, uses, last_used: 0 }
+        SavedPrompt {
+            name: name.into(),
+            text: text.into(),
+            pinned,
+            uses,
+            last_used: 0,
+        }
     }
 
     #[test]
     fn ranks_pinned_then_matches_then_use() {
-        let list = vec![p("review", "look at the diff", false, 1), p("tests", "write tests", false, 9), p("ship", "commit and push", true, 0)];
+        let list = vec![
+            p("review", "look at the diff", false, 1),
+            p("tests", "write tests", false, 9),
+            p("ship", "commit and push", true, 0),
+        ];
         assert_eq!(ranked(&list, ""), [2, 1, 0]);
         assert_eq!(ranked(&list, "re"), [0]);
         assert_eq!(ranked(&list, "push"), [2]);
@@ -110,7 +132,10 @@ mod tests {
     #[test]
     fn names_from_first_words() {
         let taken = vec![p("fix-the-failing-test", "", false, 0)];
-        assert_eq!(name_for("Fix the failing test, please", &taken), "fix-the-failing-test-2");
+        assert_eq!(
+            name_for("Fix the failing test, please", &taken),
+            "fix-the-failing-test-2"
+        );
         assert_eq!(name_for("¿?", &[]), "prompt");
     }
 }

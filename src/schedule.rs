@@ -10,15 +10,35 @@ pub enum Schedule {
     /// Only when run by hand.
     #[default]
     Manual,
-    Hourly { minute: u8 },
-    Daily { hour: u8, minute: u8 },
+    Hourly {
+        minute: u8,
+    },
+    Daily {
+        hour: u8,
+        minute: u8,
+    },
     /// Monday to Friday.
-    Weekdays { hour: u8, minute: u8 },
+    Weekdays {
+        hour: u8,
+        minute: u8,
+    },
     /// `day` 0 is Sunday.
-    Weekly { day: u8, hour: u8, minute: u8 },
+    Weekly {
+        day: u8,
+        hour: u8,
+        minute: u8,
+    },
 }
 
-pub const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+pub const WEEKDAYS: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
 
 impl Schedule {
     /// "Weekdays at 09:00", for lists.
@@ -40,19 +60,51 @@ impl Schedule {
         match *self {
             Self::Manual => None,
             Self::Hourly { minute } => {
-                let at = make(now.year, now.month, now.day, now.hour, minute.min(59) as i32)?;
-                if at > after { Some(at) } else { make(now.year, now.month, now.day, now.hour + 1, minute.min(59) as i32) }
+                let at = make(
+                    now.year,
+                    now.month,
+                    now.day,
+                    now.hour,
+                    minute.min(59) as i32,
+                )?;
+                if at > after {
+                    Some(at)
+                } else {
+                    make(
+                        now.year,
+                        now.month,
+                        now.day,
+                        now.hour + 1,
+                        minute.min(59) as i32,
+                    )
+                }
             }
             Self::Daily { hour, minute } => first_day(now, after, hour, minute, |_| true),
-            Self::Weekdays { hour, minute } => first_day(now, after, hour, minute, |wday| (1..=5).contains(&wday)),
-            Self::Weekly { day, hour, minute } => first_day(now, after, hour, minute, |wday| wday == (day % 7) as i32),
+            Self::Weekdays { hour, minute } => {
+                first_day(now, after, hour, minute, |wday| (1..=5).contains(&wday))
+            }
+            Self::Weekly { day, hour, minute } => {
+                first_day(now, after, hour, minute, |wday| wday == (day % 7) as i32)
+            }
         }
     }
 }
 
-fn first_day(now: Local, after: u64, hour: u8, minute: u8, ok: impl Fn(i32) -> bool) -> Option<u64> {
+fn first_day(
+    now: Local,
+    after: u64,
+    hour: u8,
+    minute: u8,
+    ok: impl Fn(i32) -> bool,
+) -> Option<u64> {
     (0..=8).find_map(|d| {
-        let at = make(now.year, now.month, now.day + d, hour.min(23) as i32, minute.min(59) as i32)?;
+        let at = make(
+            now.year,
+            now.month,
+            now.day + d,
+            hour.min(23) as i32,
+            minute.min(59) as i32,
+        )?;
         (at > after && ok(local(at)?.wday)).then_some(at)
     })
 }
@@ -82,7 +134,9 @@ pub fn when(at: u64, now: u64) -> String {
         -1 => format!("yesterday {time}"),
         2..=6 => format!("{} {time}", &WEEKDAYS[a.wday as usize][..3]),
         _ => {
-            const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const MONTHS: [&str; 12] = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
             format!("{} {} {time}", a.day, MONTHS[a.month as usize % 12])
         }
     }
@@ -91,7 +145,10 @@ pub fn when(at: u64, now: u64) -> String {
 /// Days since an arbitrary epoch, for telling calendar days apart.
 fn day_number(l: Local) -> i64 {
     // Days from civil (Howard Hinnant), with a 1-based month.
-    let (y, m) = (l.year as i64 - if l.month < 2 { 1 } else { 0 }, l.month as i64 + 1);
+    let (y, m) = (
+        l.year as i64 - if l.month < 2 { 1 } else { 0 },
+        l.month as i64 + 1,
+    );
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
     let mp = (m + 9) % 12;
@@ -117,9 +174,16 @@ mod tests {
     fn next_runs_land_on_the_schedule() {
         for sched in [
             Schedule::Hourly { minute: 15 },
-            Schedule::Daily { hour: 9, minute: 30 },
+            Schedule::Daily {
+                hour: 9,
+                minute: 30,
+            },
             Schedule::Weekdays { hour: 8, minute: 0 },
-            Schedule::Weekly { day: 0, hour: 18, minute: 45 },
+            Schedule::Weekly {
+                day: 0,
+                hour: 18,
+                minute: 45,
+            },
         ] {
             let mut after = NOW;
             for _ in 0..20 {
@@ -140,7 +204,10 @@ mod tests {
                         assert!((1..=5).contains(&l.wday));
                     }
                     Schedule::Weekly { day, hour, minute } => {
-                        assert_eq!((l.hour, l.minute, l.wday), (hour as i32, minute as i32, day as i32));
+                        assert_eq!(
+                            (l.hour, l.minute, l.wday),
+                            (hour as i32, minute as i32, day as i32)
+                        );
                         assert!(next - after <= 7 * 86400 + 3600);
                     }
                     Schedule::Manual => unreachable!(),
@@ -157,9 +224,20 @@ mod tests {
         assert_eq!(parse_time(" 23:59 "), Some((23, 59)));
         assert_eq!(parse_time("24:00"), None);
         assert_eq!(parse_time("nine"), None);
-        assert_eq!(Schedule::Weekly { day: 1, hour: 9, minute: 0 }.describe(), "Mondays at 09:00");
+        assert_eq!(
+            Schedule::Weekly {
+                day: 1,
+                hour: 9,
+                minute: 0
+            }
+            .describe(),
+            "Mondays at 09:00"
+        );
         assert_eq!(when(NOW, NOW).split_once(' ').unwrap().0, "today");
-        assert_eq!(when(NOW + 86400, NOW).split_once(' ').unwrap().0, "tomorrow");
+        assert_eq!(
+            when(NOW + 86400, NOW).split_once(' ').unwrap().0,
+            "tomorrow"
+        );
     }
 
     #[test]

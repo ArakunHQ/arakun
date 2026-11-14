@@ -21,21 +21,21 @@ use super::diff;
 use super::launch;
 use super::ledger;
 use super::loops::{self, Stuck};
-use super::shell_diff::{self, ShellChange, Snapshot};
 use super::rpc::{Connection, Dialect, Incoming, RpcError, unix_now, uuid_v4};
+use super::shell_diff::{self, ShellChange, Snapshot};
 
 // Children of this module so they can reach the private state of `Thread`.
-#[path = "native.rs"]
-mod native;
 #[path = "acp.rs"]
 mod acp;
+#[path = "native.rs"]
+mod native;
 #[path = "subagents.rs"]
 mod subagents;
-pub use subagents::{Subagent, SubagentRecord, SubagentState};
 pub use native::{
     AskUserRequest, Backend, ModelInfo, NativeSettings, Question, RewindPlan, Setting,
     SettingOption, SpecPlan, apply_setting, effort_name, fmt_count, setting_label, setting_options,
 };
+pub use subagents::{Subagent, SubagentRecord, SubagentState};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ThreadStatus {
@@ -124,7 +124,10 @@ impl ToolCall {
     pub fn is_subagent(&self) -> bool {
         matches!(self.tool_name.as_deref(), Some("Agent" | "Task"))
             || self.title.starts_with("Task")
-            || self.raw_input.as_ref().is_some_and(|i| i.get("subagent_type").is_some())
+            || self
+                .raw_input
+                .as_ref()
+                .is_some_and(|i| i.get("subagent_type").is_some())
     }
 }
 
@@ -388,7 +391,9 @@ impl Usage {
 #[derive(Clone, Debug)]
 pub enum ThreadEvent {
     /// Entries from this index on changed (an index equal to the old length means appended).
-    EntriesChanged { from: usize },
+    EntriesChanged {
+        from: usize,
+    },
     /// The whole history was replaced (a transcript was loaded).
     Reset,
     /// Metadata changed: modes, models, config, queue, usage, commands.
@@ -397,22 +402,34 @@ pub enum ThreadEvent {
     TitleChanged,
     NeedsPermission,
     /// A prompt turn ended; `stop_reason` is ACP's (end_turn, cancelled, ...) or "error".
-    Finished { stop_reason: String },
+    Finished {
+        stop_reason: String,
+    },
     /// `Thread::fork` made a copy of the session under a new id.
     Forked(SessionMeta),
     /// `Thread::confirm_rewind` forked the session before `prompt`, which goes
     /// back to the composer.
-    Rewound { meta: SessionMeta, prompt: String },
+    Rewound {
+        meta: SessionMeta,
+        prompt: String,
+    },
     /// The user asked to sign in to the agent (see [`Thread::request_login`]).
     LoginRequested,
     /// The rewind confirmation under the prompt at `entry` appeared, changed or went away.
-    RewindChanged { entry: usize },
+    RewindChanged {
+        entry: usize,
+    },
     /// A settled turn's shell changes are known (see [`Thread::shell_pending`]).
     ShellChanges,
     /// The user answered the offer to use `command` as the project's check.
-    CheckOffer { command: String, answer: CheckAnswer },
+    CheckOffer {
+        command: String,
+        answer: CheckAnswer,
+    },
     /// A subagent started (its id) or changed state (see [`Thread::subagents`]).
-    SubagentsChanged { spawned: Option<String> },
+    SubagentsChanged {
+        spawned: Option<String>,
+    },
 }
 
 /// What the user made of the offer to set up a check (see [`Thread::offer_check`]).
@@ -454,7 +471,8 @@ pub struct Transcript {
 }
 
 /// What a session interrupted by `arakun restart` is told when it comes back.
-const RESTARTED: &str = "Arakun restarted while you were working (a new build). Continue where you left off.";
+const RESTARTED: &str =
+    "Arakun restarted while you were working (a new build). Continue where you left off.";
 
 #[derive(Default)]
 struct Caps {
@@ -569,7 +587,11 @@ impl EventEmitter<ThreadEvent> for Thread {}
 
 fn summarize(text: &str) -> String {
     let text = attach::title_text(text);
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     match line.char_indices().nth(80) {
         Some((i, _)) => format!("{}…", &line[..i]),
         None => line.to_string(),
@@ -648,7 +670,9 @@ pub fn acp_label(s: Setting, current: &str, options: &[SettingOption]) -> String
         return current.to_string();
     };
     match s {
-        Setting::Model if o.id == "default" => o.description.clone().unwrap_or_else(|| o.name.clone()),
+        Setting::Model if o.id == "default" => {
+            o.description.clone().unwrap_or_else(|| o.name.clone())
+        }
         _ => o.name.clone(),
     }
 }
@@ -657,11 +681,20 @@ pub fn parse_config(list: &Value) -> Vec<ConfigOption> {
     list.as_array()
         .map(|a| {
             a.iter()
-                .filter(|o| o.get("type").and_then(Value::as_str).is_none_or(|t| t == "select"))
+                .filter(|o| {
+                    o.get("type")
+                        .and_then(Value::as_str)
+                        .is_none_or(|t| t == "select")
+                })
                 .filter_map(|o| {
                     // Options may come grouped: [{group, name, options: [...]}].
                     let mut options = Vec::new();
-                    for item in o.get("options").and_then(Value::as_array).into_iter().flatten() {
+                    for item in o
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
                         if let Some(inner) = item.get("options") {
                             options.extend(parse_choices(Some(inner), "value"));
                         } else {
@@ -717,7 +750,10 @@ fn parse_tool_content(list: &Value) -> Vec<ToolContent> {
 
 /// The option that allows a tool call, "allow once" first.
 fn allow_option(options: &[PermissionOption]) -> Option<&PermissionOption> {
-    options.iter().find(|o| o.kind == "allow_once").or_else(|| options.iter().find(|o| o.is_allow()))
+    options
+        .iter()
+        .find(|o| o.kind == "allow_once")
+        .or_else(|| options.iter().find(|o| o.is_allow()))
 }
 
 fn lexical_normalize(path: &Path) -> PathBuf {
@@ -741,7 +777,9 @@ fn continued_entries(mut entries: Vec<Entry>, kind: AgentKind) -> Vec<Entry> {
     for e in &mut entries {
         match e {
             Entry::User { message_id, .. } => *message_id = None,
-            Entry::Tool(tool) if matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress) => {
+            Entry::Tool(tool)
+                if matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress) =>
+            {
                 tool.status = ToolStatus::Failed;
             }
             _ => {}
@@ -789,7 +827,9 @@ impl Thread {
             }
             if !t.resume {
                 entries.push(Entry::Notice {
-                    text: "Arakun closed while this turn was running. Send a message to pick it up.".into(),
+                    text:
+                        "Arakun closed while this turn was running. Send a message to pick it up."
+                            .into(),
                     error: false,
                     mark: None,
                     places: Vec::new(),
@@ -855,7 +895,8 @@ impl Thread {
     pub fn show_transcript(&mut self, t: Transcript, status: ThreadStatus, cx: &mut Context<Self>) {
         const WINDOW: usize = 64;
         let old = self.entries.len();
-        let same = |a: &Entry, b: &Entry| serde_json::to_value(a).ok() == serde_json::to_value(b).ok();
+        let same =
+            |a: &Entry, b: &Entry| serde_json::to_value(a).ok() == serde_json::to_value(b).ok();
         let start = old.saturating_sub(WINDOW).min(t.entries.len());
         let from = (start..old.min(t.entries.len()))
             .find(|&i| !same(&self.entries[i], &t.entries[i]))
@@ -927,7 +968,8 @@ impl Thread {
             queue: Vec::new(),
             queue_paused: false,
             usage: Usage {
-                cost_estimate: kind == AgentKind::Claude && std::env::var_os("ANTHROPIC_API_KEY").is_none(),
+                cost_estimate: kind == AgentKind::Claude
+                    && std::env::var_os("ANTHROPIC_API_KEY").is_none(),
                 ..Usage::default()
             },
             turn_started: None,
@@ -1041,7 +1083,10 @@ impl Thread {
     }
 
     pub fn is_busy(&self) -> bool {
-        matches!(self.status, ThreadStatus::Working | ThreadStatus::NeedsInput)
+        matches!(
+            self.status,
+            ThreadStatus::Working | ThreadStatus::NeedsInput
+        )
     }
 
     /// How long the running turn has been going.
@@ -1101,9 +1146,14 @@ impl Thread {
                 ToolContent::Diff { path, .. } => Some(path),
                 _ => None,
             });
-            let moved = matches!(t.kind.as_str(), "edit" | "delete" | "move").then_some(&t.locations);
+            let moved =
+                matches!(t.kind.as_str(), "edit" | "delete" | "move").then_some(&t.locations);
             for p in diffs.chain(moved.into_iter().flatten()) {
-                let p = if p.is_relative() { self.cwd.join(p) } else { p.clone() };
+                let p = if p.is_relative() {
+                    self.cwd.join(p)
+                } else {
+                    p.clone()
+                };
                 if !out.contains(&p) {
                     out.push(p);
                 }
@@ -1113,7 +1163,12 @@ impl Thread {
     }
 
     /// A line in the transcript from arakun itself; returns its index for `update_notice`.
-    pub fn post_notice(&mut self, text: impl Into<String>, error: bool, cx: &mut Context<Self>) -> usize {
+    pub fn post_notice(
+        &mut self,
+        text: impl Into<String>,
+        error: bool,
+        cx: &mut Context<Self>,
+    ) -> usize {
         self.post_marked_notice(text, error, None, cx)
     }
 
@@ -1124,7 +1179,15 @@ impl Thread {
         mark: Option<NoticeMark>,
         cx: &mut Context<Self>,
     ) -> usize {
-        self.push_entry(Entry::Notice { text: text.into(), error, mark, places: Vec::new() }, cx)
+        self.push_entry(
+            Entry::Notice {
+                text: text.into(),
+                error,
+                mark,
+                places: Vec::new(),
+            },
+            cx,
+        )
     }
 
     /// Rewrites the notice at `ix`; posts a new one if the history changed under it.
@@ -1137,9 +1200,19 @@ impl Thread {
         places: Vec<NoticePlace>,
         cx: &mut Context<Self>,
     ) {
-        let notice = Entry::Notice { text: text.into(), error, mark, places };
+        let notice = Entry::Notice {
+            text: text.into(),
+            error,
+            mark,
+            places,
+        };
         match self.entries.get_mut(ix) {
-            Some(entry @ Entry::Notice { mark: Some(NoticeMark::Busy), .. }) => {
+            Some(
+                entry @ Entry::Notice {
+                    mark: Some(NoticeMark::Busy),
+                    ..
+                },
+            ) => {
                 *entry = notice;
                 self.entries_changed(ix, cx);
             }
@@ -1166,8 +1239,13 @@ impl Thread {
     /// When the latest turn was sent, if it ran a shell command, which may
     /// have changed files its edit tools never saw.
     pub fn turn_shell_since(&self) -> Option<u64> {
-        let start = self.entries.iter().rposition(|e| matches!(e, Entry::User { .. }))?;
-        let Entry::User { at, .. } = &self.entries[start] else { return None };
+        let start = self
+            .entries
+            .iter()
+            .rposition(|e| matches!(e, Entry::User { .. }))?;
+        let Entry::User { at, .. } = &self.entries[start] else {
+            return None;
+        };
         self.entries[start + 1..]
             .iter()
             .any(|e| matches!(e, Entry::Tool(t) if t.kind == "execute"))
@@ -1178,7 +1256,9 @@ impl Thread {
     pub fn diff_stats(&self) -> (u32, u32) {
         self.entries.iter().fold((0, 0), |(a, r), e| match e {
             Entry::Tool(t) if t.status == ToolStatus::Completed => (a + t.added, r + t.removed),
-            Entry::User { shell_changes, .. } => shell_changes.iter().fold((a, r), |(a, r), c| (a + c.added, r + c.removed)),
+            Entry::User { shell_changes, .. } => shell_changes
+                .iter()
+                .fold((a, r), |(a, r), c| (a + c.added, r + c.removed)),
             _ => (a, r),
         })
     }
@@ -1264,11 +1344,18 @@ impl Thread {
 
     /// Takes the totals a saved transcript had, unless the session already counts its own.
     fn restore_usage(&mut self, saved: Usage) {
-        if self.usage.total_tokens() > 0 || self.usage.cost.is_some() || self.usage.credits.is_some() {
+        if self.usage.total_tokens() > 0
+            || self.usage.cost.is_some()
+            || self.usage.credits.is_some()
+        {
             return;
         }
         let estimate = self.usage.cost_estimate;
-        self.usage = Usage { cost_estimate: estimate, limit: None, ..saved };
+        self.usage = Usage {
+            cost_estimate: estimate,
+            limit: None,
+            ..saved
+        };
     }
 
     pub fn save_transcript(&self, path: &Path, cx: &App) -> Result<()> {
@@ -1305,7 +1392,11 @@ impl Thread {
     fn set_entries(&mut self, mut entries: Vec<Entry>) {
         // Whatever was still going when the transcript was saved is not anymore.
         for e in &mut entries {
-            if let Entry::Notice { mark: mark @ Some(NoticeMark::Busy), .. } = e {
+            if let Entry::Notice {
+                mark: mark @ Some(NoticeMark::Busy),
+                ..
+            } = e
+            {
                 *mark = None;
             }
         }
@@ -1332,7 +1423,10 @@ impl Thread {
             && matches!(t.status, ToolStatus::Completed | ToolStatus::Failed)
         {
             let turn = self.turn_user.map_or(0, |ix| ix + 1);
-            self.stuck = loops::detect(self.entries.get(turn..).unwrap_or(&[]), &self.stuck_dismissed);
+            self.stuck = loops::detect(
+                self.entries.get(turn..).unwrap_or(&[]),
+                &self.stuck_dismissed,
+            );
         }
         cx.emit(ThreadEvent::EntriesChanged { from });
         cx.notify();
@@ -1655,7 +1749,10 @@ impl Thread {
 
     /// Reconnects after an error, or re-sends the prompt that failed.
     pub fn retry(&mut self, cx: &mut Context<Self>) {
-        match (&self.status, self.conn.is_some() && self.session_id.is_some()) {
+        match (
+            &self.status,
+            self.conn.is_some() && self.session_id.is_some(),
+        ) {
             (ThreadStatus::Error(_), false) | (ThreadStatus::Connecting, false) => self.connect(cx),
             (ThreadStatus::Error(_), true) => {
                 if let Some(text) = self.last_prompt.clone() {
@@ -1709,7 +1806,10 @@ impl Thread {
         }
         // What the agent did on its own so far is logged as its own turn.
         if std::mem::take(&mut self.auto_turn) {
-            let elapsed = self.turn_started.take().map(|t| t.elapsed().as_millis() as u64);
+            let elapsed = self
+                .turn_started
+                .take()
+                .map(|t| t.elapsed().as_millis() as u64);
             self.log_turn_usage(elapsed, cx);
         }
         let held = std::mem::take(&mut self.held);
@@ -1743,16 +1843,21 @@ impl Thread {
         let text = match handoff {
             Some(h) => {
                 self.handoff_sent = true;
-                format!("{h}
+                format!(
+                    "{h}
 
-{text}")
+{text}"
+                )
             }
             None => text,
         };
         self.turn_started = Some(Instant::now());
         if push_user || self.turn_tree.is_none() {
             let cwd = self.cwd.clone();
-            self.turn_tree = Some(cx.background_spawn(async move { shell_diff::snapshot(&cwd) }).shared());
+            self.turn_tree = Some(
+                cx.background_spawn(async move { shell_diff::snapshot(&cwd) })
+                    .shared(),
+            );
         }
         self.turn_tokens = self.usage.total_tokens();
         self.turn_usage = self.usage.clone();
@@ -1764,14 +1869,23 @@ impl Thread {
         self.rethink = None;
         self.set_status(ThreadStatus::Working, cx);
         let images = attach::images(&text, &self.cwd);
-        let first = first_here || self.entries.iter().filter(|e| matches!(e, Entry::User { .. })).count() <= 1;
+        let first = first_here
+            || self
+                .entries
+                .iter()
+                .filter(|e| matches!(e, Entry::User { .. }))
+                .count()
+                <= 1;
         let hint = if first { super::chart::AGENT_HINT } else { "" };
         if let Some(message_id) = message_id {
             return self.native_send(&conn, format!("{text}{hint}"), message_id, images, cx);
         }
         if !images.is_empty() && !self.caps.image {
             self.notice(
-                format!("{} does not accept images, so only the text is sent.", self.kind.label()),
+                format!(
+                    "{} does not accept images, so only the text is sent.",
+                    self.kind.label()
+                ),
                 false,
                 cx,
             );
@@ -1788,7 +1902,10 @@ impl Thread {
         self._prompt = Some(cx.spawn(async move |this, cx| {
             let blocks = cx
                 .background_spawn(async move {
-                    images.iter().map(|p| attach::acp_block(p)).collect::<Vec<_>>()
+                    images
+                        .iter()
+                        .map(|p| attach::acp_block(p))
+                        .collect::<Vec<_>>()
                 })
                 .await;
             let mut prompt = vec![json!({"type": "text", "text": text})];
@@ -1799,7 +1916,9 @@ impl Thread {
                 match block {
                     Ok(b) => prompt.push(b),
                     Err(e) => {
-                        let _ = this.update(cx, |t, cx| t.notice(format!("Not attached: {e}"), false, cx));
+                        let _ = this.update(cx, |t, cx| {
+                            t.notice(format!("Not attached: {e}"), false, cx)
+                        });
                     }
                 }
             }
@@ -1867,7 +1986,9 @@ impl Thread {
         self.stamp_turn(cx);
         let status = self.resting_status();
         self.set_status(status, cx);
-        cx.emit(ThreadEvent::Finished { stop_reason: "end_turn".into() });
+        cx.emit(ThreadEvent::Finished {
+            stop_reason: "end_turn".into(),
+        });
         self.drain_queue(cx);
     }
 
@@ -1882,12 +2003,17 @@ impl Thread {
     fn end_auto_turn(&mut self, cx: &mut Context<Self>) {
         self.auto_turn = false;
         self.set_retry(None, cx);
-        let elapsed = self.turn_started.take().map(|t| t.elapsed().as_millis() as u64);
+        let elapsed = self
+            .turn_started
+            .take()
+            .map(|t| t.elapsed().as_millis() as u64);
         self.log_turn_usage(elapsed, cx);
         let status = self.resting_status();
         self.set_status(status, cx);
         self.meta_changed(cx);
-        cx.emit(ThreadEvent::Finished { stop_reason: "end_turn".into() });
+        cx.emit(ThreadEvent::Finished {
+            stop_reason: "end_turn".into(),
+        });
         self.drain_queue(cx);
     }
 
@@ -1923,7 +2049,10 @@ impl Thread {
         let reply = self.permission_cancelled();
         let asks = std::mem::take(&mut self.permissions);
         let running = |p: &PermissionRequest| {
-            p.session.as_deref().and_then(|s| self.subagent(s)).is_some_and(|s| s.state.is_running())
+            p.session
+                .as_deref()
+                .and_then(|s| self.subagent(s))
+                .is_some_and(|s| s.state.is_running())
         };
         let (keep, gone): (Vec<_>, Vec<_>) = asks.into_iter().partition(running);
         self.permissions = keep.into();
@@ -1941,13 +2070,19 @@ impl Thread {
         self.set_retry(None, cx);
         self.stuck = None;
         let from = self.turn_user.unwrap_or(0);
-        if let Some(url) = self.entries.get(from..).and_then(|e| e.iter().rev().find_map(pr_in_entry))
+        if let Some(url) = self
+            .entries
+            .get(from..)
+            .and_then(|e| e.iter().rev().find_map(pr_in_entry))
             && self.meta.pr.as_deref() != Some(url.as_str())
         {
             self.meta.pr = Some(url);
             self.meta_changed(cx);
         }
-        let elapsed = self.turn_started.take().map(|t| t.elapsed().as_millis() as u64);
+        let elapsed = self
+            .turn_started
+            .take()
+            .map(|t| t.elapsed().as_millis() as u64);
         self.log_turn_usage(elapsed, cx);
         let used = self.usage.total_tokens().saturating_sub(self.turn_tokens);
         if let Some(ix) = self.turn_user
@@ -1973,7 +2108,12 @@ impl Thread {
         let Some(ix) = self.turn_user else {
             return;
         };
-        let ran_shell = self.entries.get(ix + 1..).unwrap_or(&[]).iter().any(|e| matches!(e, Entry::Tool(t) if t.kind == "execute"));
+        let ran_shell = self
+            .entries
+            .get(ix + 1..)
+            .unwrap_or(&[])
+            .iter()
+            .any(|e| matches!(e, Entry::Tool(t) if t.kind == "execute"));
         if !ran_shell {
             return;
         }
@@ -1984,7 +2124,9 @@ impl Thread {
             };
             let changes = cx
                 .background_spawn(async move {
-                    shell_diff::snapshot(&cwd).map(|after| shell_diff::changes(&before, &after)).unwrap_or_default()
+                    shell_diff::snapshot(&cwd)
+                        .map(|after| shell_diff::changes(&before, &after))
+                        .unwrap_or_default()
                 })
                 .await;
             let _ = this.update(cx, |t, cx| t.set_shell_changes(ix, changes, cx));
@@ -1992,11 +2134,19 @@ impl Thread {
         self.shell_pending = Some(task.shared());
     }
 
-    fn set_shell_changes(&mut self, ix: usize, mut changes: Vec<ShellChange>, cx: &mut Context<Self>) {
+    fn set_shell_changes(
+        &mut self,
+        ix: usize,
+        mut changes: Vec<ShellChange>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(after) = self.entries.get(ix + 1..) else {
             return;
         };
-        let turn = &after[..after.iter().position(|e| matches!(e, Entry::User { .. })).unwrap_or(after.len())];
+        let turn = &after[..after
+            .iter()
+            .position(|e| matches!(e, Entry::User { .. }))
+            .unwrap_or(after.len())];
         // What the edit tools changed already shows with their own diffs.
         let edited: Vec<PathBuf> = turn
             .iter()
@@ -2006,7 +2156,11 @@ impl Thread {
             })
             .flatten()
             .filter_map(|c| match c {
-                ToolContent::Diff { path, .. } => Some(if path.is_relative() { self.cwd.join(path) } else { path.clone() }),
+                ToolContent::Diff { path, .. } => Some(if path.is_relative() {
+                    self.cwd.join(path)
+                } else {
+                    path.clone()
+                }),
                 _ => None,
             })
             .collect();
@@ -2033,7 +2187,12 @@ impl Thread {
     fn add_turn_tokens(&mut self, v: &Value) {
         let rows: Vec<&Value> = v["_meta"]["quota"]["model_usage"]
             .as_array()
-            .map(|a| a.iter().map(|r| &r["token_count"]).filter(|t| t.is_object()).collect())
+            .map(|a| {
+                a.iter()
+                    .map(|r| &r["token_count"])
+                    .filter(|t| t.is_object())
+                    .collect()
+            })
             .unwrap_or_default();
         let n = |t: &Value, k: &str| t[k].as_u64().unwrap_or(0);
         if !rows.is_empty() {
@@ -2087,15 +2246,22 @@ impl Thread {
             model,
             input: now.input_tokens.saturating_sub(before.input_tokens),
             output: now.output_tokens.saturating_sub(before.output_tokens),
-            cache_read: now.cache_read_tokens.saturating_sub(before.cache_read_tokens),
-            cache_write: now.cache_write_tokens.saturating_sub(before.cache_write_tokens),
+            cache_read: now
+                .cache_read_tokens
+                .saturating_sub(before.cache_read_tokens),
+            cache_write: now
+                .cache_write_tokens
+                .saturating_sub(before.cache_write_tokens),
             cost: match (&now.cost, &before.cost) {
                 (Some(a), Some(b)) => (a.0 - b.0).max(0.),
                 (Some(a), None) => a.0,
                 _ => 0.,
             },
             cost_estimate: now.cost_estimate,
-            credits: now.credits.unwrap_or(0).saturating_sub(before.credits.unwrap_or(0)),
+            credits: now
+                .credits
+                .unwrap_or(0)
+                .saturating_sub(before.credits.unwrap_or(0)),
             ms: elapsed_ms.unwrap_or(0),
         };
         self.turn_usage = self.usage.clone();
@@ -2129,7 +2295,9 @@ impl Thread {
                 match stop.as_str() {
                     "cancelled" => self.notice("Stopped", false, cx),
                     "refusal" => self.notice("The agent declined to continue.", true, cx),
-                    "max_tokens" => self.notice("Stopped: the reply hit the token limit.", true, cx),
+                    "max_tokens" => {
+                        self.notice("Stopped: the reply hit the token limit.", true, cx)
+                    }
                     "max_turn_requests" => {
                         self.notice("Stopped: too many model requests in one turn.", true, cx)
                     }
@@ -2229,7 +2397,9 @@ impl Thread {
 
     /// What the running turn keeps repeating, if it seems to go in circles.
     pub fn stuck(&self) -> Option<&Stuck> {
-        self.stuck.as_ref().filter(|_| self.is_busy() && !self.cancelling)
+        self.stuck
+            .as_ref()
+            .filter(|_| self.is_busy() && !self.cancelling)
     }
 
     /// Stops a turn that goes in circles and, once it stopped, asks the agent to step back.
@@ -2335,7 +2505,12 @@ impl Thread {
 
     /// Drops the subagent's copy of a request answered here.
     fn forget_in_child(&mut self, req: &PermissionRequest, cx: &mut Context<Self>) {
-        let Some(child) = req.session.as_deref().and_then(|s| self.subagent(s)).map(|s| s.thread.clone()) else {
+        let Some(child) = req
+            .session
+            .as_deref()
+            .and_then(|s| self.subagent(s))
+            .map(|s| s.thread.clone())
+        else {
             return;
         };
         let id = req.rpc_id.clone();
@@ -2350,7 +2525,10 @@ impl Thread {
 
     /// Picks the agent's first allow option (normally "allow once").
     pub fn allow_permission(&mut self, cx: &mut Context<Self>) {
-        let id = self.pending_permission().and_then(|p| allow_option(&p.options)).map(|o| o.id.clone());
+        let id = self
+            .pending_permission()
+            .and_then(|p| allow_option(&p.options))
+            .map(|o| o.id.clone());
         if let Some(id) = id {
             self.respond_permission(&id, cx);
         }
@@ -2365,7 +2543,12 @@ impl Thread {
         let Some(p) = self.pending_permission() else {
             return;
         };
-        match p.options.iter().find(|o| !o.is_allow()).map(|o| o.id.clone()) {
+        match p
+            .options
+            .iter()
+            .find(|o| !o.is_allow())
+            .map(|o| o.id.clone())
+        {
             Some(id) => self.respond_permission(&id, cx),
             None => {
                 let req = self.permissions.pop_front().unwrap();
@@ -2378,13 +2561,20 @@ impl Thread {
     /// Rejects the pending call but lets the turn go on, the agent told `why`.
     /// Only arakun's own agents (Workers AI) read that; others stop as on a reject.
     pub fn decline_permission(&mut self, why: &str, cx: &mut Context<Self>) {
-        let id = self.pending_permission().and_then(|p| p.options.iter().find(|o| !o.is_allow())).map(|o| o.id.clone());
+        let id = self
+            .pending_permission()
+            .and_then(|p| p.options.iter().find(|o| !o.is_allow()))
+            .map(|o| o.id.clone());
         let (Some(id), Backend::Acp) = (id, self.backend) else {
             return self.reject_permission(cx);
         };
         let req = self.permissions.pop_front().unwrap();
         let outcome = json!({"outcome": "selected", "optionId": id});
-        self.answer(req, json!({"outcome": outcome, "_meta": {"arakun": {"continue": true, "why": why}}}), cx);
+        self.answer(
+            req,
+            json!({"outcome": outcome, "_meta": {"arakun": {"continue": true, "why": why}}}),
+            cx,
+        );
     }
 
     // ---- modes and models ------------------------------------------------
@@ -2438,7 +2628,10 @@ impl Thread {
                         if o.current == value || !o.options.iter().any(|c| c.id == value) {
                             return None;
                         }
-                        ("session/set_config_option", json!({"configId": o.id, "value": value}))
+                        (
+                            "session/set_config_option",
+                            json!({"configId": o.id, "value": value}),
+                        )
                     } else {
                         let (list, method, key) = match s {
                             Setting::Mode => (&t.modes, "session/set_mode", "modeId"),
@@ -2589,10 +2782,12 @@ impl Thread {
                     .and_then(|s| self.subagents.iter().find(|c| c.id == s))
                     .map(|c| (c.id.clone(), c.thread.clone()));
                 let known = |t: &Thread| {
-                    t.tool_index.get(&tool_call_id).and_then(|&i| match &t.entries[i] {
-                        Entry::Tool(t) => Some(t.title.clone()),
-                        _ => None,
-                    })
+                    t.tool_index
+                        .get(&tool_call_id)
+                        .and_then(|&i| match &t.entries[i] {
+                            Entry::Tool(t) => Some(t.title.clone()),
+                            _ => None,
+                        })
                 };
                 let known_title = match &child {
                     Some((_, thread)) => {
@@ -2602,13 +2797,16 @@ impl Thread {
                         known(thread.read(cx))
                     }
                     None => {
-                        if !tool_call_id.is_empty() && !self.tool_index.contains_key(&tool_call_id) {
+                        if !tool_call_id.is_empty() && !self.tool_index.contains_key(&tool_call_id)
+                        {
                             self.upsert_tool(tool, cx);
                         }
                         known(self)
                     }
                 };
-                let title = str_of(tool, "title").or(known_title).unwrap_or_else(|| "Run a tool".into());
+                let title = str_of(tool, "title")
+                    .or(known_title)
+                    .unwrap_or_else(|| "Run a tool".into());
                 let options: Vec<PermissionOption> = params["options"]
                     .as_array()
                     .into_iter()
@@ -2624,12 +2822,18 @@ impl Thread {
                 // Claude's ExitPlanMode carries the plan it asks to carry out.
                 let plan = str_of(&tool["rawInput"], "plan")
                     .filter(|p| !p.trim().is_empty())
-                    .map(|plan| SpecPlan { title: String::new(), plan });
+                    .map(|plan| SpecPlan {
+                        title: String::new(),
+                        plan,
+                    });
                 // Nobody is there to answer: the tool call stays in the log as allowed.
                 if self.auto_allow
                     && let Some(o) = allow_option(&options)
                 {
-                    conn.respond(id, json!({"outcome": {"outcome": "selected", "optionId": o.id}}));
+                    conn.respond(
+                        id,
+                        json!({"outcome": {"outcome": "selected", "optionId": o.id}}),
+                    );
                     if let Some(&ix) = self.tool_index.get(&tool_call_id) {
                         self.entries_changed(ix, cx);
                     }
@@ -2709,14 +2913,18 @@ impl Thread {
             real = real.join(rest);
         }
         if !real.starts_with(&root) {
-            return Err(anyhow!("{raw} is outside the session folder {}", root.display()));
+            return Err(anyhow!(
+                "{raw} is outside the session folder {}",
+                root.display()
+            ));
         }
         Ok(real)
     }
 
     fn read_file(&self, params: &Value) -> Result<String> {
         let path = self.confine(params["path"].as_str().unwrap_or(""))?;
-        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
         let line = params["line"].as_u64().map(|l| l.max(1) as usize);
         let limit = params["limit"].as_u64().map(|l| l as usize);
         if line.is_none() && limit.is_none() {
@@ -2761,7 +2969,10 @@ impl Thread {
         if history && self.replaying && self.suppress_replay {
             return;
         }
-        if matches!(kind, "agent_message_chunk" | "agent_thought_chunk" | "tool_call") {
+        if matches!(
+            kind,
+            "agent_message_chunk" | "agent_thought_chunk" | "tool_call"
+        ) {
             self.set_retry(None, cx);
             // Nobody prompted this: the agent goes on by itself, as Claude does
             // once a background subagent finishes.
@@ -2825,7 +3036,9 @@ impl Thread {
                 }
             }
             "compaction_update" => self.acp_compaction_update(u, cx),
-            "subagent_spawned" | "subagent_state_update" | "subagent_update" => self.subagent_update(u, None, cx),
+            "subagent_spawned" | "subagent_state_update" | "subagent_update" => {
+                self.subagent_update(u, None, cx)
+            }
             "session_message" => self.session_message(u, cx),
             "usage_update" => {
                 self.usage.context_used = u["used"].as_u64();
@@ -2836,10 +3049,15 @@ impl Thread {
                     let currency = str_of(c, "currency").unwrap_or_else(|| "USD".into());
                     self.usage.cost = Some((self.session_cost(amount), currency));
                 }
-                if let Some(model) = str_of(&u["_meta"], "_claude/model").or_else(|| str_of(&u["_meta"], "model")) {
+                if let Some(model) =
+                    str_of(&u["_meta"], "_claude/model").or_else(|| str_of(&u["_meta"], "model"))
+                {
                     self.usage.model = Some(model);
                 }
-                if let Some(limit) = u["_meta"].get("_claude/rateLimit").and_then(PlanLimit::from_json) {
+                if let Some(limit) = u["_meta"]
+                    .get("_claude/rateLimit")
+                    .and_then(PlanLimit::from_json)
+                {
                     self.usage.limit = Some(limit);
                 }
                 self.fill_compacted_after(cx);
@@ -3063,13 +3281,26 @@ impl Thread {
             return;
         };
         let done = matches!(t.status, ToolStatus::Completed | ToolStatus::Failed);
-        let abs = |p: &Path| if p.is_relative() { self.cwd.join(p) } else { p.to_path_buf() };
-        let has_diff = t.content.iter().any(|c| matches!(c, ToolContent::Diff { .. }));
+        let abs = |p: &Path| {
+            if p.is_relative() {
+                self.cwd.join(p)
+            } else {
+                p.to_path_buf()
+            }
+        };
+        let has_diff = t
+            .content
+            .iter()
+            .any(|c| matches!(c, ToolContent::Diff { .. }));
         let mut wanted: Vec<PathBuf> = t
             .content
             .iter()
             .filter_map(|c| match c {
-                ToolContent::Diff { path, old_text: None, .. } => Some(abs(path)),
+                ToolContent::Diff {
+                    path,
+                    old_text: None,
+                    ..
+                } => Some(abs(path)),
                 _ => None,
             })
             .collect();
@@ -3079,12 +3310,18 @@ impl Thread {
         }
         if !done {
             for path in wanted {
-                self.replaced.entry((t.id.clone(), path.clone())).or_insert_with(|| read_small_text(&path));
+                self.replaced
+                    .entry((t.id.clone(), path.clone()))
+                    .or_insert_with(|| read_small_text(&path));
             }
         }
         let mut filled = false;
         for c in &mut t.content {
-            if let ToolContent::Diff { path, old_text: old @ None, .. } = c
+            if let ToolContent::Diff {
+                path,
+                old_text: old @ None,
+                ..
+            } = c
                 && let Some(Some(before)) = self.replaced.get(&(t.id.clone(), abs(path)))
             {
                 *old = Some(before.clone());
@@ -3104,8 +3341,14 @@ impl Thread {
 fn recount(t: &mut ToolCall) {
     let (mut added, mut removed) = (0, 0);
     for c in &t.content {
-        if let ToolContent::Diff { old_text, new_text, .. } = c {
-            let (a, r) = diff::stats(&diff::line_diff(old_text.as_deref().unwrap_or(""), new_text));
+        if let ToolContent::Diff {
+            old_text, new_text, ..
+        } = c
+        {
+            let (a, r) = diff::stats(&diff::line_diff(
+                old_text.as_deref().unwrap_or(""),
+                new_text,
+            ));
             added += a;
             removed += r;
         }
@@ -3132,7 +3375,10 @@ fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
             .stderr(std::process::Stdio::null())
             .output()
             .ok()?;
-        out.status.success().then(|| String::from_utf8(out.stdout).ok()).flatten()
+        out.status
+            .success()
+            .then(|| String::from_utf8(out.stdout).ok())
+            .flatten()
     };
     let top = git(cwd, &["rev-parse", "--show-toplevel"]).map(|s| PathBuf::from(s.trim()));
     let mut revs: HashMap<u64, Option<String>> = HashMap::new();
@@ -3149,8 +3395,19 @@ fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
         };
         let mut filled = false;
         for c in &mut t.content {
-            let ToolContent::Diff { path, old_text, new_text } = c else { continue };
-            let abs = if path.is_relative() { cwd.join(&*path) } else { path.clone() };
+            let ToolContent::Diff {
+                path,
+                old_text,
+                new_text,
+            } = c
+            else {
+                continue;
+            };
+            let abs = if path.is_relative() {
+                cwd.join(&*path)
+            } else {
+                path.clone()
+            };
             match old_text {
                 Some(old) => {
                     if let Some(k) = known.get_mut(&abs)
@@ -3165,15 +3422,22 @@ fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
                         // Git resolves links in the toplevel, so resolve them in the path too.
                         let rel = match abs.strip_prefix(top) {
                             Ok(rel) => rel.to_path_buf(),
-                            Err(_) => crate::platform::canonicalize(&abs).ok()?.strip_prefix(top).ok()?.to_path_buf(),
+                            Err(_) => crate::platform::canonicalize(&abs)
+                                .ok()?
+                                .strip_prefix(top)
+                                .ok()?
+                                .to_path_buf(),
                         };
                         let rel = rel.to_str()?.to_string();
                         let rev = revs
                             .entry(turn_at)
                             .or_insert_with(|| {
-                                git(top, &["rev-list", "-1", &format!("--before=@{turn_at}"), "HEAD"])
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
+                                git(
+                                    top,
+                                    &["rev-list", "-1", &format!("--before=@{turn_at}"), "HEAD"],
+                                )
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
                             })
                             .clone()?;
                         git(top, &["show", &format!("{rev}:{rel}")])
@@ -3207,9 +3471,17 @@ pub(super) fn retry_label(title: &str) -> String {
     let counts = title.split_once("attempt ").and_then(|(_, rest)| {
         let (n, rest) = rest.split_once(" of ")?;
         let m: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        Some((n.trim().parse::<u32>().ok()?, m.parse::<u32>().ok()?, rest[m.len()..].trim_start_matches('.').trim().to_string()))
+        Some((
+            n.trim().parse::<u32>().ok()?,
+            m.parse::<u32>().ok()?,
+            rest[m.len()..].trim_start_matches('.').trim().to_string(),
+        ))
     });
-    let what = if reconnect { "Connection lost" } else { "API error" };
+    let what = if reconnect {
+        "Connection lost"
+    } else {
+        "API error"
+    };
     match counts {
         Some((n, m, tail)) if tail.is_empty() => format!("{what} · retrying ({n}/{m})…"),
         Some((n, m, tail)) => format!("{what} · retrying ({n}/{m})… {tail}"),
@@ -3251,12 +3523,18 @@ pub fn pr_url(text: &str) -> Option<String> {
         let end = rest
             .find(|c: char| c.is_whitespace() || "<>()[]\"'`,".contains(c))
             .unwrap_or(rest.len());
-        let parts: Vec<&str> = rest[..end].trim_end_matches(['.', ':', ';']).split('/').collect();
+        let parts: Vec<&str> = rest[..end]
+            .trim_end_matches(['.', ':', ';'])
+            .split('/')
+            .collect();
         // https: / "" / github.com / owner / repo / pull / n
         if parts.len() >= 7 && parts[5] == "pull" {
             let n: String = parts[6].chars().take_while(char::is_ascii_digit).collect();
             if !n.is_empty() {
-                found = Some(format!("https://github.com/{}/{}/pull/{n}", parts[3], parts[4]));
+                found = Some(format!(
+                    "https://github.com/{}/{}/pull/{n}",
+                    parts[3], parts[4]
+                ));
             }
         }
     }
@@ -3296,7 +3574,15 @@ mod tests {
             ]}}
         }));
         let u = &t.usage;
-        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens), (11, 21, 30, 40));
+        assert_eq!(
+            (
+                u.input_tokens,
+                u.output_tokens,
+                u.cache_read_tokens,
+                u.cache_write_tokens
+            ),
+            (11, 21, 30, 40)
+        );
         t.add_turn_tokens(&json!({"usage": {"inputTokens": 1, "outputTokens": 2, "cachedReadTokens": 3, "cachedWriteTokens": 4}}));
         assert_eq!(t.usage.cache_write_tokens, 44);
     }
@@ -3307,7 +3593,8 @@ mod tests {
         assert_eq!(l.label().as_deref(), Some("5h limit 82%"));
         let l = PlanLimit::from_json(&json!({"status": "allowed"})).unwrap();
         assert_eq!(l.label(), None);
-        let l = PlanLimit::from_json(&json!({"status": "rejected", "rateLimitType": "seven_day"})).unwrap();
+        let l = PlanLimit::from_json(&json!({"status": "rejected", "rateLimitType": "seven_day"}))
+            .unwrap();
         assert_eq!(l.label().as_deref(), Some("weekly limit reached"));
         assert_eq!(fmt_cost(0.4249, "USD", true), "≈ $0.42");
         assert_eq!(fmt_cost(0.004, "USD", false), "<$0.01");
@@ -3315,9 +3602,14 @@ mod tests {
     }
     #[test]
     fn words_api_retries() {
-        assert_eq!(retry_label("Retrying Claude, attempt 2 of 10."), "API error · retrying (2/10)…");
         assert_eq!(
-            retry_label("Reconnecting to Claude, attempt 1 of 3. No response after 30s; waiting up to 60s."),
+            retry_label("Retrying Claude, attempt 2 of 10."),
+            "API error · retrying (2/10)…"
+        );
+        assert_eq!(
+            retry_label(
+                "Reconnecting to Claude, attempt 1 of 3. No response after 30s; waiting up to 60s."
+            ),
             "Connection lost · retrying (1/3)… No response after 30s; waiting up to 60s."
         );
         assert_eq!(retry_label("Something else"), "Something else");
@@ -3326,7 +3618,9 @@ mod tests {
     #[test]
     fn finds_pull_request_links() {
         assert_eq!(
-            pr_url("Created https://github.com/a/b/pull/12.\nsee https://github.com/a/b/pull/13/files"),
+            pr_url(
+                "Created https://github.com/a/b/pull/12.\nsee https://github.com/a/b/pull/13/files"
+            ),
             Some("https://github.com/a/b/pull/13".into())
         );
         assert_eq!(pr_url("https://github.com/a/b/issues/3"), None);
@@ -3339,16 +3633,29 @@ mod tests {
             t.status = ToolStatus::InProgress;
         }
         let earlier = vec![
-            Entry::User { text: "fix it".into(), at: 1, elapsed_ms: None, message_id: Some("m1".into()), tokens: None, shell_changes: Vec::new() },
+            Entry::User {
+                text: "fix it".into(),
+                at: 1,
+                elapsed_ms: None,
+                message_id: Some("m1".into()),
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
             running,
-            Entry::Agent { text: "on it".into() },
+            Entry::Agent {
+                text: "on it".into(),
+            },
         ];
         let entries = continued_entries(earlier, AgentKind::Claude);
         assert_eq!(entries.len(), 4);
-        assert!(matches!(&entries[0], Entry::User { text, message_id: None, .. } if text == "fix it"));
+        assert!(
+            matches!(&entries[0], Entry::User { text, message_id: None, .. } if text == "fix it")
+        );
         assert!(matches!(&entries[1], Entry::Tool(t) if t.status == ToolStatus::Failed));
         assert!(matches!(&entries[2], Entry::Agent { text } if text == "on it"));
-        assert!(matches!(&entries[3], Entry::Notice { text, error: false, .. } if text == "Continued with Claude Code"));
+        assert!(
+            matches!(&entries[3], Entry::Notice { text, error: false, .. } if text == "Continued with Claude Code")
+        );
     }
 
     #[test]
@@ -3386,7 +3693,11 @@ mod tests {
             title: String::new(),
             kind: "edit".into(),
             status: ToolStatus::Completed,
-            content: vec![ToolContent::Diff { path: path.into(), old_text: old.map(Into::into), new_text: new.into() }],
+            content: vec![ToolContent::Diff {
+                path: path.into(),
+                old_text: old.map(Into::into),
+                new_text: new.into(),
+            }],
             locations: Vec::new(),
             raw_input: None,
             raw_output: None,
@@ -3420,7 +3731,14 @@ mod tests {
         let v2 = tracked.replace("line 50\n", "line 50 changed\n");
         let v3 = v2.replace("line 7\n", "line seven\n");
         let mut entries = vec![
-            Entry::User { text: "go".into(), at: unix_now() + 5, elapsed_ms: None, message_id: None, tokens: None, shell_changes: Vec::new() },
+            Entry::User {
+                text: "go".into(),
+                at: unix_now() + 5,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
             // A rewrite of a tracked file, then an edit, then another rewrite.
             write("1", &a, None, &v2),
             write("2", &a, Some("line 1\n"), "first\n"),

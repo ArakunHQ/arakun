@@ -70,7 +70,9 @@ impl CheckRun {
 
 impl Shell {
     pub(super) fn project_of_env(&self, env_path: &Path) -> Option<&Project> {
-        self.projects.iter().find(|p| p.env_index(env_path).is_some())
+        self.projects
+            .iter()
+            .find(|p| p.env_index(env_path).is_some())
     }
 
     /// The check to run after a turn that ended with `stop_reason`, if it may be due.
@@ -87,9 +89,15 @@ impl Shell {
         let command = self.project_of_env(env_path)?.check.clone()?;
         let t = thread.read(cx);
         if t.turn_edited() {
-            return Some(CheckDue { command, shell_since: None });
+            return Some(CheckDue {
+                command,
+                shell_since: None,
+            });
         }
-        t.turn_shell_since().map(|since| CheckDue { command, shell_since: Some(since) })
+        t.turn_shell_since().map(|since| CheckDue {
+            command,
+            shell_since: Some(since),
+        })
     }
 
     /// While a session's check runs its agent stays up, so a failure can go straight back.
@@ -125,8 +133,14 @@ impl Shell {
         // the checkout. Counted as running meanwhile so the agent stays up.
         self.checks.entry(id.to_string()).or_default().running += 1;
         let dir = env_path.to_path_buf();
-        let changed = cx.background_spawn(async move { !crate::memory::changed_since(&dir, since).is_empty() });
-        let (env_path, id, thread, stop_reason) = (env_path.to_path_buf(), id.clone(), thread.clone(), stop_reason.to_string());
+        let changed = cx
+            .background_spawn(async move { !crate::memory::changed_since(&dir, since).is_empty() });
+        let (env_path, id, thread, stop_reason) = (
+            env_path.to_path_buf(),
+            id.clone(),
+            thread.clone(),
+            stop_reason.to_string(),
+        );
         cx.spawn_in(window, async move |this, cx| {
             let changed = changed.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -147,7 +161,13 @@ impl Shell {
 
     /// After a turn that edited a project with no check, offers the one its
     /// files suggest, unless the user said not to.
-    fn offer_check(&self, env_path: &Path, thread: &Entity<Thread>, stop_reason: &str, cx: &mut Context<Self>) {
+    fn offer_check(
+        &self,
+        env_path: &Path,
+        thread: &Entity<Thread>,
+        stop_reason: &str,
+        cx: &mut Context<Self>,
+    ) {
         if matches!(stop_reason, "cancelled" | "error") {
             return;
         }
@@ -155,7 +175,11 @@ impl Shell {
             return;
         };
         let t = thread.read(cx);
-        if project.check.is_some() || project.check_declined || t.check_offered() || !t.turn_edited() {
+        if project.check.is_some()
+            || project.check_declined
+            || t.check_offered()
+            || !t.turn_edited()
+        {
             return;
         }
         if let Some(command) = suggest_check(env_path) {
@@ -174,7 +198,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(pi) = self.projects.iter().position(|p| p.env_index(env_path).is_some()) else {
+        let Some(pi) = self
+            .projects
+            .iter()
+            .position(|p| p.env_index(env_path).is_some())
+        else {
             return;
         };
         match answer {
@@ -206,7 +234,12 @@ impl Shell {
         lp.running += 1;
         let generation = lp.generation;
         let notice = thread.update(cx, |t, cx| {
-            t.post_marked_notice(format!("Checking · {command}"), false, Some(NoticeMark::Busy), cx)
+            t.post_marked_notice(
+                format!("Checking · {command}"),
+                false,
+                Some(NoticeMark::Busy),
+                cx,
+            )
         });
         // A check that writes files (a lockfile, a formatter) mustn't count as the turn's shell changes.
         let shell_pending = thread.read(cx).shell_pending();
@@ -220,9 +253,13 @@ impl Shell {
             let _ = std::thread::Builder::new()
                 .name("arakun-check".into())
                 .spawn(move || tx.send(run_check(&dir, &cmd, CHECK_TIMEOUT)));
-            let result = rx.await.unwrap_or_else(|_| Err(std::io::Error::other("the check stopped")));
+            let result = rx
+                .await
+                .unwrap_or_else(|_| Err(std::io::Error::other("the check stopped")));
             let _ = this.update_in(cx, |this, window, cx| {
-                this.check_done(&env_path, &id, notice, generation, &command, result, window, cx)
+                this.check_done(
+                    &env_path, &id, notice, generation, &command, result, window, cx,
+                )
             });
         })
         .detach();
@@ -247,12 +284,18 @@ impl Shell {
             }
             None => (false, 0),
         };
-        let Some(thread) = self.session_mut(env_path, id).and_then(|s| s.live.as_ref().map(|l| l.thread.clone())) else {
+        let Some(thread) = self
+            .session_mut(env_path, id)
+            .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()))
+        else {
             return;
         };
         let (agent, waiting) = {
             let t = thread.read(cx);
-            (t.kind().label(), t.status() == ThreadStatus::Idle && t.queued().is_empty())
+            (
+                t.kind().label(),
+                t.status() == ThreadStatus::Idle && t.queued().is_empty(),
+            )
         };
         // A turn the user (or its queue) already moved past keeps only the notice.
         let answer = latest && waiting;
@@ -267,7 +310,11 @@ impl Shell {
                 if latest && let Some(lp) = self.checks.get_mut(id.as_ref()) {
                     lp.rounds = 0;
                 }
-                (format!("Check passed · {command} · {}", took(run.elapsed)), false, Some(NoticeMark::Passed))
+                (
+                    format!("Check passed · {command} · {}", took(run.elapsed)),
+                    false,
+                    Some(NoticeMark::Passed),
+                )
             }
             Ok(run) if answer && rounds < CHECK_ROUNDS => {
                 let round = rounds + 1;
@@ -286,24 +333,43 @@ impl Shell {
                     lp.rounds = 0;
                 }
                 gave_up = true;
-                let text = format!("Check still fails after {CHECK_ROUNDS} tries · {command} · {} · over to you", run.outcome());
+                let text = format!(
+                    "Check still fails after {CHECK_ROUNDS} tries · {command} · {} · over to you",
+                    run.outcome()
+                );
                 (text, true, None)
             }
-            Ok(run) => (format!("Check failed · {command} · {}", run.outcome()), true, None),
+            Ok(run) => (
+                format!("Check failed · {command} · {}", run.outcome()),
+                true,
+                None,
+            ),
             Err(e) => (format!("Check could not run · {command} · {e}"), true, None),
         };
-        thread.update(cx, |t, cx| t.update_notice(notice, text, error, mark, places, cx));
+        thread.update(cx, |t, cx| {
+            t.update_notice(notice, text, error, mark, places, cx)
+        });
         if let Some(prompt) = prompt {
             self.send_to_session(env_path, id, prompt, window, cx);
             return;
         }
         if gave_up {
-            let title = self.session_mut(env_path, id).map(|s| s.title.to_string()).unwrap_or_default();
+            let title = self
+                .session_mut(env_path, id)
+                .map(|s| s.title.to_string())
+                .unwrap_or_default();
             let body = format!("The check still fails after {CHECK_ROUNDS} tries.");
-            self.notify(AlertKind::Failure, &title, &body, Some(Open::Session(id.clone())));
+            self.notify(
+                AlertKind::Failure,
+                &title,
+                &body,
+                Some(Open::Session(id.clone())),
+            );
         } else if waiting {
             // The turn's own notice waited for the check.
-            let done = ThreadEvent::Finished { stop_reason: "end_turn".into() };
+            let done = ThreadEvent::Finished {
+                stop_reason: "end_turn".into(),
+            };
             self.notify_desktop(env_path, id, &thread, &done, window, cx);
         }
         self.save_transcript(env_path, id, cx);
@@ -318,7 +384,10 @@ fn suggest_check(dir: &Path) -> Option<String> {
     let has = |f: &str| dir.join(f).exists();
     if let Some(make) = read("Makefile").or_else(|| read("makefile")) {
         for target in ["check", "test"] {
-            if make.lines().any(|l| l.strip_prefix(target).is_some_and(|r| r.starts_with(':'))) {
+            if make
+                .lines()
+                .any(|l| l.strip_prefix(target).is_some_and(|r| r.starts_with(':')))
+            {
                 return Some(format!("make {target}"));
             }
         }
@@ -337,9 +406,17 @@ fn suggest_check(dir: &Path) -> Option<String> {
             "npm"
         };
         let package: serde_json::Value = serde_json::from_str(&package).unwrap_or_default();
-        let script = |name: &str| package.get("scripts").and_then(|s| s.get(name)).and_then(|v| v.as_str());
+        let script = |name: &str| {
+            package
+                .get("scripts")
+                .and_then(|s| s.get(name))
+                .and_then(|v| v.as_str())
+        };
         let mut steps = Vec::new();
-        if let Some(name) = ["typecheck", "type-check", "check-types", "tsc"].into_iter().find(|n| script(n).is_some()) {
+        if let Some(name) = ["typecheck", "type-check", "check-types", "tsc"]
+            .into_iter()
+            .find(|n| script(n).is_some())
+        {
             steps.push(format!("{pm} run {name}"));
         } else if has("tsconfig.json") {
             let tsc = match pm {
@@ -362,7 +439,14 @@ fn suggest_check(dir: &Path) -> Option<String> {
     if has("pyproject.toml") || has("setup.py") {
         let pyproject = read("pyproject.toml").unwrap_or_default();
         if pyproject.contains("pytest") || has("pytest.ini") || has("tests") {
-            return Some(if has("uv.lock") { "uv run pytest -q" } else { "python -m pytest -q" }.into());
+            return Some(
+                if has("uv.lock") {
+                    "uv run pytest -q"
+                } else {
+                    "python -m pytest -q"
+                }
+                .into(),
+            );
         }
     }
     None
@@ -424,8 +508,18 @@ fn run_check(dir: &Path, command: &str, timeout: Duration) -> std::io::Result<Ch
     }
     let bytes = rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
     let output = clean_output(&bytes);
-    let places = if status.success() { Vec::new() } else { error_places(&output, dir) };
-    Ok(CheckRun { code: status.code(), output, elapsed: start.elapsed(), timed_out, places })
+    let places = if status.success() {
+        Vec::new()
+    } else {
+        error_places(&output, dir)
+    };
+    Ok(CheckRun {
+        code: status.code(),
+        output,
+        elapsed: start.elapsed(),
+        timed_out,
+        places,
+    })
 }
 
 /// The errors in `output` that name a file of `dir` and a line: rustc's
@@ -446,11 +540,19 @@ fn error_places(output: &str, dir: &Path) -> Vec<NoticePlace> {
         if !file.is_file() {
             continue;
         }
-        let path = file.strip_prefix(dir).unwrap_or(&file).to_string_lossy().into_owned();
+        let path = file
+            .strip_prefix(dir)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .into_owned();
         if out.iter().any(|p| p.path == path && p.line == line) {
             continue;
         }
-        out.push(NoticePlace { path, line, message });
+        out.push(NoticePlace {
+            path,
+            line,
+            message,
+        });
         if out.len() == MAX_PLACES {
             break;
         }
@@ -477,7 +579,10 @@ fn rust_panic(t: &str, next: Option<&str>) -> Option<(String, u32, String)> {
     let (_, at) = t.split_once("panicked at ")?;
     if let Some(at) = at.strip_suffix(':') {
         let (path, line) = path_line(at)?;
-        let message = next.map(str::trim).filter(|m| !m.is_empty()).unwrap_or("panicked");
+        let message = next
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or("panicked");
         return Some((path, line, message.to_string()));
     }
     let (message, at) = at.rsplit_once(", ")?;
@@ -562,7 +667,11 @@ fn tail(text: &str, max_lines: usize, max_bytes: usize) -> String {
     }
     kept.reverse();
     let earlier = lines.len() - kept.len();
-    let mut out = if earlier > 0 { format!("[… {earlier} earlier lines]\n") } else { String::new() };
+    let mut out = if earlier > 0 {
+        format!("[… {earlier} earlier lines]\n")
+    } else {
+        String::new()
+    };
     out.push_str(&kept.join("\n"));
     out
 }
@@ -574,8 +683,16 @@ fn failure_prompt(command: &str, run: &CheckRun, round: u8) -> String {
         tail(&run.output, PROMPT_LINES, PROMPT_BYTES)
     };
     // The end of the output may have cut the first errors off.
-    let places: String = run.places.iter().map(|p| format!("- {}:{}: {}\n", p.path, p.line, p.message)).collect();
-    let places = if places.is_empty() { places } else { format!("Errors it reported:\n{places}\n") };
+    let places: String = run
+        .places
+        .iter()
+        .map(|p| format!("- {}:{}: {}\n", p.path, p.line, p.message))
+        .collect();
+    let places = if places.is_empty() {
+        places
+    } else {
+        format!("Errors it reported:\n{places}\n")
+    };
     format!(
         "arakun ran this project's check after your turn and it failed (try {round} of {CHECK_ROUNDS}).\n\n\
          $ {command}\n{}\n\n{places}```\n{output}\n```\n\n\
@@ -598,14 +715,21 @@ mod tests {
 
     #[test]
     fn output_loses_colors_and_redrawn_progress() {
-        let raw = b"\x1b[1;31merror\x1b[0m: boom\r\nbuild 10%\rbuild 100%\n\x1b]0;title\x07done\n\n";
+        let raw =
+            b"\x1b[1;31merror\x1b[0m: boom\r\nbuild 10%\rbuild 100%\n\x1b]0;title\x07done\n\n";
         assert_eq!(clean_output(raw), "error: boom\nbuild 100%\ndone");
     }
 
     #[test]
     fn tail_keeps_the_end_and_says_what_it_cut() {
-        let text = (1..=10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        assert_eq!(tail(&text, 3, 1000), "[… 7 earlier lines]\nline 8\nline 9\nline 10");
+        let text = (1..=10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            tail(&text, 3, 1000),
+            "[… 7 earlier lines]\nline 8\nline 9\nline 10"
+        );
         assert_eq!(tail(&text, 100, 15), "[… 8 earlier lines]\nline 9\nline 10");
         assert_eq!(tail("short", 5, 1000), "short");
         assert_eq!(tail("ééééé", 5, 4), "éé");
@@ -623,9 +747,17 @@ mod tests {
         assert_eq!(run.code, Some(3));
         assert!(!run.passed());
         assert_eq!(run.output, "out\nerr");
-        assert!(run_check(&dir, passing, Duration::from_secs(10)).unwrap().passed());
+        assert!(
+            run_check(&dir, passing, Duration::from_secs(10))
+                .unwrap()
+                .passed()
+        );
         let prompt = failure_prompt("make test", &run, 1);
-        assert!(prompt.contains("try 1 of 3") && prompt.contains("$ make test\nexit 3") && prompt.contains("out\nerr"));
+        assert!(
+            prompt.contains("try 1 of 3")
+                && prompt.contains("$ make test\nexit 3")
+                && prompt.contains("out\nerr")
+        );
     }
 
     #[test]
@@ -647,7 +779,10 @@ mod tests {
             gone.rs:1:1: error: not here\n\
             error[E0425]: cannot find value `cx` in this scope\n  --> src/main.rs:70:31";
         let places = error_places(output, &dir);
-        let got: Vec<(&str, u32, &str)> = places.iter().map(|p| (p.path.as_str(), p.line, p.message.as_str())).collect();
+        let got: Vec<(&str, u32, &str)> = places
+            .iter()
+            .map(|p| (p.path.as_str(), p.line, p.message.as_str()))
+            .collect();
         assert_eq!(
             got,
             [
@@ -660,8 +795,17 @@ mod tests {
         );
         let abs = format!("{}:2:3: error: absolute", dir.join("lib.c").display());
         assert_eq!(error_places(&abs, &dir)[0].path, "lib.c");
-        let run = CheckRun { code: Some(1), output: output.into(), elapsed: Duration::ZERO, timed_out: false, places };
-        assert!(failure_prompt("cargo test", &run, 1).contains("Errors it reported:\n- src/main.rs:70: cannot find"));
+        let run = CheckRun {
+            code: Some(1),
+            output: output.into(),
+            elapsed: Duration::ZERO,
+            timed_out: false,
+            places,
+        };
+        assert!(
+            failure_prompt("cargo test", &run, 1)
+                .contains("Errors it reported:\n- src/main.rs:70: cannot find")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -669,9 +813,17 @@ mod tests {
     #[test]
     fn checks_run_at_lower_priority() {
         // /proc first: ps prints "-" for the nice of a process under SCHED_IDLE.
-        let run = run_check(&std::env::temp_dir(), crate::git::NICE_OF_SHELL, Duration::from_secs(10)).unwrap();
+        let run = run_check(
+            &std::env::temp_dir(),
+            crate::git::NICE_OF_SHELL,
+            Duration::from_secs(10),
+        )
+        .unwrap();
         let ours = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
-        assert_eq!(run.output.trim().parse::<i32>().unwrap(), (ours + 10).min(19));
+        assert_eq!(
+            run.output.trim().parse::<i32>().unwrap(),
+            (ours + 10).min(19)
+        );
     }
 
     #[test]
@@ -686,22 +838,49 @@ mod tests {
             suggest_check(&dir)
         };
         assert_eq!(at(&[]), None);
-        assert_eq!(at(&[("Cargo.toml", "")]).as_deref(), Some("cargo check --all-targets"));
-        assert_eq!(at(&[("Cargo.toml", ""), ("Makefile", ".PHONY: test\ntest: build\n\tcargo test\n")]).as_deref(), Some("make test"));
+        assert_eq!(
+            at(&[("Cargo.toml", "")]).as_deref(),
+            Some("cargo check --all-targets")
+        );
+        assert_eq!(
+            at(&[
+                ("Cargo.toml", ""),
+                ("Makefile", ".PHONY: test\ntest: build\n\tcargo test\n")
+            ])
+            .as_deref(),
+            Some("make test")
+        );
         let pkg = r#"{"scripts": {"typecheck": "tsc", "test": "vitest"}}"#;
-        assert_eq!(at(&[("package.json", pkg), ("pnpm-lock.yaml", "")]).as_deref(), Some("pnpm run typecheck && pnpm run test"));
+        assert_eq!(
+            at(&[("package.json", pkg), ("pnpm-lock.yaml", "")]).as_deref(),
+            Some("pnpm run typecheck && pnpm run test")
+        );
         let placeholder = r#"{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}"#;
-        assert_eq!(at(&[("package.json", placeholder), ("tsconfig.json", "{}")]).as_deref(), Some("npx tsc --noEmit"));
+        assert_eq!(
+            at(&[("package.json", placeholder), ("tsconfig.json", "{}")]).as_deref(),
+            Some("npx tsc --noEmit")
+        );
         assert_eq!(at(&[("package.json", placeholder)]), None);
         assert_eq!(at(&[("go.mod", "")]).as_deref(), Some("go test ./..."));
-        assert_eq!(at(&[("pyproject.toml", "[tool.pytest.ini_options]"), ("uv.lock", "")]).as_deref(), Some("uv run pytest -q"));
+        assert_eq!(
+            at(&[
+                ("pyproject.toml", "[tool.pytest.ini_options]"),
+                ("uv.lock", "")
+            ])
+            .as_deref(),
+            Some("uv run pytest -q")
+        );
         assert_eq!(at(&[("pyproject.toml", "")]), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn slow_checks_time_out() {
-        let slow = if cfg!(windows) { "echo started& ping -n 30 127.0.0.1 >nul" } else { "echo started; sleep 30" };
+        let slow = if cfg!(windows) {
+            "echo started& ping -n 30 127.0.0.1 >nul"
+        } else {
+            "echo started; sleep 30"
+        };
         let run = run_check(&std::env::temp_dir(), slow, Duration::from_millis(300)).unwrap();
         assert!(run.timed_out && !run.passed());
         assert_eq!(run.output, "started");

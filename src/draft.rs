@@ -48,7 +48,10 @@ impl Deref for Draft {
 impl Draft {
     /// A draft read back from disk, with the caret at `head`.
     pub fn restore(text: String, head: usize) -> Self {
-        let mut d = Self { text, ..Self::default() };
+        let mut d = Self {
+            text,
+            ..Self::default()
+        };
         d.head = d.floor(head);
         d.anchor = d.head;
         d
@@ -134,7 +137,11 @@ impl Draft {
         if !extend && self.has_selection() {
             return self.move_to(self.selection().start, false);
         }
-        let ix = if word { previous_word(&self.text, self.head) } else { previous_boundary(&self.text, self.head) };
+        let ix = if word {
+            previous_word(&self.text, self.head)
+        } else {
+            previous_boundary(&self.text, self.head)
+        };
         self.move_to(ix, extend);
     }
 
@@ -142,7 +149,11 @@ impl Draft {
         if !extend && self.has_selection() {
             return self.move_to(self.selection().end, false);
         }
-        let ix = if word { next_word(&self.text, self.head) } else { next_boundary(&self.text, self.head) };
+        let ix = if word {
+            next_word(&self.text, self.head)
+        } else {
+            next_boundary(&self.text, self.head)
+        };
         self.move_to(ix, extend);
     }
 
@@ -167,7 +178,10 @@ impl Draft {
         let kind = if self.marked.is_some() {
             Some(Edit::Compose)
         } else if !self.has_selection() && s != "\n" && s.graphemes(true).count() == 1 {
-            let after_word = self.text[..self.head].chars().next_back().is_some_and(|c| !c.is_whitespace());
+            let after_word = self.text[..self.head]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace());
             if after_word && s.chars().all(char::is_whitespace) {
                 self.last = None;
             }
@@ -184,7 +198,10 @@ impl Draft {
     /// one is there already.
     pub fn insert_word(&mut self, s: &str) {
         let range = self.selection();
-        let glued = self.text[..range.start].chars().next_back().is_some_and(|c| !c.is_whitespace());
+        let glued = self.text[..range.start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| !c.is_whitespace());
         if glued {
             self.replace(range, &format!(" {s}"));
         } else {
@@ -214,7 +231,11 @@ impl Draft {
     }
 
     fn step(&self) -> Step {
-        Step { text: self.text.clone(), anchor: self.anchor, head: self.head }
+        Step {
+            text: self.text.clone(),
+            anchor: self.anchor,
+            head: self.head,
+        }
     }
 
     fn apply(&mut self, step: Step) {
@@ -252,8 +273,15 @@ impl Draft {
     /// Input method composition: `s` replaces `range` (else the text being
     /// composed, else the selection) and stays marked; `selected` is a
     /// selection inside `s`, else the caret goes after it.
-    pub fn compose(&mut self, range: Option<Range<usize>>, s: &str, selected: Option<Range<usize>>) {
-        let range = range.or_else(|| self.marked.clone()).unwrap_or_else(|| self.selection());
+    pub fn compose(
+        &mut self,
+        range: Option<Range<usize>>,
+        s: &str,
+        selected: Option<Range<usize>>,
+    ) {
+        let range = range
+            .or_else(|| self.marked.clone())
+            .unwrap_or_else(|| self.selection());
         self.record(Some(Edit::Compose));
         self.splice(range, s);
         let start = self.head - s.len();
@@ -273,7 +301,11 @@ impl Draft {
         if self.has_selection() {
             return self.replace(self.selection(), "");
         }
-        let from = if word { previous_word(&self.text, self.head) } else { previous_boundary(&self.text, self.head) };
+        let from = if word {
+            previous_word(&self.text, self.head)
+        } else {
+            previous_boundary(&self.text, self.head)
+        };
         self.erase(from..self.head, word);
     }
 
@@ -282,7 +314,11 @@ impl Draft {
         if self.has_selection() {
             return self.replace(self.selection(), "");
         }
-        let to = if word { next_word(&self.text, self.head) } else { next_boundary(&self.text, self.head) };
+        let to = if word {
+            next_word(&self.text, self.head)
+        } else {
+            next_boundary(&self.text, self.head)
+        };
         self.erase(self.head..to, word);
     }
 
@@ -314,7 +350,9 @@ impl Draft {
     pub fn line_at(&self, ix: usize) -> Range<usize> {
         let ix = self.floor(ix);
         let start = self.text[..ix].rfind('\n').map_or(0, |i| i + 1);
-        let end = self.text[ix..].find('\n').map_or(self.text.len(), |i| ix + i);
+        let end = self.text[ix..]
+            .find('\n')
+            .map_or(self.text.len(), |i| ix + i);
         start..end
     }
 
@@ -364,11 +402,16 @@ pub fn byte_of_utf16(text: &str, ix: usize) -> usize {
 }
 
 fn previous_boundary(text: &str, offset: usize) -> usize {
-    text.grapheme_indices(true).rev().find_map(|(i, _)| (i < offset).then_some(i)).unwrap_or(0)
+    text.grapheme_indices(true)
+        .rev()
+        .find_map(|(i, _)| (i < offset).then_some(i))
+        .unwrap_or(0)
 }
 
 fn next_boundary(text: &str, offset: usize) -> usize {
-    text.grapheme_indices(true).find_map(|(i, _)| (i > offset).then_some(i)).unwrap_or(text.len())
+    text.grapheme_indices(true)
+        .find_map(|(i, _)| (i > offset).then_some(i))
+        .unwrap_or(text.len())
 }
 
 fn word_break(c: char) -> bool {
@@ -378,7 +421,11 @@ fn word_break(c: char) -> bool {
 /// Word motions stop at `/` too, so Ctrl+Backspace in a path removes one segment.
 fn previous_word(text: &str, offset: usize) -> usize {
     let trimmed = text[..offset].trim_end_matches(word_break);
-    trimmed.char_indices().rev().find(|(_, c)| word_break(*c)).map_or(0, |(i, c)| i + c.len_utf8())
+    trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, c)| word_break(*c))
+        .map_or(0, |(i, c)| i + c.len_utf8())
 }
 
 fn next_word(text: &str, offset: usize) -> usize {

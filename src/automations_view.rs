@@ -17,7 +17,10 @@ use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
 
 pub enum AutomationsEvent {
-    Save { index: Option<usize>, automation: Automation },
+    Save {
+        index: Option<usize>,
+        automation: Automation,
+    },
     Delete(usize),
     Run(usize),
     SetEnabled(usize, bool),
@@ -56,14 +59,22 @@ const TEMPLATES: &[Template] = &[
         agent: Some(Agent::Droid),
         body: "Write a concise changelog of this repo covering the commits of the last 7 days, grouped into \
                features, fixes and internal changes. Show it here; do not commit anything.",
-        schedule: Schedule::Weekly { day: 5, hour: 16, minute: 0 },
+        schedule: Schedule::Weekly {
+            day: 5,
+            hour: 16,
+            minute: 0,
+        },
     },
     Template {
         name: "Audit dependencies",
         agent: Some(Agent::Claude),
         body: "Audit this repo's dependencies: list outdated or vulnerable packages, what upgrading each one \
                would involve, and which upgrades are safe to do now. Do not change any files.",
-        schedule: Schedule::Weekly { day: 1, hour: 10, minute: 0 },
+        schedule: Schedule::Weekly {
+            day: 1,
+            hour: 10,
+            minute: 0,
+        },
     },
     Template {
         name: "Run the tests",
@@ -108,15 +119,19 @@ impl AutomationsDialog {
         let time = cx.new(|cx| TextInput::new("09:00", cx).mono());
         let mut subs = Vec::new();
         for input in [&name, &body, &time] {
-            subs.push(cx.subscribe_in(input, window, |this: &mut Self, _, ev, window, cx| match ev {
-                InputEvent::Submit => this.submit(window, cx),
-                InputEvent::Cancel => this.back(window, cx),
-                InputEvent::Changed => {
-                    this.error = None;
-                    cx.notify();
-                }
-                _ => {}
-            }));
+            subs.push(cx.subscribe_in(
+                input,
+                window,
+                |this: &mut Self, _, ev, window, cx| match ev {
+                    InputEvent::Submit => this.submit(window, cx),
+                    InputEvent::Cancel => this.back(window, cx),
+                    InputEvent::Changed => {
+                        this.error = None;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ));
         }
         let focus = cx.focus_handle();
         let mut this = Self {
@@ -166,15 +181,26 @@ impl AutomationsDialog {
         cx.notify();
     }
 
-    fn load(&mut self, name: &str, agent: Option<Agent>, body: &str, schedule: Schedule, cx: &mut Context<Self>) {
-        self.name.update(cx, |i, cx| i.set_text(name.to_string(), cx));
-        self.body.update(cx, |i, cx| i.set_text(body.to_string(), cx));
+    fn load(
+        &mut self,
+        name: &str,
+        agent: Option<Agent>,
+        body: &str,
+        schedule: Schedule,
+        cx: &mut Context<Self>,
+    ) {
+        self.name
+            .update(cx, |i, cx| i.set_text(name.to_string(), cx));
+        self.body
+            .update(cx, |i, cx| i.set_text(body.to_string(), cx));
         self.agent = agent;
         let (every, time) = match schedule {
             Schedule::Manual => (Every::Manual, "09:00".to_string()),
             Schedule::Hourly { minute } => (Every::Hourly, format!("{minute:02}")),
             Schedule::Daily { hour, minute } => (Every::Daily, format!("{hour:02}:{minute:02}")),
-            Schedule::Weekdays { hour, minute } => (Every::Weekdays, format!("{hour:02}:{minute:02}")),
+            Schedule::Weekdays { hour, minute } => {
+                (Every::Weekdays, format!("{hour:02}:{minute:02}"))
+            }
             Schedule::Weekly { day, hour, minute } => {
                 self.day = day;
                 (Every::Weekly, format!("{hour:02}:{minute:02}"))
@@ -188,7 +214,9 @@ impl AutomationsDialog {
         // Hourly takes a minute, the rest a time of day: keep the field sensible.
         let text = self.time.read(cx).text().to_string();
         let fixed = match (self.every == Every::Hourly, every == Every::Hourly) {
-            (false, true) => Some(schedule::parse_time(&text).map_or("00".into(), |(_, m)| format!("{m:02}"))),
+            (false, true) => {
+                Some(schedule::parse_time(&text).map_or("00".into(), |(_, m)| format!("{m:02}")))
+            }
             (true, false) => Some("09:00".to_string()),
             _ => None,
         };
@@ -202,7 +230,13 @@ impl AutomationsDialog {
 
     /// The schedule as typed, or why it is not valid.
     fn schedule(&self, cx: &App) -> Result<Schedule, &'static str> {
-        let text = self.time.read(cx).text().trim().trim_start_matches(':').to_string();
+        let text = self
+            .time
+            .read(cx)
+            .text()
+            .trim()
+            .trim_start_matches(':')
+            .to_string();
         let time = || schedule::parse_time(&text).ok_or("Type the time as HH:MM, like 09:30");
         Ok(match self.every {
             Every::Manual => Schedule::Manual,
@@ -220,7 +254,11 @@ impl AutomationsDialog {
             }
             Every::Weekly => {
                 let (hour, minute) = time()?;
-                Schedule::Weekly { day: self.day, hour, minute }
+                Schedule::Weekly {
+                    day: self.day,
+                    hour,
+                    minute,
+                }
             }
         })
     }
@@ -274,7 +312,11 @@ impl AutomationsDialog {
 
     fn env_name(&self, path: &Option<PathBuf>) -> Option<SharedString> {
         let path = path.as_ref()?;
-        self.envs.iter().skip(1).find(|(p, _)| p == path).map(|(_, n)| n.clone())
+        self.envs
+            .iter()
+            .skip(1)
+            .find(|(p, _)| p == path)
+            .map(|(_, n)| n.clone())
     }
 
     fn render_row(&self, i: usize, a: &Automation, now: u64, cx: &mut Context<Self>) -> AnyElement {
@@ -292,7 +334,9 @@ impl AutomationsDialog {
         }
         let lead: AnyElement = match a.agent() {
             Some(agent) => crate::shell::agent_icon(agent, 16.),
-            None => icon("flash", 16.).text_color(theme::text_subtle()).into_any_element(),
+            None => icon("flash", 16.)
+                .text_color(theme::text_subtle())
+                .into_any_element(),
         };
         let scheduled = a.schedule != Schedule::Manual;
         let has_session = a.agent.is_some() && a.last_session.is_some();
@@ -305,7 +349,14 @@ impl AutomationsDialog {
             .py(px(8.))
             .rounded(px(ui::RADIUS))
             .hover(|s| s.bg(theme::hover()))
-            .child(div().flex_none().w(px(18.)).flex().justify_center().child(lead))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(18.))
+                    .flex()
+                    .justify_center()
+                    .child(lead),
+            )
             .child(
                 div()
                     .flex()
@@ -313,7 +364,12 @@ impl AutomationsDialog {
                     .flex_1()
                     .min_w_0()
                     .gap(px(2.))
-                    .child(div().text_size(px(ui::TEXT_MD)).truncate().child(a.name.clone()))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_MD))
+                            .truncate()
+                            .child(a.name.clone()),
+                    )
                     .child(
                         div()
                             .text_size(px(ui::TEXT_XS))
@@ -324,8 +380,9 @@ impl AutomationsDialog {
             )
             .when(has_session, |d| {
                 d.child(
-                    ui::button(("auto-last", i), "Last run", ButtonKind::Ghost, true)
-                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::OpenSession(i)))),
+                    ui::button(("auto-last", i), "Last run", ButtonKind::Ghost, true).on_click(
+                        cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::OpenSession(i))),
+                    ),
                 )
             })
             .child(
@@ -333,8 +390,9 @@ impl AutomationsDialog {
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::Run(i)))),
             )
             .child(
-                icon_button(("auto-edit", i), "pencil-edit02", 14.)
-                    .on_click(cx.listener(move |this, _, window, cx| this.edit(Some(i), window, cx))),
+                icon_button(("auto-edit", i), "pencil-edit02", 14.).on_click(
+                    cx.listener(move |this, _, window, cx| this.edit(Some(i), window, cx)),
+                ),
             )
             .child(
                 icon_button(("auto-delete", i), "delete02", 14.)
@@ -412,7 +470,9 @@ impl AutomationsDialog {
                         .hover(|s| s.bg(theme::hover()))
                         .child(match t.agent {
                             Some(agent) => crate::shell::agent_icon(agent, 12.),
-                            None => icon("flash", 12.).text_color(theme::text_subtle()).into_any_element(),
+                            None => icon("flash", 12.)
+                                .text_color(theme::text_subtle())
+                                .into_any_element(),
                         })
                         .child(t.name)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -460,7 +520,11 @@ impl AutomationsDialog {
             ));
         }
         body = body.child(field(
-            if self.agent.is_some() { "Prompt" } else { "Command" },
+            if self.agent.is_some() {
+                "Prompt"
+            } else {
+                "Command"
+            },
             field_box().child(self.body.clone()),
         ));
         if self.envs.len() > 1 {
@@ -473,12 +537,14 @@ impl AutomationsDialog {
             let mut row = div().flex().flex_wrap().gap(px(4.));
             for (oi, (value, label)) in options.into_iter().enumerate() {
                 let selected = value == self.env;
-                row = row.child(ui::chip(("auto-env", oi), label, selected).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.env = value.clone();
-                        cx.notify();
-                    },
-                )));
+                row = row.child(
+                    ui::chip(("auto-env", oi), label, selected).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.env = value.clone();
+                            cx.notify();
+                        },
+                    )),
+                );
             }
             body = body.child(field("Environment", row));
         }
@@ -502,12 +568,15 @@ impl AutomationsDialog {
             let mut days = div().flex().flex_wrap().gap(px(4.));
             for d in [1u8, 2, 3, 4, 5, 6, 0] {
                 days = days.child(
-                    ui::chip(("auto-day", d as usize), &schedule::WEEKDAYS[d as usize][..3], self.day == d).on_click(
-                        cx.listener(move |this, _, _, cx| {
-                            this.day = d;
-                            cx.notify();
-                        }),
-                    ),
+                    ui::chip(
+                        ("auto-day", d as usize),
+                        &schedule::WEEKDAYS[d as usize][..3],
+                        self.day == d,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.day = d;
+                        cx.notify();
+                    })),
                 );
             }
             body = body.child(field("Day", days));
@@ -521,13 +590,22 @@ impl AutomationsDialog {
                 Err(e) => e.to_string(),
             };
             body = body.child(field(
-                if self.every == Every::Hourly { "Minute past the hour" } else { "Time" },
+                if self.every == Every::Hourly {
+                    "Minute past the hour"
+                } else {
+                    "Time"
+                },
                 div()
                     .flex()
                     .items_center()
                     .gap(px(12.))
                     .child(field_box().w(px(96.)).child(self.time.clone()))
-                    .child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(preview)),
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_subtle())
+                            .child(preview),
+                    ),
             ));
             body = body.child(
                 div()
@@ -541,7 +619,12 @@ impl AutomationsDialog {
             );
         }
         body.when_some(self.error.clone(), |d, e| {
-            d.child(div().text_size(px(ui::TEXT_SM)).text_color(theme::error()).child(e))
+            d.child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::error())
+                    .child(e),
+            )
         })
     }
 }
@@ -551,7 +634,12 @@ fn field(label: &str, content: impl IntoElement) -> gpui::Div {
         .flex()
         .flex_col()
         .gap(px(6.))
-        .child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_muted()).child(label.to_string()))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_muted())
+                .child(label.to_string()),
+        )
         .child(content)
 }
 
@@ -587,11 +675,18 @@ impl Render for AutomationsDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editing = self.editing.is_some();
         let (title, description): (SharedString, SharedString) = match self.editing {
-            None => ("Automations".into(), format!("{} · run by hand or on a schedule", self.project).into()),
+            None => (
+                "Automations".into(),
+                format!("{} · run by hand or on a schedule", self.project).into(),
+            ),
             Some(None) => ("New automation".into(), self.project.clone()),
             Some(Some(_)) => ("Edit automation".into(), self.project.clone()),
         };
-        let body = if editing { self.render_editor(cx) } else { self.render_list(cx) };
+        let body = if editing {
+            self.render_editor(cx)
+        } else {
+            self.render_list(cx)
+        };
         let footer = div()
             .flex()
             .flex_none()

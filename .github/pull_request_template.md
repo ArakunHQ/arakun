@@ -27,6 +27,7 @@
 
 <!-- Tick only what you ran; leave the rest unchecked. The commands are in CONTRIBUTING.md under "Checks". With CEF set up you can leave out `--no-default-features`. -->
 
+- [ ] `tools/rustfmt.sh --check` passes
 - [ ] `cargo clippy --locked --all-targets --no-default-features -- -D warnings` passes
 - [ ] `cargo test --locked --no-default-features` passes (includes `design_lint`: colors, text sizes and fonts come from `theme` and `ui`)
 - [ ] If `relay/` or `phone/` changed: the relay's `tsc` and `vitest`, and the phone tests pass

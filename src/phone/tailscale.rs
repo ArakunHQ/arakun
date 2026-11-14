@@ -61,7 +61,10 @@ fn parse_status(json: &str) -> Status {
     if s.backend_state != "Running" {
         return Status::Down;
     }
-    let name = s.this.map(|n| n.dns_name.trim_end_matches('.').to_string()).unwrap_or_default();
+    let name = s
+        .this
+        .map(|n| n.dns_name.trim_end_matches('.').to_string())
+        .unwrap_or_default();
     let certs = s.cert_domains.unwrap_or_default();
     if name.is_empty() || !certs.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
         return Status::NoHttps;
@@ -79,8 +82,13 @@ pub fn url(name: &str) -> String {
 /// there leaves it as is. The TLS-terminated TCP mode hands the connection over
 /// whole, so the WebSocket and the request headers arrive as the phone sent them.
 pub fn serve(port: u16) -> Result<(), String> {
-    let out = run(&["serve", "--bg", &format!("--tls-terminated-tcp={HTTPS_PORT}"), &format!("tcp://127.0.0.1:{port}")])
-        .ok_or("Tailscale is not installed")?;
+    let out = run(&[
+        "serve",
+        "--bg",
+        &format!("--tls-terminated-tcp={HTTPS_PORT}"),
+        &format!("tcp://127.0.0.1:{port}"),
+    ])
+    .ok_or("Tailscale is not installed")?;
     if out.status.success() {
         Ok(())
     } else {
@@ -90,14 +98,29 @@ pub fn serve(port: u16) -> Result<(), String> {
 
 /// Takes the HTTPS port back; other things the user serves stay.
 pub fn stop_serving() -> Result<(), String> {
-    let out = run(&["serve", &format!("--tls-terminated-tcp={HTTPS_PORT}"), "off"]).ok_or("Tailscale is not installed")?;
-    if out.status.success() { Ok(()) } else { Err(tidy(&String::from_utf8_lossy(&out.stderr))) }
+    let out = run(&[
+        "serve",
+        &format!("--tls-terminated-tcp={HTTPS_PORT}"),
+        "off",
+    ])
+    .ok_or("Tailscale is not installed")?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(tidy(&String::from_utf8_lossy(&out.stderr)))
+    }
 }
 
 /// The CLI's error, one line, without its "error: " prefix.
 fn tidy(stderr: &str) -> String {
-    let line = stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Tailscale refused");
-    line.trim_start_matches("error: ").trim_start_matches("Error: ").to_string()
+    let line = stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("Tailscale refused");
+    line.trim_start_matches("error: ")
+        .trim_start_matches("Error: ")
+        .to_string()
 }
 
 /// Runs `tailscale` with `args`; `None` when it is not here.
@@ -133,8 +156,16 @@ mod tests {
     #[test]
     fn status_needs_a_running_daemon_and_a_certificate_for_the_name() {
         let running = r#"{"BackendState":"Running","Self":{"DNSName":"desktop.tail1234.ts.net."},"CertDomains":["desktop.tail1234.ts.net"]}"#;
-        assert_eq!(parse_status(running), Status::Ready { name: "desktop.tail1234.ts.net".into() });
-        assert_eq!(url("desktop.tail1234.ts.net"), "https://desktop.tail1234.ts.net/");
+        assert_eq!(
+            parse_status(running),
+            Status::Ready {
+                name: "desktop.tail1234.ts.net".into()
+            }
+        );
+        assert_eq!(
+            url("desktop.tail1234.ts.net"),
+            "https://desktop.tail1234.ts.net/"
+        );
 
         let stopped = r#"{"BackendState":"Stopped","Self":{"DNSName":"desktop.tail1234.ts.net."},"CertDomains":null}"#;
         assert_eq!(parse_status(stopped), Status::Down);
@@ -147,7 +178,10 @@ mod tests {
 
     #[test]
     fn errors_come_as_one_plain_line() {
-        assert_eq!(tidy("error: Tailscale HTTPS is not enabled\n  see https://...\n"), "Tailscale HTTPS is not enabled");
+        assert_eq!(
+            tidy("error: Tailscale HTTPS is not enabled\n  see https://...\n"),
+            "Tailscale HTTPS is not enabled"
+        );
         assert_eq!(tidy("\n"), "Tailscale refused");
     }
 }

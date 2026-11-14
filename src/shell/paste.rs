@@ -6,8 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, ClipboardEntry, ClipboardItem, Context, InteractiveElement as _, IntoElement as _, ObjectFit,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, div, img, px,
+    AnyElement, ClipboardEntry, ClipboardItem, Context, InteractiveElement as _, IntoElement as _,
+    ObjectFit, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, div, img, px,
 };
 
 use super::Shell;
@@ -17,7 +18,11 @@ use crate::theme;
 use crate::ui::icon;
 
 impl Shell {
-    pub(super) fn paste_into_composer(&mut self, item: Option<ClipboardItem>, cx: &mut Context<Self>) {
+    pub(super) fn paste_into_composer(
+        &mut self,
+        item: Option<ClipboardItem>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(item) = item else {
             return;
         };
@@ -29,15 +34,20 @@ impl Shell {
                         Some(paths) => self.push_mentions(&paths),
                         None if attach::is_large_paste(text) => {
                             let env_path = self.env().path.clone();
-                            self.pastes.entry(env_path).or_default().push(text.replace("\r\n", "\n"));
+                            self.pastes
+                                .entry(env_path)
+                                .or_default()
+                                .push(text.replace("\r\n", "\n"));
                         }
                         None => self.env_mut().draft.insert(&text.replace("\r\n", "\n")),
                     }
                 }
-                ClipboardEntry::Image(image) => match save_image(&image.bytes, image.format.extension()) {
-                    Ok(path) => self.push_mentions(&[path]),
-                    Err(e) => eprintln!("arakun: could not save the pasted image: {e}"),
-                },
+                ClipboardEntry::Image(image) => {
+                    match save_image(&image.bytes, image.format.extension()) {
+                        Ok(path) => self.push_mentions(&[path]),
+                        Err(e) => eprintln!("arakun: could not save the pasted image: {e}"),
+                    }
+                }
                 ClipboardEntry::ExternalPaths(paths) => self.push_mentions(paths.paths()),
             }
         }
@@ -48,7 +58,11 @@ impl Shell {
 
     pub(super) fn copy_composer(&mut self, cut: bool, cx: &mut Context<Self>) {
         let draft = &self.env().draft;
-        let range = if draft.has_selection() { draft.selection() } else { 0..draft.len() };
+        let range = if draft.has_selection() {
+            draft.selection()
+        } else {
+            0..draft.len()
+        };
         if range.is_empty() {
             return;
         }
@@ -66,8 +80,9 @@ impl Shell {
     pub(super) fn push_mentions(&mut self, paths: &[PathBuf]) {
         let env = self.env_mut();
         let root = env.path.clone();
-        let (images, files): (Vec<&PathBuf>, Vec<&PathBuf>) =
-            paths.iter().partition(|p| attach::mime_type(p).is_some() && p.is_file());
+        let (images, files): (Vec<&PathBuf>, Vec<&PathBuf>) = paths
+            .iter()
+            .partition(|p| attach::mime_type(p).is_some() && p.is_file());
         for image in images {
             if !env.draft_images.contains(image) {
                 env.draft_images.push(image.clone());
@@ -75,7 +90,9 @@ impl Shell {
         }
         let mentions: Vec<String> = files
             .iter()
-            .map(|path| attach::mention(&path.strip_prefix(&root).unwrap_or(path).to_string_lossy()))
+            .map(|path| {
+                attach::mention(&path.strip_prefix(&root).unwrap_or(path).to_string_lossy())
+            })
             .collect();
         // All in one edit, so one Ctrl+Z takes them back.
         if !mentions.is_empty() {
@@ -117,7 +134,11 @@ impl Shell {
                             img(path.clone())
                                 .size_full()
                                 .object_fit(ObjectFit::Cover)
-                                .with_fallback(|| icon("image01", 16.).text_color(theme::text_subtle()).into_any_element()),
+                                .with_fallback(|| {
+                                    icon("image01", 16.)
+                                        .text_color(theme::text_subtle())
+                                        .into_any_element()
+                                }),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let env = this.env().path.clone();
@@ -157,7 +178,11 @@ impl Shell {
 /// Text that is only a list of existing files (what file managers put on the
 /// clipboard, as `file://` URIs or plain paths), else `None`.
 fn pasted_paths(text: &str) -> Option<Vec<PathBuf>> {
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
     if lines.is_empty() {
         return None;
     }
@@ -166,7 +191,9 @@ fn pasted_paths(text: &str) -> Option<Vec<PathBuf>> {
         .map(|line| {
             let path = match line.strip_prefix("file://") {
                 // `file://host/path` is rare; only local URIs are accepted.
-                Some(rest) => PathBuf::from(percent_decode(rest.strip_prefix("localhost").unwrap_or(rest))?),
+                Some(rest) => PathBuf::from(percent_decode(
+                    rest.strip_prefix("localhost").unwrap_or(rest),
+                )?),
                 None => PathBuf::from(line),
             };
             (path.is_absolute() && path.exists()).then_some(path)
@@ -218,7 +245,10 @@ mod tests {
 
     #[test]
     fn decodes_percent_escapes() {
-        assert_eq!(percent_decode("/tmp/My%20Shot%C3%B1.png").unwrap(), "/tmp/My Shotñ.png");
+        assert_eq!(
+            percent_decode("/tmp/My%20Shot%C3%B1.png").unwrap(),
+            "/tmp/My Shotñ.png"
+        );
         assert_eq!(percent_decode("/bad%2"), None);
     }
 
@@ -230,7 +260,10 @@ mod tests {
         std::fs::write(&a, b"x").unwrap();
         let uri = format!("file://{}", a.display()).replace(' ', "%20");
         assert_eq!(pasted_paths(&format!("{uri}\r\n")), Some(vec![a.clone()]));
-        assert_eq!(pasted_paths(&a.display().to_string()), Some(vec![a.clone()]));
+        assert_eq!(
+            pasted_paths(&a.display().to_string()),
+            Some(vec![a.clone()])
+        );
         assert_eq!(pasted_paths("just some text"), None);
         assert_eq!(pasted_paths(&format!("{}\nnot a file", a.display())), None);
         assert_eq!(pasted_paths("/definitely/missing/file.png"), None);

@@ -52,18 +52,27 @@ pub fn read(path: &Path) -> Result<Workbook, String> {
         "csv" | "tsv" => {
             let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
             if size > MAX_CSV_BYTES {
-                return Err(format!("File is too large to preview ({:.1} MB)", size as f64 / 1e6));
+                return Err(format!(
+                    "File is too large to preview ({:.1} MB)",
+                    size as f64 / 1e6
+                ));
             }
             let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
             let text = String::from_utf8_lossy(&bytes);
             let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-            let sep = if ext == "tsv" { '\t' } else { guess_separator(text) };
+            let sep = if ext == "tsv" {
+                '\t'
+            } else {
+                guess_separator(text)
+            };
             let rows = parse_delimited(text, sep)
                 .into_iter()
                 .map(|row| row.into_iter().map(text_cell).collect())
                 .collect();
             let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Sheet");
-            Ok(Workbook { sheets: vec![sheet(name, rows)] })
+            Ok(Workbook {
+                sheets: vec![sheet(name, rows)],
+            })
         }
         _ => read_workbook(path),
     }
@@ -86,14 +95,23 @@ fn read_workbook(path: &Path) -> Result<Workbook, String> {
         let mut rows: Vec<Vec<Cell>> = Vec::with_capacity(height.min(MAX_ROWS + 1));
         for r in 0..height.min(MAX_ROWS + 1) {
             let mut row: Vec<Cell> = (0..width.min(MAX_COLS + 1))
-                .map(|c| values.get_value((r as u32, c as u32)).map(data_cell).unwrap_or_default())
+                .map(|c| {
+                    values
+                        .get_value((r as u32, c as u32))
+                        .map(data_cell)
+                        .unwrap_or_default()
+                })
                 .collect();
             if let Some(f) = &formulas {
                 for (c, cell) in row.iter_mut().enumerate() {
                     if cell.text.is_empty()
-                        && let Some(formula) = f.get_value((r as u32, c as u32)).filter(|s| !s.is_empty())
+                        && let Some(formula) =
+                            f.get_value((r as u32, c as u32)).filter(|s| !s.is_empty())
                     {
-                        *cell = Cell { text: format!("={formula}").into(), kind: CellKind::Formula };
+                        *cell = Cell {
+                            text: format!("={formula}").into(),
+                            kind: CellKind::Formula,
+                        };
                     }
                 }
             }
@@ -128,7 +146,12 @@ fn sheet(name: &str, mut rows: Vec<Vec<Cell>>) -> Sheet {
         }
     }
     let widths = chars.iter().map(|&n| column_width(n)).collect();
-    Sheet { name: name.to_string().into(), rows, widths, truncated }
+    Sheet {
+        name: name.to_string().into(),
+        rows,
+        widths,
+        truncated,
+    }
 }
 
 /// Pixels for a column whose longest value has `chars` characters.
@@ -142,7 +165,10 @@ fn data_cell(value: &Data) -> Cell {
         Data::String(s) => (s.replace(['\r', '\n'], " "), CellKind::Text),
         Data::Int(n) => (n.to_string(), CellKind::Number),
         Data::Float(f) => (format_number(*f), CellKind::Number),
-        Data::Bool(b) => (if *b { "TRUE" } else { "FALSE" }.to_string(), CellKind::Text),
+        Data::Bool(b) => (
+            if *b { "TRUE" } else { "FALSE" }.to_string(),
+            CellKind::Text,
+        ),
         Data::DateTime(d) => {
             let text = if d.is_duration() {
                 d.as_duration().map(|t| {
@@ -152,20 +178,37 @@ fn data_cell(value: &Data) -> Cell {
             } else {
                 d.as_datetime().map(|t| {
                     let time = t.format("%H:%M").to_string();
-                    if time == "00:00" { t.format("%Y-%m-%d").to_string() } else { t.format("%Y-%m-%d %H:%M").to_string() }
+                    if time == "00:00" {
+                        t.format("%Y-%m-%d").to_string()
+                    } else {
+                        t.format("%Y-%m-%d %H:%M").to_string()
+                    }
                 })
             };
-            (text.unwrap_or_else(|| format_number(d.as_f64())), CellKind::Number)
+            (
+                text.unwrap_or_else(|| format_number(d.as_f64())),
+                CellKind::Number,
+            )
         }
         Data::DateTimeIso(s) | Data::DurationIso(s) => (s.clone(), CellKind::Number),
         Data::Error(e) => (e.to_string(), CellKind::Error),
     };
-    Cell { text: text.into(), kind }
+    Cell {
+        text: text.into(),
+        kind,
+    }
 }
 
 fn text_cell(text: String) -> Cell {
-    let kind = if !text.is_empty() && text.trim().parse::<f64>().is_ok() { CellKind::Number } else { CellKind::Text };
-    Cell { text: text.into(), kind }
+    let kind = if !text.is_empty() && text.trim().parse::<f64>().is_ok() {
+        CellKind::Number
+    } else {
+        CellKind::Text
+    };
+    Cell {
+        text: text.into(),
+        kind,
+    }
 }
 
 /// Whole numbers without decimals, others to six places without trailing zeros.
@@ -181,7 +224,10 @@ fn format_number(f: f64) -> String {
 /// Comma unless the first line has more semicolons or tabs (European exports).
 fn guess_separator(text: &str) -> char {
     let first = text.lines().next().unwrap_or_default();
-    [',', ';', '\t'].into_iter().max_by_key(|&c| (first.matches(c).count(), c == ',')).unwrap_or(',')
+    [',', ';', '\t']
+        .into_iter()
+        .max_by_key(|&c| (first.matches(c).count(), c == ','))
+        .unwrap_or(',')
 }
 
 /// RFC 4180 rows: quoted fields may hold the separator, quotes (`""`) and newlines.
@@ -255,7 +301,10 @@ mod tests {
         let rows = parse_delimited("a,\"b, c\",\"di\"\"jo\"\r\n1,2,3\n", ',');
         assert_eq!(rows, vec![vec!["a", "b, c", "di\"jo"], vec!["1", "2", "3"]]);
         assert_eq!(parse_delimited("x;y\n", ';'), vec![vec!["x", "y"]]);
-        assert_eq!(parse_delimited("sin,salto", ','), vec![vec!["sin", "salto"]]);
+        assert_eq!(
+            parse_delimited("sin,salto", ','),
+            vec![vec!["sin", "salto"]]
+        );
     }
 
     #[test]
@@ -274,7 +323,13 @@ mod tests {
 
     #[test]
     fn csv_cells_are_typed_and_sized() {
-        let s = sheet("t", vec![vec![text_cell("Horas".into()), text_cell("22.5".into())], vec![]]);
+        let s = sheet(
+            "t",
+            vec![
+                vec![text_cell("Horas".into()), text_cell("22.5".into())],
+                vec![],
+            ],
+        );
         assert_eq!(s.rows.len(), 1);
         assert_eq!(s.widths.len(), 2);
         assert_eq!(s.rows[0][1].kind, CellKind::Number);

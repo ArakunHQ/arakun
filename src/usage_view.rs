@@ -6,8 +6,8 @@
 
 use crate::ui::Typography as _;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
@@ -150,17 +150,30 @@ fn day_start(at: u64) -> u64 {
 
 fn sorted<K>(map: HashMap<K, Tally>) -> Vec<(K, Tally)> {
     let mut v: Vec<(K, Tally)> = map.into_iter().collect();
-    v.sort_by(|a, b| b.1.cost.total_cmp(&a.1.cost).then(b.1.tokens.cmp(&a.1.tokens)));
+    v.sort_by(|a, b| {
+        b.1.cost
+            .total_cmp(&a.1.cost)
+            .then(b.1.tokens.cmp(&a.1.tokens))
+    });
     v
 }
 
 impl Summary {
     /// `project_of` names the project a working directory belongs to.
-    pub fn of(records: &[Record], range: Range, now: u64, project_of: impl Fn(&Path) -> String) -> Self {
+    pub fn of(
+        records: &[Record],
+        range: Range,
+        now: u64,
+        project_of: impl Fn(&Path) -> String,
+    ) -> Self {
         let today = day_start(now);
         let since = today.saturating_sub((range.days() - 1) * DAY);
         let prev_since = since.saturating_sub(range.days() * DAY);
-        let mut s = Summary { first: since, last: today, ..Default::default() };
+        let mut s = Summary {
+            first: since,
+            last: today,
+            ..Default::default()
+        };
         let mut days: HashMap<u64, HashMap<AgentKind, Tally>> = HashMap::new();
         let mut agents: HashMap<AgentKind, Tally> = HashMap::new();
         let mut models: HashMap<(AgentKind, String), Tally> = HashMap::new();
@@ -174,9 +187,16 @@ impl Summary {
                 continue;
             }
             s.total.add(r);
-            days.entry(day_start(r.at)).or_default().entry(r.agent()).or_default().add(r);
+            days.entry(day_start(r.at))
+                .or_default()
+                .entry(r.agent())
+                .or_default()
+                .add(r);
             agents.entry(r.agent()).or_default().add(r);
-            models.entry((r.agent(), r.model.clone())).or_default().add(r);
+            models
+                .entry((r.agent(), r.model.clone()))
+                .or_default()
+                .add(r);
             if !r.cwd.as_os_str().is_empty() {
                 projects.entry(project_of(&r.cwd)).or_default().add(r);
             }
@@ -193,14 +213,22 @@ impl Summary {
         let mut d = since;
         while d <= today {
             let start = day_start(d + 2 * 3600);
-            s.days.push((start, days.remove(&start).unwrap_or_default()));
+            s.days
+                .push((start, days.remove(&start).unwrap_or_default()));
             d = start + DAY;
         }
         s.agents = sorted(agents);
         s.models = sorted(models);
         s.projects = sorted(projects);
-        let mut top: Vec<_> = sessions.into_iter().map(|(k, (cwd, t))| (k, cwd, t)).collect();
-        top.sort_by(|a, b| b.2.cost.total_cmp(&a.2.cost).then(b.2.tokens.cmp(&a.2.tokens)));
+        let mut top: Vec<_> = sessions
+            .into_iter()
+            .map(|(k, (cwd, t))| (k, cwd, t))
+            .collect();
+        top.sort_by(|a, b| {
+            b.2.cost
+                .total_cmp(&a.2.cost)
+                .then(b.2.tokens.cmp(&a.2.tokens))
+        });
         s.sessions_top = top;
         s
     }
@@ -264,7 +292,9 @@ impl UsageView {
         });
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
-                let (seats, go) = cx.background_spawn(async move { (plan::seats(), opencode_plan::refresh()) }).await;
+                let (seats, go) = cx
+                    .background_spawn(async move { (plan::seats(), opencode_plan::refresh()) })
+                    .await;
                 let plan = seats.active().cloned();
                 #[cfg(feature = "coderlabs")]
                 let borrowed = seats.borrowed.clone();
@@ -324,7 +354,9 @@ impl UsageView {
         self.scanning = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let records = cx.background_spawn(async move { usage_history::scan() }).await;
+            let records = cx
+                .background_spawn(async move { usage_history::scan() })
+                .await;
             let _ = this.update(cx, |v, cx| {
                 v.scanning = false;
                 v.records = Some(records);
@@ -335,7 +367,12 @@ impl UsageView {
     }
 
     /// What the shell knows: session titles and where its projects live.
-    pub fn set_context(&mut self, titles: HashMap<String, String>, mut projects: Vec<(PathBuf, String)>, cx: &mut Context<Self>) {
+    pub fn set_context(
+        &mut self,
+        titles: HashMap<String, String>,
+        mut projects: Vec<(PathBuf, String)>,
+        cx: &mut Context<Self>,
+    ) {
         projects.sort_by_key(|p| std::cmp::Reverse(p.0.as_os_str().len()));
         if titles != self.titles || projects != self.projects {
             self.titles = titles;
@@ -364,7 +401,12 @@ impl UsageView {
             .iter()
             .find(|(p, _)| cwd.starts_with(p))
             .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| cwd.file_name().map_or_else(|| cwd.display().to_string(), |n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| {
+                cwd.file_name().map_or_else(
+                    || cwd.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+            })
     }
 
     // ---- plan limits -----------------------------------------------------------
@@ -372,7 +414,11 @@ impl UsageView {
     /// Claude's limits: one line per active window, the idle ones folded into
     /// a single line, or the sign-in prompt.
     fn claude_limits(&self, cx: &mut Context<Self>) -> AnyElement {
-        let label = self.plan.as_ref().map(|p| p.plan_label()).unwrap_or_default();
+        let label = self
+            .plan
+            .as_ref()
+            .map(|p| p.plan_label())
+            .unwrap_or_default();
         let at = now();
         let body = match &self.plan {
             Some(plan) => {
@@ -380,7 +426,11 @@ impl UsageView {
                 let mut idle = Vec::new();
                 for w in &plan.windows {
                     if w.active || w.percent > 0 {
-                        rows = rows.child(ui::limit_line(&w.label, w.percent as f32, w.reset_text(at)));
+                        rows = rows.child(ui::limit_line(
+                            &w.label,
+                            w.percent as f32,
+                            w.reset_text(at),
+                        ));
                     } else {
                         idle.push(w.label.clone());
                     }
@@ -390,9 +440,16 @@ impl UsageView {
                 {
                     let detail = match spend.limit {
                         Some(limit) => format!("of {}", fmt_cost(limit, &spend.currency, false)),
-                        None => format!("{} this month", fmt_cost(spend.used, &spend.currency, false)),
+                        None => format!(
+                            "{} this month",
+                            fmt_cost(spend.used, &spend.currency, false)
+                        ),
                     };
-                    rows = rows.child(ui::limit_line("Extra usage", spend.percent as f32, Some(detail)));
+                    rows = rows.child(ui::limit_line(
+                        "Extra usage",
+                        spend.percent as f32,
+                        Some(detail),
+                    ));
                 }
                 rows.children(idle_line(&idle))
             }
@@ -404,7 +461,12 @@ impl UsageView {
                 cx,
             ),
         };
-        limits_block(AgentKind::Claude, "Claude Code", (!label.is_empty()).then(|| label.into_any_element()), body)
+        limits_block(
+            AgentKind::Claude,
+            "Claude Code",
+            (!label.is_empty()).then(|| label.into_any_element()),
+            body,
+        )
     }
 
     /// A second seat's windows: only some builds read one.
@@ -423,7 +485,11 @@ impl UsageView {
         for w in &b.windows {
             rows = rows.child(ui::limit_line(&w.label, w.percent as f32, w.reset_text(at)));
         }
-        let name = if plan::active_is_borrowed() { "Borrowed seat · in use" } else { "Borrowed seat" };
+        let name = if plan::active_is_borrowed() {
+            "Borrowed seat · in use"
+        } else {
+            "Borrowed seat"
+        };
         Some(limits_block(AgentKind::Claude, name, None, rows))
     }
 
@@ -434,11 +500,26 @@ impl UsageView {
         let at = now();
         let mut rows = div().flex().flex_col().gap(px(8.));
         for w in &go.windows {
-            let detail = [opencode_plan::status(w).map(str::to_string), w.reset_text(at)].into_iter().flatten().collect::<Vec<_>>();
-            rows = rows.child(ui::limit_line(&w.label, w.percent as f32, (!detail.is_empty()).then(|| detail.join(" · "))));
+            let detail = [
+                opencode_plan::status(w).map(str::to_string),
+                w.reset_text(at),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            rows = rows.child(ui::limit_line(
+                &w.label,
+                w.percent as f32,
+                (!detail.is_empty()).then(|| detail.join(" · ")),
+            ));
         }
         if go.windows.is_empty() {
-            rows = rows.child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child("No usage windows reported yet."));
+            rows = rows.child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child("No usage windows reported yet."),
+            );
         }
         Some(limits_block(AgentKind::OpenCode, "OpenCode Go", None, rows))
     }
@@ -476,16 +557,26 @@ impl UsageView {
                 let mode = limits.mode(at);
                 let core_first = mode == UsageMode::DroidCore && limits.core.is_some();
                 let (main, other) = if core_first {
-                    (limits.core.as_ref().map(|p| ("Core", p)), limits.standard.as_ref().map(|p| ("Standard", p)))
+                    (
+                        limits.core.as_ref().map(|p| ("Core", p)),
+                        limits.standard.as_ref().map(|p| ("Standard", p)),
+                    )
                 } else {
-                    (limits.standard.as_ref().map(|p| ("Standard", p)), limits.core.as_ref().map(|p| ("Core", p)))
+                    (
+                        limits.standard.as_ref().map(|p| ("Standard", p)),
+                        limits.core.as_ref().map(|p| ("Core", p)),
+                    )
                 };
                 let mut col = div().flex().flex_col().gap(px(8.));
                 let mut idle = Vec::new();
                 if let Some((name, pool)) = main {
                     for (label, b) in pool.buckets() {
                         if b.active(at) {
-                            col = col.child(ui::limit_line(&format!("{name} · {label}"), b.current(at), Some(account_view::reset_label(&b, at))));
+                            col = col.child(ui::limit_line(
+                                &format!("{name} · {label}"),
+                                b.current(at),
+                                Some(account_view::reset_label(&b, at)),
+                            ));
                         } else {
                             idle.push(format!("{name} · {label}"));
                         }
@@ -499,7 +590,11 @@ impl UsageView {
                         .filter(|(_, b)| b.active(at))
                         .max_by(|a, b| a.1.used_percent.total_cmp(&b.1.used_percent));
                     if let Some((label, b)) = fullest {
-                        col = col.child(ui::limit_line(&format!("{name} · {label}"), b.current(at), Some(account_view::reset_label(&b, at))));
+                        col = col.child(ui::limit_line(
+                            &format!("{name} · {label}"),
+                            b.current(at),
+                            Some(account_view::reset_label(&b, at)),
+                        ));
                     }
                 }
                 if limits.extra_usage_cents > 0 {
@@ -507,7 +602,12 @@ impl UsageView {
                         div()
                             .flex()
                             .text_size(px(ui::TEXT_SM))
-                            .child(div().flex_1().text_color(theme::text_subtle()).child("Extra usage balance"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_color(theme::text_subtle())
+                                    .child("Extra usage balance"),
+                            )
                             .child(format!("${:.2}", limits.extra_usage_cents as f64 / 100.)),
                     );
                 }
@@ -523,12 +623,20 @@ impl UsageView {
                         .child(limits.summary(at)),
                 )
             }
-            None => div().text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(match account.error() {
-                Some(e) => e.to_string(),
-                None => "Reading usage…".to_string(),
-            }),
+            None => div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(match account.error() {
+                    Some(e) => e.to_string(),
+                    None => "Reading usage…".to_string(),
+                }),
         };
-        limits_block(AgentKind::Droid, "Droid", Some(manage.into_any_element()), body)
+        limits_block(
+            AgentKind::Droid,
+            "Droid",
+            Some(manage.into_any_element()),
+            body,
+        )
     }
 
     // ---- breakdown ---------------------------------------------------------------
@@ -541,16 +649,30 @@ impl UsageView {
                 .iter()
                 .map(|((agent, model), t)| (Some(*agent), model_name(model), t.clone()))
                 .collect(),
-            Group::Project => s.projects.iter().map(|(p, t)| (None, p.clone(), t.clone())).collect(),
+            Group::Project => s
+                .projects
+                .iter()
+                .map(|(p, t)| (None, p.clone(), t.clone()))
+                .collect(),
             Group::Session => s
                 .sessions_top
                 .iter()
                 .map(|((agent, id), (cwd, title), t)| {
                     let own = (!title.is_empty()).then(|| title.clone());
-                    let name = self.titles.get(id).filter(|n| !n.is_empty()).cloned().or(own).unwrap_or_else(|| {
-                        let project = if cwd.as_os_str().is_empty() { "session".to_string() } else { self.project_of(cwd) };
-                        format!("{project} · {}", id.get(..8).unwrap_or(id))
-                    });
+                    let name = self
+                        .titles
+                        .get(id)
+                        .filter(|n| !n.is_empty())
+                        .cloned()
+                        .or(own)
+                        .unwrap_or_else(|| {
+                            let project = if cwd.as_os_str().is_empty() {
+                                "session".to_string()
+                            } else {
+                                self.project_of(cwd)
+                            };
+                            format!("{project} · {}", id.get(..8).unwrap_or(id))
+                        });
                     (Some(*agent), name, t.clone())
                 })
                 .collect(),
@@ -582,7 +704,11 @@ impl UsageView {
             .map(|(agent, _)| ui::Series {
                 name: agent.label().into(),
                 color: agent_color(*agent),
-                values: s.days.iter().map(|(_, by)| by.get(agent).map_or(0., |t| t.value(measure))).collect(),
+                values: s
+                    .days
+                    .iter()
+                    .map(|(_, by)| by.get(agent).map_or(0., |t| t.value(measure)))
+                    .collect(),
             })
             .collect();
         let labels = s.days.iter().map(|(d, _)| long_date(*d).into()).collect();
@@ -596,7 +722,9 @@ impl UsageView {
                 }
                 Some(match measure {
                     _ if t.tokens == 0 => "No usage".into(),
-                    Measure::Cost if t.credits > 0 => format!("{} tokens · {} credits", count(t.tokens), count(t.credits)).into(),
+                    Measure::Cost if t.credits > 0 => {
+                        format!("{} tokens · {} credits", count(t.tokens), count(t.credits)).into()
+                    }
                     Measure::Cost => format!("{} tokens", count(t.tokens)).into(),
                     Measure::Tokens => format!("{} at API prices", usd(t.cost)).into(),
                 })
@@ -604,15 +732,24 @@ impl UsageView {
             .collect();
         let n = s.days.len();
         let ticks = if n > 0 {
-            vec![short_date(s.days[0].0).into(), short_date(s.days[n / 2].0).into(), short_date(s.days[n - 1].0).into()]
+            vec![
+                short_date(s.days[0].0).into(),
+                short_date(s.days[n / 2].0).into(),
+                short_date(s.days[n - 1].0).into(),
+            ]
         } else {
             Vec::new()
         };
         let (format, axis): (ui::Format, ui::Format) = match measure {
             Measure::Cost => (Rc::new(usd), Rc::new(usd_short)),
-            Measure::Tokens => (Rc::new(|v| format!("{} tok", count(v as u64))), Rc::new(|v| count(v as u64))),
+            Measure::Tokens => (
+                Rc::new(|v| format!("{} tok", count(v as u64))),
+                Rc::new(|v| count(v as u64)),
+            ),
         };
-        self.chart.update(cx, |c, cx| c.set(series, labels, ticks, notes, format, axis, cx));
+        self.chart.update(cx, |c, cx| {
+            c.set(series, labels, ticks, notes, format, axis, cx)
+        });
     }
 }
 
@@ -629,7 +766,9 @@ fn merge(into: &mut Tally, t: &Tally) {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 // ---- formatting ------------------------------------------------------------------
@@ -664,8 +803,18 @@ fn thousands(n: u64) -> String {
 }
 
 fn trim(x: f64) -> String {
-    let s = if x >= 100. { format!("{x:.0}") } else if x >= 10. { format!("{x:.1}") } else { format!("{x:.2}") };
-    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+    let s = if x >= 100. {
+        format!("{x:.0}")
+    } else if x >= 10. {
+        format!("{x:.1}")
+    } else {
+        format!("{x:.2}")
+    };
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
 }
 
 /// "4.11B", "181M", "450k".
@@ -689,7 +838,9 @@ fn pct(part: f64, whole: f64) -> String {
     format!("{:.1}%", part * 100. / whole)
 }
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /// "Oct 25".
@@ -702,7 +853,14 @@ fn short_date(t: u64) -> String {
 /// "Sat, Oct 25".
 fn long_date(t: u64) -> String {
     crate::platform::local_time(t)
-        .map(|l| format!("{}, {} {}", WEEKDAYS[l.wday.clamp(0, 6) as usize], MONTHS[l.month.clamp(0, 11) as usize], l.day))
+        .map(|l| {
+            format!(
+                "{}, {} {}",
+                WEEKDAYS[l.wday.clamp(0, 6) as usize],
+                MONTHS[l.month.clamp(0, 11) as usize],
+                l.day
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -715,13 +873,18 @@ fn model_name(id: &str) -> String {
     };
     let cap = |w: &str| {
         let mut c = w.chars();
-        c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+        c.next()
+            .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
     };
     if let Some(rest) = id.strip_prefix("claude-") {
         let mut parts = rest.split('-');
         let family = parts.next().map(cap).unwrap_or_default();
         let version: Vec<&str> = parts.collect();
-        if !version.is_empty() && version.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit())) {
+        if !version.is_empty()
+            && version
+                .iter()
+                .all(|p| p.bytes().all(|b| b.is_ascii_digit()))
+        {
             return format!("{family} {}", version.join("."));
         }
     }
@@ -753,9 +916,17 @@ fn agent_color(agent: AgentKind) -> Hsla {
 /// One agent in the hero: name and amount, its share as a bar, and the detail.
 fn agent_share(agent: AgentKind, t: &Tally, total: &Tally) -> AnyElement {
     let by_cost = total.cost > 0.;
-    let share = if by_cost { t.cost / total.cost } else { t.tokens as f64 / total.tokens.max(1) as f64 };
+    let share = if by_cost {
+        t.cost / total.cost
+    } else {
+        t.tokens as f64 / total.tokens.max(1) as f64
+    };
     let mut detail = vec![
-        format!("{} of {}", pct(share, 1.), if by_cost { "cost" } else { "tokens" }),
+        format!(
+            "{} of {}",
+            pct(share, 1.),
+            if by_cost { "cost" } else { "tokens" }
+        ),
         format!("{} tokens", count(t.tokens)),
     ];
     if t.credits > 0 {
@@ -772,20 +943,38 @@ fn agent_share(agent: AgentKind, t: &Tally, total: &Tally) -> AnyElement {
                 .gap(px(8.))
                 .text_size(px(ui::TEXT_LG))
                 .child(agent.icon(15.))
-                .child(div().flex_1().text_color(theme::content()).child(agent.label()))
-                .child(div().text_color(theme::content()).child(if by_cost { usd(t.cost) } else { count(t.tokens) })),
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(theme::content())
+                        .child(agent.label()),
+                )
+                .child(div().text_color(theme::content()).child(if by_cost {
+                    usd(t.cost)
+                } else {
+                    count(t.tokens)
+                })),
         )
         .child(
-            div().h(px(4.)).rounded_full().bg(theme::fill_hover()).child(
-                div()
-                    .h_full()
-                    .rounded_full()
-                    .bg(agent_color(agent))
-                    .w(relative((share as f32).clamp(0., 1.)))
-                    .when(share > 0., |d| d.min_w(px(4.))),
-            ),
+            div()
+                .h(px(4.))
+                .rounded_full()
+                .bg(theme::fill_hover())
+                .child(
+                    div()
+                        .h_full()
+                        .rounded_full()
+                        .bg(agent_color(agent))
+                        .w(relative((share as f32).clamp(0., 1.)))
+                        .when(share > 0., |d| d.min_w(px(4.))),
+                ),
         )
-        .child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(detail.join(" · ")))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(detail.join(" · ")),
+        )
         .into_any_element()
 }
 
@@ -802,14 +991,23 @@ fn stat(label: &str, value: String, sub: String, trend: Vec<f64>, last: bool) ->
         .gap(px(8.))
         .px(px(16.))
         .py(px(14.))
-        .when(!last, |d| d.border_r_1().border_color(theme::border_subtle()))
+        .when(!last, |d| {
+            d.border_r_1().border_color(theme::border_subtle())
+        })
         .child(ui::stat(label, value, sub))
-        .when(moving, |d| d.child(ui::sparkline(trend, theme::accent(), 56., 24.)))
+        .when(moving, |d| {
+            d.child(ui::sparkline(trend, theme::accent(), 56., 24.))
+        })
         .into_any_element()
 }
 
 /// A plan's block in the limits column: brand, name, plan badge, its rows.
-fn limits_block(agent: AgentKind, title: &str, right: Option<AnyElement>, body: gpui::Div) -> AnyElement {
+fn limits_block(
+    agent: AgentKind,
+    title: &str,
+    right: Option<AnyElement>,
+    body: gpui::Div,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -828,21 +1026,41 @@ fn limits_block(agent: AgentKind, title: &str, right: Option<AnyElement>, body: 
                         .text_color(theme::content())
                         .child(title.to_string()),
                 )
-                .children(right.map(|r| div().text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(r))),
+                .children(right.map(|r| {
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_subtle())
+                        .child(r)
+                })),
         )
         .child(body)
         .into_any_element()
 }
 
 /// A provider that is not connected yet: what it would show, and the button.
-fn connect_hint(id: &'static str, hint: &str, button: &str, event: UsageEvent, cx: &mut Context<UsageView>) -> gpui::Div {
+fn connect_hint(
+    id: &'static str,
+    hint: &str,
+    button: &str,
+    event: UsageEvent,
+    cx: &mut Context<UsageView>,
+) -> gpui::Div {
     div()
         .flex()
         .flex_col()
         .items_start()
         .gap(px(10.))
-        .child(div().text_size(px(ui::TEXT_SM)).line_height(px(17.)).text_color(theme::text_subtle()).child(hint.to_string()))
-        .child(ui::button(id, button, ButtonKind::Outline, true).on_click(cx.listener(move |_, _, _, cx| cx.emit(event))))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .line_height(px(17.))
+                .text_color(theme::text_subtle())
+                .child(hint.to_string()),
+        )
+        .child(
+            ui::button(id, button, ButtonKind::Outline, true)
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(event))),
+        )
 }
 
 /// The windows that are not running, folded into one quiet line.
@@ -858,7 +1076,11 @@ fn idle_line(labels: &[String]) -> Option<AnyElement> {
 
 /// The breakdown table: name, cost, share of cost and tokens, in the quiet
 /// column rhythm of a ledger.
-fn breakdown_table(rows: &[(Option<AgentKind>, String, Tally)], total: &Tally, header: &str) -> AnyElement {
+fn breakdown_table(
+    rows: &[(Option<AgentKind>, String, Tally)],
+    total: &Tally,
+    header: &str,
+) -> AnyElement {
     let cell = |w: f32| div().w(px(w)).flex_none().flex().justify_end();
     let mut list = div().flex().flex_col().child(
         div()
@@ -890,10 +1112,21 @@ fn breakdown_table(rows: &[(Option<AgentKind>, String, Tally)], total: &Tally, h
                 .hover(|d| d.bg(theme::fill_raised()))
                 .text_size(px(ui::TEXT_MD))
                 .children(agent.map(|a| a.icon(13.)))
-                .child(div().flex_1().min_w_0().truncate().text_color(theme::content()).child(name.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme::content())
+                        .child(name.clone()),
+                )
                 .child(
                     cell(96.)
-                        .text_color(if priced { theme::content() } else { theme::mix(0.35) })
+                        .text_color(if priced {
+                            theme::content()
+                        } else {
+                            theme::mix(0.35)
+                        })
                         .child(if priced {
                             usd(t.cost)
                         } else if t.credits > 0 {
@@ -902,8 +1135,16 @@ fn breakdown_table(rows: &[(Option<AgentKind>, String, Tally)], total: &Tally, h
                             "unpriced".into()
                         }),
                 )
-                .child(cell(72.).text_color(theme::text_subtle()).child(if priced { pct(t.cost, total.cost) } else { "—".into() }))
-                .child(cell(84.).text_color(theme::text_subtle()).child(count(t.tokens))),
+                .child(cell(72.).text_color(theme::text_subtle()).child(if priced {
+                    pct(t.cost, total.cost)
+                } else {
+                    "—".into()
+                }))
+                .child(
+                    cell(84.)
+                        .text_color(theme::text_subtle())
+                        .child(count(t.tokens)),
+                ),
         );
     }
     list.into_any_element()
@@ -931,14 +1172,25 @@ impl Render for UsageView {
 
         let mut ranges = ui::segmented();
         for r in [Range::Week, Range::Month, Range::Quarter] {
-            ranges = ranges.child(ui::segment(("usage-range", r as usize), None, r.label(), self.range == r).on_click(
-                cx.listener(move |this, _, _, cx| {
+            ranges = ranges.child(
+                ui::segment(
+                    ("usage-range", r as usize),
+                    None,
+                    r.label(),
+                    self.range == r,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
                     this.range = r;
                     cx.notify();
-                }),
-            ));
+                })),
+            );
         }
-        let refresh = ui::refresh_control("usage-refresh", self.scanning, None, cx.listener(|this, _, _, cx| this.rescan(cx)));
+        let refresh = ui::refresh_control(
+            "usage-refresh",
+            self.scanning,
+            None,
+            cx.listener(|this, _, _, cx| this.rescan(cx)),
+        );
         let header = div()
             .flex()
             .flex_none()
@@ -949,10 +1201,18 @@ impl Render for UsageView {
             .pt(px(ui::PAGE_PAD))
             .pb(px(18.))
             .child(ui::page_title("Usage", Some(dates.into_any_element())))
-            .child(div().flex().items_center().gap(px(8.)).child(ranges).child(refresh));
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(ranges)
+                    .child(refresh),
+            );
 
         let body: AnyElement = match &self.records {
-            None => ui::loading("usage-loading", "Reading Claude Code and Droid history…").into_any_element(),
+            None => ui::loading("usage-loading", "Reading Claude Code and Droid history…")
+                .into_any_element(),
             Some(_) => self.render_body(&s, cx),
         };
         div()
@@ -986,7 +1246,11 @@ impl UsageView {
         // days before, and how it splits between the agents.
         let delta = (s.prev_cost > 0.01).then(|| (total.cost - s.prev_cost) / s.prev_cost);
         let per_day = total.cost / s.active_days.max(1) as f64;
-        let mut trend = div().flex().items_center().gap(px(8.)).text_size(px(ui::TEXT_SM));
+        let mut trend = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(ui::TEXT_SM));
         if let Some(d) = delta {
             let up = d >= 0.;
             trend = trend.child(
@@ -998,8 +1262,16 @@ impl UsageView {
                     .h(px(20.))
                     .rounded(px(ui::RADIUS_SM))
                     .bg(theme::fill_hover())
-                    .text_color(if up { theme::mix(0.85) } else { theme::diff_add().into() })
-                    .child(format!("{} {:.0}%", if up { "↑" } else { "↓" }, d.abs() * 100.)),
+                    .text_color(if up {
+                        theme::mix(0.85)
+                    } else {
+                        theme::diff_add().into()
+                    })
+                    .child(format!(
+                        "{} {:.0}%",
+                        if up { "↑" } else { "↓" },
+                        d.abs() * 100.
+                    )),
             );
             trend = trend.child(
                 div()
@@ -1009,7 +1281,11 @@ impl UsageView {
         }
         if total.cost > 0. {
             let sep = if delta.is_some() { "· " } else { "" };
-            trend = trend.child(div().text_color(theme::text_subtle()).child(format!("{sep}{}/active day", usd(per_day))));
+            trend = trend.child(
+                div()
+                    .text_color(theme::text_subtle())
+                    .child(format!("{sep}{}/active day", usd(per_day))),
+            );
         }
         let mut hero = div()
             .flex()
@@ -1070,14 +1346,28 @@ impl UsageView {
                     .rounded(px(ui::RADIUS_SM))
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::fill_hover()))
-                    .when(self.agent_filter == Some(agent), |d| d.bg(theme::fill_hover()))
+                    .when(self.agent_filter == Some(agent), |d| {
+                        d.bg(theme::fill_hover())
+                    })
                     .text_size(px(ui::TEXT_SM))
-                    .text_color(if on { theme::mix(0.7) } else { theme::mix(0.35) })
-                    .child(div().size(px(8.)).rounded_full().bg(if on { agent_color(agent) } else { theme::mix(0.2) }))
+                    .text_color(if on {
+                        theme::mix(0.7)
+                    } else {
+                        theme::mix(0.35)
+                    })
+                    .child(div().size(px(8.)).rounded_full().bg(if on {
+                        agent_color(agent)
+                    } else {
+                        theme::mix(0.2)
+                    }))
                     .child(agent.label())
                     .tooltip(ui::tip("Show only this agent; click again for both"))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.agent_filter = if this.agent_filter == Some(agent) { None } else { Some(agent) };
+                        this.agent_filter = if this.agent_filter == Some(agent) {
+                            None
+                        } else {
+                            Some(agent)
+                        };
                         this.show_all = false;
                         cx.notify();
                     })),
@@ -1094,7 +1384,14 @@ impl UsageView {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(ui::heading(if self.measure == Measure::Cost { "Daily cost" } else { "Daily tokens" }).flex_1())
+                    .child(
+                        ui::heading(if self.measure == Measure::Cost {
+                            "Daily cost"
+                        } else {
+                            "Daily tokens"
+                        })
+                        .flex_1(),
+                    )
                     .child(legend)
                     .child(ui::toggle_group(
                         "usage-measure",
@@ -1127,14 +1424,46 @@ impl UsageView {
             .border_t_1()
             .border_b_1()
             .border_color(theme::border_subtle())
-            .child(stat("Processed tokens", count(total.tokens), format!("{}/active day", count(tokens_per_day)), trend(|t| t.tokens as f64), false))
-            .child(stat("Cached input", count(total.cache_read), format!("{} of input", pct(total.cache_read as f64, observed as f64)), trend(|t| t.cache_read as f64), false))
-            .child(stat("Uncached input", count(total.input + total.cache_write), format!("{} cache writes", count(total.cache_write)), trend(|t| (t.input + t.cache_write) as f64), false))
-            .child(stat("Output", count(total.output), format!("{} · {}", plural(s.sessions, "session"), plural(s.active_days, "day")), trend(|t| t.output as f64), false))
+            .child(stat(
+                "Processed tokens",
+                count(total.tokens),
+                format!("{}/active day", count(tokens_per_day)),
+                trend(|t| t.tokens as f64),
+                false,
+            ))
+            .child(stat(
+                "Cached input",
+                count(total.cache_read),
+                format!("{} of input", pct(total.cache_read as f64, observed as f64)),
+                trend(|t| t.cache_read as f64),
+                false,
+            ))
+            .child(stat(
+                "Uncached input",
+                count(total.input + total.cache_write),
+                format!("{} cache writes", count(total.cache_write)),
+                trend(|t| (t.input + t.cache_write) as f64),
+                false,
+            ))
+            .child(stat(
+                "Output",
+                count(total.output),
+                format!(
+                    "{} · {}",
+                    plural(s.sessions, "session"),
+                    plural(s.active_days, "day")
+                ),
+                trend(|t| t.output as f64),
+                false,
+            ))
             .child(stat(
                 "Cache savings",
                 usd(total.savings),
-                if total.cost > 0. { format!("{:.1}× the raw cost", total.savings / total.cost) } else { "—".into() },
+                if total.cost > 0. {
+                    format!("{:.1}× the raw cost", total.savings / total.cost)
+                } else {
+                    "—".into()
+                },
                 trend(|t| t.savings),
                 true,
             ));
@@ -1142,7 +1471,11 @@ impl UsageView {
         // The breakdown and the side column.
         let rows = self.breakdown_rows(s);
         let hidden = rows.len().saturating_sub(ROWS);
-        let shown_rows: Vec<_> = if self.show_all { rows } else { rows.into_iter().take(ROWS).collect() };
+        let shown_rows: Vec<_> = if self.show_all {
+            rows
+        } else {
+            rows.into_iter().take(ROWS).collect()
+        };
         let header = match self.group {
             Group::Model => "Model",
             Group::Day => "Day",
@@ -1162,7 +1495,12 @@ impl UsageView {
                     .child(ui::heading("Breakdown").flex_1())
                     .child(ui::toggle_group(
                         "usage-group",
-                        &[(Group::Model, "Model"), (Group::Project, "Project"), (Group::Session, "Session"), (Group::Day, "Day")],
+                        &[
+                            (Group::Model, "Model"),
+                            (Group::Project, "Project"),
+                            (Group::Session, "Session"),
+                            (Group::Day, "Day"),
+                        ],
                         self.group,
                         |seg, g| {
                             seg.on_click(cx.listener(move |this, _, _, cx| {
@@ -1175,7 +1513,11 @@ impl UsageView {
             )
             .child(breakdown_table(&shown_rows, total, header))
             .when(hidden > 0, |d| {
-                let label = if self.show_all { "Show less".to_string() } else { format!("Show {hidden} more") };
+                let label = if self.show_all {
+                    "Show less".to_string()
+                } else {
+                    format!("Show {hidden} more")
+                };
                 d.child(
                     div()
                         .id("usage-show-all")
@@ -1205,10 +1547,14 @@ impl UsageView {
                     .gap(px(16.))
                     .child(ui::heading("Plan limits"))
                     .child(self.claude_limits(cx))
-                    .when_some(self.borrowed_limits(), |d, b| d.child(div().h(px(1.)).bg(theme::fill_hover())).child(b))
+                    .when_some(self.borrowed_limits(), |d, b| {
+                        d.child(div().h(px(1.)).bg(theme::fill_hover())).child(b)
+                    })
                     .child(div().h(px(1.)).bg(theme::fill_hover()))
                     .child(self.droid_limits(cx))
-                    .when_some(self.opencode_limits(), |d, go| d.child(div().h(px(1.)).bg(theme::fill_hover())).child(go)),
+                    .when_some(self.opencode_limits(), |d, go| {
+                        d.child(div().h(px(1.)).bg(theme::fill_hover())).child(go)
+                    }),
             )
             .child(
                 div()
@@ -1216,9 +1562,17 @@ impl UsageView {
                     .flex_col()
                     .gap(px(4.))
                     .child(ui::heading("Cost quality"))
-                    .child(ui::kv("Model priced", pct(priced as f64, total.tokens as f64)))
-                    .child(ui::kv("Unpriced", pct(total.unpriced as f64, total.tokens as f64)))
-                    .when(total.credits > 0, |d| d.child(ui::kv("Droid credits", count(total.credits))))
+                    .child(ui::kv(
+                        "Model priced",
+                        pct(priced as f64, total.tokens as f64),
+                    ))
+                    .child(ui::kv(
+                        "Unpriced",
+                        pct(total.unpriced as f64, total.tokens as f64),
+                    ))
+                    .when(total.credits > 0, |d| {
+                        d.child(ui::kv("Droid credits", count(total.credits)))
+                    })
                     .child(ui::kv("Cache savings", usd(total.savings))),
             );
 
@@ -1226,9 +1580,24 @@ impl UsageView {
             .flex()
             .flex_col()
             .gap(px(28.))
-            .child(div().flex().flex_wrap().gap(px(40.)).child(hero).child(chart))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(40.))
+                    .child(hero)
+                    .child(chart),
+            )
             .child(strip)
-            .child(div().flex().flex_wrap().items_start().gap(px(40.)).child(breakdown).child(side))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .gap(px(40.))
+                    .child(breakdown)
+                    .child(side),
+            )
             .into_any_element()
     }
 }
@@ -1254,8 +1623,20 @@ mod tests {
     fn summary_adds_up_the_range_by_day_model_and_project() {
         let now = 1_800_000_000;
         let records = vec![
-            record(now - 40 * DAY, AgentKind::Claude, "/old", "claude-opus-5-5", 900),
-            record(now - DAY, AgentKind::Claude, "/a", "claude-opus-5-5", 1_000_000),
+            record(
+                now - 40 * DAY,
+                AgentKind::Claude,
+                "/old",
+                "claude-opus-5-5",
+                900,
+            ),
+            record(
+                now - DAY,
+                AgentKind::Claude,
+                "/a",
+                "claude-opus-5-5",
+                1_000_000,
+            ),
             record(now, AgentKind::Droid, "/a", "kimi-k3", 50),
             record(now, AgentKind::Claude, "/b", "claude-sonnet-5-5", 10),
         ];
@@ -1264,7 +1645,10 @@ mod tests {
         assert_eq!(s.days.len(), 7);
         assert_eq!(s.active_days, 2);
         assert_eq!(s.sessions, 3);
-        assert_eq!(s.models[0].0, (AgentKind::Claude, "claude-opus-5-5".to_string()));
+        assert_eq!(
+            s.models[0].0,
+            (AgentKind::Claude, "claude-opus-5-5".to_string())
+        );
         assert_eq!(s.projects[0].0, "/a");
         assert_eq!(s.total.unpriced, 1050);
         assert!(s.total.cost > 4.);

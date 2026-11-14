@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use super::native::Deferred;
 use super::{
-    Backend, Entry, RewindPlan, SessionMeta, Thread, ThreadEvent, ThreadStatus, ToolContent, ToolStatus, str_of,
-    unix_now,
+    Backend, Entry, RewindPlan, SessionMeta, Thread, ThreadEvent, ThreadStatus, ToolContent,
+    ToolStatus, str_of, unix_now,
 };
 
 const COMPACTING: &str = "Compacting the conversation…";
@@ -77,10 +77,22 @@ impl Thread {
                 match result {
                     Ok(v) => {
                         t.add_turn_tokens(&v);
-                        let marked = t.entries.get(start..).unwrap_or(&[]).iter().any(|e| matches!(e, Entry::Compacted { .. }));
+                        let marked = t
+                            .entries
+                            .get(start..)
+                            .unwrap_or(&[])
+                            .iter()
+                            .any(|e| matches!(e, Entry::Compacted { .. }));
                         if !marked && v["stopReason"].as_str() != Some("cancelled") {
                             let before = t.native.compact_before.take();
-                            t.push_entry(Entry::Compacted { removed: 0, before, after: None }, cx);
+                            t.push_entry(
+                                Entry::Compacted {
+                                    removed: 0,
+                                    before,
+                                    after: None,
+                                },
+                                cx,
+                            );
                         }
                     }
                     Err(e) => t.notice(format!("Compacting failed: {e}"), true, cx),
@@ -132,13 +144,21 @@ impl Thread {
                 if !self.native.compacting {
                     self.status_detail = None;
                 }
-                self.push_entry(Entry::Compacted { removed: 0, before, after }, cx);
+                self.push_entry(
+                    Entry::Compacted {
+                        removed: 0,
+                        before,
+                        after,
+                    },
+                    cx,
+                );
                 self.meta_changed(cx);
             }
             "failed" => {
                 self.native.compact_before = None;
                 if !self.replaying {
-                    let why = str_of(u, "error").unwrap_or_else(|| "the agent gave no reason".into());
+                    let why =
+                        str_of(u, "error").unwrap_or_else(|| "the agent gave no reason".into());
                     self.notice(format!("Compacting failed: {why}"), true, cx);
                 }
             }
@@ -173,7 +193,11 @@ impl Thread {
             return;
         };
         if !self.caps.fork {
-            return self.notice(format!("{} cannot fork sessions.", self.kind.label()), true, cx);
+            return self.notice(
+                format!("{} cannot fork sessions.", self.kind.label()),
+                true,
+                cx,
+            );
         }
         let title = format!("{} (fork)", self.title());
         let cwd = self.cwd.clone();
@@ -186,7 +210,11 @@ impl Thread {
             let _ = this.update(cx, |t, cx| match result {
                 Ok(v) => {
                     let Some(id) = str_of(&v, "sessionId") else {
-                        return t.notice("Forking failed: the agent returned no session.", true, cx);
+                        return t.notice(
+                            "Forking failed: the agent returned no session.",
+                            true,
+                            cx,
+                        );
                     };
                     let now = unix_now();
                     cx.emit(ThreadEvent::Forked(SessionMeta {
@@ -213,7 +241,10 @@ impl Thread {
         if !self.caps.rename {
             return;
         }
-        let request = conn.request("_session/rename", json!({"sessionId": session_id, "title": title}));
+        let request = conn.request(
+            "_session/rename",
+            json!({"sessionId": session_id, "title": title}),
+        );
         cx.spawn(async move |this, cx| {
             if let Err(e) = request.await {
                 let _ = this.update(cx, |t, cx| {
@@ -234,14 +265,22 @@ impl Thread {
         if let Some(id) = &self.fork_point {
             return Some(id.clone());
         }
-        let said = self.entries.iter().any(|e| matches!(e, Entry::User { .. } | Entry::Agent { .. } | Entry::Tool(_)));
+        let said = self
+            .entries
+            .iter()
+            .any(|e| matches!(e, Entry::User { .. } | Entry::Agent { .. } | Entry::Tool(_)));
         (!said).then(String::new)
     }
 
     /// Lists what going back to before the prompt at `ix` undoes: the files
     /// the agent's edits and shell commands changed since, as they were then.
     pub(super) fn acp_begin_rewind(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(Entry::User { text, message_id: Some(point), .. }) = self.entries.get(ix) else {
+        let Some(Entry::User {
+            text,
+            message_id: Some(point),
+            ..
+        }) = self.entries.get(ix)
+        else {
             return;
         };
         let (restore, delete) = rewind_files(&self.entries[ix..], &self.cwd);
@@ -265,7 +304,12 @@ impl Thread {
         let (Some(conn), Some(session_id)) = (self.conn.clone(), self.session_id.clone()) else {
             return;
         };
-        let Some(plan) = self.native.rewind.as_mut().filter(|p| !p.loading && !p.running) else {
+        let Some(plan) = self
+            .native
+            .rewind
+            .as_mut()
+            .filter(|p| !p.loading && !p.running)
+        else {
             return;
         };
         plan.running = true;
@@ -276,7 +320,9 @@ impl Thread {
         cx.emit(ThreadEvent::RewindChanged { entry });
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let failed = cx.background_spawn(async move { put_back(&restore, &delete) }).await;
+            let failed = cx
+                .background_spawn(async move { put_back(&restore, &delete) })
+                .await;
             let new_id = if point.is_empty() {
                 Ok(None)
             } else {
@@ -286,18 +332,30 @@ impl Thread {
                     "mcpServers": [],
                     "_meta": {"jetbrains": {"air": {"fork": {"version": 1, "messageId": point}}}},
                 });
-                conn.request("session/fork", params).await.map(|v| str_of(&v, "sessionId"))
+                conn.request("session/fork", params)
+                    .await
+                    .map(|v| str_of(&v, "sessionId"))
             };
             let _ = this.update(cx, |t, cx| {
                 let plan = t.native.rewind.take();
                 cx.emit(ThreadEvent::RewindChanged { entry });
                 cx.notify();
                 if failed > 0 {
-                    t.notice(format!("Rewind could not put back {failed} file(s); check them by hand."), true, cx);
+                    t.notice(
+                        format!("Rewind could not put back {failed} file(s); check them by hand."),
+                        true,
+                        cx,
+                    );
                 }
                 let session_id = match new_id {
                     Ok(id) => id,
-                    Err(e) => return t.notice(format!("Rewind put the files back, but forking failed: {e}"), true, cx),
+                    Err(e) => {
+                        return t.notice(
+                            format!("Rewind put the files back, but forking failed: {e}"),
+                            true,
+                            cx,
+                        );
+                    }
                 };
                 let now = unix_now();
                 cx.emit(ThreadEvent::Rewound {
@@ -325,7 +383,11 @@ fn rewind_files(entries: &[Entry], cwd: &Path) -> (Vec<Value>, Vec<Value>) {
     let mut seen = HashSet::new();
     let (mut restore, mut delete) = (Vec::new(), Vec::new());
     let mut note = |path: PathBuf, old: Option<&String>| {
-        let path = if path.is_relative() { cwd.join(path) } else { path };
+        let path = if path.is_relative() {
+            cwd.join(path)
+        } else {
+            path
+        };
         if !seen.insert(path.clone()) {
             return;
         }
@@ -363,7 +425,10 @@ fn put_back(restore: &[Value], delete: &[Value]) -> usize {
             continue;
         };
         let path = Path::new(path);
-        let ok = path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(path, content).is_ok();
+        let ok = path
+            .parent()
+            .is_none_or(|d| std::fs::create_dir_all(d).is_ok())
+            && std::fs::write(path, content).is_ok();
         failed += usize::from(!ok);
     }
     for f in delete {
@@ -393,12 +458,13 @@ mod tests {
             tokens: None,
             shell_changes: changes,
         };
-        let edit = |path: &str, old: Option<&str>, status: ToolStatus| {
-            Entry::Tool(serde_json::from_value(json!({
+        let edit =
+            |path: &str, old: Option<&str>, status: ToolStatus| {
+                Entry::Tool(serde_json::from_value(json!({
                 "id": path, "title": "Edit", "kind": "edit", "status": status,
                 "content": [{"type": "diff", "path": path, "old_text": old, "new_text": "new"}],
             })).unwrap())
-        };
+            };
         let entries = vec![
             user(Vec::new()),
             edit("a.rs", Some("one"), ToolStatus::Completed),
@@ -407,7 +473,10 @@ mod tests {
             edit("c.rs", Some("x"), ToolStatus::Failed),
         ];
         let (restore, delete) = rewind_files(&entries, Path::new("/p"));
-        assert_eq!(restore, vec![json!({"filePath": "/p/a.rs", "content": "one"})]);
+        assert_eq!(
+            restore,
+            vec![json!({"filePath": "/p/a.rs", "content": "one"})]
+        );
         assert_eq!(delete, vec![json!({"filePath": "/p/b.rs"})]);
     }
 }

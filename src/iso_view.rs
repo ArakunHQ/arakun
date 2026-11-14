@@ -3,22 +3,22 @@
 //! frame on screen.
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Bounds, ClipboardItem, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, RenderImage,
+    Bounds, ClipboardItem, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, RenderImage,
     StatefulInteractiveElement as _, Styled as _, Window, canvas, div, px,
 };
 
 use crate::iso::raster::{self, Fit};
 use crate::iso::script::{self, ScriptScene};
-use crate::iso::{self, Item, Node, Rect, scenes};
 use crate::iso::svg::{Palette, Rgb};
+use crate::iso::{self, Item, Node, Rect, scenes};
 use crate::theme;
 use crate::ui::{self, ButtonKind, Type};
 
@@ -58,7 +58,13 @@ fn rgb(c: Hsla) -> Rgb {
 }
 
 fn hsla(c: Rgb, alpha: f32) -> Hsla {
-    gpui::Rgba { r: c[0], g: c[1], b: c[2], a: alpha }.into()
+    gpui::Rgba {
+        r: c[0],
+        g: c[1],
+        b: c[2],
+        a: alpha,
+    }
+    .into()
 }
 
 /// A scene the tab can play: one of `iso::scenes`, a script from the
@@ -76,7 +82,11 @@ impl Entry {
         match self {
             Entry::Builtin(s) => s.name.into(),
             Entry::Script(s) => s.meta.name.clone(),
-            Entry::Broken { path, .. } => path.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+            Entry::Broken { path, .. } => path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 
@@ -141,13 +151,16 @@ impl Entry {
         iso::rest_bounds((0..=48).filter_map(|i| {
             let t = i as f32 / 48.;
             self.nodes(t, t * self.seconds()).ok()
-        })).unwrap_or([0., 0., 1., 1.])
+        }))
+        .unwrap_or([0., 0., 1., 1.])
     }
 }
 
 /// The `.rhai` files of a folder and when each last changed.
 fn signature(dir: &std::path::Path) -> Vec<(PathBuf, Option<SystemTime>)> {
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut out: Vec<_> = read
         .flatten()
         .map(|e| e.path())
@@ -196,7 +209,9 @@ impl IsoView {
         // Saving a scene shows it: the folder is checked twice a second.
         let watch = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(500)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
                 let alive = this.update(cx, |v, cx| {
                     if let Some(root) = &v.root
                         && signature(&root.join("iso")) != v.loaded
@@ -244,7 +259,10 @@ impl IsoView {
     }
 
     fn reload(&mut self) {
-        let current = self.entries.get(self.scene).map(|e| (e.path().cloned(), e.name()));
+        let current = self
+            .entries
+            .get(self.scene)
+            .map(|e| (e.path().cloned(), e.name()));
         let mut entries = Vec::new();
         self.loaded = Vec::new();
         if let Some(root) = &self.root {
@@ -259,7 +277,12 @@ impl IsoView {
         }
         // A script of the same name replaces the built-in scene.
         let names: Vec<String> = entries.iter().map(Entry::name).collect();
-        entries.extend(scenes::ALL.iter().filter(|s| !names.iter().any(|n| n == s.name)).map(Entry::Builtin));
+        entries.extend(
+            scenes::ALL
+                .iter()
+                .filter(|s| !names.iter().any(|n| n == s.name))
+                .map(Entry::Builtin),
+        );
         self.extents = entries.iter().map(Entry::extent).collect();
         // Stay on the scene that was showing, found by file or by name.
         self.scene = current
@@ -294,7 +317,10 @@ impl IsoView {
                 let stop = (step + hold) / n;
                 // Past this step's stop already: settle there without
                 // playing backwards.
-                self.guide = Some(Guide { at: self.t.min(stop), to: stop });
+                self.guide = Some(Guide {
+                    at: self.t.min(stop),
+                    to: stop,
+                });
             }
             _ => {
                 self.guide = None;
@@ -308,7 +334,9 @@ impl IsoView {
     /// of this step goes by quickly, then the next plays in full. Back: the
     /// previous step starts over and plays to its stop, never in reverse.
     fn guide_step(&mut self, by: i32) {
-        let Some((n, hold)) = self.entries.get(self.scene).and_then(Entry::steps) else { return };
+        let Some((n, hold)) = self.entries.get(self.scene).and_then(Entry::steps) else {
+            return;
+        };
         let n = n as f32;
         if let Some(g) = &mut self.guide {
             let step = (g.to * n).floor() + by as f32;
@@ -334,8 +362,12 @@ impl IsoView {
     }
 
     fn copy_svg(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.entries.get(self.scene) else { return };
-        let Ok(nodes) = entry.nodes(self.t, self.tau) else { return };
+        let Some(entry) = self.entries.get(self.scene) else {
+            return;
+        };
+        let Ok(nodes) = entry.nodes(self.t, self.tau) else {
+            return;
+        };
         let items = iso::shoot(&nodes, self.extents[self.scene]);
         let mut palette = self.look.palette();
         palette.soft = entry.soft();
@@ -416,14 +448,20 @@ fn paint(
     let image = match shown.as_ref() {
         Some((k, image)) if *k == key => image.clone(),
         _ => {
-            let Some(fit) = Fit::new(extent, w as f32, h as f32, 32. * scale) else { return };
-            let Some(pixmap) = raster::frame(items, palette, w, h, fit, 1.25 * scale) else { return };
+            let Some(fit) = Fit::new(extent, w as f32, h as f32, 32. * scale) else {
+                return;
+            };
+            let Some(pixmap) = raster::frame(items, palette, w, h, fit, 1.25 * scale) else {
+                return;
+            };
             // The ground is opaque, so premultiplied RGBA is plain RGBA; GPUI wants BGRA.
             let mut data = pixmap.take();
             for px in data.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
             }
-            let Some(buffer) = image::RgbaImage::from_raw(w, h, data) else { return };
+            let Some(buffer) = image::RgbaImage::from_raw(w, h, data) else {
+                return;
+            };
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
             if let Some((_, old)) = shown.replace((key, image.clone())) {
                 let _ = window.drop_image(old);
@@ -440,7 +478,9 @@ impl Render for IsoView {
         let seconds = self.entries.get(self.scene).map_or(1., Entry::seconds);
         // Both modes keep the ambient clock going while the tab draws.
         let now = Instant::now();
-        let dt = self.last_frame.map_or(0., |l| (now - l).as_secs_f32().min(0.1));
+        let dt = self
+            .last_frame
+            .map_or(0., |l| (now - l).as_secs_f32().min(0.1));
         self.last_frame = Some(now);
         self.tau += dt;
         if let Some(g) = &mut self.guide {
@@ -466,7 +506,10 @@ impl Render for IsoView {
             self.t = (self.t + dt / seconds) % 1.;
             window.request_animation_frame();
         }
-        if self.copied.is_some_and(|at| at.elapsed().as_secs_f32() > 1.6) {
+        if self
+            .copied
+            .is_some_and(|at| at.elapsed().as_secs_f32() > 1.6)
+        {
             self.copied = None;
         }
 
@@ -477,10 +520,13 @@ impl Render for IsoView {
         };
         let extent = self.extents[self.scene];
         let (name, about) = (entry.name(), entry.about());
-        let file = entry.path().map(|p| match self.root.as_ref().and_then(|r| p.strip_prefix(r).ok()) {
-            Some(rel) => rel.display().to_string(),
-            None => p.display().to_string(),
-        });
+        let file =
+            entry.path().map(
+                |p| match self.root.as_ref().and_then(|r| p.strip_prefix(r).ok()) {
+                    Some(rel) => rel.display().to_string(),
+                    None => p.display().to_string(),
+                },
+            );
         let mut palette = self.look.palette();
         palette.soft = entry.soft();
 
@@ -489,22 +535,31 @@ impl Render for IsoView {
         for (i, e) in self.entries.iter().enumerate() {
             let broken = matches!(e, Entry::Broken { .. });
             scenes_seg = scenes_seg.child(
-                ui::segment(("iso-scene", i), broken.then_some("alert-circle"), e.name(), i == self.scene).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.select(i);
-                        cx.notify();
-                    }),
-                ),
+                ui::segment(
+                    ("iso-scene", i),
+                    broken.then_some("alert-circle"),
+                    e.name(),
+                    i == self.scene,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select(i);
+                    cx.notify();
+                })),
             );
         }
         let mut looks = ui::segmented();
-        for (i, (look, label)) in [(Look::Arakun, "Arakun"), (Look::Paper, "Paper")].into_iter().enumerate() {
-            looks = looks.child(ui::segment(("iso-look", i), None, label, self.look == look).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.look = look;
-                    cx.notify();
-                },
-            )));
+        for (i, (look, label)) in [(Look::Arakun, "Arakun"), (Look::Paper, "Paper")]
+            .into_iter()
+            .enumerate()
+        {
+            looks = looks.child(
+                ui::segment(("iso-look", i), None, label, self.look == look).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.look = look;
+                        cx.notify();
+                    },
+                )),
+            );
         }
         // A square outline button, the height of the others in the page.
         let play = div()
@@ -519,7 +574,10 @@ impl Render for IsoView {
             .border_color(theme::border())
             .cursor_pointer()
             .hover(|s| s.bg(theme::fill_hover()))
-            .child(ui::icon(if self.playing { "pause" } else { "play" }, 14.).text_color(theme::text()))
+            .child(
+                ui::icon(if self.playing { "pause" } else { "play" }, 14.)
+                    .text_color(theme::text()),
+            )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.playing = !this.playing;
                 this.last_frame = None;
@@ -528,7 +586,11 @@ impl Render for IsoView {
         let copy = ui::button_with(
             "iso-copy",
             Some("copy01"),
-            if self.copied.is_some() { "Copied" } else { "Copy SVG" },
+            if self.copied.is_some() {
+                "Copied"
+            } else {
+                "Copy SVG"
+            },
             ButtonKind::Outline,
             true,
         )
@@ -544,12 +606,9 @@ impl Render for IsoView {
             .h(px(ui::BUTTON_H))
             .cursor_pointer()
             .child(
-                canvas(
-                    move |b, _, _| slot.set(Some(b)),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
+                canvas(move |b, _, _| slot.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
             )
             .child(
                 div()
@@ -560,7 +619,13 @@ impl Render for IsoView {
                     .h(px(4.))
                     .rounded_full()
                     .bg(theme::fill_selected())
-                    .child(div().h_full().w(gpui::relative(progress)).rounded_full().bg(theme::accent())),
+                    .child(
+                        div()
+                            .h_full()
+                            .w(gpui::relative(progress))
+                            .rounded_full()
+                            .bg(theme::accent()),
+                    ),
             )
             // The playhead: a knob ringed in the page color, centered on the time.
             .child(
@@ -596,22 +661,27 @@ impl Render for IsoView {
                 cx.listener(|this, _, _, _| this.scrubbing = false),
             );
         // Fixed width, so the track doesn't twitch as the digits change.
-        let clock = ui::text(Type::Mono, theme::text_subtle(), format!("{:.2}s / {:.1}s", self.t * seconds, seconds))
-            .w(px(104.))
-            .flex_none()
-            .text_right();
+        let clock = ui::text(
+            Type::Mono,
+            theme::text_subtle(),
+            format!("{:.2}s / {:.1}s", self.t * seconds, seconds),
+        )
+        .w(px(104.))
+        .flex_none()
+        .text_right();
 
         // ---- the guide or the video controls ---------------------------------------------
         let steps = self.entries.get(self.scene).and_then(Entry::steps);
         let mut modes = ui::segmented();
         if steps.is_some() {
             for (i, (guide, label)) in [(false, "Video"), (true, "Guide")].into_iter().enumerate() {
-                modes = modes.child(ui::segment(("iso-mode", i), None, label, self.guide.is_some() == guide).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.set_guide(guide);
-                        cx.notify();
-                    }),
-                ));
+                modes = modes.child(
+                    ui::segment(("iso-mode", i), None, label, self.guide.is_some() == guide)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_guide(guide);
+                            cx.notify();
+                        })),
+                );
             }
         }
         let controls = match (self.guide, steps) {
@@ -622,27 +692,52 @@ impl Render for IsoView {
                     .items_center()
                     .justify_center()
                     .gap(px(12.))
-                    .child(square_button("iso-prev", "arrow-left01").on_click(cx.listener(|this, _, _, cx| {
-                        this.guide_step(-1);
-                        cx.notify();
-                    })))
+                    .child(
+                        square_button("iso-prev", "arrow-left01").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.guide_step(-1);
+                                cx.notify();
+                            },
+                        )),
+                    )
                     .child(
                         ui::text(Type::Label, theme::text(), format!("Step {current} of {n}"))
                             .w(px(104.))
                             .flex_none()
                             .text_center(),
                     )
-                    .child(square_button("iso-next", "arrow-right01").on_click(cx.listener(|this, _, _, cx| {
-                        this.guide_step(1);
-                        cx.notify();
-                    })))
-                    .child(ui::text(Type::Caption, theme::text_faint(), "← → on the keyboard"))
+                    .child(
+                        square_button("iso-next", "arrow-right01").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.guide_step(1);
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(ui::text(
+                        Type::Caption,
+                        theme::text_faint(),
+                        "← → on the keyboard",
+                    ))
             }
-            _ => div().flex().items_center().gap(px(12.)).child(play).child(track).child(clock),
+            _ => div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(play)
+                .child(track)
+                .child(clock),
         };
 
         // ---- stage ---------------------------------------------------------------
-        let (index, generation, t, tau, look, shown) = (self.scene, self.generation, self.t, self.tau, self.look, self.shown.clone());
+        let (index, generation, t, tau, look, shown) = (
+            self.scene,
+            self.generation,
+            self.t,
+            self.tau,
+            self.look,
+            self.shown.clone(),
+        );
         let stage = div()
             .flex_1()
             .min_h(px(240.))
@@ -659,7 +754,15 @@ impl Render for IsoView {
                             (b.size.width.as_f32() * scale).round().max(0.) as u32,
                             (b.size.height.as_f32() * scale).round().max(0.) as u32,
                         );
-                        let key = FrameKey { scene: index, generation, t, tau, look, size, scale };
+                        let key = FrameKey {
+                            scene: index,
+                            generation,
+                            t,
+                            tau,
+                            look,
+                            size,
+                            scale,
+                        };
                         paint(&items, extent, &palette, key, &shown, b, window)
                     },
                 )
@@ -691,8 +794,12 @@ impl Render for IsoView {
                     .flex_col()
                     .gap(px(4.))
                     .child(ui::text(Type::Title, theme::text(), name))
-                    .when(!about.is_empty(), |d| d.child(ui::text(Type::Body, theme::text_subtle(), about)))
-                    .when_some(file, |d, f| d.child(ui::text(Type::Mono, theme::text_faint(), f))),
+                    .when(!about.is_empty(), |d| {
+                        d.child(ui::text(Type::Body, theme::text_subtle(), about))
+                    })
+                    .when_some(file, |d, f| {
+                        d.child(ui::text(Type::Mono, theme::text_faint(), f))
+                    }),
             )
             .child(
                 div()

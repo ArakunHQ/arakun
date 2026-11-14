@@ -79,7 +79,14 @@ fn nums(shape: &[Seg], dx: f32, dy: f32) -> Vec<f32> {
     for seg in shape {
         match *seg {
             Seg::M([x, y]) | Seg::L([x, y]) => out.extend([x + dx, y + dy]),
-            Seg::C(a, b, c) => out.extend([a[0] + dx, a[1] + dy, b[0] + dx, b[1] + dy, c[0] + dx, c[1] + dy]),
+            Seg::C(a, b, c) => out.extend([
+                a[0] + dx,
+                a[1] + dy,
+                b[0] + dx,
+                b[1] + dy,
+                c[0] + dx,
+                c[1] + dy,
+            ]),
             Seg::A { r, rot, to, .. } => out.extend([r[0], r[1], rot, to[0] + dx, to[1] + dy]),
             Seg::Z => {}
         }
@@ -110,7 +117,13 @@ fn with_nums(shape: &[Seg], v: &[f32]) -> Vec<Seg> {
             }
             Seg::A { large, sweep, .. } => {
                 let p = take(5);
-                Seg::A { r: [p[0], p[1]], rot: p[2], large, sweep, to: [p[3], p[4]] }
+                Seg::A {
+                    r: [p[0], p[1]],
+                    rot: p[2],
+                    large,
+                    sweep,
+                    to: [p[3], p[4]],
+                }
             }
             Seg::Z => Seg::Z,
         })
@@ -210,7 +223,13 @@ fn tight(path: &[Seg], hv: bool) -> String {
                 put(&mut out, p[1] - cur[1], &mut first_num, &mut last_dot);
                 cur = p;
             }
-            Seg::A { r, rot, large, sweep, to: [x, y] } => {
+            Seg::A {
+                r,
+                rot,
+                large,
+                sweep,
+                to: [x, y],
+            } => {
                 cmd(&mut out, 'a', &mut last_cmd, &mut first_num);
                 put(&mut out, q(r[0]), &mut first_num, &mut last_dot);
                 put(&mut out, q(r[1]), &mut first_num, &mut last_dot);
@@ -241,7 +260,19 @@ fn unfilm(path: &[Seg], (zoom, off): (f32, P2)) -> Vec<Seg> {
             Seg::M(p) => Seg::M(f(p)),
             Seg::L(p) => Seg::L(f(p)),
             Seg::C(a, b, p) => Seg::C(f(a), f(b), f(p)),
-            Seg::A { r, rot, large, sweep, to } => Seg::A { r: [r[0] / zoom, r[1] / zoom], rot, large, sweep, to: f(to) },
+            Seg::A {
+                r,
+                rot,
+                large,
+                sweep,
+                to,
+            } => Seg::A {
+                r: [r[0] / zoom, r[1] / zoom],
+                rot,
+                large,
+                sweep,
+                to: f(to),
+            },
             Seg::Z => Seg::Z,
         })
         .collect()
@@ -272,7 +303,13 @@ fn geo_hash(v: &[f32]) -> u64 {
 
 /// Lines `frame` up against the slots so far (a weighted LCS: the same
 /// kind of path matches, the very same path matches better) and records it.
-fn merge(slots: &mut Vec<Slot>, toks: Vec<Tok>, fi: usize, frames: usize, meta: &[(String, String, Option<u32>, bool)]) {
+fn merge(
+    slots: &mut Vec<Slot>,
+    toks: Vec<Tok>,
+    fi: usize,
+    frames: usize,
+    meta: &[(String, String, Option<u32>, bool)],
+) {
     let (m, n) = (slots.len(), toks.len());
     let w = n + 1;
     let mut dp = vec![0u32; (m + 1) * w];
@@ -326,7 +363,16 @@ fn merge(slots: &mut Vec<Slot>, toks: Vec<Tok>, fi: usize, frames: usize, meta: 
             None => {
                 let t = tok.as_ref().expect("a new path");
                 let (class, fill, group, world) = meta[t.key as usize].clone();
-                Slot { key: t.key, last: 0, class, fill, group, world, shape: t.shape.clone(), vals: vec![None; frames] }
+                Slot {
+                    key: t.key,
+                    last: 0,
+                    class,
+                    fill,
+                    group,
+                    world,
+                    shape: t.shape.clone(),
+                    vals: vec![None; frames],
+                }
             }
         };
         if let Some(t) = tok {
@@ -437,17 +483,30 @@ fn stretch(v: &[Vec<f32>], tol: f32) -> Option<[f32; 4]> {
         let last = (v.len() - 1) as f32;
         let ok = v.iter().enumerate().all(|(i, w)| {
             let s = i as f32 / last;
-            w.iter().zip(a).zip(&d).all(|((x, y), e)| (x - (y + s * e)).abs() <= tol)
+            w.iter()
+                .zip(a)
+                .zip(&d)
+                .all(|((x, y), e)| (x - (y + s * e)).abs() <= tol)
         });
         return ok.then_some(LINEAR);
     }
     let dd: f32 = d.iter().map(|x| x * x).sum();
     let mut u = Vec::with_capacity(v.len());
     for w in v {
-        let p = w.iter().zip(a).zip(&d).map(|((x, y), e)| (x - y) * e).sum::<f32>() / dd;
+        let p = w
+            .iter()
+            .zip(a)
+            .zip(&d)
+            .map(|((x, y), e)| (x - y) * e)
+            .sum::<f32>()
+            / dd;
         // On the line between the ends? (Half the error here, half in the
         // timing: the two add up.)
-        if w.iter().zip(a).zip(&d).any(|((x, y), e)| (x - (y + p * e)).abs() > tol / 2.) {
+        if w.iter()
+            .zip(a)
+            .zip(&d)
+            .any(|((x, y), e)| (x - (y + p * e)).abs() > tol / 2.)
+        {
             return None;
         }
         u.push(p);
@@ -464,10 +523,24 @@ fn timing(s: &[f32], u: &[f32], scale: f32, tol: f32) -> Option<[f32; 4]> {
         return None;
     }
     let miss = |c: &[f32; 4], s: &[f32], u: &[f32]| {
-        s.iter().zip(u).map(|(s, u)| (super::cubic_bezier(c[0], c[1], c[2], c[3], *s) - u).abs()).fold(0f32, f32::max) * scale
+        s.iter()
+            .zip(u)
+            .map(|(s, u)| (super::cubic_bezier(c[0], c[1], c[2], c[3], *s) - u).abs())
+            .fold(0f32, f32::max)
+            * scale
     };
-    let known = [LINEAR, [0.23, 1., 0.32, 1.], [0.77, 0., 0.175, 1.], [0.42, 0., 1., 1.], [0., 0., 0.58, 1.]];
-    let mut best = known.iter().map(|c| (miss(c, s, u), *c)).min_by(|x, y| x.0.total_cmp(&y.0)).expect("candidates");
+    let known = [
+        LINEAR,
+        [0.23, 1., 0.32, 1.],
+        [0.77, 0., 0.175, 1.],
+        [0.42, 0., 1., 1.],
+        [0., 0., 0.58, 1.],
+    ];
+    let mut best = known
+        .iter()
+        .map(|c| (miss(c, s, u), *c))
+        .min_by(|x, y| x.0.total_cmp(&y.0))
+        .expect("candidates");
     if best.0 <= tol {
         return Some(best.1);
     }
@@ -509,7 +582,9 @@ fn timing(s: &[f32], u: &[f32], scale: f32, tol: f32) -> Option<[f32; 4]> {
             }
         }
         let worst = simplex[4].0;
-        let at = |k: f32| -> [f32; 4] { std::array::from_fn(|j| (mid[j] + k * (worst[j] - mid[j])).clamp(0., 1.)) };
+        let at = |k: f32| -> [f32; 4] {
+            std::array::from_fn(|j| (mid[j] + k * (worst[j] - mid[j])).clamp(0., 1.))
+        };
         let r = at(-1.);
         let fr = f(&r);
         if fr < simplex[0].1 {
@@ -534,14 +609,21 @@ fn timing(s: &[f32], u: &[f32], scale: f32, tol: f32) -> Option<[f32; 4]> {
     }
     simplex.sort_by(|a, b| a.1.total_cmp(&b.1));
     best = (miss(&simplex[0].0, s, u), simplex[0].0);
-    (best.0 <= tol).then(|| best.1.map(|x| (x * 10000.).round() / 10000.)).filter(|c| miss(c, s, u) <= tol)
+    (best.0 <= tol)
+        .then(|| best.1.map(|x| (x * 10000.).round() / 10000.))
+        .filter(|c| miss(c, s, u) <= tol)
 }
 
 /// The part of easing `c` between inputs `q0..q1` that best explains the
 /// samples, as a timing of its own (de Casteljau, rescaled to the unit
 /// square); None when it can't be written as one (control points out of
 /// 0..1).
-fn piece(c: [f32; 4], s: &[f32], u: &[f32], miss: &impl Fn(&[f32; 4], &[f32], &[f32]) -> f32) -> Option<[f32; 4]> {
+fn piece(
+    c: [f32; 4],
+    s: &[f32],
+    u: &[f32],
+    miss: &impl Fn(&[f32; 4], &[f32], &[f32]) -> f32,
+) -> Option<[f32; 4]> {
     let e = |q: f32| super::cubic_bezier(c[0], c[1], c[2], c[3], q);
     let k = s.len().div_ceil(24);
     let (fs, fu): (Vec<f32>, Vec<f32>) = s.iter().zip(u).step_by(k).map(|(a, b)| (*a, *b)).unzip();
@@ -550,7 +632,10 @@ fn piece(c: [f32; 4], s: &[f32], u: &[f32], miss: &impl Fn(&[f32; 4], &[f32], &[
         if (e1 - e0).abs() < 1e-4 {
             return f32::MAX;
         }
-        fs.iter().zip(&fu).map(|(s, u)| ((e(q0 + s * (q1 - q0)) - e0) / (e1 - e0) - u).abs()).fold(0f32, f32::max)
+        fs.iter()
+            .zip(&fu)
+            .map(|(s, u)| ((e(q0 + s * (q1 - q0)) - e0) / (e1 - e0) - u).abs())
+            .fold(0f32, f32::max)
     };
     let mut best = (f32::MAX, 0f32, 1f32);
     for i in 0..20 {
@@ -581,12 +666,18 @@ fn piece(c: [f32; 4], s: &[f32], u: &[f32], miss: &impl Fn(&[f32; 4], &[f32], &[
     }
     let (q0, q1) = (best.1, best.2);
     // The curve's own parameter at those inputs (x is monotone).
-    let bez = |a: f32, b: f32, t: f32| 3. * a * t * (1. - t).powi(2) + 3. * b * t * t * (1. - t) + t.powi(3);
+    let bez = |a: f32, b: f32, t: f32| {
+        3. * a * t * (1. - t).powi(2) + 3. * b * t * t * (1. - t) + t.powi(3)
+    };
     let tau = |x: f32| {
         let (mut lo, mut hi) = (0f32, 1f32);
         for _ in 0..40 {
             let m = (lo + hi) / 2.;
-            if bez(c[0], c[2], m) < x { lo = m } else { hi = m }
+            if bez(c[0], c[2], m) < x {
+                lo = m
+            } else {
+                hi = m
+            }
         }
         (lo + hi) / 2.
     };
@@ -608,18 +699,26 @@ fn piece(c: [f32; 4], s: &[f32], u: &[f32], miss: &impl Fn(&[f32; 4], &[f32], &[
     let n = |q: [f32; 2]| [(q[0] - mid[0][0]) / w, (q[1] - mid[0][1]) / h];
     let (a, b) = (n(mid[1]), n(mid[2]));
     let sub = [a[0], a[1], b[0], b[1]].map(|x| (x * 10000.).round() / 10000.);
-    sub.iter().all(|x| (0. ..=1.).contains(x)).then_some(sub).filter(|c| miss(c, s, u).is_finite())
+    sub.iter()
+        .all(|x| (0. ..=1.).contains(x))
+        .then_some(sub)
+        .filter(|c| miss(c, s, u).is_finite())
 }
 
 fn flat(v: &[Vec<f32>], tol: f32) -> bool {
-    v.iter().all(|x| x.iter().zip(&v[0]).all(|(a, b)| (a - b).abs() <= tol))
+    v.iter()
+        .all(|x| x.iter().zip(&v[0]).all(|(a, b)| (a - b).abs() <= tol))
 }
 
 /// A control value to four places, the way it was checked.
 fn fine(x: f32) -> String {
     let s = format!("{x:.4}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() || s == "-0" { "0".into() } else { s.into() }
+    if s.is_empty() || s == "-0" {
+        "0".into()
+    } else {
+        s.into()
+    }
 }
 
 /// A keyTime, fine enough that a fast part lands where it was sampled
@@ -641,13 +740,21 @@ impl Reg {
     /// The SMIL element(s) for `v` (one sample per frame plus the loop's
     /// end); empty when nothing changes. `write` turns the kept samples
     /// (their indices and values) into the text.
-    fn smil(&mut self, kind: &str, v: &[Vec<f32>], tol: f32, write: impl Fn(&[Key], &[Vec<f32>]) -> String) -> String {
+    fn smil(
+        &mut self,
+        kind: &str,
+        v: &[Vec<f32>],
+        tol: f32,
+        write: impl Fn(&[Key], &[Vec<f32>]) -> String,
+    ) -> String {
         if flat(v, tol) {
             return String::new();
         }
         let near = |w: &[Vec<f32>]| {
             w.len() == v.len()
-                && w.iter().zip(v).all(|(a, b)| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol / 2.))
+                && w.iter().zip(v).all(|(a, b)| {
+                    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol / 2.)
+                })
         };
         if let Some((_, _, text)) = self.seen.iter().find(|(k, w, _)| k == kind && near(w)) {
             return text.clone();
@@ -660,13 +767,22 @@ impl Reg {
     }
 }
 
-fn smil_tag(tag: &str, extra: &str, seconds: f32, keys: &[Key], n: usize, values: impl Fn(usize) -> String) -> String {
+fn smil_tag(
+    tag: &str,
+    extra: &str,
+    seconds: f32,
+    keys: &[Key],
+    n: usize,
+    values: impl Fn(usize) -> String,
+) -> String {
     let times: Vec<String> = keys.iter().map(|&(i, _)| at(i, n)).collect();
     let vals: Vec<String> = keys.iter().map(|&(i, _)| values(i)).collect();
     let eased = keys[..keys.len() - 1].iter().any(|(_, c)| *c != LINEAR);
     let splines = if eased {
-        let sp: Vec<String> =
-            keys[..keys.len() - 1].iter().map(|(_, c)| c.map(fine).join(" ")).collect();
+        let sp: Vec<String> = keys[..keys.len() - 1]
+            .iter()
+            .map(|(_, c)| c.map(fine).join(" "))
+            .collect();
         format!(r#" calcMode="spline" keySplines="{}""#, sp.join(";"))
     } else {
         String::new()
@@ -692,11 +808,17 @@ const PLANES: [[[f32; 2]; 2]; 3] = {
 
 fn inv2(m: [[f32; 2]; 2]) -> [[f32; 2]; 2] {
     let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-    [[m[1][1] / det, -m[0][1] / det], [-m[1][0] / det, m[0][0] / det]]
+    [
+        [m[1][1] / det, -m[0][1] / det],
+        [-m[1][0] / det, m[0][0] / det],
+    ]
 }
 
 fn mul2(m: [[f32; 2]; 2], p: [f32; 2]) -> [f32; 2] {
-    [m[0][0] * p[0] + m[0][1] * p[1], m[1][0] * p[0] + m[1][1] * p[1]]
+    [
+        m[0][0] * p[0] + m[0][1] * p[1],
+        m[1][0] * p[0] + m[1][1] * p[1],
+    ]
 }
 
 /// A part turning about a fixed point of one iso plane (a fan blade, a
@@ -732,10 +854,16 @@ fn spin(parts: &[Part], base: &[f32], vals: &[Val], tol: f32) -> Option<Spin> {
             }
             let th = sxy.atan2(sxx);
             let (c, s) = (th.cos(), th.sin());
-            let t = [cb[0] - (c * ca[0] - s * ca[1]), cb[1] - (s * ca[0] + c * ca[1])];
+            let t = [
+                cb[0] - (c * ca[0] - s * ca[1]),
+                cb[1] - (s * ca[0] + c * ca[1]),
+            ];
             // It must be that turn, back on screen to within `tol`.
             for (p, q) in a.iter().zip(&b) {
-                let r = [c * p[0] - s * p[1] + t[0] - q[0], s * p[0] + c * p[1] + t[1] - q[1]];
+                let r = [
+                    c * p[0] - s * p[1] + t[0] - q[0],
+                    s * p[0] + c * p[1] + t[1] - q[1],
+                ];
                 let e = mul2(*m, r);
                 if e[0].abs() > tol || e[1].abs() > tol {
                     continue 'plane;
@@ -744,16 +872,24 @@ fn spin(parts: &[Part], base: &[f32], vals: &[Val], tol: f32) -> Option<Spin> {
             turns.push((th, t));
         }
         // About one fixed point: solve (I - R)c = t where it turns most.
-        let (th, t) = *turns.iter().max_by(|x, y| x.0.sin().abs().total_cmp(&y.0.sin().abs()))?;
+        let (th, t) = *turns
+            .iter()
+            .max_by(|x, y| x.0.sin().abs().total_cmp(&y.0.sin().abs()))?;
         if th.sin().abs() < 0.05 {
             continue;
         }
         let (c, s) = (th.cos(), th.sin());
         let det = (1. - c) * (1. - c) + s * s;
-        let center = [((1. - c) * t[0] - s * t[1]) / det, (s * t[0] + (1. - c) * t[1]) / det];
+        let center = [
+            ((1. - c) * t[0] - s * t[1]) / det,
+            (s * t[0] + (1. - c) * t[1]) / det,
+        ];
         for (th, t) in &turns {
             let (c, s) = (th.cos(), th.sin());
-            let want = [(1. - c) * center[0] + s * center[1], -s * center[0] + (1. - c) * center[1]];
+            let want = [
+                (1. - c) * center[0] + s * center[1],
+                -s * center[0] + (1. - c) * center[1],
+            ];
             let e = mul2(*m, [want[0] - t[0], want[1] - t[1]]);
             if e[0].abs() > tol || e[1].abs() > tol {
                 continue 'plane;
@@ -768,20 +904,34 @@ fn spin(parts: &[Part], base: &[f32], vals: &[Val], tol: f32) -> Option<Spin> {
             deg.push(prev);
         }
         let local = a.iter().flat_map(|p| [p[0], p[1]]).collect();
-        return Some(Spin { plane: k, center, deg, local });
+        return Some(Spin {
+            plane: k,
+            center,
+            deg,
+            local,
+        });
     }
     None
 }
 
 fn centroid(p: &[[f32; 2]]) -> [f32; 2] {
     let n = p.len().max(1) as f32;
-    [p.iter().map(|q| q[0]).sum::<f32>() / n, p.iter().map(|q| q[1]).sum::<f32>() / n]
+    [
+        p.iter().map(|q| q[0]).sum::<f32>() / n,
+        p.iter().map(|q| q[1]).sum::<f32>() / n,
+    ]
 }
 
 /// Frames that don't matter take the value of the nearest that does.
 fn fill_gaps(v: &[Option<f32>]) -> Vec<f32> {
     let n = v.len();
-    (0..n).map(|i| (0..=n / 2).find_map(|k| v[(i + k) % n].or(v[(i + n - k) % n])).unwrap_or(0.)).collect()
+    (0..n)
+        .map(|i| {
+            (0..=n / 2)
+                .find_map(|k| v[(i + k) % n].or(v[(i + n - k) % n]))
+                .unwrap_or(0.)
+        })
+        .collect()
 }
 
 /// Each absent frame takes the value of the nearest frame that has one
@@ -791,7 +941,11 @@ fn filled(vals: &[Option<Val>]) -> Vec<Val> {
     (0..n)
         .map(|i| {
             (0..=n / 2)
-                .find_map(|k| vals[(i + k) % n].as_ref().or(vals[(i + n - k) % n].as_ref()))
+                .find_map(|k| {
+                    vals[(i + k) % n]
+                        .as_ref()
+                        .or(vals[(i + n - k) % n].as_ref())
+                })
                 .cloned()
                 .expect("a slot is present somewhere")
         })
@@ -807,9 +961,14 @@ fn between(fits: &[Option<[f32; 3]>]) -> Vec<[f32; 3]> {
             if let Some(f) = fits[i] {
                 return f;
             }
-            let back = (1..n).find(|k| fits[(i + n - k) % n].is_some()).unwrap_or(0);
+            let back = (1..n)
+                .find(|k| fits[(i + n - k) % n].is_some())
+                .unwrap_or(0);
             let fwd = (1..n).find(|k| fits[(i + k) % n].is_some()).unwrap_or(0);
-            let (a, b) = (fits[(i + n - back) % n].unwrap_or([1., 0., 0.]), fits[(i + fwd) % n].unwrap_or([1., 0., 0.]));
+            let (a, b) = (
+                fits[(i + n - back) % n].unwrap_or([1., 0., 0.]),
+                fits[(i + fwd) % n].unwrap_or([1., 0., 0.]),
+            );
             let u = back as f32 / (back + fwd).max(1) as f32;
             [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * u)
         })
@@ -831,7 +990,10 @@ fn fit(parts: &[Part], a: &[f32], b: &[f32], tol: f32) -> Option<[f32; 3]> {
     let (pa, pb) = (pts(a), pts(b));
     let c = |p: &[[f32; 2]]| {
         let n = p.len().max(1) as f32;
-        [p.iter().map(|q| q[0]).sum::<f32>() / n, p.iter().map(|q| q[1]).sum::<f32>() / n]
+        [
+            p.iter().map(|q| q[0]).sum::<f32>() / n,
+            p.iter().map(|q| q[1]).sum::<f32>() / n,
+        ]
     };
     let (ca, cb) = (c(&pa), c(&pb));
     let (mut num_, mut den) = (0., 0.);
@@ -872,7 +1034,15 @@ fn fit(parts: &[Part], a: &[f32], b: &[f32], tol: f32) -> Option<[f32; 3]> {
 
 /// The loop as one animated SVG. `frames` are evenly spaced samples of
 /// one loop of `seconds`; the first is what shows before it plays.
-pub fn loop_svg(title: &str, frames: &[Vec<Item>], cams: &[Option<(f32, P2)>], seconds: f32, palette: &Palette, pad: f32, px: f32) -> String {
+pub fn loop_svg(
+    title: &str,
+    frames: &[Vec<Item>],
+    cams: &[Option<(f32, P2)>],
+    seconds: f32,
+    palette: &Palette,
+    pad: f32,
+    px: f32,
+) -> String {
     loop_in(title, frames, cams, seconds, palette, pad, view(frames), px)
 }
 
@@ -906,8 +1076,12 @@ pub fn loop_in(
     // sizes; the error on screen is what shows).
     let geo = w.max(h) / 1600. * px;
     // The camera at every frame, as screen = off + zoom · world.
-    let cam: Vec<(f32, P2)> = (0..n).map(|i| cams.get(i).copied().flatten().unwrap_or((1., [0., 0.]))).collect();
-    let filmed = cam.iter().any(|(z, o)| (z - 1.).abs() > 1e-6 || o[0].abs() > 1e-4 || o[1].abs() > 1e-4);
+    let cam: Vec<(f32, P2)> = (0..n)
+        .map(|i| cams.get(i).copied().flatten().unwrap_or((1., [0., 0.])))
+        .collect();
+    let filmed = cam
+        .iter()
+        .any(|(z, o)| (z - 1.).abs() > 1e-6 || o[0].abs() > 1e-4 || o[1].abs() > 1e-4);
     // An error in world units shows as large as the camera ever brings it.
     let zmax = cam.iter().fold(1f32, |m, c| m.max(c.0));
 
@@ -920,7 +1094,9 @@ pub fn loop_in(
             if item.alpha <= 0. {
                 continue;
             }
-            let Some((class, fill, flow)) = paint_of(item, palette) else { continue };
+            let Some((class, fill, flow)) = paint_of(item, palette) else {
+                continue;
+            };
             let group = (item.layer >= NAMED).then_some(item.layer);
             let world = filmed && item.anchor == Anchor::World;
             let k = format!("{class}|{fill}|{group:?}|{world}|{}", signature(&item.path));
@@ -928,13 +1104,21 @@ pub fn loop_in(
                 meta.push((class, fill, group, world));
                 meta.len() as u32 - 1
             });
-            let path = if world { unfilm(&item.path, cam[fi]) } else { item.path.clone() };
+            let path = if world {
+                unfilm(&item.path, cam[fi])
+            } else {
+                item.path.clone()
+            };
             let v = nums(&path, dx, dy);
             toks.push(Tok {
                 key,
                 hash: geo_hash(&v),
                 shape: path,
-                val: Val { nums: v, alpha: item.alpha, dash: flow },
+                val: Val {
+                    nums: v,
+                    alpha: item.alpha,
+                    dash: flow,
+                },
             });
         }
         merge(&mut slots, toks, fi, n, &meta);
@@ -958,16 +1142,26 @@ pub fn loop_in(
     let mut plans = Vec::with_capacity(slots.len());
     let screen_geo = geo;
     for slot in &slots {
-        let geo = if slot.world { screen_geo / zmax } else { screen_geo };
+        let geo = if slot.world {
+            screen_geo / zmax
+        } else {
+            screen_geo
+        };
         // What a frame shows of it: nothing where it's absent or faded out,
         // and then where it is or how it looks doesn't matter.
-        let seen: Vec<Option<Val>> = slot.vals.iter().map(|v| v.clone().filter(|v| v.alpha > 0.004)).collect();
+        let seen: Vec<Option<Val>> = slot
+            .vals
+            .iter()
+            .map(|v| v.clone().filter(|v| v.alpha > 0.004))
+            .collect();
         if seen.iter().all(|v| v.is_none()) {
             continue;
         }
         let vals = filled(&seen);
         // One sample per frame, then the first again to close the loop.
-        let series = |f: &dyn Fn(usize) -> Vec<f32>| -> Vec<Vec<f32>> { (0..=n).map(|i| f(i % n)).collect() };
+        let series = |f: &dyn Fn(usize) -> Vec<f32>| -> Vec<Vec<f32>> {
+            (0..=n).map(|i| f(i % n)).collect()
+        };
         let fade = |reg: &mut Reg, v: &[Vec<f32>]| -> (String, String) {
             // Only there or not: switch visibility, which Chrome draws in
             // place. An opacity animation (above all one inside another)
@@ -975,7 +1169,11 @@ pub fn loop_in(
             // turns soft.
             if v.iter().all(|x| x[0] == 0. || x[0] == 1.) {
                 if v.iter().all(|x| x[0] == v[0][0]) {
-                    let attr = if v[0][0] == 0. { r#" visibility="hidden""#.to_string() } else { String::new() };
+                    let attr = if v[0][0] == 0. {
+                        r#" visibility="hidden""#.to_string()
+                    } else {
+                        String::new()
+                    };
                     return (attr, String::new());
                 }
                 let mut times = vec!["0".to_string()];
@@ -989,7 +1187,10 @@ pub fn loop_in(
                 // Never nested: a visible child shows even inside a hidden
                 // group (and Chrome won't animate to "inherit"), so only one
                 // level of a chain switches visibility.
-                let words: Vec<&str> = vis.iter().map(|x| if *x > 0.5 { "visible" } else { "hidden" }).collect();
+                let words: Vec<&str> = vis
+                    .iter()
+                    .map(|x| if *x > 0.5 { "visible" } else { "hidden" })
+                    .collect();
                 let anim = format!(
                     r#"<animate attributeName="visibility" dur="{}s" repeatCount="indefinite" calcMode="discrete" keyTimes="{}" values="{}"/>"#,
                     num(seconds),
@@ -999,9 +1200,20 @@ pub fn loop_in(
                 return (String::new(), anim);
             }
             let anim = reg.smil("opacity", v, 0.01, |keys, v| {
-                smil_tag("animate", r#"attributeName="opacity" "#, seconds, keys, n, |i| num(v[i][0]))
+                smil_tag(
+                    "animate",
+                    r#"attributeName="opacity" "#,
+                    seconds,
+                    keys,
+                    n,
+                    |i| num(v[i][0]),
+                )
             });
-            let attr = if anim.is_empty() && v[0][0] < 0.995 { format!(r#" opacity="{}""#, num(v[0][0])) } else { String::new() };
+            let attr = if anim.is_empty() && v[0][0] < 0.995 {
+                format!(r#" opacity="{}""#, num(v[0][0]))
+            } else {
+                String::new()
+            };
             (attr, anim)
         };
 
@@ -1010,18 +1222,29 @@ pub fn loop_in(
         // and only where the layer shows at all.
         // A layer that only switches on and off needs no group: its switch
         // folds into each part's own.
-        let group = slot.group.filter(|g| layers[g].iter().any(|x| *x > 0.004 && *x < 0.996));
+        let group = slot
+            .group
+            .filter(|g| layers[g].iter().any(|x| *x > 0.004 && *x < 0.996));
         let layer = group.map(|g| {
             let a = &layers[&g];
             let (attr, anim) = fade(&mut reg, &series(&|i| vec![a[i]]));
             (g, attr, anim)
         });
-        let snap = |x: f32| if x >= 0.996 { 1. } else if x <= 0.004 { 0. } else { x };
+        let snap = |x: f32| {
+            if x >= 0.996 {
+                1.
+            } else if x <= 0.004 {
+                0.
+            } else {
+                x
+            }
+        };
         let op = match group {
             Some(g) => {
                 let a = &layers[&g];
-                let shown: Vec<Option<f32>> =
-                    (0..n).map(|i| (a[i] > 0.004).then(|| if seen[i].is_some() { 1. } else { 0. })).collect();
+                let shown: Vec<Option<f32>> = (0..n)
+                    .map(|i| (a[i] > 0.004).then(|| if seen[i].is_some() { 1. } else { 0. }))
+                    .collect();
                 let known: Vec<f32> = shown.iter().flatten().copied().collect();
                 if known.iter().all(|x| *x == known[0]) {
                     series(&|_| vec![known[0]])
@@ -1046,21 +1269,37 @@ pub fn loop_in(
                 acc.push(vec![prev]);
             }
             own += &reg.smil("dash", &acc, 0.05, |idx, v| {
-                smil_tag("animate", r#"attributeName="stroke-dashoffset" "#, seconds, idx, n, |i| num(v[i][0]))
+                smil_tag(
+                    "animate",
+                    r#"attributeName="stroke-dashoffset" "#,
+                    seconds,
+                    idx,
+                    n,
+                    |i| num(v[i][0]),
+                )
             });
         }
 
         // Geometry: still, carried, spun, or morphed.
         let parts = parts(&slot.shape);
         let first = slot.vals.iter().position(|v| v.is_some()).unwrap_or(0);
-        let still = vals.iter().all(|v| v.nums.iter().zip(&vals[first].nums).all(|(a, b)| (a - b).abs() < 0.01));
+        let still = vals.iter().all(|v| {
+            v.nums
+                .iter()
+                .zip(&vals[first].nums)
+                .all(|(a, b)| (a - b).abs() < 0.01)
+        });
         // Carry from the shape it has most of the time, not from a frame
         // where it is half clipped; from the loop's start when that works,
         // so the parts of one body move alike.
         let pick = if still {
             first
         } else {
-            let fitting = |b: usize| vals.iter().filter(|v| fit(&parts, &vals[b].nums, &v.nums, geo / 4.).is_some()).count();
+            let fitting = |b: usize| {
+                vals.iter()
+                    .filter(|v| fit(&parts, &vals[b].nums, &v.nums, geo / 4.).is_some())
+                    .count()
+            };
             let mut best = (fitting(0), 0);
             // A few dozen candidates are plenty: a shape held for a while
             // shows up among them.
@@ -1076,31 +1315,64 @@ pub fn loop_in(
             best.1
         };
         let base = vals[pick].nums.clone();
-        let fits: Vec<Option<[f32; 3]>> = vals.iter().map(|v| if still { None } else { fit(&parts, &base, &v.nums, geo / 4.) }).collect();
+        let fits: Vec<Option<[f32; 3]>> = vals
+            .iter()
+            .map(|v| {
+                if still {
+                    None
+                } else {
+                    fit(&parts, &base, &v.nums, geo / 4.)
+                }
+            })
+            .collect();
         let rigid = fits.iter().filter(|f| f.is_some()).count();
         // How far the part reaches from the origin, which a scale swings it
         // about: an error in the scale moves its points that much more.
-        let reach = base.iter().zip(&parts).filter(|(_, p)| matches!(p, Part::X | Part::Y)).fold(1f32, |m, (v, _)| m.max(v.abs()));
+        let reach = base
+            .iter()
+            .zip(&parts)
+            .filter(|(_, p)| matches!(p, Part::X | Part::Y))
+            .fold(1f32, |m, (v, _)| m.max(v.abs()));
         let carry_smil = |reg: &mut Reg, c: &[[f32; 3]], tol: f32| -> String {
             let scaled = c.iter().any(|f| (f[0] - 1.).abs() > 1e-5);
             if !scaled {
-                return reg.smil("translate", &series(&|i| vec![c[i][1], c[i][2]]), tol, |keys, v| {
-                    smil_tag("animateTransform", r#"attributeName="transform" type="translate" "#, seconds, keys, n, |i| {
-                        format!("{} {}", num(v[i][0]), num(v[i][1]))
-                    })
-                });
+                return reg.smil(
+                    "translate",
+                    &series(&|i| vec![c[i][1], c[i][2]]),
+                    tol,
+                    |keys, v| {
+                        smil_tag(
+                            "animateTransform",
+                            r#"attributeName="transform" type="translate" "#,
+                            seconds,
+                            keys,
+                            n,
+                            |i| format!("{} {}", num(v[i][0]), num(v[i][1])),
+                        )
+                    },
+                );
             }
             // Translate and scale on the same keys, planned as one motion
             // (the scale in units of its reach), so their errors can't add up
             // past `tol` between keys.
             let joint = series(&|i| vec![c[i][1], c[i][2], c[i][0] * reach]);
             reg.smil(&format!("carry {reach}"), &joint, tol / 2., |keys, v| {
-                let tr = smil_tag("animateTransform", r#"attributeName="transform" type="translate" "#, seconds, keys, n, |i| {
-                    format!("{} {}", fine(v[i][0]), fine(v[i][1]))
-                });
-                let sc = smil_tag("animateTransform", r#"attributeName="transform" type="scale" additive="sum" "#, seconds, keys, n, |i| {
-                    format!("{}", (v[i][2] as f64 / reach as f64 * 1e6).round() / 1e6)
-                });
+                let tr = smil_tag(
+                    "animateTransform",
+                    r#"attributeName="transform" type="translate" "#,
+                    seconds,
+                    keys,
+                    n,
+                    |i| format!("{} {}", fine(v[i][0]), fine(v[i][1])),
+                );
+                let sc = smil_tag(
+                    "animateTransform",
+                    r#"attributeName="transform" type="scale" additive="sum" "#,
+                    seconds,
+                    keys,
+                    n,
+                    |i| format!("{}", (v[i][2] as f64 / reach as f64 * 1e6).round() / 1e6),
+                );
                 format!("{tr}{sc}")
             })
         };
@@ -1109,23 +1381,46 @@ pub fn loop_in(
         let mut start = base.clone();
         if still {
         } else if rigid == n {
-            motion = carry_smil(&mut reg, &fits.iter().map(|f| f.expect("rigid")).collect::<Vec<_>>(), geo);
+            motion = carry_smil(
+                &mut reg,
+                &fits.iter().map(|f| f.expect("rigid")).collect::<Vec<_>>(),
+                geo,
+            );
             carried += 1;
         } else if let Some(sp) = spin(&parts, &base, &vals, geo / 4.) {
             let m = PLANES[sp.plane];
-            frame_attr = format!(r#" transform="matrix({} {} {} {} 0 0)""#, m[0][0], m[1][0], m[0][1], m[1][1]);
-            let r = sp.local.chunks(2).map(|p| ((p[0] - sp.center[0]).powi(2) + (p[1] - sp.center[1]).powi(2)).sqrt()).fold(1f32, f32::max);
+            frame_attr = format!(
+                r#" transform="matrix({} {} {} {} 0 0)""#,
+                m[0][0], m[1][0], m[0][1], m[1][1]
+            );
+            let r = sp
+                .local
+                .chunks(2)
+                .map(|p| ((p[0] - sp.center[0]).powi(2) + (p[1] - sp.center[1]).powi(2)).sqrt())
+                .fold(1f32, f32::max);
             let tol = (geo / r).to_degrees();
             let (cx, cy) = (num(sp.center[0]), num(sp.center[1]));
             // The loop closes a whole number of turns on, not back where it began.
             let mut turn: Vec<Vec<f32>> = sp.deg.iter().map(|d| vec![*d]).collect();
             let last = sp.deg[n - 1];
-            turn.push(vec![last + ((sp.deg[0] - last).rem_euclid(360.) + 540.).rem_euclid(360.) - 180.]);
-            motion = reg.smil(&format!("rotate {} {cx} {cy}", sp.plane), &turn, tol, |idx, v| {
-                smil_tag("animateTransform", r#"attributeName="transform" type="rotate" additive="sum" "#, seconds, idx, n, |i| {
-                    format!("{} {cx} {cy}", (v[i][0] * 100.).round() / 100.)
-                })
-            });
+            turn.push(vec![
+                last + ((sp.deg[0] - last).rem_euclid(360.) + 540.).rem_euclid(360.) - 180.,
+            ]);
+            motion = reg.smil(
+                &format!("rotate {} {cx} {cy}", sp.plane),
+                &turn,
+                tol,
+                |idx, v| {
+                    smil_tag(
+                        "animateTransform",
+                        r#"attributeName="transform" type="rotate" additive="sum" "#,
+                        seconds,
+                        idx,
+                        n,
+                        |i| format!("{} {cx} {cy}", (v[i][0] * 100.).round() / 100.),
+                    )
+                },
+            );
             start = sp.local;
             spun += 1;
         } else {
@@ -1135,7 +1430,11 @@ pub fn loop_in(
             // grows (a gauge filling) is a morph, not a carry.
             let travels = {
                 let f: Vec<&[f32; 3]> = fits.iter().flatten().collect();
-                f.iter().any(|a| (a[0] - f[0][0]).abs() > 1e-3 || (a[1] - f[0][1]).abs() > geo || (a[2] - f[0][2]).abs() > geo)
+                f.iter().any(|a| {
+                    (a[0] - f[0][0]).abs() > 1e-3
+                        || (a[1] - f[0][1]).abs() > geo
+                        || (a[2] - f[0][2]).abs() > geo
+                })
             };
             let carry: Option<Vec<[f32; 3]>> = (rigid * 2 >= n && travels).then(|| between(&fits));
             let local = |i: usize| -> Vec<f32> {
@@ -1163,7 +1462,9 @@ pub fn loop_in(
             let tol = if carry.is_some() { geo / 2. } else { geo };
             if !flat(&v, tol) {
                 let keys = plan(&v, tol);
-                own += &smil_tag("animate", r#"attributeName="d" "#, seconds, &keys, n, |i| tight(&with_nums(&slot.shape, &v[i]), false));
+                own += &smil_tag("animate", r#"attributeName="d" "#, seconds, &keys, n, |i| {
+                    tight(&with_nums(&slot.shape, &v[i]), false)
+                });
             }
             if let Some(c) = &carry {
                 motion = carry_smil(&mut reg, c, geo / 2.);
@@ -1185,7 +1486,10 @@ pub fn loop_in(
         if !st.is_empty() {
             let _ = write!(attrs, r#" style="{st}""#);
         }
-        let d = tight(&with_nums(&slot.shape, &start), !own.contains(r#"attributeName="d""#));
+        let d = tight(
+            &with_nums(&slot.shape, &start),
+            !own.contains(r#"attributeName="d""#),
+        );
         plans.push(Plan {
             world: slot.world,
             layer,
@@ -1214,20 +1518,45 @@ pub fn loop_in(
     let pair = |p: &(String, String)| format!("{}|{}", p.0, p.1);
     // The camera: screen = off + zoom · world, around the view's margin.
     let lens = if filmed {
-        let t: Vec<[f32; 3]> = cam.iter().map(|(z, o)| [*z, o[0] + dx * (1. - z), o[1] + dy * (1. - z)]).collect();
-        let same = t.iter().all(|c| c.iter().zip(&t[0]).all(|(a, b)| (a - b).abs() < 1e-5));
+        let t: Vec<[f32; 3]> = cam
+            .iter()
+            .map(|(z, o)| [*z, o[0] + dx * (1. - z), o[1] + dy * (1. - z)])
+            .collect();
+        let same = t
+            .iter()
+            .all(|c| c.iter().zip(&t[0]).all(|(a, b)| (a - b).abs() < 1e-5));
         if same {
-            (format!(r#" transform="translate({} {}) scale({})""#, fine(t[0][1]), fine(t[0][2]), (t[0][0] as f64 * 1e6).round() / 1e6), String::new())
+            (
+                format!(
+                    r#" transform="translate({} {}) scale({})""#,
+                    fine(t[0][1]),
+                    fine(t[0][2]),
+                    (t[0][0] as f64 * 1e6).round() / 1e6
+                ),
+                String::new(),
+            )
         } else {
             let reach = w.max(h);
-            let joint: Vec<Vec<f32>> = (0..=n).map(|i| vec![t[i % n][1], t[i % n][2], t[i % n][0] * reach]).collect();
+            let joint: Vec<Vec<f32>> = (0..=n)
+                .map(|i| vec![t[i % n][1], t[i % n][2], t[i % n][0] * reach])
+                .collect();
             let anim = reg.smil("camera", &joint, screen_geo / 2., |keys, v| {
-                let tr = smil_tag("animateTransform", r#"attributeName="transform" type="translate" "#, seconds, keys, n, |i| {
-                    format!("{} {}", fine(v[i][0]), fine(v[i][1]))
-                });
-                let sc = smil_tag("animateTransform", r#"attributeName="transform" type="scale" additive="sum" "#, seconds, keys, n, |i| {
-                    format!("{}", (v[i][2] as f64 / reach as f64 * 1e6).round() / 1e6)
-                });
+                let tr = smil_tag(
+                    "animateTransform",
+                    r#"attributeName="transform" type="translate" "#,
+                    seconds,
+                    keys,
+                    n,
+                    |i| format!("{} {}", fine(v[i][0]), fine(v[i][1])),
+                );
+                let sc = smil_tag(
+                    "animateTransform",
+                    r#"attributeName="transform" type="scale" additive="sum" "#,
+                    seconds,
+                    keys,
+                    n,
+                    |i| format!("{}", (v[i][2] as f64 / reach as f64 * 1e6).round() / 1e6),
+                );
                 format!("{tr}{sc}")
             });
             (String::new(), anim)
@@ -1241,7 +1570,10 @@ pub fn loop_in(
             let _ = writeln!(body, "<g{}>{}", lens.0, lens.1);
         }
         for (a, b) in runs(wa, wb, &|p: &Plan| format!("{:?}", p.layer)) {
-            let lg = plans[a].layer.clone().filter(|(_, at, an)| !at.is_empty() || !an.is_empty());
+            let lg = plans[a]
+                .layer
+                .clone()
+                .filter(|(_, at, an)| !at.is_empty() || !an.is_empty());
             if let Some((_, attr, anim)) = &lg {
                 let _ = writeln!(body, "<g{attr}>{anim}");
             }
@@ -1330,16 +1662,33 @@ mod tests {
 
     #[test]
     fn tight_paths_keep_every_point() {
-        let p = [Seg::M([10.5, 20.]), Seg::L([10.5, 25.25]), Seg::L([0.05, 25.25]), Seg::A { r: [2., 1.], rot: 0., large: false, sweep: true, to: [1., 1.] }, Seg::Z];
+        let p = [
+            Seg::M([10.5, 20.]),
+            Seg::L([10.5, 25.25]),
+            Seg::L([0.05, 25.25]),
+            Seg::A {
+                r: [2., 1.],
+                rot: 0.,
+                large: false,
+                sweep: true,
+                to: [1., 1.],
+            },
+            Seg::Z,
+        ];
         assert_eq!(tight(&p, true), "m10.5 20v5.25h-10.45a2 1 0 0 1 .95-24.25z");
-        assert_eq!(tight(&p, false), "m10.5 20l0 5.25-10.45 0a2 1 0 0 1 .95-24.25z");
+        assert_eq!(
+            tight(&p, false),
+            "m10.5 20l0 5.25-10.45 0a2 1 0 0 1 .95-24.25z"
+        );
     }
 
     #[test]
     fn eased_stretch_fits_every_sample() {
         let n = 1296;
         let io = |q: f32| crate::iso::cubic_bezier(0.77, 0., 0.175, 1., q.clamp(0., 1.));
-        let v: Vec<Vec<f32>> = (0..=n).map(|i| vec![0., -40. + 40. * io((i as f32 / n as f32 - 0.84) / 0.11)]).collect();
+        let v: Vec<Vec<f32>> = (0..=n)
+            .map(|i| vec![0., -40. + 40. * io((i as f32 / n as f32 - 0.84) / 0.11)])
+            .collect();
         let keys = plan(&v, 0.02);
         for w in keys.windows(2) {
             let ((a, c), (b, _)) = (w[0], w[1]);
@@ -1348,31 +1697,53 @@ mod tests {
                 let f = crate::iso::cubic_bezier(c[0], c[1], c[2], c[3], s);
                 let want = v[i][1];
                 let got = v[a][1] + (v[b][1] - v[a][1]) * f;
-                assert!((got - want).abs() <= 0.021, "keys {a}..{b} {c:?}: at {i} {got} vs {want}");
+                assert!(
+                    (got - want).abs() <= 0.021,
+                    "keys {a}..{b} {c:?}: at {i} {got} vs {want}"
+                );
             }
         }
     }
 
     #[test]
     fn keeps_only_the_turns() {
-        let v: Vec<Vec<f32>> = (0..=10).map(|i| vec![if i <= 5 { i as f32 } else { 10. - i as f32 }]).collect();
+        let v: Vec<Vec<f32>> = (0..=10)
+            .map(|i| vec![if i <= 5 { i as f32 } else { 10. - i as f32 }])
+            .collect();
         assert_eq!(keep(&v, 0.01), vec![0, 5, 10]);
     }
 
     #[test]
     fn a_moving_box_is_carried_not_morphed() {
-        let pal = Palette { ink: [0.16; 3], ground: [1.; 3], accent: [0.11, 0.69, 0.61], dark: false, soft: false };
+        let pal = Palette {
+            ink: [0.16; 3],
+            ground: [1.; 3],
+            accent: [0.11, 0.69, 0.61],
+            dark: false,
+            soft: false,
+        };
         let frames: Vec<Vec<Item>> = (0..8)
             .map(|i| {
                 let x = (i as f32 / 8. * std::f32::consts::TAU).sin() * 20.;
                 crate::iso::render(&[
-                    crate::iso::Node::new(crate::iso::Shape::Cylinder { base: [0., 0., 0.], r: 30., h: 4. }),
-                    crate::iso::Node::new(crate::iso::Shape::Cylinder { base: [x, 0., 4.], r: 4., h: 6. }),
+                    crate::iso::Node::new(crate::iso::Shape::Cylinder {
+                        base: [0., 0., 0.],
+                        r: 30.,
+                        h: 4.,
+                    }),
+                    crate::iso::Node::new(crate::iso::Shape::Cylinder {
+                        base: [x, 0., 4.],
+                        r: 4.,
+                        h: 6.,
+                    }),
                 ])
             })
             .collect();
         let svg = loop_svg("Box", &frames, &[], 2., &pal, 16., 0.1);
         assert!(svg.contains(r#"type="translate""#), "{svg}");
-        assert!(!svg.contains(r#"attributeName="d""#), "nothing changes shape");
+        assert!(
+            !svg.contains(r#"attributeName="d""#),
+            "nothing changes shape"
+        );
     }
 }

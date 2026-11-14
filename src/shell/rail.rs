@@ -6,8 +6,6 @@ use super::*;
 const ENV_ROW_H: f32 = 28.;
 const ENV_GAP: f32 = 2.;
 
-
-
 pub(super) fn status_dot(status: Status) -> impl IntoElement {
     let color = match status {
         Status::Idle => theme::mix(0.25),
@@ -29,7 +27,12 @@ pub(super) fn ci_mark(state: ci::State) -> gpui::Div {
     if state.done() {
         div().size(px(6.)).rounded_full().bg(color).flex_none()
     } else {
-        div().size(px(7.)).rounded_full().border_1().border_color(color).flex_none()
+        div()
+            .size(px(7.))
+            .rounded_full()
+            .border_1()
+            .border_color(color)
+            .flex_none()
     }
 }
 
@@ -52,23 +55,43 @@ impl Shell {
             .pl(px(14.).max(crate::ui::traffic_lights_inset(window) - px(GAP)))
             .pr(px(6.))
             .gap(px(2.))
-            .when(!self.sidebar.has(&crate::sidebar::Piece::Mascot), |d| d.child(self.rail_mascot.clone()))
+            .when(!self.sidebar.has(&crate::sidebar::Piece::Mascot), |d| {
+                d.child(self.rail_mascot.clone())
+            })
             .child(
                 div()
                     .flex_1()
                     .h_full()
-                    .on_mouse_down(MouseButton::Left, |ev, window, _| crate::ui::drag_window(ev, window))
-                    .when(cfg!(windows), |d| d.window_control_area(WindowControlArea::Drag)),
+                    .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                        crate::ui::drag_window(ev, window)
+                    })
+                    .when(cfg!(windows), |d| {
+                        d.window_control_area(WindowControlArea::Drag)
+                    }),
             )
             .children(
                 [
-                    ("back", "arrow-left01", self.has_projects() && self.can_go_back(), true),
-                    ("forward", "arrow-right01", self.has_projects() && self.can_go_forward(), false),
+                    (
+                        "back",
+                        "arrow-left01",
+                        self.has_projects() && self.can_go_back(),
+                        true,
+                    ),
+                    (
+                        "forward",
+                        "arrow-right01",
+                        self.has_projects() && self.can_go_forward(),
+                        false,
+                    ),
                 ]
                 .map(|(id, name, enabled, go_back)| {
                     if enabled {
                         icon_button(id, name, 14.)
-                            .tooltip(ui::tip(if go_back { "Back (Alt+Left)" } else { "Forward (Alt+Right)" }))
+                            .tooltip(ui::tip(if go_back {
+                                "Back (Alt+Left)"
+                            } else {
+                                "Forward (Alt+Right)"
+                            }))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.tab_history(go_back, window, cx)
                             }))
@@ -104,11 +127,13 @@ impl Shell {
                     .cursor_pointer()
                     .tooltip(ui::tip("Workspace panel"))
                     .hover(|s| s.bg(theme::fill_selected()))
-                    .child(icon("layout-align-right", 14.).text_color(if self.panel_open {
-                        theme::content()
-                    } else {
-                        theme::mix(0.45)
-                    }))
+                    .child(
+                        icon("layout-align-right", 14.).text_color(if self.panel_open {
+                            theme::content()
+                        } else {
+                            theme::mix(0.45)
+                        }),
+                    )
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(cx))),
             );
 
@@ -117,9 +142,15 @@ impl Shell {
             crate::sidebar::Variant::Card => ui::card().bg(theme::sidebar()),
             // Part of the window: no card around it.
             crate::sidebar::Variant::Flush => div().overflow_hidden(),
-            crate::sidebar::Variant::Floating => ui::card().bg(theme::sidebar()).shadow_lg().rounded(px(16.)),
+            crate::sidebar::Variant::Floating => {
+                ui::card().bg(theme::sidebar()).shadow_lg().rounded(px(16.))
+            }
         };
-        let width = if narrow { rail_blocks::RAIL_ICONS_W } else { self.rail_w };
+        let width = if narrow {
+            rail_blocks::RAIL_ICONS_W
+        } else {
+            self.rail_w
+        };
         card.id("rail-card")
             .map(ui::stop_window_move)
             .flex()
@@ -127,7 +158,9 @@ impl Shell {
             .flex_none()
             .w(px(width))
             .h_full()
-            .when(narrow, |d| d.child(self.render_rail_narrow_header(window, cx)))
+            .when(narrow, |d| {
+                d.child(self.render_rail_narrow_header(window, cx))
+            })
             .when(!narrow, |d| d.child(header))
             .children(self.render_rail_sections(cx))
             .pb(px(4.))
@@ -135,7 +168,11 @@ impl Shell {
 
     /// The top of the rail narrowed to icons: room for the traffic lights,
     /// then the button that widens it again.
-    fn render_rail_narrow_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_rail_narrow_header(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let lights = crate::ui::traffic_lights_inset(window) > px(0.);
         div()
             .flex()
@@ -146,7 +183,9 @@ impl Shell {
                 div()
                     .w_full()
                     .h(px(if lights { 40. } else { 8. }))
-                    .on_mouse_down(MouseButton::Left, |ev, window, _| crate::ui::drag_window(ev, window)),
+                    .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                        crate::ui::drag_window(ev, window)
+                    }),
             )
             .child(
                 icon_button("rail-widen", "sidebar-left", 14.)
@@ -157,7 +196,13 @@ impl Shell {
 
     /// Projects, with the environments of the open one.
     /// With `only_open`, the others wait in a dropdown on the open one.
-    pub(super) fn render_projects_block(&self, show_envs: bool, show_changes: bool, only_open: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_projects_block(
+        &self,
+        show_envs: bool,
+        show_changes: bool,
+        only_open: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut projects = div().flex().flex_col().gap(px(4.));
         for (pi, project) in self.projects.iter().enumerate() {
             let selected = pi == self.active_project;
@@ -257,7 +302,10 @@ impl Shell {
                 let mut envs = div().flex().flex_col().gap(px(ENV_GAP)).ml(px(10.));
                 for (ei, env) in project.environments.iter().enumerate() {
                     let active = ei == project.active_env;
-                    envs = envs.child(ui::tree_item(false, ENV_ROW_H / 2., ENV_GAP, 
+                    envs = envs.child(ui::tree_item(
+                        false,
+                        ENV_ROW_H / 2.,
+                        ENV_GAP,
                         div()
                             .id(("env", pi * 1000 + ei))
                             .on_mouse_down(
@@ -315,9 +363,17 @@ impl Shell {
                                             .gap(px(3.))
                                             .text_size(px(ui::TEXT_XS))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child(div().text_color(theme::diff_add()).child(format!("+{a}")))
+                                            .child(
+                                                div()
+                                                    .text_color(theme::diff_add())
+                                                    .child(format!("+{a}")),
+                                            )
                                             .when(r > 0, |d| {
-                                                d.child(div().text_color(theme::diff_del()).child(format!("-{r}")))
+                                                d.child(
+                                                    div()
+                                                        .text_color(theme::diff_del())
+                                                        .child(format!("-{r}")),
+                                                )
                                             }),
                                     )
                                 },
@@ -348,7 +404,10 @@ impl Shell {
                             .into_any_element(),
                     ));
                 }
-                envs = envs.child(ui::tree_item(true, ENV_ROW_H / 2., ENV_GAP,
+                envs = envs.child(ui::tree_item(
+                    true,
+                    ENV_ROW_H / 2.,
+                    ENV_GAP,
                     div()
                         .id(("env-add-row", pi))
                         .group("env-add-row")
@@ -363,7 +422,13 @@ impl Shell {
                         .text_size(px(ui::TEXT_MD))
                         .text_color(theme::text_faint())
                         .hover(|s| s.bg(theme::hover()).text_color(theme::text_muted()))
-                        .child(hover_icon("add01", 14., theme::text_faint(), theme::mix(0.7), "env-add-row"))
+                        .child(hover_icon(
+                            "add01",
+                            14.,
+                            theme::text_faint(),
+                            theme::mix(0.7),
+                            "env-add-row",
+                        ))
                         .child("New environment")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_create_env(pi, window, cx)
@@ -391,21 +456,26 @@ impl Shell {
                     .text_size(px(ui::TEXT_SM))
                     .text_color(theme::text_subtle())
                     .hover(|s| s.bg(theme::fill_hover()).text_color(theme::content()))
-                    .child(hover_icon("add01", 14., theme::text_faint(), theme::content(), "project-add-empty"))
+                    .child(hover_icon(
+                        "add01",
+                        14.,
+                        theme::text_faint(),
+                        theme::content(),
+                        "project-add-empty",
+                    ))
                     .child("Add project")
                     .on_click(cx.listener(|this, _, window, cx| this.open_picker(window, cx))),
             );
         }
 
-        div()
-            .id("rail-projects")
-            .child(projects)
-
+        div().id("rail-projects").child(projects)
     }
 
     /// Every project, from the open one when the rail shows only that.
     pub(super) fn render_project_switch_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut panel = ui::menu_panel("project-switch-menu", 240.).min_h_0().overflow_y_scroll();
+        let mut panel = ui::menu_panel("project-switch-menu", 240.)
+            .min_h_0()
+            .overflow_y_scroll();
         for (pi, project) in self.projects.iter().enumerate() {
             let selected = pi == self.active_project;
             let (added, removed) = project
@@ -427,8 +497,21 @@ impl Shell {
                     .text_size(px(ui::TEXT_MD))
                     .when(selected, |d| d.bg(theme::selection()))
                     .hover(|s| s.bg(theme::hover()))
-                    .child(div().flex().items_center().justify_center().size(px(16.)).child(ui::pixel_art(ui::project_art(project.art), 1.5, logo)))
-                    .child(div().flex_1().min_w_0().truncate().child(project.name.clone()))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(16.))
+                            .child(ui::pixel_art(ui::project_art(project.art), 1.5, logo)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(project.name.clone()),
+                    )
                     .when(added + removed > 0, |d| {
                         d.child(
                             div()
@@ -436,11 +519,21 @@ impl Shell {
                                 .gap(px(4.))
                                 .text_size(px(ui::TEXT_XS))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(div().text_color(theme::diff_add()).child(format!("+{added}")))
-                                .child(div().text_color(theme::diff_del()).child(format!("-{removed}"))),
+                                .child(
+                                    div()
+                                        .text_color(theme::diff_add())
+                                        .child(format!("+{added}")),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(theme::diff_del())
+                                        .child(format!("-{removed}")),
+                                ),
                         )
                     })
-                    .when(selected, |d| d.child(icon("tick02", 14.).text_color(theme::text_subtle())))
+                    .when(selected, |d| {
+                        d.child(icon("tick02", 14.).text_color(theme::text_subtle()))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.menu = None;
                         this.select_project(pi, window, cx)
@@ -449,12 +542,14 @@ impl Shell {
         }
         panel
             .child(ui::menu_divider())
-            .child(ui::menu_item("project-switch-add", "add01", "Add project…", false, true).on_click(cx.listener(
-                |this, _, window, cx| {
-                    this.menu = None;
-                    this.open_picker(window, cx)
-                },
-            )))
+            .child(
+                ui::menu_item("project-switch-add", "add01", "Add project…", false, true).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        this.open_picker(window, cx)
+                    }),
+                ),
+            )
             .into_any_element()
     }
 }

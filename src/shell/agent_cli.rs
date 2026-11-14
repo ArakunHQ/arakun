@@ -8,14 +8,21 @@ use gpui::{App, Context, SharedString, Window};
 
 use super::Shell;
 use super::sessions::{opencode_draft, status_of};
-use crate::agent::{AgentKind, Entry, Setting, Thread, ThreadStatus, ToolCall, ToolContent, ToolStatus, workers_ai};
+use crate::agent::{
+    AgentKind, Entry, Setting, Thread, ThreadStatus, ToolCall, ToolContent, ToolStatus, workers_ai,
+};
 use crate::control::{self, Reply, Request};
 use crate::model::{self, Status};
 use crate::phone::wire;
 use crate::state;
 
 impl Shell {
-    pub(super) fn agent_command(&mut self, req: &Request, window: &mut Window, cx: &mut Context<Self>) -> Reply {
+    pub(super) fn agent_command(
+        &mut self,
+        req: &Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
         let arg = |i: usize| req.args.get(i).map_or("", String::as_str);
         let sub = arg(0);
         if sub == "new" {
@@ -37,7 +44,9 @@ impl Shell {
                     None => self
                         .with_entries(&id, cx, |entries| {
                             entries.iter().rev().find_map(|e| match e {
-                                Entry::Agent { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
+                                Entry::Agent { text } if !text.trim().is_empty() => {
+                                    Some(text.trim().to_string())
+                                }
                                 _ => None,
                             })
                         })
@@ -49,7 +58,9 @@ impl Shell {
             "log" => {
                 let lines = arg(2).parse().unwrap_or(control::AGENT_LOG);
                 let (status, model, error) = self.agent_state(&env_path, &id, cx);
-                let title = self.find_env(&env_path).and_then(|e| Some(e.sessions[e.session_index(&id)?].title.clone()));
+                let title = self
+                    .find_env(&env_path)
+                    .and_then(|e| Some(e.sessions[e.session_index(&id)?].title.clone()));
                 let mut out = format!(
                     "{id}  {}  {model}  {}  {}",
                     wire::status(status),
@@ -59,9 +70,15 @@ impl Shell {
                 if let Some(e) = error {
                     out.push_str(&format!("\nerror: {e}"));
                 }
-                let log = self.with_entries(&id, cx, |entries| render_log(entries, lines)).unwrap_or_default();
+                let log = self
+                    .with_entries(&id, cx, |entries| render_log(entries, lines))
+                    .unwrap_or_default();
                 out.push_str("\n\n");
-                out.push_str(if log.is_empty() { "(nothing yet)" } else { &log });
+                out.push_str(if log.is_empty() {
+                    "(nothing yet)"
+                } else {
+                    &log
+                });
                 Reply::ok(out)
             }
             "send" => {
@@ -72,7 +89,9 @@ impl Shell {
                 }
             }
             "stop" => {
-                let thread = self.session_mut(&env_path, &id).and_then(|s| s.live.as_ref().map(|l| l.thread.clone()));
+                let thread = self
+                    .session_mut(&env_path, &id)
+                    .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()));
                 match thread {
                     Some(t) if cli_status(t.read(cx)) == Status::Working => {
                         t.update(cx, |t, cx| t.cancel(cx));
@@ -81,7 +100,9 @@ impl Shell {
                     _ => Reply::ok(format!("{id} is not working")),
                 }
             }
-            other => Reply::err(format!("unknown command `arakun agent {other}` (see arakun help)")),
+            other => Reply::err(format!(
+                "unknown command `arakun agent {other}` (see arakun help)"
+            )),
         }
     }
 
@@ -90,26 +111,51 @@ impl Shell {
     fn agent_new(&mut self, req: &Request, window: &mut Window, cx: &mut Context<Self>) -> Reply {
         let (model, dir, title, ask, prompt, effort, mode) = match &req.args[..] {
             [_, model, dir, title, ask, prompt] => (model, dir, title, ask, prompt, "", ""),
-            [_, model, dir, title, ask, prompt, effort] => (model, dir, title, ask, prompt, effort.as_str(), ""),
-            [_, model, dir, title, ask, prompt, effort, mode] => (model, dir, title, ask, prompt, effort.as_str(), mode.as_str()),
+            [_, model, dir, title, ask, prompt, effort] => {
+                (model, dir, title, ask, prompt, effort.as_str(), "")
+            }
+            [_, model, dir, title, ask, prompt, effort, mode] => (
+                model,
+                dir,
+                title,
+                ask,
+                prompt,
+                effort.as_str(),
+                mode.as_str(),
+            ),
             _ => return Reply::err("arakun agent new: bad request (see arakun help)"),
         };
         // `claude/<model>`: a Claude Code session, visible in the app, its permissions
         // asked there as always (never auto-allowed from here).
         if let Some(claude) = model.strip_prefix("claude/") {
-            let offered: Vec<String> = crate::agent::acp_option(&crate::agent::catalog::claude_options(), Setting::Model)
-                .map(|o| o.options.iter().map(|c| c.id.to_string()).collect())
-                .unwrap_or_default();
+            let offered: Vec<String> =
+                crate::agent::acp_option(&crate::agent::catalog::claude_options(), Setting::Model)
+                    .map(|o| o.options.iter().map(|c| c.id.to_string()).collect())
+                    .unwrap_or_default();
             if !offered.is_empty() && !offered.iter().any(|m| m == claude) {
-                return Reply::err(format!("Claude doesn't offer {claude}; pick one of: {}", offered.join(", ")));
+                return Reply::err(format!(
+                    "Claude doesn't offer {claude}; pick one of: {}",
+                    offered.join(", ")
+                ));
             }
-            let dir = if dir.is_empty() { req.cwd.clone() } else { PathBuf::from(dir) };
+            let dir = if dir.is_empty() {
+                req.cwd.clone()
+            } else {
+                PathBuf::from(dir)
+            };
             let env_path = match self.env_holding(&dir, window, cx) {
                 Ok(path) => path,
                 Err(e) => return Reply::err(e),
             };
             let title: SharedString = match title.as_str() {
-                "" => head(prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(""), TITLE_CHARS),
+                "" => head(
+                    prompt
+                        .lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .unwrap_or(""),
+                    TITLE_CHARS,
+                ),
                 t => t.to_string(),
             }
             .into();
@@ -122,28 +168,56 @@ impl Shell {
             if !mode.is_empty() {
                 extra.push((Setting::Mode, mode.to_string()));
             }
-            let Some(id) = self.start_session_with(&env_path, model::Agent::Claude, title, prompt.clone(), false, extra, window, cx) else {
-                return Reply::err(format!("could not start a session in {}", env_path.display()));
+            let Some(id) = self.start_session_with(
+                &env_path,
+                model::Agent::Claude,
+                title,
+                prompt.clone(),
+                false,
+                extra,
+                window,
+                cx,
+            ) else {
+                return Reply::err(format!(
+                    "could not start a session in {}",
+                    env_path.display()
+                ));
             };
             self.save(cx);
             cx.notify();
             return Reply::ok(format!("{id}  claude/{claude}  {}", env_path.display()));
         }
-        let native = model.strip_prefix(workers_ai::CLI_PREFIX).and_then(workers_ai::model);
+        let native = model
+            .strip_prefix(workers_ai::CLI_PREFIX)
+            .and_then(workers_ai::model);
         if native.is_none() && !model.is_empty() && !crate::agent::opencode_all_models() {
             let offered = crate::agent::opencode_models();
             if !offered.contains(model) {
                 let all = [offered, workers_ai::cli_models()].concat();
-                return Reply::err(format!("arakun does not offer {model}; pick one of:\n  {}", all.join("\n  ")));
+                return Reply::err(format!(
+                    "arakun does not offer {model}; pick one of:\n  {}",
+                    all.join("\n  ")
+                ));
             }
         }
-        let dir = if dir.is_empty() { req.cwd.clone() } else { PathBuf::from(dir) };
+        let dir = if dir.is_empty() {
+            req.cwd.clone()
+        } else {
+            PathBuf::from(dir)
+        };
         let env_path = match self.env_holding(&dir, window, cx) {
             Ok(path) => path,
             Err(e) => return Reply::err(e),
         };
         let title: SharedString = match title.as_str() {
-            "" => head(prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(""), TITLE_CHARS),
+            "" => head(
+                prompt
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or(""),
+                TITLE_CHARS,
+            ),
             t => t.to_string(),
         }
         .into();
@@ -151,14 +225,29 @@ impl Shell {
         let (mut extra, picked) = if let Some(m) = native {
             (vec![(Setting::Model, m.id.to_string())], model.clone())
         } else if model.is_empty() {
-            let draft = self
-                .find_env(&env_path)
-                .and_then(|e| opencode_draft(e).into_iter().find(|(s, _)| *s == Setting::Model).map(|(_, v)| v));
-            let default = crate::agent::acp_option(&crate::agent::catalog::opencode_options(), Setting::Model)
-                .map(|o| o.current.clone())
-                .filter(|m| !m.is_empty());
-            let pinned = crate::agent::opencode_models().into_iter().next().filter(|_| !crate::agent::opencode_all_models());
-            (Vec::new(), draft.or(default).or(pinned).unwrap_or_else(|| "default".into()))
+            let draft = self.find_env(&env_path).and_then(|e| {
+                opencode_draft(e)
+                    .into_iter()
+                    .find(|(s, _)| *s == Setting::Model)
+                    .map(|(_, v)| v)
+            });
+            let default = crate::agent::acp_option(
+                &crate::agent::catalog::opencode_options(),
+                Setting::Model,
+            )
+            .map(|o| o.current.clone())
+            .filter(|m| !m.is_empty());
+            let pinned = crate::agent::opencode_models()
+                .into_iter()
+                .next()
+                .filter(|_| !crate::agent::opencode_all_models());
+            (
+                Vec::new(),
+                draft
+                    .or(default)
+                    .or(pinned)
+                    .unwrap_or_else(|| "default".into()),
+            )
         } else {
             (vec![(Setting::Model, model.clone())], model.clone())
         };
@@ -168,10 +257,26 @@ impl Shell {
         if !effort.is_empty() {
             extra.push((Setting::Effort, effort.to_string()));
         }
-        let agent = if native.is_some() { model::Agent::WorkersAi } else { model::Agent::OpenCode };
-        let started = self.start_session_with(&env_path, agent, title, prompt.clone(), false, extra, window, cx);
+        let agent = if native.is_some() {
+            model::Agent::WorkersAi
+        } else {
+            model::Agent::OpenCode
+        };
+        let started = self.start_session_with(
+            &env_path,
+            agent,
+            title,
+            prompt.clone(),
+            false,
+            extra,
+            window,
+            cx,
+        );
         let Some(id) = started else {
-            return Reply::err(format!("could not start a session in {}", env_path.display()));
+            return Reply::err(format!(
+                "could not start a session in {}",
+                env_path.display()
+            ));
         };
         let auto_allow = ask.is_empty();
         if let Some(s) = self.session_mut(&env_path, &id) {
@@ -188,7 +293,12 @@ impl Shell {
 
     /// The environment holding `dir`. A folder of no project becomes one,
     /// quietly: what is on screen stays as it is.
-    fn env_holding(&mut self, dir: &Path, window: &mut Window, cx: &mut Context<Self>) -> Result<PathBuf, String> {
+    fn env_holding(
+        &mut self,
+        dir: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<PathBuf, String> {
         if let Some(env) = self.env_for(dir) {
             return Ok(env);
         }
@@ -212,7 +322,13 @@ impl Shell {
         self.sync_poll(window, cx);
         self.save(cx);
         cx.notify();
-        self.env_for(dir).ok_or_else(|| format!("{} is in no environment of {}", dir.display(), root.display()))
+        self.env_for(dir).ok_or_else(|| {
+            format!(
+                "{} is in no environment of {}",
+                dir.display(),
+                root.display()
+            )
+        })
     }
 
     /// The session `id` names, by its id or the start of one, in any environment.
@@ -239,10 +355,17 @@ impl Shell {
 
     /// A session's status, model and error, from its agent when it is running.
     fn agent_state(&self, env_path: &Path, id: &str, cx: &App) -> (Status, String, Option<String>) {
-        let Some(s) = self.find_env(env_path).and_then(|e| Some(&e.sessions[e.session_index(id)?])) else {
+        let Some(s) = self
+            .find_env(env_path)
+            .and_then(|e| Some(&e.sessions[e.session_index(id)?]))
+        else {
             return (Status::Idle, "-".into(), None);
         };
-        let saved = s.cli_model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| "-".into());
+        let saved = s
+            .cli_model
+            .clone()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "-".into());
         let Some(live) = &s.live else {
             return (s.status, saved, None);
         };
@@ -251,7 +374,13 @@ impl Shell {
             .setting(Setting::Model)
             .map(|(m, _)| m)
             .filter(|m| !m.is_empty())
-            .map(|m| if t.kind() == AgentKind::WorkersAi { format!("{}{m}", workers_ai::CLI_PREFIX) } else { m })
+            .map(|m| {
+                if t.kind() == AgentKind::WorkersAi {
+                    format!("{}{m}", workers_ai::CLI_PREFIX)
+                } else {
+                    m
+                }
+            })
             .unwrap_or(saved);
         let error = match t.status() {
             ThreadStatus::Error(e) => Some(e.lines().next().unwrap_or("").trim().to_string()),
@@ -273,7 +402,10 @@ impl Shell {
             return Some(f(live.thread.read(cx).entries()));
         }
         let path = state::transcript_path(id);
-        let transcript = path.exists().then(|| Thread::read_transcript(&path).ok()).flatten()?;
+        let transcript = path
+            .exists()
+            .then(|| Thread::read_transcript(&path).ok())
+            .flatten()?;
         Some(f(&transcript.entries))
     }
 
@@ -281,23 +413,38 @@ impl Shell {
         let mut rows: Vec<(u64, String)> = Vec::new();
         for e in self.projects.iter().flat_map(|p| &p.environments) {
             let listed = |s: &&model::Session| {
-                (all || matches!(s.agent, model::Agent::OpenCode | model::Agent::WorkersAi)) && !crate::headless::shown(&s.id)
+                (all || matches!(s.agent, model::Agent::OpenCode | model::Agent::WorkersAi))
+                    && !crate::headless::shown(&s.id)
             };
             for s in e.sessions.iter().filter(listed) {
                 let (status, model, _) = self.agent_state(&e.path, &s.id, cx);
                 let cli = if s.cli_model.is_some() { "  [cli]" } else { "" };
-                let kind = if all { format!("{:?}  ", s.agent) } else { String::new() };
+                let kind = if all {
+                    format!("{:?}  ", s.agent)
+                } else {
+                    String::new()
+                };
                 rows.push((
                     s.updated,
-                    format!("{}  {}  {kind}{model}  {}  {}{cli}", s.id, wire::status(status), s.title, e.path.display()),
+                    format!(
+                        "{}  {}  {kind}{model}  {}  {}{cli}",
+                        s.id,
+                        wire::status(status),
+                        s.title,
+                        e.path.display()
+                    ),
                 ));
             }
         }
         if rows.is_empty() {
-            return "no OpenCode or Workers AI sessions; `arakun agent new <prompt>` starts one".into();
+            return "no OpenCode or Workers AI sessions; `arakun agent new <prompt>` starts one"
+                .into();
         }
         rows.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
-        rows.into_iter().map(|(_, row)| row).collect::<Vec<_>>().join("\n")
+        rows.into_iter()
+            .map(|(_, row)| row)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -312,7 +459,11 @@ fn cli_status(t: &Thread) -> Status {
 
 /// An `--effort` the model can't take, with the ones it can. OpenCode's levels
 /// are known only for the model its sessions start on.
-fn check_effort(native: Option<&workers_ai::Model>, model: &str, effort: &str) -> Result<(), String> {
+fn check_effort(
+    native: Option<&workers_ai::Model>,
+    model: &str,
+    effort: &str,
+) -> Result<(), String> {
     if effort.is_empty() {
         return Ok(());
     }
@@ -320,21 +471,38 @@ fn check_effort(native: Option<&workers_ai::Model>, model: &str, effort: &str) -
         Some(m) => m.efforts.iter().map(|e| e.to_string()).collect(),
         None => {
             let options = crate::agent::catalog::opencode_options();
-            let default = crate::agent::acp_option(&options, Setting::Model).map(|o| o.current.clone());
+            let default =
+                crate::agent::acp_option(&options, Setting::Model).map(|o| o.current.clone());
             if !model.is_empty() && default.as_deref() != Some(model) {
                 return Ok(());
             }
             match crate::agent::acp_option(&options, Setting::Effort) {
                 Some(o) => o.options.iter().map(|c| c.id.clone()).collect(),
-                None => return Err(format!("{} takes no --effort", if model.is_empty() { "this model" } else { model })),
+                None => {
+                    return Err(format!(
+                        "{} takes no --effort",
+                        if model.is_empty() {
+                            "this model"
+                        } else {
+                            model
+                        }
+                    ));
+                }
             }
         }
     };
     if offered.iter().any(|e| e == effort) {
         Ok(())
     } else {
-        let name = if model.is_empty() { "the default model" } else { model };
-        Err(format!("{name} takes no --effort {effort}; pick one of: {}", offered.join(", ")))
+        let name = if model.is_empty() {
+            "the default model"
+        } else {
+            model
+        };
+        Err(format!(
+            "{name} takes no --effort {effort}; pick one of: {}",
+            offered.join(", ")
+        ))
     }
 }
 
@@ -354,7 +522,9 @@ fn render_entry(e: &Entry) -> Option<String> {
     Some(match e {
         Entry::User { text, .. } => format!("you: {}", head(text.trim(), USER_CHARS)),
         Entry::Agent { text } if !text.trim().is_empty() => format!("agent: {}", text.trim()),
-        Entry::Thought { text } if !text.trim().is_empty() => format!("thought: {}", head(text.trim(), THOUGHT_CHARS)),
+        Entry::Thought { text } if !text.trim().is_empty() => {
+            format!("thought: {}", head(text.trim(), THOUGHT_CHARS))
+        }
         Entry::Tool(t) => {
             let status = match t.status {
                 ToolStatus::Pending => "pending",
@@ -388,7 +558,11 @@ fn render_entry(e: &Entry) -> Option<String> {
             }
             out
         }
-        Entry::Notice { text, error, .. } => format!("{}: {}", if *error { "error" } else { "notice" }, text.trim()),
+        Entry::Notice { text, error, .. } => format!(
+            "{}: {}",
+            if *error { "error" } else { "notice" },
+            text.trim()
+        ),
         Entry::Compacted { .. } => "(context compacted)".into(),
         _ => return None,
     })
@@ -399,9 +573,11 @@ fn tool_command(t: &ToolCall) -> Option<String> {
     let input = t.raw_input.as_ref()?;
     let raw = match input.get("command").or_else(|| input.get("cmd"))? {
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(parts) => {
-            parts.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>().join(" ")
-        }
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
         _ => return None,
     };
     Some(head(raw.trim(), OUTPUT_CHARS))
@@ -419,7 +595,11 @@ fn tool_output(t: &ToolCall) -> String {
             _ => None,
         })
         .collect();
-    if texts.is_empty() { t.raw_output.clone().unwrap_or_default() } else { texts.join("\n") }
+    if texts.is_empty() {
+        t.raw_output.clone().unwrap_or_default()
+    } else {
+        texts.join("\n")
+    }
 }
 
 fn head(text: &str, max: usize) -> String {
@@ -475,21 +655,46 @@ mod tests {
                 tokens: None,
                 shell_changes: Vec::new(),
             },
-            Entry::Thought { text: "x".repeat(400) },
-            tool(ToolStatus::Failed, "cargo test", &(1..=20).map(|i| format!("line {i}\n")).collect::<String>(), Some(101)),
+            Entry::Thought {
+                text: "x".repeat(400),
+            },
+            tool(
+                ToolStatus::Failed,
+                "cargo test",
+                &(1..=20).map(|i| format!("line {i}\n")).collect::<String>(),
+                Some(101),
+            ),
             Entry::Agent { text: "  ".into() },
             Entry::Plan {
                 entries: vec![
-                    PlanEntry { content: "find it".into(), priority: String::new(), status: "completed".into() },
-                    PlanEntry { content: "fix it".into(), priority: String::new(), status: "pending".into() },
+                    PlanEntry {
+                        content: "find it".into(),
+                        priority: String::new(),
+                        status: "completed".into(),
+                    },
+                    PlanEntry {
+                        content: "fix it".into(),
+                        priority: String::new(),
+                        status: "pending".into(),
+                    },
                 ],
             },
-            Entry::Notice { text: "Check failed".into(), error: true, mark: None, places: Vec::new() },
-            Entry::Agent { text: "Fixed.\n".into() },
+            Entry::Notice {
+                text: "Check failed".into(),
+                error: true,
+                mark: None,
+                places: Vec::new(),
+            },
+            Entry::Agent {
+                text: "Fixed.\n".into(),
+            },
         ];
         let log = render_log(&entries, 30);
         let thought = format!("thought: {}…", "x".repeat(300));
-        let output = (13..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let output = (13..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(
             log,
             format!(
@@ -497,7 +702,10 @@ mod tests {
                  plan:\n  [x] find it\n  [ ] fix it\n\nerror: Check failed\n\nagent: Fixed."
             )
         );
-        assert_eq!(render_log(&entries, 2), "error: Check failed\n\nagent: Fixed.");
+        assert_eq!(
+            render_log(&entries, 2),
+            "error: Check failed\n\nagent: Fixed."
+        );
         assert_eq!(render_log(&[], 5), "");
         assert_eq!(tail("abcdef", 5, 3), "…def");
         assert_eq!(head("abcdef", 3), "abc…");

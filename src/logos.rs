@@ -140,18 +140,38 @@ pub fn mark(name: &str, hint: &str) -> Mark {
     let name = name.strip_prefix("claude.ai ").unwrap_or(name);
     // The name decides; the address only when the name says nothing, and not by
     // where it is hosted (a github.com homepage is not GitHub's server).
-    let found = brand(name, &[]).or_else(|| brand(&format!("{name} {hint}"), &["github", "gitlab", "npm", "claude", "anthropic", "vercel"]));
+    let found = brand(name, &[]).or_else(|| {
+        brand(
+            &format!("{name} {hint}"),
+            &["github", "gitlab", "npm", "claude", "anthropic", "vercel"],
+        )
+    });
     if let Some((slug, hex)) = found {
-        return if slug.is_empty() { Mark::Letter { ch: initial(name), hex } } else { Mark::Logo { slug, hex } };
+        return if slug.is_empty() {
+            Mark::Letter {
+                ch: initial(name),
+                hex,
+            }
+        } else {
+            Mark::Logo { slug, hex }
+        };
     }
-    let hash = name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    Mark::Letter { ch: initial(name), hex: theme::CATEGORY[hash as usize % theme::CATEGORY.len()] }
+    let hash = name
+        .bytes()
+        .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    Mark::Letter {
+        ch: initial(name),
+        hex: theme::CATEGORY[hash as usize % theme::CATEGORY.len()],
+    }
 }
 
 /// The first brand a word of `text` names, leaving out the `skip` ones.
 fn brand(text: &str, skip: &[&str]) -> Option<(&'static str, u32)> {
     let hay = text.to_lowercase();
-    let words: Vec<&str> = hay.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = hay
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
     let google = hay.contains("google");
     for &(word, slug, hex) in BRANDS {
         // Google's products only under Google, so "docs" alone stays a plain word.
@@ -161,7 +181,8 @@ fn brand(text: &str, skip: &[&str]) -> Option<(&'static str, u32)> {
         }
         let hit = match word {
             // Short words only as a whole word.
-            "box" | "seo" | "npm" | "rust" | "neon" | "docs" | "sap" | "exa" | "wix" | "aws" | "okta" | "sonar" => words.contains(&word),
+            "box" | "seo" | "npm" | "rust" | "neon" | "docs" | "sap" | "exa" | "wix" | "aws"
+            | "okta" | "sonar" => words.contains(&word),
             _ => words.iter().any(|w| w.starts_with(word)),
         };
         if hit {
@@ -173,14 +194,20 @@ fn brand(text: &str, skip: &[&str]) -> Option<(&'static str, u32)> {
 
 fn initial(name: &str) -> char {
     let core = name.rsplit(':').next().unwrap_or(name);
-    core.chars().find(|c| c.is_alphanumeric()).map_or('?', |c| c.to_ascii_uppercase())
+    core.chars()
+        .find(|c| c.is_alphanumeric())
+        .map_or('?', |c| c.to_ascii_uppercase())
 }
 
 /// Relative luminance of a color, 0 (black) to 1 (white).
 fn luminance(hex: u32) -> f32 {
     let lin = |c: u32| {
         let c = c as f32 / 255.;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
     };
     0.2126 * lin(hex >> 16 & 0xff) + 0.7152 * lin(hex >> 8 & 0xff) + 0.0722 * lin(hex & 0xff)
 }
@@ -191,7 +218,11 @@ pub fn tile(mark: Mark, size: f32) -> Div {
         Mark::Logo { hex, .. } | Mark::Letter { hex, .. } => hex,
     };
     let lum = luminance(hex);
-    let ink: Hsla = if lum > 0.45 { rgb(0x111111).into() } else { gpui::white() };
+    let ink: Hsla = if lum > 0.45 {
+        rgb(0x111111).into()
+    } else {
+        gpui::white()
+    };
     let bg: Rgba = rgb(hex);
     div()
         .flex()
@@ -199,14 +230,33 @@ pub fn tile(mark: Mark, size: f32) -> Div {
         .items_center()
         .justify_center()
         .size(px(size))
-        .rounded(px(if size >= 28. { ui::RADIUS } else { ui::RADIUS_SM }))
+        .rounded(px(if size >= 28. {
+            ui::RADIUS
+        } else {
+            ui::RADIUS_SM
+        }))
         .bg(bg)
         // Near-black marks vanish on the dark page without an edge.
-        .when(lum < 0.03, |d| d.border_1().border_color(theme::border_strong()))
+        .when(lum < 0.03, |d| {
+            d.border_1().border_color(theme::border_strong())
+        })
         .map(|d| match mark {
-            Mark::Logo { slug, .. } => d.child(svg().path(format!("logos/{slug}.svg")).size(px(size * 0.56)).text_color(ink)),
+            Mark::Logo { slug, .. } => d.child(
+                svg()
+                    .path(format!("logos/{slug}.svg"))
+                    .size(px(size * 0.56))
+                    .text_color(ink),
+            ),
             Mark::Letter { ch, .. } => d.child(
-                div().ty(if size >= 28. { Type::Heading } else { Type::Label }).font_weight(gpui::FontWeight::BOLD).text_color(ink).child(ch.to_string()),
+                div()
+                    .ty(if size >= 28. {
+                        Type::Heading
+                    } else {
+                        Type::Label
+                    })
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(ink)
+                    .child(ch.to_string()),
             ),
         })
 }
@@ -224,19 +274,46 @@ mod tests {
 
     #[test]
     fn finds_brands() {
-        assert_eq!(slug("claude.ai Gmail", "https://gmailmcp.googleapis.com/mcp/v1"), "gmail");
-        assert_eq!(slug("claude.ai Google Docs", "https://docsmcp.googleapis.com/mcp/v1"), "googledocs");
-        assert_eq!(slug("claude.ai Claude Docs", "https://api.anthropic.com/v1/pages/mcp"), "claude");
+        assert_eq!(
+            slug("claude.ai Gmail", "https://gmailmcp.googleapis.com/mcp/v1"),
+            "gmail"
+        );
+        assert_eq!(
+            slug(
+                "claude.ai Google Docs",
+                "https://docsmcp.googleapis.com/mcp/v1"
+            ),
+            "googledocs"
+        );
+        assert_eq!(
+            slug(
+                "claude.ai Claude Docs",
+                "https://api.anthropic.com/v1/pages/mcp"
+            ),
+            "claude"
+        );
         assert_eq!(slug("posthog", "https://mcp.posthog.com/mcp"), "posthog");
         assert_eq!(slug("plugin:posthog:posthog", ""), "posthog");
         assert_eq!(slug("claude.ai Box", "https://mcp.box.com"), "box");
-        assert_eq!(slug("claude.ai Slack", "https://mcp.slack.com/mcp"), "letter S");
+        assert_eq!(
+            slug("claude.ai Slack", "https://mcp.slack.com/mcp"),
+            "letter S"
+        );
         assert_eq!(slug("rust-analyzer-lsp", ""), "rust");
         assert_eq!(slug("claude-seo", "agricidaniel-claude-seo"), "letter C");
         assert_eq!(slug("helius", "npx helius-mcp@latest"), "letter H");
         assert_eq!(slug("toolbox", "npx something"), "letter T");
-        assert_eq!(slug("superpowers", "https://github.com/obra/superpowers"), "letter S");
-        assert_eq!(slug("github", "https://github.com/anthropics/claude-plugins-official"), "github");
+        assert_eq!(
+            slug("superpowers", "https://github.com/obra/superpowers"),
+            "letter S"
+        );
+        assert_eq!(
+            slug(
+                "github",
+                "https://github.com/anthropics/claude-plugins-official"
+            ),
+            "github"
+        );
         assert!(luminance(0xffffff) > 0.99 && luminance(0) < 0.01);
     }
 }

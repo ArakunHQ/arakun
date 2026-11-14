@@ -48,7 +48,9 @@ impl Region {
     }
 
     pub fn of_host(host: &str) -> Option<Region> {
-        Region::ALL.into_iter().find(|r| r.host() == host.trim_end_matches('/'))
+        Region::ALL
+            .into_iter()
+            .find(|r| r.host() == host.trim_end_matches('/'))
     }
 }
 
@@ -102,7 +104,10 @@ pub struct Store {
 
 impl Store {
     pub fn read_from(file: &Path) -> Store {
-        std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     pub fn write_to(&self, file: &Path) -> Result<(), String> {
@@ -216,7 +221,9 @@ impl ApiError {
     pub fn message(&self) -> String {
         match self {
             ApiError::SignedOut(m) | ApiError::Failed(m) => m.clone(),
-            ApiError::RateLimited(until) => format!("PostHog asked to wait until {}.", clock(*until)),
+            ApiError::RateLimited(until) => {
+                format!("PostHog asked to wait until {}.", clock(*until))
+            }
         }
     }
 }
@@ -236,17 +243,27 @@ fn agent() -> &'static ureq::Agent {
 
 /// Which budget a call spends: queries are counted per hour, the rest is plain REST.
 fn bucket(path: &str) -> &'static str {
-    if path.contains("/query") { "query" } else { "api" }
+    if path.contains("/query") {
+        "query"
+    } else {
+        "api"
+    }
 }
 
 fn blocks() -> std::sync::MutexGuard<'static, HashMap<String, u64>> {
     static BLOCKS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-    BLOCKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+    BLOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// When PostHog said this session may query again, if that is still ahead.
 pub fn blocked_until(session: &str, path: &str, now: u64) -> Option<u64> {
-    blocks().get(&format!("{session} {}", bucket(path))).copied().filter(|t| *t > now)
+    blocks()
+        .get(&format!("{session} {}", bucket(path)))
+        .copied()
+        .filter(|t| *t > now)
 }
 
 fn block(session: &str, path: &str, until: u64) {
@@ -258,7 +275,11 @@ fn block(session: &str, path: &str, until: u64) {
 pub fn retry_after(header: Option<&str>, now: u64) -> u64 {
     let wait = header
         .map(str::trim)
-        .and_then(|h| h.parse::<u64>().ok().or_else(|| http_date(h).map(|t| t.saturating_sub(now))))
+        .and_then(|h| {
+            h.parse::<u64>()
+                .ok()
+                .or_else(|| http_date(h).map(|t| t.saturating_sub(now)))
+        })
         .unwrap_or(60);
     now + wait.clamp(1, 90 * 60)
 }
@@ -266,13 +287,20 @@ pub fn retry_after(header: Option<&str>, now: u64) -> u64 {
 /// `Wed, 21 Oct 2015 07:28:00 GMT` → unix seconds.
 fn http_date(s: &str) -> Option<u64> {
     let parts: Vec<&str> = s.split_whitespace().collect();
-    let [_, day, month, year, time, _] = parts.as_slice() else { return None };
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let [_, day, month, year, time, _] = parts.as_slice() else {
+        return None;
+    };
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let m = MONTHS.iter().position(|x| x.eq_ignore_ascii_case(month))? as i64 + 1;
     let (h, rest) = time.split_once(':')?;
     let (mi, sec) = rest.split_once(':')?;
     let days = days_from_civil(year.parse().ok()?, m, day.parse().ok()?);
-    let t = days * 86_400 + h.parse::<i64>().ok()? * 3600 + mi.parse::<i64>().ok()? * 60 + sec.parse::<i64>().ok()?;
+    let t = days * 86_400
+        + h.parse::<i64>().ok()? * 3600
+        + mi.parse::<i64>().ok()? * 60
+        + sec.parse::<i64>().ok()?;
     u64::try_from(t).ok()
 }
 
@@ -281,16 +309,26 @@ pub fn parse_iso(s: &str) -> Option<u64> {
     let s = s.trim();
     let date = s.get(..10)?;
     let mut d = date.split('-');
-    let (y, m, day) = (d.next()?.parse().ok()?, d.next()?.parse().ok()?, d.next()?.parse().ok()?);
+    let (y, m, day) = (
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+    );
     let time = s.get(11..19)?;
     let mut t = time.split(':');
-    let (h, mi, sec): (i64, i64, i64) = (t.next()?.parse().ok()?, t.next()?.parse().ok()?, t.next()?.parse().ok()?);
+    let (h, mi, sec): (i64, i64, i64) = (
+        t.next()?.parse().ok()?,
+        t.next()?.parse().ok()?,
+        t.next()?.parse().ok()?,
+    );
     let rest = &s[19..];
     let rest = rest.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
     let offset = match rest.as_bytes().first() {
         Some(b'+') | Some(b'-') => {
             let sign = if rest.starts_with('-') { -1 } else { 1 };
-            let (oh, om) = rest[1..].split_once(':').unwrap_or((rest.get(1..3)?, rest.get(3..5).unwrap_or("0")));
+            let (oh, om) = rest[1..]
+                .split_once(':')
+                .unwrap_or((rest.get(1..3)?, rest.get(3..5).unwrap_or("0")));
             sign * (oh.parse::<i64>().ok()? * 3600 + om.parse::<i64>().ok()? * 60)
         }
         _ => 0,
@@ -317,7 +355,13 @@ pub fn clock(t: u64) -> String {
 }
 
 /// A call with a bearer token against `host`. The token goes in the header only.
-fn send(host: &str, token: &str, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ApiError> {
+fn send(
+    host: &str,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
     let url = format!("{}{path}", host.trim_end_matches('/'));
     let request = ureq::http::Request::builder()
         .method(method)
@@ -325,26 +369,51 @@ fn send(host: &str, token: &str, method: &str, path: &str, body: Option<&Value>)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json");
     let sent = match body {
-        Some(b) => request.body(b.to_string()).map_err(|e| e.to_string()).and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-        None => request.body(()).map_err(|e| e.to_string()).and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+        Some(b) => request
+            .body(b.to_string())
+            .map_err(|e| e.to_string())
+            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+        None => request
+            .body(())
+            .map_err(|e| e.to_string())
+            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
     };
-    let mut response = sent.map_err(|e| ApiError::Failed(format!("Couldn't reach PostHog: {e}")))?;
+    let mut response =
+        sent.map_err(|e| ApiError::Failed(format!("Couldn't reach PostHog: {e}")))?;
     let status = response.status().as_u16();
-    let after = response.headers().get("retry-after").and_then(|h| h.to_str().ok()).map(str::to_string);
-    let text = response.body_mut().with_config().limit(16 * 1024 * 1024).read_to_string().unwrap_or_default();
+    let after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_string);
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(16 * 1024 * 1024)
+        .read_to_string()
+        .unwrap_or_default();
     answer(status, after.as_deref(), &text, crate::model::unix_now())
 }
 
 /// Turns a status and body into the value or the error the tab shows.
 fn answer(status: u16, retry: Option<&str>, text: &str, now: u64) -> Result<Value, ApiError> {
     let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
-    let detail = v["detail"].as_str().or(v["error"].as_str()).map(str::to_string);
+    let detail = v["detail"]
+        .as_str()
+        .or(v["error"].as_str())
+        .map(str::to_string);
     match status {
         200..=299 => Ok(v),
         429 => Err(ApiError::RateLimited(retry_after(retry, now))),
-        401 => Err(ApiError::SignedOut(detail.unwrap_or_else(|| "PostHog refused the sign-in.".into()))),
-        403 => Err(ApiError::SignedOut(detail.unwrap_or_else(|| "This sign-in can't read that (a missing scope?).".into()))),
-        _ => Err(ApiError::Failed(detail.unwrap_or_else(|| format!("PostHog answered {status}.")))),
+        401 => Err(ApiError::SignedOut(
+            detail.unwrap_or_else(|| "PostHog refused the sign-in.".into()),
+        )),
+        403 => Err(ApiError::SignedOut(detail.unwrap_or_else(|| {
+            "This sign-in can't read that (a missing scope?).".into()
+        }))),
+        _ => Err(ApiError::Failed(
+            detail.unwrap_or_else(|| format!("PostHog answered {status}.")),
+        )),
     }
 }
 
@@ -367,14 +436,32 @@ fn call(s: &Session, method: &str, path: &str, body: Option<&Value>) -> Result<V
 /// The user behind a credential on `host`, as a session ready to save.
 pub fn identify(host: &str, credential: Credential) -> Result<Session, ApiError> {
     let me = send(host, credential.bearer(), "GET", "/api/users/@me/", None)?;
-    let uuid = me["uuid"].as_str().or(me["distinct_id"].as_str()).unwrap_or_default();
+    let uuid = me["uuid"]
+        .as_str()
+        .or(me["distinct_id"].as_str())
+        .unwrap_or_default();
     let email = me["email"].as_str().unwrap_or_default().to_string();
     if uuid.is_empty() && email.is_empty() {
-        return Err(ApiError::Failed("PostHog didn't say who this sign-in belongs to.".into()));
+        return Err(ApiError::Failed(
+            "PostHog didn't say who this sign-in belongs to.".into(),
+        ));
     }
-    let name = [me["first_name"].as_str(), me["last_name"].as_str()].into_iter().flatten().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    let name = [me["first_name"].as_str(), me["last_name"].as_str()]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     Ok(Session {
-        id: format!("{}#{}", host.trim_end_matches('/'), if uuid.is_empty() { email.as_str() } else { uuid }),
+        id: format!(
+            "{}#{}",
+            host.trim_end_matches('/'),
+            if uuid.is_empty() {
+                email.as_str()
+            } else {
+                uuid
+            }
+        ),
         host: host.trim_end_matches('/').to_string(),
         email,
         name,
@@ -389,7 +476,9 @@ pub fn sign_in_with_key(key: &str, region: Option<Region>) -> Result<Session, Ap
     if key.starts_with("phc_") {
         return Err(ApiError::Failed("That's a project key (phc_), which only sends events. Paste a personal API key (phx_).".into()));
     }
-    let credential = Credential::ApiKey { key: key.to_string() };
+    let credential = Credential::ApiKey {
+        key: key.to_string(),
+    };
     let tries: Vec<Region> = match region {
         Some(r) => vec![r],
         None => Region::ALL.to_vec(),
@@ -452,20 +541,43 @@ fn projects_of(s: &Session) -> Result<SessionProjects, ApiError> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|o| Some((o["id"].as_str()?.to_string(), o["name"].as_str().unwrap_or_default().to_string())))
+        .filter_map(|o| {
+            Some((
+                o["id"].as_str()?.to_string(),
+                o["name"].as_str().unwrap_or_default().to_string(),
+            ))
+        })
         .collect();
     if orgs.is_empty()
         && let Some(id) = me["organization"]["id"].as_str()
     {
-        orgs.push((id.to_string(), me["organization"]["name"].as_str().unwrap_or_default().to_string()));
+        orgs.push((
+            id.to_string(),
+            me["organization"]["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        ));
     }
     let mut out = Vec::new();
     let mut problems = Vec::new();
     for (org_id, org) in orgs {
-        match call(s, "GET", &format!("/api/organizations/{org_id}/projects/?limit=200"), None) {
+        match call(
+            s,
+            "GET",
+            &format!("/api/organizations/{org_id}/projects/?limit=200"),
+            None,
+        ) {
             Ok(v) => {
                 for p in parse_projects(&v) {
-                    let mut p = Project { session: s.id.clone(), host: s.host.clone(), email: s.email.clone(), org_id: org_id.clone(), org: org.clone(), ..p };
+                    let mut p = Project {
+                        session: s.id.clone(),
+                        host: s.host.clone(),
+                        email: s.email.clone(),
+                        org_id: org_id.clone(),
+                        org: org.clone(),
+                        ..p
+                    };
                     if p.api_token.is_empty()
                         && let Ok(d) = call(s, "GET", &format!("/api/projects/{}/", p.id), None)
                     {
@@ -505,15 +617,20 @@ fn parse_projects(v: &Value) -> Vec<Project> {
 /// A session that fails keeps the projects the last read found for it.
 pub fn load_directory(sessions: &[Session]) -> Directory {
     let previous = cached_directory().unwrap_or_default();
-    let mut dir = Directory { fetched_at: crate::model::unix_now(), ..Default::default() };
+    let mut dir = Directory {
+        fetched_at: crate::model::unix_now(),
+        ..Default::default()
+    };
     let results: Vec<(Session, Result<SessionProjects, ApiError>)> = std::thread::scope(|scope| {
         let handles: Vec<_> = sessions
             .iter()
             .cloned()
-            .map(|s| scope.spawn(move || {
-                let got = projects_of(&s);
-                (s, got)
-            }))
+            .map(|s| {
+                scope.spawn(move || {
+                    let got = projects_of(&s);
+                    (s, got)
+                })
+            })
             .collect();
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
@@ -525,7 +642,13 @@ pub fn load_directory(sessions: &[Session]) -> Directory {
             }
             Err(e) => {
                 dir.problems.push(format!("{}: {}", s.email, e.message()));
-                dir.projects.extend(previous.projects.iter().filter(|p| p.session == s.id).cloned());
+                dir.projects.extend(
+                    previous
+                        .projects
+                        .iter()
+                        .filter(|p| p.session == s.id)
+                        .cloned(),
+                );
             }
         }
     }
@@ -555,7 +678,10 @@ fn root_key(root: &Path) -> String {
 }
 
 pub fn links_from(file: &Path) -> HashMap<String, Link> {
-    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 pub fn link_of(root: &Path) -> Option<Link> {
@@ -588,13 +714,18 @@ pub enum Resolved<'a> {
 /// its files. The same project seen by two sessions counts once (the first).
 pub fn resolve<'a>(link: Option<&Link>, keys: &[String], projects: &'a [Project]) -> Resolved<'a> {
     if let Some(l) = link
-        && let Some(p) = projects.iter().find(|p| p.session == l.session && p.id == l.project)
+        && let Some(p) = projects
+            .iter()
+            .find(|p| p.session == l.session && p.id == l.project)
     {
         return Resolved::One(p, l.auto);
     }
     let mut hits: Vec<&Project> = Vec::new();
     for k in keys {
-        for p in projects.iter().filter(|p| !p.api_token.is_empty() && &p.api_token == k) {
+        for p in projects
+            .iter()
+            .filter(|p| !p.api_token.is_empty() && &p.api_token == k)
+        {
             if !hits.iter().any(|h| h.host == p.host && h.id == p.id) {
                 hits.push(p);
             }
@@ -660,8 +791,14 @@ const ISSUES: &str = "SELECT properties.$exception_issue_id AS issue, any(proper
     GROUP BY issue ORDER BY last DESC LIMIT 8";
 
 fn overview_file(p: &Project) -> PathBuf {
-    let host: String = p.host.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    cache_dir().join("posthog").join(format!("{host}-{}.json", p.id))
+    let host: String = p
+        .host
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    cache_dir()
+        .join("posthog")
+        .join(format!("{host}-{}.json", p.id))
 }
 
 /// What the last read of `p` found, to show at once.
@@ -671,12 +808,20 @@ pub fn cached(p: &Project) -> Option<Overview> {
 
 fn hogql(s: &Session, project: u64, q: &str) -> Result<Vec<Value>, ApiError> {
     let body = json!({ "query": { "kind": "HogQLQuery", "query": q } });
-    let v = call(s, "POST", &format!("/api/projects/{project}/query/"), Some(&body))?;
+    let v = call(
+        s,
+        "POST",
+        &format!("/api/projects/{project}/query/"),
+        Some(&body),
+    )?;
     Ok(v["results"].as_array().cloned().unwrap_or_default())
 }
 
 fn num(v: &Value) -> u64 {
-    v.as_u64().or_else(|| v.as_f64().map(|f| f.max(0.) as u64)).or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0)
+    v.as_u64()
+        .or_else(|| v.as_f64().map(|f| f.max(0.) as u64))
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(0)
 }
 
 /// Rows of HOURLY → 24 buckets, oldest first.
@@ -692,11 +837,17 @@ fn parse_hourly(rows: &[Value]) -> Vec<(u64, u64)> {
 /// `["TypeError"]` (an array, or that array as JSON text) → "TypeError".
 fn first_of(v: &Value) -> String {
     let arr = match v {
-        Value::String(s) => serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone())),
+        Value::String(s) => {
+            serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
+        }
         other => other.clone(),
     };
     match arr {
-        Value::Array(a) => a.first().and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        Value::Array(a) => a
+            .first()
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
         Value::String(s) => s,
         _ => String::new(),
     }
@@ -724,14 +875,21 @@ fn parse_flags(v: &Value) -> Vec<Flag> {
         .flatten()
         .filter(|f| f["deleted"].as_bool() != Some(true))
         .filter_map(|f| {
-            let groups = f["filters"]["groups"].as_array().cloned().unwrap_or_default();
+            let groups = f["filters"]["groups"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             let rollout = if f["filters"]["multivariate"].is_object() {
                 "multivariate".to_string()
             } else if groups.len() == 1 {
                 let g = &groups[0];
                 let pct = g["rollout_percentage"].as_f64().unwrap_or(100.);
                 let props = g["properties"].as_array().is_some_and(|p| !p.is_empty());
-                if props { format!("{pct:.0}% of a condition") } else { format!("{pct:.0}%") }
+                if props {
+                    format!("{pct:.0}% of a condition")
+                } else {
+                    format!("{pct:.0}%")
+                }
             } else if groups.is_empty() {
                 "0%".to_string()
             } else {
@@ -753,26 +911,48 @@ fn parse_flags(v: &Value) -> Vec<Flag> {
 
 /// A finished call, or a crash of its thread as an error.
 fn joined<T>(h: std::thread::ScopedJoinHandle<'_, Result<T, ApiError>>) -> Result<T, ApiError> {
-    h.join().unwrap_or_else(|_| Err(ApiError::Failed("The read crashed.".into())))
+    h.join()
+        .unwrap_or_else(|_| Err(ApiError::Failed("The read crashed.".into())))
 }
 
 /// Reads the overview of `p` as `s`: three HogQL queries and the flags list,
 /// in parallel. A part that fails keeps what `previous` had for it.
-pub fn load_overview(s: Session, p: &Project, previous: Option<&Overview>) -> Result<Overview, ApiError> {
+pub fn load_overview(
+    s: Session,
+    p: &Project,
+    previous: Option<&Overview>,
+) -> Result<Overview, ApiError> {
     let id = p.id;
     let (totals, hourly, issues, flags) = std::thread::scope(|scope| {
         let s = &s;
         let t = scope.spawn(move || hogql(s, id, TOTALS));
         let h = scope.spawn(move || hogql(s, id, HOURLY));
         let i = scope.spawn(move || hogql(s, id, ISSUES));
-        let f = scope.spawn(move || call(s, "GET", &format!("/api/projects/{id}/feature_flags/?limit=100"), None));
+        let f = scope.spawn(move || {
+            call(
+                s,
+                "GET",
+                &format!("/api/projects/{id}/feature_flags/?limit=100"),
+                None,
+            )
+        });
         (joined(t), joined(h), joined(i), joined(f))
     });
-    let errors: Vec<&ApiError> = [totals.as_ref().err(), hourly.as_ref().err(), issues.as_ref().err(), flags.as_ref().err()].into_iter().flatten().collect();
+    let errors: Vec<&ApiError> = [
+        totals.as_ref().err(),
+        hourly.as_ref().err(),
+        issues.as_ref().err(),
+        flags.as_ref().err(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let previous = previous.filter(|o| o.project == id);
     if errors.len() == 4 {
         // Every part refused the sign-in: say so instead of showing stale numbers as fine.
-        if let Some(e @ ApiError::SignedOut(_)) = errors.iter().find(|e| matches!(e, ApiError::SignedOut(_))) {
+        if let Some(e @ ApiError::SignedOut(_)) =
+            errors.iter().find(|e| matches!(e, ApiError::SignedOut(_)))
+        {
             return Err((*e).clone());
         }
         // Nothing read and nothing saved: the error, not a page of zeros.
@@ -781,9 +961,22 @@ pub fn load_overview(s: Session, p: &Project, previous: Option<&Overview>) -> Re
         }
     }
     let base = previous.cloned().unwrap_or_default();
-    let mut o = Overview { project: id, fetched_at: crate::model::unix_now(), ..base };
+    let mut o = Overview {
+        project: id,
+        fetched_at: crate::model::unix_now(),
+        ..base
+    };
     o.problems.clear();
-    o.limited_until = errors.iter().filter_map(|e| if let ApiError::RateLimited(t) = e { Some(*t) } else { None }).max();
+    o.limited_until = errors
+        .iter()
+        .filter_map(|e| {
+            if let ApiError::RateLimited(t) = e {
+                Some(*t)
+            } else {
+                None
+            }
+        })
+        .max();
     let mut problem = |what: &str, e: &ApiError| {
         if !matches!(e, ApiError::RateLimited(_)) {
             o.problems.push(format!("{what}: {}", e.message()));
@@ -852,11 +1045,19 @@ mod tests {
         let back = Store::read_from(&file);
         assert_eq!(back, store);
         assert_eq!(back.sessions.len(), 2);
-        assert_eq!(back.sessions[0].credential, Credential::ApiKey { key: "phx_3".into() });
+        assert_eq!(
+            back.sessions[0].credential,
+            Credential::ApiKey {
+                key: "phx_3".into()
+            }
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         let mut store = back;
         assert!(store.remove("us#b"));
@@ -866,7 +1067,15 @@ mod tests {
 
     #[test]
     fn debug_never_shows_secrets() {
-        assert!(!format!("{:?}", Credential::ApiKey { key: "phx_secret".into() }).contains("secret"));
+        assert!(
+            !format!(
+                "{:?}",
+                Credential::ApiKey {
+                    key: "phx_secret".into()
+                }
+            )
+            .contains("secret")
+        );
     }
 
     #[test]
@@ -877,46 +1086,97 @@ mod tests {
         assert_eq!(retry_after(Some("soon"), now), now + 60);
         assert_eq!(retry_after(Some("999999"), now), now + 90 * 60);
         // 2015-10-21 07:28:00 UTC is 1445412480.
-        assert_eq!(http_date("Wed, 21 Oct 2015 07:28:00 GMT"), Some(1_445_412_480));
-        assert_eq!(retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT"), 1_445_412_480 - 30), 1_445_412_480);
-        assert_eq!(answer(429, Some("30"), "", now), Err(ApiError::RateLimited(now + 30)));
-        assert!(matches!(answer(401, None, r#"{"detail":"Invalid token"}"#, now), Err(ApiError::SignedOut(m)) if m == "Invalid token"));
+        assert_eq!(
+            http_date("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(1_445_412_480)
+        );
+        assert_eq!(
+            retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT"), 1_445_412_480 - 30),
+            1_445_412_480
+        );
+        assert_eq!(
+            answer(429, Some("30"), "", now),
+            Err(ApiError::RateLimited(now + 30))
+        );
+        assert!(
+            matches!(answer(401, None, r#"{"detail":"Invalid token"}"#, now), Err(ApiError::SignedOut(m)) if m == "Invalid token")
+        );
         assert_eq!(answer(200, None, r#"{"ok":1}"#, now).unwrap()["ok"], 1);
     }
 
     #[test]
     fn a_blocked_session_skips_queries_until_the_time() {
         block("us#z", "/api/projects/1/query/", 500);
-        assert_eq!(blocked_until("us#z", "/api/projects/2/query/", 100), Some(500));
-        assert_eq!(blocked_until("us#z", "/api/projects/2/feature_flags/", 100), None);
+        assert_eq!(
+            blocked_until("us#z", "/api/projects/2/query/", 100),
+            Some(500)
+        );
+        assert_eq!(
+            blocked_until("us#z", "/api/projects/2/feature_flags/", 100),
+            None
+        );
         assert_eq!(blocked_until("us#z", "/api/projects/2/query/", 600), None);
     }
 
     #[test]
     fn iso_times() {
         assert_eq!(parse_iso("2015-10-21T07:28:00Z"), Some(1_445_412_480));
-        assert_eq!(parse_iso("2015-10-21T01:28:00.123-06:00"), Some(1_445_412_480));
+        assert_eq!(
+            parse_iso("2015-10-21T01:28:00.123-06:00"),
+            Some(1_445_412_480)
+        );
         assert_eq!(parse_iso("2015-10-21 07:28:00"), Some(1_445_412_480));
     }
 
     #[test]
     fn matching_projects_by_key() {
-        let projects = vec![project("a", 1, "phc_one"), project("a", 2, "phc_two"), project("b", 1, "phc_one"), project("b", 3, "")];
+        let projects = vec![
+            project("a", 1, "phc_one"),
+            project("a", 2, "phc_two"),
+            project("b", 1, "phc_one"),
+            project("b", 3, ""),
+        ];
         // One key: that project, once even though two sessions see it.
-        assert_eq!(resolve(None, &["phc_one".into()], &projects), Resolved::One(&projects[0], true));
-        assert_eq!(resolve(None, &["phc_one".into(), "phc_two".into()], &projects), Resolved::Several(vec![&projects[0], &projects[1]]));
-        assert_eq!(resolve(None, &["phc_nope".into()], &projects), Resolved::Unknown);
+        assert_eq!(
+            resolve(None, &["phc_one".into()], &projects),
+            Resolved::One(&projects[0], true)
+        );
+        assert_eq!(
+            resolve(None, &["phc_one".into(), "phc_two".into()], &projects),
+            Resolved::Several(vec![&projects[0], &projects[1]])
+        );
+        assert_eq!(
+            resolve(None, &["phc_nope".into()], &projects),
+            Resolved::Unknown
+        );
         assert_eq!(resolve(None, &[], &projects), Resolved::Unknown);
         // A remembered pick wins over the keys, while the project is still visible.
-        let link = Link { session: "b".into(), project: 3, auto: false };
-        assert_eq!(resolve(Some(&link), &["phc_one".into()], &projects), Resolved::One(&projects[3], false));
-        let gone = Link { session: "c".into(), project: 9, auto: false };
-        assert_eq!(resolve(Some(&gone), &["phc_two".into()], &projects), Resolved::One(&projects[1], true));
+        let link = Link {
+            session: "b".into(),
+            project: 3,
+            auto: false,
+        };
+        assert_eq!(
+            resolve(Some(&link), &["phc_one".into()], &projects),
+            Resolved::One(&projects[3], false)
+        );
+        let gone = Link {
+            session: "c".into(),
+            project: 9,
+            auto: false,
+        };
+        assert_eq!(
+            resolve(Some(&gone), &["phc_two".into()], &projects),
+            Resolved::One(&projects[1], true)
+        );
     }
 
     #[test]
     fn parses_answers() {
-        let v: Value = serde_json::from_str(r#"{"results":[{"id":7,"name":"Web","api_token":"phc_x"},{"name":"no id"}]}"#).unwrap();
+        let v: Value = serde_json::from_str(
+            r#"{"results":[{"id":7,"name":"Web","api_token":"phc_x"},{"name":"no id"}]}"#,
+        )
+        .unwrap();
         let p = parse_projects(&v);
         assert_eq!((p.len(), p[0].id, p[0].api_token.as_str()), (1, 7, "phc_x"));
 
@@ -931,7 +1191,10 @@ mod tests {
             serde_json::from_str(r#"[["iss1", "[\"TypeError\"]", ["x is undefined"], 12, 3, "2026-11-04T10:00:00Z"], [null, "", "", 1, 1, ""]]"#).unwrap();
         let i = parse_issues(&rows);
         assert_eq!(i.len(), 1);
-        assert_eq!((i[0].kind.as_str(), i[0].message.as_str(), i[0].count), ("TypeError", "x is undefined", 12));
+        assert_eq!(
+            (i[0].kind.as_str(), i[0].message.as_str(), i[0].count),
+            ("TypeError", "x is undefined", 12)
+        );
 
         let v: Value = serde_json::from_str(
             r#"{"results":[
@@ -943,12 +1206,25 @@ mod tests {
         )
         .unwrap();
         let f = parse_flags(&v);
-        let keys: Vec<(&str, &str)> = f.iter().map(|f| (f.key.as_str(), f.rollout.as_str())).collect();
-        assert_eq!(keys, vec![("exp", "multivariate"), ("new-nav", "100%"), ("beta", "25%")]);
+        let keys: Vec<(&str, &str)> = f
+            .iter()
+            .map(|f| (f.key.as_str(), f.rollout.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("exp", "multivariate"),
+                ("new-nav", "100%"),
+                ("beta", "25%")
+            ]
+        );
     }
 
     #[test]
     fn rejects_project_keys_as_sign_in() {
-        assert!(matches!(sign_in_with_key("phc_abc", Some(Region::Us)), Err(ApiError::Failed(_))));
+        assert!(matches!(
+            sign_in_with_key("phc_abc", Some(Region::Us)),
+            Err(ApiError::Failed(_))
+        ));
     }
 }

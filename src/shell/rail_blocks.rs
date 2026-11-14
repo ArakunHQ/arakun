@@ -110,7 +110,11 @@ pub(super) fn git_identity() -> &'static (String, String) {
 
 /// A round avatar with the first letter of the name.
 pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
-    let letter = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
+    let letter = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".into());
     div()
         .flex()
         .flex_none()
@@ -132,30 +136,74 @@ impl Shell {
     }
 
     pub(super) fn view_badge(&self, view: View, cx: &mut Context<Self>) -> Option<Badge> {
-        let quiet = |count| Badge { count, bg: theme::mix(0.12), fg: theme::mix(0.8), urgent: false };
-        let loud = |count, bg: Hsla| Badge { count, bg, fg: gpui::white(), urgent: true };
+        let quiet = |count| Badge {
+            count,
+            bg: theme::mix(0.12),
+            fg: theme::mix(0.8),
+            urgent: false,
+        };
+        let loud = |count, bg: Hsla| Badge {
+            count,
+            bg,
+            fg: gpui::white(),
+            urgent: true,
+        };
         match view {
             View::Inbox => {
-                let waiting = self.inbox_items().iter().filter(|i| i.status != Status::Working).count();
-                (waiting > 0).then(|| Badge { count: waiting, bg: theme::warn().into(), fg: theme::background(), urgent: true })
+                let waiting = self
+                    .inbox_items()
+                    .iter()
+                    .filter(|i| i.status != Status::Working)
+                    .count();
+                (waiting > 0).then(|| Badge {
+                    count: waiting,
+                    bg: theme::warn().into(),
+                    fg: theme::background(),
+                    urgent: true,
+                })
             }
             #[cfg(feature = "coderlabs")]
-            View::Tasks => self.tasks_badge(cx).map(|(n, overdue)| if overdue { loud(n, theme::error().into()) } else { quiet(n) }),
-            View::Runs => self.runs_badge(cx).map(|(n, failing)| if failing { loud(n, theme::error().into()) } else { quiet(n) }),
-            View::Branches => Some(self.branches_badge(cx)).filter(|n| *n > 0).map(|n| loud(n, theme::error().into())),
-            View::Extensions => {
-                Some(self.extensions_view.read(cx).problems()).filter(|n| *n > 0).map(|n| loud(n, theme::attention().into()))
-            }
+            View::Tasks => self.tasks_badge(cx).map(|(n, overdue)| {
+                if overdue {
+                    loud(n, theme::error().into())
+                } else {
+                    quiet(n)
+                }
+            }),
+            View::Runs => self.runs_badge(cx).map(|(n, failing)| {
+                if failing {
+                    loud(n, theme::error().into())
+                } else {
+                    quiet(n)
+                }
+            }),
+            View::Branches => Some(self.branches_badge(cx))
+                .filter(|n| *n > 0)
+                .map(|n| loud(n, theme::error().into())),
+            View::Extensions => Some(self.extensions_view.read(cx).problems())
+                .filter(|n| *n > 0)
+                .map(|n| loud(n, theme::attention().into())),
             #[cfg(feature = "team")]
-            View::Team => Some(self.team_view.read(cx).unread()).filter(|n| *n > 0).map(|n| loud(n, theme::accent())),
+            View::Team => Some(self.team_view.read(cx).unread())
+                .filter(|n| *n > 0)
+                .map(|n| loud(n, theme::accent())),
             _ => None,
         }
     }
 
-    pub(super) fn open_view(&mut self, view: View, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_view(
+        &mut self,
+        view: View,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match view {
             View::Inbox => {
-                self.menu = Some(ContextMenu { target: MenuTarget::Inbox, at: at + point(px(8.), px(0.)) });
+                self.menu = Some(ContextMenu {
+                    target: MenuTarget::Inbox,
+                    at: at + point(px(8.), px(0.)),
+                });
                 cx.notify();
             }
             #[cfg(feature = "coderlabs")]
@@ -181,7 +229,10 @@ impl Shell {
                     self.open_picker(window, cx);
                     return;
                 }
-                self.menu = Some(ContextMenu { target: MenuTarget::Automations, at: at + point(px(8.), px(0.)) });
+                self.menu = Some(ContextMenu {
+                    target: MenuTarget::Automations,
+                    at: at + point(px(8.), px(0.)),
+                });
                 cx.notify();
             }
         }
@@ -195,9 +246,12 @@ impl Shell {
         match pin {
             Pin::Url { url, .. } => self.open_browser_tab(url, window, cx),
             Pin::File { path, .. } => self.open_doc_tab(TabKind::File { path }, window, cx),
-            Pin::Command { command, .. } => {
-                self.spawn_terminal_command(Some(crate::platform::run_then_shell(&command)), true, window, cx)
-            }
+            Pin::Command { command, .. } => self.spawn_terminal_command(
+                Some(crate::platform::run_then_shell(&command)),
+                true,
+                window,
+                cx,
+            ),
         }
     }
 
@@ -211,7 +265,11 @@ impl Shell {
 
     /// A change from the rail itself (folding a segment, hiding a row): it
     /// can be undone in the builder like any other.
-    pub(super) fn edit_sidebar(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut crate::sidebar::Sidebar)) {
+    pub(super) fn edit_sidebar(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut crate::sidebar::Sidebar),
+    ) {
         self.change_sidebar(cx, f);
     }
 
@@ -287,7 +345,10 @@ impl Shell {
                 .items
                 .iter()
                 .filter_map(|i| match i.piece {
-                    Piece::View { view } => self.view_badge(view, cx).filter(|b| b.urgent).map(|b| b.count),
+                    Piece::View { view } => self
+                        .view_badge(view, cx)
+                        .filter(|b| b.urgent)
+                        .map(|b| b.count),
                     _ => None,
                 })
                 .sum()
@@ -319,17 +380,35 @@ impl Shell {
                             })
                         }))
                 })
-                .child(div().flex_1().min_w_0().truncate().child(section.title.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(section.title.clone()),
+                )
                 .when(urgent > 0, |d| {
                     d.children(badge_pill(
-                        Badge { count: urgent, bg: theme::error().into(), fg: gpui::white(), urgent: true },
+                        Badge {
+                            count: urgent,
+                            bg: theme::error().into(),
+                            fg: gpui::white(),
+                            urgent: true,
+                        },
                         BadgeMode::Count,
                     ))
                 })
                 .when(collapsible, |d| {
                     d.child(
-                        icon(if section.collapsed { "arrow-right01" } else { "arrow-down01" }, 12.)
-                            .text_color(theme::text_faint()),
+                        icon(
+                            if section.collapsed {
+                                "arrow-right01"
+                            } else {
+                                "arrow-down01"
+                            },
+                            12.,
+                        )
+                        .text_color(theme::text_faint()),
                     )
                 })
                 .when_some(section.action, |d, a| {
@@ -355,7 +434,10 @@ impl Shell {
                     MouseButton::Right,
                     cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        this.menu = Some(ContextMenu { target: MenuTarget::RailSection(si), at: ev.position });
+                        this.menu = Some(ContextMenu {
+                            target: MenuTarget::RailSection(si),
+                            at: ev.position,
+                        });
                         cx.notify();
                     }),
                 )
@@ -364,13 +446,20 @@ impl Shell {
             .flex()
             .flex_col()
             .py(px(4.))
-            .when(section.line_above, |d| d.border_t_1().border_color(theme::stroke()).mt(px(4.)))
+            .when(section.line_above, |d| {
+                d.border_t_1().border_color(theme::stroke()).mt(px(4.))
+            })
             .children(title)
             .child(body)
             .into_any_element()
     }
 
-    fn render_item(&self, path: crate::sidebar::Path, item: &Item, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_item(
+        &self,
+        path: crate::sidebar::Path,
+        item: &Item,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let narrow = self.rail_narrow();
         let style = self.sidebar.style;
         let badge = match &item.piece {
@@ -382,8 +471,14 @@ impl Shell {
         }
         let name = item.name();
         let lead: AnyElement = match &item.emoji {
-            Some(e) => div().w(px(16.)).text_size(px(ui::TEXT_MD)).child(e.clone()).into_any_element(),
-            None => icon(item.piece.icon(), 16.).text_color(theme::mix(0.5 * 0.7)).into_any_element(),
+            Some(e) => div()
+                .w(px(16.))
+                .text_size(px(ui::TEXT_MD))
+                .child(e.clone())
+                .into_any_element(),
+            None => icon(item.piece.icon(), 16.)
+                .text_color(theme::mix(0.5 * 0.7))
+                .into_any_element(),
         };
         let row_id = SharedString::from(match &item.piece {
             Piece::View { view } => view_id(*view).to_string(),
@@ -406,14 +501,24 @@ impl Shell {
                 .text_color(theme::text_subtle())
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
-                .when(narrow, |d| d.justify_center().px(px(0.)).tooltip(ui::tip_text(name.clone())))
+                .when(narrow, |d| {
+                    d.justify_center()
+                        .px(px(0.))
+                        .tooltip(ui::tip_text(name.clone()))
+                })
                 .child(lead)
-                .when(!narrow, |d| d.child(div().flex_1().min_w_0().truncate().child(name.clone())).children(end))
+                .when(!narrow, |d| {
+                    d.child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                        .children(end)
+                })
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        this.menu = Some(ContextMenu { target: MenuTarget::RailBlock(path.0, Some(path.1)), at: ev.position });
+                        this.menu = Some(ContextMenu {
+                            target: MenuTarget::RailBlock(path.0, Some(path.1)),
+                            at: ev.position,
+                        });
                         cx.notify();
                     }),
                 )
@@ -436,7 +541,13 @@ impl Shell {
                     // Narrowed, a count shows as a dot on the icon.
                     .when(narrow && badge.is_some(), |d| {
                         d.relative().child(
-                            div().absolute().top(px(5.)).right(px(10.)).size(px(7.)).rounded_full().bg(badge.map_or(theme::mix(0.3), |b| b.bg)),
+                            div()
+                                .absolute()
+                                .top(px(5.))
+                                .right(px(10.))
+                                .size(px(7.))
+                                .rounded_full()
+                                .bg(badge.map_or(theme::mix(0.3), |b| b.bg)),
                         )
                     })
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
@@ -447,7 +558,9 @@ impl Shell {
             Piece::Pin { pin } => {
                 let open = pin.clone();
                 row(None)
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_pin(open.clone(), window, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_pin(open.clone(), window, cx)
+                    }))
                     .into_any_element()
             }
             Piece::Settings => row(shortcut(&item.piece))
@@ -455,7 +568,9 @@ impl Shell {
                 .into_any_element(),
             Piece::Search => {
                 if narrow {
-                    row(None).on_click(cx.listener(|this, _, window, cx| this.open_switcher(window, cx))).into_any_element()
+                    row(None)
+                        .on_click(cx.listener(|this, _, window, cx| this.open_switcher(window, cx)))
+                        .into_any_element()
                 } else {
                     row(shortcut(&item.piece))
                         .border_1()
@@ -469,9 +584,17 @@ impl Shell {
             }
             Piece::User => {
                 let (git_name, email) = git_identity();
-                let shown = item.label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| {
-                    if git_name.is_empty() { "You".into() } else { git_name.clone() }
-                });
+                let shown = item
+                    .label
+                    .clone()
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or_else(|| {
+                        if git_name.is_empty() {
+                            "You".into()
+                        } else {
+                            git_name.clone()
+                        }
+                    });
                 div()
                     .id(gpui::ElementId::Name(row_id.clone()))
                     .flex()
@@ -481,7 +604,9 @@ impl Shell {
                     .rounded(px(8.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::fill_selected()))
-                    .when(narrow, |d| d.justify_center().tooltip(ui::tip_text(shown.clone())))
+                    .when(narrow, |d| {
+                        d.justify_center().tooltip(ui::tip_text(shown.clone()))
+                    })
                     .child(avatar(&shown, if narrow { 26. } else { 28. }))
                     .when(!narrow, |d| {
                         d.child(
@@ -490,9 +615,21 @@ impl Shell {
                                 .flex_col()
                                 .flex_1()
                                 .min_w_0()
-                                .child(div().truncate().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).child(shown.clone()))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(ui::TEXT_MD))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(shown.clone()),
+                                )
                                 .when(!email.is_empty(), |d| {
-                                    d.child(div().truncate().text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child(email.clone()))
+                                    d.child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(ui::TEXT_XS))
+                                            .text_color(theme::text_faint())
+                                            .child(email.clone()),
+                                    )
                                 }),
                         )
                     })
@@ -501,7 +638,10 @@ impl Shell {
                         MouseButton::Right,
                         cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
                             cx.stop_propagation();
-                            this.menu = Some(ContextMenu { target: MenuTarget::RailBlock(path.0, Some(path.1)), at: ev.position });
+                            this.menu = Some(ContextMenu {
+                                target: MenuTarget::RailBlock(path.0, Some(path.1)),
+                                at: ev.position,
+                            });
                             cx.notify();
                         }),
                     )
@@ -511,13 +651,21 @@ impl Shell {
                 if narrow {
                     return None;
                 }
-                div().mt(px(4.)).children(self.render_usage_block(cx)).into_any_element()
+                div()
+                    .mt(px(4.))
+                    .children(self.render_usage_block(cx))
+                    .into_any_element()
             }
-            Piece::Projects { envs, changes, only_open } => {
+            Piece::Projects {
+                envs,
+                changes,
+                only_open,
+            } => {
                 if narrow {
                     self.render_projects_narrow(cx).into_any_element()
                 } else {
-                    self.render_projects_block(*envs, *changes, *only_open, cx).into_any_element()
+                    self.render_projects_block(*envs, *changes, *only_open, cx)
+                        .into_any_element()
                 }
             }
             Piece::Mascot => div()
@@ -527,7 +675,12 @@ impl Shell {
                 .h(px(40.))
                 .child(self.rail_mascot.clone())
                 .into_any_element(),
-            Piece::Separator => div().my(px(5.)).mx(px(8.)).h(px(1.)).bg(theme::stroke()).into_any_element(),
+            Piece::Separator => div()
+                .my(px(5.))
+                .mx(px(8.))
+                .h(px(1.))
+                .bg(theme::stroke())
+                .into_any_element(),
             Piece::Title { text } => {
                 if narrow {
                     return None;
@@ -557,7 +710,9 @@ impl Shell {
             {
                 let shell = cx.entity().downgrade();
                 move |at, _, cx| {
-                    let _ = shell.update(cx, |this, cx| this.open_composer_menu(MenuTarget::RailUsage, at, cx));
+                    let _ = shell.update(cx, |this, cx| {
+                        this.open_composer_menu(MenuTarget::RailUsage, at, cx)
+                    });
                 }
             },
         )
@@ -565,26 +720,43 @@ impl Shell {
 
     /// Projects narrowed to icons: each project's art, the open one lit.
     fn render_projects_narrow(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div().flex().flex_col().gap(px(2.)).children(self.projects.iter().enumerate().map(|(pi, project)| {
-            let selected = pi == self.active_project;
-            div()
-                .id(("rail-project-icon", pi))
-                .flex()
-                .items_center()
-                .justify_center()
-                .h(px(32.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .tooltip(ui::tip_text(project.name.clone()))
-                .when(selected, |d| d.bg(theme::selection_strong()))
-                .when(!selected, |d| d.opacity(0.65).hover(|s| s.bg(theme::hover()).opacity(1.)))
-                .child(ui::pixel_art(ui::project_art(project.art), 1.5, gpui::rgb(project.logo).into()))
-                .on_click(cx.listener(move |this, _, window, cx| this.select_project(pi, window, cx)))
-        }))
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(self.projects.iter().enumerate().map(|(pi, project)| {
+                let selected = pi == self.active_project;
+                div()
+                    .id(("rail-project-icon", pi))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .h(px(32.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .tooltip(ui::tip_text(project.name.clone()))
+                    .when(selected, |d| d.bg(theme::selection_strong()))
+                    .when(!selected, |d| {
+                        d.opacity(0.65).hover(|s| s.bg(theme::hover()).opacity(1.))
+                    })
+                    .child(ui::pixel_art(
+                        ui::project_art(project.art),
+                        1.5,
+                        gpui::rgb(project.logo).into(),
+                    ))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select_project(pi, window, cx)),
+                    )
+            }))
     }
 
     /// The right-click menu of a rail item.
-    pub(super) fn render_rail_block_menu(&self, s: usize, i: Option<usize>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_rail_block_menu(
+        &self,
+        s: usize,
+        i: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut panel = ui::menu_panel("rail-block-menu", 220.);
         if let Some(i) = i {
             panel = panel.child(
@@ -595,48 +767,74 @@ impl Shell {
         panel
             .child(ui::menu_divider())
             .child(
-                ui::menu_item("rbm-customize", "paint-board", "Customize sidebar…", false, true).on_click(cx.listener(
-                    |this, _, window, cx| {
-                        this.menu = None;
-                        this.open_sidebar_builder(window, cx)
-                    },
-                )),
+                ui::menu_item(
+                    "rbm-customize",
+                    "paint-board",
+                    "Customize sidebar…",
+                    false,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.menu = None;
+                    this.open_sidebar_builder(window, cx)
+                })),
             )
             .into_any_element()
     }
 
     /// The right-click menu of a segment's title.
     pub(super) fn render_rail_section_menu(&self, s: usize, cx: &mut Context<Self>) -> AnyElement {
-        let collapsible = self.sidebar.sections.get(s).is_some_and(|sec| sec.collapsible);
+        let collapsible = self
+            .sidebar
+            .sections
+            .get(s)
+            .is_some_and(|sec| sec.collapsible);
         ui::menu_panel("rail-section-menu", 220.)
             .child(
-                ui::menu_item("rsm-fold", "arrow-down01", if collapsible { "Always open" } else { "Make collapsible" }, false, true)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.menu = None;
-                        this.edit_sidebar(cx, |sb| {
-                            if let Some(sec) = sb.sections.get_mut(s) {
-                                sec.collapsible = !sec.collapsible;
-                                sec.collapsed = false;
-                            }
-                        })
-                    })),
-            )
-            .child(
-                ui::menu_item("rsm-hide", "view-off", "Remove segment", true, true).on_click(cx.listener(move |this, _, _, cx| {
+                ui::menu_item(
+                    "rsm-fold",
+                    "arrow-down01",
+                    if collapsible {
+                        "Always open"
+                    } else {
+                        "Make collapsible"
+                    },
+                    false,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
                     this.menu = None;
                     this.edit_sidebar(cx, |sb| {
-                        sb.remove_section(s);
+                        if let Some(sec) = sb.sections.get_mut(s) {
+                            sec.collapsible = !sec.collapsible;
+                            sec.collapsed = false;
+                        }
                     })
                 })),
             )
+            .child(
+                ui::menu_item("rsm-hide", "view-off", "Remove segment", true, true).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.edit_sidebar(cx, |sb| {
+                            sb.remove_section(s);
+                        })
+                    }),
+                ),
+            )
             .child(ui::menu_divider())
             .child(
-                ui::menu_item("rsm-customize", "paint-board", "Customize sidebar…", false, true).on_click(cx.listener(
-                    |this, _, window, cx| {
-                        this.menu = None;
-                        this.open_sidebar_builder(window, cx)
-                    },
-                )),
+                ui::menu_item(
+                    "rsm-customize",
+                    "paint-board",
+                    "Customize sidebar…",
+                    false,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.menu = None;
+                    this.open_sidebar_builder(window, cx)
+                })),
             )
             .into_any_element()
     }

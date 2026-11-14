@@ -46,12 +46,31 @@ const MAX_OPERATIONS: u64 = 2_000_000;
 
 impl ScriptScene {
     pub fn load(path: &Path) -> Result<ScriptScene, String> {
-        let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let meta = Rc::new(RefCell::new(Meta { name: stem, about: String::new(), seconds: 4., look: None, steps: 0, hold: 0.85, soft: false }));
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let meta = Rc::new(RefCell::new(Meta {
+            name: stem,
+            about: String::new(),
+            seconds: 4.,
+            look: None,
+            steps: 0,
+            hold: 0.85,
+            soft: false,
+        }));
         let engine = engine(meta.clone());
-        let ast = engine.compile(&source).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut scene = ScriptScene { path: path.to_path_buf(), meta: meta.borrow().clone(), engine, ast };
+        let ast = engine
+            .compile(&source)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut scene = ScriptScene {
+            path: path.to_path_buf(),
+            meta: meta.borrow().clone(),
+            engine,
+            ast,
+        };
         // The first frame runs the `scene(...)` call and proves the script draws.
         scene.frame(0.)?;
         scene.meta = meta.borrow().clone();
@@ -73,7 +92,12 @@ impl ScriptScene {
         let out: Dynamic = self
             .engine
             .eval_ast_with_scope(&mut scope, &self.ast)
-            .map_err(|e| format!("{}: {e}", self.path.file_name().unwrap_or_default().to_string_lossy()))?;
+            .map_err(|e| {
+                format!(
+                    "{}: {e}",
+                    self.path.file_name().unwrap_or_default().to_string_lossy()
+                )
+            })?;
         let mut nodes = Vec::new();
         flatten(out, &mut nodes).map_err(|e| format!("{}: {e}", self.path.display()))?;
         Ok(nodes)
@@ -83,11 +107,19 @@ impl ScriptScene {
 /// The `.rhai` scenes of a folder, by file name; the ones that fail to load
 /// come back as their path and the error.
 pub fn load_dir(dir: &Path) -> Vec<Result<ScriptScene, (PathBuf, String)>> {
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut paths: Vec<PathBuf> =
-        read.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "rhai")).collect();
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rhai"))
+        .collect();
     paths.sort();
-    paths.into_iter().map(|p| ScriptScene::load(&p).map_err(|e| (p, e))).collect()
+    paths
+        .into_iter()
+        .map(|p| ScriptScene::load(&p).map_err(|e| (p, e)))
+        .collect()
 }
 
 fn flatten(value: Dynamic, out: &mut Vec<Node>) -> Result<(), String> {
@@ -136,7 +168,12 @@ fn v3(a: &Array) -> Res<V3> {
 
 fn points(a: &Array) -> Res<Vec<V3>> {
     a.iter()
-        .map(|p| p.clone().try_cast::<Array>().ok_or_else(|| "points are [x, y, z] arrays".into()).and_then(|p| v3(&p)))
+        .map(|p| {
+            p.clone()
+                .try_cast::<Array>()
+                .ok_or_else(|| "points are [x, y, z] arrays".into())
+                .and_then(|p| v3(&p))
+        })
         .collect()
 }
 
@@ -166,7 +203,9 @@ fn ink(name: &str) -> Res<Option<Ink>> {
         "accent" => Ink::Accent,
         "accent_mute" => Ink::AccentMute,
         "none" => return Ok(None),
-        _ => return Err(format!("no ink \"{name}\": edge, mute, accent, accent_mute, none").into()),
+        _ => {
+            return Err(format!("no ink \"{name}\": edge, mute, accent, accent_mute, none").into());
+        }
     }))
 }
 
@@ -181,9 +220,13 @@ fn ease(name: &str) -> Res<Ease> {
 
 /// The point `u` (0..1) of the way along a polyline, by length.
 pub fn along(points: &[V3], u: f32) -> V3 {
-    let seg_len = |a: &V3, b: &V3| ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+    let seg_len = |a: &V3, b: &V3| {
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    };
     let total: f32 = points.windows(2).map(|w| seg_len(&w[0], &w[1])).sum();
-    let Some(first) = points.first() else { return [0.; 3] };
+    let Some(first) = points.first() else {
+        return [0.; 3];
+    };
     if total <= 0. {
         return *first;
     }
@@ -223,7 +266,12 @@ fn engine(meta: Rc<RefCell<Meta>>) -> Engine {
                 "steps" => meta.steps = num(&v)?.max(0.) as u32,
                 "hold" => meta.hold = num(&v)?.clamp(0.05, 0.98),
                 "style" => meta.soft = v.to_string() == "soft",
-                other => return Err(format!("scene() has no \"{other}\": name, about, seconds, look, steps, hold, style").into()),
+                other => {
+                    return Err(format!(
+                        "scene() has no \"{other}\": name, about, seconds, look, steps, hold, style"
+                    )
+                    .into());
+                }
             }
         }
         Ok(())
@@ -231,45 +279,106 @@ fn engine(meta: Rc<RefCell<Meta>>) -> Engine {
 
     // Faces for flat things.
     e.register_fn("top", |z: Dynamic| -> Res<Face> { Ok(Face::Top(num(&z)?)) });
-    e.register_fn("left", |y: Dynamic| -> Res<Face> { Ok(Face::Left(num(&y)?)) });
-    e.register_fn("right", |x: Dynamic| -> Res<Face> { Ok(Face::Right(num(&x)?)) });
+    e.register_fn("left", |y: Dynamic| -> Res<Face> {
+        Ok(Face::Left(num(&y)?))
+    });
+    e.register_fn("right", |x: Dynamic| -> Res<Face> {
+        Ok(Face::Right(num(&x)?))
+    });
 
     // Shapes.
     e.register_fn("slab", |min: Array, size: Array| -> Res<Node> {
-        Ok(Node::new(Shape::Slab { min: v3(&min)?, size: v3(&size)?, r: 0. }))
+        Ok(Node::new(Shape::Slab {
+            min: v3(&min)?,
+            size: v3(&size)?,
+            r: 0.,
+        }))
     });
     e.register_fn("slab", |min: Array, size: Array, r: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Slab { min: v3(&min)?, size: v3(&size)?, r: num(&r)? }))
+        Ok(Node::new(Shape::Slab {
+            min: v3(&min)?,
+            size: v3(&size)?,
+            r: num(&r)?,
+        }))
     });
-    e.register_fn("cylinder", |base: Array, r: Dynamic, h: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Cylinder { base: v3(&base)?, r: num(&r)?, h: num(&h)? }))
-    });
-    e.register_fn("tube_back", |base: Array, r: Dynamic, inner: Dynamic, h: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::TubeBack { base: v3(&base)?, r: num(&r)?, inner: num(&inner)?, h: num(&h)? }).side_ink(Ink::Mute))
-    });
-    e.register_fn("tube_front", |base: Array, r: Dynamic, inner: Dynamic, h: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::TubeFront { base: v3(&base)?, r: num(&r)?, inner: num(&inner)?, h: num(&h)? }))
-    });
-    e.register_fn("plate", |face: Face, rect: Array, r: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Plate { face, rect: nums::<4>(&rect, "a rect [a0, b0, a1, b1]")?, r: num(&r)? }))
-    });
+    e.register_fn(
+        "cylinder",
+        |base: Array, r: Dynamic, h: Dynamic| -> Res<Node> {
+            Ok(Node::new(Shape::Cylinder {
+                base: v3(&base)?,
+                r: num(&r)?,
+                h: num(&h)?,
+            }))
+        },
+    );
+    e.register_fn(
+        "tube_back",
+        |base: Array, r: Dynamic, inner: Dynamic, h: Dynamic| -> Res<Node> {
+            Ok(Node::new(Shape::TubeBack {
+                base: v3(&base)?,
+                r: num(&r)?,
+                inner: num(&inner)?,
+                h: num(&h)?,
+            })
+            .side_ink(Ink::Mute))
+        },
+    );
+    e.register_fn(
+        "tube_front",
+        |base: Array, r: Dynamic, inner: Dynamic, h: Dynamic| -> Res<Node> {
+            Ok(Node::new(Shape::TubeFront {
+                base: v3(&base)?,
+                r: num(&r)?,
+                inner: num(&inner)?,
+                h: num(&h)?,
+            }))
+        },
+    );
+    e.register_fn(
+        "plate",
+        |face: Face, rect: Array, r: Dynamic| -> Res<Node> {
+            Ok(Node::new(Shape::Plate {
+                face,
+                rect: nums::<4>(&rect, "a rect [a0, b0, a1, b1]")?,
+                r: num(&r)?,
+            }))
+        },
+    );
     e.register_fn("plate", |face: Face, rect: Array| -> Res<Node> {
-        Ok(Node::new(Shape::Plate { face, rect: nums::<4>(&rect, "a rect [a0, b0, a1, b1]")?, r: 0. }))
+        Ok(Node::new(Shape::Plate {
+            face,
+            rect: nums::<4>(&rect, "a rect [a0, b0, a1, b1]")?,
+            r: 0.,
+        }))
     });
     e.register_fn("disc", |face: Face, c: Array, r: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Disc { face, c: nums::<2>(&c, "a center [a, b]")?, r: num(&r)? }))
+        Ok(Node::new(Shape::Disc {
+            face,
+            c: nums::<2>(&c, "a center [a, b]")?,
+            r: num(&r)?,
+        }))
     });
     e.register_fn("card", |at: Array, size: Array, r: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Card { at: v3(&at)?, size: nums::<2>(&size, "a size [w, h]")?, r: num(&r)? }))
+        Ok(Node::new(Shape::Card {
+            at: v3(&at)?,
+            size: nums::<2>(&size, "a size [w, h]")?,
+            r: num(&r)?,
+        }))
     });
     // Organic bodies.
     e.register_fn("ellipsoid", |c: Array, r: Array| -> Res<Node> {
         let r = v3(&r)?;
-        Ok(Node::new(Shape::Ellipsoid { c: v3(&c)?, axes: [[r[0], 0., 0.], [0., r[1], 0.], [0., 0., r[2]]] }))
+        Ok(Node::new(Shape::Ellipsoid {
+            c: v3(&c)?,
+            axes: [[r[0], 0., 0.], [0., r[1], 0.], [0., 0., r[2]]],
+        }))
     });
     e.register_fn("sphere", |c: Array, r: Dynamic| -> Res<Node> {
         let r = num(&r)?;
-        Ok(Node::new(Shape::Ellipsoid { c: v3(&c)?, axes: [[r, 0., 0.], [0., r, 0.], [0., 0., r]] }))
+        Ok(Node::new(Shape::Ellipsoid {
+            c: v3(&c)?,
+            axes: [[r, 0., 0.], [0., r, 0.], [0., 0., r]],
+        }))
     });
     fn body(n: &Node) -> Res<(V3, [V3; 3])> {
         match n.shape {
@@ -301,46 +410,103 @@ fn engine(meta: Rc<RefCell<Meta>>) -> Engine {
     e.register_fn("at", |n: Node, local: Array| -> Res<Array> {
         let (c, [a, b, d]) = body(&n)?;
         let l = v3(&local)?;
-        Ok(arr([0, 1, 2].map(|i| c[i] + a[i] * l[0] + b[i] * l[1] + d[i] * l[2])))
+        Ok(arr(
+            [0, 1, 2].map(|i| c[i] + a[i] * l[0] + b[i] * l[1] + d[i] * l[2])
+        ))
     });
     // A patch painted on it around the local direction `dir`.
-    e.register_fn("decal", |n: Node, dir: Array, rect: Array, r: Dynamic| -> Res<Node> {
-        let (c, axes) = body(&n)?;
-        let mut d = Node::new(Shape::Decal { c, axes, dir: v3(&dir)?, rect: nums::<4>(&rect, "[lon0, lat0, lon1, lat1]")?, r: num(&r)? });
-        d.clip = n.clip;
-        Ok(d)
-    });
+    e.register_fn(
+        "decal",
+        |n: Node, dir: Array, rect: Array, r: Dynamic| -> Res<Node> {
+            let (c, axes) = body(&n)?;
+            let mut d = Node::new(Shape::Decal {
+                c,
+                axes,
+                dir: v3(&dir)?,
+                rect: nums::<4>(&rect, "[lon0, lat0, lon1, lat1]")?,
+                r: num(&r)?,
+            });
+            d.clip = n.clip;
+            Ok(d)
+        },
+    );
     // A soft contact shadow on the ground (soft style only).
-    e.register_fn("shadow", |c: Array, r: Array, alpha: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Shadow { c: v3(&c)?, r: nums::<2>(&r, "[rx, ry]")?, alpha: num(&alpha)? }))
-    });
+    e.register_fn(
+        "shadow",
+        |c: Array, r: Array, alpha: Dynamic| -> Res<Node> {
+            Ok(Node::new(Shape::Shadow {
+                c: v3(&c)?,
+                r: nums::<2>(&r, "[rx, ry]")?,
+                alpha: num(&alpha)?,
+            }))
+        },
+    );
     e.register_fn("merge", |mut n: Node, id: rhai::INT| {
         n.merge = Some(id.max(0) as u32);
         n
     });
     e.register_fn("camera", |focus: Array, zoom: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Camera { focus: v3(&focus)?, zoom: num(&zoom)? }))
+        Ok(Node::new(Shape::Camera {
+            focus: v3(&focus)?,
+            zoom: num(&zoom)?,
+        }))
     });
-    e.register_fn("line", |pts: Array| -> Res<Node> { Ok(Node::new(Shape::Line { points: points(&pts)? })) });
+    e.register_fn("line", |pts: Array| -> Res<Node> {
+        Ok(Node::new(Shape::Line {
+            points: points(&pts)?,
+        }))
+    });
     e.register_fn("text", |at: Array, s: &str, size: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Text { at: v3(&at)?, text: s.into(), size: num(&size)?, align: 0. }))
+        Ok(Node::new(Shape::Text {
+            at: v3(&at)?,
+            text: s.into(),
+            size: num(&size)?,
+            align: 0.,
+        }))
     });
-    e.register_fn("text", |at: Array, s: &str, size: Dynamic, align: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Text { at: v3(&at)?, text: s.into(), size: num(&size)?, align: num(&align)? }))
-    });
-    e.register_fn("label", |from: Array, length: Dynamic, s: &str| -> Res<Node> {
-        Ok(Node::new(Shape::Label { from: v3(&from)?, length: num(&length)?, text: s.into(), size: 9., reveal: 1. }))
-    });
-    e.register_fn("label", |from: Array, length: Dynamic, s: &str, size: Dynamic| -> Res<Node> {
-        Ok(Node::new(Shape::Label { from: v3(&from)?, length: num(&length)?, text: s.into(), size: num(&size)?, reveal: 1. }))
-    });
+    e.register_fn(
+        "text",
+        |at: Array, s: &str, size: Dynamic, align: Dynamic| -> Res<Node> {
+            Ok(Node::new(Shape::Text {
+                at: v3(&at)?,
+                text: s.into(),
+                size: num(&size)?,
+                align: num(&align)?,
+            }))
+        },
+    );
+    e.register_fn(
+        "label",
+        |from: Array, length: Dynamic, s: &str| -> Res<Node> {
+            Ok(Node::new(Shape::Label {
+                from: v3(&from)?,
+                length: num(&length)?,
+                text: s.into(),
+                size: 9.,
+                reveal: 1.,
+            }))
+        },
+    );
+    e.register_fn(
+        "label",
+        |from: Array, length: Dynamic, s: &str, size: Dynamic| -> Res<Node> {
+            Ok(Node::new(Shape::Label {
+                from: v3(&from)?,
+                length: num(&length)?,
+                text: s.into(),
+                size: num(&size)?,
+                reveal: 1.,
+            }))
+        },
+    );
 
     // The look of a shape: each returns the changed shape, so they chain.
     e.register_fn("accent", |n: Node| n.accent());
     // A color of its own, "#rrggbb": solids, bodies, decals and plates.
     e.register_fn("color", |mut n: Node, hex: &str| -> Res<Node> {
         let h = hex.trim_start_matches('#');
-        let v = u32::from_str_radix(h, 16).map_err(|_| format!("not a color: {hex} (use \"#rrggbb\")"))?;
+        let v = u32::from_str_radix(h, 16)
+            .map_err(|_| format!("not a color: {hex} (use \"#rrggbb\")"))?;
         if h.len() != 6 {
             return Err(format!("not a color: {hex} (use \"#rrggbb\")").into());
         }
@@ -365,7 +531,9 @@ fn engine(meta: Rc<RefCell<Meta>>) -> Engine {
         }
         n
     });
-    e.register_fn("fill", |n: Node, name: &str| -> Res<Node> { Ok(n.fill(tone(name)?)) });
+    e.register_fn("fill", |n: Node, name: &str| -> Res<Node> {
+        Ok(n.fill(tone(name)?))
+    });
     e.register_fn("ink", |mut n: Node, name: &str| -> Res<Node> {
         n.ink = ink(name)?;
         Ok(n)
@@ -393,18 +561,27 @@ fn engine(meta: Rc<RefCell<Meta>>) -> Engine {
         }
         Ok(n)
     });
-    e.register_fn("alpha", |n: Node, a: Dynamic| -> Res<Node> { Ok(n.alpha(num(&a)?)) });
+    e.register_fn("alpha", |n: Node, a: Dynamic| -> Res<Node> {
+        Ok(n.alpha(num(&a)?))
+    });
     e.register_fn("layer", |n: Node, l: rhai::INT| n.layer(l.max(0) as u32));
-    e.register_fn("clip_above", |n: Node, z: Dynamic| -> Res<Node> { Ok(n.clip(Clip::above(num(&z)?))) });
+    e.register_fn("clip_above", |n: Node, z: Dynamic| -> Res<Node> {
+        Ok(n.clip(Clip::above(num(&z)?)))
+    });
     e.register_fn("clip", |n: Node, min: Array, max: Array| -> Res<Node> {
-        Ok(n.clip(Clip { min: v3(&min)?, max: v3(&max)? }))
+        Ok(n.clip(Clip {
+            min: v3(&min)?,
+            max: v3(&max)?,
+        }))
     });
 
     // Motion.
     e.register_fn("keyed", |t: Dynamic, keys: Array| -> Res<FLOAT> {
         let mut ks = Vec::with_capacity(keys.len());
         for k in keys {
-            let k = k.try_cast::<Array>().ok_or("keys are [time, value] or [time, value, \"easing\"]")?;
+            let k = k
+                .try_cast::<Array>()
+                .ok_or("keys are [time, value] or [time, value, \"easing\"]")?;
             if k.len() < 2 {
                 return Err("a key is [time, value] or [time, value, \"easing\"]".into());
             }
@@ -416,31 +593,50 @@ fn engine(meta: Rc<RefCell<Meta>>) -> Engine {
         }
         Ok(keyed(num(&t)?, &ks))
     });
-    e.register_fn("ease", |name: &str, x: Dynamic| -> Res<FLOAT> { Ok(ease(name)?.at(num(&x)?)) });
-    e.register_fn("progress", |t: Dynamic, a: Dynamic, b: Dynamic| -> Res<FLOAT> {
-        let (t, a, b) = (num(&t)?, num(&a)?, num(&b)?);
-        Ok(if b > a { ((t - a) / (b - a)).clamp(0., 1.) } else if t >= b { 1. } else { 0. })
+    e.register_fn("ease", |name: &str, x: Dynamic| -> Res<FLOAT> {
+        Ok(ease(name)?.at(num(&x)?))
     });
+    e.register_fn(
+        "progress",
+        |t: Dynamic, a: Dynamic, b: Dynamic| -> Res<FLOAT> {
+            let (t, a, b) = (num(&t)?, num(&a)?, num(&b)?);
+            Ok(if b > a {
+                ((t - a) / (b - a)).clamp(0., 1.)
+            } else if t >= b {
+                1.
+            } else {
+                0.
+            })
+        },
+    );
     e.register_fn("lerp", |a: Dynamic, b: Dynamic, x: Dynamic| -> Res<FLOAT> {
         let (a, b, x) = (num(&a)?, num(&b)?, num(&x)?);
         Ok(a + (b - a) * x)
     });
-    e.register_fn("clamp", |x: Dynamic, lo: Dynamic, hi: Dynamic| -> Res<FLOAT> {
-        Ok(num(&x)?.clamp(num(&lo)?, num(&hi)?))
-    });
+    e.register_fn(
+        "clamp",
+        |x: Dynamic, lo: Dynamic, hi: Dynamic| -> Res<FLOAT> {
+            Ok(num(&x)?.clamp(num(&lo)?, num(&hi)?))
+        },
+    );
     // The ground point that lands at screen (sx, sy), for captions and
     // anything placed by where it shows rather than where it stands.
     e.register_fn("at_screen", |sx: Dynamic, sy: Dynamic| -> Res<Array> {
         let (sx, sy) = (num(&sx)? / 0.866_025_4, num(&sy)? * 2.);
         Ok(arr([(sx + sy) / 2., (sy - sx) / 2., 0.]))
     });
-    e.register_fn("along", |pts: Array, u: Dynamic| -> Res<Array> { Ok(arr(along(&points(&pts)?, num(&u)?))) });
+    e.register_fn("along", |pts: Array, u: Dynamic| -> Res<Array> {
+        Ok(arr(along(&points(&pts)?, num(&u)?)))
+    });
     // Where a row of `count` things `size` wide, `step` apart, starts to sit
     // centered in `total`: lay out details by this, never by eye.
-    e.register_fn("centered", |count: Dynamic, size: Dynamic, step: Dynamic, total: Dynamic| -> Res<FLOAT> {
-        let (n, s, st, t) = (num(&count)?, num(&size)?, num(&step)?, num(&total)?);
-        Ok((t - ((n - 1.).max(0.) * st + s)) / 2.)
-    });
+    e.register_fn(
+        "centered",
+        |count: Dynamic, size: Dynamic, step: Dynamic, total: Dynamic| -> Res<FLOAT> {
+            let (n, s, st, t) = (num(&count)?, num(&size)?, num(&step)?, num(&total)?);
+            Ok((t - ((n - 1.).max(0.) * st + s)) / 2.)
+        },
+    );
     e.register_fn("text_width", |s: &str, size: Dynamic| -> Res<FLOAT> {
         let size = num(&size)?;
         Ok(super::text::width(s, size, super::text::tracking(s, size)))

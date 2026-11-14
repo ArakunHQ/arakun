@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
 use crate::git;
@@ -426,7 +426,12 @@ impl CommandDialog {
             _ => {}
         });
         window.focus(&input.focus_handle(cx), cx);
-        Self { title, about, input, _sub: sub }
+        Self {
+            title,
+            about,
+            input,
+            _sub: sub,
+        }
     }
 }
 
@@ -442,9 +447,8 @@ impl Render for CommandDialog {
             .child(ui::modal_header(
                 self.title,
                 None,
-                ui::close_button("setup-close").on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(DialogEvent::Dismissed)
-                })),
+                ui::close_button("setup-close")
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Dismissed))),
             ))
             .child(
                 div()
@@ -474,17 +478,18 @@ impl Render for CommandDialog {
                             .gap(px(8.))
                             .child(
                                 ui::button("setup-cancel", "Cancel", ButtonKind::Ghost, true)
-                                    .on_click(cx.listener(|_, _, _, cx| {
-                                        cx.emit(DialogEvent::Dismissed)
-                                    })),
+                                    .on_click(
+                                        cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Dismissed)),
+                                    ),
                             )
                             .child(
-                                ui::button("setup-save", "Save", ButtonKind::Primary, true).on_click(
-                                    cx.listener(|this, _, _, cx| {
+                                ui::button("setup-save", "Save", ButtonKind::Primary, true)
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         let text = this.input.read(cx).text().trim().to_string();
-                                        cx.emit(DialogEvent::Command((!text.is_empty()).then_some(text)));
-                                    }),
-                                ),
+                                        cx.emit(DialogEvent::Command(
+                                            (!text.is_empty()).then_some(text),
+                                        ));
+                                    })),
                             ),
                     ),
             )
@@ -587,7 +592,11 @@ fn consequence(icon_name: &str, color: gpui::Hsla, text: impl IntoElement) -> im
         .flex()
         .items_start()
         .gap(px(10.))
-        .child(div().pt(px(2.)).child(icon(icon_name, 14.).text_color(color)))
+        .child(
+            div()
+                .pt(px(2.))
+                .child(icon(icon_name, 14.).text_color(color)),
+        )
         .child(div().flex_1().min_w_0().child(text))
 }
 
@@ -620,23 +629,39 @@ impl Render for DeleteEnvDialog {
         }
         list = list.child(consequence(
             "git-branch",
-            if self.delete_branch { theme::error().into() } else { muted },
+            if self.delete_branch {
+                theme::error().into()
+            } else {
+                muted
+            },
             match (&branch, self.delete_branch) {
                 (Some(b), false) => div()
                     .flex()
                     .flex_wrap()
                     .child("The ")
-                    .child(div().font_weight(FontWeight::MEDIUM).text_color(theme::content()).child(b.clone()))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::content())
+                            .child(b.clone()),
+                    )
                     .child(" branch and its commits are kept.")
                     .into_any_element(),
                 (Some(b), true) => div()
                     .flex()
                     .flex_wrap()
                     .child("The ")
-                    .child(div().font_weight(FontWeight::MEDIUM).text_color(theme::content()).child(b.clone()))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::content())
+                            .child(b.clone()),
+                    )
                     .child(" branch is deleted too.")
                     .into_any_element(),
-                (None, _) => div().child("The detached HEAD is kept in the repository.").into_any_element(),
+                (None, _) => div()
+                    .child("The detached HEAD is kept in the repository.")
+                    .into_any_element(),
             },
         ));
         if let Some(n) = self.unpushed.filter(|n| *n > 0) {
@@ -646,7 +671,11 @@ impl Render for DeleteEnvDialog {
                 format!(
                     "{n} commit{} not pushed{}.",
                     if n == 1 { " is" } else { "s are" },
-                    if self.delete_branch { " and will be lost" } else { "; they stay on the branch" }
+                    if self.delete_branch {
+                        " and will be lost"
+                    } else {
+                        "; they stay on the branch"
+                    }
                 ),
             ));
         }
@@ -692,11 +721,9 @@ impl Render for DeleteEnvDialog {
                     .p(px(16.))
                     .text_size(px(ui::TEXT_MD))
                     .line_height(px(19.))
-                    .child(
-                        div()
-                            .text_color(theme::text_muted())
-                            .child("This permanently deletes the worktree folder and everything inside it."),
-                    )
+                    .child(div().text_color(theme::text_muted()).child(
+                        "This permanently deletes the worktree folder and everything inside it.",
+                    ))
                     .child(
                         div()
                             .p(px(12.))
@@ -711,7 +738,11 @@ impl Render for DeleteEnvDialog {
                                     .gap(px(10.))
                                     .text_size(px(ui::TEXT_SM))
                                     .text_color(theme::text_subtle())
-                                    .child(div().pt(px(2.)).child(icon("folder01", 14.).text_color(muted)))
+                                    .child(
+                                        div()
+                                            .pt(px(2.))
+                                            .child(icon("folder01", 14.).text_color(muted)),
+                                    )
                                     .child(
                                         div()
                                             .flex_1()
@@ -771,7 +802,12 @@ impl Render for DeleteEnvDialog {
                         )
                     })
                     .when_some(self.error.clone(), |d, e| {
-                        d.child(div().text_size(px(ui::TEXT_SM)).text_color(theme::error()).child(e))
+                        d.child(
+                            div()
+                                .text_size(px(ui::TEXT_SM))
+                                .text_color(theme::error())
+                                .child(e),
+                        )
                     })
                     .child(
                         div()
@@ -779,22 +815,37 @@ impl Render for DeleteEnvDialog {
                             .justify_end()
                             .gap(px(8.))
                             .child(
-                                ui::button("delete-env-cancel", "Cancel", ButtonKind::Ghost, !self.busy)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                ui::button(
+                                    "delete-env-cancel",
+                                    "Cancel",
+                                    ButtonKind::Ghost,
+                                    !self.busy,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         if !this.busy {
                                             cx.emit(DialogEvent::Dismissed)
                                         }
-                                    })),
+                                    },
+                                )),
                             )
                             .child(
                                 ui::button(
                                     "delete-env-submit",
-                                    if self.busy { "Deleting…" } else { "Delete environment" },
+                                    if self.busy {
+                                        "Deleting…"
+                                    } else {
+                                        "Delete environment"
+                                    },
                                     ButtonKind::Danger,
                                     !self.busy,
                                 )
                                 .when(self.busy, |d| {
-                                    d.child(ui::spinner("delete-env-spin", 12., theme::error().into()))
+                                    d.child(ui::spinner(
+                                        "delete-env-spin",
+                                        12.,
+                                        theme::error().into(),
+                                    ))
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                             ),

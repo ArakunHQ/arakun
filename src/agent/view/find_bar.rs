@@ -13,13 +13,17 @@ impl ThreadView {
             Some(s) => s.input.clone(),
             None => {
                 let input = cx.new(|cx| TextInput::new("Find in chat", cx));
-                let sub = cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| match ev {
-                    InputEvent::Changed => this.search_changed(window, cx),
-                    InputEvent::Submit | InputEvent::Down => this.step_search(1, window, cx),
-                    InputEvent::Up => this.step_search(-1, window, cx),
-                    InputEvent::Cancel => this.close_search(window, cx),
-                    _ => {}
-                });
+                let sub = cx.subscribe_in(
+                    &input,
+                    window,
+                    |this, _, ev: &InputEvent, window, cx| match ev {
+                        InputEvent::Changed => this.search_changed(window, cx),
+                        InputEvent::Submit | InputEvent::Down => this.step_search(1, window, cx),
+                        InputEvent::Up => this.step_search(-1, window, cx),
+                        InputEvent::Cancel => this.close_search(window, cx),
+                        _ => {}
+                    },
+                );
                 self.search = Some(Search {
                     input: input.clone(),
                     query: String::new(),
@@ -60,12 +64,17 @@ impl ThreadView {
         let thread = self.thread.clone();
         for (ix, e) in thread.read(cx).entries().iter().enumerate() {
             let n = match e {
-                Entry::User { text, .. } => search::find_all(&crate::agent::attach::split_pastes(text).0, query).len(),
+                Entry::User { text, .. } => {
+                    search::find_all(&crate::agent::attach::split_pastes(text).0, query).len()
+                }
                 Entry::Agent { text } | Entry::Thought { text } => {
                     let doc = self.markdown_for(ix, text);
                     let mut pieces = Vec::new();
                     markdown::pieces(&doc.blocks, &mut pieces);
-                    pieces.iter().map(|p| search::find_all(p, query).len()).sum()
+                    pieces
+                        .iter()
+                        .map(|p| search::find_all(p, query).len())
+                        .sum()
                 }
                 _ => 0,
             };
@@ -111,7 +120,10 @@ impl ThreadView {
         let was = s.current.and_then(|c| s.hits.get(c).copied());
         let hits = self.collect_hits(&query, cx);
         let current = match was {
-            Some(h) => hits.iter().position(|x| *x == h).or(hits.len().checked_sub(1)),
+            Some(h) => hits
+                .iter()
+                .position(|x| *x == h)
+                .or(hits.len().checked_sub(1)),
             None => None,
         };
         if let Some(s) = &mut self.search {
@@ -121,7 +133,12 @@ impl ThreadView {
         }
     }
 
-    pub(super) fn step_search(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn step_search(
+        &mut self,
+        delta: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(s) = &mut self.search else {
             return;
         };
@@ -162,7 +179,9 @@ impl ThreadView {
         self.settle_tries = 0;
         self.list.pause_following_tail();
         self.list.scroll_to_reveal_item(turn);
-        cx.on_next_frame(window, |this, window, cx| this.settle_search_scroll(window, cx));
+        cx.on_next_frame(window, |this, window, cx| {
+            this.settle_search_scroll(window, cx)
+        });
     }
 
     /// Brings the current match to a third of the way down once it has been
@@ -171,14 +190,17 @@ impl ThreadView {
         let Some(spot) = self.spot.get() else {
             self.settle_tries += 1;
             if self.settle_tries < 4 {
-                cx.on_next_frame(window, |this, window, cx| this.settle_search_scroll(window, cx));
+                cx.on_next_frame(window, |this, window, cx| {
+                    this.settle_search_scroll(window, cx)
+                });
             }
             return;
         };
         let view = self.list.viewport_bounds();
         // The bar covers the top of the list.
         if spot.top() < view.top() + px(96.) || spot.bottom() > view.bottom() - px(48.) {
-            self.list.scroll_by(spot.top() - (view.top() + view.size.height * 0.35));
+            self.list
+                .scroll_by(spot.top() - (view.top() + view.size.height * 0.35));
             cx.notify();
         }
     }
@@ -243,7 +265,12 @@ impl ThreadView {
                 }
             }
         }
-        let mut revealed = Revealed { turn, fold: None, phase: None, row: None };
+        let mut revealed = Revealed {
+            turn,
+            fold: None,
+            phase: None,
+            row: None,
+        };
         if fold && self.folds.insert(range.start) {
             revealed.fold = Some(range.start);
         }
@@ -265,7 +292,11 @@ impl ThreadView {
         let s = self.search.as_ref().filter(|s| !s.query.is_empty())?;
         Some(Find {
             query: &s.query,
-            current: s.current.and_then(|c| s.hits.get(c)).filter(|h| h.0 == ix).map(|h| h.1),
+            current: s
+                .current
+                .and_then(|c| s.hits.get(c))
+                .filter(|h| h.0 == ix)
+                .map(|h| h.1),
             spot: &self.spot,
         })
     }
@@ -319,24 +350,38 @@ impl ThreadView {
                     }
                 }))
                 .child(icon("search01", 14.).text_color(theme::text_subtle()))
-                .child(div().flex_1().min_w_0().text_size(px(crate::ui::TEXT_MD)).child(s.input.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(crate::ui::TEXT_MD))
+                        .child(s.input.clone()),
+                )
                 .child(
                     div()
                         .flex_none()
                         .px(px(4.))
                         .text_size(px(crate::ui::TEXT_SM))
-                        .text_color(if found || s.query.is_empty() { theme::mix(0.5) } else { red().opacity(0.8) })
+                        .text_color(if found || s.query.is_empty() {
+                            theme::mix(0.5)
+                        } else {
+                            red().opacity(0.8)
+                        })
                         .child(count),
                 )
                 .child(
                     button("search-prev", "arrow-up01")
                         .when(!found, |d| d.opacity(0.4))
-                        .on_click(cx.listener(|this, _, window, cx| this.step_search(-1, window, cx))),
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.step_search(-1, window, cx)),
+                        ),
                 )
                 .child(
                     button("search-next", "arrow-down01")
                         .when(!found, |d| d.opacity(0.4))
-                        .on_click(cx.listener(|this, _, window, cx| this.step_search(1, window, cx))),
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.step_search(1, window, cx)),
+                        ),
                 )
                 .child(
                     button("search-close", "cancel01")

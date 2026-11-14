@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
 use super::{ContextMenu, MenuTarget, Modal, Shell};
@@ -107,12 +107,26 @@ impl Render for RenameDialog {
                             .justify_end()
                             .gap(px(8.))
                             .child(
-                                ui::button("rename-session-cancel", "Cancel", ButtonKind::Ghost, true)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SessionDialogEvent::Dismissed))),
+                                ui::button(
+                                    "rename-session-cancel",
+                                    "Cancel",
+                                    ButtonKind::Ghost,
+                                    true,
+                                )
+                                .on_click(
+                                    cx.listener(|_, _, _, cx| {
+                                        cx.emit(SessionDialogEvent::Dismissed)
+                                    }),
+                                ),
                             )
                             .child(
-                                ui::button("rename-session-submit", "Rename", ButtonKind::Primary, ready)
-                                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
+                                ui::button(
+                                    "rename-session-submit",
+                                    "Rename",
+                                    ButtonKind::Primary,
+                                    ready,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                             ),
                     ),
             )
@@ -131,10 +145,21 @@ pub struct RemoveDialog {
 impl EventEmitter<SessionDialogEvent> for RemoveDialog {}
 
 impl RemoveDialog {
-    pub fn new(title: SharedString, agent: Agent, busy: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        title: SharedString,
+        agent: Agent,
+        busy: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { title, agent, busy, focus }
+        Self {
+            title,
+            agent,
+            busy,
+            focus,
+        }
     }
 }
 
@@ -225,7 +250,12 @@ impl EventEmitter<SessionDialogEvent> for ImportDialog {}
 
 impl ImportDialog {
     /// Lists the agents' sessions for `path`, minus those in `known` (their session ids).
-    pub fn new(path: PathBuf, known: HashSet<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        known: HashSet<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let p = path.clone();
@@ -283,7 +313,11 @@ fn checkbox(on: bool) -> impl IntoElement {
         .size(px(16.))
         .rounded(px(4.))
         .border_1()
-        .border_color(if on { theme::content() } else { theme::mix(0.25) })
+        .border_color(if on {
+            theme::content()
+        } else {
+            theme::mix(0.25)
+        })
         .when(on, |d| {
             d.bg(theme::content())
                 .child(icon("tick02", 12.).text_color(theme::background()))
@@ -368,14 +402,22 @@ impl Render for ImportDialog {
         };
         ui::modal_panel("import-sessions", 480.)
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| match ev.keystroke.key.as_str() {
-                "escape" => cx.emit(SessionDialogEvent::Dismissed),
-                "enter" => this.submit(cx),
-                _ => {}
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                match ev.keystroke.key.as_str() {
+                    "escape" => cx.emit(SessionDialogEvent::Dismissed),
+                    "enter" => this.submit(cx),
+                    _ => {}
+                }
             }))
             .child(ui::modal_header(
                 "Import sessions",
-                Some(format!("Sessions Droid and Claude Code have for {}", model::pretty_path(&self.path)).into()),
+                Some(
+                    format!(
+                        "Sessions Droid and Claude Code have for {}",
+                        model::pretty_path(&self.path)
+                    )
+                    .into(),
+                ),
                 ui::close_button("import-close")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(SessionDialogEvent::Dismissed))),
             ))
@@ -401,20 +443,24 @@ impl Render for ImportDialog {
                                         ButtonKind::Ghost,
                                         true,
                                     )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.picked = if all {
-                                            HashSet::new()
-                                        } else {
-                                            (0..this.found.len()).collect()
-                                        };
-                                        cx.notify();
-                                    })),
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.picked = if all {
+                                                HashSet::new()
+                                            } else {
+                                                (0..this.found.len()).collect()
+                                            };
+                                            cx.notify();
+                                        },
+                                    )),
                                 )
                             })
                             .child(div().flex_1())
                             .child(
                                 ui::button("import-cancel", "Cancel", ButtonKind::Ghost, true)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SessionDialogEvent::Dismissed))),
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(SessionDialogEvent::Dismissed)
+                                    })),
                             )
                             .child(
                                 ui::button(
@@ -436,7 +482,12 @@ impl Render for ImportDialog {
 // ---------------------------------------------------------------------------
 
 impl Shell {
-    pub(super) fn open_session_menu(&mut self, id: SharedString, at: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+    pub(super) fn open_session_menu(
+        &mut self,
+        id: SharedString,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() || self.env().session_index(&id).is_none() {
             return;
         }
@@ -447,8 +498,14 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn render_session_menu(&self, index: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let panel = ui::menu_panel("session-menu", 220.).min_h_0().overflow_y_scroll();
+    pub(super) fn render_session_menu(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let panel = ui::menu_panel("session-menu", 220.)
+            .min_h_0()
+            .overflow_y_scroll();
         self.session_menu_items(index, panel, cx).into_any_element()
     }
 
@@ -474,24 +531,32 @@ impl Shell {
         let (rename, fork, compact, remove) = (id.clone(), id.clone(), id.clone(), id);
         panel = panel
             .child(
-                ui::menu_item("sm-rename", "pencil-edit02", "Rename…", false, true).on_click(cx.listener(
-                    move |this, _, window, cx| this.open_rename_dialog(rename.clone(), window, cx),
-                )),
+                ui::menu_item("sm-rename", "pencil-edit02", "Rename…", false, true).on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.open_rename_dialog(rename.clone(), window, cx)
+                    }),
+                ),
             )
             .child(
-                ui::menu_item("sm-fork", "git-branch", "Fork", false, can_fork)
-                    .when(can_fork, |d| {
+                ui::menu_item("sm-fork", "git-branch", "Fork", false, can_fork).when(
+                    can_fork,
+                    |d| {
                         d.on_click(cx.listener(move |this, _, window, cx| {
                             this.menu = None;
                             this.session_action(fork.clone(), true, window, cx)
                         }))
-                    }),
+                    },
+                ),
             )
             .child(
                 ui::menu_item(
                     "sm-compact",
                     "archive02",
-                    if busy { "Compact (wait for the turn)" } else { "Compact" },
+                    if busy {
+                        "Compact (wait for the turn)"
+                    } else {
+                        "Compact"
+                    },
                     false,
                     can_compact && !busy,
                 )
@@ -504,9 +569,11 @@ impl Shell {
             )
             .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
             .child(
-                ui::menu_item("sm-remove", "delete02", "Remove from list…", true, true).on_click(cx.listener(
-                    move |this, _, window, cx| this.open_remove_dialog(remove.clone(), window, cx),
-                )),
+                ui::menu_item("sm-remove", "delete02", "Remove from list…", true, true).on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.open_remove_dialog(remove.clone(), window, cx)
+                    }),
+                ),
             );
         panel
     }
@@ -520,15 +587,24 @@ impl Shell {
     ) where
         D: EventEmitter<SessionDialogEvent> + Render,
     {
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, ev: &SessionDialogEvent, window, cx| {
-            this.close_modal(window, cx);
-            on_event(this, ev, window, cx);
-        });
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &SessionDialogEvent, window, cx| {
+                this.close_modal(window, cx);
+                on_event(this, ev, window, cx);
+            },
+        );
         self.modal = Some((Modal::Session(dialog.into()), sub));
         cx.notify();
     }
 
-    fn open_rename_dialog(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_rename_dialog(
+        &mut self,
+        id: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         let env = self.env();
         let Some(i) = env.session_index(&id) else {
@@ -548,7 +624,12 @@ impl Shell {
         );
     }
 
-    fn open_remove_dialog(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_remove_dialog(
+        &mut self,
+        id: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         let env = self.env();
         let Some(i) = env.session_index(&id) else {
@@ -591,7 +672,12 @@ impl Shell {
     }
 
     /// Right-click on a tab: split and close actions, plus the session menu for session tabs.
-    pub(super) fn tab_menu(&mut self, index: usize, at: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+    pub(super) fn tab_menu(
+        &mut self,
+        index: usize,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() || index >= self.env().tabs.len() {
             return;
         }

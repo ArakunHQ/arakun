@@ -13,8 +13,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-pub const KINDS: &[&str] =
-    &["decision", "bugfix", "gotcha", "convention", "preference", "discovery", "pattern", "config", "session", "note"];
+pub const KINDS: &[&str] = &[
+    "decision",
+    "bugfix",
+    "gotcha",
+    "convention",
+    "preference",
+    "discovery",
+    "pattern",
+    "config",
+    "session",
+    "note",
+];
 
 /// Kinds whose text the index shows in full when short: they should change
 /// what the agent does without it having to look them up first.
@@ -82,7 +92,9 @@ pub fn parse_id(s: &str) -> Option<(Scope, u64)> {
 }
 
 pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Where memory lives.
@@ -111,11 +123,16 @@ pub fn project_of(dir: &Path) -> PathBuf {
         }
         return common;
     }
-    dir.ancestors().find(|d| d.join(".git").exists()).unwrap_or(dir).to_path_buf()
+    dir.ancestors()
+        .find(|d| d.join(".git").exists())
+        .unwrap_or(dir)
+        .to_path_buf()
 }
 
 fn fnv(s: &str) -> u64 {
-    s.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+    s.bytes().fold(0xcbf29ce484222325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100000001b3)
+    })
 }
 
 pub fn store_file(root: &Path, scope: Scope, project: &Path) -> PathBuf {
@@ -128,24 +145,42 @@ pub fn store_file(root: &Path, scope: Scope, project: &Path) -> PathBuf {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default()
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '-'
+                    }
+                })
                 .collect();
-            root.join("projects").join(format!("{name}-{:08x}.json", fnv(&path) as u32))
+            root.join("projects")
+                .join(format!("{name}-{:08x}.json", fnv(&path) as u32))
         }
     }
 }
 
 pub fn load(file: &Path) -> Store {
-    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 /// Runs `f` on the store in `file` under an exclusive lock and writes it back
 /// when `f` says it changed.
-pub fn update<T>(file: &Path, project: &str, f: impl FnOnce(&mut Store) -> (bool, T)) -> std::io::Result<T> {
+pub fn update<T>(
+    file: &Path,
+    project: &str,
+    f: impl FnOnce(&mut Store) -> (bool, T),
+) -> std::io::Result<T> {
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(file.with_extension("lock"))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(file.with_extension("lock"))?;
     // Released when `lock` closes.
     lock.lock()?;
     let mut store = load(file);
@@ -179,7 +214,10 @@ pub struct Draft {
 /// Adds `d`, or updates the memory with its topic, or the one with the same
 /// title and text; session summaries beyond the newest few are dropped.
 pub fn save(store: &mut Store, d: Draft, at: u64) -> Saved {
-    let same_topic = d.topic.as_ref().and_then(|t| store.items.iter().position(|m| m.topic.as_ref() == Some(t)));
+    let same_topic = d
+        .topic
+        .as_ref()
+        .and_then(|t| store.items.iter().position(|m| m.topic.as_ref() == Some(t)));
     if let Some(i) = same_topic {
         let m = &mut store.items[i];
         if m.title == d.title && m.body == d.body && m.kind == d.kind && m.files == d.files {
@@ -193,13 +231,18 @@ pub fn save(store: &mut Store, d: Draft, at: u64) -> Saved {
         m.revisions += 1;
         return Saved::Updated(m.id);
     }
-    if let Some(m) =
-        store.items.iter_mut().find(|m| m.title.eq_ignore_ascii_case(&d.title) && m.body.trim() == d.body.trim())
+    if let Some(m) = store
+        .items
+        .iter_mut()
+        .find(|m| m.title.eq_ignore_ascii_case(&d.title) && m.body.trim() == d.body.trim())
     {
         m.updated = at;
         return Saved::Same(m.id);
     }
-    store.next_id = store.next_id.max(store.items.iter().map(|m| m.id).max().unwrap_or(0)) + 1;
+    store.next_id = store
+        .next_id
+        .max(store.items.iter().map(|m| m.id).max().unwrap_or(0))
+        + 1;
     let id = store.next_id;
     let session = d.kind == "session";
     store.items.push(Memory {
@@ -215,10 +258,18 @@ pub fn save(store: &mut Store, d: Draft, at: u64) -> Saved {
         revisions: 0,
     });
     if session {
-        let mut sessions: Vec<(u64, u64)> =
-            store.items.iter().filter(|m| m.kind == "session").map(|m| (m.updated, m.id)).collect();
+        let mut sessions: Vec<(u64, u64)> = store
+            .items
+            .iter()
+            .filter(|m| m.kind == "session")
+            .map(|m| (m.updated, m.id))
+            .collect();
         sessions.sort_unstable_by(|a, b| b.cmp(a));
-        let drop: Vec<u64> = sessions.iter().skip(SESSIONS_KEPT).map(|&(_, id)| id).collect();
+        let drop: Vec<u64> = sessions
+            .iter()
+            .skip(SESSIONS_KEPT)
+            .map(|&(_, id)| id)
+            .collect();
         store.items.retain(|m| !drop.contains(&m.id));
     }
     Saved::New(id)
@@ -323,7 +374,10 @@ pub fn search<'a>(items: &'a [Memory], query: &str) -> Vec<(f32, &'a Memory)> {
                 if tf == 0. {
                     continue;
                 }
-                let df = docs.iter().filter(|d| d.iter().any(|w| weight(w) > 0.)).count() as f32;
+                let df = docs
+                    .iter()
+                    .filter(|d| d.iter().any(|w| weight(w) > 0.))
+                    .count() as f32;
                 let idf = (1. + (n - df + 0.5) / (df + 0.5)).ln();
                 score += idf * tf * (k1 + 1.) / (tf + k1 * (1. - b + b * len / avg));
             }
@@ -362,8 +416,16 @@ fn label(scope: Scope, m: &Memory) -> String {
 
 /// One line per memory, for search results and lists.
 pub fn brief(scope: Scope, m: &Memory, now: u64) -> String {
-    let files = if m.files.is_empty() { String::new() } else { format!(" · {}", m.files.join(", ")) };
-    let body = if m.body.is_empty() { String::new() } else { format!("\n    {}", first_line(&m.body, 140)) };
+    let files = if m.files.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", m.files.join(", "))
+    };
+    let body = if m.body.is_empty() {
+        String::new()
+    } else {
+        format!("\n    {}", first_line(&m.body, 140))
+    };
     format!(
         "{} [{}] {} · {} · ~{} tokens{files}{body}",
         label(scope, m),
@@ -410,10 +472,25 @@ fn index_lines(scope: Scope, items: &[Memory], now: u64) -> Vec<String> {
     list.sort_by(|a, b| rank(b, now).total_cmp(&rank(a, now)));
     list.iter()
         .map(|m| {
-            let files = if m.files.is_empty() { String::new() } else { format!(" ({})", m.files.join(", ")) };
-            let inline = INLINE.contains(&m.kind.as_str()) && !m.body.is_empty() && m.body.len() <= INLINE_MAX;
-            let body = if inline { format!(": {}", first_line(&m.body, INLINE_MAX)) } else { String::new() };
-            format!("- {} [{}] {}{files}{body}", label(scope, m), m.kind, m.title)
+            let files = if m.files.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", m.files.join(", "))
+            };
+            let inline = INLINE.contains(&m.kind.as_str())
+                && !m.body.is_empty()
+                && m.body.len() <= INLINE_MAX;
+            let body = if inline {
+                format!(": {}", first_line(&m.body, INLINE_MAX))
+            } else {
+                String::new()
+            };
+            format!(
+                "- {} [{}] {}{files}{body}",
+                label(scope, m),
+                m.kind,
+                m.title
+            )
         })
         .collect()
 }
@@ -422,10 +499,18 @@ fn index_lines(scope: Scope, items: &[Memory], now: u64) -> Vec<String> {
 /// what is known about this project and about the user, within a budget.
 pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String {
     let mut out = String::new();
-    let mut sessions: Vec<&Memory> = project.items.iter().filter(|m| m.kind == "session").collect();
+    let mut sessions: Vec<&Memory> = project
+        .items
+        .iter()
+        .filter(|m| m.kind == "session")
+        .collect();
     sessions.sort_by_key(|m| std::cmp::Reverse(m.updated));
     if let Some(s) = sessions.first() {
-        out.push_str(&format!("Last session here ({}): {}\n", ago(s.updated, now), s.title));
+        out.push_str(&format!(
+            "Last session here ({}): {}\n",
+            ago(s.updated, now),
+            s.title
+        ));
         if !s.body.is_empty() {
             let body: String = s.body.trim().chars().take(2400).collect();
             for l in body.lines() {
@@ -439,7 +524,12 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
     if sessions.len() > 1 {
         out.push_str("Earlier sessions here (`arakun mem get <id>` for what each was asked):\n");
         for s in sessions.iter().skip(1).take(EARLIER_SHOWN) {
-            out.push_str(&format!("- {} {} · {}\n", label(Scope::Project, s), s.title, ago(s.updated, now)));
+            out.push_str(&format!(
+                "- {} {} · {}\n",
+                label(Scope::Project, s),
+                s.title,
+                ago(s.updated, now)
+            ));
         }
     }
     let mut budget = INDEX_BUDGET.saturating_sub(out.len());
@@ -460,7 +550,10 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
             shown += 1;
         }
         if shown < total {
-            text.push_str(&format!("  …and {} more: `arakun mem search <words>` finds them\n", total - shown));
+            text.push_str(&format!(
+                "  …and {} more: `arakun mem search <words>` finds them\n",
+                total - shown
+            ));
         }
         out.push_str(&text);
     };
@@ -469,7 +562,11 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
         index_lines(Scope::Project, &project.items, now),
         &mut out,
     );
-    section("About the user, in every project:", index_lines(Scope::Global, &global.items, now), &mut out);
+    section(
+        "About the user, in every project:",
+        index_lines(Scope::Global, &global.items, now),
+        &mut out,
+    );
     if out.is_empty() {
         out.push_str(&format!("Nothing saved yet for {name}.\n"));
     }
@@ -499,7 +596,10 @@ things done), config, pattern, discovery. Reuse a --topic to update knowledge th
 pub fn prompt_for(dir: &Path) -> String {
     let root = root();
     let project = project_of(dir);
-    let name = project.file_name().map_or_else(|| project.display().to_string(), |n| n.to_string_lossy().to_string());
+    let name = project.file_name().map_or_else(
+        || project.display().to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
     let p = load(&store_file(&root, Scope::Project, &project));
     let g = load(&store_file(&root, Scope::Global, &project));
     prompt(&p, &g, &name, now())
@@ -540,8 +640,17 @@ fn reply_lead(reply: &str) -> Option<String> {
 /// The record arakun keeps of a session without the agent's help: what the user
 /// asked, how those turns ended, what was committed and which files changed.
 /// `key` names the session, so each turn updates the same memory.
-pub fn session_draft(key: &str, title: &str, turns: &[Turn], commits: &[String], files: &[String]) -> Option<Draft> {
-    let turns: Vec<&Turn> = turns.iter().filter(|t| !t.asked.trim().is_empty()).collect();
+pub fn session_draft(
+    key: &str,
+    title: &str,
+    turns: &[Turn],
+    commits: &[String],
+    files: &[String],
+) -> Option<Draft> {
+    let turns: Vec<&Turn> = turns
+        .iter()
+        .filter(|t| !t.asked.trim().is_empty())
+        .collect();
     let first = turns.first()?;
     let title = match title.trim() {
         "" | "New session" => first_line(&first.asked, 80),
@@ -573,7 +682,13 @@ pub fn session_draft(key: &str, title: &str, turns: &[Turn], commits: &[String],
         }
     }
     let files = files.iter().take(FILES_KEPT).cloned().collect();
-    Some(Draft { title, kind: "session".into(), body: body.trim_end().to_string(), topic: Some(format!("session/{key}")), files })
+    Some(Draft {
+        title,
+        kind: "session".into(),
+        body: body.trim_end().to_string(),
+        topic: Some(format!("session/{key}")),
+        files,
+    })
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
@@ -590,10 +705,23 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
 /// Commits on the checkout at `top` since `since`, oldest first, as
 /// "hash subject".
 fn commits_since(top: &Path, since: u64) -> Vec<String> {
-    let Some(log) = git(top, &["log", &format!("--since=@{since}"), "--reverse", "--format=%h %s"]) else {
+    let Some(log) = git(
+        top,
+        &[
+            "log",
+            &format!("--since=@{since}"),
+            "--reverse",
+            "--format=%h %s",
+        ],
+    ) else {
         return Vec::new();
     };
-    String::from_utf8_lossy(&log).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+    String::from_utf8_lossy(&log)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// Files of the checkout at `top` changed since `since`: committed since then,
@@ -606,10 +734,23 @@ pub(crate) fn changed_since(top: &Path, since: u64) -> Vec<String> {
             out.push(p.to_string());
         }
     };
-    if let Some(log) = git(top, &["log", &format!("--since=@{since}"), "--name-only", "--format="]) {
-        String::from_utf8_lossy(&log).lines().for_each(|l| add(l.trim()));
+    if let Some(log) = git(
+        top,
+        &[
+            "log",
+            &format!("--since=@{since}"),
+            "--name-only",
+            "--format=",
+        ],
+    ) {
+        String::from_utf8_lossy(&log)
+            .lines()
+            .for_each(|l| add(l.trim()));
     }
-    if let Some(status) = git(top, &["status", "--porcelain=v1", "-z", "--untracked-files=all"]) {
+    if let Some(status) = git(
+        top,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    ) {
         let status = String::from_utf8_lossy(&status);
         let mut fields = status.split('\0');
         while let Some(f) = fields.next() {
@@ -657,7 +798,10 @@ pub fn record_session(
             if f.is_relative() {
                 return Some(f.display().to_string());
             }
-            f.strip_prefix(&top).or_else(|_| f.strip_prefix(&project)).ok().map(|p| p.display().to_string())
+            f.strip_prefix(&top)
+                .or_else(|_| f.strip_prefix(&project))
+                .ok()
+                .map(|p| p.display().to_string())
         })
         .collect();
     for f in changed_since(&top, since) {
@@ -669,8 +813,17 @@ pub fn record_session(
     let path = project.display().to_string();
     update(&store_file(&root(), Scope::Project, &project), &path, |s| {
         // A file changed in an earlier turn and committed since still counts.
-        if let Some(old) = s.items.iter().find(|m| m.topic.as_deref() == Some(&format!("session/{key}"))) {
-            let mut merged: Vec<String> = old.files.iter().filter(|f| !f.starts_with('/')).cloned().collect();
+        if let Some(old) = s
+            .items
+            .iter()
+            .find(|m| m.topic.as_deref() == Some(&format!("session/{key}")))
+        {
+            let mut merged: Vec<String> = old
+                .files
+                .iter()
+                .filter(|f| !f.starts_with('/'))
+                .cloned()
+                .collect();
             for f in files.drain(..) {
                 if !merged.contains(&f) {
                     merged.push(f);
@@ -709,11 +862,7 @@ pub fn cli(args: &[String], cwd: &Path) -> i32 {
         }
         Err(e) => {
             eprintln!("arakun mem: {e}");
-            if e.starts_with("usage") {
-                2
-            } else {
-                1
-            }
+            if e.starts_with("usage") { 2 } else { 1 }
         }
     }
 }
@@ -721,13 +870,18 @@ pub fn cli(args: &[String], cwd: &Path) -> i32 {
 fn read_stdin() -> Result<String, String> {
     use std::io::Read as _;
     let mut s = String::new();
-    std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+    std::io::stdin()
+        .read_to_string(&mut s)
+        .map_err(|e| e.to_string())?;
     Ok(s)
 }
 
 pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, String> {
     let project = project_of(cwd);
-    let name = project.file_name().map_or_else(|| project.display().to_string(), |n| n.to_string_lossy().to_string());
+    let name = project.file_name().map_or_else(
+        || project.display().to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
     let path = project.display().to_string();
     let file = |scope| store_file(root, scope, &project);
     let rest = &args[1.min(args.len())..];
@@ -735,16 +889,29 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
         None | Some("help" | "-h" | "--help") => Ok(USAGE.into()),
         Some("save") => {
             let (mut title, mut words) = (None::<String>, Vec::new());
-            let (mut kind, mut body, mut files, mut topic, mut scope) =
-                ("note".to_string(), None::<String>, Vec::new(), None, Scope::Project);
+            let (mut kind, mut body, mut files, mut topic, mut scope) = (
+                "note".to_string(),
+                None::<String>,
+                Vec::new(),
+                None,
+                Scope::Project,
+            );
             let mut it = rest.iter();
             while let Some(a) = it.next() {
-                let mut val = || it.next().cloned().ok_or_else(|| format!("usage: {a} needs a value"));
+                let mut val = || {
+                    it.next()
+                        .cloned()
+                        .ok_or_else(|| format!("usage: {a} needs a value"))
+                };
                 match a.as_str() {
                     "--kind" | "-k" => kind = val()?.to_lowercase(),
                     "--body" | "-b" => body = Some(val()?),
                     "--files" | "-f" => {
-                        files = val()?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                        files = val()?
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
                     }
                     "--topic" | "-t" => topic = Some(val()?).filter(|t| !t.trim().is_empty()),
                     "--global" | "-g" => scope = Scope::Global,
@@ -752,7 +919,10 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
                     _ => words.push(a.clone()),
                 }
             }
-            let title = title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).ok_or("usage: save <title> …")?;
+            let title = title
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .ok_or("usage: save <title> …")?;
             if !KINDS.contains(&kind.as_str()) {
                 return Err(format!("unknown kind {kind}; one of: {}", KINDS.join(" ")));
             }
@@ -761,13 +931,27 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
                 Some(b) => b.to_string(),
                 None => words.join(" "),
             };
-            let draft = Draft { title, kind, body: body.trim().to_string(), topic, files };
-            let saved = update(&file(scope), if scope == Scope::Global { "" } else { &path }, |s| {
-                let r = save(s, draft, at);
-                (!matches!(r, Saved::Same(_)), r)
-            })
+            let draft = Draft {
+                title,
+                kind,
+                body: body.trim().to_string(),
+                topic,
+                files,
+            };
+            let saved = update(
+                &file(scope),
+                if scope == Scope::Global { "" } else { &path },
+                |s| {
+                    let r = save(s, draft, at);
+                    (!matches!(r, Saved::Same(_)), r)
+                },
+            )
             .map_err(|e| e.to_string())?;
-            let whose = if scope == Scope::Global { "about the user".to_string() } else { format!("in {name}") };
+            let whose = if scope == Scope::Global {
+                "about the user".to_string()
+            } else {
+                format!("in {name}")
+            };
             Ok(match saved {
                 Saved::New(id) => format!("saved #{}{id} {whose}", scope.prefix()),
                 Saved::Updated(id) => format!("updated #{}{id} {whose}", scope.prefix()),
@@ -779,7 +963,11 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
             let mut it = rest.iter();
             while let Some(a) = it.next() {
                 if a == "-n" {
-                    limit = it.next().and_then(|n| n.parse().ok()).filter(|n| *n > 0).ok_or("usage: -n N")?;
+                    limit = it
+                        .next()
+                        .and_then(|n| n.parse().ok())
+                        .filter(|n| *n > 0)
+                        .ok_or("usage: -n N")?;
                 } else {
                     words.push(a.as_str());
                 }
@@ -792,14 +980,24 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
             let mut hits: Vec<(f32, Scope, &Memory)> = search(&p.items, &query)
                 .into_iter()
                 .map(|(s, m)| (s, Scope::Project, m))
-                .chain(search(&g.items, &query).into_iter().map(|(s, m)| (s, Scope::Global, m)))
+                .chain(
+                    search(&g.items, &query)
+                        .into_iter()
+                        .map(|(s, m)| (s, Scope::Global, m)),
+                )
                 .collect();
             hits.sort_by(|a, b| b.0.total_cmp(&a.0));
             if hits.is_empty() {
-                return Ok(format!("nothing about \"{query}\" in {name} or about the user"));
+                return Ok(format!(
+                    "nothing about \"{query}\" in {name} or about the user"
+                ));
             }
             let total = hits.len();
-            let mut out: Vec<String> = hits.iter().take(limit).map(|(_, s, m)| brief(*s, m, at)).collect();
+            let mut out: Vec<String> = hits
+                .iter()
+                .take(limit)
+                .map(|(_, s, m)| brief(*s, m, at))
+                .collect();
             if total > limit {
                 out.push(format!("…{} more (-n {total})", total - limit));
             }
@@ -809,30 +1007,40 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
         Some("get") if !rest.is_empty() => {
             let mut out = Vec::new();
             for raw in rest {
-                let (scope, id) = parse_id(raw).ok_or_else(|| format!("usage: {raw} is not an id (12 or g3)"))?;
-                let found = update(&file(scope), if scope == Scope::Global { "" } else { &path }, |s| {
-                    match s.items.iter_mut().find(|m| m.id == id) {
+                let (scope, id) =
+                    parse_id(raw).ok_or_else(|| format!("usage: {raw} is not an id (12 or g3)"))?;
+                let found = update(
+                    &file(scope),
+                    if scope == Scope::Global { "" } else { &path },
+                    |s| match s.items.iter_mut().find(|m| m.id == id) {
                         Some(m) => {
                             m.hits += 1;
                             (true, Some(full(scope, m, at)))
                         }
                         None => (false, None),
-                    }
-                })
+                    },
+                )
                 .map_err(|e| e.to_string())?;
-                out.push(found.unwrap_or_else(|| format!("#{}{id}: no such memory", scope.prefix())));
+                out.push(
+                    found.unwrap_or_else(|| format!("#{}{id}: no such memory", scope.prefix())),
+                );
             }
             Ok(out.join("\n"))
         }
         Some("forget") if !rest.is_empty() => {
             let mut out = Vec::new();
             for raw in rest {
-                let (scope, id) = parse_id(raw).ok_or_else(|| format!("usage: {raw} is not an id (12 or g3)"))?;
-                let gone = update(&file(scope), if scope == Scope::Global { "" } else { &path }, |s| {
-                    let before = s.items.len();
-                    s.items.retain(|m| m.id != id);
-                    (s.items.len() != before, s.items.len() != before)
-                })
+                let (scope, id) =
+                    parse_id(raw).ok_or_else(|| format!("usage: {raw} is not an id (12 or g3)"))?;
+                let gone = update(
+                    &file(scope),
+                    if scope == Scope::Global { "" } else { &path },
+                    |s| {
+                        let before = s.items.len();
+                        s.items.retain(|m| m.id != id);
+                        (s.items.len() != before, s.items.len() != before)
+                    },
+                )
                 .map_err(|e| e.to_string())?;
                 out.push(if gone {
                     format!("forgot #{}{id}", scope.prefix())
@@ -843,16 +1051,34 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
             Ok(out.join("\n"))
         }
         Some("list") => {
-            let scope = if rest.iter().any(|a| a == "--global" || a == "-g") { Scope::Global } else { Scope::Project };
+            let scope = if rest.iter().any(|a| a == "--global" || a == "-g") {
+                Scope::Global
+            } else {
+                Scope::Project
+            };
             let mut s = load(&file(scope));
             s.items.sort_by_key(|m| std::cmp::Reverse(m.updated));
             if s.items.is_empty() {
                 return Ok("nothing saved yet".into());
             }
-            Ok(s.items.iter().map(|m| brief(scope, m, at)).collect::<Vec<_>>().join("\n"))
+            Ok(s.items
+                .iter()
+                .map(|m| brief(scope, m, at))
+                .collect::<Vec<_>>()
+                .join("\n"))
         }
-        Some("context") => Ok(context(&load(&file(Scope::Project)), &load(&file(Scope::Global)), &name, at)),
-        Some("prompt") => Ok(prompt(&load(&file(Scope::Project)), &load(&file(Scope::Global)), &name, at)),
+        Some("context") => Ok(context(
+            &load(&file(Scope::Project)),
+            &load(&file(Scope::Global)),
+            &name,
+            at,
+        )),
+        Some("prompt") => Ok(prompt(
+            &load(&file(Scope::Project)),
+            &load(&file(Scope::Global)),
+            &name,
+            at,
+        )),
         Some(other) => Err(format!("usage: unknown `{other}`\n{USAGE}")),
     }
 }
@@ -874,9 +1100,16 @@ mod tests {
 
     #[test]
     fn words_fold_accents_and_split_identifiers() {
-        assert_eq!(tokens("Configuración de Tests"), vec!["configuracion", "de", "test"]);
+        assert_eq!(
+            tokens("Configuración de Tests"),
+            vec!["configuracion", "de", "test"]
+        );
         let t = tokens("ARAKUN_CI parseJsonBody");
-        assert!(t.contains(&"arakun".to_string()) && t.contains(&"ci".to_string()) && t.contains(&"arakunci".to_string()));
+        assert!(
+            t.contains(&"arakun".to_string())
+                && t.contains(&"ci".to_string())
+                && t.contains(&"arakunci".to_string())
+        );
         assert!(t.contains(&"json".to_string()) && t.contains(&"parsejsonbody".to_string()));
     }
 
@@ -895,8 +1128,16 @@ mod tests {
             revisions: 0,
         };
         let items = vec![
-            mk(1, "Release build needs CEF", "Run tools/install-cef.sh before cargo build --release"),
-            mk(2, "Tests must run with ARAKUN_CI=off", "Otherwise the CI poller hits the network"),
+            mk(
+                1,
+                "Release build needs CEF",
+                "Run tools/install-cef.sh before cargo build --release",
+            ),
+            mk(
+                2,
+                "Tests must run with ARAKUN_CI=off",
+                "Otherwise the CI poller hits the network",
+            ),
             mk(3, "Composer caret", "blinks like VS Code expand"),
         ];
         assert_eq!(search(&items, "ci tests network")[0].1.id, 2);
@@ -916,18 +1157,40 @@ mod tests {
             topic: topic.map(Into::into),
             files: vec![],
         };
-        assert_eq!(save(&mut st, d("Auth uses JWT", "short lived", Some("auth/model")), 1), Saved::New(1));
-        assert_eq!(save(&mut st, d("Auth uses sessions", "moved off JWT", Some("auth/model")), 2), Saved::Updated(1));
+        assert_eq!(
+            save(
+                &mut st,
+                d("Auth uses JWT", "short lived", Some("auth/model")),
+                1
+            ),
+            Saved::New(1)
+        );
+        assert_eq!(
+            save(
+                &mut st,
+                d("Auth uses sessions", "moved off JWT", Some("auth/model")),
+                2
+            ),
+            Saved::Updated(1)
+        );
         assert_eq!(st.items.len(), 1);
         assert_eq!(st.items[0].revisions, 1);
         assert_eq!(save(&mut st, d("Other", "x", None), 3), Saved::New(2));
         assert_eq!(save(&mut st, d("other", "x", None), 4), Saved::Same(2));
         for i in 0..40 {
-            let draft = Draft { kind: "session".into(), ..d(&format!("s{i}"), "", None) };
+            let draft = Draft {
+                kind: "session".into(),
+                ..d(&format!("s{i}"), "", None)
+            };
             save(&mut st, draft, 10 + i);
         }
-        assert_eq!(st.items.iter().filter(|m| m.kind == "session").count(), SESSIONS_KEPT);
-        assert!(st.items.iter().any(|m| m.title == "s39") && !st.items.iter().any(|m| m.title == "s0"));
+        assert_eq!(
+            st.items.iter().filter(|m| m.kind == "session").count(),
+            SESSIONS_KEPT
+        );
+        assert!(
+            st.items.iter().any(|m| m.title == "s39") && !st.items.iter().any(|m| m.title == "s0")
+        );
     }
 
     #[test]
@@ -936,26 +1199,83 @@ mod tests {
         let proj = tmp("proj");
         let run = |a: &[&str]| run(&s(a), &proj, &root, 1_000_000);
         assert_eq!(
-            run(&["save", "Tests need ARAKUN_CI=off", "--kind", "gotcha", "--files", "src/ci/mod.rs", "--body", "or it polls"]),
-            Ok(format!("saved #1 in arakun-mem-proj-{}", std::process::id()))
+            run(&[
+                "save",
+                "Tests need ARAKUN_CI=off",
+                "--kind",
+                "gotcha",
+                "--files",
+                "src/ci/mod.rs",
+                "--body",
+                "or it polls"
+            ]),
+            Ok(format!(
+                "saved #1 in arakun-mem-proj-{}",
+                std::process::id()
+            ))
         );
-        assert_eq!(run(&["save", "Reply in Spanish", "-k", "preference", "-g", "the", "user", "asks"]).unwrap(), "saved #g1 about the user");
+        assert_eq!(
+            run(&[
+                "save",
+                "Reply in Spanish",
+                "-k",
+                "preference",
+                "-g",
+                "the",
+                "user",
+                "asks"
+            ])
+            .unwrap(),
+            "saved #g1 about the user"
+        );
         assert!(run(&["save", "x", "--kind", "nope"]).is_err());
         assert!(run(&["save"]).unwrap_err().starts_with("usage"));
         let found = run(&["search", "ci", "polls"]).unwrap();
-        assert!(found.starts_with("#1 [gotcha] Tests need ARAKUN_CI=off"), "{found}");
+        assert!(
+            found.starts_with("#1 [gotcha] Tests need ARAKUN_CI=off"),
+            "{found}"
+        );
         let found = run(&["search", "spanish"]).unwrap();
         assert!(found.starts_with("#g1 [preference]"), "{found}");
         let got = run(&["get", "1"]).unwrap();
-        assert!(got.contains("files src/ci/mod.rs") && got.contains("or it polls"), "{got}");
-        assert_eq!(load(&store_file(&root, Scope::Project, &project_of(&proj))).items[0].hits, 1);
+        assert!(
+            got.contains("files src/ci/mod.rs") && got.contains("or it polls"),
+            "{got}"
+        );
+        assert_eq!(
+            load(&store_file(&root, Scope::Project, &project_of(&proj))).items[0].hits,
+            1
+        );
         let ctx = run(&["context"]).unwrap();
-        assert!(ctx.contains("- #1 [gotcha] Tests need ARAKUN_CI=off (src/ci/mod.rs): or it polls"), "{ctx}");
-        assert!(ctx.contains("About the user") && ctx.contains("#g1 [preference] Reply in Spanish: the user asks"), "{ctx}");
-        run(&["save", "Added memory", "--kind", "session", "--body", "Goal: memory\nNext: benchmark"]).unwrap();
+        assert!(
+            ctx.contains("- #1 [gotcha] Tests need ARAKUN_CI=off (src/ci/mod.rs): or it polls"),
+            "{ctx}"
+        );
+        assert!(
+            ctx.contains("About the user")
+                && ctx.contains("#g1 [preference] Reply in Spanish: the user asks"),
+            "{ctx}"
+        );
+        run(&[
+            "save",
+            "Added memory",
+            "--kind",
+            "session",
+            "--body",
+            "Goal: memory\nNext: benchmark",
+        ])
+        .unwrap();
         let ctx = run(&["context"]).unwrap();
-        assert!(ctx.starts_with("Last session here (just now): Added memory\n  Goal: memory\n  Next: benchmark"), "{ctx}");
-        assert_eq!(run(&["forget", "1", "g9"]).unwrap(), "forgot #1\n#g9: no such memory");
+        assert!(
+            ctx.starts_with(
+                "Last session here (just now): Added memory\n  Goal: memory\n  Next: benchmark"
+            ),
+            "{ctx}"
+        );
+        assert_eq!(
+            run(&["forget", "1", "g9"]).unwrap(),
+            "forgot #1\n#g9: no such memory"
+        );
         assert!(run(&["search", "polls"]).unwrap().starts_with("nothing"));
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&proj);
@@ -965,7 +1285,13 @@ mod tests {
     fn the_index_keeps_to_its_budget() {
         let mut p = Store::default();
         for i in 0..400 {
-            let d = Draft { title: format!("Memory number {i} about something"), kind: "note".into(), body: String::new(), topic: None, files: vec![] };
+            let d = Draft {
+                title: format!("Memory number {i} about something"),
+                kind: "note".into(),
+                body: String::new(),
+                topic: None,
+                files: vec![],
+            };
             save(&mut p, d, i);
         }
         let ctx = context(&p, &Store::default(), "x", 500);
@@ -976,7 +1302,10 @@ mod tests {
     #[test]
     fn arakun_records_sessions_by_itself() {
         let turns: Vec<Turn> = [
-            ("Fix the login bug", "The token expired early.\n\nDetails follow."),
+            (
+                "Fix the login bug",
+                "The token expired early.\n\nDetails follow.",
+            ),
             ("", ""),
             ("now add a test", ""),
             ("and the docs", "```sh\nx\n```\n\n## Docs updated in README"),
@@ -984,10 +1313,20 @@ mod tests {
             ("commit", "Committed   as\nabc123."),
         ]
         .iter()
-        .map(|(a, r)| Turn { asked: a.to_string(), reply: r.to_string() })
+        .map(|(a, r)| Turn {
+            asked: a.to_string(),
+            reply: r.to_string(),
+        })
         .collect();
         let commits = vec!["abc123 Fix login".to_string()];
-        let d = session_draft("s1", "New session", &turns, &commits, &["src/auth.rs".into()]).unwrap();
+        let d = session_draft(
+            "s1",
+            "New session",
+            &turns,
+            &commits,
+            &["src/auth.rs".into()],
+        )
+        .unwrap();
         assert_eq!(d.title, "Fix the login bug");
         assert_eq!(d.topic.as_deref(), Some("session/s1"));
         assert_eq!(
@@ -995,18 +1334,41 @@ mod tests {
             "Asked:\n- Fix the login bug\n  → The token expired early.\n- …1 more\n- and the docs\n  → Docs updated in README\n\
              - rename it\n- commit\n  → Committed as abc123.\nCommits:\n- abc123 Fix login"
         );
-        let blank = [Turn { asked: "  ".into(), reply: String::new() }];
+        let blank = [Turn {
+            asked: "  ".into(),
+            reply: String::new(),
+        }];
         assert!(session_draft("s1", "x", &blank, &[], &[]).is_none());
 
         let mut p = Store::default();
-        save(&mut p, session_draft("s1", "Login bug", &turns[..1], &[], &[]).unwrap(), 10);
-        save(&mut p, session_draft("s2", "Docs", &turns[..1], &[], &[]).unwrap(), 20);
+        save(
+            &mut p,
+            session_draft("s1", "Login bug", &turns[..1], &[], &[]).unwrap(),
+            10,
+        );
+        save(
+            &mut p,
+            session_draft("s2", "Docs", &turns[..1], &[], &[]).unwrap(),
+            20,
+        );
         // The next turn of s1 updates its record instead of adding another.
-        save(&mut p, session_draft("s1", "Login bug", &turns, &commits, &["src/auth.rs".into()]).unwrap(), 30);
+        save(
+            &mut p,
+            session_draft("s1", "Login bug", &turns, &commits, &["src/auth.rs".into()]).unwrap(),
+            30,
+        );
         assert_eq!(p.items.len(), 2);
         let ctx = context(&p, &Store::default(), "x", 40);
-        assert!(ctx.starts_with("Last session here (just now): Login bug\n  Asked:\n  - Fix the login bug\n"), "{ctx}");
-        assert!(ctx.contains("  Changed: src/auth.rs\nEarlier sessions here"), "{ctx}");
+        assert!(
+            ctx.starts_with(
+                "Last session here (just now): Login bug\n  Asked:\n  - Fix the login bug\n"
+            ),
+            "{ctx}"
+        );
+        assert!(
+            ctx.contains("  Changed: src/auth.rs\nEarlier sessions here"),
+            "{ctx}"
+        );
         assert!(ctx.contains("- #2 Docs · just now\n"), "{ctx}");
     }
 
@@ -1014,7 +1376,13 @@ mod tests {
     fn changes_since_the_session_started_count_however_they_were_made() {
         let repo = tmp("changed");
         let sh = |c: &str| {
-            let ok = crate::git::unpinned(&mut std::process::Command::new("sh")).arg("-c").arg(c).current_dir(&repo).status().unwrap().success();
+            let ok = crate::git::unpinned(&mut std::process::Command::new("sh"))
+                .arg("-c")
+                .arg(c)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success();
             assert!(ok, "{c}");
         };
         sh("export GIT_COMMITTER_DATE=2001-01-01T00:00:00 \
@@ -1022,8 +1390,10 @@ mod tests {
             && echo a > old.txt && git add old.txt && git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q -m old \
             && echo dirty > before.txt && touch -t 200101010000 before.txt");
         let since = now();
-        sh("echo b > new.txt && mkdir -p src && echo c > src/lib.rs && git add src && \
-            git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q -m lib && echo d >> old.txt");
+        sh(
+            "echo b > new.txt && mkdir -p src && echo c > src/lib.rs && git add src && \
+            git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q -m lib && echo d >> old.txt",
+        );
         let mut got = changed_since(&repo, since);
         got.sort();
         assert_eq!(got, vec!["new.txt", "old.txt", "src/lib.rs"]);

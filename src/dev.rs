@@ -8,8 +8,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, ScrollDelta,
-    ScrollWheelEvent, TouchPhase, point, px,
+    Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+    ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,8 +73,15 @@ pub fn socket() -> PathBuf {
 pub fn size() -> Option<(f32, f32)> {
     let v = std::env::var(ENV).ok()?;
     let (w, h) = v.split_once('x')?;
-    let scale = std::env::var("GPUI_X11_SCALE_FACTOR").ok().and_then(|s| s.parse::<f32>().ok()).filter(|s| *s > 0.).unwrap_or(1.);
-    Some((w.parse::<f32>().ok()? / scale, h.parse::<f32>().ok()? / scale))
+    let scale = std::env::var("GPUI_X11_SCALE_FACTOR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|s| *s > 0.)
+        .unwrap_or(1.);
+    Some((
+        w.parse::<f32>().ok()? / scale,
+        h.parse::<f32>().ok()? / scale,
+    ))
 }
 
 /// `arakun dev …`; `None` hands the arguments to the normal CLI, aimed at the
@@ -88,9 +95,13 @@ pub fn cli(args: &[String]) -> Option<i32> {
         Some("start") => start(&args[1..]),
         Some("stop") => stop().map(|_| "stopped the test arakun".into()),
         Some("shot") => shot(args.get(1).map(PathBuf::from)),
-        Some("log") => std::fs::read_to_string(root().join("arakun.log")).map_err(|e| format!("no log: {e}")),
+        Some("log") => {
+            std::fs::read_to_string(root().join("arakun.log")).map_err(|e| format!("no log: {e}"))
+        }
         Some("socket") => Ok(socket().display().to_string()),
-        Some("click") if args.get(1).is_some_and(|a| a.parse::<f32>().is_err()) => click_text(&args[1..]),
+        Some("click") if args.get(1).is_some_and(|a| a.parse::<f32>().is_err()) => {
+            click_text(&args[1..])
+        }
         Some("text") => text(&args[1..]),
         Some("wait") => wait(&args[1..]),
         Some(cmd) if INPUT.contains(&cmd) => input(args),
@@ -158,20 +169,35 @@ fn stop() -> Result<(), String> {
 /// opened (imported) were born before it and are left alone.
 fn archive_test_sessions(started: u64) {
     let dir = root().join("data").join("arakun").join("sessions");
-    for path in std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
-        let Some(meta) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
-            continue;
-        };
-        let meta = &meta["meta"];
-        let (Some("claude"), Some(id), Some(cwd)) = (meta["agent"].as_str(), meta["session_id"].as_str(), meta["cwd"].as_str())
+    for path in std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+    {
+        let Some(meta) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         else {
             continue;
         };
-        let file = crate::agent::catalog::claude_project_dir(Path::new(cwd)).join(format!("{id}.jsonl"));
+        let meta = &meta["meta"];
+        let (Some("claude"), Some(id), Some(cwd)) = (
+            meta["agent"].as_str(),
+            meta["session_id"].as_str(),
+            meta["cwd"].as_str(),
+        ) else {
+            continue;
+        };
+        let file =
+            crate::agent::catalog::claude_project_dir(Path::new(cwd)).join(format!("{id}.jsonl"));
         if born(&file).is_none_or(|t| t + 5 < started) {
             continue;
         }
-        let title = meta["title"].as_str().filter(|t| !t.trim().is_empty()).unwrap_or("arakun dev test");
+        let title = meta["title"]
+            .as_str()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or("arakun dev test");
         let line = serde_json::json!({"type": "custom-title", "customTitle": format!("[archived] {title}"), "sessionId": id});
         if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&file) {
             let _ = std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes());
@@ -183,7 +209,11 @@ fn archive_test_sessions(started: u64) {
 fn born(file: &Path) -> Option<u64> {
     use std::io::Read as _;
     let mut head = Vec::new();
-    std::fs::File::open(file).ok()?.take(64 * 1024).read_to_end(&mut head).ok()?;
+    std::fs::File::open(file)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut head)
+        .ok()?;
     let head = String::from_utf8_lossy(&head);
     let at = head.find("\"timestamp\":\"")? + 13;
     let end = head[at..].find('"')? + at;
@@ -200,7 +230,9 @@ fn start_args(args: &[String]) -> Result<(Option<String>, (u32, u32)), String> {
             size = v
                 .split_once('x')
                 .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
-                .filter(|&(w, h): &(u32, u32)| (800..=4000).contains(&w) && (520..=3000).contains(&h))
+                .filter(|&(w, h): &(u32, u32)| {
+                    (800..=4000).contains(&w) && (520..=3000).contains(&h)
+                })
                 .ok_or_else(|| format!("bad --size {v}: WxH, at least 800x520"))?;
         } else if dir.is_none() {
             dir = Some(arg.clone());
@@ -213,7 +245,8 @@ fn start_args(args: &[String]) -> Result<(Option<String>, (u32, u32)), String> {
 
 fn free_display() -> Option<u32> {
     (90..200).find(|n| {
-        !Path::new(&format!("/tmp/.X11-unix/X{n}")).exists() && !Path::new(&format!("/tmp/.X{n}-lock")).exists()
+        !Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()
+            && !Path::new(&format!("/tmp/.X{n}-lock")).exists()
     })
 }
 
@@ -222,7 +255,12 @@ fn free_display() -> Option<u32> {
 fn spawn_detached(cmd: &mut Command, log: &Path) -> std::io::Result<u32> {
     let out = std::fs::File::create(log)?;
     crate::platform::detach(cmd);
-    Ok(cmd.stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out).spawn()?.id())
+    Ok(cmd
+        .stdin(Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out)
+        .spawn()?
+        .id())
 }
 
 fn start(args: &[String]) -> Result<String, String> {
@@ -231,7 +269,10 @@ fn start(args: &[String]) -> Result<String, String> {
     }
     let (dir, (width, height)) = start_args(args)?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let project = cwd.join(dir.as_deref().unwrap_or(".")).canonicalize().map_err(|e| format!("project: {e}"))?;
+    let project = cwd
+        .join(dir.as_deref().unwrap_or("."))
+        .canonicalize()
+        .map_err(|e| format!("project: {e}"))?;
     if !project.is_dir() {
         return Err(format!("{} is not a directory", project.display()));
     }
@@ -273,7 +314,9 @@ fn start(args: &[String]) -> Result<String, String> {
     let up = Instant::now();
     while !Path::new(&format!("/tmp/.X11-unix/X{display}")).exists() {
         if up.elapsed() > Duration::from_secs(5) || !alive(xvfb) {
-            return Err("Xvfb did not start; see its log in `arakun dev socket`'s directory".into());
+            return Err(
+                "Xvfb did not start; see its log in `arakun dev socket`'s directory".into(),
+            );
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -294,12 +337,29 @@ fn start(args: &[String]) -> Result<String, String> {
         &root.join("arakun.log"),
     )
     .map_err(|e| e.to_string())?;
-    let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let inst = Instance { display, xvfb, arakun, width, height, started };
-    std::fs::write(root.join("instance.json"), serde_json::to_vec(&inst).unwrap_or_default())
-        .map_err(|e| e.to_string())?;
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let inst = Instance {
+        display,
+        xvfb,
+        arakun,
+        width,
+        height,
+        started,
+    };
+    std::fs::write(
+        root.join("instance.json"),
+        serde_json::to_vec(&inst).unwrap_or_default(),
+    )
+    .map_err(|e| e.to_string())?;
 
-    let ping = Request { cmd: "ls".into(), args: Vec::new(), cwd: project.clone(), side: false };
+    let ping = Request {
+        cmd: "ls".into(),
+        args: Vec::new(),
+        cwd: project.clone(),
+        side: false,
+    };
     let up = Instant::now();
     loop {
         if control::send_to(&socket(), &ping).is_ok() {
@@ -309,7 +369,10 @@ fn start(args: &[String]) -> Result<String, String> {
             return Err("the test arakun exited; `arakun dev log` shows why".into());
         }
         if up.elapsed() > Duration::from_secs(30) {
-            return Err("the test arakun did not answer within 30 s; `arakun dev log` shows its output".into());
+            return Err(
+                "the test arakun did not answer within 30 s; `arakun dev log` shows its output"
+                    .into(),
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -347,7 +410,8 @@ fn shot(file: Option<PathBuf>) -> Result<String, String> {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat};
     let inst = running().ok_or("no test arakun is running; start one with `arakun dev start`")?;
-    let (conn, screen) = x11rb::connect(Some(&format!(":{}", inst.display))).map_err(|e| e.to_string())?;
+    let (conn, screen) =
+        x11rb::connect(Some(&format!(":{}", inst.display))).map_err(|e| e.to_string())?;
     let screen = &conn.setup().roots[screen];
     let (w, h) = (screen.width_in_pixels, screen.height_in_pixels);
     let reply = conn
@@ -358,7 +422,9 @@ fn shot(file: Option<PathBuf>) -> Result<String, String> {
     let rgb = bgrx_to_rgb(&reply.data, w as usize * h as usize).ok_or("unexpected image format")?;
     let img = image::RgbImage::from_raw(w as u32, h as u32, rgb).ok_or("bad image size")?;
     let file = file.unwrap_or_else(|| {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
         root().join("shots").join(format!("shot-{secs}.png"))
     });
     img.save(&file).map_err(|e| e.to_string())?;
@@ -419,12 +485,26 @@ fn parse_tsv(tsv: &str, scale: f32) -> Vec<Vec<Found>> {
     for row in tsv.lines().skip(1) {
         let c: Vec<&str> = row.split('\t').collect();
         // Low confidence is mostly icons and art read as letters.
-        if c.len() < 12 || c[0] != "5" || c[11].trim().is_empty() || c[10].parse::<f32>().unwrap_or(0.) < 50. {
+        if c.len() < 12
+            || c[0] != "5"
+            || c[11].trim().is_empty()
+            || c[10].parse::<f32>().unwrap_or(0.) < 50.
+        {
             continue;
         }
         let n = |i: usize| c[i].parse::<f32>().unwrap_or(0.) / scale;
-        let key = (c[2].parse().unwrap_or(0), c[3].parse().unwrap_or(0), c[4].parse().unwrap_or(0));
-        let word = Found { text: c[11].trim().to_string(), x: n(6), y: n(7), w: n(8), h: n(9) };
+        let key = (
+            c[2].parse().unwrap_or(0),
+            c[3].parse().unwrap_or(0),
+            c[4].parse().unwrap_or(0),
+        );
+        let word = Found {
+            text: c[11].trim().to_string(),
+            x: n(6),
+            y: n(7),
+            w: n(8),
+            h: n(9),
+        };
         match lines.last_mut() {
             Some((k, words)) if *k == key => words.push(word),
             _ => lines.push((key, vec![word])),
@@ -434,13 +514,18 @@ fn parse_tsv(tsv: &str, scale: f32) -> Vec<Vec<Found>> {
 }
 
 fn norm(word: &str) -> String {
-    word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+    word.trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
 }
 
 /// Where the words of `query` show in a row, the last one allowed to be cut
 /// ("sessions…" reads as "sessions").
 fn find_in(lines: &[Vec<Found>], query: &str) -> Vec<Found> {
-    let want: Vec<String> = query.split_whitespace().map(norm).filter(|w| !w.is_empty()).collect();
+    let want: Vec<String> = query
+        .split_whitespace()
+        .map(norm)
+        .filter(|w| !w.is_empty())
+        .collect();
     let mut out = Vec::new();
     if want.is_empty() {
         return out;
@@ -449,7 +534,8 @@ fn find_in(lines: &[Vec<Found>], query: &str) -> Vec<Found> {
         let got: Vec<String> = words.iter().map(|w| norm(&w.text)).collect();
         for start in 0..got.len() {
             let fits = want.iter().enumerate().all(|(i, t)| {
-                got.get(start + i).is_some_and(|g| g == t || (i + 1 == want.len() && g.starts_with(t.as_str())))
+                got.get(start + i)
+                    .is_some_and(|g| g == t || (i + 1 == want.len() && g.starts_with(t.as_str())))
             });
             if fits {
                 out.push(join(&words[start..start + want.len()]));
@@ -464,14 +550,28 @@ fn join(words: &[Found]) -> Found {
     let y = words.iter().map(|w| w.y).fold(f32::MAX, f32::min);
     let right = words.iter().map(|w| w.x + w.w).fold(0., f32::max);
     let bottom = words.iter().map(|w| w.y + w.h).fold(0., f32::max);
-    let text = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
-    Found { text, x, y, w: right - x, h: bottom - y }
+    let text = words
+        .iter()
+        .map(|w| w.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Found {
+        text,
+        x,
+        y,
+        w: right - x,
+        h: bottom - y,
+    }
 }
 
 /// `arakun dev text [words…]`.
 fn text(args: &[String]) -> Result<String, String> {
     let lines = screen_lines()?;
-    let found = if args.is_empty() { lines.iter().map(|l| join(l)).collect() } else { find_in(&lines, &args.join(" ")) };
+    let found = if args.is_empty() {
+        lines.iter().map(|l| join(l)).collect()
+    } else {
+        find_in(&lines, &args.join(" "))
+    };
     if found.is_empty() {
         return Err(format!("“{}” is not on screen", args.join(" ")));
     }
@@ -491,7 +591,14 @@ fn click_text(args: &[String]) -> Result<String, String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--nth" => nth = Some(it.next().and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).ok_or("--nth wants 1, 2…")?),
+            "--nth" => {
+                nth = Some(
+                    it.next()
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .filter(|n| *n > 0)
+                        .ok_or("--nth wants 1, 2…")?,
+                )
+            }
             "--right" | "--double" => flags.push(a.clone()),
             _ => words.push(a.as_str()),
         }
@@ -499,12 +606,24 @@ fn click_text(args: &[String]) -> Result<String, String> {
     let query = words.join(" ");
     let found = find_in(&screen_lines()?, &query);
     let pick = match (found.len(), nth) {
-        (0, _) => return Err(format!("“{query}” is not on screen (see `arakun dev text`)")),
-        (_, Some(n)) => found.get(n - 1).ok_or(format!("“{query}” shows {} times", found.len()))?,
+        (0, _) => {
+            return Err(format!(
+                "“{query}” is not on screen (see `arakun dev text`)"
+            ));
+        }
+        (_, Some(n)) => found
+            .get(n - 1)
+            .ok_or(format!("“{query}” shows {} times", found.len()))?,
         (1, None) => &found[0],
         (n, None) => {
-            let list: Vec<String> = found.iter().map(|f| format!("  {:.0} {:.0}", f.center().0, f.center().1)).collect();
-            return Err(format!("“{query}” shows {n} times; pick one with --nth:\n{}", list.join("\n")));
+            let list: Vec<String> = found
+                .iter()
+                .map(|f| format!("  {:.0} {:.0}", f.center().0, f.center().1))
+                .collect();
+            return Err(format!(
+                "“{query}” shows {n} times; pick one with --nth:\n{}",
+                list.join("\n")
+            ));
         }
     };
     let (x, y) = pick.center();
@@ -539,17 +658,32 @@ fn wait(args: &[String]) -> Result<String, String> {
     loop {
         let elapsed = start.elapsed();
         let done = match &until {
-            Until::Text(t) => (!find_in(&screen_lines()?, t).is_empty()).then(|| format!("“{t}” shows")),
-            Until::Gone(t) => find_in(&screen_lines()?, t).is_empty().then(|| format!("“{t}” is gone")),
+            Until::Text(t) => {
+                (!find_in(&screen_lines()?, t).is_empty()).then(|| format!("“{t}” shows"))
+            }
+            Until::Gone(t) => find_in(&screen_lines()?, t)
+                .is_empty()
+                .then(|| format!("“{t}” is gone")),
             Until::Idle => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-                let req = Request { cmd: "ls".into(), args: Vec::new(), cwd, side: false };
-                let ls = control::send_to(&socket(), &req).map(|r| r.message).unwrap_or_default();
+                let req = Request {
+                    cmd: "ls".into(),
+                    args: Vec::new(),
+                    cwd,
+                    side: false,
+                };
+                let ls = control::send_to(&socket(), &req)
+                    .map(|r| r.message)
+                    .unwrap_or_default();
                 let working = ls.contains(" working");
                 seen_work |= working;
                 // A prompt just sent may still be starting its agent: give it a moment.
                 (!working && (seen_work || elapsed > Duration::from_secs(5))).then(|| {
-                    if ls.contains("needs input") { "a session needs input".to_string() } else { "no session is working".to_string() }
+                    if ls.contains("needs input") {
+                        "a session needs input".to_string()
+                    } else {
+                        "no session is working".to_string()
+                    }
                 })
             }
         };
@@ -566,8 +700,14 @@ fn wait(args: &[String]) -> Result<String, String> {
 
 /// A 24-bit X image comes as 4 bytes a pixel, blue first.
 fn bgrx_to_rgb(data: &[u8], pixels: usize) -> Option<Vec<u8>> {
-    (data.len() >= pixels * 4)
-        .then(|| data.as_chunks::<4>().0.iter().take(pixels).flat_map(|&[b, g, r, _]| [r, g, b]).collect())
+    (data.len() >= pixels * 4).then(|| {
+        data.as_chunks::<4>()
+            .0
+            .iter()
+            .take(pixels)
+            .flat_map(|&[b, g, r, _]| [r, g, b])
+            .collect()
+    })
 }
 
 fn input(args: &[String]) -> Result<String, String> {
@@ -576,11 +716,21 @@ fn input(args: &[String]) -> Result<String, String> {
         return Err("no test arakun is running; start one with `arakun dev start`".into());
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let req = Request { cmd: "dev".into(), args: args.to_vec(), cwd, side: false };
-    let reply = control::send_to(&socket(), &req).map_err(|e| format!("could not reach the test arakun: {e}"))?;
+    let req = Request {
+        cmd: "dev".into(),
+        args: args.to_vec(),
+        cwd,
+        side: false,
+    };
+    let reply = control::send_to(&socket(), &req)
+        .map_err(|e| format!("could not reach the test arakun: {e}"))?;
     // Let the frame the input caused be drawn before a screenshot.
     std::thread::sleep(Duration::from_millis(250));
-    if reply.ok { Ok(reply.message) } else { Err(reply.message) }
+    if reply.ok {
+        Ok(reply.message)
+    } else {
+        Err(reply.message)
+    }
 }
 
 /// One step of `arakun dev` input.
@@ -590,15 +740,28 @@ pub enum Synth {
     /// The left button goes down here and stays down: moves drag until `Up`.
     Down(f32, f32),
     Up(f32, f32),
-    Click { x: f32, y: f32, button: MouseButton, count: usize },
-    Scroll { x: f32, y: f32, dy: f32, dx: f32, ctrl: bool },
+    Click {
+        x: f32,
+        y: f32,
+        button: MouseButton,
+        count: usize,
+    },
+    Scroll {
+        x: f32,
+        y: f32,
+        dy: f32,
+        dx: f32,
+        ctrl: bool,
+    },
     Key(String),
     Text(String),
 }
 
 pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
     let num = |s: Option<&String>, what: &str| {
-        s.and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).ok_or_else(|| format!("{what} must be a number"))
+        s.and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| format!("{what} must be a number"))
     };
     let rest = &args[1.min(args.len())..];
     match args.first().map(String::as_str) {
@@ -614,11 +777,25 @@ pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
                     other => return Err(format!("unknown click flag {other}")),
                 }
             }
-            Ok(vec![Synth::Click { x, y, button, count }])
+            Ok(vec![Synth::Click {
+                x,
+                y,
+                button,
+                count,
+            }])
         }
-        Some("move") if rest.len() == 2 => Ok(vec![Synth::Move(num(rest.first(), "x")?, num(rest.get(1), "y")?)]),
-        Some("down") if rest.len() == 2 => Ok(vec![Synth::Down(num(rest.first(), "x")?, num(rest.get(1), "y")?)]),
-        Some("up") if rest.len() == 2 => Ok(vec![Synth::Up(num(rest.first(), "x")?, num(rest.get(1), "y")?)]),
+        Some("move") if rest.len() == 2 => Ok(vec![Synth::Move(
+            num(rest.first(), "x")?,
+            num(rest.get(1), "y")?,
+        )]),
+        Some("down") if rest.len() == 2 => Ok(vec![Synth::Down(
+            num(rest.first(), "x")?,
+            num(rest.get(1), "y")?,
+        )]),
+        Some("up") if rest.len() == 2 => Ok(vec![Synth::Up(
+            num(rest.first(), "x")?,
+            num(rest.get(1), "y")?,
+        )]),
         Some("scroll") => {
             let ctrl = rest.iter().any(|a| a == "--ctrl");
             let rest: Vec<&String> = rest.iter().filter(|a| *a != "--ctrl").collect();
@@ -629,13 +806,21 @@ pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
                 x: num(rest.first().copied(), "x")?,
                 y: num(rest.get(1).copied(), "y")?,
                 dy: num(rest.get(2).copied(), "dy")?,
-                dx: if rest.len() == 4 { num(rest.get(3).copied(), "dx")? } else { 0. },
+                dx: if rest.len() == 4 {
+                    num(rest.get(3).copied(), "dx")?
+                } else {
+                    0.
+                },
                 ctrl,
             }])
         }
         Some("key") if !rest.is_empty() => rest
             .iter()
-            .map(|k| Keystroke::parse(k).map(|_| Synth::Key(k.clone())).map_err(|_| format!("unknown key {k}")))
+            .map(|k| {
+                Keystroke::parse(k)
+                    .map(|_| Synth::Key(k.clone()))
+                    .map_err(|_| format!("unknown key {k}"))
+            })
             .collect(),
         Some("type") if !rest.is_empty() => Ok(vec![Synth::Text(rest.join(" "))]),
         Some(cmd) => Err(format!("usage: see `arakun dev help` ({cmd})")),
@@ -659,7 +844,11 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
             Synth::Move(x, y) => {
                 let pressed_button = HELD.get().then_some(MouseButton::Left);
                 window.dispatch_event(
-                    PlatformInput::MouseMove(MouseMoveEvent { position: at(x, y), pressed_button, modifiers: mods }),
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: at(x, y),
+                        pressed_button,
+                        modifiers: mods,
+                    }),
                     cx,
                 );
             }
@@ -667,7 +856,11 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
                 HELD.set(true);
                 let position = at(x, y);
                 window.dispatch_event(
-                    PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: mods }),
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: None,
+                        modifiers: mods,
+                    }),
                     cx,
                 );
                 window.dispatch_event(
@@ -685,18 +878,36 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
                 HELD.set(false);
                 let position = at(x, y);
                 window.dispatch_event(
-                    PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), modifiers: mods }),
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: mods,
+                    }),
                     cx,
                 );
                 window.dispatch_event(
-                    PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position, modifiers: mods, click_count: 1 }),
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: mods,
+                        click_count: 1,
+                    }),
                     cx,
                 );
             }
-            Synth::Click { x, y, button, count } => {
+            Synth::Click {
+                x,
+                y,
+                button,
+                count,
+            } => {
                 let position = at(x, y);
                 window.dispatch_event(
-                    PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: mods }),
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: None,
+                        modifiers: mods,
+                    }),
                     cx,
                 );
                 for click_count in 1..=count {
@@ -711,7 +922,12 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
                         cx,
                     );
                     window.dispatch_event(
-                        PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers: mods, click_count }),
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            button,
+                            position,
+                            modifiers: mods,
+                            click_count,
+                        }),
                         cx,
                     );
                 }
@@ -721,7 +937,10 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
                     PlatformInput::ScrollWheel(ScrollWheelEvent {
                         position: at(x, y),
                         delta: ScrollDelta::Pixels(point(px(-dx), px(-dy))),
-                        modifiers: Modifiers { control: ctrl, ..mods },
+                        modifiers: Modifiers {
+                            control: ctrl,
+                            ..mods
+                        },
                         touch_phase: TouchPhase::Moved,
                     }),
                     cx,
@@ -741,7 +960,14 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
                         c => c.to_string(),
                     };
                     let key_char = Some(ch.to_string());
-                    window.dispatch_keystroke(Keystroke { modifiers: mods, key, key_char }, cx);
+                    window.dispatch_keystroke(
+                        Keystroke {
+                            modifiers: mods,
+                            key,
+                            key_char,
+                        },
+                        cx,
+                    );
                 }
             }
         }
@@ -752,7 +978,9 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
 /// Answers a `dev` request: only a test arakun takes synthetic input.
 pub fn handle(req: &Request) -> Result<Vec<Synth>, Reply> {
     if size().is_none() {
-        return Err(Reply::err("only a test arakun (`arakun dev start`) takes synthetic input"));
+        return Err(Reply::err(
+            "only a test arakun (`arakun dev start`) takes synthetic input",
+        ));
     }
     parse_input(&req.args).map_err(Reply::err)
 }
@@ -767,7 +995,9 @@ mod tests {
 
     #[test]
     fn finds_phrases_in_tesseract_lines() {
-        let row = |line: u32, x: u32, conf: u32, text: &str| format!("5\t1\t1\t1\t{line}\t1\t{x}\t30\t60\t30\t{conf}\t{text}");
+        let row = |line: u32, x: u32, conf: u32, text: &str| {
+            format!("5\t1\t1\t1\t{line}\t1\t{x}\t30\t60\t30\t{conf}\t{text}")
+        };
         let tsv = [
             "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext".to_string(),
             row(1, 300, 95, "Import"),
@@ -792,24 +1022,55 @@ mod tests {
     fn input_parses_like_the_usage_says() {
         assert_eq!(
             parse_input(&s(&["click", "10", "20.5"])),
-            Ok(vec![Synth::Click { x: 10., y: 20.5, button: MouseButton::Left, count: 1 }])
+            Ok(vec![Synth::Click {
+                x: 10.,
+                y: 20.5,
+                button: MouseButton::Left,
+                count: 1
+            }])
         );
         assert_eq!(
             parse_input(&s(&["click", "1", "2", "--right", "--double"])),
-            Ok(vec![Synth::Click { x: 1., y: 2., button: MouseButton::Right, count: 2 }])
+            Ok(vec![Synth::Click {
+                x: 1.,
+                y: 2.,
+                button: MouseButton::Right,
+                count: 2
+            }])
         );
         assert!(parse_input(&s(&["click", "x", "2"])).is_err());
         assert!(parse_input(&s(&["click", "1"])).is_err());
         assert!(parse_input(&s(&["click", "1", "2", "--triple"])).is_err());
-        assert_eq!(parse_input(&s(&["scroll", "5", "6", "-120"])), Ok(vec![Synth::Scroll { x: 5., y: 6., dy: -120., dx: 0., ctrl: false }]));
+        assert_eq!(
+            parse_input(&s(&["scroll", "5", "6", "-120"])),
+            Ok(vec![Synth::Scroll {
+                x: 5.,
+                y: 6.,
+                dy: -120.,
+                dx: 0.,
+                ctrl: false
+            }])
+        );
         assert_eq!(
             parse_input(&s(&["key", "ctrl-f", "enter"])),
-            Ok(vec![Synth::Key("ctrl-f".into()), Synth::Key("enter".into())])
+            Ok(vec![
+                Synth::Key("ctrl-f".into()),
+                Synth::Key("enter".into())
+            ])
         );
         assert!(parse_input(&s(&["key"])).is_err());
-        assert_eq!(parse_input(&s(&["type", "hola", "mundo"])), Ok(vec![Synth::Text("hola mundo".into())]));
-        assert_eq!(parse_input(&s(&["down", "5", "6"])), Ok(vec![Synth::Down(5., 6.)]));
-        assert_eq!(parse_input(&s(&["up", "7", "8"])), Ok(vec![Synth::Up(7., 8.)]));
+        assert_eq!(
+            parse_input(&s(&["type", "hola", "mundo"])),
+            Ok(vec![Synth::Text("hola mundo".into())])
+        );
+        assert_eq!(
+            parse_input(&s(&["down", "5", "6"])),
+            Ok(vec![Synth::Down(5., 6.)])
+        );
+        assert_eq!(
+            parse_input(&s(&["up", "7", "8"])),
+            Ok(vec![Synth::Up(7., 8.)])
+        );
         assert!(parse_input(&s(&["down", "5"])).is_err());
         assert!(parse_input(&s(&["move", "1"])).is_err());
     }
@@ -817,7 +1078,10 @@ mod tests {
     #[test]
     fn start_takes_a_dir_and_a_size() {
         assert_eq!(start_args(&[]), Ok((None, DEFAULT_SIZE)));
-        assert_eq!(start_args(&s(&["--size", "1200x800", "proj"])), Ok((Some("proj".into()), (1200, 800))));
+        assert_eq!(
+            start_args(&s(&["--size", "1200x800", "proj"])),
+            Ok((Some("proj".into()), (1200, 800)))
+        );
         assert!(start_args(&s(&["--size", "10x10"])).is_err());
         assert!(start_args(&s(&["--size"])).is_err());
         assert!(start_args(&s(&["a", "b"])).is_err());
@@ -825,7 +1089,10 @@ mod tests {
 
     #[test]
     fn x_pixels_become_rgb() {
-        assert_eq!(bgrx_to_rgb(&[1, 2, 3, 0, 4, 5, 6, 0], 2), Some(vec![3, 2, 1, 6, 5, 4]));
+        assert_eq!(
+            bgrx_to_rgb(&[1, 2, 3, 0, 4, 5, 6, 0], 2),
+            Some(vec![3, 2, 1, 6, 5, 4])
+        );
         assert_eq!(bgrx_to_rgb(&[1, 2, 3], 1), None);
     }
 }

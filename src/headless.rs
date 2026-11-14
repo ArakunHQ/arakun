@@ -34,7 +34,9 @@ use gpui::{App, AppContext as _, Context, Entity, Global};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::{self, AgentKind, Entry, Setting, Thread, ThreadEvent, ThreadStatus, workers_ai};
+use crate::agent::{
+    self, AgentKind, Entry, Setting, Thread, ThreadEvent, ThreadStatus, workers_ai,
+};
 use policy::{Level, Policy};
 use sandbox::{Cap, Jail, Sandbox};
 
@@ -118,7 +120,11 @@ impl Meta {
     /// How its tools run, for `ls` and `log`.
     pub fn confinement(&self) -> String {
         let caps = sandbox::caps_names(&self.caps);
-        let reads: String = self.reads.iter().map(|r| format!(", read {}", r.display())).collect();
+        let reads: String = self
+            .reads
+            .iter()
+            .map(|r| format!(", read {}", r.display()))
+            .collect();
         match (self.no_sandbox, self.unsandboxed) {
             (false, _) => format!("sandbox, allow {caps}{reads}"),
             (true, true) => format!("NO SANDBOX, allow {caps}"),
@@ -197,7 +203,10 @@ fn inbox(id: &str) -> PathBuf {
 }
 
 fn write_json<T: Serialize>(path: &Path, v: &T) -> std::io::Result<()> {
-    crate::durable::write(path, &serde_json::to_vec_pretty(v).map_err(std::io::Error::other)?)
+    crate::durable::write(
+        path,
+        &serde_json::to_vec_pretty(v).map_err(std::io::Error::other)?,
+    )
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
@@ -281,8 +290,14 @@ fn now() -> u64 {
 }
 
 fn new_id() -> String {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    format!("h{:x}{:02x}", t.as_millis(), (t.subsec_nanos() ^ std::process::id()) & 0xff)
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "h{:x}{:02x}",
+        t.as_millis(),
+        (t.subsec_nanos() ^ std::process::id()) & 0xff
+    )
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -295,8 +310,13 @@ fn clip(s: &str, max: usize) -> String {
 
 /// Queues `text` for the host to send.
 fn post(id: &str, text: &str) -> std::io::Result<()> {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    crate::durable::write(&inbox(id).join(format!("{:020}.txt", t.as_nanos())), text.as_bytes())
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    crate::durable::write(
+        &inbox(id).join(format!("{:020}.txt", t.as_nanos())),
+        text.as_bytes(),
+    )
 }
 
 /// Prompts waiting in the inbox, oldest first, taken out of it.
@@ -306,7 +326,12 @@ fn take_inbox(id: &str) -> Vec<String> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "txt") && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "txt")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
         .collect();
     files.sort();
     files
@@ -320,11 +345,16 @@ fn take_inbox(id: &str) -> Vec<String> {
 }
 
 fn inbox_empty(id: &str) -> bool {
-    !std::fs::read_dir(inbox(id)).is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.path().extension().is_some_and(|x| x == "txt"))))
+    !std::fs::read_dir(inbox(id)).is_ok_and(|mut d| {
+        d.any(|e| e.is_ok_and(|e| e.path().extension().is_some_and(|x| x == "txt")))
+    })
 }
 
 fn workers_ai_model(model: &str) -> Option<&'static workers_ai::Model> {
-    let name = model.strip_prefix(workers_ai::CLI_PREFIX).or_else(|| model.strip_prefix("cloudflare-workers-ai/")).unwrap_or(model);
+    let name = model
+        .strip_prefix(workers_ai::CLI_PREFIX)
+        .or_else(|| model.strip_prefix("cloudflare-workers-ai/"))
+        .unwrap_or(model);
     workers_ai::model(name)
 }
 
@@ -332,7 +362,10 @@ fn workers_ai_model(model: &str) -> Option<&'static workers_ai::Model> {
 fn agent_for(model: &str, effort: &str) -> Result<(AgentKind, Vec<(Setting, String)>), String> {
     if let Some(m) = workers_ai_model(model) {
         if !effort.is_empty() && !m.efforts.contains(&effort) {
-            return Err(format!("{model} takes no --effort {effort}; pick one of: {}", m.efforts.join(", ")));
+            return Err(format!(
+                "{model} takes no --effort {effort}; pick one of: {}",
+                m.efforts.join(", ")
+            ));
         }
         let mut settings = vec![(Setting::Model, m.id.to_string())];
         if !effort.is_empty() {
@@ -343,13 +376,21 @@ fn agent_for(model: &str, effort: &str) -> Result<(AgentKind, Vec<(Setting, Stri
     if model.starts_with("claude") {
         return Err("Claude Code can't run headless yet: its own permission settings would get around --policy".into());
     }
-    Err(format!("arakun can't run {model} headless; pick one of:\n  {}", workers_ai::cli_models().join("\n  ")))
+    Err(format!(
+        "arakun can't run {model} headless; pick one of:\n  {}",
+        workers_ai::cli_models().join("\n  ")
+    ))
 }
 
 /// Starts the host of `id`, its output to `host.log`: in a session of its own,
 /// or `attached` to this process (`--wait`), which takes it down if it dies.
 /// `append` goes at the end of a new session's system prompt.
-fn spawn_host(id: &str, cwd: &Path, attached: bool, append: Option<&Path>) -> Result<std::process::Child, String> {
+fn spawn_host(
+    id: &str,
+    cwd: &Path,
+    attached: bool,
+    append: Option<&Path>,
+) -> Result<std::process::Child, String> {
     let exe = std::env::current_exe().map_err(|e| format!("can't find arakun's binary: {e}"))?;
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -358,7 +399,12 @@ fn spawn_host(id: &str, cwd: &Path, attached: bool, append: Option<&Path>) -> Re
         .map_err(|e| e.to_string())?;
     let err = log.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = crate::platform::command(exe);
-    cmd.arg("agent-host").arg(id).current_dir(cwd).stdin(std::process::Stdio::null()).stdout(log).stderr(err);
+    cmd.arg("agent-host")
+        .arg(id)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(err);
     if let Some(path) = append {
         cmd.env("ARAKUN_SYSTEM_APPEND", path);
     }
@@ -383,7 +429,8 @@ fn spawn_host(id: &str, cwd: &Path, attached: bool, append: Option<&Path>) -> Re
     }
     #[cfg(not(unix))]
     let _ = attached;
-    cmd.spawn().map_err(|e| format!("could not start the agent: {e}"))
+    cmd.spawn()
+        .map_err(|e| format!("could not start the agent: {e}"))
 }
 
 // ---- the command line --------------------------------------------------------
@@ -440,7 +487,8 @@ fn run_args(rest: &[String]) -> Option<Run> {
                 continue;
             }
             "--read" => {
-                r.reads.push(rest.get(i + 1).filter(|v| !v.is_empty())?.clone());
+                r.reads
+                    .push(rest.get(i + 1).filter(|v| !v.is_empty())?.clone());
                 i += 2;
                 continue;
             }
@@ -484,7 +532,9 @@ pub fn cli(rest: &[String], cwd: &Path) -> Option<i32> {
     let (sub, args) = rest.split_first()?;
     type Found = Option<(Meta, usize, u64, Vec<String>)>;
     let session = |args: &[String]| -> Result<Found, String> {
-        let Some((id, lines, secs, tail)) = id_args(args) else { return Ok(None) };
+        let Some((id, lines, secs, tail)) = id_args(args) else {
+            return Ok(None);
+        };
         Ok(find(&id)?.map(|m| (m, lines, secs, tail)))
     };
     match sub.as_str() {
@@ -500,7 +550,10 @@ pub fn cli(rest: &[String], cwd: &Path) -> Option<i32> {
         "approve" | "deny" => Some(match args {
             [id, req, note @ ..] => answer(id, req, sub == "approve", &note.join(" ")),
             _ => {
-                eprintln!("usage: arakun agent {sub} <id> <req_id>{}", if sub == "deny" { " [reason…]" } else { "" });
+                eprintln!(
+                    "usage: arakun agent {sub} <id> <req_id>{}",
+                    if sub == "deny" { " [reason…]" } else { "" }
+                );
                 2
             }
         }),
@@ -548,7 +601,11 @@ fn run(r: Run, cwd: &Path) -> i32 {
     if !r.resume.is_empty() {
         return resume_run(&r, cwd, timeout, append.as_deref());
     }
-    let model = if r.model.is_empty() { format!("{}{}", workers_ai::CLI_PREFIX, workers_ai::MODELS[0].id) } else { r.model.clone() };
+    let model = if r.model.is_empty() {
+        format!("{}{}", workers_ai::CLI_PREFIX, workers_ai::MODELS[0].id)
+    } else {
+        r.model.clone()
+    };
     let (agent, _) = match agent_for(&model, &r.effort) {
         Ok(a) => a,
         Err(e) => return fail(&e),
@@ -557,10 +614,18 @@ fn run(r: Run, cwd: &Path) -> i32 {
         "" => Policy::Workspace,
         p => match Policy::parse(p) {
             Some(p) => p,
-            None => return fail(&format!("unknown --policy {p}: readonly, workspace or full")),
+            None => {
+                return fail(&format!(
+                    "unknown --policy {p}: readonly, workspace or full"
+                ));
+            }
         },
     };
-    let dir = if r.dir.is_empty() { cwd.to_path_buf() } else { cwd.join(&r.dir) };
+    let dir = if r.dir.is_empty() {
+        cwd.to_path_buf()
+    } else {
+        cwd.join(&r.dir)
+    };
     let dir = match crate::platform::canonicalize(&dir) {
         Ok(d) if d.is_dir() => d,
         _ => return fail(&format!("not a directory: {}", dir.display())),
@@ -588,12 +653,21 @@ fn run(r: Run, cwd: &Path) -> i32 {
             Ok(sb) => sb.reads,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(self::dir(&id));
-                return fail(&format!("{e}\nHeadless agents run sandboxed; nothing was started."));
+                return fail(&format!(
+                    "{e}\nHeadless agents run sandboxed; nothing was started."
+                ));
             }
         }
     };
     let title = if r.title.is_empty() {
-        clip(r.prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(""), 60)
+        clip(
+            r.prompt
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or(""),
+            60,
+        )
     } else {
         r.title.clone()
     };
@@ -694,7 +768,12 @@ fn resume_run(r: &Run, cwd: &Path, timeout: Option<Duration>, append: Option<&Pa
             return fail(&e);
         }
     };
-    let line = format!("{id}  {}  {}  [resumed; {}]", meta.model, meta.cwd.display(), meta.confinement());
+    let line = format!(
+        "{id}  {}  {}  [resumed; {}]",
+        meta.model,
+        meta.cwd.display(),
+        meta.confinement()
+    );
     if r.wait {
         eprintln!("{line}");
         let result = (!r.result.is_empty()).then(|| cwd.join(&r.result));
@@ -708,7 +787,13 @@ fn resume_run(r: &Run, cwd: &Path, timeout: Option<Duration>, append: Option<&Pa
 /// JSON (and writes it to `result`). A timeout or a signal stops the turn
 /// first, the way `arakun agent stop` does. Exits 0 when the turn ended on its
 /// own, 1 on an error, 124 on the timeout, 130 on a signal.
-fn wait_for_host(id: &str, mut host: std::process::Child, started: Instant, timeout: Option<Duration>, result: Option<&Path>) -> i32 {
+fn wait_for_host(
+    id: &str,
+    mut host: std::process::Child,
+    started: Instant,
+    timeout: Option<Duration>,
+    result: Option<&Path>,
+) -> i32 {
     let mut signal = crate::signals::first_signal();
     let mut stopped: Option<(Instant, &str)> = None;
     let exited = loop {
@@ -721,7 +806,10 @@ fn wait_for_host(id: &str, mut host: std::process::Child, started: Instant, time
             None => {
                 let why = if timeout.is_some_and(|t| started.elapsed() >= t) {
                     Some("timeout")
-                } else if signal.as_mut().is_some_and(|rx| matches!(rx.try_recv(), Ok(Some(())))) {
+                } else if signal
+                    .as_mut()
+                    .is_some_and(|rx| matches!(rx.try_recv(), Ok(Some(()))))
+                {
                     Some("signal")
                 } else {
                     None
@@ -747,7 +835,9 @@ fn wait_for_host(id: &str, mut host: std::process::Child, started: Instant, time
         std::thread::sleep(Duration::from_millis(200));
     };
     let wall = started.elapsed().as_secs_f64();
-    let Some(m) = read_meta(id) else { return fail(&format!("{id} is gone")) };
+    let Some(m) = read_meta(id) else {
+        return fail(&format!("{id} is gone"));
+    };
     let s = status(&m);
     let usage = read_transcript(id).map(|t| t.usage).unwrap_or_default();
     let counts = m.session_id.as_deref().and_then(workers_ai::history_counts);
@@ -787,7 +877,10 @@ fn wait_for_host(id: &str, mut host: std::process::Child, started: Instant, time
     {
         eprintln!("arakun: could not write {}: {e}", path.display());
     }
-    println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary).unwrap_or_default()
+    );
     match stopped {
         Some((_, "timeout")) => 124,
         Some(_) => 130,
@@ -797,7 +890,11 @@ fn wait_for_host(id: &str, mut host: std::process::Child, started: Instant, time
 }
 
 fn row(m: &Meta) -> String {
-    let pending = if read_pending(&m.id).is_some_and(|p| p.answer.is_none()) { "  [pending]" } else { "" };
+    let pending = if read_pending(&m.id).is_some_and(|p| p.answer.is_none()) {
+        "  [pending]"
+    } else {
+        ""
+    };
     format!(
         "{}  {}  {}  {}  {}  [headless {}; {}]{pending}",
         m.id,
@@ -822,7 +919,11 @@ fn ls() -> i32 {
         side: false,
     };
     match crate::control::send(&req) {
-        Ok(reply) if reply.ok && !(!rows.is_empty() && reply.message.starts_with("no OpenCode")) => println!("{}", reply.message),
+        Ok(reply)
+            if reply.ok && !(!rows.is_empty() && reply.message.starts_with("no OpenCode")) =>
+        {
+            println!("{}", reply.message)
+        }
         Ok(reply) if !reply.ok => eprintln!("arakun: {}", reply.message),
         Err(_) if rows.is_empty() => println!("no agents; `arakun agent run <prompt>` starts one"),
         _ => {}
@@ -848,12 +949,21 @@ pub fn log(m: &Meta, lines: usize) -> String {
         out.push_str(&format!("\ncost: ${:.4}", m.cost));
     }
     if let Some(p) = read_pending(&m.id).filter(|p| p.answer.is_none()) {
-        out.push_str(&format!("\npending {}: {} ({})", p.req_id, p.summary, p.why));
+        out.push_str(&format!(
+            "\npending {}: {} ({})",
+            p.req_id, p.summary, p.why
+        ));
     }
-    let entries = Thread::read_transcript(&transcript_path(&m.id)).map(|t| t.entries).unwrap_or_default();
+    let entries = Thread::read_transcript(&transcript_path(&m.id))
+        .map(|t| t.entries)
+        .unwrap_or_default();
     let log = crate::shell::agent_cli::render_log(&entries, lines);
     out.push_str("\n\n");
-    out.push_str(if log.is_empty() { "(nothing yet)" } else { &log });
+    out.push_str(if log.is_empty() {
+        "(nothing yet)"
+    } else {
+        &log
+    });
     out
 }
 
@@ -872,19 +982,30 @@ fn last_message(id: &str) -> String {
 fn wait(id: &str, timeout: Duration) -> i32 {
     let start = Instant::now();
     loop {
-        let Some(m) = read_meta(id) else { return fail(&format!("{id} is gone")) };
+        let Some(m) = read_meta(id) else {
+            return fail(&format!("{id} is gone"));
+        };
         let s = status(&m);
         // Answered, and the host has yet to take it up.
-        let answered = s == Status::NeedsInput && !read_pending(id).is_some_and(|p| p.answer.is_none());
+        let answered =
+            s == Status::NeedsInput && !read_pending(id).is_some_and(|p| p.answer.is_none());
         if s != Status::Working && !answered {
             println!("{}", s.name());
             match s {
                 Status::NeedsInput => {
                     if let Some(p) = read_pending(id) {
-                        println!("pending {}: {}\n  {}\n  arakun agent approve {id} {}  |  arakun agent deny {id} {}", p.req_id, p.summary, p.why, p.req_id, p.req_id);
+                        println!(
+                            "pending {}: {}\n  {}\n  arakun agent approve {id} {}  |  arakun agent deny {id} {}",
+                            p.req_id, p.summary, p.why, p.req_id, p.req_id
+                        );
                     }
                 }
-                Status::Error => println!("{}", m.error.as_deref().unwrap_or("the agent's process ended mid-turn")),
+                Status::Error => println!(
+                    "{}",
+                    m.error
+                        .as_deref()
+                        .unwrap_or("the agent's process ended mid-turn")
+                ),
                 _ => {
                     let last = last_message(id);
                     if !last.is_empty() {
@@ -895,7 +1016,10 @@ fn wait(id: &str, timeout: Duration) -> i32 {
             return if s == Status::Error { 1 } else { 0 };
         }
         if start.elapsed() >= timeout {
-            return fail(&format!("the session is still working after {} s", timeout.as_secs()));
+            return fail(&format!(
+                "the session is still working after {} s",
+                timeout.as_secs()
+            ));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -957,7 +1081,10 @@ fn stop(m: &Meta) -> i32 {
 
 fn remove(m: &Meta) -> i32 {
     if alive(m.pid) {
-        return fail(&format!("{} is still running; `arakun agent stop {}` first", m.id, m.id));
+        return fail(&format!(
+            "{} is still running; `arakun agent stop {}` first",
+            m.id, m.id
+        ));
     }
     match std::fs::remove_dir_all(dir(&m.id)) {
         Ok(()) => {
@@ -990,8 +1117,15 @@ fn pending_cmd(json: bool) -> i32 {
     }
     for p in all {
         let title = read_meta(&p.session).map(|m| m.title).unwrap_or_default();
-        let level = if p.level == Level::Always { "always" } else { "confirm" };
-        println!("{}  {}  [{level}]  {title}\n  {}\n  why: {}\n  di: «{}»", p.session, p.req_id, p.summary, p.why, p.phrase);
+        let level = if p.level == Level::Always {
+            "always"
+        } else {
+            "confirm"
+        };
+        println!(
+            "{}  {}  [{level}]  {title}\n  {}\n  why: {}\n  di: «{}»",
+            p.session, p.req_id, p.summary, p.why, p.phrase
+        );
         if let Some(c) = &p.command {
             println!("  $ {}", clip(c, 300));
         }
@@ -1015,12 +1149,23 @@ pub fn resolve(id: &str, req: &str, approve: bool, note: &str) -> Result<String,
     }
     if !alive(m.pid) {
         let _ = std::fs::remove_file(&path);
-        return Err(format!("{}'s agent is no longer running; nothing to answer", m.id));
+        return Err(format!(
+            "{}'s agent is no longer running; nothing to answer",
+            m.id
+        ));
     }
-    p.answer = Some(if approve { Answer::Approved } else { Answer::Denied });
+    p.answer = Some(if approve {
+        Answer::Approved
+    } else {
+        Answer::Denied
+    });
     p.note = (!note.trim().is_empty()).then(|| note.trim().to_string());
     write_json(&path, &p).map_err(|e| e.to_string())?;
-    Ok(format!("{} {req}: {}", if approve { "approved" } else { "denied" }, p.summary))
+    Ok(format!(
+        "{} {req}: {}",
+        if approve { "approved" } else { "denied" },
+        p.summary
+    ))
 }
 
 fn answer(id: &str, req: &str, approve: bool, note: &str) -> i32 {
@@ -1047,7 +1192,9 @@ pub fn host_main(args: &[String]) -> i32 {
     if !valid(id) {
         return fail("bad session id");
     }
-    let Some(mut meta) = read_meta(id) else { return fail(&format!("no headless session {id}")) };
+    let Some(mut meta) = read_meta(id) else {
+        return fail(&format!("no headless session {id}"));
+    };
     workers_ai::keep_warm(false);
     let me = std::process::id();
     if meta.pid.is_some_and(|p| p != me) && alive(meta.pid) {
@@ -1072,7 +1219,11 @@ pub fn host_main(args: &[String]) -> i32 {
             }
         }
     };
-    sandbox::set(Some(Jail { sandbox, caps: meta.caps.clone(), workspace: meta.cwd.clone() }));
+    sandbox::set(Some(Jail {
+        sandbox,
+        caps: meta.caps.clone(),
+        workspace: meta.cwd.clone(),
+    }));
     write_meta(&meta);
     let code = Rc::new(Cell::new(0));
     let out = code.clone();
@@ -1109,13 +1260,18 @@ const SAVE_EVERY: Duration = Duration::from_secs(1);
 impl Host {
     fn new(meta: Meta, code: Rc<Cell<i32>>, cx: &mut Context<Self>) -> Self {
         let transcript = transcript_path(&meta.id);
-        let restored = transcript.exists().then(|| Thread::restore(&transcript, cx)).and_then(|r| {
-            r.map_err(|e| eprintln!("arakun: transcript {}: {e:#}", meta.id)).ok()
-        });
+        let restored = transcript
+            .exists()
+            .then(|| Thread::restore(&transcript, cx))
+            .and_then(|r| {
+                r.map_err(|e| eprintln!("arakun: transcript {}: {e:#}", meta.id))
+                    .ok()
+            });
         let thread = match restored {
             Some(t) => t,
             None => {
-                let (kind, settings) = agent_for(&meta.model, &meta.effort).unwrap_or((meta.agent, Vec::new()));
+                let (kind, settings) =
+                    agent_for(&meta.model, &meta.effort).unwrap_or((meta.agent, Vec::new()));
                 let t = Thread::start(kind, meta.cwd.clone(), None, cx);
                 t.update(cx, |t, cx| {
                     for (s, v) in &settings {
@@ -1128,7 +1284,9 @@ impl Host {
                 t
             }
         };
-        let events = cx.subscribe(&thread, |this, _, ev: &ThreadEvent, cx| this.thread_event(ev, cx));
+        let events = cx.subscribe(&thread, |this, _, ev: &ThreadEvent, cx| {
+            this.thread_event(ev, cx)
+        });
         let mut ctx = policy::Ctx::new(&meta.cwd);
         ctx.jailed = !meta.no_sandbox;
         ctx.tmp = ctx.jailed.then(|| dir(&meta.id).join("tmp"));
@@ -1211,7 +1369,11 @@ impl Host {
             args: Value::Null,
             level: Level::Always,
             why: "sin sandbox, sus comandos corren con tus credenciales y tu red".into(),
-            summary: format!("Dejar que el agente «{}» corra sin sandbox en {}", self.meta.title, self.meta.cwd.display()),
+            summary: format!(
+                "Dejar que el agente «{}» corra sin sandbox en {}",
+                self.meta.title,
+                self.meta.cwd.display()
+            ),
             phrase: "confirmo: sin sandbox".into(),
             created,
             expires: created + PENDING_TTL,
@@ -1245,8 +1407,14 @@ impl Host {
     /// The agent asks to run a tool call: the policy lets it, or the user is asked.
     fn permission(&mut self, cx: &mut Context<Self>) {
         let t = self.thread.read(cx);
-        let Some(req) = t.pending_permission() else { return };
-        if self.waiting.as_ref().is_some_and(|(id, _)| *id == req.tool_call_id) {
+        let Some(req) = t.pending_permission() else {
+            return;
+        };
+        if self
+            .waiting
+            .as_ref()
+            .is_some_and(|(id, _)| *id == req.tool_call_id)
+        {
             return;
         }
         let tool = t.entries().iter().rev().find_map(|e| match e {
@@ -1254,7 +1422,11 @@ impl Host {
             _ => None,
         });
         let (kind, title, input) = match &tool {
-            Some(tc) => (tc.kind.clone(), tc.title.clone(), tc.raw_input.clone().unwrap_or(Value::Null)),
+            Some(tc) => (
+                tc.kind.clone(),
+                tc.title.clone(),
+                tc.raw_input.clone().unwrap_or(Value::Null),
+            ),
             None => ("other".to_string(), req.title.clone(), Value::Null),
         };
         let call_id = req.tool_call_id.clone();
@@ -1269,20 +1441,32 @@ impl Host {
             return;
         }
         if self.meta.unattended {
-            let why = format!("nobody can approve it in this unattended run: {}", verdict.why);
+            let why = format!(
+                "nobody can approve it in this unattended run: {}",
+                verdict.why
+            );
             eprintln!("arakun: declined: {} ({why})", verdict.summary);
             self.meta.declined += 1;
-            self.thread.update(cx, |t, cx| t.decline_permission(&why, cx));
+            self.thread
+                .update(cx, |t, cx| t.decline_permission(&why, cx));
             return;
         }
         let command = match input.get("command") {
             Some(Value::String(s)) => Some(s.clone()),
-            Some(Value::Array(a)) => Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+            Some(Value::Array(a)) => Some(
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
             _ => None,
         };
         let created = now();
         let p = Pending {
-            req_id: format!("r{:x}", (created as u32) ^ (call_id.len() as u32).rotate_left(13) ^ std::process::id()),
+            req_id: format!(
+                "r{:x}",
+                (created as u32) ^ (call_id.len() as u32).rotate_left(13) ^ std::process::id()
+            ),
             session: self.meta.id.clone(),
             tool: kind,
             title,
@@ -1299,7 +1483,9 @@ impl Host {
         };
         if let Err(e) = write_json(&pending_path(&self.meta.id), &p) {
             eprintln!("arakun: could not write the pending request: {e}");
-            self.thread.update(cx, |t, cx| t.decline_permission("arakun could not ask the user", cx));
+            self.thread.update(cx, |t, cx| {
+                t.decline_permission("arakun could not ask the user", cx)
+            });
             return;
         }
         eprintln!("arakun: waiting for the user: {} ({})", p.summary, p.req_id);
@@ -1309,7 +1495,9 @@ impl Host {
 
     /// The user's answer, or the wait running out.
     fn check_answer(&mut self, cx: &mut Context<Self>) {
-        let Some((call, waiting)) = &self.waiting else { return };
+        let Some((call, waiting)) = &self.waiting else {
+            return;
+        };
         let gate = call == NO_SANDBOX;
         let path = pending_path(&self.meta.id);
         let seen: Option<Pending> = read_json(&path);
@@ -1321,11 +1509,16 @@ impl Host {
             Some(_) if expired => Some((false, Some("no answer within 24 hours".into()))),
             Some(_) => None,
         };
-        let Some((approved, note)) = decision else { return };
+        let Some((approved, note)) = decision else {
+            return;
+        };
         let _ = std::fs::remove_file(&path);
         let summary = waiting.summary.clone();
         self.waiting = None;
-        eprintln!("arakun: {}: {summary}", if approved { "approved" } else { "denied" });
+        eprintln!(
+            "arakun: {}: {summary}",
+            if approved { "approved" } else { "denied" }
+        );
         if gate {
             return self.unsandboxed(approved, cx);
         }
@@ -1365,8 +1558,13 @@ impl Host {
             && (!t.in_background() || matches!(t.status(), ThreadStatus::Error(_)))
             && (t.queued().is_empty() || t.queue_paused())
             && self.waiting.is_none();
-        let stuck_stopping = self.stopping.is_some_and(|s| s.elapsed() > Duration::from_secs(10));
-        let finished = settled && (self.worked || self.stopping.is_some() || self.started.elapsed() > Duration::from_secs(30));
+        let stuck_stopping = self
+            .stopping
+            .is_some_and(|s| s.elapsed() > Duration::from_secs(10));
+        let finished = settled
+            && (self.worked
+                || self.stopping.is_some()
+                || self.started.elapsed() > Duration::from_secs(30));
         if (finished && (inbox_empty(&self.meta.id) || self.stopping.is_some())) || stuck_stopping {
             self.done = true;
             self.save(cx);
@@ -1432,9 +1630,14 @@ fn last_line(entries: &[Entry]) -> String {
         .iter()
         .rev()
         .find_map(|e| match e {
-            Entry::Agent { text } | Entry::Thought { text } if !text.trim().is_empty() => {
-                Some(text.trim().lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").to_string())
-            }
+            Entry::Agent { text } | Entry::Thought { text } if !text.trim().is_empty() => Some(
+                text.trim()
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .to_string(),
+            ),
             Entry::Tool(t) => Some(format!("[{}] {:?}", t.title, t.status).to_lowercase()),
             Entry::Notice { text, .. } => Some(text.clone()),
             Entry::User { text, .. } => Some(format!("you: {text}")),
@@ -1450,7 +1653,11 @@ pub fn thread_status(m: &Meta) -> ThreadStatus {
         Status::Working => ThreadStatus::Working,
         Status::NeedsInput => ThreadStatus::NeedsInput,
         Status::Idle => ThreadStatus::Idle,
-        Status::Error => ThreadStatus::Error(m.error.clone().unwrap_or_else(|| "The agent's process ended mid-turn.".into())),
+        Status::Error => ThreadStatus::Error(
+            m.error
+                .clone()
+                .unwrap_or_else(|| "The agent's process ended mid-turn.".into()),
+        ),
     }
 }
 
@@ -1489,13 +1696,27 @@ mod tests {
 
     #[test]
     fn run_takes_its_flags_before_the_prompt() {
-        let r = run_args(&s(&["--model", "workers-ai/@cf/zai-org/glm-5.3", "--dir", "/tmp/x", "--policy", "readonly", "fix", "--policy", "full"])).unwrap();
+        let r = run_args(&s(&[
+            "--model",
+            "workers-ai/@cf/zai-org/glm-5.3",
+            "--dir",
+            "/tmp/x",
+            "--policy",
+            "readonly",
+            "fix",
+            "--policy",
+            "full",
+        ]))
+        .unwrap();
         assert_eq!(r.model, "workers-ai/@cf/zai-org/glm-5.3");
         assert_eq!(r.dir, "/tmp/x");
         assert_eq!(r.policy, "readonly");
         assert_eq!(r.prompt, "fix --policy full");
         let r = run_args(&s(&["--title", "T", "--effort", "max", "go"])).unwrap();
-        assert_eq!((r.title.as_str(), r.effort.as_str(), r.prompt.as_str()), ("T", "max", "go"));
+        assert_eq!(
+            (r.title.as_str(), r.effort.as_str(), r.prompt.as_str()),
+            ("T", "max", "go")
+        );
         assert_eq!(run_args(&s(&[])), None);
         assert_eq!(run_args(&s(&["--model"])), None);
         assert_eq!(run_args(&s(&["--model", "", "go"])), None);
@@ -1504,27 +1725,81 @@ mod tests {
         let r = run_args(&s(&["--read", "/a", "--read", "b", "go"])).unwrap();
         assert_eq!(r.reads, s(&["/a", "b"]));
         assert_eq!(run_args(&s(&["--read"])), None);
-        let r = run_args(&s(&["--no-sandbox", "--allow", "net,modal", "go", "--no-sandbox"])).unwrap();
+        let r = run_args(&s(&[
+            "--no-sandbox",
+            "--allow",
+            "net,modal",
+            "go",
+            "--no-sandbox",
+        ]))
+        .unwrap();
         assert!(r.no_sandbox);
-        assert_eq!((r.allow.as_str(), r.prompt.as_str()), ("net,modal", "go --no-sandbox"));
+        assert_eq!(
+            (r.allow.as_str(), r.prompt.as_str()),
+            ("net,modal", "go --no-sandbox")
+        );
         assert!(!run_args(&s(&["go"])).unwrap().no_sandbox);
         let r = run_args(&s(&[
-            "--wait", "--yes", "--no-sandbox", "--cwd", "w", "--timeout", "600", "--result", "r.json", "--append-system-prompt", "v.md", "go",
+            "--wait",
+            "--yes",
+            "--no-sandbox",
+            "--cwd",
+            "w",
+            "--timeout",
+            "600",
+            "--result",
+            "r.json",
+            "--append-system-prompt",
+            "v.md",
+            "go",
         ]))
         .unwrap();
         assert!(r.wait && r.yes && r.no_sandbox);
-        assert_eq!((r.dir.as_str(), r.timeout.as_str(), r.result.as_str(), r.append.as_str()), ("w", "600", "r.json", "v.md"));
-        let r = run_args(&s(&["--resume", "h123", "--wait", "--timeout", "300", "--result", "r2.json", "fix", "it"])).unwrap();
+        assert_eq!(
+            (
+                r.dir.as_str(),
+                r.timeout.as_str(),
+                r.result.as_str(),
+                r.append.as_str()
+            ),
+            ("w", "600", "r.json", "v.md")
+        );
+        let r = run_args(&s(&[
+            "--resume",
+            "h123",
+            "--wait",
+            "--timeout",
+            "300",
+            "--result",
+            "r2.json",
+            "fix",
+            "it",
+        ]))
+        .unwrap();
         assert_eq!((r.resume.as_str(), r.prompt.as_str()), ("h123", "fix it"));
         assert!(!run_args(&s(&["go", "--wait"])).unwrap().wait);
     }
 
     #[test]
     fn ids_come_with_their_options() {
-        assert_eq!(id_args(&s(&["abc"])), Some(("abc".into(), crate::control::AGENT_LOG, crate::control::AGENT_WAIT, vec![])));
+        assert_eq!(
+            id_args(&s(&["abc"])),
+            Some((
+                "abc".into(),
+                crate::control::AGENT_LOG,
+                crate::control::AGENT_WAIT,
+                vec![]
+            ))
+        );
         assert_eq!(id_args(&s(&["-n", "5", "abc"])).map(|a| a.1), Some(5));
-        assert_eq!(id_args(&s(&["--timeout", "9", "abc"])).map(|a| a.2), Some(9));
-        assert_eq!(id_args(&s(&["abc", "hello", "-n", "x"])).map(|a| a.3), Some(s(&["hello", "-n", "x"])));
+        assert_eq!(
+            id_args(&s(&["--timeout", "9", "abc"])).map(|a| a.2),
+            Some(9)
+        );
+        assert_eq!(
+            id_args(&s(&["abc", "hello", "-n", "x"])).map(|a| a.3),
+            Some(s(&["hello", "-n", "x"]))
+        );
         assert_eq!(id_args(&s(&["-n", "0", "abc"])), None);
         assert_eq!(id_args(&s(&["-x"])), None);
         assert_eq!(id_args(&s(&[])), None);
@@ -1534,7 +1809,13 @@ mod tests {
     fn models_map_to_agents() {
         let (kind, settings) = agent_for("workers-ai/@cf/zai-org/glm-5.3", "high").unwrap();
         assert_eq!(kind, AgentKind::WorkersAi);
-        assert_eq!(settings, vec![(Setting::Model, "@cf/zai-org/glm-5.3".to_string()), (Setting::Effort, "high".to_string())]);
+        assert_eq!(
+            settings,
+            vec![
+                (Setting::Model, "@cf/zai-org/glm-5.3".to_string()),
+                (Setting::Effort, "high".to_string())
+            ]
+        );
         assert!(agent_for("workers-ai/@cf/zai-org/glm-5.3", "none").is_err());
         assert!(agent_for("workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017", "").is_ok());
         assert!(agent_for("claude", "").unwrap_err().contains("Claude Code"));
@@ -1569,14 +1850,27 @@ mod tests {
         };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["caps"], serde_json::json!(["modal", "mail-read"]));
-        assert_eq!(m.confinement(), "sandbox, allow modal,mail-read, read /srv/data");
+        assert_eq!(
+            m.confinement(),
+            "sandbox, allow modal,mail-read, read /srv/data"
+        );
         // Sessions from before the sandbox load sandboxed.
         let mut old = v.clone();
-        for k in ["caps", "reads", "no_sandbox", "unsandboxed", "unattended", "declined", "stop_reason"] {
+        for k in [
+            "caps",
+            "reads",
+            "no_sandbox",
+            "unsandboxed",
+            "unattended",
+            "declined",
+            "stop_reason",
+        ] {
             old.as_object_mut().unwrap().remove(k);
         }
         let old: Meta = serde_json::from_value(old).unwrap();
-        assert!(old.caps.is_empty() && !old.no_sandbox && !old.unattended && old.stop_reason.is_none());
+        assert!(
+            old.caps.is_empty() && !old.no_sandbox && !old.unattended && old.stop_reason.is_none()
+        );
         assert_eq!(v["status"], "needs_input");
         assert_eq!(v["policy"], "readonly");
         assert_eq!(v["agent"], "workers-ai");
@@ -1617,8 +1911,17 @@ mod tests {
                 pr: None,
             },
             entries: vec![
-                Entry::User { text: "hi".into(), at: 1, elapsed_ms: None, message_id: None, tokens: None, shell_changes: Vec::new() },
-                Entry::Agent { text: "done\n".into() },
+                Entry::User {
+                    text: "hi".into(),
+                    at: 1,
+                    elapsed_ms: None,
+                    message_id: None,
+                    tokens: None,
+                    shell_changes: Vec::new(),
+                },
+                Entry::Agent {
+                    text: "done\n".into(),
+                },
             ],
             usage: agent::Usage::default(),
             fork_point: None,

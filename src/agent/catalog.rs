@@ -108,11 +108,19 @@ fn parse_models(raw: &Value) -> Vec<ModelInfo> {
 
 fn read_cache() -> Option<(Vec<ModelInfo>, u64)> {
     let v: Value = serde_json::from_slice(&std::fs::read(cache_path()).ok()?).ok()?;
-    Some((parse_models(&v["models"]), v["fetched"].as_u64().unwrap_or(0)))
+    Some((
+        parse_models(&v["models"]),
+        v["fetched"].as_u64().unwrap_or(0),
+    ))
 }
 
 fn write_cache(models: &Value) -> std::io::Result<()> {
-    crate::durable::write(&cache_path(), json!({"fetched": unix_now(), "models": models}).to_string().as_bytes())
+    crate::durable::write(
+        &cache_path(),
+        json!({"fetched": unix_now(), "models": models})
+            .to_string()
+            .as_bytes(),
+    )
 }
 
 /// `sessionDefaultSettings` from `~/.factory/settings.json`: what Droid's own
@@ -189,9 +197,10 @@ fn fetch_models() -> Result<Value> {
             }
         }
     });
-    let reply = wrote
-        .map_err(anyhow::Error::from)
-        .and_then(|_| rx.recv_timeout(Duration::from_secs(20)).map_err(|_| anyhow!("no answer")));
+    let reply = wrote.map_err(anyhow::Error::from).and_then(|_| {
+        rx.recv_timeout(Duration::from_secs(20))
+            .map_err(|_| anyhow!("no answer"))
+    });
     let _ = child.kill();
     let _ = child.wait();
     let reply = reply?;
@@ -223,7 +232,10 @@ pub fn claude_options() -> Arc<Vec<ConfigOption>> {
         let raw = std::fs::read(claude_cache_path())
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-        Arc::new(raw.map(|v| claude_defaults(parse_config(&v["options"]))).unwrap_or_default())
+        Arc::new(
+            raw.map(|v| claude_defaults(parse_config(&v["options"])))
+                .unwrap_or_default(),
+        )
     })
     .clone()
 }
@@ -237,7 +249,11 @@ pub fn remember_claude_options(raw: &Value) {
     let same = |a: &[ConfigOption], b: &[ConfigOption]| {
         a.len() == b.len()
             && a.iter().zip(b).all(|(x, y)| {
-                x.id == y.id && x.options.iter().map(|c| &c.id).eq(y.options.iter().map(|c| &c.id))
+                x.id == y.id
+                    && x.options
+                        .iter()
+                        .map(|c| &c.id)
+                        .eq(y.options.iter().map(|c| &c.id))
             })
     };
     if same(&claude_options(), &fresh) {
@@ -245,7 +261,9 @@ pub fn remember_claude_options(raw: &Value) {
     }
     let _ = crate::durable::write(
         &claude_cache_path(),
-        json!({"fetched": unix_now(), "options": raw}).to_string().as_bytes(),
+        json!({"fetched": unix_now(), "options": raw})
+            .to_string()
+            .as_bytes(),
     );
     *CLAUDE.lock().unwrap() = Some(Arc::new(fresh));
 }
@@ -328,9 +346,10 @@ fn fetch_options(kind: AgentKind) -> Result<(String, Value)> {
             }
         }
     });
-    let reply = wrote
-        .map_err(anyhow::Error::from)
-        .and_then(|_| rx.recv_timeout(Duration::from_secs(60)).map_err(|_| anyhow!("no answer")));
+    let reply = wrote.map_err(anyhow::Error::from).and_then(|_| {
+        rx.recv_timeout(Duration::from_secs(60))
+            .map_err(|_| anyhow!("no answer"))
+    });
     let _ = child.kill();
     let _ = child.wait();
     let reply = reply?;
@@ -341,7 +360,13 @@ fn fetch_options(kind: AgentKind) -> Result<(String, Value)> {
     if !options.is_array() {
         return Err(anyhow!("no config options in the reply"));
     }
-    Ok((reply["result"]["sessionId"].as_str().unwrap_or_default().to_string(), options))
+    Ok((
+        reply["result"]["sessionId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        options,
+    ))
 }
 
 // ---- OpenCode's options -----------------------------------------------------
@@ -373,7 +398,12 @@ fn with_opencode<T>(f: impl FnOnce(&mut OpenCodeCache) -> T) -> T {
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|p| Some((Setting::from_key(p[0].as_str()?)?, p[1].as_str()?.to_string())))
+            .filter_map(|p| {
+                Some((
+                    Setting::from_key(p[0].as_str()?)?,
+                    p[1].as_str()?.to_string(),
+                ))
+            })
             .collect();
         OpenCodeCache {
             options: Arc::new(parse_config(&v["options"])),
@@ -385,10 +415,16 @@ fn with_opencode<T>(f: impl FnOnce(&mut OpenCodeCache) -> T) -> T {
 }
 
 fn write_opencode(cache: &OpenCodeCache) {
-    let picked: Vec<Value> = cache.picked.iter().map(|(s, v)| json!([s.key(), v])).collect();
+    let picked: Vec<Value> = cache
+        .picked
+        .iter()
+        .map(|(s, v)| json!([s.key(), v]))
+        .collect();
     let _ = crate::durable::write(
         &opencode_cache_path(),
-        json!({"fetched": unix_now(), "options": cache.raw, "picked": picked}).to_string().as_bytes(),
+        json!({"fetched": unix_now(), "options": cache.raw, "picked": picked})
+            .to_string()
+            .as_bytes(),
     );
 }
 
@@ -511,14 +547,21 @@ pub fn agent_sessions(cwd: &Path) -> Vec<AgentSession> {
 /// Claude Code's folder for a project: `~/.claude/projects/<cwd, every
 /// non-alphanumeric as ->`, cut and hashed past 200 characters as the SDK does.
 pub fn claude_project_dir(cwd: &Path) -> PathBuf {
-    let config = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".claude"));
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".claude"));
     let path = cwd.to_string_lossy();
-    let name: String = path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let name: String = path
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
     let name = if name.chars().count() <= 200 {
         name
     } else {
         // JavaScript's 32-bit string hash over UTF-16 units, in base 36.
-        let hash = path.encode_utf16().fold(0i32, |h, u| h.wrapping_shl(5).wrapping_sub(h).wrapping_add(u as i32));
+        let hash = path.encode_utf16().fold(0i32, |h, u| {
+            h.wrapping_shl(5).wrapping_sub(h).wrapping_add(u as i32)
+        });
         let mut n = hash.unsigned_abs();
         let mut digits = Vec::new();
         loop {
@@ -572,7 +615,11 @@ fn read_claude_session(path: &Path) -> Option<AgentSession> {
         if cwd.is_none() {
             cwd = v["cwd"].as_str().map(PathBuf::from);
         }
-        if prompt.is_none() && v["type"] == "user" && v["isSidechain"] != true && v["isMeta"] != true {
+        if prompt.is_none()
+            && v["type"] == "user"
+            && v["isSidechain"] != true
+            && v["isMeta"] != true
+        {
             prompt = user_text(&v["message"]["content"]);
         }
         if cwd.is_some() && prompt.is_some() {
@@ -581,18 +628,26 @@ fn read_claude_session(path: &Path) -> Option<AgentSession> {
     }
     let prompt = prompt?;
     let mut tail = Vec::new();
-    file.seek(SeekFrom::Start(meta.len().saturating_sub(TAIL))).ok()?;
+    file.seek(SeekFrom::Start(meta.len().saturating_sub(TAIL)))
+        .ok()?;
     file.read_to_end(&mut tail).ok()?;
     let tail = String::from_utf8_lossy(&tail);
     let last = |key: &str| {
         tail.lines()
             .rev()
             .filter(|l| l.contains(key))
-            .find_map(|l| serde_json::from_str::<Value>(l).ok()?[key].as_str().map(str::to_string))
+            .find_map(|l| {
+                serde_json::from_str::<Value>(l).ok()?[key]
+                    .as_str()
+                    .map(str::to_string)
+            })
             .filter(|t| !t.trim().is_empty())
     };
     let custom = last("customTitle");
-    if custom.as_deref().is_some_and(|t| t.starts_with("[archived]")) {
+    if custom
+        .as_deref()
+        .is_some_and(|t| t.starts_with("[archived]"))
+    {
         return None;
     }
     let title = custom.or_else(|| last("aiTitle")).unwrap_or(prompt);
@@ -604,7 +659,14 @@ fn read_claude_session(path: &Path) -> Option<AgentSession> {
     Some(AgentSession {
         agent: AgentKind::Claude,
         id,
-        title: title.lines().next().unwrap_or_default().trim().chars().take(120).collect(),
+        title: title
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            .take(120)
+            .collect(),
         cwd: cwd?,
         updated,
     })
@@ -672,7 +734,11 @@ mod tests {
         let dir = claude_project_dir(Path::new("/home/u/proj"));
         assert!(dir.ends_with("projects/-home-u-proj"));
         let long = format!("/{}", "a".repeat(250));
-        let name = claude_project_dir(Path::new(&long)).file_name().unwrap().to_string_lossy().into_owned();
+        let name = claude_project_dir(Path::new(&long))
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         assert!(name.starts_with(&format!("-{}", "a".repeat(199))));
         assert_eq!(name.len(), 200 + 1 + name.rsplit('-').next().unwrap().len());
     }
@@ -692,13 +758,29 @@ mod tests {
         let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
         std::fs::write(&path, &text).unwrap();
         let s = read_claude_session(&path).unwrap();
-        assert_eq!((s.id.as_str(), s.title.as_str()), ("0f0f0f0f-1111-2222-3333-444444444444", "Arreglar el login"));
+        assert_eq!(
+            (s.id.as_str(), s.title.as_str()),
+            ("0f0f0f0f-1111-2222-3333-444444444444", "Arreglar el login")
+        );
         assert_eq!(s.cwd, PathBuf::from("/w"));
         // A name the user gave wins; an archived session is left out.
-        std::fs::write(&path, format!("{text}{}\n", json!({"type": "custom-title", "customTitle": "Mío"}))).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{text}{}\n",
+                json!({"type": "custom-title", "customTitle": "Mío"})
+            ),
+        )
+        .unwrap();
         assert_eq!(read_claude_session(&path).unwrap().title, "Mío");
-        std::fs::write(&path, format!("{text}{}\n", json!({"type": "custom-title", "customTitle": "[archived] Mío"})))
-            .unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{text}{}\n",
+                json!({"type": "custom-title", "customTitle": "[archived] Mío"})
+            ),
+        )
+        .unwrap();
         assert!(read_claude_session(&path).is_none());
         // No prompt of the user's: nothing to import.
         std::fs::write(&path, format!("{}\n", lines[0])).unwrap();

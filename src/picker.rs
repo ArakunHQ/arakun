@@ -93,7 +93,9 @@ impl FolderPicker {
         };
         this.refilter(cx);
         cx.spawn(async move |this, cx| {
-            let repos = cx.background_spawn(async move { scan_repos(&home()) }).await;
+            let repos = cx
+                .background_spawn(async move { scan_repos(&home()) })
+                .await;
             *REPOS.lock().unwrap() = Some(repos.clone());
             let _ = this.update(cx, |this, cx| {
                 this.repos = repos;
@@ -156,8 +158,12 @@ impl FolderPicker {
                     if q.is_empty() {
                         return Some((0, r));
                     }
-                    fuzzy_score(&q, &r.name.to_lowercase(), &pretty_path(&r.path).to_lowercase())
-                        .map(|s| (s, r))
+                    fuzzy_score(
+                        &q,
+                        &r.name.to_lowercase(),
+                        &pretty_path(&r.path).to_lowercase(),
+                    )
+                    .map(|s| (s, r))
                 })
                 .collect();
             if q.is_empty() {
@@ -278,7 +284,12 @@ impl FolderPicker {
             prompt: Some("Add project".into()),
         });
         cx.spawn(async move |this, cx| {
-            let picked = rx.await.ok().and_then(|r| r.ok()).flatten().unwrap_or_default();
+            let picked = rx
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .flatten()
+                .unwrap_or_default();
             if let Some(path) = picked.into_iter().next() {
                 let _ = this.update(cx, |this, cx| this.pick(path, cx));
             }
@@ -396,7 +407,12 @@ impl FolderPicker {
             .child(trailing)
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 this.selected = ix;
-                if ev.click_count() >= 2 || matches!(this.rows.get(ix).map(|r| &r.kind), Some(RowKind::Repo { .. })) {
+                if ev.click_count() >= 2
+                    || matches!(
+                        this.rows.get(ix).map(|r| &r.kind),
+                        Some(RowKind::Repo { .. })
+                    )
+                {
                     this.activate(ix, window, cx);
                 } else {
                     cx.notify();
@@ -518,17 +534,25 @@ impl Render for FolderPicker {
                     )
                     .when_some(enclosing, |d, root| {
                         let label = format!("Add {}", crate::model::dir_name(&root));
-                        d.child(ui::button("picker-enclosing", label, ButtonKind::Ghost, true).on_click(
-                            cx.listener(move |this, _, _, cx| this.add_root(root.clone(), cx)),
-                        ))
+                        d.child(
+                            ui::button("picker-enclosing", label, ButtonKind::Ghost, true)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.add_root(root.clone(), cx)
+                                })),
+                        )
                     })
                     .child(
-                        ui::button("picker-init", "Initialize and add", ButtonKind::Primary, true)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(p) = this.confirm_init.clone() {
-                                    this.init_and_pick(p, cx);
-                                }
-                            })),
+                        ui::button(
+                            "picker-init",
+                            "Initialize and add",
+                            ButtonKind::Primary,
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(p) = this.confirm_init.clone() {
+                                this.init_and_pick(p, cx);
+                            }
+                        })),
                     )
                     .into_any_element(),
             )
@@ -566,7 +590,10 @@ impl Render for FolderPicker {
         ui::modal_panel("folder-picker", 600.)
             .child(ui::modal_header(
                 "Add project",
-                Some("Pick a git repository. Each branch you work on becomes its own environment.".into()),
+                Some(
+                    "Pick a git repository. Each branch you work on becomes its own environment."
+                        .into(),
+                ),
                 ui::close_button("picker-close")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::Dismissed))),
             ))
@@ -583,7 +610,15 @@ impl Render for FolderPicker {
                     .child(div().flex_1().min_w_0().truncate().child(section))
                     .child(count),
             )
-            .child(div().flex().flex_col().min_h_0().px(px(8.)).pb(px(8.)).child(list))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_h_0()
+                    .px(px(8.))
+                    .pb(px(8.))
+                    .child(list),
+            )
             .children(notice)
             .child(
                 div()
@@ -603,7 +638,9 @@ impl Render for FolderPicker {
                     .when(cfg!(windows), |d| {
                         d.child(
                             ui::button("picker-dialog", "Choose folder…", ButtonKind::Ghost, true)
-                                .on_click(cx.listener(|this, _, _, cx| this.choose_with_dialog(cx))),
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.choose_with_dialog(cx)),
+                                ),
                         )
                     })
                     .child(
@@ -615,8 +652,13 @@ impl Render for FolderPicker {
                     )
                     .when(path_mode, |d| {
                         d.child(
-                            ui::button("picker-add-here", "Add this folder", ButtonKind::Primary, true)
-                                .on_click(cx.listener(|this, _, _, cx| this.pick_current_folder(cx))),
+                            ui::button(
+                                "picker-add-here",
+                                "Add this folder",
+                                ButtonKind::Primary,
+                                true,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.pick_current_folder(cx))),
                         )
                     }),
             )
@@ -668,20 +710,29 @@ pub(crate) fn is_path_query(q: &str) -> bool {
         return true;
     }
     cfg!(windows)
-        && (q.starts_with('\\') || q.starts_with(".\\") || q.starts_with("..\\") || is_drive_root(q))
+        && (q.starts_with('\\')
+            || q.starts_with(".\\")
+            || q.starts_with("..\\")
+            || is_drive_root(q))
 }
 
 /// `C:\` or `C:/` (`C:` alone means that drive's current folder, not its root).
 fn is_drive_root(q: &str) -> bool {
     let b = q.as_bytes();
-    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && SEPARATORS.contains(&(b[2] as char))
+    b.len() >= 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && SEPARATORS.contains(&(b[2] as char))
 }
 
 fn expand(path: &str) -> PathBuf {
     if path == "~" {
         return home();
     }
-    if let Some(rest) = path.strip_prefix('~').and_then(|r| r.strip_prefix(SEPARATORS)) {
+    if let Some(rest) = path
+        .strip_prefix('~')
+        .and_then(|r| r.strip_prefix(SEPARATORS))
+    {
         return home().join(rest);
     }
     let relative = path.starts_with("./")
@@ -699,7 +750,11 @@ pub(crate) fn split_path_query(q: &str) -> (PathBuf, String) {
         Some(i) => {
             // A root keeps its separator: `/`, and `C:\` on Windows.
             let dir = &q[..i];
-            let dir = if dir.is_empty() || dir.ends_with(':') { &q[..=i] } else { dir };
+            let dir = if dir.is_empty() || dir.ends_with(':') {
+                &q[..=i]
+            } else {
+                dir
+            };
             (expand(dir), q[i + 1..].to_string())
         }
         None => (expand(q), String::new()),
@@ -810,7 +865,11 @@ fn scan_repos(root: &Path) -> Vec<Repo> {
         if depth > 0 && git.is_dir() {
             let touched = ["index", "HEAD", "logs/HEAD"]
                 .iter()
-                .filter_map(|f| std::fs::metadata(git.join(f)).and_then(|m| m.modified()).ok())
+                .filter_map(|f| {
+                    std::fs::metadata(git.join(f))
+                        .and_then(|m| m.modified())
+                        .ok()
+                })
                 .max()
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             out.push(Repo {
@@ -849,7 +908,14 @@ mod tests {
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = crate::git::unpinned(&mut crate::git::git(dir))
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
             .args(args)
             .status()
             .unwrap()
@@ -876,7 +942,17 @@ mod tests {
         git(&repo, &["init", "-q"]);
         git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
         let linked = base.join("linked");
-        git(&repo, &["worktree", "add", "-q", "-b", "side", linked.to_str().unwrap()]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "side",
+                linked.to_str().unwrap(),
+            ],
+        );
 
         // The repository's root and a linked worktree still add the main checkout.
         assert!(matches!(classify(&repo), Choice::Project(r) if same_dir(&r, &repo)));
@@ -893,7 +969,10 @@ mod tests {
         assert!(is_path_query("~/code"));
         assert!(is_path_query("/usr"));
         assert!(!is_path_query("arakun"));
-        assert_eq!(split_path_query("~/code/ap"), (home().join("code"), "ap".into()));
+        assert_eq!(
+            split_path_query("~/code/ap"),
+            (home().join("code"), "ap".into())
+        );
         assert_eq!(split_path_query("/"), (PathBuf::from("/"), String::new()));
     }
 
@@ -904,11 +983,23 @@ mod tests {
         assert!(is_path_query("c:/Users"));
         assert!(is_path_query(r"\server\share"));
         assert!(!is_path_query("C:"));
-        assert_eq!(split_path_query(r"C:\"), (PathBuf::from(r"C:\"), String::new()));
-        assert_eq!(split_path_query(r"C:\Users\Da"), (PathBuf::from(r"C:\Users"), "Da".into()));
-        assert_eq!(split_path_query(r"~\Desktop\pro"), (home().join("Desktop"), "pro".into()));
+        assert_eq!(
+            split_path_query(r"C:\"),
+            (PathBuf::from(r"C:\"), String::new())
+        );
+        assert_eq!(
+            split_path_query(r"C:\Users\Da"),
+            (PathBuf::from(r"C:\Users"), "Da".into())
+        );
+        assert_eq!(
+            split_path_query(r"~\Desktop\pro"),
+            (home().join("Desktop"), "pro".into())
+        );
         // What browsing into a folder writes back into the field.
-        assert_eq!(split_path_query(r"~/Desktop\proyectos/"), (home().join(r"Desktop\proyectos"), String::new()));
+        assert_eq!(
+            split_path_query(r"~/Desktop\proyectos/"),
+            (home().join(r"Desktop\proyectos"), String::new())
+        );
     }
 
     #[cfg(not(windows))]

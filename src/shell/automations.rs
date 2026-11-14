@@ -38,7 +38,11 @@ impl Shell {
         let mut changed = false;
         for (pi, p) in self.projects.iter_mut().enumerate() {
             for (ai, a) in p.automations.iter_mut().enumerate() {
-                let Some(at) = a.enabled.then(|| a.schedule.next_after(a.checked)).flatten() else {
+                let Some(at) = a
+                    .enabled
+                    .then(|| a.schedule.next_after(a.checked))
+                    .flatten()
+                else {
                     continue;
                 };
                 if at > now {
@@ -64,7 +68,14 @@ impl Shell {
     /// Runs automation `ai` of project `pi`. `show` (a run by hand) opens the
     /// agent's session in a tab and focuses a command's terminal; scheduled runs
     /// stay in the background and show up in Sessions, the Inbox and the dock.
-    pub(super) fn run_automation(&mut self, pi: usize, ai: usize, show: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn run_automation(
+        &mut self,
+        pi: usize,
+        ai: usize,
+        show: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
@@ -91,7 +102,11 @@ impl Shell {
                 None
             }
         };
-        if let Some(a) = self.projects.get_mut(pi).and_then(|p| p.automations.get_mut(ai)) {
+        if let Some(a) = self
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.automations.get_mut(ai))
+        {
             a.last_run = Some(unix_now());
             if let Some(id) = session {
                 a.last_session = Some(id.to_string());
@@ -103,7 +118,12 @@ impl Shell {
     }
 
     /// The Automations dialog of the active project; `create` opens the editor.
-    pub(super) fn open_automations(&mut self, create: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_automations(
+        &mut self,
+        create: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         if !self.has_projects() {
             return;
@@ -123,58 +143,62 @@ impl Shell {
         );
         let (name, items) = (project.name.clone(), project.automations.clone());
         let dialog = cx.new(|cx| AutomationsDialog::new(name, items, envs, create, window, cx));
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, ev: &AutomationsEvent, window, cx| {
-            let Some(pi) = this.projects.iter().position(|p| p.path == project_path) else {
-                return this.close_modal(window, cx);
-            };
-            let list = &mut this.projects[pi].automations;
-            match ev {
-                AutomationsEvent::Save { index, automation } => {
-                    match index.filter(|i| *i < list.len()) {
-                        Some(i) => list[i] = automation.clone(),
-                        None => list.push(automation.clone()),
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &AutomationsEvent, window, cx| {
+                let Some(pi) = this.projects.iter().position(|p| p.path == project_path) else {
+                    return this.close_modal(window, cx);
+                };
+                let list = &mut this.projects[pi].automations;
+                match ev {
+                    AutomationsEvent::Save { index, automation } => {
+                        match index.filter(|i| *i < list.len()) {
+                            Some(i) => list[i] = automation.clone(),
+                            None => list.push(automation.clone()),
+                        }
                     }
-                }
-                AutomationsEvent::Delete(i) => {
-                    if *i < list.len() {
-                        list.remove(*i);
+                    AutomationsEvent::Delete(i) => {
+                        if *i < list.len() {
+                            list.remove(*i);
+                        }
                     }
-                }
-                AutomationsEvent::SetEnabled(i, on) => {
-                    if let Some(a) = list.get_mut(*i) {
-                        a.enabled = *on;
-                        // Turning it back on never catches up on the paused time.
-                        a.checked = unix_now();
+                    AutomationsEvent::SetEnabled(i, on) => {
+                        if let Some(a) = list.get_mut(*i) {
+                            a.enabled = *on;
+                            // Turning it back on never catches up on the paused time.
+                            a.checked = unix_now();
+                        }
                     }
-                }
-                AutomationsEvent::Run(i) => {
-                    let i = *i;
-                    this.close_modal(window, cx);
-                    this.run_automation(pi, i, true, window, cx);
-                    return;
-                }
-                AutomationsEvent::OpenSession(i) => {
-                    let id = list.get(*i).and_then(|a| a.last_session.clone());
-                    let target = id.and_then(|id| {
-                        let env = this.projects[pi]
-                            .environments
-                            .iter()
-                            .position(|e| e.session_index(&id).is_some())?;
-                        Some((env, id))
-                    });
-                    this.close_modal(window, cx);
-                    if let Some((ei, id)) = target {
-                        this.select_env(pi, ei, window, cx);
-                        this.open_session(id.into(), window, cx);
+                    AutomationsEvent::Run(i) => {
+                        let i = *i;
+                        this.close_modal(window, cx);
+                        this.run_automation(pi, i, true, window, cx);
+                        return;
                     }
-                    return;
+                    AutomationsEvent::OpenSession(i) => {
+                        let id = list.get(*i).and_then(|a| a.last_session.clone());
+                        let target = id.and_then(|id| {
+                            let env = this.projects[pi]
+                                .environments
+                                .iter()
+                                .position(|e| e.session_index(&id).is_some())?;
+                            Some((env, id))
+                        });
+                        this.close_modal(window, cx);
+                        if let Some((ei, id)) = target {
+                            this.select_env(pi, ei, window, cx);
+                            this.open_session(id.into(), window, cx);
+                        }
+                        return;
+                    }
+                    AutomationsEvent::Dismissed => return this.close_modal(window, cx),
                 }
-                AutomationsEvent::Dismissed => return this.close_modal(window, cx),
-            }
-            this.save(cx);
-            this.refresh_automations(cx);
-            cx.notify();
-        });
+                this.save(cx);
+                this.refresh_automations(cx);
+                cx.notify();
+            },
+        );
         self.modal = Some((Modal::Automations(dialog), sub));
         cx.notify();
     }
@@ -185,7 +209,11 @@ impl Shell {
             return;
         };
         let dialog = dialog.clone();
-        let Some(items) = self.projects.get(self.active_project).map(|p| p.automations.clone()) else {
+        let Some(items) = self
+            .projects
+            .get(self.active_project)
+            .map(|p| p.automations.clone())
+        else {
             return;
         };
         dialog.update(cx, |d, cx| d.set_items(items, cx));

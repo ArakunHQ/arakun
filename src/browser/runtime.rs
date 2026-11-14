@@ -116,7 +116,10 @@ fn ephemeral_profile() -> PathBuf {
     // Leftovers of instances that were killed before their shutdown ran.
     for entry in std::fs::read_dir(&base).into_iter().flatten().flatten() {
         let name = entry.file_name();
-        let pid = name.to_str().and_then(|n| n.strip_prefix("arakun-browser-")).and_then(|p| p.parse::<u32>().ok());
+        let pid = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("arakun-browser-"))
+            .and_then(|p| p.parse::<u32>().ok());
         if pid.is_some_and(|pid| !crate::platform::process_alive(pid)) {
             let _ = std::fs::remove_dir_all(entry.path());
         }
@@ -131,7 +134,10 @@ fn ephemeral_profile() -> PathBuf {
 fn idle_tick() -> Option<Duration> {
     static TICK: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     let visible = *TICK.get_or_init(|| {
-        let ms = std::env::var("ARAKUN_BROWSER_IDLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(33);
+        let ms = std::env::var("ARAKUN_BROWSER_IDLE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(33);
         Duration::from_millis(ms)
     });
     let ready = CONTEXT_READY.load(Ordering::Relaxed);
@@ -189,26 +195,39 @@ pub fn kick() {
 }
 
 pub fn register(tab: &Rc<TabState>, view: WeakEntity<BrowserView>) {
-    VIEWS.with(|v| v.borrow_mut().push(Registered { tab: Rc::downgrade(tab), view }));
+    VIEWS.with(|v| {
+        v.borrow_mut().push(Registered {
+            tab: Rc::downgrade(tab),
+            view,
+        })
+    });
     kick();
 }
 
 fn pick_cdp_port() -> u16 {
-    if let Some(p) = std::env::var("ARAKUN_CDP_PORT").ok().and_then(|v| v.parse::<u16>().ok()) {
+    if let Some(p) = std::env::var("ARAKUN_CDP_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+    {
         return p;
     }
     let bind = |port| std::net::TcpListener::bind(("127.0.0.1", port));
     if bind(DEFAULT_CDP_PORT).is_ok() {
         return DEFAULT_CDP_PORT;
     }
-    bind(0).ok().and_then(|l| l.local_addr().ok()).map_or(0, |a| a.port())
+    bind(0)
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map_or(0, |a| a.port())
 }
 
 /// Windows: `arakun-helper.exe` next to arakun.exe (src/bin/arakun-helper.rs), so CEF's
 /// child processes open no console window. Without it CEF re-runs arakun.exe itself.
 #[cfg(windows)]
 fn subprocess_path() -> Option<PathBuf> {
-    let helper = std::env::current_exe().ok()?.with_file_name("arakun-helper.exe");
+    let helper = std::env::current_exe()
+        .ok()?
+        .with_file_name("arakun-helper.exe");
     helper.exists().then_some(helper)
 }
 /// macOS: CEF would look for helper apps inside an app bundle; arakun has none, so its
@@ -234,7 +253,12 @@ fn adopt_ns_app() {
         fn objc_getClass(name: *const c_char) -> *mut c_void;
         fn object_getClass(obj: *mut c_void) -> *mut c_void;
         fn sel_registerName(name: *const c_char) -> *mut c_void;
-        fn class_addMethod(cls: *mut c_void, sel: *mut c_void, imp: *const c_void, types: *const c_char) -> bool;
+        fn class_addMethod(
+            cls: *mut c_void,
+            sel: *mut c_void,
+            imp: *const c_void,
+            types: *const c_char,
+        ) -> bool;
         fn objc_getProtocol(name: *const c_char) -> *mut c_void;
         fn class_addProtocol(cls: *mut c_void, protocol: *mut c_void) -> bool;
         fn objc_msgSend();
@@ -252,13 +276,26 @@ fn adopt_ns_app() {
         let ns_app_class = objc_getClass(c"NSApplication".as_ptr());
         let shared: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
             std::mem::transmute(objc_msgSend as *const c_void);
-        let app = shared(ns_app_class, sel_registerName(c"sharedApplication".as_ptr()));
+        let app = shared(
+            ns_app_class,
+            sel_registerName(c"sharedApplication".as_ptr()),
+        );
         if app.is_null() {
             return;
         }
         let class = object_getClass(app);
-        class_addMethod(class, sel_registerName(c"isHandlingSendEvent".as_ptr()), is_handling as *const c_void, c"B@:".as_ptr());
-        class_addMethod(class, sel_registerName(c"setHandlingSendEvent:".as_ptr()), set_handling as *const c_void, c"v@:B".as_ptr());
+        class_addMethod(
+            class,
+            sel_registerName(c"isHandlingSendEvent".as_ptr()),
+            is_handling as *const c_void,
+            c"B@:".as_ptr(),
+        );
+        class_addMethod(
+            class,
+            sel_registerName(c"setHandlingSendEvent:".as_ptr()),
+            set_handling as *const c_void,
+            c"v@:B".as_ptr(),
+        );
         for name in [c"CrAppProtocol", c"CrAppControlProtocol", c"CefAppProtocol"] {
             let protocol = objc_getProtocol(name.as_ptr());
             if !protocol.is_null() {
@@ -278,7 +315,10 @@ fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     let (tx, rx) = mpsc::unbounded();
     let signal = Arc::new(PumpSignal { tx });
     let port = pick_cdp_port();
-    let mut app = client::app(AppState { pump: Some(signal.clone()), cdp_port: port });
+    let mut app = client::app(AppState {
+        pump: Some(signal.clone()),
+        cdp_port: port,
+    });
 
     let runtime = loader::runtime_dir();
     let mut profile = profile_dir();
@@ -324,7 +364,11 @@ fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
         resources_dir_path: resources,
         locales_dir_path: locales,
         locale: cef::CefString::from(if spanish { "es" } else { "en-US" }),
-        accept_language_list: cef::CefString::from(if spanish { "es-ES,es,en-US,en" } else { "en-US,en" }),
+        accept_language_list: cef::CefString::from(if spanish {
+            "es-ES,es,en-US,en"
+        } else {
+            "en-US,en"
+        }),
         log_file: path(profile.join("cef.log")),
         log_severity: cef::LogSeverity::WARNING,
         background_color: 0xFFFF_FFFF,
@@ -333,7 +377,13 @@ fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     };
     // CEF keeps pointers into argv, so the arguments live for the whole process.
     let args: &'static cef::args::Args = Box::leak(Box::new(cef::args::Args::new()));
-    if cef::initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
+    if cef::initialize(
+        Some(args.as_main_args()),
+        Some(&settings),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    ) != 1
+    {
         return Err(format!(
             "CEF failed to start (is another arakun using {}? see cef.log there)",
             profile.display()
@@ -341,10 +391,14 @@ fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     }
     CDP_PORT.store(port, Ordering::Relaxed);
     if timing() {
-        eprintln!("arakun-browser: cef::initialize took {:?} (CDP port {port})", started.elapsed());
+        eprintln!(
+            "arakun-browser: cef::initialize took {:?} (CDP port {port})",
+            started.elapsed()
+        );
     }
 
-    cx.spawn(async move |cx: &mut AsyncApp| pump(rx, cx).await).detach();
+    cx.spawn(async move |cx: &mut AsyncApp| pump(rx, cx).await)
+        .detach();
     cx.on_app_quit(|_| {
         shutdown();
         async {}
@@ -407,7 +461,9 @@ fn after_work(cx: &mut AsyncApp) {
         v.retain(|r| r.tab.strong_count() > 0);
         v.iter()
             .filter(|r| {
-                r.tab.upgrade().is_some_and(|t| t.dirty.get() || (ready && t.browser.borrow().is_none()))
+                r.tab
+                    .upgrade()
+                    .is_some_and(|t| t.dirty.get() || (ready && t.browser.borrow().is_none()))
             })
             .map(|r| r.view.clone())
             .collect()
@@ -441,5 +497,9 @@ fn shutdown() {
 }
 
 fn closed(tab: &TabState) -> bool {
-    tab.updates.borrow().iter().any(|u| matches!(u, client::Update::Closed)) || tab.browser.borrow().is_none()
+    tab.updates
+        .borrow()
+        .iter()
+        .any(|u| matches!(u, client::Update::Closed))
+        || tab.browser.borrow().is_none()
 }

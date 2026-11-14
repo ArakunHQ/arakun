@@ -6,12 +6,12 @@
 //! arakun with a window already full doesn't notify again. Providers hidden
 //! from the rail's usage card stay quiet: hiding is how one says "I know".
 
+use super::island::Open;
 use super::*;
-use crate::agent::AgentKind;
 use crate::account::UsageMode;
+use crate::agent::AgentKind;
 use crate::agent::opencode_plan;
 use crate::agent::plan::{self, PlanUsage};
-use super::island::Open;
 use crate::island::AlertKind;
 
 /// One window of a plan, as the alerts see it.
@@ -51,8 +51,13 @@ fn plan_readings(plan: &PlanUsage, who: &'static str, now: u64) -> Vec<Reading> 
 }
 
 fn droid_readings(account: &Account, now: u64) -> Vec<Reading> {
-    let Some(limits) = account.limits() else { return Vec::new() };
-    let pools = [("Standard", limits.standard.as_ref()), ("Core", limits.core.as_ref())];
+    let Some(limits) = account.limits() else {
+        return Vec::new();
+    };
+    let pools = [
+        ("Standard", limits.standard.as_ref()),
+        ("Core", limits.core.as_ref()),
+    ];
     pools
         .into_iter()
         .filter_map(|(name, pool)| Some((name, pool?)))
@@ -73,7 +78,11 @@ fn droid_readings(account: &Account, now: u64) -> Vec<Reading> {
 
 /// The notifications `readings` call for, given the level each window last
 /// notified at (updated here). `first` only records the levels.
-fn alerts(readings: Vec<Reading>, seen: &mut std::collections::HashMap<String, u8>, first: bool) -> Vec<(String, String, bool)> {
+fn alerts(
+    readings: Vec<Reading>,
+    seen: &mut std::collections::HashMap<String, u8>,
+    first: bool,
+) -> Vec<(String, String, bool)> {
     let mut out = Vec::new();
     for r in readings {
         let lvl = level(r.pct);
@@ -83,9 +92,17 @@ fn alerts(readings: Vec<Reading>, seen: &mut std::collections::HashMap<String, u
         }
         let reset = r.reset.map(|t| format!(" · {t}")).unwrap_or_default();
         out.push(if lvl == 2 {
-            (format!("{} reached a limit", r.who), format!("{} is used up{reset}", r.label), true)
+            (
+                format!("{} reached a limit", r.who),
+                format!("{} is used up{reset}", r.label),
+                true,
+            )
         } else {
-            (format!("{} is at {:.0}%", r.who, r.pct), format!("{} is filling up{reset}", r.label), false)
+            (
+                format!("{} is at {:.0}%", r.who, r.pct),
+                format!("{} is filling up{reset}", r.label),
+                false,
+            )
         });
     }
     out
@@ -120,7 +137,11 @@ impl Shell {
         let first = !self.limits_seen;
         self.limits_seen = true;
         for (title, body, critical) in alerts(readings, &mut self.limit_alerts, first) {
-            let kind = if critical { AlertKind::Failure } else { AlertKind::Warning };
+            let kind = if critical {
+                AlertKind::Failure
+            } else {
+                AlertKind::Warning
+            };
             self.notify(kind, &title, &body, Some(Open::Usage));
         }
         cx.notify();
@@ -133,13 +154,20 @@ impl Shell {
             model::Agent::Claude => {
                 let plan = plan::latest()?;
                 let full = plan.windows.iter().find(|w| w.active && w.percent >= 100)?;
-                let reset = full.reset_text(now).map(|t| format!(", {t}")).unwrap_or_default();
-                Some(format!("Claude Code's {} is used up{reset}.", full.label.to_lowercase()))
+                let reset = full
+                    .reset_text(now)
+                    .map(|t| format!(", {t}"))
+                    .unwrap_or_default();
+                Some(format!(
+                    "Claude Code's {} is used up{reset}.",
+                    full.label.to_lowercase()
+                ))
             }
             model::Agent::Droid => {
                 let account = self.account.read(cx);
                 let limits = account.limits()?;
-                (limits.mode(now) == UsageMode::Blocked).then(|| format!("Droid's plan is out: {}", limits.summary(now)))
+                (limits.mode(now) == UsageMode::Blocked)
+                    .then(|| format!("Droid's plan is out: {}", limits.summary(now)))
             }
             // A full Go plan doesn't stop OpenCode: other providers, or Go's
             // extra usage, may still take the prompt; the provider says so if not.
@@ -154,12 +182,21 @@ mod tests {
     use std::collections::HashMap;
 
     fn r(key: &str, pct: f32) -> Reading {
-        Reading { key: key.into(), who: "Droid", label: "Core · Week".into(), pct, reset: Some("resets Oct 31".into()) }
+        Reading {
+            key: key.into(),
+            who: "Droid",
+            label: "Core · Week".into(),
+            pct,
+            reset: Some("resets Oct 31".into()),
+        }
     }
 
     #[test]
     fn levels() {
-        assert_eq!([level(10.), level(80.), level(99.9), level(100.)], [0, 1, 1, 2]);
+        assert_eq!(
+            [level(10.), level(80.), level(99.9), level(100.)],
+            [0, 1, 1, 2]
+        );
     }
 
     #[test]

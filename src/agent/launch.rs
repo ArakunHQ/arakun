@@ -111,7 +111,9 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
             let bin = which("claude").or_else(|| {
-                bundled_claude_candidates()?.into_iter().find(|p| is_executable(p))
+                bundled_claude_candidates()?
+                    .into_iter()
+                    .find(|p| is_executable(p))
             })?;
             Some(vec![bin.display().to_string(), "/login".into()])
         }
@@ -121,7 +123,11 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
         }
         AgentKind::OpenCode | AgentKind::WorkersAi => {
             let bin = opencode_bin().ok()?;
-            Some(vec![bin.display().to_string(), "auth".into(), "login".into()])
+            Some(vec![
+                bin.display().to_string(),
+                "auth".into(),
+                "login".into(),
+            ])
         }
     }
 }
@@ -133,14 +139,20 @@ pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
             let bin = which("claude").or_else(|| {
-                bundled_claude_candidates()?.into_iter().find(|p| is_executable(p))
+                bundled_claude_candidates()?
+                    .into_iter()
+                    .find(|p| is_executable(p))
             })?;
             Some(vec![bin.display().to_string(), "/logout".into()])
         }
         AgentKind::Droid | AgentKind::WorkersAi => None,
         AgentKind::OpenCode => {
             let bin = opencode_bin().ok()?;
-            Some(vec![bin.display().to_string(), "auth".into(), "logout".into()])
+            Some(vec![
+                bin.display().to_string(),
+                "auth".into(),
+                "logout".into(),
+            ])
         }
     }
 }
@@ -160,7 +172,11 @@ fn bundled_claude_candidates() -> Option<Vec<PathBuf>> {
         "aarch64" => "arm64",
         _ => return None,
     };
-    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let exe = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
     let base = agents_dir().join("node_modules").join("@anthropic-ai");
     let mut pkgs = vec![format!("claude-agent-sdk-{os}-{arch}")];
     if os == "linux" {
@@ -174,8 +190,7 @@ fn bundled_claude_candidates() -> Option<Vec<PathBuf>> {
 /// the `.exe`; the adapter then fails every session with "native binary not found".
 fn claude_binary_ok() -> bool {
     std::env::var_os("CLAUDE_CODE_EXECUTABLE").is_some()
-        || bundled_claude_candidates()
-            .is_none_or(|c| c.iter().any(|p| is_executable(p)))
+        || bundled_claude_candidates().is_none_or(|c| c.iter().any(|p| is_executable(p)))
 }
 
 pub fn which(name: &str) -> Option<PathBuf> {
@@ -255,8 +270,7 @@ pub fn agent_hint(cwd: Option<&Path>) -> Option<String> {
     Some(format!("{HINT}{memory}"))
 }
 
-const HINT: &str =
-        "You are running inside arakun, a desktop app where the user reads this conversation. \
+const HINT: &str = "You are running inside arakun, a desktop app where the user reads this conversation. \
          The `arakun` command on your PATH controls its window, acting on this project:\n\
          - `arakun browse -s <url>` shows a web page (for example a dev server you started) beside the chat.\n\
          - `arakun open -s <file[:line]>` shows a file beside the chat, at that line.\n\
@@ -301,7 +315,14 @@ fn droid_hint_args(cwd: Option<&Path>) -> Vec<String> {
 pub fn opencode_go_login_command() -> Option<Vec<String>> {
     let bin = opencode_bin().ok()?;
     Some(
-        [bin.display().to_string(), "auth".into(), "login".into(), "-p".into(), "opencode-go".into()].into(),
+        [
+            bin.display().to_string(),
+            "auth".into(),
+            "login".into(),
+            "-p".into(),
+            "opencode-go".into(),
+        ]
+        .into(),
     )
 }
 
@@ -325,7 +346,9 @@ pub fn opencode_providers() -> Vec<String> {
     else {
         return Vec::new();
     };
-    v.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default()
+    v.as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// OpenCode takes no system prompt over ACP or its command line, but its config
@@ -351,14 +374,20 @@ fn opencode_hint_env(cwd: Option<&Path>) -> Option<(String, OsString)> {
     };
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     cwd.hash(&mut hasher);
-    let path = agents_dir().join("opencode").join(format!("hint-{:016x}.md", hasher.finish()));
+    let path = agents_dir()
+        .join("opencode")
+        .join(format!("hint-{:016x}.md", hasher.finish()));
     let wrote = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
         .and_then(|_| std::fs::write(&path, hint));
     if let Err(e) = wrote {
         if let Some(mut log) = open_log(AgentKind::OpenCode) {
-            let _ = writeln!(log, "=== could not write the arakun hint to {}: {e}", path.display());
+            let _ = writeln!(
+                log,
+                "=== could not write the arakun hint to {}: {e}",
+                path.display()
+            );
         }
         return None;
     }
@@ -375,7 +404,13 @@ fn opencode_hint_env(cwd: Option<&Path>) -> Option<(String, OsString)> {
 /// Cloudflare Workers AI models. `ARAKUN_OPENCODE_ALL_MODELS=1` brings back every provider.
 const OPENCODE_MODELS: &[(&str, &[&str])] = &[
     ("opencode-go", &["gemini-4-argon", "kimi-k3.1-pro"]),
-    ("cloudflare-workers-ai", &["@cf/deepseek-ai/deepseek-v4.1-flash-1017", "@cf/zai-org/glm-5.3"]),
+    (
+        "cloudflare-workers-ai",
+        &[
+            "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+            "@cf/zai-org/glm-5.3",
+        ],
+    ),
 ];
 
 /// `ARAKUN_OPENCODE_ALL_MODELS` lifts the pin.
@@ -402,13 +437,19 @@ fn pin_opencode_models(config: &mut serde_json::Value) {
 /// provider's other models, so the ACP model menu lists only these. Keys the
 /// user already set win.
 fn pin_models(config: &mut serde_json::Value, pins: &[(&str, &[&str])]) {
-    let Some(obj) = config.as_object_mut() else { return };
+    let Some(obj) = config.as_object_mut() else {
+        return;
+    };
     let providers: Vec<&str> = pins.iter().map(|(p, _)| *p).collect();
-    obj.entry("enabled_providers").or_insert_with(|| serde_json::json!(providers));
+    obj.entry("enabled_providers")
+        .or_insert_with(|| serde_json::json!(providers));
     if let Some((provider, models)) = pins.first() {
-        obj.entry("model").or_insert_with(|| format!("{provider}/{}", models[0]).into());
+        obj.entry("model")
+            .or_insert_with(|| format!("{provider}/{}", models[0]).into());
     }
-    let table = obj.entry("provider").or_insert_with(|| serde_json::json!({}));
+    let table = obj
+        .entry("provider")
+        .or_insert_with(|| serde_json::json!({}));
     if !table.is_object() {
         return;
     }
@@ -422,14 +463,22 @@ fn pin_models(config: &mut serde_json::Value, pins: &[(&str, &[&str])]) {
 
 fn claude_adapter_bin() -> PathBuf {
     // npm writes a `.cmd` launcher for every bin on Windows; the bare name there is a sh script.
-    let name = if cfg!(windows) { "claude-agent-acp.cmd" } else { "claude-agent-acp" };
+    let name = if cfg!(windows) {
+        "claude-agent-acp.cmd"
+    } else {
+        "claude-agent-acp"
+    };
     agents_dir().join("node_modules/.bin").join(name)
 }
 
 /// Resolves how to start `kind` in ACP mode. Blocking: on the first Claude launch
 /// this runs `npm install` into [`agents_dir`]. `progress` gets a short status line.
 /// `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP` and `ARAKUN_OPENCODE_ACP` replace the command.
-pub fn resolve(kind: AgentKind, cwd: Option<&Path>, progress: &dyn Fn(String)) -> Result<LaunchSpec> {
+pub fn resolve(
+    kind: AgentKind,
+    cwd: Option<&Path>,
+    progress: &dyn Fn(String),
+) -> Result<LaunchSpec> {
     let mut spec = match kind {
         AgentKind::Droid => match from_override("ARAKUN_DROID") {
             Some(spec) => spec?,
@@ -454,19 +503,27 @@ pub fn resolve(kind: AgentKind, cwd: Option<&Path>, progress: &dyn Fn(String)) -
                 {
                     progress("Installing the Claude Code ACP adapter…".into());
                     install_claude_adapter()?;
-                } else if !claude_adapter_current() && !UPGRADE_TRIED.swap(true, Ordering::Relaxed) {
+                } else if !claude_adapter_current() && !UPGRADE_TRIED.swap(true, Ordering::Relaxed)
+                {
                     // A bumped pin: without this the first install would stay forever.
                     // If npm fails, the old adapter still works, so keep it.
                     progress("Updating the Claude Code ACP adapter…".into());
                     if let Err(e) = install_claude_adapter()
                         && let Some(mut log) = open_log(AgentKind::Claude)
                     {
-                        let _ = writeln!(log, "=== updating to {CLAUDE_ACP_PACKAGE} failed, keeping the old one: {e:#}");
+                        let _ = writeln!(
+                            log,
+                            "=== updating to {CLAUDE_ACP_PACKAGE} failed, keeping the old one: {e:#}"
+                        );
                     }
                 }
                 let mut env = Vec::new();
                 if !claude_binary_ok() {
-                    let name = if cfg!(windows) { "claude.exe" } else { "claude" };
+                    let name = if cfg!(windows) {
+                        "claude.exe"
+                    } else {
+                        "claude"
+                    };
                     let cli = which(name).ok_or_else(|| anyhow!(missing_claude_binary()))?;
                     env.push(("CLAUDE_CODE_EXECUTABLE".to_string(), cli.into_os_string()));
                 }
@@ -491,7 +548,11 @@ pub fn resolve(kind: AgentKind, cwd: Option<&Path>, progress: &dyn Fn(String)) -
             spec
         }
         // Nothing to start: it runs in arakun (`Connection::in_process`).
-        AgentKind::WorkersAi => LaunchSpec { program: PathBuf::from("arakun"), args: Vec::new(), env: Vec::new() },
+        AgentKind::WorkersAi => LaunchSpec {
+            program: PathBuf::from("arakun"),
+            args: Vec::new(),
+            env: Vec::new(),
+        },
     };
     spec.env.push(("PATH".into(), child_path_env()));
     Ok(spec)
@@ -523,11 +584,18 @@ fn claude_extra_model_env() -> Vec<(String, OsString)> {
 
 /// Whether the installed adapter is the pinned [`CLAUDE_ACP_PACKAGE`] version.
 fn claude_adapter_current() -> bool {
-    let (name, want) = CLAUDE_ACP_PACKAGE.rsplit_once('@').unwrap_or((CLAUDE_ACP_PACKAGE, ""));
-    std::fs::read_to_string(agents_dir().join("node_modules").join(name).join("package.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .is_some_and(|j| j["version"] == want)
+    let (name, want) = CLAUDE_ACP_PACKAGE
+        .rsplit_once('@')
+        .unwrap_or((CLAUDE_ACP_PACKAGE, ""));
+    std::fs::read_to_string(
+        agents_dir()
+            .join("node_modules")
+            .join(name)
+            .join("package.json"),
+    )
+    .ok()
+    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    .is_some_and(|j| j["version"] == want)
 }
 
 fn missing_claude_binary() -> String {
@@ -559,7 +627,10 @@ fn install_claude_adapter() -> Result<()> {
         // A lockfile written without this platform's package keeps npm from ever
         // adding it (npm/cli#4828), so start over from nothing once.
         if let Some(mut log) = open_log(AgentKind::Claude) {
-            let _ = writeln!(log, "=== the Claude Code binary is still missing; reinstalling from scratch");
+            let _ = writeln!(
+                log,
+                "=== the Claude Code binary is still missing; reinstalling from scratch"
+            );
         }
         let _ = std::fs::remove_file(dir.join("package-lock.json"));
         let _ = std::fs::remove_dir_all(dir.join("node_modules"));
@@ -636,8 +707,14 @@ mod tests {
         });
         pin_models(&mut theirs, OPENCODE_MODELS);
         assert_eq!(theirs["model"], "anthropic/x");
-        assert_eq!(theirs["provider"]["opencode-go"]["whitelist"], serde_json::json!(["y"]));
-        assert_eq!(theirs["provider"]["cloudflare-workers-ai"]["whitelist"][1], "@cf/zai-org/glm-5.3");
+        assert_eq!(
+            theirs["provider"]["opencode-go"]["whitelist"],
+            serde_json::json!(["y"])
+        );
+        assert_eq!(
+            theirs["provider"]["cloudflare-workers-ai"]["whitelist"][1],
+            "@cf/zai-org/glm-5.3"
+        );
         assert_eq!(
             opencode_models(),
             [

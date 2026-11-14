@@ -19,22 +19,32 @@ const STALE: u64 = 5 * 60;
 const PROVIDER: &str = "opencode-go";
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// OpenCode's credentials file; `ARAKUN_OPENCODE_AUTH` points elsewhere (the
 /// dev nest sandboxes XDG_DATA_HOME, so it would never find the real one).
 fn auth_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("ARAKUN_OPENCODE_AUTH").map(PathBuf::from).filter(|p| p.is_absolute()) {
+    if let Some(p) = std::env::var_os("ARAKUN_OPENCODE_AUTH")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
         return p;
     }
-    crate::platform::data_home().join("opencode").join("auth.json")
+    crate::platform::data_home()
+        .join("opencode")
+        .join("auth.json")
 }
 
 /// The Go API key, if `opencode auth login` stored one. Never logged or shown.
 fn key() -> Option<String> {
     let json: Value = serde_json::from_slice(&std::fs::read(auth_path()).ok()?).ok()?;
-    json[PROVIDER]["key"].as_str().filter(|k| !k.is_empty()).map(str::to_string)
+    json[PROVIDER]["key"]
+        .as_str()
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
 }
 
 fn cache_path() -> PathBuf {
@@ -95,9 +105,17 @@ fn remember(p: Option<PlanUsage>) -> Option<PlanUsage> {
 
 /// One GET of the usage endpoint. A key without Go answers 403.
 fn fetch(key: &str) -> Result<PlanUsage> {
-    let body = plan::http(ENDPOINT, None, &[("Authorization", format!("Bearer {key}"))])?;
-    let json: Value = serde_json::from_str(&body).context("OpenCode usage endpoint did not answer JSON")?;
-    if let Some(msg) = json["error"]["message"].as_str().or_else(|| json["error"].as_str()) {
+    let body = plan::http(
+        ENDPOINT,
+        None,
+        &[("Authorization", format!("Bearer {key}"))],
+    )?;
+    let json: Value =
+        serde_json::from_str(&body).context("OpenCode usage endpoint did not answer JSON")?;
+    if let Some(msg) = json["error"]["message"]
+        .as_str()
+        .or_else(|| json["error"].as_str())
+    {
         bail!("OpenCode usage endpoint: {msg}");
     }
     Ok(parse(&json))
@@ -107,21 +125,36 @@ fn fetch(key: &str) -> Result<PlanUsage> {
 /// into windows. `status` other than "ok" rides along as the severity, so the
 /// views can say it.
 fn parse(json: &Value) -> PlanUsage {
-    let windows = [("rolling", "5-hour limit"), ("weekly", "Weekly limit"), ("monthly", "Monthly limit")]
-        .into_iter()
-        .filter_map(|(key, label)| {
-            let w = json["usage"].get(key).filter(|w| w.is_object())?;
-            let status = w["status"].as_str().unwrap_or("ok");
-            Some(Window {
-                label: label.to_string(),
-                percent: w["percent"].as_f64().filter(|p| p.is_finite() && *p >= 0.).map_or(0, |p| p.round() as u64),
-                severity: if status == "ok" { "normal".into() } else { status.to_string() },
-                resets_at: w["resetsAt"].as_str().and_then(plan::from_iso),
-                active: true,
-            })
+    let windows = [
+        ("rolling", "5-hour limit"),
+        ("weekly", "Weekly limit"),
+        ("monthly", "Monthly limit"),
+    ]
+    .into_iter()
+    .filter_map(|(key, label)| {
+        let w = json["usage"].get(key).filter(|w| w.is_object())?;
+        let status = w["status"].as_str().unwrap_or("ok");
+        Some(Window {
+            label: label.to_string(),
+            percent: w["percent"]
+                .as_f64()
+                .filter(|p| p.is_finite() && *p >= 0.)
+                .map_or(0, |p| p.round() as u64),
+            severity: if status == "ok" {
+                "normal".into()
+            } else {
+                status.to_string()
+            },
+            resets_at: w["resetsAt"].as_str().and_then(plan::from_iso),
+            active: true,
         })
-        .collect();
-    PlanUsage { at: now(), windows, ..PlanUsage::default() }
+    })
+    .collect();
+    PlanUsage {
+        at: now(),
+        windows,
+        ..PlanUsage::default()
+    }
 }
 
 /// A status the endpoint sent that isn't "ok", for the views to show as is.
@@ -141,9 +174,23 @@ mod tests {
             "monthly": {"status": "throttled", "percent": 99.6, "resetsAt": "2026-12-02T17:07:42.000Z"}
         }});
         let p = parse(&json);
-        let rows: Vec<_> = p.windows.iter().map(|w| (w.short_label(), w.percent, status(w))).collect();
-        assert_eq!(rows, [("5h".to_string(), 1, None), ("Week".to_string(), 0, None), ("Month".to_string(), 100, Some("throttled"))]);
-        assert_eq!(p.windows[0].resets_at, plan::from_iso("2026-11-02T22:47:51Z"));
+        let rows: Vec<_> = p
+            .windows
+            .iter()
+            .map(|w| (w.short_label(), w.percent, status(w)))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("5h".to_string(), 1, None),
+                ("Week".to_string(), 0, None),
+                ("Month".to_string(), 100, Some("throttled"))
+            ]
+        );
+        assert_eq!(
+            p.windows[0].resets_at,
+            plan::from_iso("2026-11-02T22:47:51Z")
+        );
         assert!(!p.windows[0].hot() && p.windows[2].hot());
         assert!(p.plan_label().is_empty() && p.spend.is_none());
     }

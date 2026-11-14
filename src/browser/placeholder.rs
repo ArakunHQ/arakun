@@ -4,14 +4,15 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, RenderImage, SharedString, Styled as _, Window, div,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, RenderImage, SharedString,
+    Styled as _, Window, div,
 };
 
-use super::{BrowserEvent, ConsoleLine, HomeInfo, PageState};
 use super::chrome::{self, Toolbar};
 use super::text_field::{TextField, TextFieldEvent};
 use super::url;
+use super::{BrowserEvent, ConsoleLine, HomeInfo, PageState};
 
 const NOT_BUILT: &str = "browser tabs are not part of this build";
 
@@ -39,7 +40,12 @@ impl BrowserView {
                 this.navigate(&text, cx);
             }
         });
-        let mut view = Self { address, focus: cx.focus_handle(), url: SharedString::default(), _subscription: subscription };
+        let mut view = Self {
+            address,
+            focus: cx.focus_handle(),
+            url: SharedString::default(),
+            _subscription: subscription,
+        };
         if !url.trim().is_empty() {
             view.navigate(&url, cx);
         }
@@ -102,7 +108,10 @@ impl BrowserView {
     }
 
     pub fn page_state(&self) -> PageState {
-        PageState { error: Some(NOT_BUILT.into()), ..PageState::default() }
+        PageState {
+            error: Some(NOT_BUILT.into()),
+            ..PageState::default()
+        }
     }
 
     pub fn focus_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {

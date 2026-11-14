@@ -24,7 +24,9 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, SharedString, Task};
+use gpui::{
+    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, SharedString, Task,
+};
 
 use super::colors;
 
@@ -374,7 +376,8 @@ impl Terminal {
                 }
             }
             AlacEvent::ColorRequest(index, format) => {
-                let rgb = self.term.lock().colors()[index].unwrap_or_else(|| colors::default_rgb(index));
+                let rgb =
+                    self.term.lock().colors()[index].unwrap_or_else(|| colors::default_rgb(index));
                 self.shared.write(Cow::Owned(format(rgb).into_bytes()));
             }
             _ => {}
@@ -591,7 +594,11 @@ impl Terminal {
         let bottom = grid.bottommost_line();
         let cols = grid.columns();
         let mut start = point.line;
-        while start > top && grid[Line(start.0 - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+        while start > top
+            && grid[Line(start.0 - 1)][Column(cols - 1)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        {
             start -= 1;
         }
         let mut end = point.line;
@@ -637,9 +644,7 @@ impl Terminal {
         if point.line < grid.topmost_line() || point.line > grid.bottommost_line() {
             return None;
         }
-        grid[point]
-            .hyperlink()
-            .map(|link| link.uri().to_string())
+        grid[point].hyperlink().map(|link| link.uri().to_string())
     }
 }
 
@@ -662,7 +667,9 @@ impl Drop for Terminal {
 /// SIGKILL. Programs that left the session (`setsid`, tmux) are not touched.
 /// Runs on its own thread.
 fn end_session(sid: i32, grace: Duration) {
-    let _ = std::thread::Builder::new().name("term-hangup".into()).spawn(move || hang_up(sid, grace));
+    let _ = std::thread::Builder::new()
+        .name("term-hangup".into())
+        .spawn(move || hang_up(sid, grace));
 }
 
 #[cfg(unix)]
@@ -699,8 +706,13 @@ fn session_members(sid: i32) -> Vec<(i32, bool)> {
                 return false;
             };
             // After the command name: state, ppid, pgrp, session.
-            let fields: Vec<&str> = stat.rsplit_once(')').map_or("", |(_, f)| f).split_whitespace().collect();
-            fields.first().is_some_and(|&s| s != "Z") && fields.get(3).and_then(|s| s.parse().ok()) == Some(sid)
+            let fields: Vec<&str> = stat
+                .rsplit_once(')')
+                .map_or("", |(_, f)| f)
+                .split_whitespace()
+                .collect();
+            fields.first().is_some_and(|&s| s != "Z")
+                && fields.get(3).and_then(|s| s.parse().ok()) == Some(sid)
         })
         .map(|pid| (pid, ignores_hup(pid)))
         .collect()
@@ -730,7 +742,10 @@ fn find_in<T: EventListener>(
         .chars()
         .flat_map(|c| {
             let special = "\\.+*?()|[]{}^$#&-~".contains(c);
-            special.then_some('\\').into_iter().chain(std::iter::once(c))
+            special
+                .then_some('\\')
+                .into_iter()
+                .chain(std::iter::once(c))
         })
         .collect();
     let mut regex = RegexSearch::new(&escaped).ok()?;
@@ -766,7 +781,10 @@ fn tail_text<T>(term: &Term<T>, max_lines: usize) -> String {
         let row = &grid[line];
         for col in 0..cols {
             let cell = &row[Column(col)];
-            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
                 continue;
             }
             current.push(cell.c);
@@ -807,8 +825,14 @@ mod tests {
     fn recent_text_joins_wrapped_lines() {
         let mut term = Term::new(Config::default(), &TermSize::new(10, 4), VoidListener);
         let mut parser: Processor = Processor::new();
-        parser.advance(&mut term, b"one\r\ntwo\r\nthis line wraps around\r\nlast   \r\n");
-        assert_eq!(tail_text(&term, 100), "one\ntwo\nthis line wraps around\nlast");
+        parser.advance(
+            &mut term,
+            b"one\r\ntwo\r\nthis line wraps around\r\nlast   \r\n",
+        );
+        assert_eq!(
+            tail_text(&term, 100),
+            "one\ntwo\nthis line wraps around\nlast"
+        );
         assert_eq!(tail_text(&term, 2), "this line wraps around\nlast");
     }
 
@@ -864,10 +888,18 @@ mod tests {
             if let Some(pid) = pid {
                 break pid;
             }
-            assert!(started.elapsed() < Duration::from_secs(5), "nohup never came up: {:?}", session_members(sid));
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "nohup never came up: {:?}",
+                session_members(sid)
+            );
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(session_members(sid).len() >= 4, "{:?}", session_members(sid));
+        assert!(
+            session_members(sid).len() >= 4,
+            "{:?}",
+            session_members(sid)
+        );
         hang_up(sid, Duration::from_millis(300));
         let _ = leader.wait();
         // SIGKILL is delivered asynchronously; the last ones may need a moment

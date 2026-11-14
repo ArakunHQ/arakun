@@ -73,7 +73,9 @@ impl Shell {
     /// A new subagent in a session: the panel opens for the one on screen,
     /// unless the user closed it.
     pub(super) fn subagent_spawned(&mut self, session: &str, cx: &mut Context<Self>) {
-        let active = self.active_session_id().is_some_and(|a| a.as_ref() == session);
+        let active = self
+            .active_session_id()
+            .is_some_and(|a| a.as_ref() == session);
         if active && !self.subagents_open && !self.subagents_dismissed {
             self.subagents_open = true;
             self.save(cx);
@@ -84,27 +86,57 @@ impl Shell {
 
     fn session_thread(&self, session: &str) -> Option<Entity<Thread>> {
         let env = self.env();
-        env.sessions[env.session_index(session)?].live.as_ref().map(|l| l.thread.clone())
+        env.sessions[env.session_index(session)?]
+            .live
+            .as_ref()
+            .map(|l| l.thread.clone())
     }
 
-    fn show_subagent(&mut self, session: SharedString, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_subagent(
+        &mut self,
+        session: SharedString,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(thread) = self.session_thread(&session) else {
             return;
         };
-        let Some((id, child)) = thread.read(cx).subagent(id).map(|s| (s.id.clone(), s.thread.clone())) else {
+        let Some((id, child)) = thread
+            .read(cx)
+            .subagent(id)
+            .map(|s| (s.id.clone(), s.thread.clone()))
+        else {
             return;
         };
-        if self.subagent_view.as_ref().is_some_and(|v| v.session == session && v.id == id) {
+        if self
+            .subagent_view
+            .as_ref()
+            .is_some_and(|v| v.session == session && v.id == id)
+        {
             return;
         }
         let view = cx.new(|cx| ThreadView::new(child, window, cx));
         let (env, sid) = (self.env().path.clone(), session.clone());
-        let events = cx.subscribe_in(&view, window, move |this, _, ev: &ThreadViewEvent, window, cx| match ev {
-            ThreadViewEvent::OpenFile(file, line) => this.open_file_beside(&env, file, *line, window, cx),
-            ThreadViewEvent::OpenSubagent(id) => this.open_subagent(sid.clone(), id.clone(), window, cx),
-            ThreadViewEvent::AddNote { .. } => {}
+        let events = cx.subscribe_in(
+            &view,
+            window,
+            move |this, _, ev: &ThreadViewEvent, window, cx| match ev {
+                ThreadViewEvent::OpenFile(file, line) => {
+                    this.open_file_beside(&env, file, *line, window, cx)
+                }
+                ThreadViewEvent::OpenSubagent(id) => {
+                    this.open_subagent(sid.clone(), id.clone(), window, cx)
+                }
+                ThreadViewEvent::AddNote { .. } => {}
+            },
+        );
+        self.subagent_view = Some(SubagentView {
+            session,
+            id,
+            view,
+            _events: events,
         });
-        self.subagent_view = Some(SubagentView { session, id, view, _events: events });
     }
 
     /// Keeps the elapsed times of running subagents counting while the panel shows them.
@@ -134,17 +166,23 @@ impl Shell {
     fn subagents_running(&self, cx: &App) -> bool {
         self.subagents_open
             && self.has_projects()
-            && self.active_thread(cx).is_some_and(|t| t.read(cx).running_subagents() > 0)
+            && self
+                .active_thread(cx)
+                .is_some_and(|t| t.read(cx).running_subagents() > 0)
     }
 
     pub(super) fn render_subagents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.active_session_id();
         let thread = self.active_thread(cx);
-        let opened = self.subagent_view.as_ref().filter(|v| Some(&v.session) == session.as_ref()).and_then(|v| {
-            let t = thread.as_ref()?.read(cx);
-            let s = t.subagent(&v.id)?;
-            Some((v.view.clone(), s.name.clone(), s.state, s.elapsed_secs()))
-        });
+        let opened = self
+            .subagent_view
+            .as_ref()
+            .filter(|v| Some(&v.session) == session.as_ref())
+            .and_then(|v| {
+                let t = thread.as_ref()?.read(cx);
+                let s = t.subagent(&v.id)?;
+                Some((v.view.clone(), s.name.clone(), s.state, s.elapsed_secs()))
+            });
 
         let header = div()
             .flex()
@@ -158,12 +196,14 @@ impl Shell {
             .border_color(theme::stroke())
             .map(|d| match &opened {
                 Some((_, name, state, _)) => d
-                    .child(icon_button("subagent-back", "arrow-left01", 14.).tooltip(ui::tip("All subagents")).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.subagent_view = None;
-                            cx.notify();
-                        }),
-                    ))
+                    .child(
+                        icon_button("subagent-back", "arrow-left01", 14.)
+                            .tooltip(ui::tip("All subagents"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.subagent_view = None;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -176,17 +216,30 @@ impl Shell {
                     .child(ui::badge(state.label(), tone(*state))),
                 None => {
                     let count = thread.as_ref().map_or(0, |t| t.read(cx).subagents().len());
-                    d.child(div().text_size(px(ui::TEXT_LG)).font_weight(FontWeight::MEDIUM).child("Subagents"))
-                        .when(count > 0, |d| {
-                            d.child(ui::text(Type::Caption, theme::text_subtle(), count.to_string()))
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .h_full()
-                                .on_mouse_down(MouseButton::Left, |ev, window, _| crate::ui::drag_window(ev, window))
-                                .when(cfg!(windows), |d| d.window_control_area(WindowControlArea::Drag)),
-                        )
+                    d.child(
+                        div()
+                            .text_size(px(ui::TEXT_LG))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Subagents"),
+                    )
+                    .when(count > 0, |d| {
+                        d.child(ui::text(
+                            Type::Caption,
+                            theme::text_subtle(),
+                            count.to_string(),
+                        ))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                                crate::ui::drag_window(ev, window)
+                            })
+                            .when(cfg!(windows), |d| {
+                                d.window_control_area(WindowControlArea::Drag)
+                            }),
+                    )
                 }
             })
             .child(
@@ -199,8 +252,13 @@ impl Shell {
             (Some((view, ..)), _) => gpui::AnyView::from(view.clone())
                 .cached(gpui::StyleRefinement::default().size_full())
                 .into_any_element(),
-            (None, None) => ui::empty_state("bot", "No session", "Open a session to see the subagents it runs.", None)
-                .into_any_element(),
+            (None, None) => ui::empty_state(
+                "bot",
+                "No session",
+                "Open a session to see the subagents it runs.",
+                None,
+            )
+            .into_any_element(),
             (None, Some(thread)) => {
                 // Newest first: the one just started is the one to look at.
                 let rows: Vec<Row> = thread
@@ -211,7 +269,13 @@ impl Shell {
                     .map(|s| Row {
                         id: s.id.clone(),
                         name: s.name.clone(),
-                        task: s.task.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string(),
+                        task: s
+                            .task
+                            .lines()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
                         state: s.state,
                         secs: s.elapsed_secs(),
                     })
@@ -233,7 +297,11 @@ impl Shell {
                         .gap(px(2.))
                         .p(px(6.))
                         .overflow_y_scroll()
-                        .children(rows.into_iter().enumerate().map(|(i, row)| self.subagent_row(i, row, &sid, cx)))
+                        .children(
+                            rows.into_iter()
+                                .enumerate()
+                                .map(|(i, row)| self.subagent_row(i, row, &sid, cx)),
+                        )
                         .into_any_element()
                 }
             }
@@ -252,8 +320,20 @@ impl Shell {
             .child(div().flex_1().min_h_0().child(body))
     }
 
-    fn subagent_row(&self, i: usize, row: Row, session: &SharedString, cx: &mut Context<Self>) -> AnyElement {
-        let Row { id, name, task, state, secs } = row;
+    fn subagent_row(
+        &self,
+        i: usize,
+        row: Row,
+        session: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Row {
+            id,
+            name,
+            task,
+            state,
+            secs,
+        } = row;
         let session = session.clone();
         let running = state.is_running();
         div()
@@ -282,9 +362,23 @@ impl Shell {
                     .flex_1()
                     .min_w_0()
                     .gap(px(2.))
-                    .child(div().min_w_0().truncate().ty(Type::Label).text_color(theme::text()).child(name.clone()))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .ty(Type::Label)
+                            .text_color(theme::text())
+                            .child(name.clone()),
+                    )
                     .when(!task.is_empty() && task != name, |d| {
-                        d.child(div().min_w_0().truncate().ty(Type::Caption).text_color(theme::text_subtle()).child(task))
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .ty(Type::Caption)
+                                .text_color(theme::text_subtle())
+                                .child(task),
+                        )
                     }),
             )
             .child(

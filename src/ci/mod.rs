@@ -131,7 +131,11 @@ impl Run {
     /// Seconds it ran (so far, while it runs).
     pub fn duration(&self) -> Option<u64> {
         let start = parse_time(self.started_at.as_deref().unwrap_or(&self.created_at))?;
-        let end = if self.state().done() { parse_time(&self.updated_at)? } else { unix_now() };
+        let end = if self.state().done() {
+            parse_time(&self.updated_at)?
+        } else {
+            unix_now()
+        };
         Some(end.saturating_sub(start))
     }
 
@@ -370,7 +374,16 @@ fn since_green(dir: &Path, green: &Run, failing: &Run) -> SinceGreen {
     if green.head_sha == failing.head_sha {
         return s;
     }
-    match git::read(dir, &["log", "--format=%H%x1f%s", "-n", "30", &format!("{}..{}", green.head_sha, failing.head_sha)]) {
+    match git::read(
+        dir,
+        &[
+            "log",
+            "--format=%H%x1f%s",
+            "-n",
+            "30",
+            &format!("{}..{}", green.head_sha, failing.head_sha),
+        ],
+    ) {
         Ok(out) => {
             s.commits = out
                 .lines()
@@ -518,8 +531,12 @@ pub fn failure_excerpt(lines: &[LogLine]) -> Vec<LogLine> {
         .iter()
         .position(|l| l.kind != LineKind::Error)
         .map_or(lines.len(), |n| first_error + n);
-    let start = lines[..first_error].iter().rposition(|l| l.kind == LineKind::Group).unwrap_or(0);
-    let header = (lines.get(start).is_some_and(|l| l.kind == LineKind::Group)).then(|| lines[start].clone());
+    let start = lines[..first_error]
+        .iter()
+        .rposition(|l| l.kind == LineKind::Group)
+        .unwrap_or(0);
+    let header =
+        (lines.get(start).is_some_and(|l| l.kind == LineKind::Group)).then(|| lines[start].clone());
     let body: Vec<LogLine> = lines[start..end]
         .iter()
         .filter(|l| !matches!(l.kind, LineKind::Group | LineKind::Setup))
@@ -560,7 +577,10 @@ pub fn error_at(t: &str) -> Option<(String, u32, String)> {
 }
 
 fn looks_like_path(p: &str) -> bool {
-    !p.is_empty() && !p.contains(' ') && p.rsplit_once('.').is_some_and(|(_, ext)| (1..=5).contains(&ext.len()))
+    !p.is_empty()
+        && !p.contains(' ')
+        && p.rsplit_once('.')
+            .is_some_and(|(_, ext)| (1..=5).contains(&ext.len()))
 }
 
 fn tsc_error(t: &str) -> Option<(String, u32, String)> {
@@ -574,16 +594,25 @@ fn tsc_error(t: &str) -> Option<(String, u32, String)> {
 fn colon_error(t: &str) -> Option<(String, u32, String)> {
     // A Windows drive (`C:\w\lib.c:2:3: error`) belongs to the path.
     let b = t.as_bytes();
-    let drive = b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    let drive =
+        b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
     let (drive, t) = t.split_at(if drive { 2 } else { 0 });
     let mut parts = t.splitn(4, ':');
     let (path, line, col, rest) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
     let line: u32 = line.trim().parse().ok()?;
     col.trim().parse::<u32>().ok()?;
     let rest = rest.trim();
-    let message = rest.strip_prefix("error").or_else(|| rest.strip_prefix("Error"))?;
+    let message = rest
+        .strip_prefix("error")
+        .or_else(|| rest.strip_prefix("Error"))?;
     let message = message.trim_start_matches(':').trim().to_string();
-    looks_like_path(path).then(|| (format!("{drive}{}", path.trim_start_matches("./")), line, message))
+    looks_like_path(path).then(|| {
+        (
+            format!("{drive}{}", path.trim_start_matches("./")),
+            line,
+            message,
+        )
+    })
 }
 
 /// The lines of `source` around an annotation: four before, through one after.
@@ -611,7 +640,14 @@ fn gh_json<T: serde::de::DeserializeOwned>(dir: &Path, args: &[&str]) -> Result<
     })?;
     if !out.status.success() {
         let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        bail!("{}", if err.trim().is_empty() { "gh failed" } else { err.trim() });
+        bail!(
+            "{}",
+            if err.trim().is_empty() {
+                "gh failed"
+            } else {
+                err.trim()
+            }
+        );
     }
     serde_json::from_slice(&out.stdout).context("unexpected answer from gh")
 }
@@ -629,7 +665,10 @@ pub fn list_runs(dir: &Path) -> std::result::Result<Vec<Run>, ListError> {
     gh_json(dir, &["run", "list", "-L", &limit, "--json", RUN_FIELDS]).map_err(|e| {
         let msg = e.to_string();
         let lower = msg.to_lowercase();
-        if lower.contains("no git remotes") || lower.contains("known github host") || lower.contains("not a git repository") {
+        if lower.contains("no git remotes")
+            || lower.contains("known github host")
+            || lower.contains("not a git repository")
+        {
             ListError::NotGitHub
         } else if lower.contains("gh auth login") {
             ListError::Other("Sign in to GitHub: run `gh auth login` in a terminal.".into())
@@ -692,12 +731,23 @@ struct RawAnnotation {
 
 pub fn job_log(dir: &Path, job: u64) -> Result<Vec<LogLine>> {
     let out = git::gh(dir)
-        .args(["api", "--allow-escape-sequences", &format!("repos/{{owner}}/{{repo}}/actions/jobs/{job}/logs")])
+        .args([
+            "api",
+            "--allow-escape-sequences",
+            &format!("repos/{{owner}}/{{repo}}/actions/jobs/{job}/logs"),
+        ])
         .output()
         .context("could not run gh")?;
     if !out.status.success() {
         let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        bail!("{}", if err.trim().is_empty() { "The log isn't available." } else { err.trim() });
+        bail!(
+            "{}",
+            if err.trim().is_empty() {
+                "The log isn't available."
+            } else {
+                err.trim()
+            }
+        );
     }
     let mut lines = parse_log(&String::from_utf8_lossy(&out.stdout));
     if lines.len() > LOG_LINES {
@@ -708,7 +758,12 @@ pub fn job_log(dir: &Path, job: u64) -> Result<Vec<LogLine>> {
 
 /// Everything the run page shows. `checkouts` are the project's folders, to
 /// read annotated code from when the commit isn't in the clone.
-pub fn run_detail(dir: &Path, run: &Run, green: Option<&Run>, checkouts: &[PathBuf]) -> Result<Detail> {
+pub fn run_detail(
+    dir: &Path,
+    run: &Run,
+    green: Option<&Run>,
+    checkouts: &[PathBuf],
+) -> Result<Detail> {
     let base = format!("repos/{{owner}}/{{repo}}/actions/runs/{}", run.id);
     let raw: RawRun = gh_json(dir, &["api", &base])?;
     let jobs: RawJobs = gh_json(dir, &["api", &format!("{base}/jobs?per_page=100")])?;
@@ -736,21 +791,28 @@ pub fn run_detail(dir: &Path, run: &Run, green: Option<&Run>, checkouts: &[PathB
             snippet: Vec::new(),
         }));
     }
-    let failure = jobs.jobs.iter().find(|j| j.state() == State::Failed).and_then(|job| {
-        let lines = job_log(dir, job.id).ok()?;
-        if !annotations.iter().any(|a| a.in_code() && a.job == job.name) {
-            annotations.extend(errors_in_log(&lines, &job.name));
-        }
-        Some(Failure {
-            job: job.id,
-            lines: failure_excerpt(&lines),
-        })
-    });
+    let failure = jobs
+        .jobs
+        .iter()
+        .find(|j| j.state() == State::Failed)
+        .and_then(|job| {
+            let lines = job_log(dir, job.id).ok()?;
+            if !annotations.iter().any(|a| a.in_code() && a.job == job.name) {
+                annotations.extend(errors_in_log(&lines, &job.name));
+            }
+            Some(Failure {
+                job: job.id,
+                lines: failure_excerpt(&lines),
+            })
+        });
     let mut sources: HashMap<String, Option<String>> = HashMap::new();
     for a in annotations.iter_mut().filter(|a| a.in_code()) {
         let source = sources.entry(a.path.clone()).or_insert_with(|| {
-            git::show_file(dir, &run.head_sha, &a.path)
-                .or_else(|| checkouts.iter().find_map(|c| std::fs::read_to_string(c.join(&a.path)).ok()))
+            git::show_file(dir, &run.head_sha, &a.path).or_else(|| {
+                checkouts
+                    .iter()
+                    .find_map(|c| std::fs::read_to_string(c.join(&a.path)).ok())
+            })
         });
         if let Some(src) = source {
             a.snippet = snippet(src, a.line, a.end_line);
@@ -766,15 +828,27 @@ pub fn run_detail(dir: &Path, run: &Run, green: Option<&Run>, checkouts: &[PathB
             (title, c.author.map(|a| a.name).unwrap_or_default())
         }),
         actor: raw.actor.map(|a| a.login),
-        since_green: green.filter(|_| run.state() == State::Failed).map(|g| since_green(dir, g, run)),
+        since_green: green
+            .filter(|_| run.state() == State::Failed)
+            .map(|g| since_green(dir, g, run)),
     })
 }
 
 fn gh_action(dir: &Path, args: &[&str]) -> Result<()> {
-    let out = git::gh(dir).args(args).output().context("could not run gh")?;
+    let out = git::gh(dir)
+        .args(args)
+        .output()
+        .context("could not run gh")?;
     if !out.status.success() {
         let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        bail!("{}", if err.trim().is_empty() { "gh failed" } else { err.trim() });
+        bail!(
+            "{}",
+            if err.trim().is_empty() {
+                "gh failed"
+            } else {
+                err.trim()
+            }
+        );
     }
     Ok(())
 }
@@ -797,14 +871,27 @@ pub fn fix_prompt(run: &Run, detail: Option<&Detail>, checkout_branch: &str) -> 
             }
             p.push('\n');
         }
-        let notes: Vec<&Annotation> = d.annotations.iter().filter(|a| a.level != Level::Notice).take(8).collect();
+        let notes: Vec<&Annotation> = d
+            .annotations
+            .iter()
+            .filter(|a| a.level != Level::Notice)
+            .take(8)
+            .collect();
         if !notes.is_empty() {
             p.push_str("\nProblems reported:\n");
             for a in notes {
                 if a.in_code() {
-                    p.push_str(&format!("- {}:{}: {}\n", a.path, a.line, a.message.lines().next().unwrap_or_default()));
+                    p.push_str(&format!(
+                        "- {}:{}: {}\n",
+                        a.path,
+                        a.line,
+                        a.message.lines().next().unwrap_or_default()
+                    ));
                 } else {
-                    p.push_str(&format!("- {}\n", a.message.lines().next().unwrap_or_default()));
+                    p.push_str(&format!(
+                        "- {}\n",
+                        a.message.lines().next().unwrap_or_default()
+                    ));
                 }
             }
         }
@@ -839,7 +926,11 @@ pub fn ship_prompt(branch: &str, staged: &[String]) -> String {
         format!(
             "I staged the {} you changed ({}). Commit only what is staged (`git commit`, no `-a`; leave other changes alone)",
             if staged.len() == 1 { "file" } else { "files" },
-            staged.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")
+            staged
+                .iter()
+                .map(|f| format!("`{f}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     };
     format!(
@@ -880,7 +971,12 @@ pub enum CiEvent {
     /// A run finished since the last read; `prev` is how the one before it on
     /// the same workflow and branch ended.
     /// `watched`: the branch was pushed from arakun, and this is its first result.
-    Finished { root: PathBuf, run: Run, prev: Option<State>, watched: bool },
+    Finished {
+        root: PathBuf,
+        run: Run,
+        prev: Option<State>,
+        watched: bool,
+    },
 }
 
 #[derive(Default)]
@@ -936,7 +1032,9 @@ impl Repo {
         self.runs
             .iter()
             .filter(|r| r.workflow_name == run.workflow_name && r.head_branch == run.head_branch)
-            .find(|r| r.created() < run.created() || (r.created() == run.created() && r.id < run.id))
+            .find(|r| {
+                r.created() < run.created() || (r.created() == run.created() && r.id < run.id)
+            })
     }
 
     pub fn detail(&self, id: u64) -> Option<&Load<Arc<Detail>>> {
@@ -964,14 +1062,20 @@ impl Repo {
 
     /// Deploys of a commit (release tags), newest first.
     pub fn deploys_of(&self, sha: &str) -> impl Iterator<Item = &Run> {
-        self.runs.iter().filter(move |r| r.head_sha == sha && r.is_deploy())
+        self.runs
+            .iter()
+            .filter(move |r| r.head_sha == sha && r.is_deploy())
     }
 
     /// The last run of `run`'s workflow and branch, before it, that passed.
     pub fn last_green(&self, run: &Run) -> Option<&Run> {
         self.runs
             .iter()
-            .filter(|r| r.workflow_name == run.workflow_name && r.head_branch == run.head_branch && r.id != run.id)
+            .filter(|r| {
+                r.workflow_name == run.workflow_name
+                    && r.head_branch == run.head_branch
+                    && r.id != run.id
+            })
             .filter(|r| r.created() <= run.created())
             .find(|r| r.state() == State::Passed)
     }
@@ -986,7 +1090,9 @@ impl Repo {
         let mut out: Vec<(u64, u64, State)> = self
             .runs
             .iter()
-            .filter(|r| r.workflow_name == workflow && matches!(r.state(), State::Passed | State::Failed))
+            .filter(|r| {
+                r.workflow_name == workflow && matches!(r.state(), State::Passed | State::Failed)
+            })
             .filter_map(|r| Some((r.id, r.duration()?, r.state())))
             .take(24)
             .collect();
@@ -996,11 +1102,14 @@ impl Repo {
 
     /// A push from arakun is waiting for its CI to show up.
     pub fn expecting(&self, branch: &str) -> bool {
-        self.expected.get(branch).is_some_and(|at| unix_now().saturating_sub(*at) < EXPECT_FOR.as_secs())
+        self.expected
+            .get(branch)
+            .is_some_and(|at| unix_now().saturating_sub(*at) < EXPECT_FOR.as_secs())
     }
 
     fn any_running(&self) -> bool {
-        self.runs.iter().any(|r| !r.state().done()) || self.expected.keys().any(|b| self.expecting(b))
+        self.runs.iter().any(|r| !r.state().done())
+            || self.expected.keys().any(|b| self.expecting(b))
     }
 }
 
@@ -1077,7 +1186,10 @@ impl Ci {
             let stale: Vec<PathBuf> = self
                 .repos
                 .iter()
-                .filter(|(_, r)| r.last_fetch.is_none_or(|t| t.elapsed() > Duration::from_secs(30)))
+                .filter(|(_, r)| {
+                    r.last_fetch
+                        .is_none_or(|t| t.elapsed() > Duration::from_secs(30))
+                })
                 .map(|(p, _)| p.clone())
                 .collect();
             for root in stale {
@@ -1094,7 +1206,11 @@ impl Ci {
     }
 
     pub fn refresh_if_stale(&mut self, root: &Path, max_age: Duration, cx: &mut Context<Self>) {
-        if self.repos.get(root).is_some_and(|r| r.last_fetch.is_none_or(|t| t.elapsed() > max_age)) {
+        if self
+            .repos
+            .get(root)
+            .is_some_and(|r| r.last_fetch.is_none_or(|t| t.elapsed() > max_age))
+        {
             self.refresh(root, cx);
         }
     }
@@ -1118,7 +1234,9 @@ impl Ci {
             let (result, prs) = cx
                 .background_spawn(async move {
                     let runs = list_runs(&dir);
-                    let prs = (want_prs && runs.is_ok()).then(|| list_prs(&dir).ok()).flatten();
+                    let prs = (want_prs && runs.is_ok())
+                        .then(|| list_prs(&dir).ok())
+                        .flatten();
                     (runs, prs)
                 })
                 .await;
@@ -1138,21 +1256,33 @@ impl Ci {
                         repo.loaded = true;
                         let finished = Self::finished(repo, &runs);
                         // A run that changed since its page was read gets read again.
-                        repo.details.retain(|id, (at, _)| runs.iter().any(|r| r.id == *id && r.updated_at == *at));
+                        repo.details.retain(|id, (at, _)| {
+                            runs.iter().any(|r| r.id == *id && r.updated_at == *at)
+                        });
                         if repo.runs != runs {
                             repo.graphs.clear();
                         }
                         repo.expected.retain(|branch, at| {
                             unix_now().saturating_sub(*at) < EXPECT_FOR.as_secs()
-                                && !runs.iter().any(|r| &r.head_branch == branch && r.created() + 30 >= *at)
+                                && !runs
+                                    .iter()
+                                    .any(|r| &r.head_branch == branch && r.created() + 30 >= *at)
                         });
                         repo.runs = runs;
                         for run in finished {
                             let prev = repo.previous(&run).map(Run::state);
                             let watched = !run.is_deploy()
-                                && repo.watched.get(&run.head_branch).is_some_and(|at| run.created() + 30 >= *at)
+                                && repo
+                                    .watched
+                                    .get(&run.head_branch)
+                                    .is_some_and(|at| run.created() + 30 >= *at)
                                 && repo.watched.remove(&run.head_branch).is_some();
-                            cx.emit(CiEvent::Finished { root: root.clone(), run, prev, watched });
+                            cx.emit(CiEvent::Finished {
+                                root: root.clone(),
+                                run,
+                                prev,
+                                watched,
+                            });
                         }
                     }
                     Err(ListError::NotGitHub) => {
@@ -1176,7 +1306,11 @@ impl Ci {
                 .iter()
                 .filter(|r| r.state().done() && seen.get(&r.id) != Some(&true))
                 // A run first seen already finished, long after it ended, isn't news.
-                .filter(|r| seen.contains_key(&r.id) || unix_now().saturating_sub(parse_time(&r.updated_at).unwrap_or(0)) < 15 * 60)
+                .filter(|r| {
+                    seen.contains_key(&r.id)
+                        || unix_now().saturating_sub(parse_time(&r.updated_at).unwrap_or(0))
+                            < 15 * 60
+                })
                 .cloned()
                 .collect(),
         };
@@ -1222,7 +1356,13 @@ impl Ci {
         }
     }
 
-    fn read_detail(&mut self, root: &Path, run: Run, checkouts: Vec<PathBuf>, cx: &mut Context<Self>) {
+    fn read_detail(
+        &mut self,
+        root: &Path,
+        run: Run,
+        checkouts: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.repos.get_mut(root) else {
             return;
         };
@@ -1233,7 +1373,13 @@ impl Ci {
             Load::Ready(d) => Some(d),
             _ => None,
         });
-        repo.details.insert(id, (run.updated_at.clone(), keep_old.map_or(Load::Loading, Load::Ready)));
+        repo.details.insert(
+            id,
+            (
+                run.updated_at.clone(),
+                keep_old.map_or(Load::Loading, Load::Ready),
+            ),
+        );
         // The job logs can have grown too.
         repo.logs.clear();
         cx.notify();
@@ -1241,7 +1387,9 @@ impl Ci {
         cx.spawn(async move |this, cx| {
             let dir = root.clone();
             let r = run.clone();
-            let result = cx.background_spawn(async move { run_detail(&dir, &r, green.as_ref(), &checkouts) }).await;
+            let result = cx
+                .background_spawn(async move { run_detail(&dir, &r, green.as_ref(), &checkouts) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(repo) = this.repos.get_mut(&root) {
                     let load = match result {
@@ -1267,12 +1415,17 @@ impl Ci {
             Some((_, Load::Ready(g))) => Some(g.clone()),
             _ => None,
         };
-        repo.graphs.insert(branch.to_string(), (Instant::now(), keep.map_or(Load::Loading, Load::Ready)));
+        repo.graphs.insert(
+            branch.to_string(),
+            (Instant::now(), keep.map_or(Load::Loading, Load::Ready)),
+        );
         cx.notify();
         let (root, branch) = (root.to_path_buf(), branch.to_string());
         cx.spawn(async move |this, cx| {
             let (dir, b) = (root.clone(), branch.clone());
-            let result = cx.background_spawn(async move { graph::build(&dir, &b) }).await;
+            let result = cx
+                .background_spawn(async move { graph::build(&dir, &b) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(repo) = this.repos.get_mut(&root) {
                     let load = match result {
@@ -1300,7 +1453,9 @@ impl Ci {
         cx.spawn(async move |this, cx| {
             // GitHub takes a few seconds to queue the run of a push.
             for wait in [6, 12, 25] {
-                cx.background_executor().timer(Duration::from_secs(wait)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs(wait))
+                    .await;
                 if this.update(cx, |this, cx| this.refresh(&root, cx)).is_err() {
                     break;
                 }
@@ -1421,15 +1576,46 @@ mod tests {
     fn finds_the_last_green_run_and_words_a_retry() {
         let repo = Repo {
             runs: vec![
-            run(4, "CI", "feat", "completed", "failure", "2026-10-13T04:00:00Z"),
-            run(3, "CI", "feat", "completed", "failure", "2026-10-13T03:00:00Z"),
-            run(2, "Lint", "feat", "completed", "success", "2026-10-13T02:30:00Z"),
-            run(1, "CI", "feat", "completed", "success", "2026-10-13T02:00:00Z"),
+                run(
+                    4,
+                    "CI",
+                    "feat",
+                    "completed",
+                    "failure",
+                    "2026-10-13T04:00:00Z",
+                ),
+                run(
+                    3,
+                    "CI",
+                    "feat",
+                    "completed",
+                    "failure",
+                    "2026-10-13T03:00:00Z",
+                ),
+                run(
+                    2,
+                    "Lint",
+                    "feat",
+                    "completed",
+                    "success",
+                    "2026-10-13T02:30:00Z",
+                ),
+                run(
+                    1,
+                    "CI",
+                    "feat",
+                    "completed",
+                    "success",
+                    "2026-10-13T02:00:00Z",
+                ),
             ],
             ..Repo::default()
         };
         assert_eq!(repo.last_green(&repo.runs[0]).map(|r| r.id), Some(1));
-        assert_eq!(repo.durations("CI").iter().map(|d| d.0).collect::<Vec<_>>(), vec![1, 3, 4]);
+        assert_eq!(
+            repo.durations("CI").iter().map(|d| d.0).collect::<Vec<_>>(),
+            vec![1, 3, 4]
+        );
 
         let detail = Detail::default();
         let p = retry_prompt(&repo.runs[0], Some(&detail), 2, 3);
@@ -1456,7 +1642,11 @@ mod tests {
         assert!(runs[0].is_deploy());
         assert_eq!(runs[0].short_sha(), "4ab3c3b");
         assert_eq!(parse_time("1970-01-02T00:01:05Z"), Some(86465));
-        assert_eq!(parse_time("2026-10-13T03:43:11.1234Z").unwrap() - parse_time("2026-10-13T03:42:18Z").unwrap(), 53);
+        assert_eq!(
+            parse_time("2026-10-13T03:43:11.1234Z").unwrap()
+                - parse_time("2026-10-13T03:42:18Z").unwrap(),
+            53
+        );
     }
 
     #[test]
@@ -1476,10 +1666,38 @@ mod tests {
     fn branch_state_takes_the_newest_run_of_each_workflow() {
         let repo = Repo {
             runs: vec![
-                run(4, "CI", "feat", "completed", "success", "2026-10-13T03:00:04Z"),
-                run(3, "Lint", "feat", "completed", "failure", "2026-10-13T03:00:03Z"),
-                run(2, "CI", "feat", "completed", "failure", "2026-10-13T03:00:02Z"),
-                run(1, "CI", "main", "completed", "success", "2026-10-13T03:00:01Z"),
+                run(
+                    4,
+                    "CI",
+                    "feat",
+                    "completed",
+                    "success",
+                    "2026-10-13T03:00:04Z",
+                ),
+                run(
+                    3,
+                    "Lint",
+                    "feat",
+                    "completed",
+                    "failure",
+                    "2026-10-13T03:00:03Z",
+                ),
+                run(
+                    2,
+                    "CI",
+                    "feat",
+                    "completed",
+                    "failure",
+                    "2026-10-13T03:00:02Z",
+                ),
+                run(
+                    1,
+                    "CI",
+                    "main",
+                    "completed",
+                    "success",
+                    "2026-10-13T03:00:01Z",
+                ),
             ],
             ..Default::default()
         };
@@ -1494,9 +1712,23 @@ mod tests {
     #[test]
     fn finished_runs_are_news_only_after_the_first_read() {
         let mut repo = Repo::default();
-        let first = vec![run(1, "CI", "feat", "in_progress", "", "2026-10-13T03:00:00Z")];
+        let first = vec![run(
+            1,
+            "CI",
+            "feat",
+            "in_progress",
+            "",
+            "2026-10-13T03:00:00Z",
+        )];
         assert!(Ci::finished(&mut repo, &first).is_empty());
-        let second = vec![run(1, "CI", "feat", "completed", "failure", "2026-10-13T03:00:00Z")];
+        let second = vec![run(
+            1,
+            "CI",
+            "feat",
+            "completed",
+            "failure",
+            "2026-10-13T03:00:00Z",
+        )];
         assert_eq!(Ci::finished(&mut repo, &second).len(), 1);
         assert!(Ci::finished(&mut repo, &second).is_empty());
     }
@@ -1518,7 +1750,13 @@ mod tests {
     fn parses_logs_and_finds_the_failure() {
         let lines = parse_log(LOG);
         assert_eq!(lines[0].text, "Current runner version: '2.337.0'");
-        assert_eq!(lines[1], LogLine { kind: LineKind::Group, text: "Run npm ci".into() });
+        assert_eq!(
+            lines[1],
+            LogLine {
+                kind: LineKind::Group,
+                text: "Run npm ci".into()
+            }
+        );
         assert_eq!(lines[2].kind, LineKind::Setup);
         assert_eq!(lines[4].kind, LineKind::Plain);
         let excerpt = failure_excerpt(&lines);
@@ -1533,7 +1771,10 @@ mod tests {
         );
         let found = errors_in_log(&lines, "module");
         assert_eq!(found.len(), 1);
-        assert_eq!((found[0].path.as_str(), found[0].line), ("studio/worker/mcp.ts", 340));
+        assert_eq!(
+            (found[0].path.as_str(), found[0].line),
+            ("studio/worker/mcp.ts", 340)
+        );
         assert!(found[0].message.starts_with("TS2551"));
     }
 
@@ -1544,9 +1785,15 @@ mod tests {
             Some(("src/main.rs".into(), 12, "expected `;`".into()))
         );
         assert_eq!(colon_error("Error: something: else"), None);
-        assert_eq!(colon_error(r"C:\w\lib.c:2:3: error: x"), Some((r"C:\w\lib.c".into(), 2, "x".into())));
+        assert_eq!(
+            colon_error(r"C:\w\lib.c:2:3: error: x"),
+            Some((r"C:\w\lib.c".into(), 2, "x".into()))
+        );
         assert_eq!(tsc_error("Found 1 error (in 1 file)"), None);
-        let src = (1..=10).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let src = (1..=10)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let s = snippet(&src, 6, 6);
         assert_eq!(s.first().map(|l| l.0), Some(2));
         assert_eq!(s.last().map(|l| l.0), Some(7));
@@ -1555,11 +1802,21 @@ mod tests {
 
     #[test]
     fn fix_prompt_carries_the_failure() {
-        let r = run(57, "CI", "feat", "completed", "failure", "2026-10-13T03:00:00Z");
+        let r = run(
+            57,
+            "CI",
+            "feat",
+            "completed",
+            "failure",
+            "2026-10-13T03:00:00Z",
+        );
         let detail = Detail {
             failure: Some(Failure {
                 job: 1,
-                lines: vec![LogLine { kind: LineKind::Error, text: "boom".into() }],
+                lines: vec![LogLine {
+                    kind: LineKind::Error,
+                    text: "boom".into(),
+                }],
             }),
             ..Default::default()
         };

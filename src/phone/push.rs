@@ -40,7 +40,11 @@ impl Subscription {
             return None;
         }
         let keys = &v["keys"];
-        let sub = Subscription { endpoint, p256dh: keys["p256dh"].as_str()?.into(), auth: keys["auth"].as_str()?.into() };
+        let sub = Subscription {
+            endpoint,
+            p256dh: keys["p256dh"].as_str()?.into(),
+            auth: keys["auth"].as_str()?.into(),
+        };
         let (public, auth) = (B64.decode(&sub.p256dh).ok()?, B64.decode(&sub.auth).ok()?);
         (public.len() == 65 && auth.len() == 16).then_some(sub)
     }
@@ -57,15 +61,26 @@ pub struct Vapid {
 impl Vapid {
     pub fn generate() -> Vapid {
         let rng = rand::SystemRandom::new();
-        let doc = signature::EcdsaKeyPair::generate_pkcs8(&signature::ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
-            .expect("ring can make a P-256 key");
+        let doc = signature::EcdsaKeyPair::generate_pkcs8(
+            &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &rng,
+        )
+        .expect("ring can make a P-256 key");
         Vapid::from_pkcs8(doc.as_ref()).expect("a key ring just made parses")
     }
 
     pub fn from_pkcs8(pkcs8: &[u8]) -> Option<Vapid> {
         let rng = rand::SystemRandom::new();
-        let pair = signature::EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8, &rng).ok()?;
-        Some(Vapid { pair, pkcs8: pkcs8.to_vec() })
+        let pair = signature::EcdsaKeyPair::from_pkcs8(
+            &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            pkcs8,
+            &rng,
+        )
+        .ok()?;
+        Some(Vapid {
+            pair,
+            pkcs8: pkcs8.to_vec(),
+        })
     }
 
     /// The pair as the settings keep it.
@@ -82,10 +97,19 @@ impl Vapid {
     fn authorization(&self, endpoint: &str, now: u64) -> Option<String> {
         let aud = audience(endpoint)?;
         let header = B64.encode(br#"{"typ":"JWT","alg":"ES256"}"#);
-        let claims = B64.encode(serde_json::json!({ "aud": aud, "exp": now + TOKEN_FOR, "sub": CONTACT }).to_string());
+        let claims = B64.encode(
+            serde_json::json!({ "aud": aud, "exp": now + TOKEN_FOR, "sub": CONTACT }).to_string(),
+        );
         let signing = format!("{header}.{claims}");
-        let sig = self.pair.sign(&rand::SystemRandom::new(), signing.as_bytes()).ok()?;
-        Some(format!("vapid t={signing}.{}, k={}", B64.encode(sig.as_ref()), self.public_key()))
+        let sig = self
+            .pair
+            .sign(&rand::SystemRandom::new(), signing.as_bytes())
+            .ok()?;
+        Some(format!(
+            "vapid t={signing}.{}, k={}",
+            B64.encode(sig.as_ref()),
+            self.public_key()
+        ))
     }
 }
 
@@ -115,8 +139,11 @@ impl std::fmt::Display for Fail {
 
 /// Sends `payload` to one phone. Blocks on the network: for a background thread.
 pub fn send(vapid: &Vapid, sub: &Subscription, payload: &[u8], now: u64) -> Result<(), Fail> {
-    let body = encrypt(sub, payload).ok_or_else(|| Fail::Other("the subscription's keys are malformed".into()))?;
-    let auth = vapid.authorization(&sub.endpoint, now).ok_or_else(|| Fail::Other("could not sign the request".into()))?;
+    let body = encrypt(sub, payload)
+        .ok_or_else(|| Fail::Other("the subscription's keys are malformed".into()))?;
+    let auth = vapid
+        .authorization(&sub.endpoint, now)
+        .ok_or_else(|| Fail::Other("could not sign the request".into()))?;
     let request = ureq::http::Request::builder()
         .method("POST")
         .uri(&sub.endpoint)
@@ -127,13 +154,23 @@ pub fn send(vapid: &Vapid, sub: &Subscription, payload: &[u8], now: u64) -> Resu
         .header("Authorization", auth)
         .body(body)
         .map_err(|e| Fail::Other(e.to_string()))?;
-    let mut response = agent().run(request).map_err(|e| Fail::Other(e.to_string()))?;
+    let mut response = agent()
+        .run(request)
+        .map_err(|e| Fail::Other(e.to_string()))?;
     match response.status().as_u16() {
         200..=202 => Ok(()),
         404 | 410 => Err(Fail::Gone),
         status => {
-            let text = response.body_mut().with_config().limit(4096).read_to_string().unwrap_or_default();
-            Err(Fail::Other(format!("the push service answered {status}: {}", text.trim())))
+            let text = response
+                .body_mut()
+                .with_config()
+                .limit(4096)
+                .read_to_string()
+                .unwrap_or_default();
+            Err(Fail::Other(format!(
+                "the push service answered {status}: {}",
+                text.trim()
+            )))
         }
     }
 }
@@ -175,7 +212,12 @@ fn encrypt(sub: &Subscription, payload: &[u8]) -> Option<Vec<u8>> {
     // The last (only) record ends with 2; a 1 would mean more follow.
     record.push(2);
     let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &cek).ok()?);
-    key.seal_in_place_append_tag(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut record).ok()?;
+    key.seal_in_place_append_tag(
+        aead::Nonce::assume_unique_for_key(nonce),
+        aead::Aad::empty(),
+        &mut record,
+    )
+    .ok()?;
 
     let mut out = Vec::with_capacity(16 + 4 + 1 + 65 + record.len());
     out.extend_from_slice(&salt);
@@ -187,12 +229,22 @@ fn encrypt(sub: &Subscription, payload: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The content key and nonce both sides reach from the shared secret (RFC 8291 §3).
-fn derive(shared: &[u8], auth: &[u8], ua_public: &[u8], as_public: &[u8], salt: &[u8]) -> ([u8; 16], [u8; 12]) {
+fn derive(
+    shared: &[u8],
+    auth: &[u8],
+    ua_public: &[u8],
+    as_public: &[u8],
+    salt: &[u8],
+) -> ([u8; 16], [u8; 12]) {
     let mut info = b"WebPush: info\0".to_vec();
     info.extend_from_slice(ua_public);
     info.extend_from_slice(as_public);
     let mut ikm = [0u8; 32];
-    expand(&hkdf::Salt::new(hkdf::HKDF_SHA256, auth).extract(shared), &info, &mut ikm);
+    expand(
+        &hkdf::Salt::new(hkdf::HKDF_SHA256, auth).extract(shared),
+        &info,
+        &mut ikm,
+    );
     let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(&ikm);
     let mut cek = [0u8; 16];
     expand(&prk, b"Content-Encoding: aes128gcm\0", &mut cek);
@@ -210,7 +262,10 @@ impl hkdf::KeyType for Len {
 }
 
 fn expand(prk: &hkdf::Prk, info: &[u8], out: &mut [u8]) {
-    prk.expand(&[info], Len(out.len())).expect("short outputs").fill(out).expect("the length matches");
+    prk.expand(&[info], Len(out.len()))
+        .expect("short outputs")
+        .fill(out)
+        .expect("the length matches");
 }
 
 #[cfg(test)]
@@ -227,11 +282,16 @@ mod tests {
     impl Phone {
         fn new() -> Phone {
             let rng = rand::SystemRandom::new();
-            let private = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).unwrap();
+            let private =
+                agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).unwrap();
             let public = private.compute_public_key().unwrap().as_ref().to_vec();
             let mut auth = [0u8; 16];
             rand::SecureRandom::fill(&rng, &mut auth).unwrap();
-            Phone { private, public, auth }
+            Phone {
+                private,
+                public,
+                auth,
+            }
         }
 
         fn subscription(&self) -> Subscription {
@@ -253,9 +313,16 @@ mod tests {
                 derive(shared, &self.auth, &self.public, as_public, salt)
             })
             .unwrap();
-            let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &cek).unwrap());
+            let key =
+                aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &cek).unwrap());
             let mut record = record.to_vec();
-            let plain = key.open_in_place(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::empty(), &mut record).unwrap();
+            let plain = key
+                .open_in_place(
+                    aead::Nonce::assume_unique_for_key(nonce),
+                    aead::Aad::empty(),
+                    &mut record,
+                )
+                .unwrap();
             assert_eq!(plain.last(), Some(&2));
             plain[..plain.len() - 1].to_vec()
         }
@@ -266,11 +333,20 @@ mod tests {
         let phone = Phone::new();
         let sub = phone.subscription();
         let body = encrypt(&sub, br#"{"kind":"input","title":"Fix the build"}"#).unwrap();
-        assert_eq!(phone.open(&body), br#"{"kind":"input","title":"Fix the build"}"#);
+        assert_eq!(
+            phone.open(&body),
+            br#"{"kind":"input","title":"Fix the build"}"#
+        );
 
         assert!(encrypt(&sub, &[0u8; MAX_PAYLOAD + 1]).is_none());
-        let short = Subscription { auth: "c2hvcnQ".into(), ..sub };
-        assert!(encrypt(&short, b"x").is_none(), "malformed keys are refused");
+        let short = Subscription {
+            auth: "c2hvcnQ".into(),
+            ..sub
+        };
+        assert!(
+            encrypt(&short, b"x").is_none(),
+            "malformed keys are refused"
+        );
     }
 
     #[test]
@@ -280,17 +356,36 @@ mod tests {
         assert_eq!(again.public_key(), vapid.public_key());
         assert_eq!(B64.decode(vapid.public_key()).unwrap().len(), 65);
 
-        let auth = vapid.authorization("https://fcm.googleapis.com/fcm/send/abc", 1_700_000_000).unwrap();
-        let (t, k) = auth.strip_prefix("vapid t=").unwrap().split_once(", k=").unwrap();
+        let auth = vapid
+            .authorization("https://fcm.googleapis.com/fcm/send/abc", 1_700_000_000)
+            .unwrap();
+        let (t, k) = auth
+            .strip_prefix("vapid t=")
+            .unwrap()
+            .split_once(", k=")
+            .unwrap();
         assert_eq!(k, vapid.public_key());
         let mut parts = t.split('.');
-        let (header, claims_b64, sig) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
-        let claims: serde_json::Value = serde_json::from_slice(&B64.decode(claims_b64).unwrap()).unwrap();
+        let (header, claims_b64, sig) = (
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+        );
+        let claims: serde_json::Value =
+            serde_json::from_slice(&B64.decode(claims_b64).unwrap()).unwrap();
         assert_eq!(claims["aud"], "https://fcm.googleapis.com");
         assert_eq!(claims["exp"], 1_700_000_000 + TOKEN_FOR);
         assert_eq!(claims["sub"], CONTACT);
-        let public = signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, B64.decode(k).unwrap());
-        public.verify(format!("{header}.{claims_b64}").as_bytes(), &B64.decode(sig).unwrap()).unwrap();
+        let public = signature::UnparsedPublicKey::new(
+            &signature::ECDSA_P256_SHA256_FIXED,
+            B64.decode(k).unwrap(),
+        );
+        public
+            .verify(
+                format!("{header}.{claims_b64}").as_bytes(),
+                &B64.decode(sig).unwrap(),
+            )
+            .unwrap();
     }
 
     /// A push service of our own: answers each request with the next status
@@ -308,13 +403,21 @@ mod tests {
                 let head = String::from_utf8_lossy(&buf[..n]).to_string();
                 let want: usize = head
                     .lines()
-                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap()))
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse().unwrap())
+                    })
                     .unwrap();
                 let have = n - head.split("\r\n\r\n").next().unwrap().len() - 4;
                 let mut rest = vec![0u8; want - have];
                 s.read_exact(&mut rest).unwrap();
                 tx.send(format!("{head}<{want} bytes>")).unwrap();
-                write!(s, "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                write!(
+                    s,
+                    "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
             }
         });
         (endpoint, rx)
@@ -325,19 +428,40 @@ mod tests {
         let (endpoint, got) = service(&[201, 410, 500]);
         let vapid = Vapid::generate();
         let phone = Phone::new();
-        let sub = Subscription { endpoint, ..phone.subscription() };
-        assert_eq!(send(&vapid, &sub, b"{\"kind\":\"done\"}", 1_700_000_000), Ok(()));
+        let sub = Subscription {
+            endpoint,
+            ..phone.subscription()
+        };
+        assert_eq!(
+            send(&vapid, &sub, b"{\"kind\":\"done\"}", 1_700_000_000),
+            Ok(())
+        );
         let req = got.recv().unwrap();
         assert!(req.starts_with("POST /wpush/abc HTTP/1.1"), "{req}");
-        assert!(req.contains("content-encoding: aes128gcm") || req.contains("Content-Encoding: aes128gcm"), "{req}");
-        assert!(req.contains("ttl: 3600") || req.contains("TTL: 3600"), "{req}");
-        assert!(req.contains("vapid t=") && req.contains(&format!(", k={}", vapid.public_key())), "{req}");
+        assert!(
+            req.contains("content-encoding: aes128gcm")
+                || req.contains("Content-Encoding: aes128gcm"),
+            "{req}"
+        );
+        assert!(
+            req.contains("ttl: 3600") || req.contains("TTL: 3600"),
+            "{req}"
+        );
+        assert!(
+            req.contains("vapid t=") && req.contains(&format!(", k={}", vapid.public_key())),
+            "{req}"
+        );
         // Header (86 bytes) + the message, its delimiter and the 16-byte tag.
-        assert!(req.ends_with(&format!("<{} bytes>", 86 + 15 + 1 + 16)), "{req}");
+        assert!(
+            req.ends_with(&format!("<{} bytes>", 86 + 15 + 1 + 16)),
+            "{req}"
+        );
 
         assert_eq!(send(&vapid, &sub, b"x", 1_700_000_000), Err(Fail::Gone));
         got.recv().unwrap();
-        assert!(matches!(send(&vapid, &sub, b"x", 1_700_000_000), Err(Fail::Other(e)) if e.contains("500")));
+        assert!(
+            matches!(send(&vapid, &sub, b"x", 1_700_000_000), Err(Fail::Other(e)) if e.contains("500"))
+        );
     }
 
     #[test]
@@ -355,7 +479,10 @@ mod tests {
         let mut plain = good.clone();
         plain["endpoint"] = serde_json::json!("http://push.example/abc");
         assert!(Subscription::from_browser(&plain).is_none());
-        assert_eq!(audience("https://updates.push.services.mozilla.com/wpush/v2/x"), Some("https://updates.push.services.mozilla.com".into()));
+        assert_eq!(
+            audience("https://updates.push.services.mozilla.com/wpush/v2/x"),
+            Some("https://updates.push.services.mozilla.com".into())
+        );
     }
 
     /// Rings every phone paired with this computer, skipping the window and
@@ -370,10 +497,23 @@ mod tests {
         let mut rang = 0;
         for device in settings.devices.iter().filter(|d| d.push.is_some()) {
             let sub = device.push.as_ref().unwrap();
-            let outcome = send(&vapid, sub, payload.to_string().as_bytes(), crate::model::unix_now());
-            eprintln!("{} ({}): {:?}", device.name, &sub.endpoint[..sub.endpoint.len().min(48)], outcome);
+            let outcome = send(
+                &vapid,
+                sub,
+                payload.to_string().as_bytes(),
+                crate::model::unix_now(),
+            );
+            eprintln!(
+                "{} ({}): {:?}",
+                device.name,
+                &sub.endpoint[..sub.endpoint.len().min(48)],
+                outcome
+            );
             rang += outcome.is_ok() as usize;
         }
-        assert!(rang > 0, "no phone with a push subscription took the message");
+        assert!(
+            rang > 0,
+            "no phone with a push subscription took the message"
+        );
     }
 }

@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _,
-    SharedString, Styled, div, px, relative,
+    AnyElement, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled, div, px, relative,
 };
 
 use super::{MENU_ROW_H, RADIUS, RADIUS_SM, icon};
@@ -122,7 +122,10 @@ impl TypeScale {
     }
 
     pub fn from_id(id: &str) -> Self {
-        Self::ALL.into_iter().find(|t| t.id() == id).unwrap_or(TypeScale::Compact)
+        Self::ALL
+            .into_iter()
+            .find(|t| t.id() == id)
+            .unwrap_or(TypeScale::Compact)
     }
 }
 
@@ -141,8 +144,15 @@ pub fn set_type_scale(t: TypeScale) {
 pub trait Typography: Styled + Sized {
     fn ty(self, t: Type) -> Self {
         let (size, line, weight) = t.metrics();
-        let s = self.text_size(px(size)).line_height(px(line)).font_weight(weight);
-        if t == Type::Mono { s.font_family(theme::FONT_MONO) } else { s }
+        let s = self
+            .text_size(px(size))
+            .line_height(px(line))
+            .font_weight(weight);
+        if t == Type::Mono {
+            s.font_family(theme::FONT_MONO)
+        } else {
+            s
+        }
     }
 }
 
@@ -178,7 +188,14 @@ pub enum Tone {
 }
 
 impl Tone {
-    pub const ALL: [Tone; 6] = [Tone::Neutral, Tone::Accent, Tone::Info, Tone::Success, Tone::Warning, Tone::Danger];
+    pub const ALL: [Tone; 6] = [
+        Tone::Neutral,
+        Tone::Accent,
+        Tone::Info,
+        Tone::Success,
+        Tone::Warning,
+        Tone::Danger,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -262,7 +279,11 @@ pub fn legend(content: impl Into<SharedString>, color: Hsla) -> gpui::Div {
 }
 
 /// A filter or choice that toggles: outlined, filled when on.
-pub fn chip(id: impl Into<ElementId>, content: impl Into<SharedString>, on: bool) -> gpui::Stateful<gpui::Div> {
+pub fn chip(
+    id: impl Into<ElementId>,
+    content: impl Into<SharedString>,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .flex()
@@ -275,7 +296,11 @@ pub fn chip(id: impl Into<ElementId>, content: impl Into<SharedString>, on: bool
         .border_1()
         .ty(Type::Label)
         .cursor_pointer()
-        .when(on, |d| d.bg(theme::fill_selected()).border_color(theme::border_strong()).text_color(theme::text()))
+        .when(on, |d| {
+            d.bg(theme::fill_selected())
+                .border_color(theme::border_strong())
+                .text_color(theme::text())
+        })
         .when(!on, |d| {
             d.border_color(theme::border())
                 .text_color(theme::text_muted())
@@ -327,7 +352,11 @@ pub fn switch(on: bool) -> gpui::Div {
         .h(px(18.))
         .p(px(2.))
         .rounded_full()
-        .bg(if on { theme::accent() } else { theme::fill_selected() })
+        .bg(if on {
+            theme::accent()
+        } else {
+            theme::fill_selected()
+        })
         .when(on, |d| d.justify_end())
         .child(div().size(px(14.)).rounded_full().bg(theme::content()))
 }
@@ -342,7 +371,10 @@ pub fn radio(on: bool) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .when(on, |d| d.border_color(theme::accent()).child(div().size(px(6.)).rounded_full().bg(theme::accent())))
+        .when(on, |d| {
+            d.border_color(theme::accent())
+                .child(div().size(px(6.)).rounded_full().bg(theme::accent()))
+        })
         .when(!on, |d| d.border_color(theme::border_strong()))
 }
 
@@ -375,8 +407,13 @@ pub fn toggle_group<T: Copy + PartialEq + 'static>(
             .rounded(px(RADIUS_SM))
             .ty(Type::Overline)
             .cursor_pointer()
-            .when(on, |d| d.bg(theme::fill_selected()).text_color(theme::text()))
-            .when(!on, |d| d.text_color(theme::text_subtle()).hover(|s| s.text_color(theme::text())))
+            .when(on, |d| {
+                d.bg(theme::fill_selected()).text_color(theme::text())
+            })
+            .when(!on, |d| {
+                d.text_color(theme::text_subtle())
+                    .hover(|s| s.text_color(theme::text()))
+            })
             .child(label.to_uppercase());
         track = track.child(on_pick(seg, *value));
     }
@@ -391,7 +428,11 @@ pub fn menu_heading(content: &str) -> gpui::Div {
 }
 
 pub fn menu_divider() -> gpui::Div {
-    div().h(px(1.)).mx(px(4.)).my(px(3.)).bg(theme::border_subtle())
+    div()
+        .h(px(1.))
+        .mx(px(4.))
+        .my(px(3.))
+        .bg(theme::border_subtle())
 }
 
 /// A pickable row with a radio dot; the caller adds the name and any note.
@@ -414,7 +455,12 @@ pub fn choice_row(id: impl Into<ElementId>, selected: bool) -> gpui::Stateful<gp
 }
 
 /// A row that opens more choices beside it: name, current value, chevron.
-pub fn submenu_row(id: impl Into<ElementId>, name: &str, value: impl Into<SharedString>, open: bool) -> gpui::Stateful<gpui::Div> {
+pub fn submenu_row(
+    id: impl Into<ElementId>,
+    name: &str,
+    value: impl Into<SharedString>,
+    open: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .flex()
@@ -429,7 +475,15 @@ pub fn submenu_row(id: impl Into<ElementId>, name: &str, value: impl Into<Shared
         .when(open, |d| d.bg(theme::fill_hover()))
         .hover(|d| d.bg(theme::fill_hover()))
         .child(div().flex_1().child(name.to_string()))
-        .child(div().min_w_0().max_w(px(130.)).truncate().ty(Type::Label).text_color(theme::text_subtle()).child(value.into()))
+        .child(
+            div()
+                .min_w_0()
+                .max_w(px(130.))
+                .truncate()
+                .ty(Type::Label)
+                .text_color(theme::text_subtle())
+                .child(value.into()),
+        )
         .child(icon("arrow-right01", 12.).text_color(theme::text_faint()))
 }
 
@@ -457,14 +511,18 @@ pub fn switch_row(id: impl Into<ElementId>, name: &str, on: bool) -> gpui::State
 /// A thin bar filled to `pct` (0-100) in the tone's color.
 pub fn meter(pct: f32, tone: Tone, height: f32) -> gpui::Div {
     let fill = (pct / 100.).clamp(0., 1.);
-    div().h(px(height)).rounded_full().bg(theme::fill_selected()).child(
-        div()
-            .h_full()
-            .rounded_full()
-            .w(relative(fill))
-            .when(fill > 0., |d| d.min_w(px(height)))
-            .bg(tone.color()),
-    )
+    div()
+        .h(px(height))
+        .rounded_full()
+        .bg(theme::fill_selected())
+        .child(
+            div()
+                .h_full()
+                .rounded_full()
+                .w(relative(fill))
+                .when(fill > 0., |d| d.min_w(px(height)))
+                .bg(tone.color()),
+        )
 }
 
 /// One limit on one line: name, when it starts over, a short meter in the
@@ -478,8 +536,21 @@ pub fn limit_line(label: &str, pct: f32, detail: Option<String>) -> AnyElement {
         .h(px(22.))
         .ty(Type::Label)
         .font_weight(FontWeight::NORMAL)
-        .child(div().flex_1().min_w_0().truncate().text_color(theme::text_muted()).child(label.to_string()))
-        .child(div().flex_none().ty(Type::Caption).text_color(theme::text_faint()).child(detail.unwrap_or_default()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(theme::text_muted())
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .ty(Type::Caption)
+                .text_color(theme::text_faint())
+                .child(detail.unwrap_or_default()),
+        )
         .child(meter(pct, tone, 4.).w(px(56.)).flex_none())
         .child(
             div()
@@ -487,20 +558,37 @@ pub fn limit_line(label: &str, pct: f32, detail: Option<String>) -> AnyElement {
                 .flex_none()
                 .flex()
                 .justify_end()
-                .text_color(if pct >= 70. { tone.color() } else { theme::text() })
+                .text_color(if pct >= 70. {
+                    tone.color()
+                } else {
+                    theme::text()
+                })
                 .child(format!("{:.0}%", pct.ceil())),
         )
         .into_any_element()
 }
 
 /// One metric: what it is, the value, and what it means underneath.
-pub fn stat(label: &str, value: impl Into<SharedString>, sub: impl Into<SharedString>) -> gpui::Div {
+pub fn stat(
+    label: &str,
+    value: impl Into<SharedString>,
+    sub: impl Into<SharedString>,
+) -> gpui::Div {
     div()
         .flex()
         .flex_col()
         .gap(px(4.))
-        .child(text(Type::Label, theme::text_subtle(), label.to_string()).font_weight(FontWeight::NORMAL))
-        .child(div().text_size(px(20.)).line_height(px(26.)).text_color(theme::text()).child(value.into()))
+        .child(
+            text(Type::Label, theme::text_subtle(), label.to_string())
+                .font_weight(FontWeight::NORMAL),
+        )
+        .child(
+            div()
+                .text_size(px(20.))
+                .line_height(px(26.))
+                .text_color(theme::text())
+                .child(value.into()),
+        )
         .child(text(Type::Caption, theme::text_faint(), sub))
 }
 
@@ -513,13 +601,23 @@ pub fn kv(label: &str, value: impl Into<SharedString>) -> gpui::Div {
         .border_b_1()
         .border_color(theme::border_subtle())
         .ty(Type::Body)
-        .child(div().flex_1().text_color(theme::text_muted()).child(label.to_string()))
+        .child(
+            div()
+                .flex_1()
+                .text_color(theme::text_muted())
+                .child(label.to_string()),
+        )
         .child(div().text_color(theme::text()).child(value.into()))
 }
 
 /// What a list or page shows with nothing in it: an icon, what it is for,
 /// and the one thing to do about it.
-pub fn empty_state(icon_name: &str, title: &str, body: &str, action: Option<AnyElement>) -> gpui::Div {
+pub fn empty_state(
+    icon_name: &str,
+    title: &str,
+    body: &str,
+    action: Option<AnyElement>,
+) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -540,7 +638,11 @@ pub fn empty_state(icon_name: &str, title: &str, body: &str, action: Option<AnyE
                 .child(icon(icon_name, 18.).text_color(theme::text_subtle())),
         )
         .child(heading(title.to_string()).mt(px(4.)))
-        .child(text(Type::Body, theme::text_subtle(), body.to_string()).max_w(px(320.)).text_center())
+        .child(
+            text(Type::Body, theme::text_subtle(), body.to_string())
+                .max_w(px(320.))
+                .text_center(),
+        )
         .children(action.map(|a| div().mt(px(6.)).child(a)))
 }
 
@@ -572,7 +674,9 @@ pub fn refresh_control(
         .gap(px(6.))
         .text_size(px(super::TEXT_XS))
         .text_color(theme::text_faint())
-        .when_some(updated.filter(|_| !busy), |d, u| d.child(format!("updated {u}")))
+        .when_some(updated.filter(|_| !busy), |d, u| {
+            d.child(format!("updated {u}"))
+        })
         .child(if busy {
             div()
                 .flex()
@@ -583,7 +687,10 @@ pub fn refresh_control(
                 .child(super::spinner(id, 13., theme::mix(0.5)))
                 .into_any_element()
         } else {
-            super::icon_button(id, "refresh01", 13.).tooltip(super::tip("Refresh")).on_click(on_refresh).into_any_element()
+            super::icon_button(id, "refresh01", 13.)
+                .tooltip(super::tip("Refresh"))
+                .on_click(on_refresh)
+                .into_any_element()
         })
         .into_any_element()
 }
@@ -623,4 +730,3 @@ mod tests {
         assert_eq!(Tone::of_usage(100.), Tone::Danger);
     }
 }
-

@@ -24,12 +24,12 @@ pub mod call;
 pub mod desktop;
 #[cfg(unix)]
 pub mod link;
-pub mod proto;
-pub mod watch;
-#[cfg(feature = "coderlabs")]
-pub mod wake;
 #[cfg(all(target_os = "linux", feature = "coderlabs"))]
 pub mod meeting;
+pub mod proto;
+#[cfg(feature = "coderlabs")]
+pub mod wake;
+pub mod watch;
 
 /// `arakun island …`: one request, straight to the island.
 pub fn cli(args: &[String]) -> i32 {
@@ -77,7 +77,12 @@ fn send(msg: proto::ToIsland) -> i32 {
                 0
             }
             Ok(reply) => fail(&reply.message),
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
                 fail("the island is not running; start it with `arakun island-host`")
             }
             Err(e) => fail(&format!("could not reach the island: {e}")),
@@ -110,15 +115,30 @@ pub fn brief(text: &str) -> String {
             continue;
         }
         // A rule or a table's separator says nothing.
-        if fenced || line.chars().all(|c| matches!(c, '-' | '*' | '_' | '=' | '|' | ':' | ' ')) {
+        if fenced
+            || line
+                .chars()
+                .all(|c| matches!(c, '-' | '*' | '_' | '=' | '|' | ':' | ' '))
+        {
             continue;
         }
         let line = line.trim_start_matches(['#', '>', ' ']);
         let line = match line.split_once(' ') {
-            Some((mark, rest)) if matches!(mark, "-" | "*" | "+") || mark.strip_suffix(['.', ')']).is_some_and(|n| n.parse::<u32>().is_ok()) => rest,
+            Some((mark, rest))
+                if matches!(mark, "-" | "*" | "+")
+                    || mark
+                        .strip_suffix(['.', ')'])
+                        .is_some_and(|n| n.parse::<u32>().is_ok()) =>
+            {
+                rest
+            }
             _ => line,
         };
-        for word in unlink(line).replace(['`', '*'], "").replace('|', " ").split_whitespace() {
+        for word in unlink(line)
+            .replace(['`', '*'], "")
+            .replace('|', " ")
+            .split_whitespace()
+        {
             len += word.chars().count() + 1;
             words.push(word.to_string());
         }
@@ -206,10 +226,22 @@ mod host {
     static EXIT: AtomicI32 = AtomicI32::new(0);
 
     enum Msg {
-        Hello { conn: u64, pid: u32, out: std::sync::mpsc::Sender<FromIsland> },
-        App { conn: u64, msg: ToIsland },
-        Gone { conn: u64 },
-        Request { msg: ToIsland, done: oneshot::Sender<Reply> },
+        Hello {
+            conn: u64,
+            pid: u32,
+            out: std::sync::mpsc::Sender<FromIsland>,
+        },
+        App {
+            conn: u64,
+            msg: ToIsland,
+        },
+        Gone {
+            conn: u64,
+        },
+        Request {
+            msg: ToIsland,
+            done: oneshot::Sender<Reply>,
+        },
         #[cfg(feature = "coderlabs")]
         Wake(super::wake::Wake),
         Notice(Alert),
@@ -246,18 +278,21 @@ mod host {
         }
         let noticed = tx.clone();
         super::desktop::start(move |a| drop(noticed.unbounded_send(Msg::Notice(a))));
-        let accepted = std::thread::Builder::new().name("arakun-island".into()).spawn(move || {
-            for (conn, stream) in (1..).zip(listener.incoming().flatten()) {
-                let tx = tx.clone();
-                std::thread::spawn(move || serve(conn, stream, tx));
-            }
-        });
+        let accepted = std::thread::Builder::new()
+            .name("arakun-island".into())
+            .spawn(move || {
+                for (conn, stream) in (1..).zip(listener.incoming().flatten()) {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || serve(conn, stream, tx));
+                }
+            });
         if let Err(e) = accepted {
             eprintln!("arakun: island socket: {e}");
             return 1;
         }
-        gpui::Application::with_platform(crate::ui_zoom::platform()).with_assets(crate::assets::Assets).run(
-            move |cx: &mut App| {
+        gpui::Application::with_platform(crate::ui_zoom::platform())
+            .with_assets(crate::assets::Assets)
+            .run(move |cx: &mut App| {
                 crate::assets::load_fonts(cx);
                 crate::signals::quit_on_signals(cx);
                 if !island::supported(cx) {
@@ -273,13 +308,14 @@ mod host {
                         if cx.update(|cx| !cx.displays().is_empty()) {
                             break;
                         }
-                        cx.background_executor().timer(Duration::from_millis(25)).await;
+                        cx.background_executor()
+                            .timer(Duration::from_millis(25))
+                            .await;
                     }
                     cx.update(|cx| open(cx, rx));
                 })
                 .detach();
-            },
-        );
+            });
         let _ = std::fs::remove_file(&path);
         #[cfg(feature = "coderlabs")]
         super::call::kill_all();
@@ -292,7 +328,14 @@ mod host {
         options.display_id = island::landscape_display(cx);
         for d in cx.displays() {
             let b = d.bounds();
-            eprintln!("arakun: screen {:?} {}x{} at {},{}", d.id(), b.size.width.as_f32(), b.size.height.as_f32(), b.origin.x.as_f32(), b.origin.y.as_f32());
+            eprintln!(
+                "arakun: screen {:?} {}x{} at {},{}",
+                d.id(),
+                b.size.width.as_f32(),
+                b.size.height.as_f32(),
+                b.origin.x.as_f32(),
+                b.origin.y.as_f32()
+            );
         }
         eprintln!("arakun: island on {:?}", options.display_id);
         let opened = cx
@@ -349,7 +392,9 @@ mod host {
             Ok(ToIsland::Hello { pid }) => {
                 let _ = stream.set_read_timeout(None);
                 let (events, presses) = std::sync::mpsc::channel::<FromIsland>();
-                let Ok(writer) = stream.try_clone() else { return };
+                let Ok(writer) = stream.try_clone() else {
+                    return;
+                };
                 std::thread::spawn(move || {
                     let mut writer = writer;
                     for ev in presses {
@@ -358,7 +403,14 @@ mod host {
                         }
                     }
                 });
-                if tx.unbounded_send(Msg::Hello { conn, pid, out: events }).is_err() {
+                if tx
+                    .unbounded_send(Msg::Hello {
+                        conn,
+                        pid,
+                        out: events,
+                    })
+                    .is_err()
+                {
                     return;
                 }
                 for line in lines {
@@ -377,7 +429,8 @@ mod host {
                 let reply = if tx.unbounded_send(Msg::Request { msg, done }).is_err() {
                     Reply::err("the island is shutting down")
                 } else {
-                    futures::executor::block_on(wait).unwrap_or_else(|_| Reply::err("the island did not answer"))
+                    futures::executor::block_on(wait)
+                        .unwrap_or_else(|_| Reply::err("the island did not answer"))
                 };
                 let _ = out.write_all(proto::encode(&reply).as_bytes());
             }
@@ -417,7 +470,11 @@ mod host {
     }
 
     impl Host {
-        fn new(island: Entity<Island>, mut rx: mpsc::UnboundedReceiver<Msg>, cx: &mut Context<Self>) -> Self {
+        fn new(
+            island: Entity<Island>,
+            mut rx: mpsc::UnboundedReceiver<Msg>,
+            cx: &mut Context<Self>,
+        ) -> Self {
             let inbox = cx.spawn(async move |this, cx| {
                 while let Some(msg) = rx.next().await {
                     if this.update(cx, |host, cx| host.handle(msg, cx)).is_err() {
@@ -449,7 +506,10 @@ mod host {
             #[cfg(feature = "coderlabs")]
             let voice = cx.spawn(async move |this, cx| {
                 while let Some((n, out)) = calls.next().await {
-                    if this.update(cx, |host, cx| host.on_call(n, out, cx)).is_err() {
+                    if this
+                        .update(cx, |host, cx| host.on_call(n, out, cx))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -489,29 +549,45 @@ mod host {
             match msg {
                 Msg::Hello { conn, pid, out } => {
                     eprintln!("arakun: island: app {pid} connected");
-                    self.app = Some(AppLink { conn, pid, out, feed: Feed::default() });
+                    self.app = Some(AppLink {
+                        conn,
+                        pid,
+                        out,
+                        feed: Feed::default(),
+                    });
                     self.push(cx);
                 }
-                Msg::App { conn, msg } if self.app.as_ref().is_some_and(|a| a.conn == conn) => match msg {
-                    ToIsland::Feed { feed } => {
-                        if let Some(app) = &mut self.app {
-                            app.feed = feed;
+                Msg::App { conn, msg } if self.app.as_ref().is_some_and(|a| a.conn == conn) => {
+                    match msg {
+                        ToIsland::Feed { feed } => {
+                            if let Some(app) = &mut self.app {
+                                app.feed = feed;
+                            }
+                            self.push(cx);
                         }
-                        self.push(cx);
+                        msg => {
+                            self.apply(msg, cx);
+                        }
                     }
-                    msg => {
-                        self.apply(msg, cx);
-                    }
-                },
+                }
                 Msg::App { .. } => {}
                 Msg::Gone { conn } if self.app.as_ref().is_some_and(|a| a.conn == conn) => {
                     let pid = self.app.take().map(|a| a.pid).unwrap_or_default();
                     eprintln!("arakun: island: app {pid} left");
                     // Its sessions go with it; the headless ones, notices and the island's own stay.
-                    let headless: HashSet<SharedString> = self.headless.rows.iter().map(|r| r.key.clone()).collect();
+                    let headless: HashSet<SharedString> =
+                        self.headless.rows.iter().map(|r| r.key.clone()).collect();
                     let busy = self.headless.rows.iter().any(|r| r.status.active());
                     self.island.update(cx, |island, cx| {
-                        island.retain_alerts(|a| !a.kind.session() || a.key.is_empty() || a.kind == AlertKind::Confirm || headless.contains(&a.key), cx);
+                        island.retain_alerts(
+                            |a| {
+                                !a.kind.session()
+                                    || a.key.is_empty()
+                                    || a.kind == AlertKind::Confirm
+                                    || headless.contains(&a.key)
+                            },
+                            cx,
+                        );
                         if !busy {
                             island.forget_busy(cx);
                         }
@@ -550,7 +626,9 @@ mod host {
                 _ => {}
             }
             self.island.update(cx, |island, cx| match msg {
-                ToIsland::Hello { .. } | ToIsland::Feed { .. } => Reply::err("only a connected app sends that"),
+                ToIsland::Hello { .. } | ToIsland::Feed { .. } => {
+                    Reply::err("only a connected app sends that")
+                }
                 ToIsland::Alert { alert } => {
                     island.alert(alert, cx);
                     Reply::ok("")
@@ -577,7 +655,9 @@ mod host {
                 ToIsland::State => Reply::ok(format!("{:?}", island.phase()).to_lowercase()),
                 ToIsland::Fps => Reply::ok(island.fps_report()),
                 #[cfg(feature = "coderlabs")]
-                ToIsland::Voice { .. } | ToIsland::Meeting { .. } | ToIsland::Wake { .. } => Reply::ok(""),
+                ToIsland::Voice { .. } | ToIsland::Meeting { .. } | ToIsland::Wake { .. } => {
+                    Reply::ok("")
+                }
             })
         }
 
@@ -591,7 +671,9 @@ mod host {
             // calling again if the call already ended.
             #[cfg(feature = "coderlabs")]
             for alert in &alerts {
-                if matches!(alert.kind, AlertKind::Finished | AlertKind::Error) && call::take_launched(&alert.key) {
+                if matches!(alert.kind, AlertKind::Finished | AlertKind::Error)
+                    && call::take_launched(&alert.key)
+                {
                     match &self.call {
                         Some((_, c)) => c.report(alert),
                         None => self.open_call(Some(alert.clone()), cx),
@@ -604,7 +686,10 @@ mod host {
                 if gone {
                     // Answered elsewhere (`arakun agent approve`), or expired.
                     island.retain_alerts(
-                        |a| a.kind != AlertKind::Confirm || pending.contains(&(a.key.to_string(), a.req.to_string())),
+                        |a| {
+                            a.kind != AlertKind::Confirm
+                                || pending.contains(&(a.key.to_string(), a.req.to_string()))
+                        },
                         cx,
                     );
                 }
@@ -619,7 +704,8 @@ mod host {
 
         fn push(&mut self, cx: &mut Context<Self>) {
             let feed = watch::merge(self.app.as_ref().map(|a| &a.feed), &self.headless);
-            self.island.update(cx, |island, cx| island.set_feed(feed, cx));
+            self.island
+                .update(cx, |island, cx| island.set_feed(feed, cx));
         }
 
         fn on_island(&mut self, ev: &IslandEvent, cx: &mut Context<Self>) {
@@ -640,7 +726,10 @@ mod host {
                 },
                 IslandEvent::Pressed => {
                     let just_pressed = self.button_at.is_some_and(|at| at.elapsed() < AFTER_BUTTON);
-                    if self.app.is_none() && !just_pressed && self.island.read(cx).phase() != Phase::Alert {
+                    if self.app.is_none()
+                        && !just_pressed
+                        && self.island.read(cx).phase() != Phase::Alert
+                    {
                         self.launch();
                     }
                 }
@@ -671,7 +760,8 @@ mod host {
                 }
                 (false, Some((_, c))) => {
                     c.stop();
-                    self.island.update(cx, |island, cx| island.set_call(None, cx));
+                    self.island
+                        .update(cx, |island, cx| island.set_call(None, cx));
                     Reply::ok("llamada terminada")
                 }
                 (false, None) => Reply::ok("no hay llamada"),
@@ -679,7 +769,12 @@ mod host {
         }
 
         #[cfg(feature = "coderlabs")]
-        fn meeting(&mut self, on: Option<bool>, people: Option<u32>, cx: &mut Context<Self>) -> Reply {
+        fn meeting(
+            &mut self,
+            on: Option<bool>,
+            people: Option<u32>,
+            cx: &mut Context<Self>,
+        ) -> Reply {
             match (on.unwrap_or(self.meeting.is_none()), self.meeting.take()) {
                 (true, Some(m)) => {
                     let dir = m.dir.display().to_string();
@@ -691,27 +786,46 @@ mod host {
                         let dir = m.dir.display().to_string();
                         self.meeting = Some(m);
                         let levels = self.meeting_levels.clone();
-                        self.island.update(cx, |island, cx| island.set_recording(Some(levels), cx));
+                        self.island
+                            .update(cx, |island, cx| island.set_recording(Some(levels), cx));
                         Reply::ok(format!("grabando la reunión en {dir}"))
                     }
                     Err(e) => Reply::err(e),
                 },
                 (false, Some(m)) => {
                     let dir = m.dir.display().to_string();
-                    self.island.update(cx, |island, cx| island.set_recording(None, cx));
+                    self.island
+                        .update(cx, |island, cx| island.set_recording(None, cx));
                     m.finish(people, |done| {
                         // From another thread: through the socket, like `arakun island` would.
                         let (kind, title, sub) = match &done {
-                            Ok(dir) => (AlertKind::Success, "Reunión lista", dir.join("resumen.md").display().to_string()),
-                            Err(e) => (AlertKind::Failure, "La reunión no se pudo procesar", e.clone()),
+                            Ok(dir) => (
+                                AlertKind::Success,
+                                "Reunión lista",
+                                dir.join("resumen.md").display().to_string(),
+                            ),
+                            Err(e) => (
+                                AlertKind::Failure,
+                                "La reunión no se pudo procesar",
+                                e.clone(),
+                            ),
                         };
                         eprintln!("arakun: reunión: {title}: {sub}");
-                        let alert = Alert { key: SharedString::default(), kind, title: title.into(), subtitle: sub.into(), req: SharedString::default(), image: SharedString::default() };
+                        let alert = Alert {
+                            key: SharedString::default(),
+                            kind,
+                            title: title.into(),
+                            subtitle: sub.into(),
+                            req: SharedString::default(),
+                            image: SharedString::default(),
+                        };
                         if let Err(e) = proto::request(&ToIsland::Alert { alert }) {
                             eprintln!("arakun: reunión: {e}");
                         }
                     });
-                    Reply::ok(format!("reunión terminada; la transcribo y te aviso ({dir})"))
+                    Reply::ok(format!(
+                        "reunión terminada; la transcribo y te aviso ({dir})"
+                    ))
                 }
                 (false, None) => Reply::ok("no estoy grabando ninguna reunión"),
             }
@@ -737,7 +851,8 @@ mod host {
                     c.stop();
                     self.call = None;
                     self.tentative = false;
-                    self.island.update(cx, |island, cx| island.set_call(None, cx));
+                    self.island
+                        .update(cx, |island, cx| island.set_call(None, cx));
                 }
                 _ => {}
             }
@@ -760,10 +875,13 @@ mod host {
             let heard = self.heard.clone();
             self.levels.set_mic(0.);
             self.levels.set_out(0.);
-            let c = Call::start(self.levels.clone(), first, tentative, move |out| drop(heard.unbounded_send((n, out))));
+            let c = Call::start(self.levels.clone(), first, tentative, move |out| {
+                drop(heard.unbounded_send((n, out)))
+            });
             self.call = Some((n, c));
             let levels = self.levels.clone();
-            self.island.update(cx, |island, cx| island.set_call(Some(levels), cx));
+            self.island
+                .update(cx, |island, cx| island.set_call(Some(levels), cx));
         }
 
         /// A session's alert, said in the call; notices about anything else
@@ -783,10 +901,12 @@ mod host {
                 return;
             }
             match out {
-                call::Out::Phase(phase) => self.island.update(cx, |island, cx| island.call_phase(phase, cx)),
-                call::Out::Captions { user, assistant } => {
-                    self.island.update(cx, |island, cx| island.captions(&user, &assistant, cx))
-                }
+                call::Out::Phase(phase) => self
+                    .island
+                    .update(cx, |island, cx| island.call_phase(phase, cx)),
+                call::Out::Captions { user, assistant } => self
+                    .island
+                    .update(cx, |island, cx| island.captions(&user, &assistant, cx)),
                 call::Out::Open(Some(key)) => self.show_in_app(FromIsland::Ver { key: key.into() }),
                 call::Out::Open(None) => match &self.app {
                     Some(app) => focus(app.pid),
@@ -798,7 +918,17 @@ mod host {
                         island.set_call(None, cx);
                         if let Some(e) = error {
                             let subtitle = island::one_line(&e);
-                            island.alert(Alert { key: SharedString::default(), kind: AlertKind::Failure, title: "La llamada falló".into(), subtitle: subtitle.into(), req: SharedString::default(), image: SharedString::default() }, cx);
+                            island.alert(
+                                Alert {
+                                    key: SharedString::default(),
+                                    kind: AlertKind::Failure,
+                                    title: "La llamada falló".into(),
+                                    subtitle: subtitle.into(),
+                                    req: SharedString::default(),
+                                    image: SharedString::default(),
+                                },
+                                cx,
+                            );
                         }
                     });
                 }
@@ -823,7 +953,8 @@ mod host {
             self.launched = Some(Instant::now());
             let started = std::env::current_exe().and_then(|exe| {
                 let exe = exe.to_string_lossy();
-                let mut cmd = std::process::Command::new(exe.strip_suffix(" (deleted)").unwrap_or(&exe));
+                let mut cmd =
+                    std::process::Command::new(exe.strip_suffix(" (deleted)").unwrap_or(&exe));
                 cmd.stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
@@ -891,7 +1022,10 @@ mod tests {
         }
         assert!(headless::root().starts_with(std::env::var_os("XDG_DATA_HOME").unwrap()));
         // A host stand-in: `alive` wants "agent-host" in its command line.
-        let mut host = std::process::Command::new("bash").args(["-c", "exec -a arakun-agent-host sleep 30"]).spawn().unwrap();
+        let mut host = std::process::Command::new("bash")
+            .args(["-c", "exec -a arakun-agent-host sleep 30"])
+            .spawn()
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
         let write = |id: &str, req: &str| {
             let now = crate::model::unix_now();
@@ -914,14 +1048,29 @@ mod tests {
         let scan = super::watch::scan();
         let seen = super::watch::Watch::default().update(&scan);
         assert_eq!(seen.alerts.len(), 2);
-        assert!(seen.alerts.iter().all(|a| a.kind == crate::island::AlertKind::Confirm));
+        assert!(
+            seen.alerts
+                .iter()
+                .all(|a| a.kind == crate::island::AlertKind::Confirm)
+        );
         super::host::answer("h1", "r1", true).unwrap();
         super::host::answer("h2", "r2", false).unwrap();
-        assert_eq!(headless::read_pending("h1").unwrap().answer, Some(Answer::Approved));
-        assert_eq!(headless::read_pending("h2").unwrap().answer, Some(Answer::Denied));
+        assert_eq!(
+            headless::read_pending("h1").unwrap().answer,
+            Some(Answer::Approved)
+        );
+        assert_eq!(
+            headless::read_pending("h2").unwrap().answer,
+            Some(Answer::Denied)
+        );
         // Answered once only.
         assert!(super::host::answer("h1", "r1", false).is_err());
-        assert!(super::watch::scan().sessions.iter().all(|(_, _, p)| p.is_none()));
+        assert!(
+            super::watch::scan()
+                .sessions
+                .iter()
+                .all(|(_, _, p)| p.is_none())
+        );
         let _ = host.kill();
         let _ = host.wait();
     }

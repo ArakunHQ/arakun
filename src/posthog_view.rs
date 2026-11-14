@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement as _, Pixels, Point, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Point, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    Window, div, px,
 };
 
 use crate::input::{InputEvent, TextInput};
@@ -84,14 +85,17 @@ impl EventEmitter<PostHogEvent> for PostHogView {}
 impl PostHogView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let key_input = cx.new(|cx| TextInput::new("phx_…", cx).mono().secret());
-        let sub = cx.subscribe(&key_input, |this: &mut Self, _, ev: &InputEvent, cx| match ev {
-            InputEvent::Submit => this.connect_key(cx),
-            InputEvent::Changed => {
-                this.connect_note = None;
-                cx.notify();
-            }
-            _ => {}
-        });
+        let sub = cx.subscribe(
+            &key_input,
+            |this: &mut Self, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Submit => this.connect_key(cx),
+                InputEvent::Changed => {
+                    this.connect_note = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
         Self {
             root: None,
             sessions: posthog::sessions(),
@@ -141,7 +145,9 @@ impl PostHogView {
         let root = root.to_path_buf();
         self._scan = Some(cx.spawn(async move |this, cx| {
             let scanned = root.clone();
-            let keys = cx.background_spawn(async move { posthog::scan::keys(&scanned) }).await;
+            let keys = cx
+                .background_spawn(async move { posthog::scan::keys(&scanned) })
+                .await;
             this.update(cx, |this, cx| {
                 if this.root.as_ref() == Some(&root) {
                     this.keys = Some(keys);
@@ -157,17 +163,29 @@ impl PostHogView {
     /// Opening the tab: the project list and the overview, if old.
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
         let now = crate::model::unix_now();
-        if !self.sessions.is_empty() && self.directory.as_ref().is_none_or(|d| now.saturating_sub(d.fetched_at) >= DIRECTORY_STALE) {
+        if !self.sessions.is_empty()
+            && self
+                .directory
+                .as_ref()
+                .is_none_or(|d| now.saturating_sub(d.fetched_at) >= DIRECTORY_STALE)
+        {
             self.refresh_directory(cx);
         }
-        if self.current.is_some() && self.overview.as_ref().is_none_or(|o| now.saturating_sub(o.fetched_at) >= STALE) {
+        if self.current.is_some()
+            && self
+                .overview
+                .as_ref()
+                .is_none_or(|o| now.saturating_sub(o.fetched_at) >= STALE)
+        {
             self.refresh(false, cx);
         }
     }
 
     /// Picks the project for `root`: its remembered link, else its keys.
     fn resolve(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.root.clone() else { return };
+        let Some(root) = self.root.clone() else {
+            return;
+        };
         if self.sessions.is_empty() {
             return;
         }
@@ -183,8 +201,18 @@ impl PostHogView {
         let keys = self.keys.clone().unwrap_or_default();
         match posthog::resolve(link.as_ref(), &keys, &dir.projects) {
             Resolved::One(p, auto) => {
-                if link.as_ref().is_none_or(|l| l.session != p.session || l.project != p.id) {
-                    posthog::set_link(&root, Some(posthog::Link { session: p.session.clone(), project: p.id, auto }));
+                if link
+                    .as_ref()
+                    .is_none_or(|l| l.session != p.session || l.project != p.id)
+                {
+                    posthog::set_link(
+                        &root,
+                        Some(posthog::Link {
+                            session: p.session.clone(),
+                            project: p.id,
+                            auto,
+                        }),
+                    );
                 }
                 self.candidates.clear();
                 self.auto = auto;
@@ -220,7 +248,14 @@ impl PostHogView {
         self.menu = None;
         self.page = Page::Main;
         if let Some(root) = &self.root {
-            posthog::set_link(root, Some(posthog::Link { session: p.session.clone(), project: p.id, auto: false }));
+            posthog::set_link(
+                root,
+                Some(posthog::Link {
+                    session: p.session.clone(),
+                    project: p.id,
+                    auto: false,
+                }),
+            );
         }
         self.auto = false;
         self.candidates.clear();
@@ -236,7 +271,9 @@ impl PostHogView {
         if self.loading || (manual && now.saturating_sub(self.asked_at) < GAP) {
             return;
         }
-        let Some(p) = self.current.clone() else { return };
+        let Some(p) = self.current.clone() else {
+            return;
+        };
         let Some(s) = self.session_of(&p) else {
             self.current = None;
             self.resolve(cx);
@@ -248,7 +285,11 @@ impl PostHogView {
         let previous = self.overview.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
             let project = p.clone();
-            let got = cx.background_spawn(async move { posthog::load_overview(s, &project, previous.as_ref()) }).await;
+            let got = cx
+                .background_spawn(
+                    async move { posthog::load_overview(s, &project, previous.as_ref()) },
+                )
+                .await;
             this.update(cx, |this, cx| {
                 this.loading = false;
                 if this.current.as_ref() != Some(&p) {
@@ -276,13 +317,20 @@ impl PostHogView {
         cx.notify();
         let sessions = self.sessions.clone();
         self._dir = Some(cx.spawn(async move |this, cx| {
-            let dir = cx.background_spawn(async move { posthog::load_directory(&sessions) }).await;
+            let dir = cx
+                .background_spawn(async move { posthog::load_directory(&sessions) })
+                .await;
             this.update(cx, |this, cx| {
                 this.dir_loading = false;
                 this.directory = Some(dir);
                 this.sessions = posthog::sessions();
                 // A project that is gone, or a better match, shows up now.
-                if this.current.as_ref().is_none_or(|c| !this.directory.as_ref().is_some_and(|d| d.projects.contains(c))) {
+                if this.current.as_ref().is_none_or(|c| {
+                    !this
+                        .directory
+                        .as_ref()
+                        .is_some_and(|d| d.projects.contains(c))
+                }) {
                     this.current = None;
                 }
                 this.resolve(cx);
@@ -298,15 +346,30 @@ impl PostHogView {
             return;
         }
         let n = o.hourly.len();
-        let labels: Vec<SharedString> =
-            (0..n).map(|i| match n - 1 - i { 0 => "This hour".into(), 1 => "An hour ago".into(), h => format!("{h} hours ago").into() }).collect();
+        let labels: Vec<SharedString> = (0..n)
+            .map(|i| match n - 1 - i {
+                0 => "This hour".into(),
+                1 => "An hour ago".into(),
+                h => format!("{h} hours ago").into(),
+            })
+            .collect();
         let ticks = vec!["24 h ago".into(), "12 h ago".into(), "Now".into()];
         let series = vec![
-            Series { name: "Events".into(), color: Tone::Info.color(), values: o.hourly.iter().map(|h| h.0 as f64).collect() },
-            Series { name: "Visitors".into(), color: Tone::Accent.color(), values: o.hourly.iter().map(|h| h.1 as f64).collect() },
+            Series {
+                name: "Events".into(),
+                color: Tone::Info.color(),
+                values: o.hourly.iter().map(|h| h.0 as f64).collect(),
+            },
+            Series {
+                name: "Visitors".into(),
+                color: Tone::Accent.color(),
+                values: o.hourly.iter().map(|h| h.1 as f64).collect(),
+            },
         ];
         let fmt: Format = std::rc::Rc::new(|v| count(v as u64));
-        self.chart.update(cx, |c, cx| c.set(series, labels, ticks, vec![None; n], fmt.clone(), fmt, cx));
+        self.chart.update(cx, |c, cx| {
+            c.set(series, labels, ticks, vec![None; n], fmt.clone(), fmt, cx)
+        });
     }
 
     fn open(&self, path: &str, cx: &mut Context<Self>) {
@@ -348,7 +411,9 @@ fn section(title: &str, meta: Option<String>) -> gpui::Div {
             .items_baseline()
             .gap(px(8.))
             .child(ui::heading(title.to_string()))
-            .when_some(meta, |d, m| d.child(ui::text(Type::Caption, theme::text_faint(), m))),
+            .when_some(meta, |d, m| {
+                d.child(ui::text(Type::Caption, theme::text_faint(), m))
+            }),
     )
 }
 
@@ -371,18 +436,37 @@ impl PostHogView {
                 .rounded(px(ui::RADIUS))
                 .cursor_pointer()
                 .hover(|d| d.bg(theme::fill_hover()))
-                .child(ui::text(Type::Body, theme::text_muted(), format!("{} · {} · ", p.email, p.org)))
+                .child(ui::text(
+                    Type::Body,
+                    theme::text_muted(),
+                    format!("{} · {} · ", p.email, p.org),
+                ))
                 .child(ui::text(Type::Body, theme::text(), p.name.clone()))
-                .when(self.auto, |d| d.child(ui::badge("key found", Tone::Neutral)))
+                .when(self.auto, |d| {
+                    d.child(ui::badge("key found", Tone::Neutral))
+                })
                 .child(icon("unfold-more", 14.).text_color(theme::text_subtle()))
                 .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                    this.menu = if this.menu.is_some() { None } else { Some(ev.position() + gpui::point(px(-8.), px(14.))) };
+                    this.menu = if this.menu.is_some() {
+                        None
+                    } else {
+                        Some(ev.position() + gpui::point(px(-8.), px(14.)))
+                    };
                     cx.notify();
                 }))
                 .into_any_element(),
-            None => ui::text(Type::Body, theme::text_subtle(), "Product analytics, errors and flags of this project").into_any_element(),
+            None => ui::text(
+                Type::Body,
+                theme::text_subtle(),
+                "Product analytics, errors and flags of this project",
+            )
+            .into_any_element(),
         };
-        let updated = self.overview.as_ref().filter(|_| self.current.is_some()).map(|o| crate::memory::ago(o.fetched_at, now));
+        let updated = self
+            .overview
+            .as_ref()
+            .filter(|_| self.current.is_some())
+            .map(|o| crate::memory::ago(o.fetched_at, now));
         let can_refresh = self.current.is_some() && now.saturating_sub(self.asked_at) >= GAP;
         let refresh = ui::refresh_control(
             "ph-refresh",
@@ -399,18 +483,32 @@ impl PostHogView {
         let accounts = ui::button_with(
             "ph-accounts",
             Some("user"),
-            if self.page == Page::Accounts { "Back to the project" } else { "Accounts" },
+            if self.page == Page::Accounts {
+                "Back to the project"
+            } else {
+                "Accounts"
+            },
             ButtonKind::Outline,
             true,
         )
         .on_click(cx.listener(|this, _, _, cx| {
-            this.page = if this.page == Page::Accounts { Page::Main } else { Page::Accounts };
+            this.page = if this.page == Page::Accounts {
+                Page::Main
+            } else {
+                Page::Accounts
+            };
             this.menu = None;
             cx.notify();
         }));
         let open = self.current.as_ref().map(|_| {
-            ui::button_with("ph-open", Some("link-square02"), "Open in PostHog", ButtonKind::Outline, true)
-                .on_click(cx.listener(|this, _, _, cx| this.open("", cx)))
+            ui::button_with(
+                "ph-open",
+                Some("link-square02"),
+                "Open in PostHog",
+                ButtonKind::Outline,
+                true,
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.open("", cx)))
         });
         div()
             .flex()
@@ -435,8 +533,15 @@ impl PostHogView {
     }
 
     /// Projects to pick from, grouped by account and organization.
-    fn project_rows(&self, id: &'static str, menu: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(dir) = &self.directory else { return Vec::new() };
+    fn project_rows(
+        &self,
+        id: &'static str,
+        menu: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let Some(dir) = &self.directory else {
+            return Vec::new();
+        };
         let mut rows = Vec::new();
         let mut group = String::new();
         for (i, p) in dir.projects.iter().enumerate() {
@@ -446,13 +551,22 @@ impl PostHogView {
                 group = g;
             }
             let on = self.current.as_ref() == Some(p);
-            let matched = self.candidates.contains(p) || self.keys.as_ref().is_some_and(|k| k.contains(&p.api_token));
+            let matched = self.candidates.contains(p)
+                || self.keys.as_ref().is_some_and(|k| k.contains(&p.api_token));
             let pick = p.clone();
             rows.push(
                 ui::choice_row((id, i), on)
                     .child(div().flex_1().min_w_0().truncate().child(p.name.clone()))
-                    .when(matched, |d| d.child(ui::badge("key in project", Tone::Accent)))
-                    .when(!menu, |d| d.child(ui::text(Type::Caption, theme::text_faint(), p.host.trim_start_matches("https://").to_string())))
+                    .when(matched, |d| {
+                        d.child(ui::badge("key in project", Tone::Accent))
+                    })
+                    .when(!menu, |d| {
+                        d.child(ui::text(
+                            Type::Caption,
+                            theme::text_faint(),
+                            p.host.trim_start_matches("https://").to_string(),
+                        ))
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| this.pick(pick.clone(), cx)))
                     .into_any_element(),
             );
@@ -470,18 +584,26 @@ impl PostHogView {
                     .children(self.project_rows("ph-menu-row", true, cx))
                     .child(ui::menu_divider())
                     .child(
-                        ui::menu_item("ph-menu-reload", "refresh01", "Read the project list again", false, !self.dir_loading).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.menu = None;
-                                this.refresh_directory(cx);
-                            },
-                        )),
+                        ui::menu_item(
+                            "ph-menu-reload",
+                            "refresh01",
+                            "Read the project list again",
+                            false,
+                            !self.dir_loading,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.menu = None;
+                            this.refresh_directory(cx);
+                        })),
                     )
-                    .child(ui::menu_item("ph-menu-accounts", "user", "Accounts…", false, true).on_click(cx.listener(|this, _, _, cx| {
-                        this.menu = None;
-                        this.page = Page::Accounts;
-                        cx.notify();
-                    }))),
+                    .child(
+                        ui::menu_item("ph-menu-accounts", "user", "Accounts…", false, true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.menu = None;
+                                this.page = Page::Accounts;
+                                cx.notify();
+                            })),
+                    ),
             )
             .into_any_element()
     }
@@ -490,18 +612,27 @@ impl PostHogView {
     fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let waiting = self.keys.is_none() || (self.directory.is_none() && self.dir_loading);
         if waiting {
-            return ui::loading("ph-scan", "Looking for this project's PostHog key…").into_any_element();
+            return ui::loading("ph-scan", "Looking for this project's PostHog key…")
+                .into_any_element();
         }
-        let name = self.root.as_ref().and_then(|r| r.file_name()).map_or("this project".into(), |n| n.to_string_lossy().into_owned());
+        let name = self
+            .root
+            .as_ref()
+            .and_then(|r| r.file_name())
+            .map_or("this project".into(), |n| n.to_string_lossy().into_owned());
         let keys = self.keys.as_ref().map_or(0, Vec::len);
         let why = match (keys, self.candidates.len()) {
-            (0, _) => format!("No PostHog project key (phc_…) turned up in {name}'s files. Pick its project once; Arakun remembers it."),
+            (0, _) => format!(
+                "No PostHog project key (phc_…) turned up in {name}'s files. Pick its project once; Arakun remembers it."
+            ),
             (_, 0) => format!(
                 "{name} has {} PostHog key{} that none of your accounts can see. Add the account that owns it, or pick a project.",
                 keys,
                 if keys == 1 { "" } else { "s" }
             ),
-            (_, n) => format!("{name} has the keys of {n} projects. Pick the one this tab shows; Arakun remembers it."),
+            (_, n) => format!(
+                "{name} has the keys of {n} projects. Pick the one this tab shows; Arakun remembers it."
+            ),
         };
         let rows = self.project_rows("ph-pick-row", false, cx);
         let empty = rows.is_empty();
@@ -513,7 +644,11 @@ impl PostHogView {
             .child(ui::heading(format!("Which PostHog project is {name}?")))
             .child(ui::text(Type::Body, theme::text_muted(), why))
             .when(empty, |d| {
-                d.child(quiet(if self.dir_loading { "Reading your projects…" } else { "Your accounts don't see any project yet." }))
+                d.child(quiet(if self.dir_loading {
+                    "Reading your projects…"
+                } else {
+                    "Your accounts don't see any project yet."
+                }))
             })
             .child(
                 div()
@@ -549,7 +684,10 @@ impl PostHogView {
             Some(ApiError::RateLimited(until)) => ui::empty_state(
                 "clock01",
                 "Waiting on PostHog's query budget",
-                &format!("This account used its queries for the hour. The tab reads again after {}.", posthog::clock(*until)),
+                &format!(
+                    "This account used its queries for the hour. The tab reads again after {}.",
+                    posthog::clock(*until)
+                ),
                 None,
             ),
             Some(ApiError::Failed(e)) => ui::empty_state(
@@ -571,7 +709,15 @@ impl PostHogView {
 
     fn render_stats(&self, o: &Overview) -> AnyElement {
         let cell = |body: gpui::Div, last: bool| {
-            div().flex_1().min_w(px(170.)).px(px(16.)).py(px(14.)).when(!last, |d| d.border_r_1().border_color(theme::border_subtle())).child(body)
+            div()
+                .flex_1()
+                .min_w(px(170.))
+                .px(px(16.))
+                .py(px(14.))
+                .when(!last, |d| {
+                    d.border_r_1().border_color(theme::border_subtle())
+                })
+                .child(body)
         };
         let live_flags = o.flags.iter().filter(|f| f.active).count();
         div()
@@ -580,10 +726,41 @@ impl PostHogView {
             .border_t_1()
             .border_b_1()
             .border_color(theme::border_subtle())
-            .child(cell(ui::stat("Events · 24 h", count(o.events), format!("{} pageviews", count(o.pageviews))), false))
-            .child(cell(ui::stat("Unique visitors · 24 h", count(o.visitors), "persons with an event"), false))
-            .child(cell(ui::stat("Error issues · 7 days", o.issues.len().to_string(), format!("{} exceptions", count(o.issues.iter().map(|i| i.count).sum()))), false))
-            .child(cell(ui::stat("Feature flags", o.flags.len().to_string(), format!("{live_flags} on")), true))
+            .child(cell(
+                ui::stat(
+                    "Events · 24 h",
+                    count(o.events),
+                    format!("{} pageviews", count(o.pageviews)),
+                ),
+                false,
+            ))
+            .child(cell(
+                ui::stat(
+                    "Unique visitors · 24 h",
+                    count(o.visitors),
+                    "persons with an event",
+                ),
+                false,
+            ))
+            .child(cell(
+                ui::stat(
+                    "Error issues · 7 days",
+                    o.issues.len().to_string(),
+                    format!(
+                        "{} exceptions",
+                        count(o.issues.iter().map(|i| i.count).sum())
+                    ),
+                ),
+                false,
+            ))
+            .child(cell(
+                ui::stat(
+                    "Feature flags",
+                    o.flags.len().to_string(),
+                    format!("{live_flags} on"),
+                ),
+                true,
+            ))
             .into_any_element()
     }
 
@@ -595,7 +772,11 @@ impl PostHogView {
         }
         for (i, issue) in o.issues.iter().enumerate() {
             let path = format!("/error_tracking/{}", issue.id);
-            let title = if issue.kind.is_empty() { "Exception".to_string() } else { issue.kind.clone() };
+            let title = if issue.kind.is_empty() {
+                "Exception".to_string()
+            } else {
+                issue.kind.clone()
+            };
             list = list.child(
                 div()
                     .id(("ph-issue", i))
@@ -615,12 +796,42 @@ impl PostHogView {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(div().truncate().ty(Type::Body).text_color(theme::text()).child(title))
-                            .child(div().truncate().ty(Type::Mono).text_color(theme::text_subtle()).child(issue.message.clone())),
+                            .child(
+                                div()
+                                    .truncate()
+                                    .ty(Type::Body)
+                                    .text_color(theme::text())
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .ty(Type::Mono)
+                                    .text_color(theme::text_subtle())
+                                    .child(issue.message.clone()),
+                            ),
                     )
                     .child(ui::text(Type::Label, theme::text(), count(issue.count)))
-                    .child(ui::text(Type::Caption, theme::text_faint(), format!("{} users", count(issue.users))).w(px(70.)))
-                    .child(ui::text(Type::Caption, theme::text_subtle(), if issue.last_seen > 0 { crate::memory::ago(issue.last_seen, now) } else { String::new() }).w(px(80.)))
+                    .child(
+                        ui::text(
+                            Type::Caption,
+                            theme::text_faint(),
+                            format!("{} users", count(issue.users)),
+                        )
+                        .w(px(70.)),
+                    )
+                    .child(
+                        ui::text(
+                            Type::Caption,
+                            theme::text_subtle(),
+                            if issue.last_seen > 0 {
+                                crate::memory::ago(issue.last_seen, now)
+                            } else {
+                                String::new()
+                            },
+                        )
+                        .w(px(80.)),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx))),
             );
         }
@@ -628,7 +839,10 @@ impl PostHogView {
     }
 
     fn render_flags(&self, o: &Overview, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = section("Feature flags", Some(format!("{} · live first", o.flags.len())));
+        let mut list = section(
+            "Feature flags",
+            Some(format!("{} · live first", o.flags.len())),
+        );
         if o.flags.is_empty() {
             list = list.child(quiet("No feature flags in this project."));
         }
@@ -646,19 +860,45 @@ impl PostHogView {
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::fill_hover()))
                     .when(!f.active, |d| d.opacity(0.6))
-                    .child(ui::status_dot(if f.active { "On" } else { "Off" }, if f.active { Tone::Success } else { Tone::Neutral }).w(px(44.)))
+                    .child(
+                        ui::status_dot(
+                            if f.active { "On" } else { "Off" },
+                            if f.active {
+                                Tone::Success
+                            } else {
+                                Tone::Neutral
+                            },
+                        )
+                        .w(px(44.)),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(div().truncate().ty(Type::Mono).text_color(theme::text()).child(f.key.clone()))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .ty(Type::Mono)
+                                    .text_color(theme::text())
+                                    .child(f.key.clone()),
+                            )
                             .when(!f.name.is_empty() && f.name != f.key, |d| {
-                                d.child(div().truncate().ty(Type::Caption).text_color(theme::text_faint()).child(f.name.clone()))
+                                d.child(
+                                    div()
+                                        .truncate()
+                                        .ty(Type::Caption)
+                                        .text_color(theme::text_faint())
+                                        .child(f.name.clone()),
+                                )
                             }),
                     )
-                    .child(ui::text(Type::Caption, theme::text_subtle(), f.rollout.clone()))
+                    .child(ui::text(
+                        Type::Caption,
+                        theme::text_subtle(),
+                        f.rollout.clone(),
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx))),
             );
         }
@@ -695,8 +935,18 @@ impl PostHogView {
             notes.push(notice("alert-circle", Tone::Warning, p.clone()));
         }
         let traffic = section("Traffic", Some("last 24 hours, per hour".into()))
-            .child(div().flex().gap(px(16.)).child(ui::legend("Events", Tone::Info.color())).child(ui::legend("Visitors", Tone::Accent.color())))
-            .child(if o.hourly.len() == posthog::HOURS { self.chart.clone().into_any_element() } else { quiet("No hourly numbers yet.").into_any_element() });
+            .child(
+                div()
+                    .flex()
+                    .gap(px(16.))
+                    .child(ui::legend("Events", Tone::Info.color()))
+                    .child(ui::legend("Visitors", Tone::Accent.color())),
+            )
+            .child(if o.hourly.len() == posthog::HOURS {
+                self.chart.clone().into_any_element()
+            } else {
+                quiet("No hourly numbers yet.").into_any_element()
+            });
         div()
             .flex()
             .flex_col()
@@ -704,13 +954,26 @@ impl PostHogView {
             .children(notes)
             .child(self.render_stats(o))
             .child(traffic)
-            .child(div().flex().flex_wrap().items_start().gap(px(40.)).child(self.render_issues(o, cx)).child(self.render_flags(o, cx)))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .gap(px(40.))
+                    .child(self.render_issues(o, cx))
+                    .child(self.render_flags(o, cx)),
+            )
             .into_any_element()
     }
 
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.sessions.is_empty() {
-            return div().flex().justify_center().pt(px(24.)).child(self.render_connect(true, cx)).into_any_element();
+            return div()
+                .flex()
+                .justify_center()
+                .pt(px(24.))
+                .child(self.render_connect(true, cx))
+                .into_any_element();
         }
         if self.page == Page::Accounts {
             return self.render_accounts(cx);
@@ -718,7 +981,12 @@ impl PostHogView {
         match (&self.current, &self.overview) {
             (None, _) => self.render_picker(cx),
             (Some(_), Some(o)) => self.render_overview(o, cx),
-            (Some(_), None) => div().flex().justify_center().pt(px(48.)).child(self.render_state(cx)).into_any_element(),
+            (Some(_), None) => div()
+                .flex()
+                .justify_center()
+                .pt(px(48.))
+                .child(self.render_state(cx))
+                .into_any_element(),
         }
     }
 }
@@ -772,7 +1040,12 @@ impl Render for PostHogView {
                             }),
                         ),
                 )
-                .child(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(self.render_menu(cx))))
+                .child(gpui::deferred(
+                    gpui::anchored()
+                        .position(at)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(self.render_menu(cx)),
+                ))
             })
     }
 }

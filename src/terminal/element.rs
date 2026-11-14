@@ -360,15 +360,17 @@ fn build_frame(term: &super::model::AlacTerm, focused: bool) -> Frame {
             if flags.contains(Flags::DIM) {
                 color.a *= 0.66;
             }
-            let underline = flags.intersects(Flags::ALL_UNDERLINES).then(|| UnderlineStyle {
-                thickness: px(1.),
-                color: Some(
-                    cell.underline_color()
-                        .map(|c| resolver.resolve(c))
-                        .unwrap_or(color),
-                ),
-                wavy: flags.contains(Flags::UNDERCURL),
-            });
+            let underline = flags
+                .intersects(Flags::ALL_UNDERLINES)
+                .then(|| UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(
+                        cell.underline_color()
+                            .map(|c| resolver.resolve(c))
+                            .unwrap_or(color),
+                    ),
+                    wavy: flags.contains(Flags::UNDERCURL),
+                });
             if !wide && push_block(&mut blocks, vline, col, cell.c, color) {
                 if seg.is_some() {
                     gap += 1;
@@ -524,7 +526,10 @@ impl Element for TerminalElement {
                 f32::from(cell_width),
                 f32::from(line_height),
             );
-            let origin = point(snap(bounds.origin.x + px(pad_x)), snap(bounds.origin.y + px(pad_y)));
+            let origin = point(
+                snap(bounds.origin.x + px(pad_x)),
+                snap(bounds.origin.y + px(pad_y)),
+            );
             (build_frame(&term, focused), origin, columns, lines)
         });
 
@@ -581,13 +586,19 @@ impl Element for TerminalElement {
         for r in &frame.rects {
             let (left, right) = (x_at(r.start * 8), x_at(r.end * 8));
             let (top, bottom) = (y_at(r.line, 0), y_at(r.line, 8));
-            rects.push(Bounds::new(point(left, top), size(right - left, bottom - top)));
+            rects.push(Bounds::new(
+                point(left, top),
+                size(right - left, bottom - top),
+            ));
             rect_colors.push(r.color);
         }
         for b in &frame.blocks {
             let (left, right) = (x_at(b.x0), x_at(b.x1));
             let (top, bottom) = (y_at(b.line, b.y0), y_at(b.line, b.y1));
-            rects.push(Bounds::new(point(left, top), size(right - left, bottom - top)));
+            rects.push(Bounds::new(
+                point(left, top),
+                size(right - left, bottom - top),
+            ));
             rect_colors.push(b.color);
         }
 
@@ -600,7 +611,11 @@ impl Element for TerminalElement {
                 let (start, end) = if range.is_block {
                     (range.start.column.0, range.end.column.0 + 1)
                 } else {
-                    let start = if line == first { range.start.column.0 } else { 0 };
+                    let start = if line == first {
+                        range.start.column.0
+                    } else {
+                        0
+                    };
                     let end = if line == last {
                         range.end.column.0 + 1
                     } else {
@@ -642,10 +657,9 @@ impl Element for TerminalElement {
                 });
             let bounds = match c.shape {
                 CursorShape::Beam => Bounds::new(o, size(px(2.), line_height)),
-                CursorShape::Underline => Bounds::new(
-                    point(o.x, o.y + line_height - px(2.)),
-                    size(width, px(2.)),
-                ),
+                CursorShape::Underline => {
+                    Bounds::new(point(o.x, o.y + line_height - px(2.)), size(width, px(2.)))
+                }
                 _ => Bounds::new(o, size(width, line_height)),
             };
             (bounds, c.shape, text)

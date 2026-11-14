@@ -15,7 +15,9 @@ use gpui::{AppContext as _, Context, Entity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Entry, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolStatus, content_text, str_of, unix_now};
+use super::{
+    Entry, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolStatus, content_text, str_of, unix_now,
+};
 
 /// Where AIR's left-out Agent call is stood in for in the transcript that started the subagent.
 const MARKER: &str = "subagent:";
@@ -120,7 +122,9 @@ pub struct Subagent {
 impl Subagent {
     /// How long it ran, or has been running.
     pub fn elapsed_secs(&self) -> u64 {
-        self.ended.unwrap_or_else(unix_now).saturating_sub(self.started)
+        self.ended
+            .unwrap_or_else(unix_now)
+            .saturating_sub(self.started)
     }
 
     /// Whether `id` names it: its own id or the Agent call that started it.
@@ -163,7 +167,11 @@ fn marker_call(id: &str, name: &str, task: &str) -> ToolCall {
 fn text_of(v: &Value) -> Option<String> {
     let text = match v {
         Value::String(s) => s.clone(),
-        Value::Array(blocks) => blocks.iter().map(content_text).collect::<Vec<_>>().join("\n"),
+        Value::Array(blocks) => blocks
+            .iter()
+            .map(content_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
         Value::Object(_) => content_text(v),
         _ => return None,
     };
@@ -183,7 +191,10 @@ impl Thread {
     }
 
     pub fn running_subagents(&self) -> usize {
-        self.subagents.iter().filter(|s| s.state.is_running()).count()
+        self.subagents
+            .iter()
+            .filter(|s| s.state.is_running())
+            .count()
     }
 
     /// The user has the session back while the agent still works: subagents
@@ -241,7 +252,10 @@ impl Thread {
             }
             return;
         }
-        let elapsed = self.turn_started.take().map(|t| t.elapsed().as_millis() as u64);
+        let elapsed = self
+            .turn_started
+            .take()
+            .map(|t| t.elapsed().as_millis() as u64);
         if let Some(ix) = self.turn_user
             && let Some(Entry::User { elapsed_ms, .. }) = self.entries.get_mut(ix)
             && elapsed.is_some()
@@ -288,7 +302,10 @@ impl Thread {
         let mut t = self.transcript(cx);
         t.entries = entries;
         self.show_transcript(t, status, cx);
-        self.turn_user = self.entries.iter().position(|e| matches!(e, Entry::User { .. }));
+        self.turn_user = self
+            .entries
+            .iter()
+            .position(|e| matches!(e, Entry::User { .. }));
     }
 
     // ---- updates from the agent ------------------------------------------
@@ -299,7 +316,10 @@ impl Thread {
             return;
         }
         let kind = u["sessionUpdate"].as_str().unwrap_or("");
-        if matches!(kind, "subagent_spawned" | "subagent_state_update" | "subagent_update") {
+        if matches!(
+            kind,
+            "subagent_spawned" | "subagent_state_update" | "subagent_update"
+        ) {
             return self.subagent_update(u, Some(sid), cx);
         }
         let Some(ix) = self.subagents.iter().position(|s| s.id == sid) else {
@@ -309,14 +329,26 @@ impl Thread {
         // transcript, which mirrored the subagent already: the child session is it.
         if let Some(call) = str_of(&u["_meta"]["claudeCode"], "parentToolUseId")
             && self.subagents[ix].call.is_none()
-            && let Some(m) = self.subagents.iter().position(|s| s.mirrored && s.id == call)
+            && let Some(m) = self
+                .subagents
+                .iter()
+                .position(|s| s.mirrored && s.id == call)
         {
             self.subagents.remove(m);
-            let ix = self.subagents.iter().position(|s| s.id == sid).unwrap_or(ix);
+            let ix = self
+                .subagents
+                .iter()
+                .position(|s| s.id == sid)
+                .unwrap_or(ix);
             self.subagents[ix].call = Some(call);
             cx.emit(ThreadEvent::SubagentsChanged { spawned: None });
         }
-        let Some(child) = self.subagents.iter().find(|s| s.id == sid).map(|s| s.thread.clone()) else {
+        let Some(child) = self
+            .subagents
+            .iter()
+            .find(|s| s.id == sid)
+            .map(|s| s.thread.clone())
+        else {
             return;
         };
         child.update(cx, |c, cx| c.update(u, cx));
@@ -324,13 +356,25 @@ impl Thread {
 
     /// `subagent_spawned` and `subagent_state_update` (AIR), `subagent_update`
     /// (the RFD); `host` is the subagent whose session it came on, if any.
-    pub(super) fn subagent_update(&mut self, u: &Value, host: Option<&str>, cx: &mut Context<Self>) {
+    pub(super) fn subagent_update(
+        &mut self,
+        u: &Value,
+        host: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         match u["sessionUpdate"].as_str() {
             Some("subagent_spawned") => {
-                let Some(id) = str_of(u, "subagentSessionId") else { return };
+                let Some(id) = str_of(u, "subagentSessionId") else {
+                    return;
+                };
                 let task = str_of(u, "task").unwrap_or_default();
-                let name = str_of(u, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Subagent".into());
-                let prompt = u.get("prompt").and_then(text_of).or_else(|| Some(task.clone()).filter(|t| !t.trim().is_empty()));
+                let name = str_of(u, "name")
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| "Subagent".into());
+                let prompt = u
+                    .get("prompt")
+                    .and_then(text_of)
+                    .or_else(|| Some(task.clone()).filter(|t| !t.trim().is_empty()));
                 self.spawn_subagent(id, name, task, prompt, host, true, cx);
             }
             Some("subagent_state_update") => {
@@ -340,13 +384,26 @@ impl Thread {
                 }
             }
             Some("subagent_update") => {
-                let Some(id) = str_of(u, "sessionId") else { return };
+                let Some(id) = str_of(u, "sessionId") else {
+                    return;
+                };
                 let title = str_of(u, "title").filter(|t| !t.trim().is_empty());
                 let description = str_of(u, "description").filter(|t| !t.trim().is_empty());
                 if !self.subagents.iter().any(|s| s.id == id) {
-                    let name = title.clone().or_else(|| description.clone()).unwrap_or_else(|| "Subagent".into());
+                    let name = title
+                        .clone()
+                        .or_else(|| description.clone())
+                        .unwrap_or_else(|| "Subagent".into());
                     // The prompt comes as the child's first `session_message`.
-                    self.spawn_subagent(id.clone(), name, description.unwrap_or_default(), None, host, false, cx);
+                    self.spawn_subagent(
+                        id.clone(),
+                        name,
+                        description.unwrap_or_default(),
+                        None,
+                        host,
+                        false,
+                        cx,
+                    );
                 } else if let Some(title) = title
                     && let Some(s) = self.subagents.iter_mut().find(|s| s.id == id)
                 {
@@ -391,10 +448,15 @@ impl Thread {
             }
             c.child_state(SubagentState::Running, cx);
         });
-        let host = host.filter(|h| self.subagents.iter().any(|s| s.id == *h)).map(str::to_string);
+        let host = host
+            .filter(|h| self.subagents.iter().any(|s| s.id == *h))
+            .map(str::to_string);
         if stand_in {
             let call = marker_call(&id, &name, &task);
-            match host.as_deref().and_then(|h| self.subagents.iter().find(|s| s.id == h)) {
+            match host
+                .as_deref()
+                .and_then(|h| self.subagents.iter().find(|s| s.id == h))
+            {
                 Some(h) => h.thread.clone().update(cx, |c, cx| {
                     c.push_entry(Entry::Tool(call), cx);
                 }),
@@ -434,8 +496,9 @@ impl Thread {
         // Requests a subagent left unanswered go with it.
         if !state.is_running() {
             let reply = self.permission_cancelled();
-            let (gone, keep): (Vec<_>, Vec<_>) =
-                std::mem::take(&mut self.permissions).into_iter().partition(|p| p.session.as_deref() == Some(id));
+            let (gone, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.permissions)
+                .into_iter()
+                .partition(|p| p.session.as_deref() == Some(id));
             self.permissions = keep.into();
             for req in gone {
                 if let Some(conn) = &self.conn {
@@ -449,7 +512,13 @@ impl Thread {
     }
 
     /// Keeps AIR's stand-in Agent call in step with the subagent it stands for.
-    fn set_stand_in(&mut self, id: &str, host: Option<&str>, state: SubagentState, cx: &mut Context<Self>) {
+    fn set_stand_in(
+        &mut self,
+        id: &str,
+        host: Option<&str>,
+        state: SubagentState,
+        cx: &mut Context<Self>,
+    ) {
         let marker = format!("{MARKER}{id}");
         let status = state.call_status();
         let set = move |t: &mut Thread, cx: &mut Context<Thread>| {
@@ -461,7 +530,10 @@ impl Thread {
                 t.entries_changed(ix, cx);
             }
         };
-        match host.and_then(|h| self.subagents.iter().find(|s| s.id == h)).map(|s| s.thread.clone()) {
+        match host
+            .and_then(|h| self.subagents.iter().find(|s| s.id == h))
+            .map(|s| s.thread.clone())
+        {
             Some(h) => h.update(cx, set),
             None => set(self, cx),
         }
@@ -469,7 +541,12 @@ impl Thread {
 
     /// Ends every subagent still running: the agent behind them is gone.
     pub(super) fn stop_subagents(&mut self, cx: &mut Context<Self>) {
-        let running: Vec<String> = self.subagents.iter().filter(|s| s.state.is_running()).map(|s| s.id.clone()).collect();
+        let running: Vec<String> = self
+            .subagents
+            .iter()
+            .filter(|s| s.state.is_running())
+            .map(|s| s.id.clone())
+            .collect();
         for id in running {
             self.set_subagent_state(&id, SubagentState::Cancelled, cx);
         }
@@ -488,11 +565,22 @@ impl Thread {
         }
         if t.is_subagent() {
             let (id, state) = (t.id.clone(), SubagentState::of_call(t.status));
-            let input = |k: &str| t.raw_input.as_ref().and_then(|i| str_of(i, k)).filter(|s| !s.trim().is_empty());
-            let name = input("description").or_else(|| Some(t.title.clone()).filter(|s| !s.trim().is_empty())).unwrap_or_else(|| "Subagent".into());
+            let input = |k: &str| {
+                t.raw_input
+                    .as_ref()
+                    .and_then(|i| str_of(i, k))
+                    .filter(|s| !s.trim().is_empty())
+            };
+            let name = input("description")
+                .or_else(|| Some(t.title.clone()).filter(|s| !s.trim().is_empty()))
+                .unwrap_or_else(|| "Subagent".into());
             let task = input("prompt").unwrap_or_default();
             // A child session that already stands for this call is the subagent.
-            if self.subagents.iter().any(|s| !s.mirrored && s.call.as_deref() == Some(id.as_str())) {
+            if self
+                .subagents
+                .iter()
+                .any(|s| !s.mirrored && s.call.as_deref() == Some(id.as_str()))
+            {
                 return;
             }
             match self.subagents.iter().position(|s| s.id == id) {
@@ -566,15 +654,32 @@ impl Thread {
     /// Takes the subagents a transcript saved, and mirrors the Task calls in
     /// its entries again. `reopened`: this process runs the agent now, so what
     /// was running then is not anymore.
-    pub(super) fn load_subagents(&mut self, records: Vec<SubagentRecord>, reopened: bool, cx: &mut Context<Self>) {
+    pub(super) fn load_subagents(
+        &mut self,
+        records: Vec<SubagentRecord>,
+        reopened: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.parent.is_some() {
             return;
         }
         let before = self.subagents.len();
         for r in records {
-            let state = if reopened && r.state.is_running() { SubagentState::Cancelled } else { r.state };
-            let ended = if state.is_running() { None } else { r.ended.or(Some(r.started)) };
-            match self.subagents.iter_mut().find(|s| s.id == r.id && !s.mirrored) {
+            let state = if reopened && r.state.is_running() {
+                SubagentState::Cancelled
+            } else {
+                r.state
+            };
+            let ended = if state.is_running() {
+                None
+            } else {
+                r.ended.or(Some(r.started))
+            };
+            match self
+                .subagents
+                .iter_mut()
+                .find(|s| s.id == r.id && !s.mirrored)
+            {
                 Some(s) => {
                     s.name = r.name;
                     s.task = r.task;
@@ -591,7 +696,10 @@ impl Thread {
                     let thread = self.child_thread(&r.name, cx);
                     thread.update(cx, |c, cx| {
                         c.set_entries(r.entries);
-                        c.turn_user = c.entries.iter().position(|e| matches!(e, Entry::User { .. }));
+                        c.turn_user = c
+                            .entries
+                            .iter()
+                            .position(|e| matches!(e, Entry::User { .. }));
                         c.follow_state(state, cx);
                     });
                     self.subagents.push(Subagent {
@@ -610,8 +718,12 @@ impl Thread {
             }
         }
         // Stand-ins of subagents that ended after the transcript was saved.
-        let states: Vec<(String, Option<String>, SubagentState)> =
-            self.subagents.iter().filter(|s| !s.mirrored).map(|s| (s.id.clone(), s.host.clone(), s.state)).collect();
+        let states: Vec<(String, Option<String>, SubagentState)> = self
+            .subagents
+            .iter()
+            .filter(|s| !s.mirrored)
+            .map(|s| (s.id.clone(), s.host.clone(), s.state))
+            .collect();
         for (id, host, state) in states {
             self.set_stand_in(&id, host.as_deref(), state, cx);
         }
@@ -628,9 +740,15 @@ impl Thread {
         for e in &self.entries {
             match e {
                 Entry::User { at: a, .. } => at = *a,
-                Entry::Tool(t) if t.is_subagent() && !t.id.starts_with(MARKER) => calls.push((t.id.clone(), at, Vec::new())),
+                Entry::Tool(t) if t.is_subagent() && !t.id.starts_with(MARKER) => {
+                    calls.push((t.id.clone(), at, Vec::new()))
+                }
                 Entry::Tool(t) => {
-                    if let Some(c) = t.parent.as_deref().and_then(|p| calls.iter_mut().find(|c| c.0 == p)) {
+                    if let Some(c) = t
+                        .parent
+                        .as_deref()
+                        .and_then(|p| calls.iter_mut().find(|c| c.0 == p))
+                    {
                         c.2.push(e.clone());
                     }
                 }
@@ -638,9 +756,13 @@ impl Thread {
             }
         }
         for (id, at, mut entries) in calls {
-            let Some(&ix) = self.tool_index.get(&id) else { continue };
+            let Some(&ix) = self.tool_index.get(&id) else {
+                continue;
+            };
             self.mirror_subagent(ix, cx);
-            let Some(s) = self.subagents.iter_mut().find(|s| s.mirrored && s.id == id) else { continue };
+            let Some(s) = self.subagents.iter_mut().find(|s| s.mirrored && s.id == id) else {
+                continue;
+            };
             s.started = at;
             if !s.state.is_running() {
                 s.ended = Some(at);
@@ -670,14 +792,35 @@ mod tests {
 
     #[test]
     fn states_read_from_both_forms() {
-        assert_eq!(SubagentState::from_air("completed"), SubagentState::Completed);
+        assert_eq!(
+            SubagentState::from_air("completed"),
+            SubagentState::Completed
+        );
         assert_eq!(SubagentState::from_air("failed"), SubagentState::Failed);
-        assert_eq!(SubagentState::from_air("disconnected"), SubagentState::Cancelled);
-        assert_eq!(SubagentState::from_rfd(&json!({"state": "running"})), SubagentState::Running);
-        assert_eq!(SubagentState::from_rfd(&json!({"state": "requires_action"})), SubagentState::Running);
-        assert_eq!(SubagentState::from_rfd(&json!({"state": "idle", "stopReason": "end_turn"})), SubagentState::Completed);
-        assert_eq!(SubagentState::from_rfd(&json!({"state": "idle", "stopReason": "cancelled"})), SubagentState::Cancelled);
-        assert_eq!(SubagentState::from_rfd(&json!({"state": "idle", "stopReason": "error"})), SubagentState::Failed);
+        assert_eq!(
+            SubagentState::from_air("disconnected"),
+            SubagentState::Cancelled
+        );
+        assert_eq!(
+            SubagentState::from_rfd(&json!({"state": "running"})),
+            SubagentState::Running
+        );
+        assert_eq!(
+            SubagentState::from_rfd(&json!({"state": "requires_action"})),
+            SubagentState::Running
+        );
+        assert_eq!(
+            SubagentState::from_rfd(&json!({"state": "idle", "stopReason": "end_turn"})),
+            SubagentState::Completed
+        );
+        assert_eq!(
+            SubagentState::from_rfd(&json!({"state": "idle", "stopReason": "cancelled"})),
+            SubagentState::Cancelled
+        );
+        assert_eq!(
+            SubagentState::from_rfd(&json!({"state": "idle", "stopReason": "error"})),
+            SubagentState::Failed
+        );
     }
 
     #[test]
@@ -696,7 +839,11 @@ mod tests {
     #[test]
     fn prompts_come_as_text_or_blocks() {
         assert_eq!(text_of(&json!("do it")).as_deref(), Some("do it"));
-        assert_eq!(text_of(&json!([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}])).as_deref(), Some("a\nb"));
+        assert_eq!(
+            text_of(&json!([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]))
+                .as_deref(),
+            Some("a\nb")
+        );
         assert_eq!(text_of(&json!("  ")), None);
     }
 }

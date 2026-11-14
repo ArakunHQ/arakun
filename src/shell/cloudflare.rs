@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use gpui::{Context, SharedString, Window};
 
+use super::island::Open;
 use super::*;
 use crate::cloudflare;
-use super::island::Open;
 use crate::cloudflare_view::CloudflareEvent;
 use crate::island::AlertKind;
 
@@ -19,7 +19,9 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        self.show_view_tab("Cloudflare", TabKind::Cloudflare, |k| matches!(k, TabKind::Cloudflare));
+        self.show_view_tab("Cloudflare", TabKind::Cloudflare, |k| {
+            matches!(k, TabKind::Cloudflare)
+        });
         self.note_active_tab();
         let roots: Vec<PathBuf> = self.projects.iter().map(|p| p.path.clone()).collect();
         let agent = self.env().agent;
@@ -32,7 +34,12 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn on_cloudflare_event(&mut self, ev: &CloudflareEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_cloudflare_event(
+        &mut self,
+        ev: &CloudflareEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }
@@ -43,14 +50,32 @@ impl Shell {
             }
             CloudflareEvent::Ask(ask) => self.start_ask(ask, window, cx),
             CloudflareEvent::ConnectMcp(agent, state) => {
-                self.run_in_terminal(&env_path, &cloudflare::mcp_connect_command(*agent, state), true, window, cx);
+                self.run_in_terminal(
+                    &env_path,
+                    &cloudflare::mcp_connect_command(*agent, state),
+                    true,
+                    window,
+                    cx,
+                );
             }
             CloudflareEvent::Share { port, emails } => {
-                let note = match self.run_in_terminal(&env_path, &cloudflare::share_command(*port, emails), true, window, cx) {
-                    Some(_) => (format!("Sharing localhost:{port}. The link shows in the terminal; close it to stop sharing."), false),
+                let note = match self.run_in_terminal(
+                    &env_path,
+                    &cloudflare::share_command(*port, emails),
+                    true,
+                    window,
+                    cx,
+                ) {
+                    Some(_) => (
+                        format!(
+                            "Sharing localhost:{port}. The link shows in the terminal; close it to stop sharing."
+                        ),
+                        false,
+                    ),
                     None => ("Couldn't open a terminal.".to_string(), true),
                 };
-                self.cloudflare_view.update(cx, |v, cx| v.shared(note.0, note.1, cx));
+                self.cloudflare_view
+                    .update(cx, |v, cx| v.shared(note.0, note.1, cx));
             }
             CloudflareEvent::SignIn { install } => {
                 let login = cloudflare::access_command("");
@@ -64,8 +89,16 @@ impl Shell {
             CloudflareEvent::Run(cmd) => {
                 self.run_in_terminal(&env_path, cmd, true, window, cx);
             }
-            CloudflareEvent::Notify { title, body, critical } => {
-                let kind = if *critical { AlertKind::Failure } else { AlertKind::Warning };
+            CloudflareEvent::Notify {
+                title,
+                body,
+                critical,
+            } => {
+                let kind = if *critical {
+                    AlertKind::Failure
+                } else {
+                    AlertKind::Warning
+                };
                 self.notify(kind, title, body, Some(Open::Cloudflare));
             }
             CloudflareEvent::OpenProject(root) => {
@@ -80,8 +113,15 @@ impl Shell {
     /// Workers when one has the wrangler config, else in the visible environment.
     fn start_ask(&mut self, ask: &cloudflare::Ask, window: &mut Window, cx: &mut Context<Self>) {
         let visible = self.env().path.clone();
-        let deploys = |p: &model::Project| cloudflare::workers_in(&p.path).iter().any(|n| ask.workers.contains(n));
-        let current = self.projects.iter().position(|p| p.env_index(&visible).is_some());
+        let deploys = |p: &model::Project| {
+            cloudflare::workers_in(&p.path)
+                .iter()
+                .any(|n| ask.workers.contains(n))
+        };
+        let current = self
+            .projects
+            .iter()
+            .position(|p| p.env_index(&visible).is_some());
         let target: Option<(usize, PathBuf)> = if ask.workers.is_empty() {
             None
         } else {
@@ -103,6 +143,14 @@ impl Shell {
         }
         let title: SharedString = ask.title.clone().into();
         let agent = self.env().agent;
-        self.start_session_in(&env_path, agent, title, ask.prompt.clone(), true, window, cx);
+        self.start_session_in(
+            &env_path,
+            agent,
+            title,
+            ask.prompt.clone(),
+            true,
+            window,
+            cx,
+        );
     }
 }

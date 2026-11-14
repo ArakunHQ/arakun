@@ -86,7 +86,10 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
         },
         "search" => ToolLabel {
             action: "Search",
-            target: strip(&title, &["Search", "search", "Grep", "grep", "Find", "find"]),
+            target: strip(
+                &title,
+                &["Search", "search", "Grep", "grep", "Find", "find"],
+            ),
             file: false,
         },
         "execute" => ToolLabel {
@@ -117,7 +120,11 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
         },
         _ => ToolLabel {
             action: "",
-            target: if title.is_empty() { "Tool".into() } else { title },
+            target: if title.is_empty() {
+                "Tool".into()
+            } else {
+                title
+            },
             file: false,
         },
     }
@@ -145,7 +152,11 @@ impl ThreadView {
                 } else {
                     summary
                 };
-                let color = if thought { theme::mix(0.5) } else { theme::mix(0.7) };
+                let color = if thought {
+                    theme::mix(0.5)
+                } else {
+                    theme::mix(0.7)
+                };
                 let streaming = thought && live && ix + 1 == self.thread.read(cx).entries().len();
                 let group: SharedString = format!("row-{ix}").into();
                 let mut row = div().flex().flex_col().min_w_0().child(
@@ -180,17 +191,25 @@ impl ThreadView {
                     } else {
                         MdStyle::reply()
                     };
-                    row = row.child(div().min_w_0().pb(px(8.)).child(self.surface(ix, text, st, cx)));
+                    row = row.child(
+                        div()
+                            .min_w_0()
+                            .pb(px(8.))
+                            .child(self.surface(ix, text, st, cx)),
+                    );
                 }
                 row.into_any_element()
             }
             Entry::Tool(tool) => {
                 let asking = permission.filter(|p| p.tool_call_id == tool.id);
-                let mut col = div()
-                    .flex()
-                    .flex_col()
-                    .min_w_0()
-                    .child(self.tool_row(ix, tool, cwd, live, asking.is_some(), cx));
+                let mut col = div().flex().flex_col().min_w_0().child(self.tool_row(
+                    ix,
+                    tool,
+                    cwd,
+                    live,
+                    asking.is_some(),
+                    cx,
+                ));
                 if let Some(p) = asking {
                     col = col.child(self.permission_card(p, Some(tool), cwd, window, cx));
                 } else if open {
@@ -198,15 +217,31 @@ impl ThreadView {
                 }
                 col.into_any_element()
             }
-            Entry::Plan { entries } => div().py(px(4.)).child(plan_card(entries)).into_any_element(),
-            Entry::Notice { text, error, places, .. } => div()
+            Entry::Plan { entries } => div()
+                .py(px(4.))
+                .child(plan_card(entries))
+                .into_any_element(),
+            Entry::Notice {
+                text,
+                error,
+                places,
+                ..
+            } => div()
                 .py(px(4.))
                 .text_size(px(crate::ui::TEXT_LG))
-                .text_color(if *error { red().opacity(0.85) } else { theme::mix(0.5) })
+                .text_color(if *error {
+                    red().opacity(0.85)
+                } else {
+                    theme::mix(0.5)
+                })
                 .child(text.clone())
                 .children(self.notice_places(ix, places, cx))
                 .into_any_element(),
-            Entry::Compacted { removed, before, after } => compaction_divider(*removed, *before, *after),
+            Entry::Compacted {
+                removed,
+                before,
+                after,
+            } => compaction_divider(*removed, *before, *after),
             Entry::User { .. } => div().into_any_element(),
         }
     }
@@ -221,7 +256,10 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> AnyElement {
         // A subagent runs on in the background after the turn that started it.
-        let subagent = tool.subagent_id().and_then(|id| self.thread.read(cx).subagent(id)).map(|s| (s.id.clone(), s.state));
+        let subagent = tool
+            .subagent_id()
+            .and_then(|id| self.thread.read(cx).subagent(id))
+            .map(|s| (s.id.clone(), s.state));
         let background = subagent.as_ref().is_some_and(|(_, s)| s.is_running());
         let live = live || background;
         let running = live && matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress);
@@ -231,7 +269,10 @@ impl ThreadView {
             ToolContent::Text { text } => !text.trim().is_empty(),
             ToolContent::Diff { .. } => true,
             ToolContent::Terminal { .. } => false,
-        }) || tool.raw_output.as_ref().is_some_and(|o| !o.trim().is_empty())
+        }) || tool
+            .raw_output
+            .as_ref()
+            .is_some_and(|o| !o.trim().is_empty())
             || !tool.terminal_output.trim().is_empty();
         let compact = matches!(tool.kind.as_str(), "read" | "search") && !failed;
         let expandable = !asking && !compact && (has_output || tool.kind == "execute");
@@ -250,12 +291,20 @@ impl ThreadView {
                 })
             })
             .flatten()
-            .map(|p| if p.is_relative() { cwd.join(p) } else { p.clone() })
+            .map(|p| {
+                if p.is_relative() {
+                    cwd.join(p)
+                } else {
+                    p.clone()
+                }
+            })
             .filter(|p| p.is_file());
 
         let status_icon = if failed {
             Some(icon("cancel01", 14.).text_color(red()).into_any_element())
-        } else if matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress) && (live || asking) {
+        } else if matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress)
+            && (live || asking)
+        {
             Some(if asking {
                 icon("circle-dashed", 14.)
                     .text_color(theme::text_faint())
@@ -298,7 +347,10 @@ impl ThreadView {
                     .when(label.file, |d| d.bg(theme::fill_hover()))
                     .when_some(file, |d, file| {
                         d.cursor_pointer()
-                            .hover(|s| s.bg(theme::fill_selected()).text_color(markdown::link_color()))
+                            .hover(|s| {
+                                s.bg(theme::fill_selected())
+                                    .text_color(markdown::link_color())
+                            })
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.stop_propagation();
                                 cx.emit(ThreadViewEvent::OpenFile(file.clone(), None));
@@ -326,7 +378,11 @@ impl ThreadView {
                         .text_size(px(crate::ui::TEXT_XS))
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(tool.added > 0, |d| {
-                            d.child(div().text_color(theme::diff_add()).child(format!("+{}", tool.added)))
+                            d.child(
+                                div()
+                                    .text_color(theme::diff_add())
+                                    .child(format!("+{}", tool.added)),
+                            )
                         })
                         .when(tool.removed > 0, |d| {
                             d.child(
@@ -379,7 +435,13 @@ impl ThreadView {
 }
 
 pub(super) fn tool_details(tool: &ToolCall, cwd: &Path) -> AnyElement {
-    let mut col = div().flex().flex_col().gap(px(6.)).pt(px(2.)).pb(px(6.)).min_w_0();
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .pt(px(2.))
+        .pb(px(6.))
+        .min_w_0();
     if tool.kind == "execute" {
         return col.child(terminal_card(tool)).into_any_element();
     }
@@ -400,7 +462,10 @@ pub(super) fn tool_details(tool: &ToolCall, cwd: &Path) -> AnyElement {
     }
     if !any_text
         && let Some(out) = tool.raw_output.as_ref().filter(|o| !o.trim().is_empty())
-        && !tool.content.iter().any(|c| matches!(c, ToolContent::Diff { .. }))
+        && !tool
+            .content
+            .iter()
+            .any(|c| matches!(c, ToolContent::Diff { .. }))
     {
         col = col.child(mono_block(out, theme::mix(0.55)));
     }
@@ -428,7 +493,10 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
             })
             .collect();
         if texts.is_empty() {
-            tool.raw_output.as_deref().map(strip_ansi).unwrap_or_default()
+            tool.raw_output
+                .as_deref()
+                .map(strip_ansi)
+                .unwrap_or_default()
         } else {
             strip_ansi(&texts.join("\n"))
         }
@@ -458,9 +526,17 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
                     .gap(px(8.))
                     .px(px(10.))
                     .py(px(6.))
-                    .when(!shown.is_empty(), |d| d.border_b_1().border_color(theme::border_subtle()))
+                    .when(!shown.is_empty(), |d| {
+                        d.border_b_1().border_color(theme::border_subtle())
+                    })
                     .child(div().flex_none().text_color(theme::text_faint()).child("$"))
-                    .child(div().flex_1().min_w_0().text_color(theme::text_muted()).child(cmd)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(theme::text_muted())
+                            .child(cmd),
+                    ),
             )
         })
         .when(hidden > 0, |d| {

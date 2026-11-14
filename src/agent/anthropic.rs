@@ -38,7 +38,12 @@ pub fn key_path() -> PathBuf {
 /// the bench's containers), and then the key may be missing. `ANTHROPIC_API_KEY` is left
 /// alone on purpose: it belongs to whatever else runs in this environment.
 pub fn endpoint() -> Result<(String, String), String> {
-    let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let env = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
     let base = env("ARAKUN_ANTHROPIC_URL");
     let key = env("ARAKUN_ANTHROPIC_KEY")
         .or_else(|| std::fs::read_to_string(key_path()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
@@ -51,7 +56,10 @@ pub fn endpoint() -> Result<(String, String), String> {
             )
         })?;
     let base = base.unwrap_or_else(|| API.to_string());
-    Ok((format!("{}/v1/messages?beta=true", base.trim_end_matches('/')), key))
+    Ok((
+        format!("{}/v1/messages?beta=true", base.trim_end_matches('/')),
+        key,
+    ))
 }
 
 // ---- request: Chat Completions -> Messages -------------------------------------------
@@ -59,14 +67,21 @@ pub fn endpoint() -> Result<(String, String), String> {
 fn text_of(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
-        Value::Array(parts) => parts.iter().map(|p| p.as_str().or(p["text"].as_str()).unwrap_or("")).collect(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|p| p.as_str().or(p["text"].as_str()).unwrap_or(""))
+            .collect(),
         Value::Null => String::new(),
         other => other.to_string(),
     }
 }
 
 fn or_text(text: String, empty: &str) -> String {
-    if text.trim().is_empty() { empty.to_string() } else { text }
+    if text.trim().is_empty() {
+        empty.to_string()
+    } else {
+        text
+    }
 }
 
 fn user_blocks(content: &Value) -> Vec<Value> {
@@ -75,8 +90,14 @@ fn user_blocks(content: &Value) -> Vec<Value> {
     };
     let mut out = Vec::new();
     for p in parts {
-        let url = if p["type"] == "image_url" { p["image_url"]["url"].as_str().unwrap_or("") } else { "" };
-        let data = url.strip_prefix("data:").and_then(|d| d.split_once(";base64,"));
+        let url = if p["type"] == "image_url" {
+            p["image_url"]["url"].as_str().unwrap_or("")
+        } else {
+            ""
+        };
+        let data = url
+            .strip_prefix("data:")
+            .and_then(|d| d.split_once(";base64,"));
         if let Some((mime, data)) = data {
             out.push(json!({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}));
         } else if !url.is_empty() {
@@ -98,15 +119,24 @@ fn parse_args(raw: &Value) -> Value {
     if raw.is_object() {
         return raw.clone();
     }
-    serde_json::from_str::<Value>(raw.as_str().unwrap_or("{}")).ok().filter(Value::is_object).unwrap_or_else(|| json!({}))
+    serde_json::from_str::<Value>(raw.as_str().unwrap_or("{}"))
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
 }
 
 /// The blocks Anthropic sent for this assistant message, when they still are that message:
 /// the same tool calls in the same order, and something besides thinking.
 fn kept(m: &Value, ids: &[&str]) -> Option<Vec<Value>> {
     let blocks = m[NATIVE].as_array()?;
-    let kept_ids: Vec<&str> = blocks.iter().filter(|b| b["type"] == "tool_use").filter_map(|b| b["id"].as_str()).collect();
-    let said = blocks.iter().any(|b| b["type"] == "tool_use" || b["type"] == "text");
+    let kept_ids: Vec<&str> = blocks
+        .iter()
+        .filter(|b| b["type"] == "tool_use")
+        .filter_map(|b| b["id"].as_str())
+        .collect();
+    let said = blocks
+        .iter()
+        .any(|b| b["type"] == "tool_use" || b["type"] == "text");
     (said && kept_ids == ids).then(|| blocks.clone())
 }
 
@@ -182,7 +212,9 @@ pub fn request(body: &Value) -> Value {
         })
         .collect();
 
-    let max = body["max_completion_tokens"].as_u64().or(body["max_tokens"].as_u64());
+    let max = body["max_completion_tokens"]
+        .as_u64()
+        .or(body["max_tokens"].as_u64());
     let mut params = json!({
         "model": body["model"],
         "max_tokens": max.filter(|m| *m > 0).map_or(64_000, |m| m.clamp(1024, 128_000)),
@@ -194,9 +226,14 @@ pub fn request(body: &Value) -> Value {
         "thinking": {"type": "adaptive", "display": "summarized", "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
         "output_config": {"effort": body["reasoning_effort"].as_str().unwrap_or("medium")},
     });
-    let system = system.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+    let system = system
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if !system.is_empty() {
-        params["system"] = json!([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]);
+        params["system"] =
+            json!([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]);
     }
     if !tools.is_empty() {
         params["tools"] = json!(tools);
@@ -219,7 +256,10 @@ fn append(block: &mut Value, key: &str, more: &str) {
 /// what was written to the cache (priced apart) is named beside it.
 pub fn usage_of(u: &Map<String, Value>) -> Value {
     let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
-    let (read, write) = (n("cache_read_input_tokens"), n("cache_creation_input_tokens"));
+    let (read, write) = (
+        n("cache_read_input_tokens"),
+        n("cache_creation_input_tokens"),
+    );
     let prompt = n("input_tokens") + read + write;
     json!({
         "prompt_tokens": prompt,
@@ -263,7 +303,9 @@ impl Stream {
                 }
                 self.dropped = ev["message"]["input_transformations"]
                     .as_array()
-                    .map_or(0, |t| t.iter().filter(|t| t["type"] == "thinking_dropped").count());
+                    .map_or(0, |t| {
+                        t.iter().filter(|t| t["type"] == "thinking_dropped").count()
+                    });
             }
             "content_block_start" => {
                 let block = ev["content_block"].clone();
@@ -297,7 +339,9 @@ impl Stream {
                             out.push(chunk(json!({"reasoning_content": text}), None));
                         }
                     }
-                    "signature_delta" => append(block, "signature", d["signature"].as_str().unwrap_or("")),
+                    "signature_delta" => {
+                        append(block, "signature", d["signature"].as_str().unwrap_or(""))
+                    }
                     "input_json_delta" => {
                         let part = d["partial_json"].as_str().unwrap_or("");
                         self.inputs.entry(index).or_default().push_str(part);
@@ -312,7 +356,11 @@ impl Stream {
                 if let Some(raw) = self.inputs.get(&index)
                     && let Some(block) = self.blocks.get_mut(&index)
                 {
-                    block["input"] = parse_args(&json!(if raw.trim().is_empty() { "{}" } else { raw.as_str() }));
+                    block["input"] = parse_args(&json!(if raw.trim().is_empty() {
+                        "{}"
+                    } else {
+                        raw.as_str()
+                    }));
                 }
             }
             "message_delta" => {
@@ -323,13 +371,21 @@ impl Stream {
                     self.stop = stop.to_string();
                 }
                 if self.stop == "refusal" {
-                    self.declined = Some(ev["delta"]["stop_details"]["category"].as_str().unwrap_or("no category").to_string());
+                    self.declined = Some(
+                        ev["delta"]["stop_details"]["category"]
+                            .as_str()
+                            .unwrap_or("no category")
+                            .to_string(),
+                    );
                 }
             }
             "message_stop" => {
                 self.ended = true;
                 if let Some(why) = &self.declined {
-                    out.push(chunk(json!({"content": format!("(Claude declined to answer: {why})")}), None));
+                    out.push(chunk(
+                        json!({"content": format!("(Claude declined to answer: {why})")}),
+                        None,
+                    ));
                 }
                 let finish = match self.stop.as_str() {
                     "tool_use" => "tool_calls",
@@ -342,7 +398,9 @@ impl Stream {
             }
             "error" => {
                 let e = &ev["error"];
-                return Err(e["message"].as_str().map_or_else(|| e.to_string(), str::to_string));
+                return Err(e["message"]
+                    .as_str()
+                    .map_or_else(|| e.to_string(), str::to_string));
             }
             _ => {}
         }
@@ -358,7 +416,9 @@ impl Stream {
         let blocks: Vec<Value> = self
             .blocks
             .values()
-            .filter(|b| b["type"] != "text" || b["text"].as_str().is_some_and(|t| !t.trim().is_empty()))
+            .filter(|b| {
+                b["type"] != "text" || b["text"].as_str().is_some_and(|t| !t.trim().is_empty())
+            })
             .cloned()
             .collect();
         (!blocks.is_empty()).then(|| json!(blocks))
@@ -397,9 +457,17 @@ mod tests {
         assert_eq!(r["output_config"]["effort"], "medium");
         assert_eq!(r["thinking"]["type"], "adaptive");
         assert_eq!(r["max_tokens"], 65_536);
-        assert_eq!(r["tools"][0]["input_schema"]["properties"]["command"]["type"], "string");
+        assert_eq!(
+            r["tools"][0]["input_schema"]["properties"]["command"]["type"],
+            "string"
+        );
         let m = r["messages"].as_array().unwrap();
-        assert_eq!(m.iter().map(|m| m["role"].as_str().unwrap()).collect::<Vec<_>>(), ["user", "assistant", "user", "user"]);
+        assert_eq!(
+            m.iter()
+                .map(|m| m["role"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["user", "assistant", "user", "user"]
+        );
         assert_eq!(m[1]["content"][0]["input"]["command"], "ls");
         assert_eq!(m[1]["content"][1]["input"], json!({}));
         // both answers travel in one user message, an empty one with a placeholder
@@ -461,7 +529,10 @@ mod tests {
         assert_eq!(reply.calls[&0].arguments, "{\"command\":\"ls\"}");
         assert_eq!(s.dropped, 1);
         let u = usage_of(&s.usage);
-        assert_eq!((u["prompt_tokens"].as_u64(), u["completion_tokens"].as_u64()), (Some(125), Some(40)));
+        assert_eq!(
+            (u["prompt_tokens"].as_u64(), u["completion_tokens"].as_u64()),
+            (Some(125), Some(40))
+        );
         assert_eq!(u["prompt_tokens_details"]["cached_tokens"], 100);
         assert_eq!(u["cache_creation_input_tokens"], 20);
         // the empty text block is not kept; the thinking block keeps its signature
@@ -478,7 +549,9 @@ mod tests {
         assert_eq!(e, Err("Overloaded".to_string()));
         let mut s = Stream::default();
         s.take(&json!({"type": "message_delta", "delta": {"stop_reason": "refusal", "stop_details": {"category": "cyber"}}}).to_string()).unwrap();
-        let out = s.take(&json!({"type": "message_stop"}).to_string()).unwrap();
+        let out = s
+            .take(&json!({"type": "message_stop"}).to_string())
+            .unwrap();
         assert!(out[0].contains("declined to answer: cyber"));
         assert_eq!(out.last().map(String::as_str), Some("[DONE]"));
         assert!(s.blocks().is_none());

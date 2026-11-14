@@ -10,9 +10,10 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window, div, px, rgb, rgba,
+    AnyElement, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    UniformListScrollHandle, Window, div, px, rgb, rgba,
 };
 
 use crate::ci::{self, Ci, Load, Run, State};
@@ -40,7 +41,11 @@ pub const AMBER: u32 = theme::ATTENTION;
 pub enum RunsEvent {
     /// Hand the failed run to an agent.
     Fix { root: PathBuf, run: u64 },
-    OpenSession { project: usize, env: usize, id: SharedString },
+    OpenSession {
+        project: usize,
+        env: usize,
+        id: SharedString,
+    },
     /// A file of the repository, relative to its root, at a line.
     OpenFile { branch: String, path: String },
     /// Revert a commit in the environment of `branch`.
@@ -50,9 +55,19 @@ pub enum RunsEvent {
     /// Open the branch's pull request (`url`), or GitHub's page to open one.
     OpenPr { branch: String, url: Option<String> },
     /// Have a fix session commit and push, and follow its CI.
-    Ship { project: usize, env: usize, id: SharedString, branch: String },
+    Ship {
+        project: usize,
+        env: usize,
+        id: SharedString,
+        branch: String,
+    },
     /// Send a newer failure to the session that fixed an older one.
-    SendFailure { project: usize, env: usize, id: SharedString, run: u64 },
+    SendFailure {
+        project: usize,
+        env: usize,
+        id: SharedString,
+        run: u64,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -145,11 +160,21 @@ pub fn state_color(s: State) -> Hsla {
 pub fn state_icon(id: impl Into<ElementId>, s: State, size: f32) -> AnyElement {
     match s {
         State::Running => ui::spinner(id, size, hex(AMBER)).into_any_element(),
-        State::Passed => icon("checkmark-circle01", size).text_color(hex(GREEN)).into_any_element(),
-        State::Failed => icon("cancel-circle", size).text_color(hex(RED)).into_any_element(),
-        State::Queued => icon("clock01", size).text_color(hex(AMBER)).into_any_element(),
-        State::Cancelled => icon("minus-sign", size).text_color(theme::text_faint()).into_any_element(),
-        State::Skipped => icon("circle-dashed", size).text_color(theme::text_faint()).into_any_element(),
+        State::Passed => icon("checkmark-circle01", size)
+            .text_color(hex(GREEN))
+            .into_any_element(),
+        State::Failed => icon("cancel-circle", size)
+            .text_color(hex(RED))
+            .into_any_element(),
+        State::Queued => icon("clock01", size)
+            .text_color(hex(AMBER))
+            .into_any_element(),
+        State::Cancelled => icon("minus-sign", size)
+            .text_color(theme::text_faint())
+            .into_any_element(),
+        State::Skipped => icon("circle-dashed", size)
+            .text_color(theme::text_faint())
+            .into_any_element(),
     }
 }
 
@@ -166,8 +191,14 @@ pub fn mono_chip(text: impl Into<SharedString>) -> gpui::Div {
 }
 
 /// A small bordered button of the run header.
-pub fn header_button(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, key: Option<&str>) -> gpui::Stateful<gpui::Div> {
-    ui::button_with(id, Some(icon_name), label, ui::ButtonKind::Outline, true).when_some(key, |d, k| d.child(keycap(k)))
+pub fn header_button(
+    id: impl Into<ElementId>,
+    icon_name: &str,
+    label: impl Into<SharedString>,
+    key: Option<&str>,
+) -> gpui::Stateful<gpui::Div> {
+    ui::button_with(id, Some(icon_name), label, ui::ButtonKind::Outline, true)
+        .when_some(key, |d, k| d.child(keycap(k)))
 }
 
 pub fn keycap(k: &str) -> gpui::Div {
@@ -239,12 +270,21 @@ impl RunsView {
     }
 
     /// The outcome of an action started from the graph.
-    pub fn set_notice(&mut self, text: impl Into<SharedString>, error: bool, cx: &mut Context<Self>) {
+    pub fn set_notice(
+        &mut self,
+        text: impl Into<SharedString>,
+        error: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.notice = Some((text.into(), error));
         cx.notify();
     }
 
-    pub fn set_sessions(&mut self, sessions: HashMap<u64, Vec<LinkedSession>>, prs: HashMap<String, LinkedSession>) {
+    pub fn set_sessions(
+        &mut self,
+        sessions: HashMap<u64, Vec<LinkedSession>>,
+        prs: HashMap<String, LinkedSession>,
+    ) {
         self.sessions = sessions;
         self.pr_sessions = prs;
     }
@@ -298,7 +338,12 @@ impl RunsView {
         let (Some(root), Some(id)) = (self.root.clone(), self.selected) else {
             return;
         };
-        let failed = self.ci.read(cx).repo(&root).and_then(|r| r.run(id)).is_some_and(|r| r.state() == State::Failed);
+        let failed = self
+            .ci
+            .read(cx)
+            .repo(&root)
+            .and_then(|r| r.run(id))
+            .is_some_and(|r| r.state() == State::Failed);
         if failed {
             cx.emit(RunsEvent::Fix { root, run: id });
         }
@@ -327,7 +372,12 @@ impl RunsView {
             Some(r) => {
                 let mut overview = Vec::new();
                 if let Some(d) = r.latest_deploy() {
-                    overview.push(("cloud-upload", "Production", d.head_branch.clone(), d.clone()));
+                    overview.push((
+                        "cloud-upload",
+                        "Production",
+                        d.head_branch.clone(),
+                        d.clone(),
+                    ));
                 }
                 let mut seen = HashSet::new();
                 for b in &self.branches {
@@ -345,21 +395,31 @@ impl RunsView {
             }
         };
         let seg = ui::segmented().children(Filter::ALL.into_iter().enumerate().map(|(i, f)| {
-            ui::segment(("runs-filter", i), None, f.label(), f == self.filter).on_click(cx.listener(move |this, _, _, cx| {
-                this.filter = f;
-                cx.notify();
-            }))
+            ui::segment(("runs-filter", i), None, f.label(), f == self.filter).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.filter = f;
+                    cx.notify();
+                }),
+            )
         }));
         let modes = ui::segmented().children(
-            [(Mode::Graph, "git-branch", "Graph"), (Mode::List, "left-to-right-list-bullet", "List")].into_iter().map(
-                |(m, icon_name, label)| {
-                    ui::segment(SharedString::from(format!("runs-mode-{label}")), Some(icon_name), label, m == self.mode)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.mode = m;
-                            cx.notify();
-                        }))
-                },
-            ),
+            [
+                (Mode::Graph, "git-branch", "Graph"),
+                (Mode::List, "left-to-right-list-bullet", "List"),
+            ]
+            .into_iter()
+            .map(|(m, icon_name, label)| {
+                ui::segment(
+                    SharedString::from(format!("runs-mode-{label}")),
+                    Some(icon_name),
+                    label,
+                    m == self.mode,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.mode = m;
+                    cx.notify();
+                }))
+            }),
         );
         let header = div()
             .flex()
@@ -370,8 +430,11 @@ impl RunsView {
             .pt(px(ui::PAGE_PAD))
             .pb(px(16.))
             .child(
-                ui::page_title("Runs", Some(format!("{} · GitHub Actions", self.project_name).into_any_element()))
-                    .flex_1(),
+                ui::page_title(
+                    "Runs",
+                    Some(format!("{} · GitHub Actions", self.project_name).into_any_element()),
+                )
+                .flex_1(),
             )
             .child(
                 div()
@@ -382,12 +445,21 @@ impl RunsView {
                     .h(px(ui::BUTTON_H))
                     .when(self.mode == Mode::List, |d| d.child(seg))
                     .child(modes)
-                    .child(ui::refresh_control("runs-refresh", busy, None, cx.listener(|this, _, _, cx| this.refresh(cx)))),
+                    .child(ui::refresh_control(
+                        "runs-refresh",
+                        busy,
+                        None,
+                        cx.listener(|this, _, _, cx| this.refresh(cx)),
+                    )),
             );
 
         let body: AnyElement = match list {
             List::Off => empty("activity01", "Runs are turned off", "ARAKUN_CI=off is set."),
-            List::NoProject => empty("activity01", "No project", "Add a project to see its GitHub Actions runs."),
+            List::NoProject => empty(
+                "activity01",
+                "No project",
+                "Add a project to see its GitHub Actions runs.",
+            ),
             List::NotGitHub => empty(
                 "git-branch",
                 "Not on GitHub",
@@ -404,7 +476,11 @@ impl RunsView {
                     .into_any_element(),
             },
             List::Ready { .. } if self.mode == Mode::Graph => self.render_graph_page(cx),
-            List::Ready { runs, error, overview } => {
+            List::Ready {
+                runs,
+                error,
+                overview,
+            } => {
                 let mut list = div()
                     .id("runs-list")
                     .flex()
@@ -447,15 +523,27 @@ impl RunsView {
                 list.into_any_element()
             }
         };
-        div().flex().flex_col().size_full().child(header).child(body).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(header)
+            .child(body)
+            .into_any_element()
     }
 
     /// Production and the branch of each environment, at a glance.
-    fn render_overview(&self, overview: Vec<(&'static str, &'static str, String, Run)>, cx: &mut Context<Self>) -> AnyElement {
+    fn render_overview(
+        &self,
+        overview: Vec<(&'static str, &'static str, String, Run)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let cards: Vec<AnyElement> = overview
             .into_iter()
             .enumerate()
-            .map(|(i, (icon_name, kind, name, run))| self.overview_card(("ov-card", i), icon_name, kind, name, &run, cx))
+            .map(|(i, (icon_name, kind, name, run))| {
+                self.overview_card(("ov-card", i), icon_name, kind, name, &run, cx)
+            })
             .collect();
         if cards.is_empty() {
             return div().into_any_element();
@@ -491,7 +579,11 @@ impl RunsView {
             .py(px(10.))
             .rounded(px(ui::RADIUS_LG))
             .border_1()
-            .border_color(if state == State::Failed { soft(RED, 0.35) } else { theme::mix(0.08) })
+            .border_color(if state == State::Failed {
+                soft(RED, 0.35)
+            } else {
+                theme::mix(0.08)
+            })
             .bg(theme::fill_raised())
             .cursor_pointer()
             .hover(|s| s.bg(theme::fill_hover()))
@@ -511,15 +603,34 @@ impl RunsView {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().size(px(8.)).rounded_full().flex_none().bg(state_color(state)))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).child(name)),
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .rounded_full()
+                            .flex_none()
+                            .bg(state_color(state)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(ui::TEXT_MD))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(name),
+                    ),
             )
             .child(
                 div()
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_subtle())
                     .truncate()
-                    .child(format!("{} · #{} · {}", state.label(), run.number, run.workflow_name)),
+                    .child(format!(
+                        "{} · #{} · {}",
+                        state.label(),
+                        run.number,
+                        run.workflow_name
+                    )),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.select(Some(rid), cx)))
             .into_any_element()
@@ -540,7 +651,14 @@ impl RunsView {
             .rounded(px(12.))
             .cursor_pointer()
             .hover(|s| s.bg(theme::hover()))
-            .child(div().flex().items_center().justify_center().size(px(18.)).child(state_icon(("run-state", ix), state, 16.)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(18.))
+                    .child(state_icon(("run-state", ix), state, 16.)),
+            )
             .child(
                 div()
                     .flex()
@@ -553,7 +671,14 @@ impl RunsView {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().min_w_0().truncate().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).child(run.display_title.clone()))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(run.display_title.clone()),
+                            )
                             .when(fixing, |d| {
                                 d.child(
                                     div()
@@ -595,7 +720,12 @@ impl RunsView {
                             .min_w_0()
                             .text_size(px(ui::TEXT_XS))
                             .text_color(theme::text_subtle())
-                            .child(div().flex_none().child(format!("#{} · {} · {}", run.number, run.workflow_name, run.trigger())))
+                            .child(div().flex_none().child(format!(
+                                "#{} · {} · {}",
+                                run.number,
+                                run.workflow_name,
+                                run.trigger()
+                            )))
                             .child(
                                 div()
                                     .flex()
@@ -604,9 +734,27 @@ impl RunsView {
                                     .min_w_0()
                                     .px(px(6.))
                                     .rounded(px(4.))
-                                    .bg(if mine { theme::mix(0.08) } else { theme::mix(0.04) })
-                                    .text_color(if mine { theme::mix(0.75) } else { theme::mix(0.5) })
-                                    .child(icon(if run.is_deploy() { "tag01" } else { "git-branch" }, 11.).text_color(theme::text_subtle()))
+                                    .bg(if mine {
+                                        theme::mix(0.08)
+                                    } else {
+                                        theme::mix(0.04)
+                                    })
+                                    .text_color(if mine {
+                                        theme::mix(0.75)
+                                    } else {
+                                        theme::mix(0.5)
+                                    })
+                                    .child(
+                                        icon(
+                                            if run.is_deploy() {
+                                                "tag01"
+                                            } else {
+                                                "git-branch"
+                                            },
+                                            11.,
+                                        )
+                                        .text_color(theme::text_subtle()),
+                                    )
                                     .child(div().truncate().child(run.head_branch.clone())),
                             ),
                     ),
@@ -629,7 +777,10 @@ impl RunsView {
 }
 
 pub fn empty(icon_name: &str, title: &str, text: &str) -> AnyElement {
-    ui::empty_state(icon_name, title, text, None).flex_1().justify_center().into_any_element()
+    ui::empty_state(icon_name, title, text, None)
+        .flex_1()
+        .justify_center()
+        .into_any_element()
 }
 
 impl Focusable for RunsView {
@@ -646,7 +797,11 @@ impl Render for RunsView {
         };
         if self.selected.is_some() && run.is_none() {
             // Gone from the recent list, or another project is in front.
-            let loaded = self.root.as_ref().and_then(|r| self.ci.read(cx).repo(r)).is_some_and(|r| r.loaded);
+            let loaded = self
+                .root
+                .as_ref()
+                .and_then(|r| self.ci.read(cx).repo(r))
+                .is_some_and(|r| r.loaded);
             if loaded {
                 self.selected = None;
             }

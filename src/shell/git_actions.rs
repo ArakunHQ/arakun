@@ -29,7 +29,11 @@ impl Shell {
             return;
         }
         let env = self.env_mut();
-        let branch = env.sync.branch.clone().filter(|_| env.sync.github && env.sync.gh);
+        let branch = env
+            .sync
+            .branch
+            .clone()
+            .filter(|_| env.sync.github && env.sync.gh);
         let Some(branch) = branch else {
             if env.pr.take().is_some() {
                 cx.notify();
@@ -96,12 +100,18 @@ impl Shell {
 
     fn git_push(&mut self, cx: &mut Context<Self>) {
         let env = self.env();
-        let (Some(remote), Some(branch)) = (env.sync.remote.clone(), env.sync.branch.clone()) else {
+        let (Some(remote), Some(branch)) = (env.sync.remote.clone(), env.sync.branch.clone())
+        else {
             return;
         };
         let path = env.path.clone();
         let dir = path.clone();
-        self.run_git_op(path, GitOp::Push, move || git::push(&dir, &remote, &branch), cx);
+        self.run_git_op(
+            path,
+            GitOp::Push,
+            move || git::push(&dir, &remote, &branch),
+            cx,
+        );
     }
 
     fn git_pull(&mut self, cx: &mut Context<Self>) {
@@ -176,26 +186,41 @@ impl Shell {
         let staged = env.changes.iter().filter(|c| c.staged).count();
         let dir = path.clone();
         let dialog = cx.new(|cx| CommitDialog::new(dir, branch, files, staged, window, cx));
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, ev: &GitDialogEvent, window, cx| {
-            if let GitDialogEvent::Done = ev {
-                if let Some(env) = this.find_env_mut(&path) {
-                    env.git_error = None;
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &GitDialogEvent, window, cx| {
+                if let GitDialogEvent::Done = ev {
+                    if let Some(env) = this.find_env_mut(&path) {
+                        env.git_error = None;
+                    }
+                    this.refresh_status(&path, cx);
                 }
-                this.refresh_status(&path, cx);
-            }
-            this.close_modal(window, cx);
-        });
+                this.close_modal(window, cx);
+            },
+        );
         self.menu = None;
         self.modal = Some((Modal::Commit(dialog), sub));
         cx.notify();
     }
 
-    pub(super) fn confirm_discard(&mut self, change: git::Change, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn confirm_discard(
+        &mut self,
+        change: git::Change,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let path = self.env().path.clone();
         let body = match change.kind {
-            ChangeKind::Untracked => "This deletes the file. It was never committed, so it can't be recovered.",
-            ChangeKind::Added => "This removes the new file from the index and deletes it. It can't be undone.",
-            _ => "This throws away every uncommitted change to the file, staged or not. It can't be undone.",
+            ChangeKind::Untracked => {
+                "This deletes the file. It was never committed, so it can't be recovered."
+            }
+            ChangeKind::Added => {
+                "This removes the new file from the index and deletes it. It can't be undone."
+            }
+            _ => {
+                "This throws away every uncommitted change to the file, staged or not. It can't be undone."
+            }
         };
         let dir = path.clone();
         let file = change.path.clone();
@@ -211,10 +236,14 @@ impl Shell {
             )
             .detail("file01", theme::mix(0.45), file)
         });
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, _: &GitDialogEvent, window, cx| {
-            this.refresh_status(&path, cx);
-            this.close_modal(window, cx);
-        });
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, _: &GitDialogEvent, window, cx| {
+                this.refresh_status(&path, cx);
+                this.close_modal(window, cx);
+            },
+        );
         self.menu = None;
         self.modal = Some((Modal::GitConfirm(dialog), sub));
         cx.notify();
@@ -231,14 +260,21 @@ impl Shell {
         let Some(branch) = env.sync.branch.clone() else {
             return;
         };
-        let Some(main) = self.project().environments.iter().find(|e| e.is_checkout).map(|e| e.path.clone())
+        let Some(main) = self
+            .project()
+            .environments
+            .iter()
+            .find(|e| e.is_checkout)
+            .map(|e| e.path.clone())
         else {
             return;
         };
         let dirty_here = env.changes.len();
         cx.spawn_in(window, async move |this, cx| {
             let (m, b) = (main.clone(), branch.clone());
-            let plan = cx.background_spawn(async move { git::merge_plan(&m, &b) }).await;
+            let plan = cx
+                .background_spawn(async move { git::merge_plan(&m, &b) })
+                .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.show_merge(pi, main, branch, plan, dirty_here, window, cx)
             });
@@ -267,7 +303,8 @@ impl Shell {
         let base = base.unwrap_or_else(|| "the main checkout".into());
         let warn: Hsla = theme::warn().into();
         let muted = theme::mix(0.45);
-        let body = format!("Merges {branch} into {base} in the main checkout, with a merge commit.");
+        let body =
+            format!("Merges {branch} into {base} in the main checkout, with a merge commit.");
         let dialog = cx.new(|cx| {
             let (m, b) = (main.clone(), branch.clone());
             let mut d = ConfirmDialog::new(
@@ -280,7 +317,11 @@ impl Shell {
                 cx,
             );
             if commits > 0 {
-                d = d.detail("git-commit", muted, format!("{} to merge", plural(commits as usize, "commit")));
+                d = d.detail(
+                    "git-commit",
+                    muted,
+                    format!("{} to merge", plural(commits as usize, "commit")),
+                );
             }
             d = d.detail("folder01", muted, pretty_path(&main));
             if dirty_here > 0 {
@@ -297,12 +338,16 @@ impl Shell {
             }
             d.blocked(blocked)
         });
-        let sub = cx.subscribe_in(&dialog, window, move |this, _, ev: &GitDialogEvent, window, cx| {
-            if let GitDialogEvent::Done = ev {
-                this.refresh_project(pi, cx);
-            }
-            this.close_modal(window, cx);
-        });
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &GitDialogEvent, window, cx| {
+                if let GitDialogEvent::Done = ev {
+                    this.refresh_project(pi, cx);
+                }
+                this.close_modal(window, cx);
+            },
+        );
         self.menu = None;
         self.modal = Some((Modal::GitConfirm(dialog), sub));
         cx.notify();
@@ -320,8 +365,15 @@ impl Shell {
         if s.upstream.is_some() {
             let label = (s.behind > 0).then(|| format!("{}", s.behind));
             chips = chips.child(
-                sync_chip("git-pull", "circle-arrow-down01", None, label, busy == Some(GitOp::Pull), idle)
-                    .on_click(cx.listener(|this, _, _, cx| this.git_pull(cx))),
+                sync_chip(
+                    "git-pull",
+                    "circle-arrow-down01",
+                    None,
+                    label,
+                    busy == Some(GitOp::Pull),
+                    idle,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.git_pull(cx))),
             );
         }
         if s.remote.is_some() && s.branch.is_some() {
@@ -332,19 +384,28 @@ impl Shell {
             };
             let enabled = idle && (!s.published || s.ahead > 0);
             chips = chips.child(
-                sync_chip("git-push", "cloud-upload", None, label, busy == Some(GitOp::Push), enabled)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if enabled {
-                            this.git_push(cx)
-                        }
-                    })),
+                sync_chip(
+                    "git-push",
+                    "cloud-upload",
+                    None,
+                    label,
+                    busy == Some(GitOp::Push),
+                    enabled,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if enabled {
+                        this.git_push(cx)
+                    }
+                })),
             );
         }
         if s.github && s.branch.is_some() {
             let pr = env.pr.as_ref();
             let (icon_name, tint) = match pr {
                 Some(p) if p.state == "MERGED" => ("git-merge", Some(theme::pr_merged())),
-                Some(p) if p.state == "CLOSED" => ("git-pull-request-closed", Some(theme::pr_closed())),
+                Some(p) if p.state == "CLOSED" => {
+                    ("git-pull-request-closed", Some(theme::pr_closed()))
+                }
                 Some(p) if p.is_draft => ("git-pull-request-draft", Some(theme::pr_draft())),
                 Some(_) => ("git-pull-request", Some(theme::pr_open())),
                 None => ("git-pull-request", None),
@@ -352,12 +413,19 @@ impl Shell {
             let label = pr.map_or("PR".to_string(), |p| format!("#{}", p.number));
             let enabled = pr.is_some() || (idle && s.gh);
             chips = chips.child(
-                sync_chip("git-pr", icon_name, tint, Some(label), busy == Some(GitOp::PullRequest), enabled)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if enabled {
-                            this.git_pull_request(cx)
-                        }
-                    })),
+                sync_chip(
+                    "git-pr",
+                    icon_name,
+                    tint,
+                    Some(label),
+                    busy == Some(GitOp::PullRequest),
+                    enabled,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if enabled {
+                        this.git_pull_request(cx)
+                    }
+                })),
             );
         }
 
@@ -494,8 +562,16 @@ impl Shell {
             } else {
                 plural(env.changes.len(), "file")
             }))
-            .child(div().text_color(theme::diff_add()).child(format!("+{added}")))
-            .child(div().text_color(theme::diff_del()).child(format!("-{removed}")));
+            .child(
+                div()
+                    .text_color(theme::diff_add())
+                    .child(format!("+{added}")),
+            )
+            .child(
+                div()
+                    .text_color(theme::diff_del())
+                    .child(format!("-{removed}")),
+            );
         div()
             .id("changes")
             .flex()
@@ -609,12 +685,16 @@ impl Shell {
                                             .group_hover(group.clone(), |s| s.invisible())
                                             .when(c.added > 0, |d| {
                                                 d.child(
-                                                    div().text_color(theme::diff_add()).child(format!("+{}", c.added)),
+                                                    div()
+                                                        .text_color(theme::diff_add())
+                                                        .child(format!("+{}", c.added)),
                                                 )
                                             })
                                             .when(c.removed > 0, |d| {
                                                 d.child(
-                                                    div().text_color(theme::diff_del()).child(format!("-{}", c.removed)),
+                                                    div()
+                                                        .text_color(theme::diff_del())
+                                                        .child(format!("-{}", c.removed)),
                                                 )
                                             }),
                                     )
@@ -631,19 +711,27 @@ impl Shell {
                                             .child(
                                                 action(
                                                     ("change-toggle", i),
-                                                    if c.fully_staged() { "minus-sign" } else { "add01" },
+                                                    if c.fully_staged() {
+                                                        "minus-sign"
+                                                    } else {
+                                                        "add01"
+                                                    },
                                                 )
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     cx.stop_propagation();
                                                     this.toggle_stage(toggle2.clone(), cx);
                                                 })),
                                             )
-                                            .child(action(("change-discard", i), "undo").on_click(cx.listener(
-                                                move |this, _, window, cx| {
+                                            .child(action(("change-discard", i), "undo").on_click(
+                                                cx.listener(move |this, _, window, cx| {
                                                     cx.stop_propagation();
-                                                    this.confirm_discard(discard.clone(), window, cx);
-                                                },
-                                            ))),
+                                                    this.confirm_discard(
+                                                        discard.clone(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                            )),
                                     ),
                             )
                             .child(
@@ -701,7 +789,9 @@ fn sync_chip(
         .text_size(px(ui::TEXT_SM))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme::text_muted())
-        .when(enabled && !busy, |d| d.cursor_pointer().hover(|s| s.bg(theme::fill_selected())))
+        .when(enabled && !busy, |d| {
+            d.cursor_pointer().hover(|s| s.bg(theme::fill_selected()))
+        })
         .when(!enabled && !busy, |d| d.opacity(0.4))
         .child(if busy {
             ui::spinner((id, 0usize), 13., theme::mix(0.65)).into_any_element()

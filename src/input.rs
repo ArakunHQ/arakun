@@ -46,9 +46,16 @@ pub fn bind_keys(cx: &mut App) {
     use crate::platform::keystroke;
     let ctx = Some("TextInput");
     // Option moves by word on macOS, and Cmd+arrows go to the ends.
-    let word = if cfg!(target_os = "macos") { "alt" } else { "ctrl" };
+    let word = if cfg!(target_os = "macos") {
+        "alt"
+    } else {
+        "ctrl"
+    };
     if cfg!(target_os = "macos") {
-        cx.bind_keys([KeyBinding::new("cmd-left", Home, ctx), KeyBinding::new("cmd-right", End, ctx)]);
+        cx.bind_keys([
+            KeyBinding::new("cmd-left", Home, ctx),
+            KeyBinding::new("cmd-right", End, ctx),
+        ]);
     }
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, ctx),
@@ -234,7 +241,12 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus_handle, cx);
         self.is_selecting = true;
         if event.modifiers.shift {
@@ -380,7 +392,10 @@ impl TextInput {
 
     fn next_word(&self, offset: usize) -> usize {
         let rest = &self.content[offset..];
-        let skip = rest.len() - rest.trim_start_matches(|c: char| c.is_whitespace() || c == '/').len();
+        let skip = rest.len()
+            - rest
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '/')
+                .len();
         let after = &rest[skip..];
         let word = after
             .find(|c: char| c.is_whitespace() || c == '/')
@@ -461,7 +476,8 @@ impl EntityInputHandler for TextInput {
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
-        self.marked_range = (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
+        self.marked_range =
+            (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
         self.selected_range = new_selected_range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -481,8 +497,14 @@ impl EntityInputHandler for TextInput {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
-            point(bounds.left() + last_layout.x_for_index(range.start), bounds.top()),
-            point(bounds.left() + last_layout.x_for_index(range.end), bounds.bottom()),
+            point(
+                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + last_layout.x_for_index(range.end),
+                bounds.bottom(),
+            ),
         ))
     }
 

@@ -56,7 +56,9 @@ pub struct DnsRecord {
 impl DnsRecord {
     /// The Tunnel id a CNAME routes to.
     pub fn tunnel(&self) -> Option<&str> {
-        (self.kind == "CNAME").then(|| self.content.strip_suffix(".cfargotunnel.com")).flatten()
+        (self.kind == "CNAME")
+            .then(|| self.content.strip_suffix(".cfargotunnel.com"))
+            .flatten()
     }
     /// An address record that shows the server's IP to anyone who looks it up.
     pub fn exposes_origin(&self) -> bool {
@@ -67,8 +69,12 @@ impl DnsRecord {
 /// Loopback, private and link-local addresses: nothing to hide behind a proxy.
 fn private_ip(ip: &str) -> bool {
     match ip.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(v)) => v.is_private() || v.is_loopback() || v.is_link_local() || v.is_unspecified(),
-        Ok(std::net::IpAddr::V6(v)) => v.is_loopback() || v.is_unspecified() || (v.segments()[0] & 0xfe00) == 0xfc00,
+        Ok(std::net::IpAddr::V4(v)) => {
+            v.is_private() || v.is_loopback() || v.is_link_local() || v.is_unspecified()
+        }
+        Ok(std::net::IpAddr::V6(v)) => {
+            v.is_loopback() || v.is_unspecified() || (v.segments()[0] & 0xfe00) == 0xfc00
+        }
         Err(_) => false,
     }
 }
@@ -152,8 +158,16 @@ pub struct LocalCloudflared {
 
 /// `2026.10.4` → (2026, 10, 4); anything after the numbers is ignored.
 pub fn version(v: &str) -> (u32, u32, u32) {
-    let mut n = v.trim().trim_start_matches('v').split(|c: char| !c.is_ascii_digit()).map(|p| p.parse().unwrap_or(0));
-    (n.next().unwrap_or(0), n.next().unwrap_or(0), n.next().unwrap_or(0))
+    let mut n = v
+        .trim()
+        .trim_start_matches('v')
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|p| p.parse().unwrap_or(0));
+    (
+        n.next().unwrap_or(0),
+        n.next().unwrap_or(0),
+        n.next().unwrap_or(0),
+    )
 }
 
 /// Whether `v` is older than `latest` (false when either is unknown).
@@ -163,11 +177,30 @@ pub fn outdated(v: &str, latest: &str) -> bool {
 
 pub(super) fn local_cloudflared() -> LocalCloudflared {
     let installed = crate::agent::which("cloudflared")
-        .and_then(|bin| crate::platform::command(bin).arg("--version").stdin(Stdio::null()).output().ok())
-        .map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().nth(2).unwrap_or_default().to_string())
+        .and_then(|bin| {
+            crate::platform::command(bin)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .output()
+                .ok()
+        })
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .nth(2)
+                .unwrap_or_default()
+                .to_string()
+        })
         .unwrap_or_default();
     let latest = crate::platform::command("curl")
-        .args(["-sS", "--max-time", "10", "-H", "Accept: application/vnd.github+json", "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"])
+        .args([
+            "-sS",
+            "--max-time",
+            "10",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
+        ])
         .stdin(Stdio::null())
         .output()
         .ok()
@@ -182,7 +215,9 @@ fn str_of(v: &Value) -> String {
 }
 
 fn time_of(v: &Value) -> u64 {
-    v.as_str().and_then(crate::account::parse_rfc3339).unwrap_or(0)
+    v.as_str()
+        .and_then(crate::account::parse_rfc3339)
+        .unwrap_or(0)
 }
 
 fn items(v: &Value) -> impl Iterator<Item = &Value> {
@@ -203,7 +238,12 @@ pub(super) fn parse_tunnels(v: &Value) -> Vec<Tunnel> {
                     None => {
                         connectors.push((
                             client,
-                            Connector { version: str_of(&c["client_version"]), origin_ip: str_of(&c["origin_ip"]), opened: time_of(&c["opened_at"]), colos: Vec::new() },
+                            Connector {
+                                version: str_of(&c["client_version"]),
+                                origin_ip: str_of(&c["origin_ip"]),
+                                opened: time_of(&c["opened_at"]),
+                                colos: Vec::new(),
+                            },
                         ));
                         connectors.len() - 1
                     }
@@ -230,14 +270,29 @@ pub(super) fn parse_tunnels(v: &Value) -> Vec<Tunnel> {
 
 pub(super) fn parse_dns(v: &Value) -> Vec<DnsRecord> {
     let mut records: Vec<DnsRecord> = items(&v["result"])
-        .map(|r| DnsRecord { id: str_of(&r["id"]), kind: str_of(&r["type"]), name: str_of(&r["name"]), content: str_of(&r["content"]), proxied: r["proxied"].as_bool().unwrap_or(false) })
+        .map(|r| DnsRecord {
+            id: str_of(&r["id"]),
+            kind: str_of(&r["type"]),
+            name: str_of(&r["name"]),
+            content: str_of(&r["content"]),
+            proxied: r["proxied"].as_bool().unwrap_or(false),
+        })
         .collect();
-    records.sort_by(|a, b| a.name.len().cmp(&b.name.len()).then(a.name.cmp(&b.name)).then(a.kind.cmp(&b.kind)));
+    records.sort_by(|a, b| {
+        a.name
+            .len()
+            .cmp(&b.name.len())
+            .then(a.name.cmp(&b.name))
+            .then(a.kind.cmp(&b.kind))
+    });
     records
 }
 
 pub(super) fn parse_settings(v: &Value) -> ZoneSettings {
-    let mut s = ZoneSettings { read: true, ..Default::default() };
+    let mut s = ZoneSettings {
+        read: true,
+        ..Default::default()
+    };
     for item in items(&v["result"]) {
         let value = item["value"].as_str().unwrap_or_default();
         match item["id"].as_str().unwrap_or_default() {
@@ -245,7 +300,11 @@ pub(super) fn parse_settings(v: &Value) -> ZoneSettings {
             "always_use_https" => s.always_https = value == "on",
             "min_tls_version" => s.min_tls = value.to_string(),
             "development_mode" => s.dev_mode = value == "on",
-            "security_header" => s.hsts = item["value"]["strict_transport_security"]["enabled"].as_bool().unwrap_or(false),
+            "security_header" => {
+                s.hsts = item["value"]["strict_transport_security"]["enabled"]
+                    .as_bool()
+                    .unwrap_or(false)
+            }
             _ => {}
         }
     }
@@ -255,7 +314,11 @@ pub(super) fn parse_settings(v: &Value) -> ZoneSettings {
 pub(super) fn parse_registrations(v: &Value) -> Vec<Registration> {
     let mut out: Vec<Registration> = items(&v["result"])
         .map(|d| Registration {
-            name: str_of(if d["name"].is_string() { &d["name"] } else { &d["domain_name"] }),
+            name: str_of(if d["name"].is_string() {
+                &d["name"]
+            } else {
+                &d["domain_name"]
+            }),
             expires: time_of(&d["expires_at"]),
             auto_renew: d["auto_renew"].as_bool().unwrap_or(false),
         })
@@ -271,7 +334,9 @@ pub(super) fn parse_pages(v: &Value) -> Vec<PagesProject> {
             let d = &p["latest_deployment"];
             PagesProject {
                 name: str_of(&p["name"]),
-                domains: items(&p["domains"]).filter_map(|d| d.as_str().map(str::to_string)).collect(),
+                domains: items(&p["domains"])
+                    .filter_map(|d| d.as_str().map(str::to_string))
+                    .collect(),
                 source: str_of(&p["source"]["type"]),
                 repo: str_of(&p["source"]["config"]["repo_name"]),
                 deployed: time_of(&d["created_on"]),
@@ -281,12 +346,20 @@ pub(super) fn parse_pages(v: &Value) -> Vec<PagesProject> {
             }
         })
         .collect();
-    out.sort_by(|a, b| b.failed().cmp(&a.failed()).then(b.deployed.cmp(&a.deployed)));
+    out.sort_by(|a, b| {
+        b.failed()
+            .cmp(&a.failed())
+            .then(b.deployed.cmp(&a.deployed))
+    });
     out
 }
 
 pub(super) fn parse_kv(v: &Value) -> Vec<KvNamespace> {
-    let mut out: Vec<KvNamespace> = items(&v["result"]).map(|n| KvNamespace { title: str_of(&n["title"]) }).collect();
+    let mut out: Vec<KvNamespace> = items(&v["result"])
+        .map(|n| KvNamespace {
+            title: str_of(&n["title"]),
+        })
+        .collect();
     out.sort_by(|a, b| a.title.cmp(&b.title));
     out
 }
@@ -316,20 +389,50 @@ mod tests {
             { "id": "t0", "name": "old", "status": "inactive", "connections": [] },
             { "id": "tx", "name": "gone", "status": "inactive", "deleted_at": "2026-01-01T00:00:00Z" } ] });
         let t = parse_tunnels(&v);
-        assert_eq!(t.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["web", "old"]);
+        assert_eq!(
+            t.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            vec!["web", "old"]
+        );
         assert_eq!(t[0].connectors.len(), 2);
-        assert_eq!(t[0].connectors[0].colos, vec!["MEX".to_string(), "DFW".to_string()]);
+        assert_eq!(
+            t[0].connectors[0].colos,
+            vec!["MEX".to_string(), "DFW".to_string()]
+        );
         assert_eq!(t[0].target(), "t1.cfargotunnel.com");
     }
 
     #[test]
     fn records_and_settings() {
-        let tunnel = DnsRecord { id: String::new(), kind: "CNAME".into(), name: "dev.a.mx".into(), content: "abc.cfargotunnel.com".into(), proxied: true };
+        let tunnel = DnsRecord {
+            id: String::new(),
+            kind: "CNAME".into(),
+            name: "dev.a.mx".into(),
+            content: "abc.cfargotunnel.com".into(),
+            proxied: true,
+        };
         assert_eq!(tunnel.tunnel(), Some("abc"));
-        let bare = DnsRecord { id: String::new(), kind: "A".into(), name: "a.mx".into(), content: "203.0.113.9".into(), proxied: false };
+        let bare = DnsRecord {
+            id: String::new(),
+            kind: "A".into(),
+            name: "a.mx".into(),
+            content: "203.0.113.9".into(),
+            proxied: false,
+        };
         assert!(bare.exposes_origin());
-        assert!(!DnsRecord { content: "192.168.1.2".into(), ..bare.clone() }.exposes_origin());
-        assert!(!DnsRecord { proxied: true, ..bare }.exposes_origin());
+        assert!(
+            !DnsRecord {
+                content: "192.168.1.2".into(),
+                ..bare.clone()
+            }
+            .exposes_origin()
+        );
+        assert!(
+            !DnsRecord {
+                proxied: true,
+                ..bare
+            }
+            .exposes_origin()
+        );
         let s = parse_settings(&json!({ "result": [
             { "id": "ssl", "value": "flexible" }, { "id": "always_use_https", "value": "off" },
             { "id": "min_tls_version", "value": "1.0" }, { "id": "development_mode", "value": "on" } ] }));

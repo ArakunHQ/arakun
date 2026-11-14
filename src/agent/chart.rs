@@ -144,7 +144,12 @@ fn parse_chart(text: &str) -> Option<Chart> {
         Ok(v) => chart_from_json(&v)?,
         Err(_) => chart_from_lines(text)?,
     };
-    let n = chart.series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+    let n = chart
+        .series
+        .iter()
+        .map(|s| s.values.len())
+        .max()
+        .unwrap_or(0);
     (n > 0 && chart.values().all(f64::is_finite)).then_some(chart)
 }
 
@@ -186,12 +191,17 @@ fn number_with_unit(s: &str) -> Option<(f64, String)> {
         .find(|&(i, c)| !(c.is_ascii_digit() || c == '.' || c == ',' || (i == 0 && c == '-')))
         .map_or(s.len(), |(i, _)| i);
     let n: f64 = s[..end].replace(',', "").parse().ok()?;
-    let unit = if prefix.is_empty() { s[end..].trim().to_string() } else { prefix.to_string() };
+    let unit = if prefix.is_empty() {
+        s[end..].trim().to_string()
+    } else {
+        prefix.to_string()
+    };
     Some((n, unit))
 }
 
 fn num(v: &Value) -> Option<f64> {
-    v.as_f64().or_else(|| number_with_unit(v.as_str()?).map(|(n, _)| n))
+    v.as_f64()
+        .or_else(|| number_with_unit(v.as_str()?).map(|(n, _)| n))
 }
 
 fn label_of(v: &Value) -> String {
@@ -230,7 +240,14 @@ fn chart_from_json(v: &Value) -> Option<Chart> {
             Value::Array(a) if !a.is_empty() && a.iter().all(Value::is_object) => {
                 labels = a
                     .iter()
-                    .map(|x| label_of(x.get("label").or(x.get("name")).or(x.get("x")).unwrap_or(&Value::Null)))
+                    .map(|x| {
+                        label_of(
+                            x.get("label")
+                                .or(x.get("name"))
+                                .or(x.get("x"))
+                                .unwrap_or(&Value::Null),
+                        )
+                    })
                     .collect();
                 a.iter()
                     .map(|x| x.get("value").or(x.get("y")).and_then(num).unwrap_or(0.))
@@ -301,7 +318,9 @@ fn chart_from_lines(text: &str) -> Option<Chart> {
         if chart.unit.is_empty() {
             chart.unit = unit;
         }
-        chart.labels.push(label.trim().trim_matches('"').to_string());
+        chart
+            .labels
+            .push(label.trim().trim_matches('"').to_string());
         chart.series[0].values.push(n);
     }
     Some(chart)
@@ -408,12 +427,18 @@ fn parse_pie(statements: &[String]) -> Option<Chart> {
         unit: String::new(),
     };
     for (i, s) in statements.iter().enumerate() {
-        let s = if i == 0 { s.trim_start_matches("pie").trim() } else { s.as_str() };
+        let s = if i == 0 {
+            s.trim_start_matches("pie").trim()
+        } else {
+            s.as_str()
+        };
         let s = s.trim_start_matches("showData").trim();
         if let Some(t) = s.strip_prefix("title") {
             chart.title = Some(t.trim().to_string());
         } else if let Some((label, value)) = s.rsplit_once(':') {
-            chart.labels.push(label.trim().trim_matches('"').to_string());
+            chart
+                .labels
+                .push(label.trim().trim_matches('"').to_string());
             chart.series[0].values.push(value.trim().parse().ok()?);
         }
     }
@@ -421,8 +446,16 @@ fn parse_pie(statements: &[String]) -> Option<Chart> {
 }
 
 const SKIP: &[&str] = &[
-    "subgraph", "end", "classDef", "class", "style", "linkStyle", "click", "direction",
-    "accTitle", "accDescr",
+    "subgraph",
+    "end",
+    "classDef",
+    "class",
+    "style",
+    "linkStyle",
+    "click",
+    "direction",
+    "accTitle",
+    "accDescr",
 ];
 
 #[derive(Default)]
@@ -450,13 +483,21 @@ fn skip_ws(s: &[char], i: &mut usize) {
 }
 
 fn starts(s: &[char], i: usize, pat: &str) -> bool {
-    pat.chars().enumerate().all(|(k, c)| s.get(i + k) == Some(&c))
+    pat.chars()
+        .enumerate()
+        .all(|(k, c)| s.get(i + k) == Some(&c))
 }
 
 fn clean_label(s: &str) -> String {
     let s = s.trim();
-    let s = s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s);
-    let s = s.strip_prefix('`').and_then(|s| s.strip_suffix('`')).unwrap_or(s);
+    let s = s
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s);
+    let s = s
+        .strip_prefix('`')
+        .and_then(|s| s.strip_suffix('`'))
+        .unwrap_or(s);
     s.replace("<br>", "\n")
         .replace("<br/>", "\n")
         .replace("<br />", "\n")
@@ -638,7 +679,9 @@ fn edge_op(s: &[char], i: &mut usize) -> Option<EdgeStyle> {
         while j < s.len() && s[j] != '|' {
             j += 1;
         }
-        label = Some(clean_label(&s[from..j.min(s.len())].iter().collect::<String>()));
+        label = Some(clean_label(
+            &s[from..j.min(s.len())].iter().collect::<String>(),
+        ));
         *i = (j + 1).min(s.len());
     }
     Some(EdgeStyle {
@@ -838,17 +881,27 @@ fn rank_nodes(n: usize, edges: &[FlowEdge]) -> (Vec<usize>, Vec<Vec<usize>>) {
     };
     index(&layers, &mut pos);
     let mean = |vs: &[usize], pos: &[f32], own: f32| {
-        if vs.is_empty() { own } else { vs.iter().map(|&u| pos[u]).sum::<f32>() / vs.len() as f32 }
+        if vs.is_empty() {
+            own
+        } else {
+            vs.iter().map(|&u| pos[u]).sum::<f32>() / vs.len() as f32
+        }
     };
     for _ in 0..2 {
         for r in 1..ranks {
-            let mut sorted: Vec<(usize, f32)> = layers[r].iter().map(|&v| (v, mean(&preds[v], &pos, pos[v]))).collect();
+            let mut sorted: Vec<(usize, f32)> = layers[r]
+                .iter()
+                .map(|&v| (v, mean(&preds[v], &pos, pos[v])))
+                .collect();
             sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
             layers[r] = sorted.into_iter().map(|(v, _)| v).collect();
             index(&layers, &mut pos);
         }
         for r in (0..ranks.saturating_sub(1)).rev() {
-            let mut sorted: Vec<(usize, f32)> = layers[r].iter().map(|&v| (v, mean(&forward[v], &pos, pos[v]))).collect();
+            let mut sorted: Vec<(usize, f32)> = layers[r]
+                .iter()
+                .map(|&v| (v, mean(&forward[v], &pos, pos[v])))
+                .collect();
             sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
             layers[r] = sorted.into_iter().map(|(v, _)| v).collect();
             index(&layers, &mut pos);
@@ -865,7 +918,13 @@ struct Laid {
     height: f32,
 }
 
-fn place(edges: &[FlowEdge], sizes: &[(f32, f32)], rank: &[usize], layers: &[Vec<usize>], h: bool) -> Laid {
+fn place(
+    edges: &[FlowEdge],
+    sizes: &[(f32, f32)],
+    rank: &[usize],
+    layers: &[Vec<usize>],
+    h: bool,
+) -> Laid {
     let n = sizes.len();
     // Along = the direction ranks advance in; across = inside a rank.
     let along = |s: (f32, f32)| if h { s.0 } else { s.1 };
@@ -884,10 +943,21 @@ fn place(edges: &[FlowEdge], sizes: &[(f32, f32)], rank: &[usize], layers: &[Vec
     }
     let spans: Vec<f32> = layers
         .iter()
-        .map(|l| l.iter().map(|&v| across(sizes[v])).sum::<f32>() + node_gap * l.len().saturating_sub(1) as f32)
+        .map(|l| {
+            l.iter().map(|&v| across(sizes[v])).sum::<f32>()
+                + node_gap * l.len().saturating_sub(1) as f32
+        })
         .collect();
     let widest = spans.iter().cloned().fold(0., f32::max);
-    let mut placed = vec![Placed { x: 0., y: 0., w: 0., h: 0. }; n];
+    let mut placed = vec![
+        Placed {
+            x: 0.,
+            y: 0.,
+            w: 0.,
+            h: 0.
+        };
+        n
+    ];
     let mut cursor = 0.;
     for (r, layer) in layers.iter().enumerate() {
         let band = layer.iter().map(|&v| along(sizes[v])).fold(0., f32::max);
@@ -896,9 +966,19 @@ fn place(edges: &[FlowEdge], sizes: &[(f32, f32)], rank: &[usize], layers: &[Vec
             let s = sizes[v];
             let a = cursor + (band - along(s)) / 2.;
             placed[v] = if h {
-                Placed { x: a, y: x, w: s.0, h: s.1 }
+                Placed {
+                    x: a,
+                    y: x,
+                    w: s.0,
+                    h: s.1,
+                }
             } else {
-                Placed { x, y: a, w: s.0, h: s.1 }
+                Placed {
+                    x,
+                    y: a,
+                    w: s.0,
+                    h: s.1,
+                }
             };
             x += across(s) + node_gap;
         }
@@ -917,35 +997,76 @@ fn place(edges: &[FlowEdge], sizes: &[(f32, f32)], rank: &[usize], layers: &[Vec
             // A loop on the node's outer side.
             if h {
                 let (x, y) = (a.x + a.w / 2., a.y + a.h);
-                Curve { from: (x - 8., y), c1: (x - 28., y + 36.), c2: (x + 28., y + 36.), to: (x + 8., y) }
+                Curve {
+                    from: (x - 8., y),
+                    c1: (x - 28., y + 36.),
+                    c2: (x + 28., y + 36.),
+                    to: (x + 8., y),
+                }
             } else {
                 let (x, y) = (a.x + a.w, a.y + a.h / 2.);
-                Curve { from: (x, y - 8.), c1: (x + 36., y - 28.), c2: (x + 36., y + 28.), to: (x, y + 8.) }
+                Curve {
+                    from: (x, y - 8.),
+                    c1: (x + 36., y - 28.),
+                    c2: (x + 36., y + 28.),
+                    to: (x, y + 8.),
+                }
             }
         } else if rank[e.to] > rank[e.from] {
             if h {
                 let (f, t) = ((a.x + a.w, a.y + a.h / 2.), (b.x, b.y + b.h / 2.));
                 let d = (t.0 - f.0) * 0.5;
-                Curve { from: f, c1: (f.0 + d, f.1), c2: (t.0 - d, t.1), to: t }
+                Curve {
+                    from: f,
+                    c1: (f.0 + d, f.1),
+                    c2: (t.0 - d, t.1),
+                    to: t,
+                }
             } else {
                 let (f, t) = ((a.x + a.w / 2., a.y + a.h), (b.x + b.w / 2., b.y));
                 let d = (t.1 - f.1) * 0.5;
-                Curve { from: f, c1: (f.0, f.1 + d), c2: (t.0, t.1 - d), to: t }
+                Curve {
+                    from: f,
+                    c1: (f.0, f.1 + d),
+                    c2: (t.0, t.1 - d),
+                    to: t,
+                }
             }
         } else if rank[e.to] == rank[e.from] {
             let l = if h { a.y < b.y } else { a.x < b.x };
             if h {
-                let (f, t) = if l { ((a.x + a.w / 2., a.y + a.h), (b.x + b.w / 2., b.y)) } else { ((a.x + a.w / 2., a.y), (b.x + b.w / 2., b.y + b.h)) };
-                Curve { from: f, c1: f, c2: t, to: t }
+                let (f, t) = if l {
+                    ((a.x + a.w / 2., a.y + a.h), (b.x + b.w / 2., b.y))
+                } else {
+                    ((a.x + a.w / 2., a.y), (b.x + b.w / 2., b.y + b.h))
+                };
+                Curve {
+                    from: f,
+                    c1: f,
+                    c2: t,
+                    to: t,
+                }
             } else {
-                let (f, t) = if l { ((a.x + a.w, a.y + a.h / 2.), (b.x, b.y + b.h / 2.)) } else { ((a.x, a.y + a.h / 2.), (b.x + b.w, b.y + b.h / 2.)) };
-                Curve { from: f, c1: f, c2: t, to: t }
+                let (f, t) = if l {
+                    ((a.x + a.w, a.y + a.h / 2.), (b.x, b.y + b.h / 2.))
+                } else {
+                    ((a.x, a.y + a.h / 2.), (b.x + b.w, b.y + b.h / 2.))
+                };
+                Curve {
+                    from: f,
+                    c1: f,
+                    c2: t,
+                    to: t,
+                }
             }
         } else {
             // A back edge goes around the ranks it spans, on the side with fewer
             // nodes in the way at its two ends, so it does not cross the flow.
             let (lo, hi) = (rank[e.to], rank[e.from]);
-            let band: Vec<Placed> = (0..n).filter(|&v| (lo..=hi).contains(&rank[v])).map(|v| placed[v]).collect();
+            let band: Vec<Placed> = (0..n)
+                .filter(|&v| (lo..=hi).contains(&rank[v]))
+                .map(|v| placed[v])
+                .collect();
             let ((ab, aa), (bb, ba)) = (slot(e.from), slot(e.to));
             let near = ab + bb < aa + ba;
             let out = 36.;
@@ -953,20 +1074,40 @@ fn place(edges: &[FlowEdge], sizes: &[(f32, f32)], rank: &[usize], layers: &[Vec
                 if near {
                     let y = band.iter().map(|p| p.y).fold(f32::MAX, f32::min) - out;
                     let (f, t) = ((a.x + a.w / 2., a.y), (b.x + b.w / 2., b.y));
-                    Curve { from: f, c1: (f.0, y), c2: (t.0, y), to: t }
+                    Curve {
+                        from: f,
+                        c1: (f.0, y),
+                        c2: (t.0, y),
+                        to: t,
+                    }
                 } else {
                     let y = band.iter().map(|p| p.y + p.h).fold(f32::MIN, f32::max) + out;
                     let (f, t) = ((a.x + a.w / 2., a.y + a.h), (b.x + b.w / 2., b.y + b.h));
-                    Curve { from: f, c1: (f.0, y), c2: (t.0, y), to: t }
+                    Curve {
+                        from: f,
+                        c1: (f.0, y),
+                        c2: (t.0, y),
+                        to: t,
+                    }
                 }
             } else if near {
                 let x = band.iter().map(|p| p.x).fold(f32::MAX, f32::min) - out;
                 let (f, t) = ((a.x, a.y + a.h / 2.), (b.x, b.y + b.h / 2.));
-                Curve { from: f, c1: (x, f.1), c2: (x, t.1), to: t }
+                Curve {
+                    from: f,
+                    c1: (x, f.1),
+                    c2: (x, t.1),
+                    to: t,
+                }
             } else {
                 let x = band.iter().map(|p| p.x + p.w).fold(f32::MIN, f32::max) + out;
                 let (f, t) = ((a.x + a.w, a.y + a.h / 2.), (b.x + b.w, b.y + b.h / 2.));
-                Curve { from: f, c1: (x, f.1), c2: (x, t.1), to: t }
+                Curve {
+                    from: f,
+                    c1: (x, f.1),
+                    c2: (x, t.1),
+                    to: t,
+                }
             }
         };
         curves.push(curve);
@@ -1002,7 +1143,12 @@ fn place(edges: &[FlowEdge], sizes: &[(f32, f32)], rank: &[usize], layers: &[Vec
     }
     let shift = |(x, y): (f32, f32)| (x + dx, y + dy);
     for c in &mut curves {
-        *c = Curve { from: shift(c.from), c1: shift(c.c1), c2: shift(c.c2), to: shift(c.to) };
+        *c = Curve {
+            from: shift(c.from),
+            c1: shift(c.c1),
+            c2: shift(c.c2),
+            to: shift(c.to),
+        };
     }
     Laid {
         placed,
@@ -1057,9 +1203,21 @@ pub fn render(ix: usize, diagram: &Diagram, source: &str) -> AnyElement {
     match diagram {
         Diagram::Chart(c) => {
             let title = c.title.clone().unwrap_or_else(|| "Chart".into());
-            card(ix, "chart-breakout-square", title, source, render_chart(ix, c))
+            card(
+                ix,
+                "chart-breakout-square",
+                title,
+                source,
+                render_chart(ix, c),
+            )
         }
-        Diagram::Flow(f) => card(ix, "git-branch", "Diagram".into(), source, render_flow(ix, f)),
+        Diagram::Flow(f) => card(
+            ix,
+            "git-branch",
+            "Diagram".into(),
+            source,
+            render_flow(ix, f),
+        ),
     }
 }
 
@@ -1084,7 +1242,12 @@ fn legend(series: &[Series]) -> AnyElement {
 
 fn render_chart(ix: usize, c: &Chart) -> AnyElement {
     let groups = c.labels.len();
-    let longest = c.labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let longest = c
+        .labels
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
     let kind = match c.kind {
         Kind::Bar if longest > 10 || groups > 14 || groups * c.series.len() > 36 => Kind::HBar,
         k => k,
@@ -1102,7 +1265,9 @@ fn render_chart(ix: usize, c: &Chart) -> AnyElement {
         .p(px(16.))
         .min_w_0()
         .child(body)
-        .when(c.series.len() > 1 && kind != Kind::Pie, |d| d.child(legend(&c.series)))
+        .when(c.series.len() > 1 && kind != Kind::Pie, |d| {
+            d.child(legend(&c.series))
+        })
         .into_any_element()
 }
 
@@ -1155,7 +1320,13 @@ fn bars(c: &Chart) -> AnyElement {
                                             .child(c.fmt(v)),
                                     )
                                 })
-                                .child(div().w_full().h(px(h.max(2.))).rounded_t(px(4.)).bg(color(s)))
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(h.max(2.)))
+                                        .rounded_t(px(4.))
+                                        .bg(color(s)),
+                                )
                         })),
                 )
                 .child(
@@ -1243,10 +1414,15 @@ const LINE_H: f32 = 170.;
 const INSET: f32 = 6.;
 
 fn lines(ix: usize, c: &Chart, area: bool) -> AnyElement {
-    let (lo, hi) = c.values().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(v), b.max(v)));
+    let (lo, hi) = c
+        .values()
+        .fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(v), b.max(v)));
     let lo = if lo >= 0. { 0. } else { -nice_max(-lo) };
     let hi = nice_max(hi.max(lo + 1e-9));
-    let ticks: Vec<String> = (0..5).rev().map(|k| c.fmt(lo + (hi - lo) * k as f64 / 4.)).collect();
+    let ticks: Vec<String> = (0..5)
+        .rev()
+        .map(|k| c.fmt(lo + (hi - lo) * k as f64 / 4.))
+        .collect();
     let series: Vec<(Vec<f64>, Hsla)> = c
         .series
         .iter()
@@ -1260,9 +1436,18 @@ fn lines(ix: usize, c: &Chart, area: bool) -> AnyElement {
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
             let o = bounds.origin;
-            let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32() - 2. * INSET);
+            let (w, h) = (
+                bounds.size.width.as_f32(),
+                bounds.size.height.as_f32() - 2. * INSET,
+            );
             let y_of = |v: f64| o.y + px(INSET + h - ((v - lo) / (hi - lo)) as f32 * h);
-            let x_of = |i: usize| o.x + px(if n <= 1 { w / 2. } else { 4. + i as f32 * (w - 8.) / (n - 1) as f32 });
+            let x_of = |i: usize| {
+                o.x + px(if n <= 1 {
+                    w / 2.
+                } else {
+                    4. + i as f32 * (w - 8.) / (n - 1) as f32
+                })
+            };
             for k in 0..5 {
                 let y = o.y + px(INSET + h * k as f32 / 4.);
                 let mut p = PathBuilder::stroke(px(1.));
@@ -1273,7 +1458,11 @@ fn lines(ix: usize, c: &Chart, area: bool) -> AnyElement {
                 }
             }
             for (values, col) in &series {
-                let pts: Vec<Point<Pixels>> = values.iter().enumerate().map(|(i, &v)| point(x_of(i), y_of(v))).collect();
+                let pts: Vec<Point<Pixels>> = values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| point(x_of(i), y_of(v)))
+                    .collect();
                 if pts.len() >= 2 && fill {
                     let mut p = PathBuilder::fill();
                     p.move_to(point(pts[0].x, y_of(lo.max(0.))));
@@ -1300,7 +1489,10 @@ fn lines(ix: usize, c: &Chart, area: bool) -> AnyElement {
                     for &q in &pts {
                         let r = 3.;
                         window.paint_quad(quad(
-                            Bounds::new(point(q.x - px(r), q.y - px(r)), size(px(r * 2.), px(r * 2.))),
+                            Bounds::new(
+                                point(q.x - px(r), q.y - px(r)),
+                                size(px(r * 2.), px(r * 2.)),
+                            ),
                             px(r),
                             theme::background(),
                             px(1.75),
@@ -1318,7 +1510,11 @@ fn lines(ix: usize, c: &Chart, area: bool) -> AnyElement {
     let x_labels: Vec<String> = match n {
         0 => Vec::new(),
         1..=8 => c.labels.clone(),
-        _ => vec![c.labels[0].clone(), c.labels[n / 2].clone(), c.labels[n - 1].clone()],
+        _ => vec![
+            c.labels[0].clone(),
+            c.labels[n / 2].clone(),
+            c.labels[n - 1].clone(),
+        ],
     };
     let label = |t: String| {
         div()
@@ -1429,7 +1625,12 @@ fn pie(c: &Chart) -> AnyElement {
                         .text_color(theme::text())
                         .child(c.fmt(total)),
                 )
-                .child(div().text_size(px(crate::ui::TEXT_XS)).text_color(theme::text_subtle()).child("total")),
+                .child(
+                    div()
+                        .text_size(px(crate::ui::TEXT_XS))
+                        .text_color(theme::text_subtle())
+                        .child("total"),
+                ),
         )
         .child(
             div()
@@ -1448,8 +1649,20 @@ fn pie(c: &Chart) -> AnyElement {
                         .gap(px(8.))
                         .min_w_0()
                         .child(div().flex_none().size(px(8.)).rounded(px(4.)).bg(color(i)))
-                        .child(div().flex_1().min_w_0().truncate().text_color(theme::text_muted()).child(label.clone()))
-                        .child(div().flex_none().text_color(theme::text_subtle()).child(c.fmt(v)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme::text_muted())
+                                .child(label.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme::text_subtle())
+                                .child(c.fmt(v)),
+                        )
                         .child(
                             div()
                                 .flex_none()
@@ -1464,7 +1677,12 @@ fn pie(c: &Chart) -> AnyElement {
 }
 
 fn render_flow(ix: usize, f: &Flow) -> AnyElement {
-    let shapes: Vec<(Shape, Placed)> = f.nodes.iter().map(|n| n.shape).zip(f.placed.iter().copied()).collect();
+    let shapes: Vec<(Shape, Placed)> = f
+        .nodes
+        .iter()
+        .map(|n| n.shape)
+        .zip(f.placed.iter().copied())
+        .collect();
     let edges: Vec<(Curve, bool, bool, bool)> = f
         .edges
         .iter()
@@ -1473,7 +1691,9 @@ fn render_flow(ix: usize, f: &Flow) -> AnyElement {
         .collect();
     let paint = canvas(
         |_, _, _| {},
-        move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| paint_flow(bounds, &shapes, &edges, window),
+        move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+            paint_flow(bounds, &shapes, &edges, window)
+        },
     )
     .absolute()
     .top_0()
@@ -1503,7 +1723,11 @@ fn render_flow(ix: usize, f: &Flow) -> AnyElement {
                 .text_size(px(crate::ui::TEXT_SM))
                 .line_height(px(NODE_LINE_H))
                 .text_color(theme::content())
-                .children(lines.iter().map(|l| div().whitespace_nowrap().child(l.clone()))),
+                .children(
+                    lines
+                        .iter()
+                        .map(|l| div().whitespace_nowrap().child(l.clone())),
+                ),
         );
     }
     for (e, c) in f.edges.iter().zip(&f.curves) {
@@ -1526,7 +1750,11 @@ fn render_flow(ix: usize, f: &Flow) -> AnyElement {
                 .text_size(px(crate::ui::TEXT_XS))
                 .line_height(px(EDGE_LINE_H))
                 .text_color(theme::text_subtle())
-                .children(lines.into_iter().map(|l| div().whitespace_nowrap().child(l))),
+                .children(
+                    lines
+                        .into_iter()
+                        .map(|l| div().whitespace_nowrap().child(l)),
+                ),
         );
     }
     div()
@@ -1540,18 +1768,31 @@ fn render_flow(ix: usize, f: &Flow) -> AnyElement {
         .into_any_element()
 }
 
-fn paint_flow(bounds: Bounds<Pixels>, shapes: &[(Shape, Placed)], edges: &[(Curve, bool, bool, bool)], window: &mut Window) {
+fn paint_flow(
+    bounds: Bounds<Pixels>,
+    shapes: &[(Shape, Placed)],
+    edges: &[(Curve, bool, bool, bool)],
+    window: &mut Window,
+) {
     let o = bounds.origin;
     let pt = |(x, y): (f32, f32)| point(o.x + px(x), o.y + px(y));
     let line = theme::mix(0.38);
     for &(c, arrow, dotted, thick) in edges {
         // End the stroke at the arrow's base so its tip stays sharp.
         let (dx, dy) = (c.to.0 - c.c2.0, c.to.1 - c.c2.1);
-        let (dx, dy) = if dx.abs() + dy.abs() < 0.01 { (c.to.0 - c.from.0, c.to.1 - c.from.1) } else { (dx, dy) };
+        let (dx, dy) = if dx.abs() + dy.abs() < 0.01 {
+            (c.to.0 - c.from.0, c.to.1 - c.from.1)
+        } else {
+            (dx, dy)
+        };
         let len = (dx * dx + dy * dy).sqrt().max(0.01);
         let (ux, uy) = (dx / len, dy / len);
         let tip = 8.;
-        let end = if arrow { (c.to.0 - ux * tip * 0.8, c.to.1 - uy * tip * 0.8) } else { c.to };
+        let end = if arrow {
+            (c.to.0 - ux * tip * 0.8, c.to.1 - uy * tip * 0.8)
+        } else {
+            c.to
+        };
         let mut p = PathBuilder::stroke(px(if thick { 2.5 } else { 1.5 }));
         if dotted {
             p = p.dash_array(&[px(4.), px(4.)]);
@@ -1566,7 +1807,11 @@ fn paint_flow(bounds: Bounds<Pixels>, shapes: &[(Shape, Placed)], edges: &[(Curv
             let (px_, py_) = (-uy * tip * 0.5, ux * tip * 0.5);
             let mut a = PathBuilder::fill();
             a.add_polygon(
-                &[pt(c.to), pt((base.0 + px_, base.1 + py_)), pt((base.0 - px_, base.1 - py_))],
+                &[
+                    pt(c.to),
+                    pt((base.0 + px_, base.1 + py_)),
+                    pt((base.0 - px_, base.1 - py_)),
+                ],
                 true,
             );
             if let Ok(path) = a.build() {
@@ -1595,7 +1840,14 @@ fn paint_flow(bounds: Bounds<Pixels>, shapes: &[(Shape, Placed)], edges: &[(Curv
                     vec![(mx, y0), (x1, my), (mx, y1), (x0, my)]
                 } else {
                     let k = 14.;
-                    vec![(x0 + k, y0), (x1 - k, y0), (x1, my), (x1 - k, y1), (x0 + k, y1), (x0, my)]
+                    vec![
+                        (x0 + k, y0),
+                        (x1 - k, y0),
+                        (x1, my),
+                        (x1 - k, y1),
+                        (x0 + k, y1),
+                        (x0, my),
+                    ]
                 };
                 let pts: Vec<Point<Pixels>> = pts.into_iter().map(pt).collect();
                 let mut f = PathBuilder::fill();
@@ -1625,7 +1877,9 @@ Do not mention this note.)\n</arakun-hint>";
 
 pub fn strip_hint(text: &mut String) {
     if let Some(start) = text.find("<arakun-hint>") {
-        let end = text[start..].find("</arakun-hint>").map_or(text.len(), |e| start + e + "</arakun-hint>".len());
+        let end = text[start..]
+            .find("</arakun-hint>")
+            .map_or(text.len(), |e| start + e + "</arakun-hint>".len());
         text.replace_range(start..end, "");
         let keep = text.trim_end().len();
         text.truncate(keep);
@@ -1646,7 +1900,8 @@ mod tests {
         };
         assert_eq!(c.kind, Kind::Line);
         assert_eq!(c.series.len(), 2);
-        let Some(Diagram::Chart(c)) = parse("chart", "title: Build: times\nMon: 12ms\nTue: 9.5ms") else {
+        let Some(Diagram::Chart(c)) = parse("chart", "title: Build: times\nMon: 12ms\nTue: 9.5ms")
+        else {
             panic!()
         };
         assert_eq!(c.title.as_deref(), Some("Build: times"));
@@ -1654,7 +1909,10 @@ mod tests {
         assert_eq!(c.series[0].values, [12., 9.5]);
         assert_eq!(c.fmt(12.), "12ms");
         assert!(parse("chart", "{\"type\": \"bar\", \"data\": [").is_none());
-        let Some(Diagram::Chart(c)) = parse("chart", r#"{"data":[{"label":"a","value":3}]}"#) else { panic!() };
+        let Some(Diagram::Chart(c)) = parse("chart", r#"{"data":[{"label":"a","value":3}]}"#)
+        else {
+            panic!()
+        };
         assert_eq!(c.labels, ["a"]);
     }
 
@@ -1697,7 +1955,9 @@ mod tests {
 
     #[test]
     fn long_flowcharts_fit_the_column() {
-        let Some(Diagram::Flow(f)) = parse("mermaid", HARNESS_LOOP) else { panic!() };
+        let Some(Diagram::Flow(f)) = parse("mermaid", HARNESS_LOOP) else {
+            panic!()
+        };
         // Seven nodes in a row are far wider than a reply; it turns top-down.
         assert!(!f.horizontal);
         assert!(f.width <= FIT_W, "width {}", f.width);
@@ -1710,7 +1970,8 @@ mod tests {
         assert!(f.lines[2].len() > 1, "long labels wrap: {:?}", f.lines[2]);
         for (i, a) in f.placed.iter().enumerate() {
             for b in &f.placed[i + 1..] {
-                let apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                let apart =
+                    a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
                 assert!(apart, "nodes overlap");
             }
         }
@@ -1720,14 +1981,20 @@ mod tests {
                 if v == e.from || v == e.to {
                     continue;
                 }
-                assert!((0..=32).all(|k| !inside(p, c.at(k as f32 / 32.))), "edge {e:?} crosses node {v}");
+                assert!(
+                    (0..=32).all(|k| !inside(p, c.at(k as f32 / 32.))),
+                    "edge {e:?} crosses node {v}"
+                );
             }
         }
     }
 
     #[test]
     fn short_flowcharts_keep_their_direction() {
-        let Some(Diagram::Flow(f)) = parse("mermaid", "flowchart LR\n  A[Plan] --> B[Code] --> C[Ship]\n  C -. bug .-> A") else {
+        let Some(Diagram::Flow(f)) = parse(
+            "mermaid",
+            "flowchart LR\n  A[Plan] --> B[Code] --> C[Ship]\n  C -. bug .-> A",
+        ) else {
             panic!()
         };
         assert!(f.horizontal);
@@ -1737,7 +2004,10 @@ mod tests {
 
     #[test]
     fn edge_label_line_breaks() {
-        let Some(Diagram::Flow(f)) = parse("mermaid", "flowchart TD\n  A -- \"x 62<br/>capas\" --> B\n  B -- uno --> C") else {
+        let Some(Diagram::Flow(f)) = parse(
+            "mermaid",
+            "flowchart TD\n  A -- \"x 62<br/>capas\" --> B\n  B -- uno --> C",
+        ) else {
             panic!()
         };
         let (two, (_, h2)) = edge_label_box(f.edges[0].label.as_deref().unwrap());
@@ -1749,7 +2019,10 @@ mod tests {
 
     #[test]
     fn mermaid_pie() {
-        let Some(Diagram::Chart(c)) = parse("mermaid", "pie title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85") else {
+        let Some(Diagram::Chart(c)) = parse(
+            "mermaid",
+            "pie title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85",
+        ) else {
             panic!()
         };
         assert_eq!(c.kind, Kind::Pie);

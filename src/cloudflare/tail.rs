@@ -38,7 +38,12 @@ impl TailEvent {
         if let Some(cron) = &self.cron {
             return format!("cron {cron}");
         }
-        let path = self.url.split_once("://").map_or(self.url.as_str(), |(_, r)| r.find('/').map_or("/", |i| &r[i..]));
+        let path = self
+            .url
+            .split_once("://")
+            .map_or(self.url.as_str(), |(_, r)| {
+                r.find('/').map_or("/", |i| &r[i..])
+            });
         format!("{} {}", self.method, path)
     }
 }
@@ -64,8 +69,18 @@ pub fn parse_event(v: &Value) -> TailEvent {
         status: e["response"]["status"].as_u64().map(|s| s as u16),
         country: text(&r["cf"]["country"]),
         cpu_ms: v["cpuTime"].as_u64().unwrap_or(0),
-        logs: v["logs"].as_array().into_iter().flatten().map(|l| (text(&l["level"]), text(&l["message"]))).collect(),
-        exceptions: v["exceptions"].as_array().into_iter().flatten().map(|x| format!("{}: {}", text(&x["name"]), text(&x["message"]))).collect(),
+        logs: v["logs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|l| (text(&l["level"]), text(&l["message"])))
+            .collect(),
+        exceptions: v["exceptions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|x| format!("{}: {}", text(&x["name"]), text(&x["message"])))
+            .collect(),
     }
 }
 
@@ -90,14 +105,21 @@ impl Drop for Tail {
 /// Starts `wrangler tail` for `worker` in `account`. `wrangler` from PATH,
 /// else through npm's `npx`.
 pub fn start(worker: &str, account: &str) -> Result<Tail, String> {
-    let (program, mut args): (std::path::PathBuf, Vec<String>) = match crate::agent::which("wrangler") {
-        Some(w) => (w, Vec::new()),
-        None => {
-            let npx = crate::agent::which("npx").ok_or("Live logs need wrangler or Node's npx")?;
-            (npx, vec!["-y".into(), "wrangler".into()])
-        }
-    };
-    args.extend(["tail".into(), worker.into(), "--format".into(), "json".into()]);
+    let (program, mut args): (std::path::PathBuf, Vec<String>) =
+        match crate::agent::which("wrangler") {
+            Some(w) => (w, Vec::new()),
+            None => {
+                let npx =
+                    crate::agent::which("npx").ok_or("Live logs need wrangler or Node's npx")?;
+                (npx, vec!["-y".into(), "wrangler".into()])
+            }
+        };
+    args.extend([
+        "tail".into(),
+        worker.into(),
+        "--format".into(),
+        "json".into(),
+    ]);
     let mut cmd = crate::platform::command(program);
     #[cfg(unix)]
     {
@@ -126,7 +148,8 @@ pub fn start(worker: &str, account: &str) -> Result<Tail, String> {
     let (tx, events) = mpsc::channel();
     std::thread::spawn(move || {
         // Pretty-printed objects, one after another.
-        for v in serde_json::Deserializer::from_reader(BufReader::new(stdout)).into_iter::<Value>() {
+        for v in serde_json::Deserializer::from_reader(BufReader::new(stdout)).into_iter::<Value>()
+        {
             let Ok(v) = v else { break };
             if tx.send(parse_event(&v)).is_err() {
                 break;
@@ -149,9 +172,21 @@ mod tests {
             "exceptions": [],
             "event": {"request": {"url": "https://a.app/.well-known/x?y=1", "method": "GET", "cf": {"country": "US"}}, "response": {"status": 404}}
         }));
-        assert_eq!((e.what().as_str(), e.status, e.country.as_str(), e.failed()), ("GET /.well-known/x?y=1", Some(404), "US", false));
+        assert_eq!(
+            (e.what().as_str(), e.status, e.country.as_str(), e.failed()),
+            ("GET /.well-known/x?y=1", Some(404), "US", false)
+        );
         assert_eq!(e.logs, vec![("log".to_string(), "hit 2".to_string())]);
-        let cron = parse_event(&json!({"outcome": "exception", "exceptions": [{"name": "Error", "message": "boom"}], "event": {"cron": "*/15 * * * *"}}));
-        assert_eq!((cron.what().as_str(), cron.failed(), cron.exceptions[0].as_str()), ("cron */15 * * * *", true, "Error: boom"));
+        let cron = parse_event(
+            &json!({"outcome": "exception", "exceptions": [{"name": "Error", "message": "boom"}], "event": {"cron": "*/15 * * * *"}}),
+        );
+        assert_eq!(
+            (
+                cron.what().as_str(),
+                cron.failed(),
+                cron.exceptions[0].as_str()
+            ),
+            ("cron */15 * * * *", true, "Error: boom")
+        );
     }
 }

@@ -12,8 +12,8 @@ use gpui::{AppContext as _, Context, Entity, SharedString, Window};
 use super::Shell;
 use crate::agent::catalog;
 use crate::agent::{
-    AgentKind, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, ThreadView,
-    ThreadViewEvent,
+    AgentKind, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
+    ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
 use crate::state;
@@ -43,7 +43,11 @@ fn new_session_id() -> SharedString {
 
 pub(super) fn summary(text: &str) -> SharedString {
     let text = crate::agent::attach::title_text(text);
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     match line.char_indices().nth(80) {
         Some((i, _)) => format!("{}…", &line[..i]).into(),
         None => line.to_string().into(),
@@ -106,7 +110,13 @@ impl Shell {
         }
     }
 
-    pub(super) fn ensure_live(&mut self, env_path: &Path, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn ensure_live(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.session_mut(env_path, id) else {
             return;
         };
@@ -116,12 +126,19 @@ impl Shell {
         if crate::headless::shown(id) {
             return self.view_headless(env_path, id, window, cx);
         }
-        let (kind, meta, title) = (session.agent.kind(), session.meta.clone(), session.title.clone());
+        let (kind, meta, title) = (
+            session.agent.kind(),
+            session.meta.clone(),
+            session.title.clone(),
+        );
         let transcript = state::transcript_path(id);
         let thread = transcript
             .exists()
             .then(|| Thread::restore(&transcript, cx))
-            .and_then(|r| r.map_err(|e| eprintln!("arakun: transcript {id}: {e:#}")).ok())
+            .and_then(|r| {
+                r.map_err(|e| eprintln!("arakun: transcript {id}: {e:#}"))
+                    .ok()
+            })
             .unwrap_or_else(|| Thread::start(kind, env_path.to_path_buf(), meta, cx));
         // A rename made while the agent was not running reaches it now.
         if !title.is_empty() && thread.read(cx).title() != title {
@@ -153,13 +170,22 @@ impl Shell {
         });
         let env = env_path.to_path_buf();
         let sid_for_notes: SharedString = id.to_string().into();
-        let view_events = cx.subscribe_in(&view, window, move |this, _, ev: &ThreadViewEvent, window, cx| {
-            match ev {
-                ThreadViewEvent::OpenFile(file, line) => this.open_file_beside(&env, file, *line, window, cx),
+        let view_events = cx.subscribe_in(
+            &view,
+            window,
+            move |this, _, ev: &ThreadViewEvent, window, cx| match ev {
+                ThreadViewEvent::OpenFile(file, line) => {
+                    this.open_file_beside(&env, file, *line, window, cx)
+                }
                 ThreadViewEvent::OpenSubagent(subagent) => {
                     this.open_subagent(sid_for_notes.clone(), subagent.clone(), window, cx)
                 }
-                ThreadViewEvent::AddNote { surface, range, quote, note } => {
+                ThreadViewEvent::AddNote {
+                    surface,
+                    range,
+                    quote,
+                    note,
+                } => {
                     let n = crate::agent::notes::ChatNote {
                         kind: crate::agent::notes::NoteKind::Annotation,
                         quote: quote.clone(),
@@ -170,8 +196,8 @@ impl Shell {
                     };
                     this.add_note(&env, n, window, cx);
                 }
-            }
-        });
+            },
+        );
         if let Some(session) = self.session_mut(env_path, id) {
             // Each new agent process of the session answers its permissions the same way.
             if session.auto_allow {
@@ -202,7 +228,9 @@ impl Shell {
             cx.open_with_system(file);
             return;
         }
-        let kind = TabKind::File { path: file.to_path_buf() };
+        let kind = TabKind::File {
+            path: file.to_path_buf(),
+        };
         if let Some(id) = self.open_doc_in(env_path, kind, false, cx) {
             if let Some(line) = line {
                 self.reveal_line(env_path, id, line, cx);
@@ -243,7 +271,15 @@ impl Shell {
                 cx.notify();
             }
             ThreadEvent::CheckOffer { command, answer } => {
-                self.check_offer_answered(env_path, id, thread, command.clone(), *answer, window, cx);
+                self.check_offer_answered(
+                    env_path,
+                    id,
+                    thread,
+                    command.clone(),
+                    *answer,
+                    window,
+                    cx,
+                );
             }
             ThreadEvent::SubagentsChanged { spawned } => {
                 if spawned.is_some() {
@@ -311,7 +347,10 @@ impl Shell {
                     match e {
                         crate::agent::Entry::User { text, at, .. } => {
                             since.get_or_insert(*at);
-                            turns.push(crate::memory::Turn { asked: text.clone(), reply: String::new() });
+                            turns.push(crate::memory::Turn {
+                                asked: text.clone(),
+                                reply: String::new(),
+                            });
                         }
                         crate::agent::Entry::Agent { text } if !text.trim().is_empty() => {
                             if let Some(turn) = turns.last_mut() {
@@ -322,7 +361,13 @@ impl Shell {
                     }
                 }
                 let since = since.unwrap_or_else(model::unix_now);
-                let record = (t.cwd().to_path_buf(), t.title().to_string(), turns, t.edited_files(), since);
+                let record = (
+                    t.cwd().to_path_buf(),
+                    t.title().to_string(),
+                    turns,
+                    t.edited_files(),
+                    since,
+                );
                 if let Some(s) = self.session_mut(env_path, id) {
                     s.status = status;
                     s.added = added;
@@ -337,7 +382,9 @@ impl Shell {
                         eprintln!("arakun: could not save {}: {e}", path.display());
                     }
                     let (cwd, title, turns, files, since) = record;
-                    if let Err(e) = crate::memory::record_session(&cwd, &key, &title, &turns, &files, since) {
+                    if let Err(e) =
+                        crate::memory::record_session(&cwd, &key, &title, &turns, &files, since)
+                    {
                         eprintln!("arakun: could not remember the session: {e}");
                     }
                 })
@@ -373,7 +420,10 @@ impl Shell {
             return;
         };
         let busy = matches!(env.sessions[i].status, Status::Working | Status::NeedsInput)
-            || env.sessions[i].live.as_ref().is_some_and(|l| l.thread.read(cx).in_background());
+            || env.sessions[i]
+                .live
+                .as_ref()
+                .is_some_and(|l| l.thread.read(cx).in_background());
         if open || busy || self.check_running(id) || self.phone_watching(id) {
             return;
         }
@@ -394,13 +444,21 @@ impl Shell {
     }
 
     /// Sends the composer text: to the open session, or as the first prompt of a new one.
-    pub(super) fn send_prompt(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn send_prompt(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(id) = self.active_session_id() {
             let path = self.env().path.clone();
             if text.trim() == "/stage" {
                 self.stage_session(&path, &id, window, cx, |this, staged, path, id, _, cx| {
                     let text = match staged {
-                        Ok(files) if files.is_empty() => ("Nothing this session changed is left to stage.".to_string(), false),
+                        Ok(files) if files.is_empty() => (
+                            "Nothing this session changed is left to stage.".to_string(),
+                            false,
+                        ),
                         Ok(files) => (
                             format!(
                                 "Staged {} {} this session changed: {}",
@@ -412,7 +470,10 @@ impl Shell {
                         ),
                         Err(e) => (format!("Staging failed: {e}"), true),
                     };
-                    if let Some(thread) = this.session_mut(&path, &id).and_then(|s| s.live.as_ref().map(|l| l.thread.clone())) {
+                    if let Some(thread) = this
+                        .session_mut(&path, &id)
+                        .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()))
+                    {
                         thread.update(cx, |t, cx| t.post_notice(text.0, text.1, cx));
                     }
                 });
@@ -445,7 +506,14 @@ impl Shell {
         id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, Result<Vec<String>, String>, PathBuf, SharedString, &mut Window, &mut Context<Self>) + 'static,
+        then: impl FnOnce(
+            &mut Self,
+            Result<Vec<String>, String>,
+            PathBuf,
+            SharedString,
+            &mut Window,
+            &mut Context<Self>,
+        ) + 'static,
     ) {
         self.ensure_live(env_path, id, window, cx);
         let files: Vec<String> = self
@@ -453,14 +521,23 @@ impl Shell {
             .and_then(|s| s.live.as_ref().map(|l| l.thread.read(cx).edited_files()))
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|p| Some(p.strip_prefix(env_path).ok()?.to_string_lossy().into_owned()))
+            .filter_map(|p| {
+                Some(
+                    p.strip_prefix(env_path)
+                        .ok()?
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            })
             .filter(|p| !p.is_empty())
             .collect();
         let (dir, id) = (env_path.to_path_buf(), SharedString::from(id.to_string()));
         cx.spawn_in(window, async move |this, cx| {
             let d = dir.clone();
             let staged = cx
-                .background_spawn(async move { crate::git::stage_only(&d, &files).map_err(|e| e.to_string()) })
+                .background_spawn(async move {
+                    crate::git::stage_only(&d, &files).map_err(|e| e.to_string())
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.refresh_status(&dir, cx);
@@ -531,8 +608,17 @@ impl Shell {
         session.status = Status::Working;
         env.sessions.insert(0, session);
         if show {
-            let tab = Tab::new(title, TabKind::Session { agent, id: id.clone() });
-            if matches!(env.tabs.get(env.active_tab).map(|t| &t.kind), Some(TabKind::NewSession)) {
+            let tab = Tab::new(
+                title,
+                TabKind::Session {
+                    agent,
+                    id: id.clone(),
+                },
+            );
+            if matches!(
+                env.tabs.get(env.active_tab).map(|t| &t.kind),
+                Some(TabKind::NewSession)
+            ) {
                 env.tabs[env.active_tab] = tab;
             } else {
                 env.tabs.push(tab);
@@ -574,7 +660,8 @@ impl Shell {
         if !extra.is_empty() {
             for (s, v) in extra {
                 // The effort remembered went with the model remembered.
-                claude_settings.retain(|(d, _)| *d != s && !(s == Setting::Model && *d == Setting::Effort));
+                claude_settings
+                    .retain(|(d, _)| *d != s && !(s == Setting::Model && *d == Setting::Effort));
                 claude_settings.push((s, v));
             }
             claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
@@ -599,9 +686,22 @@ impl Shell {
     /// Hands the composer's session to `agent`, in the same tab and checkout: a
     /// session of `agent` takes its place, showing the conversation so far and
     /// told about it with the next prompt; the old agent stops.
-    pub(super) fn continue_with(&mut self, agent: model::Agent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn continue_with(
+        &mut self,
+        agent: model::Agent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let env_path = self.env().path.clone();
-        let Some(TabKind::Session { agent: from, id: old_id }) = self.env().tabs.get(self.composer_tab()).map(|t| t.kind.clone()) else {
+        let Some(TabKind::Session {
+            agent: from,
+            id: old_id,
+        }) = self
+            .env()
+            .tabs
+            .get(self.composer_tab())
+            .map(|t| t.kind.clone())
+        else {
             return;
         };
         if from == agent || crate::headless::shown(&old_id) {
@@ -632,17 +732,39 @@ impl Shell {
             session.task = old.task.clone();
         }
         session.continues = old.continues.clone();
-        let talked = entries.iter().any(|e| matches!(e, crate::agent::Entry::User { .. }));
+        let talked = entries
+            .iter()
+            .any(|e| matches!(e, crate::agent::Entry::User { .. }));
         let thread = if talked {
-            session.continues.push(model::Earlier { id: old_id.to_string(), agent_session });
-            let linked = state::data_dir().join("linked").join(format!("{old_id}.md"));
-            let markdown = crate::agent::notes::transcript_markdown(&old.title, from.label(), &entries);
-            if let Err(e) = std::fs::create_dir_all(state::data_dir().join("linked")).and_then(|_| std::fs::write(&linked, markdown)) {
+            session.continues.push(model::Earlier {
+                id: old_id.to_string(),
+                agent_session,
+            });
+            let linked = state::data_dir()
+                .join("linked")
+                .join(format!("{old_id}.md"));
+            let markdown =
+                crate::agent::notes::transcript_markdown(&old.title, from.label(), &entries);
+            if let Err(e) = std::fs::create_dir_all(state::data_dir().join("linked"))
+                .and_then(|_| std::fs::write(&linked, markdown))
+            {
                 eprintln!("arakun: could not write {}: {e}", linked.display());
             }
-            let handoff =
-                crate::agent::notes::handoff(from.label(), &old.title, &entries, &linked.to_string_lossy(), HANDOFF_BUDGET);
-            Thread::continued(agent.kind(), env_path.clone(), old.title.to_string(), entries, handoff, cx)
+            let handoff = crate::agent::notes::handoff(
+                from.label(),
+                &old.title,
+                &entries,
+                &linked.to_string_lossy(),
+                HANDOFF_BUDGET,
+            );
+            Thread::continued(
+                agent.kind(),
+                env_path.clone(),
+                old.title.to_string(),
+                entries,
+                handoff,
+                cx,
+            )
         } else {
             // Nothing was said yet: a fresh session of `agent` and nothing to keep.
             let path = state::transcript_path(&old_id);
@@ -657,7 +779,10 @@ impl Shell {
         env.sessions.insert(ix, session);
         for tab in &mut env.tabs {
             if matches!(&tab.kind, TabKind::Session { id: tid, .. } if *tid == old_id) {
-                tab.kind = TabKind::Session { agent, id: id.clone() };
+                tab.kind = TabKind::Session {
+                    agent,
+                    id: id.clone(),
+                };
             }
         }
         self.apply_env_settings(&env_path, agent, Vec::new(), &thread, cx);
@@ -669,7 +794,12 @@ impl Shell {
     }
 
     /// Opens a session from the list in a tab (reusing its tab if it has one).
-    pub(super) fn open_session(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_session(
+        &mut self,
+        id: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let env = self.env_mut();
         let Some(i) = env.session_index(&id) else {
             return;
@@ -682,9 +812,17 @@ impl Shell {
             Some(t) => t,
             None => {
                 let s = &env.sessions[i];
-                let tab = Tab::new(s.title.clone(), TabKind::Session { agent: s.agent, id: id.clone() });
-                if matches!(env.tabs.get(env.active_tab).map(|t| &t.kind), Some(TabKind::NewSession))
-                    && env.tabs.len() == 1
+                let tab = Tab::new(
+                    s.title.clone(),
+                    TabKind::Session {
+                        agent: s.agent,
+                        id: id.clone(),
+                    },
+                );
+                if matches!(
+                    env.tabs.get(env.active_tab).map(|t| &t.kind),
+                    Some(TabKind::NewSession)
+                ) && env.tabs.len() == 1
                 {
                     env.tabs[0] = tab;
                     0
@@ -724,9 +862,11 @@ impl Shell {
                 cx.background_spawn(async { catalog::refresh() }).await;
                 let _ = this.update(cx, |_, cx| cx.notify());
             }
-            cx.background_spawn(async { catalog::refresh_claude() }).await;
+            cx.background_spawn(async { catalog::refresh_claude() })
+                .await;
             let _ = this.update(cx, |_, cx| cx.notify());
-            cx.background_spawn(async { catalog::refresh_opencode() }).await;
+            cx.background_spawn(async { catalog::refresh_opencode() })
+                .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
@@ -763,7 +903,9 @@ impl Shell {
                     settings.model_id.clear();
                     settings.reasoning_effort.clear();
                 }
-                Some(m) if !m.efforts.is_empty() && !m.efforts.contains(&settings.reasoning_effort) => {
+                Some(m)
+                    if !m.efforts.is_empty() && !m.efforts.contains(&settings.reasoning_effort) =>
+                {
                     settings.reasoning_effort = m.default_effort.clone().unwrap_or_default();
                 }
                 Some(_) => {}
@@ -778,10 +920,14 @@ impl Shell {
             return None;
         }
         let env = self.env();
-        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind) else {
+        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind)
+        else {
             return None;
         };
-        env.sessions[env.session_index(id)?].live.as_ref().map(|l| l.thread.clone())
+        env.sessions[env.session_index(id)?]
+            .live
+            .as_ref()
+            .map(|l| l.thread.clone())
     }
 
     /// The agent of the composer's session, or the one picked for the next session.
@@ -795,12 +941,19 @@ impl Shell {
 
     pub(super) fn composer_in_session(&self) -> bool {
         let env = self.env();
-        matches!(env.tabs.get(self.composer_tab()).map(|t| &t.kind), Some(TabKind::Session { .. }))
+        matches!(
+            env.tabs.get(self.composer_tab()).map(|t| &t.kind),
+            Some(TabKind::Session { .. })
+        )
     }
 
     /// A setting's value and choices: the running session's, or what the next
     /// session of this environment starts with.
-    pub(super) fn setting_choices(&self, s: Setting, cx: &gpui::App) -> Option<(String, Vec<SettingOption>)> {
+    pub(super) fn setting_choices(
+        &self,
+        s: Setting,
+        cx: &gpui::App,
+    ) -> Option<(String, Vec<SettingOption>)> {
         if let Some(thread) = self.composer_thread() {
             return thread.read(cx).setting(s).filter(|(_, o)| !o.is_empty());
         }
@@ -812,7 +965,12 @@ impl Shell {
 
     /// What the next `agent` session of the environment at `env_path` starts with
     /// for a setting, and its choices.
-    pub(super) fn draft_choices(&self, env_path: &Path, agent: model::Agent, s: Setting) -> Option<(String, Vec<SettingOption>)> {
+    pub(super) fn draft_choices(
+        &self,
+        env_path: &Path,
+        agent: model::Agent,
+        s: Setting,
+    ) -> Option<(String, Vec<SettingOption>)> {
         let env = self.find_env(env_path)?;
         match agent {
             model::Agent::Droid => {
@@ -840,11 +998,13 @@ impl Shell {
             model::Agent::OpenCode => {
                 let options = catalog::opencode_options();
                 let draft = opencode_draft(env);
-                let picked = |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v.clone());
+                let picked =
+                    |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v.clone());
                 // Reasoning levels are per model: the cached ones are the default model's.
                 if s == Setting::Effort
                     && let Some(model) = picked(Setting::Model)
-                    && crate::agent::acp_option(&options, Setting::Model).is_some_and(|o| o.current != model)
+                    && crate::agent::acp_option(&options, Setting::Model)
+                        .is_some_and(|o| o.current != model)
                 {
                     return None;
                 }
@@ -857,7 +1017,8 @@ impl Shell {
             }
             model::Agent::WorkersAi => {
                 let options = crate::agent::workers_ai::draft_options(&env.workers_ai_settings);
-                crate::agent::acp_option(&options, s).map(|o| crate::agent::acp_setting_options(o, s))
+                crate::agent::acp_option(&options, s)
+                    .map(|o| crate::agent::acp_setting_options(o, s))
             }
         }
     }
@@ -900,7 +1061,14 @@ impl Shell {
     }
 
     /// What the next `agent` session of the environment at `env_path` starts with.
-    pub(super) fn remember_setting(&mut self, env_path: &Path, agent: model::Agent, s: Setting, value: &str, cx: &mut Context<Self>) {
+    pub(super) fn remember_setting(
+        &mut self,
+        env_path: &Path,
+        agent: model::Agent,
+        s: Setting,
+        value: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
@@ -918,7 +1086,9 @@ impl Shell {
         }
         // Other environments' next OpenCode sessions start on this model too.
         if agent == model::Agent::OpenCode && matches!(s, Setting::Model | Setting::Effort) {
-            let model_settings = opencode_draft(env).into_iter().filter(|(d, _)| matches!(d, Setting::Model | Setting::Effort));
+            let model_settings = opencode_draft(env)
+                .into_iter()
+                .filter(|(d, _)| matches!(d, Setting::Model | Setting::Effort));
             catalog::remember_opencode_pick(model_settings.collect());
         }
         self.save(cx);
@@ -933,7 +1103,8 @@ impl Shell {
         {
             let env = self.env_mut();
             // Only what the model menu shows; the permission level stays.
-            let model_menu = |s: &Setting| matches!(s, Setting::Model | Setting::Effort | Setting::Fast);
+            let model_menu =
+                |s: &Setting| matches!(s, Setting::Model | Setting::Effort | Setting::Fast);
             match agent {
                 model::Agent::Droid => env.draft_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::Claude => env.claude_settings.retain(|(s, _)| !model_menu(s)),
@@ -959,17 +1130,30 @@ impl Shell {
                     let options = catalog::claude_options();
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
-                        .filter_map(|s| Some((s, crate::agent::acp_option(&options, s)?.current.clone())))
+                        .filter_map(|s| {
+                            Some((s, crate::agent::acp_option(&options, s)?.current.clone()))
+                        })
                         .collect()
                 }
                 // OpenCode's default model; its reasoning follows.
-                model::Agent::OpenCode => crate::agent::acp_option(&catalog::opencode_options(), Setting::Model)
-                    .map(|o| (Setting::Model, o.current.clone()))
-                    .into_iter()
-                    .collect(),
+                model::Agent::OpenCode => {
+                    crate::agent::acp_option(&catalog::opencode_options(), Setting::Model)
+                        .map(|o| (Setting::Model, o.current.clone()))
+                        .into_iter()
+                        .collect()
+                }
                 model::Agent::WorkersAi => crate::agent::workers_ai::draft_options(&[])
                     .into_iter()
-                    .map(|o| (if o.category.as_deref() == Some("model") { Setting::Model } else { Setting::Effort }, o.current))
+                    .map(|o| {
+                        (
+                            if o.category.as_deref() == Some("model") {
+                                Setting::Model
+                            } else {
+                                Setting::Effort
+                            },
+                            o.current,
+                        )
+                    })
                     .collect(),
             };
             thread.update(cx, |t, cx| {
@@ -986,13 +1170,18 @@ impl Shell {
     /// Shift+Tab: the next permission level (Claude's mode, Droid's autonomy).
     pub(super) fn cycle_permissions(&mut self, cx: &mut Context<Self>) {
         let s = match self.composer_agent() {
-            model::Agent::Droid if self.setting_choices(Setting::Autonomy, cx).is_some() => Setting::Autonomy,
+            model::Agent::Droid if self.setting_choices(Setting::Autonomy, cx).is_some() => {
+                Setting::Autonomy
+            }
             _ => Setting::Mode,
         };
         let Some((current, options)) = self.setting_choices(s, cx) else {
             return;
         };
-        let options: Vec<_> = options.into_iter().filter(|o| o.disabled.is_none()).collect();
+        let options: Vec<_> = options
+            .into_iter()
+            .filter(|o| o.disabled.is_none())
+            .collect();
         let Some(next) = options
             .iter()
             .position(|o| o.id == current)
@@ -1010,7 +1199,13 @@ impl Shell {
 
     /// Reads a session's new AskUser question aloud once, even while the session is on
     /// screen, and stops reading a question that was answered or dismissed.
-    fn speak_question(&mut self, env_path: &Path, id: &SharedString, thread: &Entity<Thread>, cx: &mut Context<Self>) {
+    fn speak_question(
+        &mut self,
+        env_path: &Path,
+        id: &SharedString,
+        thread: &Entity<Thread>,
+        cx: &mut Context<Self>,
+    ) {
         let pending = thread
             .read(cx)
             .pending_question()
@@ -1115,7 +1310,10 @@ impl Shell {
 
     /// Writes a live session's transcript in the background.
     pub(super) fn save_transcript(&mut self, env_path: &Path, id: &str, cx: &mut Context<Self>) {
-        let Some(thread) = self.session_mut(env_path, id).and_then(|s| s.live.as_ref().map(|l| l.thread.clone())) else {
+        let Some(thread) = self
+            .session_mut(env_path, id)
+            .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()))
+        else {
             return;
         };
         let (path, transcript) = (state::transcript_path(id), thread.read(cx).transcript(cx));
@@ -1159,7 +1357,8 @@ impl Shell {
         } else {
             // Forked from a session of another environment: its tab waits there.
             if let Some(env) = self.find_env_mut(env_path) {
-                env.tabs.push(Tab::new(title, TabKind::Session { agent, id }));
+                env.tabs
+                    .push(Tab::new(title, TabKind::Session { agent, id }));
             }
             self.save(cx);
             cx.notify();
@@ -1195,7 +1394,13 @@ impl Shell {
 
     /// Fork or compact a native Droid session; the session opens in a tab so the
     /// result is on screen, and the request waits there until Droid is ready.
-    pub(super) fn session_action(&mut self, id: SharedString, fork: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn session_action(
+        &mut self,
+        id: SharedString,
+        fork: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_session(id.clone(), window, cx);
         let env = self.env();
         let Some(thread) = env
@@ -1219,11 +1424,10 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        while let Some(i) = self
-            .env()
-            .tabs
-            .iter()
-            .position(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id))
+        while let Some(i) =
+            self.env().tabs.iter().position(
+                |t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id),
+            )
         {
             self.close_tab(i, window, cx);
         }
@@ -1235,7 +1439,11 @@ impl Shell {
         let mut paths = vec![state::transcript_path(id)];
         for earlier in removed.iter().flat_map(|s| &s.continues) {
             paths.push(state::transcript_path(&earlier.id));
-            paths.push(state::data_dir().join("linked").join(format!("{}.md", earlier.id)));
+            paths.push(
+                state::data_dir()
+                    .join("linked")
+                    .join(format!("{}.md", earlier.id)),
+            );
         }
         cx.background_spawn(async move {
             for path in paths {
@@ -1256,12 +1464,17 @@ impl Shell {
             .flat_map(|e| &e.sessions)
             .flat_map(|s| {
                 let own = s.meta.as_ref().and_then(|m| m.session_id.clone());
-                own.into_iter().chain(s.continues.iter().filter_map(|c| c.agent_session.clone()))
+                own.into_iter()
+                    .chain(s.continues.iter().filter_map(|c| c.agent_session.clone()))
             })
             .collect()
     }
 
-    pub(super) fn import_agent_sessions(&mut self, found: Vec<catalog::AgentSession>, cx: &mut Context<Self>) {
+    pub(super) fn import_agent_sessions(
+        &mut self,
+        found: Vec<catalog::AgentSession>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() || found.is_empty() {
             return;
         }
@@ -1300,7 +1513,11 @@ impl Shell {
     pub(super) fn save_transcripts(&self, cx: &gpui::App) {
         let mut resume = Vec::new();
         for env in self.projects.iter().flat_map(|p| &p.environments) {
-            for s in env.sessions.iter().filter(|s| !crate::headless::shown(&s.id)) {
+            for s in env
+                .sessions
+                .iter()
+                .filter(|s| !crate::headless::shown(&s.id))
+            {
                 if let Some(live) = &s.live {
                     let mut t = live.thread.read(cx).transcript(cx);
                     if self.restarting && t.interrupted {
@@ -1312,7 +1529,10 @@ impl Shell {
             }
         }
         if self.restarting {
-            let _ = std::fs::write(state::resume_path(), serde_json::to_vec(&resume).unwrap_or_default());
+            let _ = std::fs::write(
+                state::resume_path(),
+                serde_json::to_vec(&resume).unwrap_or_default(),
+            );
         }
     }
 
@@ -1373,10 +1593,17 @@ fn notification_icon() -> Option<String> {
     let themed = ["/usr/share/icons/hicolor", "/usr/local/share/icons/hicolor"]
         .into_iter()
         .map(std::path::PathBuf::from)
-        .chain(std::iter::once(model::home().join(".local/share/icons/hicolor")))
-        .any(|dir| ["48x48", "64x64", "128x128", "256x256", "scalable"].iter().any(|s| {
-            dir.join(s).join("apps/arakun.png").exists() || dir.join(s).join("apps/arakun.svg").exists()
-        }));
+        .chain(std::iter::once(
+            model::home().join(".local/share/icons/hicolor"),
+        ))
+        .any(|dir| {
+            ["48x48", "64x64", "128x128", "256x256", "scalable"]
+                .iter()
+                .any(|s| {
+                    dir.join(s).join("apps/arakun.png").exists()
+                        || dir.join(s).join("apps/arakun.svg").exists()
+                })
+        });
     if themed {
         return Some("arakun".into());
     }
@@ -1388,7 +1615,11 @@ pub(super) fn send_notification(title: &str, body: &str, critical: bool) {
     if std::env::var_os("ARAKUN_NOTIFY").is_some_and(|v| v == "off") {
         return;
     }
-    let icon = if cfg!(windows) { None } else { notification_icon() };
+    let icon = if cfg!(windows) {
+        None
+    } else {
+        notification_icon()
+    };
     crate::platform::notify(title, body, critical, icon.as_deref());
 }
 

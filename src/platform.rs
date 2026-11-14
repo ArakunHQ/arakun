@@ -54,8 +54,15 @@ pub fn agent_command(program: impl AsRef<OsStr>) -> Command {
     if let Some(systemd_run) = agent_slice() {
         let mut cmd = Command::new(systemd_run);
         // --scope execs `program` in place: same pid, process group, cwd and environment.
-        cmd.args(["--user", "--scope", "--quiet", "--collect", "--slice=arakun-agents.slice", "--"])
-            .arg(program);
+        cmd.args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--slice=arakun-agents.slice",
+            "--",
+        ])
+        .arg(program);
         return cmd;
     }
     command(program)
@@ -72,7 +79,13 @@ fn agent_slice() -> Option<&'static Path> {
                 .map(|dir| dir.join("systemd-run"))
                 .find(|p| p.is_file())?;
             let capped = Command::new("systemctl")
-                .args(["--user", "set-property", "--runtime", "arakun-agents.slice", "MemoryMax=70%"])
+                .args([
+                    "--user",
+                    "set-property",
+                    "--runtime",
+                    "arakun-agents.slice",
+                    "MemoryMax=70%",
+                ])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -99,7 +112,9 @@ pub fn lower_priority(cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
-        use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW};
+        use windows_sys::Win32::System::Threading::{
+            BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW,
+        };
         // creation_flags replaces the flags, so CREATE_NO_WINDOW from `no_window` stays.
         cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
     }
@@ -123,7 +138,8 @@ pub fn shell_command(script: &str) -> Command {
         use std::os::windows::process::CommandExt as _;
         let mut cmd = Command::new("cmd.exe");
         // /S: what follows /C is the outer quotes' content, taken as typed.
-        cmd.args(["/D", "/S", "/C"]).raw_arg(format!("\"{script}\""));
+        cmd.args(["/D", "/S", "/C"])
+            .raw_arg(format!("\"{script}\""));
         cmd
     }
     #[cfg(not(windows))]
@@ -148,7 +164,13 @@ pub fn run_then_shell(command: &str) -> Vec<String> {
              $arakunMe.PriorityClass = 'Normal'\n\
              Write-Host (\"`n\" + [char]27 + \"[2m[exit $arakunCode]\" + [char]27 + \"[0m\")\n}}"
         );
-        vec![windows_shell(), "-NoLogo".into(), "-NoExit".into(), "-Command".into(), script]
+        vec![
+            windows_shell(),
+            "-NoLogo".into(),
+            "-NoExit".into(),
+            "-Command".into(),
+            script,
+        ]
     }
     #[cfg(not(windows))]
     {
@@ -177,7 +199,9 @@ pub fn process_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
         // SAFETY: the handle is checked before use and closed after.
         unsafe {
             let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -242,12 +266,16 @@ pub fn relaunch() -> std::io::Result<()> {
     let exe = exe.to_string_lossy();
     let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
     let mut cmd = Command::new("sh");
-    cmd.args(["-c", r#"while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; exec "$2""#, "sh"])
-        .arg(std::process::id().to_string())
-        .arg(exe)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    cmd.args([
+        "-c",
+        r#"while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; exec "$2""#,
+        "sh",
+    ])
+    .arg(std::process::id().to_string())
+    .arg(exe)
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
     detach(&mut cmd).spawn().map(|_| ())
 }
 
@@ -300,9 +328,16 @@ pub fn notify(title: &str, body: &str, critical: bool, icon: Option<&str>) {
         let _ = (critical, icon);
         // Title and body travel as arguments, never inside the script.
         let mut cmd = Command::new("osascript");
-        cmd.args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run"])
-            .arg(title)
-            .arg(body);
+        cmd.args([
+            "-e",
+            "on run argv",
+            "-e",
+            "display notification (item 2 of argv) with title (item 1 of argv)",
+            "-e",
+            "end run",
+        ])
+        .arg(title)
+        .arg(body);
         cmd
     };
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -337,7 +372,12 @@ pub fn play_sound(path: &Path) -> std::io::Result<std::process::Child> {
     {
         // The path travels in the environment so nothing in it is parsed as PowerShell.
         command("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "(New-Object System.Media.SoundPlayer $env:ARAKUN_SOUND).PlaySync()"])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(New-Object System.Media.SoundPlayer $env:ARAKUN_SOUND).PlaySync()",
+            ])
             .env("ARAKUN_SOUND", path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -364,7 +404,10 @@ pub fn play_sound(path: &Path) -> std::io::Result<std::process::Child> {
                 other => return other,
             }
         }
-        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no pw-play, paplay or aplay to play sound with"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no pw-play, paplay or aplay to play sound with",
+        ))
     }
 }
 
@@ -373,7 +416,11 @@ pub fn play_sound(path: &Path) -> std::io::Result<std::process::Child> {
 /// xclip (X11); Windows uses the Forms clipboard and macOS AppleScript. Returns once
 /// the helper has the data; wl-copy and xclip keep serving it in the background.
 pub fn copy_image(path: &Path) -> std::io::Result<()> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let mime = match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -386,7 +433,9 @@ pub fn copy_image(path: &Path) -> std::io::Result<()> {
         if status.success() {
             Ok(())
         } else {
-            Err(std::io::Error::other(format!("{program} failed ({status})")))
+            Err(std::io::Error::other(format!(
+                "{program} failed ({status})"
+            )))
         }
     };
     #[cfg(windows)]
@@ -411,9 +460,18 @@ pub fn copy_image(path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         let _ = mime;
-        let class = if ext == "jpg" || ext == "jpeg" { "JPEG picture" } else { "«class PNGf»" };
-        let script = format!("set the clipboard to (read (POSIX file (system attribute \"ARAKUN_IMAGE\")) as {class})");
-        let status = Command::new("osascript").args(["-e", &script]).env("ARAKUN_IMAGE", path).status()?;
+        let class = if ext == "jpg" || ext == "jpeg" {
+            "JPEG picture"
+        } else {
+            "«class PNGf»"
+        };
+        let script = format!(
+            "set the clipboard to (read (POSIX file (system attribute \"ARAKUN_IMAGE\")) as {class})"
+        );
+        let status = Command::new("osascript")
+            .args(["-e", &script])
+            .env("ARAKUN_IMAGE", path)
+            .status()?;
         check(status, "osascript")
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -432,7 +490,8 @@ pub fn copy_image(path: &Path) -> std::io::Result<()> {
             .status()?;
         check(status, program)
     }
-}#[cfg(windows)]
+}
+#[cfg(windows)]
 const TOAST: &str = "\
 $ErrorActionPreference = 'Stop'
 $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
@@ -473,9 +532,15 @@ fn windows_shell() -> String {
 pub fn is_executable(path: &Path) -> bool {
     #[cfg(windows)]
     {
-        let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy()));
+        let ext = path
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()));
         path.is_file()
-            && ext.is_some_and(|ext| path_exts().iter().any(|known| known.eq_ignore_ascii_case(&ext)))
+            && ext.is_some_and(|ext| {
+                path_exts()
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(&ext))
+            })
     }
     #[cfg(not(windows))]
     {
@@ -527,10 +592,17 @@ pub fn random_bytes() -> Option<[u8; 16]> {
     let mut b = [0u8; 16];
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+        use windows_sys::Win32::Security::Cryptography::{
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+        };
         // SAFETY: the buffer is ours and its length is the one passed.
         let status = unsafe {
-            BCryptGenRandom(std::ptr::null_mut(), b.as_mut_ptr(), b.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG)
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                b.as_mut_ptr(),
+                b.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
         };
         (status == 0).then_some(b)
     }
@@ -606,14 +678,23 @@ pub fn shortcut_label(text: &str) -> String {
             }
             rest = &rest[m.len()..];
         }
-        let n = match rest.chars().take_while(|c| c.is_ascii_alphanumeric()).count() {
+        let n = match rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .count()
+        {
             0 => rest.chars().next().map_or(0, char::len_utf8),
             n => n,
         };
         let key = &rest[..n];
         rest = &rest[n..];
         let keep_ctrl = matches!(key, "Tab" | "`" | "PgDn" | "PgUp");
-        for (on, sym) in [(ctrl && keep_ctrl, "⌃"), (alt, "⌥"), (shift, "⇧"), (cmd || ctrl && !keep_ctrl, "⌘")] {
+        for (on, sym) in [
+            (ctrl && keep_ctrl, "⌃"),
+            (alt, "⌥"),
+            (shift, "⇧"),
+            (cmd || ctrl && !keep_ctrl, "⌘"),
+        ] {
             if on {
                 out.push_str(sym);
             }
@@ -643,7 +724,11 @@ pub fn command_key(m: &gpui::Modifiers) -> bool {
 
 /// The modifier that moves the caret a word at a time: Option on macOS, Ctrl elsewhere.
 pub fn word_key(m: &gpui::Modifiers) -> bool {
-    if cfg!(target_os = "macos") { m.alt && !m.platform } else { m.control }
+    if cfg!(target_os = "macos") {
+        m.alt && !m.platform
+    } else {
+        m.control
+    }
 }
 
 /// On Windows arakun is a console program, so `arakun <command>` prints in the terminal that
@@ -685,7 +770,10 @@ pub fn import_login_path() {
         if std::os::unix::process::parent_id() != 1 {
             return;
         }
-        let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "/bin/zsh".into());
         let Ok(mut child) = Command::new(shell)
             .args(["-l", "-i", "-c", r#"printf '\n%s' "$PATH""#])
             .stdin(Stdio::null())
@@ -741,7 +829,9 @@ pub fn hang_up(pid: u32) {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
         // SAFETY: the handle is checked before use and closed after.
         unsafe {
             let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
@@ -822,7 +912,9 @@ impl ProcessTree {
             }
         }
         #[cfg(not(windows))]
-        Self { group: child.id() as i32 }
+        Self {
+            group: child.id() as i32,
+        }
     }
 
     /// Asks the tree to end, giving it a chance to flush. Windows has no such request; there
@@ -882,9 +974,16 @@ pub fn local_time(unix: u64) -> Option<LocalTime> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
-        use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-        let ticks = unix.checked_mul(10_000_000)?.checked_add(FILETIME_UNIX_EPOCH)?;
-        let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+        use windows_sys::Win32::System::Time::{
+            FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime,
+        };
+        let ticks = unix
+            .checked_mul(10_000_000)?
+            .checked_add(FILETIME_UNIX_EPOCH)?;
+        let ft = FILETIME {
+            dwLowDateTime: ticks as u32,
+            dwHighDateTime: (ticks >> 32) as u32,
+        };
         // SAFETY: plain data in and out; a null zone means the current one.
         unsafe {
             let mut utc: SYSTEMTIME = std::mem::zeroed();
@@ -929,7 +1028,9 @@ pub fn from_local(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> Op
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
-        use windows_sys::Win32::System::Time::{SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime};
+        use windows_sys::Win32::System::Time::{
+            SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime,
+        };
         let (year, month, day, hour, minute) = normalize(year, month, day, hour, minute);
         let local = SYSTEMTIME {
             wYear: u16::try_from(year).ok()?,
@@ -951,7 +1052,9 @@ pub fn from_local(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> Op
                 return None;
             }
             let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
-            ticks.checked_sub(FILETIME_UNIX_EPOCH).map(|t| t / 10_000_000)
+            ticks
+                .checked_sub(FILETIME_UNIX_EPOCH)
+                .map(|t| t / 10_000_000)
         }
     }
     #[cfg(not(windows))]
@@ -983,7 +1086,13 @@ fn normalize(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> (i32, i
     let month = i64::from(month).rem_euclid(12);
     let days = days_from_civil(year, month + 1, 1) + i64::from(day) - 1 + carry;
     let (y, m, d) = civil_from_days(days);
-    (y as i32, m as i32 - 1, d as i32, (minute_of_day / 60) as i32, (minute_of_day % 60) as i32)
+    (
+        y as i32,
+        m as i32 - 1,
+        d as i32,
+        (minute_of_day / 60) as i32,
+        (minute_of_day % 60) as i32,
+    )
 }
 
 /// Days since 1970-01-01 of a proleptic Gregorian date (month 1-based). Howard Hinnant's
@@ -1036,9 +1145,14 @@ pub mod keyring {
                 .stderr(Stdio::null())
                 .output()
                 .ok()?;
-            out.status.success().then(|| String::from_utf8(out.stdout).ok()).flatten()
+            out.status
+                .success()
+                .then(|| String::from_utf8(out.stdout).ok())
+                .flatten()
         };
-        secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        secret
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     pub fn store(account: &str, label: &str, secret: &str) -> Result<(), String> {
@@ -1047,7 +1161,14 @@ pub mod keyring {
         #[cfg(not(windows))]
         {
             let mut child = Command::new("secret-tool")
-                .args(["store", &format!("--label={label}"), "service", "arakun", "account", account])
+                .args([
+                    "store",
+                    &format!("--label={label}"),
+                    "service",
+                    "arakun",
+                    "account",
+                    account,
+                ])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
@@ -1082,8 +1203,8 @@ pub mod keyring {
     #[cfg(windows)]
     mod win {
         use windows_sys::Win32::Security::Credentials::{
-            CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW,
-            CredDeleteW, CredFree, CredReadW, CredWriteW,
+            CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+            CREDENTIALW, CredDeleteW, CredFree, CredReadW, CredWriteW,
         };
 
         fn wide(s: &str) -> Vec<u16> {
@@ -1104,7 +1225,10 @@ pub mod keyring {
                 if CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred) == 0 {
                     return None;
                 }
-                let blob = std::slice::from_raw_parts((*cred).CredentialBlob, (*cred).CredentialBlobSize as usize);
+                let blob = std::slice::from_raw_parts(
+                    (*cred).CredentialBlob,
+                    (*cred).CredentialBlobSize as usize,
+                );
                 let secret = String::from_utf8(blob.to_vec()).ok();
                 CredFree(cred.cast());
                 secret
@@ -1131,7 +1255,10 @@ pub mod keyring {
             };
             // SAFETY: every pointer in `cred` points into a buffer alive for the call.
             if unsafe { CredWriteW(&cred, 0) } == 0 {
-                return Err(format!("Credential Manager: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "Credential Manager: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
             Ok(())
         }
@@ -1177,7 +1304,10 @@ mod tests {
         assert_eq!(keystroke("ctrl-shift-`"), "ctrl-shift-`");
         assert_eq!(keystroke("alt-left"), "cmd-[");
         assert_eq!(keystroke("alt-up"), "alt-up");
-        assert_eq!(shortcut_label("New terminal (Ctrl+Shift+T)"), "New terminal (⇧⌘T)");
+        assert_eq!(
+            shortcut_label("New terminal (Ctrl+Shift+T)"),
+            "New terminal (⇧⌘T)"
+        );
         assert_eq!(shortcut_label("Ctrl+= / Ctrl+- / Ctrl+0"), "⌘= / ⌘- / ⌘0");
         assert_eq!(shortcut_label("Ctrl+Tab / Ctrl+Shift+Tab"), "⌃Tab / ⌃⇧Tab");
         assert_eq!(shortcut_label("Back (Alt+Left)"), "Back (⌘[)");
@@ -1189,13 +1319,37 @@ mod tests {
     #[test]
     fn out_of_range_fields_roll_over_like_mktime() {
         assert_eq!(normalize(2026, 9, 15, 9, 30), (2026, 9, 15, 9, 30));
-        assert_eq!(normalize(2026, 9, 32, 0, 0), (2026, 10, 1, 0, 0), "Oct 32 is Nov 1");
-        assert_eq!(normalize(2026, 11, 32, 0, 0), (2027, 0, 1, 0, 0), "Dec 32 is Jan 1");
-        assert_eq!(normalize(2028, 1, 30, 0, 0), (2028, 2, 1, 0, 0), "a leap February has 29 days");
+        assert_eq!(
+            normalize(2026, 9, 32, 0, 0),
+            (2026, 10, 1, 0, 0),
+            "Oct 32 is Nov 1"
+        );
+        assert_eq!(
+            normalize(2026, 11, 32, 0, 0),
+            (2027, 0, 1, 0, 0),
+            "Dec 32 is Jan 1"
+        );
+        assert_eq!(
+            normalize(2028, 1, 30, 0, 0),
+            (2028, 2, 1, 0, 0),
+            "a leap February has 29 days"
+        );
         assert_eq!(normalize(2026, 1, 29, 0, 0), (2026, 2, 1, 0, 0));
-        assert_eq!(normalize(2026, 9, 31, 24, 5), (2026, 10, 1, 0, 5), "hour 24 is the next day");
-        assert_eq!(normalize(2026, 12, 1, 0, 0), (2027, 0, 1, 0, 0), "month 12 is next January");
-        assert_eq!(normalize(2026, 0, 0, 0, 0), (2025, 11, 31, 0, 0), "day 0 is the day before");
+        assert_eq!(
+            normalize(2026, 9, 31, 24, 5),
+            (2026, 10, 1, 0, 5),
+            "hour 24 is the next day"
+        );
+        assert_eq!(
+            normalize(2026, 12, 1, 0, 0),
+            (2027, 0, 1, 0, 0),
+            "month 12 is next January"
+        );
+        assert_eq!(
+            normalize(2026, 0, 0, 0, 0),
+            (2025, 11, 31, 0, 0),
+            "day 0 is the day before"
+        );
     }
 
     #[test]
@@ -1215,7 +1369,10 @@ mod tests {
         let back = from_local(t.year, t.month, t.day, t.hour, t.minute).unwrap();
         assert_eq!(back, now - now % 60, "a minute's precision");
         let next = from_local(t.year, t.month, t.day + 1, t.hour, t.minute).unwrap();
-        assert!((next - back).abs_diff(86_400) <= 3_600, "a day later, give or take a DST hour");
+        assert!(
+            (next - back).abs_diff(86_400) <= 3_600,
+            "a day later, give or take a DST hour"
+        );
     }
 
     #[test]
@@ -1248,4 +1405,3 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
-

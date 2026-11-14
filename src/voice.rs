@@ -94,7 +94,10 @@ pub fn settings() -> Settings {
 pub fn store(settings: &Settings) {
     *lock(cached()) = Some(settings.clone());
     let path = file();
-    if let Err(e) = crate::durable::write(&path, &serde_json::to_vec_pretty(settings).unwrap_or_default()) {
+    if let Err(e) = crate::durable::write(
+        &path,
+        &serde_json::to_vec_pretty(settings).unwrap_or_default(),
+    ) {
         eprintln!("arakun: could not save {}: {e}", path.display());
     }
 }
@@ -140,19 +143,45 @@ impl Lang {
 
 /// Spanish or English, from accents and the commonest short words.
 pub fn guess_lang(text: &str) -> Lang {
-    if text.chars().any(|c| matches!(c, '¿' | '¡' | 'ñ' | 'Ñ' | 'á' | 'é' | 'í' | 'ó' | 'ú')) {
+    if text
+        .chars()
+        .any(|c| matches!(c, '¿' | '¡' | 'ñ' | 'Ñ' | 'á' | 'é' | 'í' | 'ó' | 'ú'))
+    {
         return Lang::Es;
     }
     const ES: &[&str] = &[
-        "que", "de", "el", "la", "los", "las", "para", "con", "una", "un", "es", "por", "en", "y", "o", "del",
-        "se", "lo", "quieres", "prefieres", "usar", "cual",
+        "que",
+        "de",
+        "el",
+        "la",
+        "los",
+        "las",
+        "para",
+        "con",
+        "una",
+        "un",
+        "es",
+        "por",
+        "en",
+        "y",
+        "o",
+        "del",
+        "se",
+        "lo",
+        "quieres",
+        "prefieres",
+        "usar",
+        "cual",
     ];
     const EN: &[&str] = &[
-        "the", "to", "you", "do", "which", "what", "should", "is", "of", "and", "or", "for", "with", "want",
-        "prefer", "use", "in",
+        "the", "to", "you", "do", "which", "what", "should", "is", "of", "and", "or", "for",
+        "with", "want", "prefer", "use", "in",
     ];
     let (mut es, mut en) = (0, 0);
-    for w in text.split(|c: char| !c.is_alphabetic()).filter(|w| !w.is_empty()) {
+    for w in text
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| !w.is_empty())
+    {
         let w = w.to_lowercase();
         es += usize::from(ES.contains(&w.as_str()));
         en += usize::from(EN.contains(&w.as_str()));
@@ -200,8 +229,12 @@ fn strip_links(text: &str) -> String {
 
 /// Small numbers as words: the fast ElevenLabs models read digits unreliably.
 fn number(n: usize, lang: Lang) -> String {
-    const ES: [&str; 10] = ["uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez"];
-    const EN: [&str; 10] = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+    const ES: [&str; 10] = [
+        "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez",
+    ];
+    const EN: [&str; 10] = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ];
     let words = if lang == Lang::Es { ES } else { EN };
     match n {
         1..=10 => words[n - 1].to_string(),
@@ -211,14 +244,20 @@ fn number(n: usize, lang: Lang) -> String {
 
 fn sentence(s: &str) -> String {
     let s = s.trim();
-    if s.is_empty() || s.ends_with(['.', '?', '!', '…', ':']) { s.to_string() } else { format!("{s}.") }
+    if s.is_empty() || s.ends_with(['.', '?', '!', '…', ':']) {
+        s.to_string()
+    } else {
+        format!("{s}.")
+    }
 }
 
 /// What arakun says for a questionnaire from the session titled `session`.
 pub fn question_text(session: &str, questions: &[Question]) -> (String, Lang) {
     let all: Vec<&str> = questions
         .iter()
-        .flat_map(|q| std::iter::once(q.question.as_str()).chain(q.options.iter().map(String::as_str)))
+        .flat_map(|q| {
+            std::iter::once(q.question.as_str()).chain(q.options.iter().map(String::as_str))
+        })
         .collect();
     let lang = guess_lang(&all.join(" "));
     let session = speakable(session);
@@ -248,7 +287,11 @@ pub fn question_text(session: &str, questions: &[Question]) -> (String, Lang) {
             out.push_str(multi);
         }
         for (j, o) in q.options.iter().enumerate() {
-            out.push_str(&format!(" {option} {}: {}", number(j + 1, lang), sentence(&speakable(o))));
+            out.push_str(&format!(
+                " {option} {}: {}",
+                number(j + 1, lang),
+                sentence(&speakable(o))
+            ));
         }
     }
     (truncate(out.trim(), MAX_CHARS), lang)
@@ -267,8 +310,12 @@ fn truncate(s: &str, max: usize) -> String {
 /// What the "Test voice" button says.
 pub fn sample(lang: Lang) -> &'static str {
     match lang {
-        Lang::Es => "Hola. Así te voy a leer las preguntas en Arakun. Opción uno: sí. Opción dos: no.",
-        Lang::En => "Hi. This is how Arakun reads questions to you. Option one: yes. Option two: no.",
+        Lang::Es => {
+            "Hola. Así te voy a leer las preguntas en Arakun. Opción uno: sí. Opción dos: no."
+        }
+        Lang::En => {
+            "Hi. This is how Arakun reads questions to you. Option one: yes. Option two: no."
+        }
     }
 }
 
@@ -286,13 +333,21 @@ fn temp_path(ext: &str) -> PathBuf {
 }
 
 /// `text` spoken with `voice_id`, as a WAV file in the temp directory.
-pub fn fetch(api_key: &str, voice_id: &str, tone: Tone, text: &str, lang: Lang) -> Result<PathBuf, String> {
+pub fn fetch(
+    api_key: &str,
+    voice_id: &str,
+    tone: Tone,
+    text: &str,
+    lang: Lang,
+) -> Result<PathBuf, String> {
     let voice_id = voice_id.trim();
     if !valid_voice_id(voice_id) {
         return Err("Set the voice ID in Settings › Voice (the letters and digits ElevenLabs shows for a voice).".into());
     }
     let raw = temp_path("pcm");
-    let url = format!("https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_{SAMPLE_RATE}");
+    let url = format!(
+        "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_{SAMPLE_RATE}"
+    );
     // Without voice_settings ElevenLabs uses the voice's own, which for many library
     // voices are far more theatrical than a question needs.
     let body = json!({
@@ -335,7 +390,10 @@ pub fn fetch(api_key: &str, voice_id: &str, tone: Tone, text: &str, lang: Lang) 
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!("Could not reach ElevenLabs ({}).", err.trim()));
     }
-    let code: u16 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
+    let code: u16 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
     if code != 200 {
         return Err(api_error(code, &bytes));
     }
@@ -348,14 +406,22 @@ pub fn fetch(api_key: &str, voice_id: &str, tone: Tone, text: &str, lang: Lang) 
 }
 
 fn api_error(code: u16, body: &[u8]) -> String {
-    let detail = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("detail").cloned());
+    let detail = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("detail").cloned());
     let msg = match &detail {
         Some(Value::String(s)) => Some(s.clone()),
         Some(Value::Object(o)) => o.get("message").and_then(Value::as_str).map(str::to_string),
-        Some(Value::Array(a)) => a.first().and_then(|e| e.get("msg")).and_then(Value::as_str).map(str::to_string),
+        Some(Value::Array(a)) => a
+            .first()
+            .and_then(|e| e.get("msg"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
         _ => None,
     };
-    let msg = msg.map(|m| m.trim().trim_end_matches('.').to_string()).filter(|m| !m.is_empty());
+    let msg = msg
+        .map(|m| m.trim().trim_end_matches('.').to_string())
+        .filter(|m| !m.is_empty());
     match (code, msg) {
         (401, None) => "ElevenLabs did not accept the API key.".into(),
         (401, Some(m)) => format!("ElevenLabs did not accept the API key ({m})."),
@@ -409,7 +475,10 @@ struct Queue {
 fn queue() -> &'static (Mutex<Queue>, Condvar) {
     static QUEUE: OnceLock<(Mutex<Queue>, Condvar)> = OnceLock::new();
     QUEUE.get_or_init(|| {
-        if let Err(e) = std::thread::Builder::new().name("arakun-voice".into()).spawn(run) {
+        if let Err(e) = std::thread::Builder::new()
+            .name("arakun-voice".into())
+            .spawn(run)
+        {
             eprintln!("arakun: voice: {e}");
         }
         (Mutex::new(Queue::default()), Condvar::new())
@@ -418,12 +487,18 @@ fn queue() -> &'static (Mutex<Queue>, Condvar) {
 
 /// Says `text` after whatever is being said; `key` is what [`cancel`] takes.
 pub fn speak(key: impl Into<String>, text: String, lang: Lang) {
-    push(Job { key: key.into(), source: Source::Text(text, lang) });
+    push(Job {
+        key: key.into(),
+        source: Source::Text(text, lang),
+    });
 }
 
 /// Plays a WAV file from [`fetch`] in turn, and deletes it afterwards.
 pub fn play(key: impl Into<String>, path: PathBuf) {
-    push(Job { key: key.into(), source: Source::File(path) });
+    push(Job {
+        key: key.into(),
+        source: Source::File(path),
+    });
 }
 
 fn push(job: Job) {
@@ -560,21 +635,40 @@ mod tests {
 
     #[test]
     fn markdown_and_links_are_not_read() {
-        assert_eq!(speakable("Use **`date-fns`** or [dayjs](https://day.js.org)?"), "Use date-fns or dayjs?");
+        assert_eq!(
+            speakable("Use **`date-fns`** or [dayjs](https://day.js.org)?"),
+            "Use date-fns or dayjs?"
+        );
         assert_eq!(speakable("See https://example.com now"), "See now");
-        assert_eq!(speakable("## pending_question  in  `src/voice.rs`"), "pending question in src/voice.rs");
+        assert_eq!(
+            speakable("## pending_question  in  `src/voice.rs`"),
+            "pending question in src/voice.rs"
+        );
     }
 
     #[test]
     fn language_comes_from_the_text() {
         assert_eq!(guess_lang("¿Qué librería prefieres?"), Lang::Es);
-        assert_eq!(guess_lang("Cual libreria quieres para las fechas"), Lang::Es);
-        assert_eq!(guess_lang("Which library should we use for dates?"), Lang::En);
+        assert_eq!(
+            guess_lang("Cual libreria quieres para las fechas"),
+            Lang::Es
+        );
+        assert_eq!(
+            guess_lang("Which library should we use for dates?"),
+            Lang::En
+        );
     }
 
     #[test]
     fn one_question_reads_its_options_in_order() {
-        let (text, lang) = question_text("Integrar voz", &[q("¿Qué librería usamos para fechas?", &["date-fns", "dayjs"], false)]);
+        let (text, lang) = question_text(
+            "Integrar voz",
+            &[q(
+                "¿Qué librería usamos para fechas?",
+                &["date-fns", "dayjs"],
+                false,
+            )],
+        );
         assert_eq!(lang, Lang::Es);
         assert_eq!(
             text,
@@ -586,7 +680,10 @@ mod tests {
     fn several_questions_are_numbered() {
         let (text, lang) = question_text(
             "",
-            &[q("Which features do you want?", &["Auth", "Login"], true), q("Which database?", &["Postgres"], false)],
+            &[
+                q("Which features do you want?", &["Auth", "Login"], true),
+                q("Which database?", &["Postgres"], false),
+            ],
         );
         assert_eq!(lang, Lang::En);
         assert_eq!(
@@ -617,8 +714,14 @@ mod tests {
     #[test]
     fn api_errors_read_like_sentences() {
         let body = br#"{"detail":{"status":"invalid_api_key","message":"Invalid API key"}}"#;
-        assert_eq!(api_error(401, body), "ElevenLabs did not accept the API key (Invalid API key).");
-        assert_eq!(api_error(429, br#"{"detail":"Too many requests."}"#), "ElevenLabs answered 429: Too many requests.");
+        assert_eq!(
+            api_error(401, body),
+            "ElevenLabs did not accept the API key (Invalid API key)."
+        );
+        assert_eq!(
+            api_error(429, br#"{"detail":"Too many requests."}"#),
+            "ElevenLabs answered 429: Too many requests."
+        );
         assert_eq!(api_error(500, b"oops"), "ElevenLabs answered 500.");
     }
 
@@ -626,7 +729,8 @@ mod tests {
     fn older_settings_files_read_as_balanced() {
         let s: Settings = serde_json::from_str(r#"{"enabled":true,"voice_id":"abc"}"#).unwrap();
         assert_eq!(s.tone, Tone::Balanced);
-        let s: Settings = serde_json::from_str(r#"{"enabled":true,"voice_id":"abc","tone":"calm"}"#).unwrap();
+        let s: Settings =
+            serde_json::from_str(r#"{"enabled":true,"voice_id":"abc","tone":"calm"}"#).unwrap();
         assert_eq!(s.tone, Tone::Calm);
     }
 

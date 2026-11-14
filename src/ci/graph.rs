@@ -50,18 +50,33 @@ pub struct Graph {
 }
 
 fn exists(dir: &Path, r: &str) -> bool {
-    git::read(dir, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")]).is_ok()
+    git::read(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{r}^{{commit}}"),
+        ],
+    )
+    .is_ok()
 }
 
 /// `origin/main` (what CI ran on), else a local default branch.
 fn default_ref(dir: &Path) -> Option<String> {
-    if let Ok(head) = git::read(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]) {
+    if let Ok(head) = git::read(
+        dir,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
         let head = head.trim().to_string();
         if !head.is_empty() && exists(dir, &head) {
             return Some(head);
         }
     }
-    ["origin/main", "origin/master", "main", "master"].into_iter().find(|r| exists(dir, r)).map(str::to_string)
+    ["origin/main", "origin/master", "main", "master"]
+        .into_iter()
+        .find(|r| exists(dir, r))
+        .map(str::to_string)
 }
 
 fn log(dir: &Path, args: &[&str], lane: Lane) -> Vec<Commit> {
@@ -76,17 +91,27 @@ fn log(dir: &Path, args: &[&str], lane: Lane) -> Vec<Commit> {
             let sha = parts.next()?.to_string();
             let time = parts.next()?.parse().ok()?;
             let title = parts.next().unwrap_or_default().to_string();
-            Some(Commit { sha, title, time, lane, pushed: true })
+            Some(Commit {
+                sha,
+                title,
+                time,
+                lane,
+                pushed: true,
+            })
         })
         .collect()
 }
 
 fn one(dir: &Path, args: &[&str]) -> Option<String> {
-    git::read(dir, args).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    git::read(dir, args)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 pub fn build(dir: &Path, branch: &str) -> Result<Graph> {
-    let main_ref = default_ref(dir).ok_or_else(|| anyhow!("This repository has no main branch."))?;
+    let main_ref =
+        default_ref(dir).ok_or_else(|| anyhow!("This repository has no main branch."))?;
     let main = main_ref.trim_start_matches("origin/").to_string();
     let local = format!("refs/heads/{branch}");
     let remote = format!("refs/remotes/origin/{branch}");
@@ -98,7 +123,11 @@ pub fn build(dir: &Path, branch: &str) -> Result<Graph> {
         return Err(anyhow!("{branch} isn't in this clone yet."));
     };
     let unpushed: HashSet<String> = {
-        let upstream = if exists(dir, &remote) { remote.clone() } else { main_ref.clone() };
+        let upstream = if exists(dir, &remote) {
+            remote.clone()
+        } else {
+            main_ref.clone()
+        };
         one(dir, &["rev-list", &format!("{upstream}..{tip}")])
             .map(|s| s.lines().map(str::to_string).collect())
             .unwrap_or_default()
@@ -112,14 +141,34 @@ pub fn build(dir: &Path, branch: &str) -> Result<Graph> {
     let n = |k: usize| k.to_string();
 
     if branch == main {
-        let rows = mark(log(dir, &["--first-parent", "-n", &n(BRANCH_MAX), &tip], Lane::Main));
-        return Ok(Graph { branch: branch.into(), main, rows, fork: None, merge: None });
+        let rows = mark(log(
+            dir,
+            &["--first-parent", "-n", &n(BRANCH_MAX), &tip],
+            Lane::Main,
+        ));
+        return Ok(Graph {
+            branch: branch.into(),
+            main,
+            rows,
+            fork: None,
+            merge: None,
+        });
     }
 
     let merged = git::read(dir, &["merge-base", "--is-ancestor", &tip, &main_ref]).is_ok();
     // The oldest commit on main's first-parent line that contains the branch.
     let merge_sha = merged
-        .then(|| one(dir, &["rev-list", "--first-parent", "--ancestry-path", &format!("{tip}..{main_ref}")]))
+        .then(|| {
+            one(
+                dir,
+                &[
+                    "rev-list",
+                    "--first-parent",
+                    "--ancestry-path",
+                    &format!("{tip}..{main_ref}"),
+                ],
+            )
+        })
         .flatten()
         .and_then(|s| s.lines().last().map(str::to_string));
     let base = match &merge_sha {
@@ -128,22 +177,54 @@ pub fn build(dir: &Path, branch: &str) -> Result<Graph> {
     }
     .ok_or_else(|| anyhow!("{branch} shares no history with {main}."))?;
 
-    let branch_rows = mark(log(dir, &["-n", &n(BRANCH_MAX), &format!("{base}..{tip}")], Lane::Branch));
-    let newer = log(dir, &["--first-parent", "-n", "200", &format!("{base}..{main_ref}")], Lane::Main);
-    let newer: Vec<Commit> = match merge_sha.as_ref().and_then(|m| newer.iter().position(|c| &c.sha == m)) {
+    let branch_rows = mark(log(
+        dir,
+        &["-n", &n(BRANCH_MAX), &format!("{base}..{tip}")],
+        Lane::Branch,
+    ));
+    let newer = log(
+        dir,
+        &[
+            "--first-parent",
+            "-n",
+            "200",
+            &format!("{base}..{main_ref}"),
+        ],
+        Lane::Main,
+    );
+    let newer: Vec<Commit> = match merge_sha
+        .as_ref()
+        .and_then(|m| newer.iter().position(|c| &c.sha == m))
+    {
         Some(at) => newer[at.saturating_sub(MAIN_NEWER / 2)..].to_vec(),
         None => newer.into_iter().take(MAIN_NEWER).collect(),
     };
-    let older = log(dir, &["--first-parent", "-n", &n(MAIN_OLDER), &base], Lane::Main);
+    let older = log(
+        dir,
+        &["--first-parent", "-n", &n(MAIN_OLDER), &base],
+        Lane::Main,
+    );
 
     let mut rows: Vec<Commit> = newer.into_iter().chain(branch_rows).collect();
     // Newest first; the merge commit stays above what it merged.
-    rows.sort_by(|a, b| b.time.cmp(&a.time).then((a.lane == Lane::Branch).cmp(&(b.lane == Lane::Branch))));
+    rows.sort_by(|a, b| {
+        b.time
+            .cmp(&a.time)
+            .then((a.lane == Lane::Branch).cmp(&(b.lane == Lane::Branch)))
+    });
     let has_branch = rows.iter().any(|c| c.lane == Lane::Branch);
     let fork = (has_branch && !older.is_empty()).then_some(rows.len());
     rows.extend(older);
-    let merge = merge_sha.and_then(|m| rows.iter().position(|c| c.sha == m)).filter(|_| has_branch);
-    Ok(Graph { branch: branch.into(), main, rows, fork, merge })
+    let merge = merge_sha
+        .and_then(|m| rows.iter().position(|c| c.sha == m))
+        .filter(|_| has_branch);
+    Ok(Graph {
+        branch: branch.into(),
+        main,
+        rows,
+        fork,
+        merge,
+    })
 }
 
 #[cfg(test)]
@@ -163,7 +244,11 @@ mod tests {
             .env("GIT_COMMITTER_EMAIL", "t@t")
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn commit(dir: &Path, t: u64, msg: &str) {
@@ -192,20 +277,33 @@ mod tests {
         assert_eq!(g.main, "main");
         assert_eq!(
             titles(&g),
-            [("f2", Lane::Branch), ("c3", Lane::Main), ("f1", Lane::Branch), ("c2", Lane::Main), ("c1", Lane::Main)]
+            [
+                ("f2", Lane::Branch),
+                ("c3", Lane::Main),
+                ("f1", Lane::Branch),
+                ("c2", Lane::Main),
+                ("c1", Lane::Main)
+            ]
         );
         assert_eq!((g.fork, g.merge), (Some(3), None));
         // Nothing has an upstream here, so the branch's own commits are unpushed.
         assert!(!g.rows[0].pushed && g.rows[1].pushed);
 
-        git_at(&dir, 50, &["merge", "-q", "--no-ff", "-m", "Merge feat", "feat"]);
+        git_at(
+            &dir,
+            50,
+            &["merge", "-q", "--no-ff", "-m", "Merge feat", "feat"],
+        );
         let g = build(&dir, "feat").unwrap();
         assert_eq!(g.rows[0].title, "Merge feat");
         assert_eq!(g.merge, Some(0));
         assert_eq!(g.rows[g.fork.unwrap()].title, "c2");
 
         let g = build(&dir, "main").unwrap();
-        assert_eq!(g.rows.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Merge feat", "c3", "c2", "c1"]);
+        assert_eq!(
+            g.rows.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
+            ["Merge feat", "c3", "c2", "c1"]
+        );
         assert!(build(&dir, "nope").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -39,6 +39,7 @@ Every commit message and pull request title follows
 Run what CI runs for the parts you changed, and fix every warning:
 
 ```sh
+tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
 # Cargo.toml, Cargo.lock or deny.toml changed
@@ -54,8 +55,8 @@ allow-list in `deny.toml`; do not add a license to that list without asking.
 
 ## Code
 
-- Do not run `cargo fmt` on whole files or the whole crate. There is no rustfmt config,
-  and reformatting buries the real change. Match the code around you.
+- Format with `tools/rustfmt.sh` (rustfmt defaults). Plain `cargo fmt` stops at the
+  private modules this repository does not have.
 - Tests go in a `#[cfg(test)] mod tests` at the bottom of the file they test.
 - UI code uses the design system: colors, grays, text sizes and fonts from `theme` and
   `ui`, never hand-written values. `src/design_lint.rs` fails the tests otherwise.

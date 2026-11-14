@@ -13,7 +13,9 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        self.show_view_tab("PostHog", TabKind::PostHog, |k| matches!(k, TabKind::PostHog));
+        self.show_view_tab("PostHog", TabKind::PostHog, |k| {
+            matches!(k, TabKind::PostHog)
+        });
         self.note_active_tab();
         let root = self.project().path.clone();
         self.posthog_view.update(cx, |v, cx| {
@@ -24,7 +26,12 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn on_posthog_event(&mut self, ev: &PostHogEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_posthog_event(
+        &mut self,
+        ev: &PostHogEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }

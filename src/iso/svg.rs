@@ -47,7 +47,10 @@ impl Palette {
     }
 
     fn accented(tone: Tone) -> bool {
-        matches!(tone, Tone::AccentTop | Tone::AccentLeft | Tone::AccentRight | Tone::Accent)
+        matches!(
+            tone,
+            Tone::AccentTop | Tone::AccentLeft | Tone::AccentRight | Tone::Accent
+        )
     }
 
     pub fn fill(&self, tone: Tone) -> Rgb {
@@ -59,14 +62,22 @@ impl Palette {
             return c.map(|v| (v * k).min(1.));
         }
         let (light, dark) = Self::share(tone);
-        let over = if Self::accented(tone) { self.accent } else { self.ink };
+        let over = if Self::accented(tone) {
+            self.accent
+        } else {
+            self.ink
+        };
         mix(over, self.ground, if self.dark { dark } else { light })
     }
 
     pub fn stroke(&self, ink: Ink) -> Rgb {
         let c = self.stroke_full(ink);
         // Soft: outlines settle back so the shading carries the form.
-        if self.soft { mix(c, self.ground, 0.55) } else { c }
+        if self.soft {
+            mix(c, self.ground, 0.55)
+        } else {
+            c
+        }
     }
 
     fn stroke_full(&self, ink: Ink) -> Rgb {
@@ -105,7 +116,13 @@ pub fn path_data(path: &[Seg], dx: f32, dy: f32) -> String {
             Seg::L([x, y]) => {
                 let _ = write!(d, "L{} {}", num(x + dx), num(y + dy));
             }
-            Seg::A { r, rot, large, sweep, to: [x, y] } => {
+            Seg::A {
+                r,
+                rot,
+                large,
+                sweep,
+                to: [x, y],
+            } => {
                 let _ = write!(
                     d,
                     "A{} {} {} {} {} {} {}",
@@ -197,7 +214,11 @@ pub fn style(id: &str, palette: &Palette) -> String {
         Tone::Accent,
     ] {
         let (light, dark) = Palette::share(tone);
-        let over = if Palette::accented(tone) { "--accent" } else { "--ink" };
+        let over = if Palette::accented(tone) {
+            "--accent"
+        } else {
+            "--ink"
+        };
         let _ = writeln!(
             css,
             ".{c}{{fill:color-mix(in srgb,var({over}) calc(var(--d) * {dk}% + (1 - var(--d)) * {lt}%),var(--g))}}",
@@ -214,7 +235,9 @@ pub fn style(id: &str, palette: &Palette) -> String {
 }
 
 pub fn svg_id(title: &str) -> String {
-    title.to_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "-")
+    title
+        .to_lowercase()
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "-")
 }
 
 /// How an item is painted in SVG: its classes, an inline fill for custom
@@ -223,12 +246,26 @@ pub fn svg_id(title: &str) -> String {
 pub fn paint_of(item: &Item, palette: &Palette) -> Option<(String, String, Option<f32>)> {
     Some(match item.paint {
         Paint::Fill(tone) | Paint::LineOnly(tone) => match tone {
-            Tone::Custom(..) => (String::new(), format!("fill:{}", hex(palette.fill(tone))), None),
+            Tone::Custom(..) => (
+                String::new(),
+                format!("fill:{}", hex(palette.fill(tone))),
+                None,
+            ),
             _ => (tone_class(tone).to_string(), String::new(), None),
         },
         Paint::Shade { .. } | Paint::Soft { .. } | Paint::Fade { .. } => return None,
-        Paint::Stroke { ink, dashed, flow, wide } => (
-            format!("{}{}{}", ink_class(ink), if dashed { " d" } else { "" }, if wide { " w" } else { "" }),
+        Paint::Stroke {
+            ink,
+            dashed,
+            flow,
+            wide,
+        } => (
+            format!(
+                "{}{}{}",
+                ink_class(ink),
+                if dashed { " d" } else { "" },
+                if wide { " w" } else { "" }
+            ),
             String::new(),
             (dashed && flow != 0.).then_some(flow),
         ),
@@ -269,13 +306,19 @@ pub fn frame(title: &str, items: &[Item], palette: &Palette, pad: f32) -> String
             let _ = writeln!(s, r#"<g opacity="{}">"#, num(first.alpha));
         }
         for item in run {
-            let Some((class, fill, flow)) = paint_of(item, palette) else { continue };
+            let Some((class, fill, flow)) = paint_of(item, palette) else {
+                continue;
+            };
             let style = match flow {
                 Some(f) => format!(r#" style="stroke-dashoffset:{}""#, num(dash_offset(f))),
                 None if !fill.is_empty() => format!(r#" style="{fill}""#),
                 None => String::new(),
             };
-            let _ = writeln!(s, r#"<path class="{class}"{style} d="{}"/>"#, path_data(&item.path, dx, dy));
+            let _ = writeln!(
+                s,
+                r#"<path class="{class}"{style} d="{}"/>"#,
+                path_data(&item.path, dx, dy)
+            );
         }
         if fading {
             s.push_str("</g>\n");
@@ -292,7 +335,13 @@ mod tests {
     #[test]
     fn exports_arcs_not_polylines() {
         let items = crate::iso::render(&(crate::iso::scenes::ALL[0].build)(0.));
-        let pal = Palette { ink: [0.16; 3], ground: [1.; 3], accent: [0.11, 0.69, 0.61], dark: false, soft: false };
+        let pal = Palette {
+            ink: [0.16; 3],
+            ground: [1.; 3],
+            accent: [0.11, 0.69, 0.61],
+            dark: false,
+            soft: false,
+        };
         let svg = frame("Usage billing", &items, &pal, 16.);
         assert!(svg.starts_with("<svg class=\"iso-usage-billing\""));
         assert!(svg.contains('A'), "rounded corners are written as arcs");
@@ -307,8 +356,20 @@ mod tests {
 fn dump_frames() {
     let dir = std::env::var("ISO_DUMP").unwrap_or_else(|_| "/tmp/iso".into());
     std::fs::create_dir_all(&dir).unwrap();
-    let paper = Palette { ink: [0.165; 3], ground: [1.; 3], accent: [0.114, 0.686, 0.612], dark: false, soft: false };
-    let night = Palette { ink: [0.9, 0.91, 0.94], ground: [0.063, 0.071, 0.11], accent: [1., 0.71, 0.28], dark: true, soft: false };
+    let paper = Palette {
+        ink: [0.165; 3],
+        ground: [1.; 3],
+        accent: [0.114, 0.686, 0.612],
+        dark: false,
+        soft: false,
+    };
+    let night = Palette {
+        ink: [0.9, 0.91, 0.94],
+        ground: [0.063, 0.071, 0.11],
+        accent: [1., 0.71, 0.28],
+        dark: true,
+        soft: false,
+    };
     for (i, s) in crate::iso::scenes::ALL.iter().enumerate() {
         for t in [0., 0.2, 0.45, 0.62, 0.75, 0.9] {
             let items = crate::iso::render(&(s.build)(t));

@@ -9,7 +9,8 @@ use super::rail_blocks::{avatar, git_identity, url_title, view_id};
 use super::*;
 use crate::input::{InputEvent, TextInput};
 use crate::sidebar::{
-    BadgeMode, Collapse, Density, Item, Mode, Path as ItemPath, Piece, Pin, Preset, Side, Sidebar, TitleAction, Variant, View,
+    BadgeMode, Collapse, Density, Item, Mode, Path as ItemPath, Piece, Pin, Preset, Side, Sidebar,
+    TitleAction, Variant, View,
 };
 
 /// What the right column is about.
@@ -123,7 +124,12 @@ fn panel_title(text: &str) -> gpui::Div {
 }
 
 fn field_label(text: &str) -> gpui::Div {
-    div().pt(px(10.)).pb(px(4.)).text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(text.to_string())
+    div()
+        .pt(px(10.))
+        .pb(px(4.))
+        .text_size(px(ui::TEXT_SM))
+        .text_color(theme::text_subtle())
+        .child(text.to_string())
 }
 
 impl Shell {
@@ -132,7 +138,9 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        self.show_view_tab("Sidebar", TabKind::SidebarBuilder, |k| matches!(k, TabKind::SidebarBuilder));
+        self.show_view_tab("Sidebar", TabKind::SidebarBuilder, |k| {
+            matches!(k, TabKind::SidebarBuilder)
+        });
         if self.sidebar.mark_known() {
             self.sidebar.save();
         }
@@ -166,7 +174,11 @@ impl Shell {
     }
 
     fn undo_sidebar(&mut self, redo: bool, cx: &mut Context<Self>) {
-        let (from, to) = if redo { (&mut self.builder.redo, &mut self.builder.undo) } else { (&mut self.builder.undo, &mut self.builder.redo) };
+        let (from, to) = if redo {
+            (&mut self.builder.redo, &mut self.builder.undo)
+        } else {
+            (&mut self.builder.undo, &mut self.builder.redo)
+        };
         if let Some(prev) = from.pop() {
             to.push(std::mem::replace(&mut self.sidebar, prev));
             self.sidebar.save();
@@ -181,18 +193,32 @@ impl Shell {
         self.builder.prompt = None;
         let (name, emoji, target) = match sel {
             BuilderSel::Item(p) => {
-                let Some(item) = self.sidebar.get(p) else { return };
+                let Some(item) = self.sidebar.get(p) else {
+                    return;
+                };
                 let target = match &item.piece {
-                    Piece::Pin { pin: Pin::Url { url, .. } } => Some(url.clone()),
-                    Piece::Pin { pin: Pin::Command { command, .. } } => Some(command.clone()),
-                    Piece::Pin { pin: Pin::File { path, .. } } => Some(path.display().to_string()),
+                    Piece::Pin {
+                        pin: Pin::Url { url, .. },
+                    } => Some(url.clone()),
+                    Piece::Pin {
+                        pin: Pin::Command { command, .. },
+                    } => Some(command.clone()),
+                    Piece::Pin {
+                        pin: Pin::File { path, .. },
+                    } => Some(path.display().to_string()),
                     Piece::Title { text } => Some(text.clone()),
                     _ => None,
                 };
-                (item.label.clone().unwrap_or_default(), item.emoji.clone().unwrap_or_default(), target)
+                (
+                    item.label.clone().unwrap_or_default(),
+                    item.emoji.clone().unwrap_or_default(),
+                    target,
+                )
             }
             BuilderSel::Section(s) => {
-                let Some(sec) = self.sidebar.sections.get(s) else { return };
+                let Some(sec) = self.sidebar.sections.get(s) else {
+                    return;
+                };
                 (sec.title.clone(), String::new(), None)
             }
         };
@@ -249,15 +275,21 @@ impl Shell {
                     this.quiet_edit(cx, |s| {
                         if let Some(i) = s.get_mut(p) {
                             match &mut i.piece {
-                                Piece::Pin { pin: Pin::Url { url, title } } => {
+                                Piece::Pin {
+                                    pin: Pin::Url { url, title },
+                                } => {
                                     *url = text.clone();
                                     *title = url_title(&text);
                                 }
-                                Piece::Pin { pin: Pin::Command { command, title } } => {
+                                Piece::Pin {
+                                    pin: Pin::Command { command, title },
+                                } => {
                                     *command = text.clone();
                                     *title = text.clone();
                                 }
-                                Piece::Pin { pin: Pin::File { path, .. } } => *path = text.clone().into(),
+                                Piece::Pin {
+                                    pin: Pin::File { path, .. },
+                                } => *path = text.clone().into(),
                                 Piece::Title { text: t } => *t = text.clone(),
                                 _ => {}
                             }
@@ -267,7 +299,13 @@ impl Shell {
             }));
         }
         let _ = window;
-        self.builder.inputs = Some(BuilderInputs { sel, name: name_input, emoji: emoji_input, target: target_input, _subs: subs });
+        self.builder.inputs = Some(BuilderInputs {
+            sel,
+            name: name_input,
+            emoji: emoji_input,
+            target: target_input,
+            _subs: subs,
+        });
         cx.notify();
     }
 
@@ -292,10 +330,24 @@ impl Shell {
                 if !text.is_empty() {
                     let piece = match ask {
                         PinAsk::Url => {
-                            let url = if text.contains("://") { text } else { format!("https://{text}") };
-                            Piece::Pin { pin: Pin::Url { title: url_title(&url), url } }
+                            let url = if text.contains("://") {
+                                text
+                            } else {
+                                format!("https://{text}")
+                            };
+                            Piece::Pin {
+                                pin: Pin::Url {
+                                    title: url_title(&url),
+                                    url,
+                                },
+                            }
                         }
-                        PinAsk::Command => Piece::Pin { pin: Pin::Command { title: text.clone(), command: text } },
+                        PinAsk::Command => Piece::Pin {
+                            pin: Pin::Command {
+                                title: text.clone(),
+                                command: text,
+                            },
+                        },
                         PinAsk::Title => Piece::Title { text },
                     };
                     this.add_piece(piece, cx);
@@ -309,7 +361,11 @@ impl Shell {
             _ => {}
         });
         window.focus(&input.focus_handle(cx), cx);
-        self.builder.prompt = Some(BuilderPrompt { ask, input, _sub: sub });
+        self.builder.prompt = Some(BuilderPrompt {
+            ask,
+            input,
+            _sub: sub,
+        });
         cx.notify();
     }
 
@@ -319,7 +375,12 @@ impl Shell {
         let target = match self.builder.sel {
             Some(BuilderSel::Section(s)) => Some(s),
             Some(BuilderSel::Item((s, _))) => Some(s),
-            None => self.sidebar.sections.iter().position(|s| s.mode == Mode::Scroll).or(Some(0)),
+            None => self
+                .sidebar
+                .sections
+                .iter()
+                .position(|s| s.mode == Mode::Scroll)
+                .or(Some(0)),
         };
         let Some(s) = target.filter(|s| *s < self.sidebar.sections.len()) else {
             self.change_sidebar(cx, |sb| {
@@ -338,11 +399,21 @@ impl Shell {
     fn tab_pin(&self) -> Option<Pin> {
         let env = self.env();
         // The builder itself is on screen; the tab before it is the one meant.
-        let tab = env.tabs.iter().rev().find(|t| matches!(t.kind, TabKind::Browser { .. } | TabKind::File { .. }))?;
+        let tab = env
+            .tabs
+            .iter()
+            .rev()
+            .find(|t| matches!(t.kind, TabKind::Browser { .. } | TabKind::File { .. }))?;
         match &tab.kind {
-            TabKind::Browser { url } if !url.is_empty() => Some(Pin::Url { title: url_title(url), url: url.to_string() }),
+            TabKind::Browser { url } if !url.is_empty() => Some(Pin::Url {
+                title: url_title(url),
+                url: url.to_string(),
+            }),
             TabKind::File { path } => Some(Pin::File {
-                title: path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned()),
+                title: path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                ),
                 path: path.clone(),
             }),
             _ => None,
@@ -351,7 +422,11 @@ impl Shell {
 
     // ── The tab ─────────────────────────────────────────────────────────
 
-    pub(super) fn render_sidebar_builder(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_sidebar_builder(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let _ = window;
         div()
             .id("sidebar-builder")
@@ -391,10 +466,27 @@ impl Shell {
             .px(px(16.))
             .border_b_1()
             .border_color(theme::stroke())
-            .child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_faint()).child("Design system ›"))
-            .child(div().text_size(px(ui::TEXT_LG)).font_weight(FontWeight::SEMIBOLD).child("Sidebar"))
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_faint())
+                    .child("Design system ›"),
+            )
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_LG))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Sidebar"),
+            )
             .child(div().flex_1())
-            .when_some(self.builder.flash.clone(), |d, f| d.child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(f)))
+            .when_some(self.builder.flash.clone(), |d, f| {
+                d.child(
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_subtle())
+                        .child(f),
+                )
+            })
             .child(
                 icon_button("sb-undo", "arrow-left01", 14.)
                     .tooltip(ui::tip("Undo (Ctrl+Z)"))
@@ -411,7 +503,9 @@ impl Shell {
                 ui::button("sb-copy", "Export", ui::ButtonKind::Ghost, true)
                     .tooltip(ui::tip("Copies the layout as JSON, to share or keep"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(this.sidebar.to_json()));
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            this.sidebar.to_json(),
+                        ));
                         this.builder.flash = Some("Layout copied to the clipboard".into());
                         cx.notify();
                     })),
@@ -420,7 +514,10 @@ impl Shell {
                 ui::button("sb-paste", "Import", ui::ButtonKind::Ghost, true)
                     .tooltip(ui::tip("Uses a layout copied from Arakun"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+                        let text = cx
+                            .read_from_clipboard()
+                            .and_then(|c| c.text())
+                            .unwrap_or_default();
                         match Sidebar::parse(text.as_bytes()) {
                             Some(s) => {
                                 this.change_sidebar(cx, |cur| *cur = s);
@@ -434,15 +531,23 @@ impl Shell {
             .child(
                 ui::button("sb-reset", "Reset", ui::ButtonKind::Outline, true)
                     .tooltip(ui::tip("Back to the sidebar Arakun ships with"))
-                    .on_click(cx.listener(|this, _, _, cx| this.change_sidebar(cx, |s| *s = Sidebar::default()))),
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.change_sidebar(cx, |s| *s = Sidebar::default())
+                    })),
             )
     }
 
     // ── Left: the pieces ────────────────────────────────────────────────
 
     fn render_builder_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let piece_row = |id: SharedString, piece: Option<Piece>, icon_name: &'static str, label: String, note: Option<&'static str>| {
-            let placed = piece.as_ref().is_some_and(|p| p.unique() && self.sidebar.has(p));
+        let piece_row = |id: SharedString,
+                         piece: Option<Piece>,
+                         icon_name: &'static str,
+                         label: String,
+                         note: Option<&'static str>| {
+            let placed = piece
+                .as_ref()
+                .is_some_and(|p| p.unique() && self.sidebar.has(p));
             let el = div()
                 .id(id.clone())
                 .flex()
@@ -461,7 +566,14 @@ impl Shell {
                 .when(placed, |d| d.opacity(0.5))
                 .child(icon(icon_name, 14.).text_color(theme::text_subtle()))
                 .child(div().flex_1().min_w_0().truncate().child(label.clone()))
-                .when(placed, |d| d.child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child("in use")))
+                .when(placed, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child("in use"),
+                    )
+                })
                 .when_some(note, |d, n| {
                     d.child(
                         div()
@@ -475,7 +587,12 @@ impl Shell {
                 });
             match piece {
                 Some(piece) => {
-                    let dragged = DraggedPiece { from: None, item: Item::new(piece.clone()), title: label.into(), offset: Point::default() };
+                    let dragged = DraggedPiece {
+                        from: None,
+                        item: Item::new(piece.clone()),
+                        title: label.into(),
+                        offset: Point::default(),
+                    };
                     el.on_click(cx.listener(move |this, _, window, cx| {
                         // A piece already in the sidebar is selected instead of moved.
                         match this.sidebar.find(&piece).filter(|_| piece.unique()) {
@@ -507,57 +624,152 @@ impl Shell {
             .border_r_1()
             .border_color(theme::stroke());
         col = col.child(panel_title("Templates")).child(
-            div().flex().flex_wrap().gap(px(4.)).children(Preset::ALL.into_iter().map(|p| {
-                ui::chip(SharedString::from(format!("sb-preset-{}", p.label())), p.label(), self.sidebar.sections == p.layout().sections)
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(4.))
+                .children(Preset::ALL.into_iter().map(|p| {
+                    ui::chip(
+                        SharedString::from(format!("sb-preset-{}", p.label())),
+                        p.label(),
+                        self.sidebar.sections == p.layout().sections,
+                    )
                     .tooltip(ui::tip(p.blurb()))
-                    .on_click(cx.listener(move |this, _, _, cx| this.change_sidebar(cx, |s| *s = p.layout())))
-            })),
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.change_sidebar(cx, |s| *s = p.layout())
+                    }))
+                })),
         );
         col = col
             .child(panel_title("Navigation"))
-            .child(piece_row("sb-p-search".into(), Some(Piece::Search), "search01", "Search".into(), None))
-            .child(piece_row("sb-p-projects".into(), Some(Piece::projects()), "folder01", "Projects".into(), None));
+            .child(piece_row(
+                "sb-p-search".into(),
+                Some(Piece::Search),
+                "search01",
+                "Search".into(),
+                None,
+            ))
+            .child(piece_row(
+                "sb-p-projects".into(),
+                Some(Piece::projects()),
+                "folder01",
+                "Projects".into(),
+                None,
+            ));
         for &v in View::ALL {
             let note = self.sidebar.is_new(v).then_some("New");
-            col = col.child(piece_row(format!("sb-p-{}", view_id(v)).into(), Some(Piece::view(v)), v.icon(), v.label().into(), note));
+            col = col.child(piece_row(
+                format!("sb-p-{}", view_id(v)).into(),
+                Some(Piece::view(v)),
+                v.icon(),
+                v.label().into(),
+                note,
+            ));
         }
         col = col
             .child(panel_title("Your own"))
             .child(
-                piece_row("sb-p-link".into(), None, "link01", "Link…".into(), None)
-                    .on_click(cx.listener(|this, _, window, cx| this.ask_pin(PinAsk::Url, window, cx))),
+                piece_row("sb-p-link".into(), None, "link01", "Link…".into(), None).on_click(
+                    cx.listener(|this, _, window, cx| this.ask_pin(PinAsk::Url, window, cx)),
+                ),
             )
             .child(
-                piece_row("sb-p-cmd".into(), None, "computer-terminal01", "Command…".into(), None)
-                    .on_click(cx.listener(|this, _, window, cx| this.ask_pin(PinAsk::Command, window, cx))),
+                piece_row(
+                    "sb-p-cmd".into(),
+                    None,
+                    "computer-terminal01",
+                    "Command…".into(),
+                    None,
+                )
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.ask_pin(PinAsk::Command, window, cx)),
+                ),
             );
         if let Some(pin) = self.tab_pin() {
             let label = format!("Pin {}", pin.title());
-            col = col.child(piece_row("sb-p-tab".into(), Some(Piece::Pin { pin }), "pin", label, None));
+            col = col.child(piece_row(
+                "sb-p-tab".into(),
+                Some(Piece::Pin { pin }),
+                "pin",
+                label,
+                None,
+            ));
         }
         if let Some(prompt) = &self.builder.prompt
             && prompt.ask != PinAsk::Title
         {
-            col = col.child(div().mb(px(4.)).child(ui::field().child(prompt.input.clone())));
+            col = col.child(
+                div()
+                    .mb(px(4.))
+                    .child(ui::field().child(prompt.input.clone())),
+            );
         }
         col = col
             .child(panel_title("Account"))
-            .child(piece_row("sb-p-user".into(), Some(Piece::User), "user", "User".into(), None))
-            .child(piece_row("sb-p-usage".into(), Some(Piece::Usage), "dashboard-square01", "Usage card".into(), None))
-            .child(piece_row("sb-p-settings".into(), Some(Piece::Settings), "settings01", "Settings".into(), None))
-            .child(piece_row("sb-p-mascot".into(), Some(Piece::Mascot), "smile-plus", "Mascot".into(), None))
+            .child(piece_row(
+                "sb-p-user".into(),
+                Some(Piece::User),
+                "user",
+                "User".into(),
+                None,
+            ))
+            .child(piece_row(
+                "sb-p-usage".into(),
+                Some(Piece::Usage),
+                "dashboard-square01",
+                "Usage card".into(),
+                None,
+            ))
+            .child(piece_row(
+                "sb-p-settings".into(),
+                Some(Piece::Settings),
+                "settings01",
+                "Settings".into(),
+                None,
+            ))
+            .child(piece_row(
+                "sb-p-mascot".into(),
+                Some(Piece::Mascot),
+                "smile-plus",
+                "Mascot".into(),
+                None,
+            ))
             .child(panel_title("Structure"))
             .child(
-                piece_row("sb-p-title".into(), None, "pencil-edit01", "Title…".into(), None)
-                    .on_click(cx.listener(|this, _, window, cx| this.ask_pin(PinAsk::Title, window, cx))),
+                piece_row(
+                    "sb-p-title".into(),
+                    None,
+                    "pencil-edit01",
+                    "Title…".into(),
+                    None,
+                )
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.ask_pin(PinAsk::Title, window, cx)),
+                ),
             );
         if let Some(prompt) = &self.builder.prompt
             && prompt.ask == PinAsk::Title
         {
-            col = col.child(div().mb(px(4.)).child(ui::field().child(prompt.input.clone())));
+            col = col.child(
+                div()
+                    .mb(px(4.))
+                    .child(ui::field().child(prompt.input.clone())),
+            );
         }
-        col.child(piece_row("sb-p-sep".into(), Some(Piece::Separator), "minus-sign", "Separator".into(), None))
-            .child(piece_row("sb-p-spacer".into(), Some(Piece::Spacer), "unfold-more", "Space".into(), None))
+        col.child(piece_row(
+            "sb-p-sep".into(),
+            Some(Piece::Separator),
+            "minus-sign",
+            "Separator".into(),
+            None,
+        ))
+        .child(piece_row(
+            "sb-p-spacer".into(),
+            Some(Piece::Spacer),
+            "unfold-more",
+            "Space".into(),
+            None,
+        ))
     }
 
     // ── Middle: the sidebar ─────────────────────────────────────────────
@@ -573,8 +785,15 @@ impl Shell {
             .w(px(self.rail_w.max(220.) + 24.))
             .min_h(px(560.))
             .p(px(10.))
-            .when(style.variant != Variant::Flush, |d| d.rounded(px(14.)).border_1().border_color(theme::stroke()).bg(theme::sidebar()))
-            .when(style.variant == Variant::Floating, |d| d.shadow_lg().rounded(px(18.)));
+            .when(style.variant != Variant::Flush, |d| {
+                d.rounded(px(14.))
+                    .border_1()
+                    .border_color(theme::stroke())
+                    .bg(theme::sidebar())
+            })
+            .when(style.variant == Variant::Floating, |d| {
+                d.shadow_lg().rounded(px(18.))
+            });
         for (si, section) in self.sidebar.sections.iter().enumerate() {
             rail = rail.child(self.render_builder_section(si, section, cx));
         }
@@ -638,11 +857,20 @@ impl Shell {
             .child(rail)
     }
 
-    fn render_builder_section(&self, si: usize, section: &crate::sidebar::Section, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_builder_section(
+        &self,
+        si: usize,
+        section: &crate::sidebar::Section,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let selected = self.builder.sel == Some(BuilderSel::Section(si));
         let lifted = cx.has_active_drag() && self.builder.lifted == Some(BuilderSel::Section(si));
         let scroll = section.mode == Mode::Scroll;
-        let dragged = DraggedSection { from: si, title: section.title.clone().into(), offset: Point::default() };
+        let dragged = DraggedSection {
+            from: si,
+            title: section.title.clone().into(),
+            offset: Point::default(),
+        };
         let header = div()
             .id(("sb-sec-head", si))
             .flex()
@@ -659,7 +887,9 @@ impl Shell {
                     .on_drag(dragged, {
                         let shell = cx.entity().downgrade();
                         move |d, offset, _, cx| {
-                            let _ = shell.update(cx, |this, _| this.builder.lifted = Some(BuilderSel::Section(d.from)));
+                            let _ = shell.update(cx, |this, _| {
+                                this.builder.lifted = Some(BuilderSel::Section(d.from))
+                            });
                             cx.new(|_| {
                                 let mut d = d.clone();
                                 d.offset = offset;
@@ -674,9 +904,15 @@ impl Shell {
                     .min_w_0()
                     .truncate()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(if section.title.is_empty() { "Segment".to_string() } else { section.title.to_uppercase() }),
+                    .child(if section.title.is_empty() {
+                        "Segment".to_string()
+                    } else {
+                        section.title.to_uppercase()
+                    }),
             )
-            .when(!section.show_title, |d| d.child(icon("view-off", 11.).text_color(theme::text_faint())))
+            .when(!section.show_title, |d| {
+                d.child(icon("view-off", 11.).text_color(theme::text_faint()))
+            })
             .child(
                 div()
                     .id(("sb-sec-mode", si))
@@ -684,16 +920,30 @@ impl Shell {
                     .py(px(1.))
                     .rounded(px(6.))
                     .border_1()
-                    .border_color(if scroll { theme::accent().opacity(0.5) } else { theme::border() })
-                    .text_color(if scroll { theme::accent() } else { theme::text_subtle() })
+                    .border_color(if scroll {
+                        theme::accent().opacity(0.5)
+                    } else {
+                        theme::border()
+                    })
+                    .text_color(if scroll {
+                        theme::accent()
+                    } else {
+                        theme::text_subtle()
+                    })
                     .cursor_pointer()
-                    .tooltip(ui::tip("Fixed stays on screen; Scroll scrolls with its neighbours"))
+                    .tooltip(ui::tip(
+                        "Fixed stays on screen; Scroll scrolls with its neighbours",
+                    ))
                     .child(if scroll { "Scroll" } else { "Fixed" })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.change_sidebar(cx, |s| {
                             if let Some(sec) = s.sections.get_mut(si) {
-                                sec.mode = if sec.mode == Mode::Scroll { Mode::Fixed } else { Mode::Scroll };
+                                sec.mode = if sec.mode == Mode::Scroll {
+                                    Mode::Fixed
+                                } else {
+                                    Mode::Scroll
+                                };
                             }
                         })
                     })),
@@ -731,10 +981,17 @@ impl Shell {
                 .justify_center()
                 .rounded(px(8.))
                 .when(section.items.is_empty(), |d| {
-                    d.border_1().border_dashed().border_color(theme::stroke()).text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child("Drop pieces here")
+                    d.border_1()
+                        .border_dashed()
+                        .border_color(theme::stroke())
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child("Drop pieces here")
                 })
                 .drag_over::<DraggedPiece>(|s, _, _, _| s.bg(theme::accent().opacity(0.12)))
-                .on_drop(cx.listener(move |this, d: &DraggedPiece, _, cx| this.drop_piece(d, (si, end), cx))),
+                .on_drop(cx.listener(move |this, d: &DraggedPiece, _, cx| {
+                    this.drop_piece(d, (si, end), cx)
+                })),
         );
         div()
             .id(("sb-sec", si))
@@ -745,7 +1002,9 @@ impl Shell {
             .rounded(px(10.))
             .border_1()
             .when(selected, |d| d.border_color(theme::accent()))
-            .when(!selected, |d| d.border_dashed().border_color(theme::border()))
+            .when(!selected, |d| {
+                d.border_dashed().border_color(theme::border())
+            })
             .when(lifted, |d| d.opacity(0.35))
             .when(section.line_above, |d| d.border_t_2())
             .cursor_pointer()
@@ -767,7 +1026,11 @@ impl Shell {
                     div()
                         .text_size(px(ui::TEXT_XS))
                         .text_color(theme::text_faint())
-                        .child(if section.collapsed { "Collapsible · starts folded" } else { "Collapsible" }),
+                        .child(if section.collapsed {
+                            "Collapsible · starts folded"
+                        } else {
+                            "Collapsible"
+                        }),
                 )
             })
             .child(body)
@@ -785,23 +1048,52 @@ impl Shell {
     }
 
     /// A piece in the canvas, drawn as the rail draws it.
-    fn render_builder_item(&self, path: ItemPath, item: &Item, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_builder_item(
+        &self,
+        path: ItemPath,
+        item: &Item,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let style = self.sidebar.style;
         let selected = self.builder.sel == Some(BuilderSel::Item(path));
         let lifted = cx.has_active_drag() && self.builder.lifted == Some(BuilderSel::Item(path));
         let lead: AnyElement = match &item.emoji {
-            Some(e) => div().w(px(16.)).text_size(px(ui::TEXT_MD)).child(e.clone()).into_any_element(),
-            None => icon(item.piece.icon(), 16.).text_color(theme::text_subtle()).into_any_element(),
+            Some(e) => div()
+                .w(px(16.))
+                .text_size(px(ui::TEXT_MD))
+                .child(e.clone())
+                .into_any_element(),
+            None => icon(item.piece.icon(), 16.)
+                .text_color(theme::text_subtle())
+                .into_any_element(),
         };
         let badge = match &item.piece {
             Piece::View { view } if style.badges && item.badge != BadgeMode::Off => {
-                self.view_badge(*view, cx).map(|b| if item.badge == BadgeMode::Dot { "•".to_string() } else { format!("{}", badge_count(b)) })
+                self.view_badge(*view, cx).map(|b| {
+                    if item.badge == BadgeMode::Dot {
+                        "•".to_string()
+                    } else {
+                        format!("{}", badge_count(b))
+                    }
+                })
             }
             _ => None,
         };
         let content: AnyElement = match &item.piece {
-            Piece::Separator => div().w_full().my(px(6.)).h(px(1.)).bg(theme::stroke()).into_any_element(),
-            Piece::Spacer => div().w_full().h(px(16.)).border_1().border_dashed().border_color(theme::stroke()).rounded(px(6.)).into_any_element(),
+            Piece::Separator => div()
+                .w_full()
+                .my(px(6.))
+                .h(px(1.))
+                .bg(theme::stroke())
+                .into_any_element(),
+            Piece::Spacer => div()
+                .w_full()
+                .h(px(16.))
+                .border_1()
+                .border_dashed()
+                .border_color(theme::stroke())
+                .rounded(px(6.))
+                .into_any_element(),
             Piece::Title { text } => div()
                 .px(px(8.))
                 .pt(px(4.))
@@ -812,7 +1104,17 @@ impl Shell {
                 .into_any_element(),
             Piece::User => {
                 let (name, email) = git_identity();
-                let shown = item.label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| if name.is_empty() { "You".into() } else { name.clone() });
+                let shown = item
+                    .label
+                    .clone()
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or_else(|| {
+                        if name.is_empty() {
+                            "You".into()
+                        } else {
+                            name.clone()
+                        }
+                    });
                 div()
                     .flex()
                     .items_center()
@@ -826,7 +1128,13 @@ impl Shell {
                             .flex_col()
                             .min_w_0()
                             .child(div().truncate().text_size(px(ui::TEXT_MD)).child(shown))
-                            .child(div().truncate().text_size(px(ui::TEXT_XS)).text_color(theme::text_faint()).child(email.clone())),
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_faint())
+                                    .child(email.clone()),
+                            ),
                     )
                     .into_any_element()
             }
@@ -840,11 +1148,31 @@ impl Shell {
                 .border_color(theme::stroke())
                 .bg(theme::fill_hover())
                 .child(div().text_size(px(ui::TEXT_SM)).child("Usage"))
-                .child(div().h(px(5.)).rounded(px(3.)).bg(theme::fill_selected()).child(div().w(px(90.)).h_full().rounded(px(3.)).bg(theme::accent())))
+                .child(
+                    div()
+                        .h(px(5.))
+                        .rounded(px(3.))
+                        .bg(theme::fill_selected())
+                        .child(
+                            div()
+                                .w(px(90.))
+                                .h_full()
+                                .rounded(px(3.))
+                                .bg(theme::accent()),
+                        ),
+                )
                 .into_any_element(),
-            Piece::Projects { envs, only_open, .. } => {
+            Piece::Projects {
+                envs, only_open, ..
+            } => {
                 let mut list = div().flex().flex_col().gap(px(1.));
-                for (pi, p) in self.projects.iter().enumerate().filter(|(pi, _)| !only_open || *pi == self.active_project).take(6) {
+                for (pi, p) in self
+                    .projects
+                    .iter()
+                    .enumerate()
+                    .filter(|(pi, _)| !only_open || *pi == self.active_project)
+                    .take(6)
+                {
                     list = list.child(
                         div()
                             .flex()
@@ -854,9 +1182,22 @@ impl Shell {
                             .px(px(8.))
                             .rounded(px(8.))
                             .when(pi == self.active_project, |d| d.bg(theme::selection()))
-                            .child(ui::pixel_art(ui::project_art(p.art), 1.5, gpui::rgb(p.logo).into()))
-                            .child(div().flex_1().min_w_0().truncate().text_size(px(ui::TEXT_MD)).child(p.name.clone()))
-                            .when(*only_open, |d| d.child(icon("unfold-more", 14.).text_color(theme::text_subtle()))),
+                            .child(ui::pixel_art(
+                                ui::project_art(p.art),
+                                1.5,
+                                gpui::rgb(p.logo).into(),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .child(p.name.clone()),
+                            )
+                            .when(*only_open, |d| {
+                                d.child(icon("unfold-more", 14.).text_color(theme::text_subtle()))
+                            }),
                     );
                     if pi == self.active_project && *envs {
                         for e in p.environments.iter().take(3) {
@@ -886,7 +1227,9 @@ impl Shell {
                 .text_size(px(ui::TEXT_LG))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::text_subtle())
-                .when(matches!(item.piece, Piece::Search), |d| d.border_1().border_color(theme::border()).rounded(px(8.)))
+                .when(matches!(item.piece, Piece::Search), |d| {
+                    d.border_1().border_color(theme::border()).rounded(px(8.))
+                })
                 .child(lead)
                 .child(div().flex_1().min_w_0().truncate().child(item.name()))
                 .when_some(badge, |d, b| {
@@ -902,7 +1245,12 @@ impl Shell {
                 })
                 .into_any_element(),
         };
-        let dragged = DraggedPiece { from: Some(path), item: item.clone(), title: item.name().into(), offset: Point::default() };
+        let dragged = DraggedPiece {
+            from: Some(path),
+            item: item.clone(),
+            title: item.name().into(),
+            offset: Point::default(),
+        };
         div()
             .id(SharedString::from(format!("sb-item-{}-{}", path.0, path.1)))
             .group("sb-item")
@@ -910,13 +1258,20 @@ impl Shell {
             .rounded(px(8.))
             .cursor_grab()
             .border_1()
-            .border_color(if selected { theme::accent() } else { gpui::transparent_black() })
+            .border_color(if selected {
+                theme::accent()
+            } else {
+                gpui::transparent_black()
+            })
             .hover(|s| s.bg(theme::hover()))
             .when(lifted, |d| d.opacity(0.35))
             .child(content)
             .child(
                 div()
-                    .id(SharedString::from(format!("sb-item-x-{}-{}", path.0, path.1)))
+                    .id(SharedString::from(format!(
+                        "sb-item-x-{}-{}",
+                        path.0, path.1
+                    )))
                     .absolute()
                     .top(px(4.))
                     .right(px(4.))
@@ -945,7 +1300,9 @@ impl Shell {
             .on_drag(dragged, {
                 let shell = cx.entity().downgrade();
                 move |d, offset, _, cx| {
-                    let _ = shell.update(cx, |this, _| this.builder.lifted = d.from.map(BuilderSel::Item));
+                    let _ = shell.update(cx, |this, _| {
+                        this.builder.lifted = d.from.map(BuilderSel::Item)
+                    });
                     cx.new(|_| {
                         let mut d = d.clone();
                         d.offset = offset;
@@ -974,8 +1331,14 @@ impl Shell {
             .border_l_1()
             .border_color(theme::stroke());
         col = match (self.builder.sel, &self.builder.inputs) {
-            (Some(BuilderSel::Item(p)), Some(inputs)) if inputs.sel == BuilderSel::Item(p) => col.child(self.render_item_options(p, inputs, cx)),
-            (Some(BuilderSel::Section(s)), Some(inputs)) if inputs.sel == BuilderSel::Section(s) => col.child(self.render_section_options(s, inputs, cx)),
+            (Some(BuilderSel::Item(p)), Some(inputs)) if inputs.sel == BuilderSel::Item(p) => {
+                col.child(self.render_item_options(p, inputs, cx))
+            }
+            (Some(BuilderSel::Section(s)), Some(inputs))
+                if inputs.sel == BuilderSel::Section(s) =>
+            {
+                col.child(self.render_section_options(s, inputs, cx))
+            }
             _ => col.child(panel_title("Selected")).child(
                 div()
                     .text_size(px(ui::TEXT_SM))
@@ -986,8 +1349,15 @@ impl Shell {
         col.child(self.render_style_options(cx))
     }
 
-    fn render_item_options(&self, p: ItemPath, inputs: &BuilderInputs, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(item) = self.sidebar.get(p).cloned() else { return div() };
+    fn render_item_options(
+        &self,
+        p: ItemPath,
+        inputs: &BuilderInputs,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(item) = self.sidebar.get(p).cloned() else {
+            return div();
+        };
         let mut out = div()
             .flex()
             .flex_col()
@@ -998,78 +1368,142 @@ impl Shell {
             .child(ui::field().child(inputs.emoji.clone()));
         if let Some(target) = &inputs.target {
             let label = match item.piece {
-                Piece::Pin { pin: Pin::Url { .. } } => "Opens",
-                Piece::Pin { pin: Pin::Command { .. } } => "Runs",
-                Piece::Pin { pin: Pin::File { .. } } => "File",
+                Piece::Pin {
+                    pin: Pin::Url { .. },
+                } => "Opens",
+                Piece::Pin {
+                    pin: Pin::Command { .. },
+                } => "Runs",
+                Piece::Pin {
+                    pin: Pin::File { .. },
+                } => "File",
                 _ => "Text",
             };
-            out = out.child(field_label(label)).child(ui::field().child(target.clone()));
+            out = out
+                .child(field_label(label))
+                .child(ui::field().child(target.clone()));
         }
         if let Piece::View { .. } = item.piece {
             let mut seg = ui::segmented();
-            for (i, (mode, label)) in
-                [(BadgeMode::Count, "Count"), (BadgeMode::Dot, "Dot"), (BadgeMode::Urgent, "Urgent"), (BadgeMode::Off, "Off")].into_iter().enumerate()
+            for (i, (mode, label)) in [
+                (BadgeMode::Count, "Count"),
+                (BadgeMode::Dot, "Dot"),
+                (BadgeMode::Urgent, "Urgent"),
+                (BadgeMode::Off, "Off"),
+            ]
+            .into_iter()
+            .enumerate()
             {
-                seg = seg.child(ui::segment(("sb-badge", i), None, label, item.badge == mode).on_click(cx.listener(move |this, _, _, cx| {
-                    this.change_sidebar(cx, |s| {
-                        if let Some(i) = s.get_mut(p) {
-                            i.badge = mode;
-                        }
-                    })
-                })));
+                seg = seg.child(
+                    ui::segment(("sb-badge", i), None, label, item.badge == mode).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.change_sidebar(cx, |s| {
+                                if let Some(i) = s.get_mut(p) {
+                                    i.badge = mode;
+                                }
+                            })
+                        }),
+                    ),
+                );
             }
             out = out.child(field_label("Counter")).child(seg).child(
-                ui::switch_row("sb-busy", "Only when it has something", item.only_when_busy).on_click(cx.listener(move |this, _, _, cx| {
-                    this.change_sidebar(cx, |s| {
-                        if let Some(i) = s.get_mut(p) {
-                            i.only_when_busy = !i.only_when_busy;
-                        }
-                    })
-                })),
+                ui::switch_row("sb-busy", "Only when it has something", item.only_when_busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.change_sidebar(cx, |s| {
+                            if let Some(i) = s.get_mut(p) {
+                                i.only_when_busy = !i.only_when_busy;
+                            }
+                        })
+                    })),
             );
         }
-        if let Piece::Projects { envs, changes, only_open } = item.piece {
+        if let Piece::Projects {
+            envs,
+            changes,
+            only_open,
+        } = item.piece
+        {
             out = out
-                .child(ui::switch_row("sb-envs", "Show environments", envs).on_click(cx.listener(move |this, _, _, cx| {
-                    this.change_sidebar(cx, |s| {
-                        if let Some(Item { piece: Piece::Projects { envs, .. }, .. }) = s.get_mut(p) {
-                            *envs = !*envs;
-                        }
-                    })
-                })))
-                .child(ui::switch_row("sb-changes", "Show changes (+/−)", changes).on_click(cx.listener(move |this, _, _, cx| {
-                    this.change_sidebar(cx, |s| {
-                        if let Some(Item { piece: Piece::Projects { changes, .. }, .. }) = s.get_mut(p) {
-                            *changes = !*changes;
-                        }
-                    })
-                })))
-                .child(ui::switch_row("sb-only-open", "Only the open project (others in a dropdown)", only_open).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                .child(
+                    ui::switch_row("sb-envs", "Show environments", envs).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.change_sidebar(cx, |s| {
+                                if let Some(Item {
+                                    piece: Piece::Projects { envs, .. },
+                                    ..
+                                }) = s.get_mut(p)
+                                {
+                                    *envs = !*envs;
+                                }
+                            })
+                        },
+                    )),
+                )
+                .child(
+                    ui::switch_row("sb-changes", "Show changes (+/−)", changes).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.change_sidebar(cx, |s| {
+                                if let Some(Item {
+                                    piece: Piece::Projects { changes, .. },
+                                    ..
+                                }) = s.get_mut(p)
+                                {
+                                    *changes = !*changes;
+                                }
+                            })
+                        }),
+                    ),
+                )
+                .child(
+                    ui::switch_row(
+                        "sb-only-open",
+                        "Only the open project (others in a dropdown)",
+                        only_open,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.change_sidebar(cx, |s| {
-                            if let Some(Item { piece: Piece::Projects { only_open, .. }, .. }) = s.get_mut(p) {
+                            if let Some(Item {
+                                piece: Piece::Projects { only_open, .. },
+                                ..
+                            }) = s.get_mut(p)
+                            {
                                 *only_open = !*only_open;
                             }
                         })
-                    },
-                )));
+                    })),
+                );
         }
         out.child(
             div().pt(px(12.)).child(
-                ui::button_with("sb-item-remove", Some("view-off"), "Remove from the sidebar", ui::ButtonKind::Danger, true).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.change_sidebar(cx, |s| {
-                            s.remove(p);
-                        })
-                    },
-                )),
+                ui::button_with(
+                    "sb-item-remove",
+                    Some("view-off"),
+                    "Remove from the sidebar",
+                    ui::ButtonKind::Danger,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.change_sidebar(cx, |s| {
+                        s.remove(p);
+                    })
+                })),
             ),
         )
     }
 
-    fn render_section_options(&self, si: usize, inputs: &BuilderInputs, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(sec) = self.sidebar.sections.get(si).cloned() else { return div() };
-        let toggle = |id: &'static str, label: &'static str, on: bool, f: fn(&mut crate::sidebar::Section)| {
+    fn render_section_options(
+        &self,
+        si: usize,
+        inputs: &BuilderInputs,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(sec) = self.sidebar.sections.get(si).cloned() else {
+            return div();
+        };
+        let toggle = |id: &'static str,
+                      label: &'static str,
+                      on: bool,
+                      f: fn(&mut crate::sidebar::Section)| {
             ui::switch_row(id, label, on).on_click(cx.listener(move |this, _, _, cx| {
                 this.change_sidebar(cx, |s| {
                     if let Some(sec) = s.sections.get_mut(si) {
@@ -1079,17 +1513,26 @@ impl Shell {
             }))
         };
         let mut mode = ui::segmented();
-        for (i, (m, label)) in [(Mode::Fixed, "Fixed"), (Mode::Scroll, "Scroll")].into_iter().enumerate() {
-            mode = mode.child(ui::segment(("sb-sec-mode-opt", i), None, label, sec.mode == m).on_click(cx.listener(move |this, _, _, cx| {
-                this.change_sidebar(cx, |s| {
-                    if let Some(sec) = s.sections.get_mut(si) {
-                        sec.mode = m;
-                    }
-                })
-            })));
+        for (i, (m, label)) in [(Mode::Fixed, "Fixed"), (Mode::Scroll, "Scroll")]
+            .into_iter()
+            .enumerate()
+        {
+            mode = mode.child(
+                ui::segment(("sb-sec-mode-opt", i), None, label, sec.mode == m).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.change_sidebar(cx, |s| {
+                            if let Some(sec) = s.sections.get_mut(si) {
+                                sec.mode = m;
+                            }
+                        })
+                    }),
+                ),
+            );
         }
         let mut action = ui::segmented();
-        let actions: Vec<Option<TitleAction>> = std::iter::once(None).chain(TitleAction::ALL.map(Some)).collect();
+        let actions: Vec<Option<TitleAction>> = std::iter::once(None)
+            .chain(TitleAction::ALL.map(Some))
+            .collect();
         for (i, a) in actions.into_iter().enumerate() {
             let label = match a {
                 None => "None",
@@ -1097,13 +1540,17 @@ impl Shell {
                 Some(TitleAction::NewSession) => "Session",
                 Some(TitleAction::NewTerminal) => "Terminal",
             };
-            action = action.child(ui::segment(("sb-sec-action", i), None, label, sec.action == a).on_click(cx.listener(move |this, _, _, cx| {
-                this.change_sidebar(cx, |s| {
-                    if let Some(sec) = s.sections.get_mut(si) {
-                        sec.action = a;
-                    }
-                })
-            })));
+            action = action.child(
+                ui::segment(("sb-sec-action", i), None, label, sec.action == a).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.change_sidebar(cx, |s| {
+                            if let Some(sec) = s.sections.get_mut(si) {
+                                sec.action = a;
+                            }
+                        })
+                    }),
+                ),
+            );
         }
         div()
             .flex()
@@ -1113,25 +1560,49 @@ impl Shell {
             .child(ui::field().child(inputs.name.clone()))
             .child(field_label("Behaviour"))
             .child(mode)
-            .child(toggle("sb-sec-title", "Show its title", sec.show_title, |s| s.show_title = !s.show_title))
+            .child(toggle(
+                "sb-sec-title",
+                "Show its title",
+                sec.show_title,
+                |s| s.show_title = !s.show_title,
+            ))
             .child(toggle("sb-sec-fold", "Collapsible", sec.collapsible, |s| {
                 s.collapsible = !s.collapsible;
                 s.show_title |= s.collapsible;
             }))
-            .when(sec.collapsible, |d| d.child(toggle("sb-sec-folded", "Starts folded", sec.collapsed, |s| s.collapsed = !s.collapsed)))
-            .child(toggle("sb-sec-line", "Line above", sec.line_above, |s| s.line_above = !s.line_above))
-            .child(toggle("sb-sec-icons", "Hide when narrowed to icons", sec.hide_in_icons, |s| s.hide_in_icons = !s.hide_in_icons))
+            .when(sec.collapsible, |d| {
+                d.child(toggle(
+                    "sb-sec-folded",
+                    "Starts folded",
+                    sec.collapsed,
+                    |s| s.collapsed = !s.collapsed,
+                ))
+            })
+            .child(toggle("sb-sec-line", "Line above", sec.line_above, |s| {
+                s.line_above = !s.line_above
+            }))
+            .child(toggle(
+                "sb-sec-icons",
+                "Hide when narrowed to icons",
+                sec.hide_in_icons,
+                |s| s.hide_in_icons = !s.hide_in_icons,
+            ))
             .child(field_label("Button on its title"))
             .child(action)
             .child(
                 div().pt(px(12.)).child(
-                    ui::button_with("sb-sec-remove", Some("cancel01"), "Remove segment", ui::ButtonKind::Danger, true).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.change_sidebar(cx, |s| {
-                                s.remove_section(si);
-                            })
-                        },
-                    )),
+                    ui::button_with(
+                        "sb-sec-remove",
+                        Some("cancel01"),
+                        "Remove segment",
+                        ui::ButtonKind::Danger,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.change_sidebar(cx, |s| {
+                            s.remove_section(si);
+                        })
+                    })),
                 ),
             )
     }
@@ -1149,9 +1620,11 @@ impl Shell {
             let _ = this;
             let mut seg = ui::segmented();
             for (i, (v, label)) in opts.iter().copied().enumerate() {
-                seg = seg.child(ui::segment((id, i), None, label, current == v).on_click(cx.listener(move |this, _, _, cx| {
-                    this.change_sidebar(cx, |s| set(&mut s.style, v))
-                })));
+                seg = seg.child(ui::segment((id, i), None, label, current == v).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.change_sidebar(cx, |s| set(&mut s.style, v))
+                    }),
+                ));
             }
             seg
         }
@@ -1168,7 +1641,11 @@ impl Shell {
                 self,
                 "sb-variant",
                 style.variant,
-                &[(Variant::Card, "Card"), (Variant::Flush, "Flush"), (Variant::Floating, "Floating")],
+                &[
+                    (Variant::Card, "Card"),
+                    (Variant::Flush, "Flush"),
+                    (Variant::Floating, "Floating"),
+                ],
                 |s, v| s.variant = v,
                 cx,
             ))
@@ -1177,18 +1654,33 @@ impl Shell {
                 self,
                 "sb-collapse",
                 style.collapse,
-                &[(Collapse::Hide, "Hides"), (Collapse::Icons, "Icons"), (Collapse::Never, "Never")],
+                &[
+                    (Collapse::Hide, "Hides"),
+                    (Collapse::Icons, "Icons"),
+                    (Collapse::Never, "Never"),
+                ],
                 |s, v| s.collapse = v,
                 cx,
             ))
             .child(field_label("Side"))
-            .child(choices(self, "sb-side", style.side, &[(Side::Left, "Left"), (Side::Right, "Right")], |s, v| s.side = v, cx))
+            .child(choices(
+                self,
+                "sb-side",
+                style.side,
+                &[(Side::Left, "Left"), (Side::Right, "Right")],
+                |s, v| s.side = v,
+                cx,
+            ))
             .child(field_label("Rows"))
             .child(choices(
                 self,
                 "sb-density",
                 style.density,
-                &[(Density::Compact, "Compact"), (Density::Normal, "Normal"), (Density::Roomy, "Roomy")],
+                &[
+                    (Density::Compact, "Compact"),
+                    (Density::Normal, "Normal"),
+                    (Density::Roomy, "Roomy"),
+                ],
                 |s, v| s.density = v,
                 cx,
             ))
@@ -1196,22 +1688,34 @@ impl Shell {
             .child({
                 let mut seg = ui::segmented();
                 for (i, w) in [180., 200., 240., 280.].into_iter().enumerate() {
-                    seg = seg.child(ui::segment(("sb-width", i), None, format!("{w}"), (self.rail_w - w).abs() < 1.).on_click(cx.listener(
-                        move |this, _, _, cx| {
+                    seg = seg.child(
+                        ui::segment(
+                            ("sb-width", i),
+                            None,
+                            format!("{w}"),
+                            (self.rail_w - w).abs() < 1.,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             this.rail_w = w;
                             this.save(cx);
                             cx.notify();
-                        },
-                    )));
+                        })),
+                    );
                 }
                 seg
             })
-            .child(ui::switch_row("sb-badges", "Counters", style.badges).on_click(cx.listener(|this, _, _, cx| {
-                this.change_sidebar(cx, |s| s.style.badges = !s.style.badges)
-            })))
-            .child(ui::switch_row("sb-shortcuts", "Shortcuts", style.shortcuts).on_click(cx.listener(|this, _, _, cx| {
-                this.change_sidebar(cx, |s| s.style.shortcuts = !s.style.shortcuts)
-            })))
+            .child(
+                ui::switch_row("sb-badges", "Counters", style.badges).on_click(cx.listener(
+                    |this, _, _, cx| this.change_sidebar(cx, |s| s.style.badges = !s.style.badges),
+                )),
+            )
+            .child(
+                ui::switch_row("sb-shortcuts", "Shortcuts", style.shortcuts).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.change_sidebar(cx, |s| s.style.shortcuts = !s.style.shortcuts)
+                    },
+                )),
+            )
             .child(
                 div()
                     .pt(px(8.))

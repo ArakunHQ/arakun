@@ -49,20 +49,24 @@ impl Shell {
                 div()
                     .flex_1()
                     .h_full()
-                    .on_mouse_down(MouseButton::Left, |ev, window, _| crate::ui::drag_window(ev, window))
-                    .when(cfg!(windows), |d| d.window_control_area(WindowControlArea::Drag)),
+                    .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                        crate::ui::drag_window(ev, window)
+                    })
+                    .when(cfg!(windows), |d| {
+                        d.window_control_area(WindowControlArea::Drag)
+                    }),
             )
             .child(
-                icon_button("panel-search", "search01", 14.).tooltip(ui::tip("Search sessions (Ctrl+K)")).on_click(cx.listener(
-                    |this, _, window, cx| {
+                icon_button("panel-search", "search01", 14.)
+                    .tooltip(ui::tip("Search sessions (Ctrl+K)"))
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.panel_tab = PanelTab::Sessions;
                         this.env_menu_open = false;
                         let field = this.session_query.clone();
                         window.focus(&field.focus_handle(cx), cx);
                         field.update(cx, |f, cx| f.select_all_text(cx));
                         cx.notify();
-                    },
-                )),
+                    })),
             )
             .child(
                 icon_button("panel-new", "add01", 14.)
@@ -90,66 +94,68 @@ impl Shell {
                     .rounded(px(8.))
                     .bg(theme::fill_hover())
                     .children(
-                [PanelTab::Sessions, PanelTab::Explorer, PanelTab::Changes]
-                    .into_iter()
-                    .map(|tab| {
-                        let active = tab == self.panel_tab;
-                        let label = match tab {
-                            PanelTab::Sessions => "Sessions",
-                            PanelTab::Explorer => "Explorer",
-                            PanelTab::Changes => "Changes",
-                        };
-                        div()
-                            .id(label)
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(6.))
-                            .h_full()
-                            .px(px(8.))
-                            .rounded(px(4.))
-                            .text_size(px(ui::TEXT_SM))
-                            .line_height(px(12.))
-                            .cursor_pointer()
-                            .when(active, |d| {
-                                d.bg(theme::selection()).text_color(theme::content())
-                            })
-                            .when(!active, |d| {
-                                d.text_color(theme::text_subtle())
-                                    .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
-                            })
-                            .child(label)
-                            // The line counts are inside the tab; its label only says how many files.
-                            .when(tab == PanelTab::Changes && changed_files > 0, |d| {
-                                d.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .h(px(16.))
-                                        .px(px(4.))
-                                        .rounded(px(crate::ui::RADIUS_SM))
-                                        .bg(theme::fill_selected())
-                                        .text_size(px(crate::ui::TEXT_XS))
-                                        .line_height(px(16.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(theme::text_muted())
-                                        .child(changed_files.to_string()),
-                                )
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.panel_tab = tab;
-                                match tab {
-                                    PanelTab::Explorer => {
-                                        this.ensure_explorer(cx);
-                                        this.refresh_visible(cx);
-                                    }
-                                    PanelTab::Changes => this.refresh_visible(cx),
-                                    PanelTab::Sessions => {}
-                                }
-                                cx.notify();
-                            }))
-                    }))
+                        [PanelTab::Sessions, PanelTab::Explorer, PanelTab::Changes]
+                            .into_iter()
+                            .map(|tab| {
+                                let active = tab == self.panel_tab;
+                                let label = match tab {
+                                    PanelTab::Sessions => "Sessions",
+                                    PanelTab::Explorer => "Explorer",
+                                    PanelTab::Changes => "Changes",
+                                };
+                                div()
+                                    .id(label)
+                                    .flex()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(6.))
+                                    .h_full()
+                                    .px(px(8.))
+                                    .rounded(px(4.))
+                                    .text_size(px(ui::TEXT_SM))
+                                    .line_height(px(12.))
+                                    .cursor_pointer()
+                                    .when(active, |d| {
+                                        d.bg(theme::selection()).text_color(theme::content())
+                                    })
+                                    .when(!active, |d| {
+                                        d.text_color(theme::text_subtle()).hover(|s| {
+                                            s.bg(theme::hover()).text_color(theme::content())
+                                        })
+                                    })
+                                    .child(label)
+                                    // The line counts are inside the tab; its label only says how many files.
+                                    .when(tab == PanelTab::Changes && changed_files > 0, |d| {
+                                        d.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .h(px(16.))
+                                                .px(px(4.))
+                                                .rounded(px(crate::ui::RADIUS_SM))
+                                                .bg(theme::fill_selected())
+                                                .text_size(px(crate::ui::TEXT_XS))
+                                                .line_height(px(16.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme::text_muted())
+                                                .child(changed_files.to_string()),
+                                        )
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.panel_tab = tab;
+                                        match tab {
+                                            PanelTab::Explorer => {
+                                                this.ensure_explorer(cx);
+                                                this.refresh_visible(cx);
+                                            }
+                                            PanelTab::Changes => this.refresh_visible(cx),
+                                            PanelTab::Sessions => {}
+                                        }
+                                        cx.notify();
+                                    }))
+                            }),
+                    ),
             );
 
         let body: AnyElement = match self.panel_tab {
@@ -172,7 +178,11 @@ impl Shell {
             .child(body)
     }
 
-    pub(super) fn render_sessions(&self, env: &Environment, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_sessions(
+        &self,
+        env: &Environment,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let search = div()
             .flex()
             .flex_none()
@@ -211,12 +221,16 @@ impl Shell {
             .child(
                 icon_button("session-import", "download04", 12.)
                     .tooltip(ui::tip("Import sessions"))
-                    .on_click(cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx)),
+                    ),
             )
             .child(
                 icon_button("session-filter", "filter", 12.)
                     .tooltip(ui::tip("Filter by agent"))
-                    .when(self.session_filter.is_some(), |d| d.bg(theme::fill_selected()))
+                    .when(self.session_filter.is_some(), |d| {
+                        d.bg(theme::fill_selected())
+                    })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.session_filter = match this.session_filter {
                             None => Some(Agent::Droid),
@@ -261,7 +275,9 @@ impl Shell {
                         ui::ButtonKind::Outline,
                         true,
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx)),
+                    ),
                 )
                 .into_any_element()
         } else {
@@ -285,33 +301,57 @@ impl Shell {
                             .child("No sessions match"),
                     )
                 })
-                .children(env.sessions.iter().enumerate().filter(|(_, s)| matches(s)).map(|(i, s)| {
-                    let active = active_id.as_ref() == Some(&s.id);
-                    let id = s.id.clone();
-                    let menu_id = s.id.clone();
-                    let lifted = self.lifted_session(cx) == Some(&s.id);
-                    let dragged = drag::DraggedSession::new(env.path.clone(), s.id.clone(), s.title.clone(), s.agent);
-                    let shell = cx.entity();
-                    let card = session_card(i, s, active, &self.project().name, &env.branch)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_session(id.clone(), window, cx)
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                                this.open_session_menu(menu_id.clone(), ev.position, cx)
-                            }),
-                        )
-                        .on_drag(dragged, move |d, offset, _, cx| {
-                            shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
-                        })
-                        .drag_over::<drag::DraggedSession>(|s, _, _, _| s.bg(theme::accent().opacity(0.10)))
-                        .on_drop(cx.listener(move |this, d: &drag::DraggedSession, _, cx| {
-                            this.drop_session_on_row(d, i, cx)
-                        }))
-                        .when(lifted, |d| d.opacity(0.3));
-                    self.sliding_card(i, &s.id, card)
-                }))
+                .children(
+                    env.sessions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| matches(s))
+                        .map(|(i, s)| {
+                            let active = active_id.as_ref() == Some(&s.id);
+                            let id = s.id.clone();
+                            let menu_id = s.id.clone();
+                            let lifted = self.lifted_session(cx) == Some(&s.id);
+                            let dragged = drag::DraggedSession::new(
+                                env.path.clone(),
+                                s.id.clone(),
+                                s.title.clone(),
+                                s.agent,
+                            );
+                            let shell = cx.entity();
+                            let card =
+                                session_card(i, s, active, &self.project().name, &env.branch)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_session(id.clone(), window, cx)
+                                    }))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(
+                                            move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                                this.open_session_menu(
+                                                    menu_id.clone(),
+                                                    ev.position,
+                                                    cx,
+                                                )
+                                            },
+                                        ),
+                                    )
+                                    .on_drag(dragged, move |d, offset, _, cx| {
+                                        shell.update(cx, |this, cx| {
+                                            this.start_session_drag(d, offset, cx)
+                                        })
+                                    })
+                                    .drag_over::<drag::DraggedSession>(|s, _, _, _| {
+                                        s.bg(theme::accent().opacity(0.10))
+                                    })
+                                    .on_drop(cx.listener(
+                                        move |this, d: &drag::DraggedSession, _, cx| {
+                                            this.drop_session_on_row(d, i, cx)
+                                        },
+                                    ))
+                                    .when(lifted, |d| d.opacity(0.3));
+                            self.sliding_card(i, &s.id, card)
+                        }),
+                )
                 .into_any_element()
         };
 
@@ -369,7 +409,12 @@ pub(super) fn session_card(
                         .text_color(theme::text_subtle())
                         .child(s.agent.label()),
                 )
-                .child(div().text_size(px(ui::TEXT_XS)).text_color(color).child(status)),
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(color)
+                        .child(status),
+                ),
         )
         .child(
             div()
@@ -388,7 +433,12 @@ pub(super) fn session_card(
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_subtle())
                 .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
-                .child(div().flex_1().truncate().child(format!("{project}/{branch}")))
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .child(format!("{project}/{branch}")),
+                )
                 .when_some(s.meta.as_ref().and_then(|m| m.pr.clone()), |d, url| {
                     let number = url.rsplit('/').next().unwrap_or_default().to_string();
                     d.child(

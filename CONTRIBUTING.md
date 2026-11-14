@@ -56,12 +56,14 @@ off, and do not add code behind them.
 ## Checks
 
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
-`tools/` alone skips the Rust jobs, the relay job runs only when `relay/`, `phone/`
-or CI itself changes, and cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or
-`deny.toml` changes. Run the ones that match what you changed before you push:
+`tools/` (apart from `tools/rustfmt.sh`) alone skips the Rust jobs, the relay job runs
+only when `relay/`, `phone/` or CI itself changes, and cargo-deny runs only when
+`Cargo.toml`, `Cargo.lock` or `deny.toml` changes. Run the ones that match what you
+changed before you push:
 
 ```sh
 # the app (with CEF set up, you can leave out --no-default-features)
+tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
 
@@ -75,6 +77,9 @@ cargo deny check
 
 Some notes:
 
+- The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
+  it; it runs `cargo fmt --all`, which on its own stops at the private modules this
+  repository does not have. Format-on-save in your editor is fine.
 - `--locked` fails if `Cargo.lock` would change. If you add or update a dependency,
   commit the new `Cargo.lock` in the same pull request.
 - `cargo deny check` reads [`deny.toml`](deny.toml). It fails on a crate with a
@@ -116,9 +121,8 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
 - **Tests** go in a `#[cfg(test)] mod tests` at the bottom of the file they test. Add a
   test for a bug fix where you can, and for logic that does not need a window (parsing,
   state, git, the control protocol).
-- **Style.** There is no `rustfmt.toml`, and CI does not run `cargo fmt`. Do not reformat
-  files you are not changing, because that buries the real change in the diff. Match the
-  code around you.
+- **Style.** rustfmt with its default settings, checked by CI (see [Checks](#checks)).
+  Beyond what rustfmt decides, match the code around you.
 - **Comments** say why, not what. A new module starts with a `//!` comment that says what
   it is for. Write plain, short sentences, as in the existing code and docs.
 - **New dependencies:** prefer pure Rust crates and crates GPUI already pulls in. Put a

@@ -11,9 +11,9 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use ring::{aead, agreement, hkdf, rand};
 #[cfg(test)]
 use ring::signature;
+use ring::{aead, agreement, hkdf, rand};
 use serde_json::{Value, json};
 
 use super::identity::Identity;
@@ -61,17 +61,27 @@ pub struct PhoneHello {
 
 impl PhoneHello {
     pub fn parse(payload: &[u8]) -> Result<PhoneHello, E2eError> {
-        let v: Value = serde_json::from_slice(payload).map_err(|_| E2eError::BadHello("not json"))?;
+        let v: Value =
+            serde_json::from_slice(payload).map_err(|_| E2eError::BadHello("not json"))?;
         let version = v["v"].as_u64().ok_or(E2eError::BadHello("v"))?;
         let ephemeral = field(&v, "e", POINT_LEN)?;
-        let nonce = field(&v, "nonce", NONCE_LEN)?.try_into().expect("checked length");
-        Ok(PhoneHello { version, ephemeral, nonce })
+        let nonce = field(&v, "nonce", NONCE_LEN)?
+            .try_into()
+            .expect("checked length");
+        Ok(PhoneHello {
+            version,
+            ephemeral,
+            nonce,
+        })
     }
 }
 
 /// A base64url field of exactly `len` bytes.
 fn field(v: &Value, name: &'static str, len: usize) -> Result<Vec<u8>, E2eError> {
-    let bytes = v[name].as_str().and_then(|s| B64.decode(s).ok()).ok_or(E2eError::BadHello(name))?;
+    let bytes = v[name]
+        .as_str()
+        .and_then(|s| B64.decode(s).ok())
+        .ok_or(E2eError::BadHello(name))?;
     if bytes.len() != len {
         return Err(E2eError::BadHello(name));
     }
@@ -88,22 +98,44 @@ pub struct Handshake {
 impl Handshake {
     pub fn begin() -> Handshake {
         let rng = rand::SystemRandom::new();
-        let private = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).expect("ring can make a key");
-        let public = private.compute_public_key().expect("a fresh key has a public half").as_ref().to_vec();
+        let private = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng)
+            .expect("ring can make a key");
+        let public = private
+            .compute_public_key()
+            .expect("a fresh key has a public half")
+            .as_ref()
+            .to_vec();
         let mut nonce = [0u8; NONCE_LEN];
         rand::SecureRandom::fill(&rng, &mut nonce).expect("the OS has random bytes");
-        Handshake { private, public, nonce }
+        Handshake {
+            private,
+            public,
+            nonce,
+        }
     }
 
     /// The computer's answer to a phone's hello on `channel`: the hello to send
     /// back (JSON) and the session both sides now share. The phone's hello must
     /// speak this version.
-    pub fn answer(self, hello: &PhoneHello, identity: &Identity, channel: u32, arakun: &str) -> Result<(Vec<u8>, Session), E2eError> {
+    pub fn answer(
+        self,
+        hello: &PhoneHello,
+        identity: &Identity,
+        channel: u32,
+        arakun: &str,
+    ) -> Result<(Vec<u8>, Session), E2eError> {
         if hello.version != VERSION {
             return Err(E2eError::BadHello("version"));
         }
         let label = identity.label();
-        let signed = transcript(&label, channel, &hello.ephemeral, &self.public, &hello.nonce, &self.nonce);
+        let signed = transcript(
+            &label,
+            channel,
+            &hello.ephemeral,
+            &self.public,
+            &hello.nonce,
+            &self.nonce,
+        );
         let reply = json!({
             "v": VERSION,
             "pub": B64.encode(identity.public_raw()),
@@ -114,13 +146,18 @@ impl Handshake {
         });
         let shared = agree(self.private, &hello.ephemeral)?;
         let (phone_to_pc, pc_to_phone) = derive_keys(&shared, &hello.nonce, &self.nonce);
-        Ok((reply.to_string().into_bytes(), Session::new(pc_to_phone, phone_to_pc)))
+        Ok((
+            reply.to_string().into_bytes(),
+            Session::new(pc_to_phone, phone_to_pc),
+        ))
     }
 
     /// The hello a phone opens with, from this handshake. The Rust phone is for tests.
     #[cfg(test)]
     pub fn hello(&self) -> Vec<u8> {
-        json!({ "v": VERSION, "e": B64.encode(&self.public), "nonce": B64.encode(self.nonce) }).to_string().into_bytes()
+        json!({ "v": VERSION, "e": B64.encode(&self.public), "nonce": B64.encode(self.nonce) })
+            .to_string()
+            .into_bytes()
     }
 
     /// The phone's side: checks the computer's hello is from the key `label`
@@ -136,9 +173,18 @@ impl Handshake {
             return Err(E2eError::BadHello("label"));
         }
         let ephemeral = field(&v, "e", POINT_LEN)?;
-        let nonce: [u8; NONCE_LEN] = field(&v, "nonce", NONCE_LEN)?.try_into().expect("checked length");
+        let nonce: [u8; NONCE_LEN] = field(&v, "nonce", NONCE_LEN)?
+            .try_into()
+            .expect("checked length");
         let sig = field(&v, "sig", 64)?;
-        let signed = transcript(label, channel, &self.public, &ephemeral, &self.nonce, &nonce);
+        let signed = transcript(
+            label,
+            channel,
+            &self.public,
+            &ephemeral,
+            &self.nonce,
+            &nonce,
+        );
         signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, &public)
             .verify(&signed, &sig)
             .map_err(|_| E2eError::BadHello("sig"))?;
@@ -150,8 +196,16 @@ impl Handshake {
 
 /// What the computer signs: everything both sides saw, in a fixed order with
 /// fixed lengths, so no part can be moved into another.
-fn transcript(label: &str, channel: u32, e_phone: &[u8], e_pc: &[u8], nonce_phone: &[u8], nonce_pc: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(TRANSCRIPT_TAG.len() + label.len() + 4 + 2 * POINT_LEN + 2 * NONCE_LEN);
+fn transcript(
+    label: &str,
+    channel: u32,
+    e_phone: &[u8],
+    e_pc: &[u8],
+    nonce_phone: &[u8],
+    nonce_pc: &[u8],
+) -> Vec<u8> {
+    let mut out =
+        Vec::with_capacity(TRANSCRIPT_TAG.len() + label.len() + 4 + 2 * POINT_LEN + 2 * NONCE_LEN);
     out.extend_from_slice(TRANSCRIPT_TAG);
     out.extend_from_slice(label.as_bytes());
     out.extend_from_slice(&channel.to_be_bytes());
@@ -165,12 +219,17 @@ fn transcript(label: &str, channel: u32, e_phone: &[u8], e_pc: &[u8], nonce_phon
 /// The ECDH secret with the other side's ephemeral key: the x coordinate, 32 bytes.
 fn agree(private: agreement::EphemeralPrivateKey, peer: &[u8]) -> Result<Vec<u8>, E2eError> {
     let peer = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, peer);
-    agreement::agree_ephemeral(private, &peer, |secret| secret.to_vec()).map_err(|_| E2eError::BadHello("e"))
+    agreement::agree_ephemeral(private, &peer, |secret| secret.to_vec())
+        .map_err(|_| E2eError::BadHello("e"))
 }
 
 /// The two session keys out of the shared secret: phone to computer, then
 /// computer to phone. Salt is both nonces, phone's first.
-pub fn derive_keys(shared: &[u8], nonce_phone: &[u8], nonce_pc: &[u8]) -> ([u8; KEY_LEN], [u8; KEY_LEN]) {
+pub fn derive_keys(
+    shared: &[u8],
+    nonce_phone: &[u8],
+    nonce_pc: &[u8],
+) -> ([u8; KEY_LEN], [u8; KEY_LEN]) {
     struct Len(usize);
     impl hkdf::KeyType for Len {
         fn len(&self) -> usize {
@@ -204,8 +263,15 @@ pub struct Session {
 
 impl Session {
     fn new(seal: [u8; KEY_LEN], open: [u8; KEY_LEN]) -> Session {
-        let key = |k: &[u8]| aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, k).expect("32 bytes"));
-        Session { seal_key: key(&seal), open_key: key(&open), sealed: 0, opened: 0 }
+        let key = |k: &[u8]| {
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, k).expect("32 bytes"))
+        };
+        Session {
+            seal_key: key(&seal),
+            open_key: key(&open),
+            sealed: 0,
+            opened: 0,
+        }
     }
 
     /// `plain` as a data frame payload: its number, then the ciphertext and tag.
@@ -259,7 +325,9 @@ mod tests {
         let me = Identity::generate();
         let phone = Handshake::begin();
         let hello = PhoneHello::parse(&phone.hello()).unwrap();
-        let (reply, pc) = Handshake::begin().answer(&hello, &me, CHANNEL, "test").unwrap();
+        let (reply, pc) = Handshake::begin()
+            .answer(&hello, &me, CHANNEL, "test")
+            .unwrap();
         let phone = phone.finish(&reply, &me.label(), CHANNEL).unwrap();
         (me, pc, phone)
     }
@@ -289,7 +357,11 @@ mod tests {
         let mut forged = second.clone();
         forged[12] ^= 1;
         assert_eq!(phone.open(&forged), Err(E2eError::Cipher));
-        assert_eq!(phone.open(&second).unwrap(), b"two", "the good one still counts as next");
+        assert_eq!(
+            phone.open(&second).unwrap(),
+            b"two",
+            "the good one still counts as next"
+        );
         assert_eq!(phone.open(&[0u8; 3]), Err(E2eError::Cipher));
     }
 
@@ -299,28 +371,56 @@ mod tests {
         let other = Identity::generate();
         let phone = Handshake::begin();
         let hello = PhoneHello::parse(&phone.hello()).unwrap();
-        let (reply, _) = Handshake::begin().answer(&hello, &other, CHANNEL, "test").unwrap();
-        assert_eq!(phone.finish(&reply, &me.label(), CHANNEL).err(), Some(E2eError::BadHello("label")));
+        let (reply, _) = Handshake::begin()
+            .answer(&hello, &other, CHANNEL, "test")
+            .unwrap();
+        assert_eq!(
+            phone.finish(&reply, &me.label(), CHANNEL).err(),
+            Some(E2eError::BadHello("label"))
+        );
 
         // The right key, but signing another channel's exchange.
         let phone = Handshake::begin();
         let hello = PhoneHello::parse(&phone.hello()).unwrap();
-        let (reply, _) = Handshake::begin().answer(&hello, &me, CHANNEL + 1, "test").unwrap();
-        assert_eq!(phone.finish(&reply, &me.label(), CHANNEL).err(), Some(E2eError::BadHello("sig")));
+        let (reply, _) = Handshake::begin()
+            .answer(&hello, &me, CHANNEL + 1, "test")
+            .unwrap();
+        assert_eq!(
+            phone.finish(&reply, &me.label(), CHANNEL).err(),
+            Some(E2eError::BadHello("sig"))
+        );
     }
 
     #[test]
     fn a_hello_that_is_not_right_is_named() {
-        assert_eq!(PhoneHello::parse(b"nope").err(), Some(E2eError::BadHello("not json")));
-        assert_eq!(PhoneHello::parse(br#"{"e":"","nonce":""}"#).err(), Some(E2eError::BadHello("v")));
+        assert_eq!(
+            PhoneHello::parse(b"nope").err(),
+            Some(E2eError::BadHello("not json"))
+        );
+        assert_eq!(
+            PhoneHello::parse(br#"{"e":"","nonce":""}"#).err(),
+            Some(E2eError::BadHello("v"))
+        );
         let short = json!({"v": 1, "e": B64.encode([4u8; 10]), "nonce": B64.encode([0u8; 16])});
-        assert_eq!(PhoneHello::parse(short.to_string().as_bytes()).err(), Some(E2eError::BadHello("e")));
+        assert_eq!(
+            PhoneHello::parse(short.to_string().as_bytes()).err(),
+            Some(E2eError::BadHello("e"))
+        );
         let bad_point = json!({"v": 1, "e": B64.encode([4u8; 65]), "nonce": B64.encode([0u8; 16])});
         let hello = PhoneHello::parse(bad_point.to_string().as_bytes()).unwrap();
         let me = Identity::generate();
-        assert_eq!(Handshake::begin().answer(&hello, &me, 1, "t").err(), Some(E2eError::BadHello("e")));
-        let old = PhoneHello { version: 0, ..hello };
-        assert_eq!(Handshake::begin().answer(&old, &me, 1, "t").err(), Some(E2eError::BadHello("version")));
+        assert_eq!(
+            Handshake::begin().answer(&hello, &me, 1, "t").err(),
+            Some(E2eError::BadHello("e"))
+        );
+        let old = PhoneHello {
+            version: 0,
+            ..hello
+        };
+        assert_eq!(
+            Handshake::begin().answer(&old, &me, 1, "t").err(),
+            Some(E2eError::BadHello("version"))
+        );
     }
 
     /// What `phone/e2e.js` is checked against: `WRITE_VECTORS=1 cargo test
@@ -342,12 +442,25 @@ mod tests {
         assert_eq!(label_of(&bytes("pc_pub")), label);
 
         let hello_pc: Value = serde_json::from_str(v["hello_pc"].as_str().unwrap()).unwrap();
-        let signed = transcript(label, channel, &bytes("e_phone"), &bytes("e_pc"), &bytes("nonce_phone"), &bytes("nonce_pc"));
+        let signed = transcript(
+            label,
+            channel,
+            &bytes("e_phone"),
+            &bytes("e_pc"),
+            &bytes("nonce_phone"),
+            &bytes("nonce_pc"),
+        );
         let sig = B64.decode(hello_pc["sig"].as_str().unwrap()).unwrap();
-        signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, bytes("pc_pub")).verify(&signed, &sig).unwrap();
-        assert_eq!(B64.decode(hello_pc["e"].as_str().unwrap()).unwrap(), bytes("e_pc"));
+        signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, bytes("pc_pub"))
+            .verify(&signed, &sig)
+            .unwrap();
+        assert_eq!(
+            B64.decode(hello_pc["e"].as_str().unwrap()).unwrap(),
+            bytes("e_pc")
+        );
 
-        let (phone_to_pc, pc_to_phone) = derive_keys(&bytes("shared"), &bytes("nonce_phone"), &bytes("nonce_pc"));
+        let (phone_to_pc, pc_to_phone) =
+            derive_keys(&bytes("shared"), &bytes("nonce_phone"), &bytes("nonce_pc"));
         assert_eq!(phone_to_pc.to_vec(), bytes("key_phone_to_pc"));
         assert_eq!(pc_to_phone.to_vec(), bytes("key_pc_to_phone"));
 
@@ -392,7 +505,11 @@ mod tests {
             ("phone", r#"{"type":"ping"}"#),
             ("pc", ""),
         ] {
-            let sealed = if from == "pc" { pc_session.seal(plain.as_bytes()) } else { phone_session.seal(plain.as_bytes()) };
+            let sealed = if from == "pc" {
+                pc_session.seal(plain.as_bytes())
+            } else {
+                phone_session.seal(plain.as_bytes())
+            };
             frames.push(json!({ "from": from, "plain": plain, "sealed": B64.encode(sealed) }));
         }
         serde_json::to_string_pretty(&json!({

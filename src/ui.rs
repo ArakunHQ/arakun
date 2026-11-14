@@ -3,8 +3,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, AnyView, App, AppContext as _, Bounds, Context, ElementId, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-    Styled, Svg, Window, canvas, div, fill, point, px, size, svg,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Styled,
+    Svg, Window, canvas, div, fill, point, px, size, svg,
 };
 
 use crate::theme;
@@ -33,7 +33,13 @@ pub fn tree_item(last: bool, mid: f32, gap: f32, row: gpui::AnyElement) -> gpui:
                 .top_0()
                 .w(px(1.))
                 .bg(c)
-                .map(|d| if last { d.h(px(top + 1.)) } else { d.bottom(px(-gap)) }),
+                .map(|d| {
+                    if last {
+                        d.h(px(top + 1.))
+                    } else {
+                        d.bottom(px(-gap))
+                    }
+                }),
         )
         .child(
             div()
@@ -302,7 +308,11 @@ pub fn drag_window(ev: &gpui::MouseDownEvent, window: &mut Window) {
 /// what the top bar keeps clear. Zero elsewhere and in full screen, where macOS
 /// hides them.
 pub fn traffic_lights_inset(window: &Window) -> Pixels {
-    if cfg!(target_os = "macos") && !window.is_fullscreen() { px(TRAFFIC_LIGHTS_W) } else { px(0.) }
+    if cfg!(target_os = "macos") && !window.is_fullscreen() {
+        px(TRAFFIC_LIGHTS_W)
+    } else {
+        px(0.)
+    }
 }
 
 /// The lights start at `TRAFFIC_LIGHTS` and take 52pt.
@@ -346,12 +356,23 @@ pub fn page_title(title: impl Into<SharedString>, subtitle: Option<gpui::AnyElem
                 .child(title.into()),
         )
         .when_some(subtitle, |d, s| {
-            d.child(div().text_size(px(TEXT_MD)).line_height(px(18.)).text_color(theme::text_subtle()).child(s))
+            d.child(
+                div()
+                    .text_size(px(TEXT_MD))
+                    .line_height(px(18.))
+                    .text_color(theme::text_subtle())
+                    .child(s),
+            )
         })
 }
 
 /// One option of a segmented control (Due date | Status | Project, Graph | List).
-pub fn segment(id: impl Into<ElementId>, leading: Option<&str>, label: impl Into<SharedString>, on: bool) -> gpui::Stateful<gpui::Div> {
+pub fn segment(
+    id: impl Into<ElementId>,
+    leading: Option<&str>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .flex()
@@ -364,10 +385,19 @@ pub fn segment(id: impl Into<ElementId>, leading: Option<&str>, label: impl Into
         .text_size(px(TEXT_SM))
         .font_weight(gpui::FontWeight::MEDIUM)
         .cursor_pointer()
-        .when(on, |d| d.bg(theme::fill_selected()).text_color(theme::content()))
-        .when(!on, |d| d.text_color(theme::text_subtle()).hover(|s| s.text_color(theme::content())))
+        .when(on, |d| {
+            d.bg(theme::fill_selected()).text_color(theme::content())
+        })
+        .when(!on, |d| {
+            d.text_color(theme::text_subtle())
+                .hover(|s| s.text_color(theme::content()))
+        })
         .when_some(leading, |d, name| {
-            d.child(icon(name, 12.).text_color(if on { theme::content() } else { theme::text_subtle() }))
+            d.child(icon(name, 12.).text_color(if on {
+                theme::content()
+            } else {
+                theme::text_subtle()
+            }))
         })
         .child(label.into())
 }
@@ -434,9 +464,7 @@ pub fn modal_header(
                 .flex_1()
                 .min_w_0()
                 .pt(px(2.))
-                .child(
-                    div().ty(Type::Subtitle).child(title.into()),
-                )
+                .child(div().ty(Type::Subtitle).child(title.into()))
                 .when_some(description, |d, desc| {
                     d.child(
                         div()
@@ -547,11 +575,15 @@ pub fn button_lead(
             .border_1()
             .border_color(theme::border_strong())
             .text_color(theme::text_muted())
-            .when(enabled, |d| d.hover(|s| s.bg(theme::fill_hover()).text_color(theme::content()))),
+            .when(enabled, |d| {
+                d.hover(|s| s.bg(theme::fill_hover()).text_color(theme::content()))
+            }),
         ButtonKind::Danger => base
             .bg(Hsla::from(theme::error()).opacity(0.2))
             .text_color(theme::error())
-            .when(enabled, |d| d.hover(|s| s.bg(Hsla::from(theme::error()).opacity(0.3)))),
+            .when(enabled, |d| {
+                d.hover(|s| s.bg(Hsla::from(theme::error()).opacity(0.3)))
+            }),
     }
 }
 
@@ -595,8 +627,7 @@ pub fn menu_item(
         .text_size(px(TEXT_MD))
         .text_color(color)
         .when(enabled, |d| {
-            d.cursor_pointer()
-                .hover(|s| s.bg(theme::selection_hover()))
+            d.cursor_pointer().hover(|s| s.bg(theme::selection_hover()))
         })
         .when(!enabled, |d| d.opacity(0.4))
         .child(icon(icon_name, 14.).text_color(color))
@@ -605,11 +636,9 @@ pub fn menu_item(
 
 /// Small spinning loader for busy buttons and rows.
 pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
-    icon("loading03", size)
-        .text_color(color)
-        .with_animation(
-            id,
-            gpui::Animation::new(std::time::Duration::from_millis(900)).repeat(),
-            |svg, t| svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
-        )
+    icon("loading03", size).text_color(color).with_animation(
+        id,
+        gpui::Animation::new(std::time::Duration::from_millis(900)).repeat(),
+        |svg, t| svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
+    )
 }

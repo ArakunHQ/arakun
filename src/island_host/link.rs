@@ -23,19 +23,32 @@ const RESTART_EVERY: Duration = Duration::from_secs(20);
 /// Connects in the background; dropping the sender closes the connection. The
 /// flag says whether the island is connected right now: until it is, only the
 /// newest feed is kept and anything else sent is dropped.
-pub fn connect(start: bool) -> (mpsc::Sender<ToIsland>, fmpsc::UnboundedReceiver<FromIsland>, Arc<AtomicBool>) {
+pub fn connect(
+    start: bool,
+) -> (
+    mpsc::Sender<ToIsland>,
+    fmpsc::UnboundedReceiver<FromIsland>,
+    Arc<AtomicBool>,
+) {
     let (tx, rx) = mpsc::channel();
     let (events, presses) = fmpsc::unbounded();
     let up = Arc::new(AtomicBool::new(false));
     let flag = up.clone();
-    let spawned = std::thread::Builder::new().name("arakun-island-link".into()).spawn(move || run(rx, events, &flag, start));
+    let spawned = std::thread::Builder::new()
+        .name("arakun-island-link".into())
+        .spawn(move || run(rx, events, &flag, start));
     if let Err(e) = spawned {
         eprintln!("arakun: no island link: {e}");
     }
     (tx, presses, up)
 }
 
-fn run(rx: mpsc::Receiver<ToIsland>, events: fmpsc::UnboundedSender<FromIsland>, up: &Arc<AtomicBool>, start: bool) {
+fn run(
+    rx: mpsc::Receiver<ToIsland>,
+    events: fmpsc::UnboundedSender<FromIsland>,
+    up: &Arc<AtomicBool>,
+    start: bool,
+) {
     let path = proto::socket_path();
     let mut feed: Option<ToIsland> = None;
     let mut wait = FIRST_TRY;
@@ -81,8 +94,13 @@ fn session(
     feed: &mut Option<ToIsland>,
 ) -> bool {
     let mut out = &stream;
-    let hello = ToIsland::Hello { pid: std::process::id() };
-    if std::iter::once(&hello).chain(feed.as_ref()).any(|m| out.write_all(proto::encode(m).as_bytes()).is_err()) {
+    let hello = ToIsland::Hello {
+        pid: std::process::id(),
+    };
+    if std::iter::once(&hello)
+        .chain(feed.as_ref())
+        .any(|m| out.write_all(proto::encode(m).as_bytes()).is_err())
+    {
         return true;
     }
     let gone = Arc::new(AtomicBool::new(false));
@@ -135,9 +153,15 @@ fn start_island() -> std::io::Result<()> {
     let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
     let dir = crate::control::runtime_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("island.log"))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("island.log"))?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("island-host").stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    cmd.arg("island-host")
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
     let mut child = crate::platform::detach(&mut cmd).spawn()?;
     std::thread::spawn(move || child.wait());
     Ok(())

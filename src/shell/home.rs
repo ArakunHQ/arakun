@@ -1,51 +1,58 @@
 //! The start screen of an environment and the welcome screen, each with the
 //! raccoon's ASCII face.
 
-use crate::ui::Typography as _;
 use super::*;
+use crate::ui::Typography as _;
 
 impl Shell {
     pub(super) fn render_home(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let project = self.project().name.clone();
         let face = self.home_face.read(cx);
-        let caret = self.composer_layout.borrow().as_ref().and_then(|l| l.position_for_index(self.env().draft.head()));
+        let caret = self
+            .composer_layout
+            .borrow()
+            .as_ref()
+            .and_then(|l| l.position_for_index(self.env().draft.head()));
         face.caret.set(caret);
         let alpha = face.ui_alpha();
-        div()
-            .relative()
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .justify_center()
-                    .mx_auto()
-                    .w_full()
-                    .max_w(px(896.))
-                    .px(px(6.))
-                    .pt(px(48.))
-                    // Optical center: extra room below lifts the group above the
-                    // geometric middle, where the eye expects it.
-                    .pb(px(96.))
-                    .child(div().mb(px(10.)).child(self.home_face.clone()))
-                    .child(
-                        div()
-                            .mb(px(16.))
-                            .px(px(10.))
-                            .ty(ui::Type::Title)
-                            .font_weight(gpui::FontWeight::NORMAL)
-                            .opacity(alpha)
-                            .child(format!("What should we work on in {project}?")),
-                    )
-                    .child(div().opacity(alpha).child(self.render_composer(true, window, cx))),
-            )
+        div().relative().flex().flex_col().size_full().child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .justify_center()
+                .mx_auto()
+                .w_full()
+                .max_w(px(896.))
+                .px(px(6.))
+                .pt(px(48.))
+                // Optical center: extra room below lifts the group above the
+                // geometric middle, where the eye expects it.
+                .pb(px(96.))
+                .child(div().mb(px(10.)).child(self.home_face.clone()))
+                .child(
+                    div()
+                        .mb(px(16.))
+                        .px(px(10.))
+                        .ty(ui::Type::Title)
+                        .font_weight(gpui::FontWeight::NORMAL)
+                        .opacity(alpha)
+                        .child(format!("What should we work on in {project}?")),
+                )
+                .child(
+                    div()
+                        .opacity(alpha)
+                        .child(self.render_composer(true, window, cx)),
+                ),
+        )
     }
 
     /// No projects yet: the raccoon over a short welcome and one button.
-    pub(super) fn render_welcome(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_welcome(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let maximized = window.is_maximized();
         let face = self.home_face.read(cx);
         face.caret.set(None);

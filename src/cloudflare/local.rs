@@ -36,8 +36,11 @@ pub fn mcp_server(agent: Agent) -> Option<String> {
     };
     let v: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
     v["mcpServers"].as_object()?.iter().find_map(|(name, s)| {
-        (s["url"].as_str().is_some_and(|u| u.contains("mcp.cloudflare.com")) && s["disabled"].as_bool() != Some(true))
-            .then(|| name.clone())
+        (s["url"]
+            .as_str()
+            .is_some_and(|u| u.contains("mcp.cloudflare.com"))
+            && s["disabled"].as_bool() != Some(true))
+        .then(|| name.clone())
     })
 }
 
@@ -52,8 +55,11 @@ fn opencode_mcp_server() -> Option<String> {
     ["opencode.json", "opencode.jsonc"].iter().find_map(|f| {
         let v: Value = serde_json::from_slice(&std::fs::read(config.join(f)).ok()?).ok()?;
         v["mcp"].as_object()?.iter().find_map(|(name, s)| {
-            (s["url"].as_str().is_some_and(|u| u.contains("mcp.cloudflare.com")) && s["enabled"].as_bool() != Some(false))
-                .then(|| name.clone())
+            (s["url"]
+                .as_str()
+                .is_some_and(|u| u.contains("mcp.cloudflare.com"))
+                && s["enabled"].as_bool() != Some(false))
+            .then(|| name.clone())
         })
     })
 }
@@ -70,11 +76,16 @@ pub fn mcp_status(agent: Agent) -> Mcp {
         Agent::WorkersAi => return Mcp::Missing,
     };
     let bin = crate::agent::which(bin).unwrap_or_else(|| bin.into());
-    let out = crate::platform::command(bin).args(["mcp", "list"]).stdin(Stdio::null()).output();
+    let out = crate::platform::command(bin)
+        .args(["mcp", "list"])
+        .stdin(Stdio::null())
+        .output();
     match (out, agent) {
         (Ok(o), Agent::Droid) => mcp_line_status(&String::from_utf8_lossy(&o.stdout), &name),
         (Ok(o), Agent::Claude) => claude_line_status(&String::from_utf8_lossy(&o.stdout), &name),
-        (Ok(o), Agent::OpenCode) => opencode_line_status(&String::from_utf8_lossy(&o.stdout), &name),
+        (Ok(o), Agent::OpenCode) => {
+            opencode_line_status(&String::from_utf8_lossy(&o.stdout), &name)
+        }
         (Ok(_), Agent::WorkersAi) => Mcp::Missing,
         (Err(_), _) => Mcp::Added,
     }
@@ -82,7 +93,11 @@ pub fn mcp_status(agent: Agent) -> Mcp {
 
 /// The state on `name`'s line of `droid mcp list` (`  cloudflare  http  needs authentication  [user]`).
 fn mcp_line_status(list: &str, name: &str) -> Mcp {
-    let Some(line) = list.lines().map(str::trim).find(|l| l.split_whitespace().next() == Some(name)) else {
+    let Some(line) = list
+        .lines()
+        .map(str::trim)
+        .find(|l| l.split_whitespace().next() == Some(name))
+    else {
         return Mcp::Added;
     };
     if line.contains("needs auth") {
@@ -90,17 +105,31 @@ fn mcp_line_status(list: &str, name: &str) -> Mcp {
     } else if line.split_whitespace().any(|w| w == "connected") {
         Mcp::Connected
     } else {
-        let state = line.split_whitespace().skip(2).take_while(|w| !w.starts_with('[')).collect::<Vec<_>>().join(" ");
+        let state = line
+            .split_whitespace()
+            .skip(2)
+            .take_while(|w| !w.starts_with('['))
+            .collect::<Vec<_>>()
+            .join(" ");
         Mcp::Failing(state)
     }
 }
 
 /// The state on `name`'s line of `claude mcp list` (`cloudflare: https://… (HTTP) - ✔ Connected`).
 fn claude_line_status(list: &str, name: &str) -> Mcp {
-    let Some(line) = list.lines().map(str::trim).find(|l| l.split(':').next() == Some(name)) else {
+    let Some(line) = list
+        .lines()
+        .map(str::trim)
+        .find(|l| l.split(':').next() == Some(name))
+    else {
         return Mcp::Added;
     };
-    let state = line.rsplit(" - ").next().unwrap_or_default().trim_start_matches(|c: char| !c.is_alphabetic()).to_string();
+    let state = line
+        .rsplit(" - ")
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches(|c: char| !c.is_alphabetic())
+        .to_string();
     if state.starts_with("Connected") {
         Mcp::Connected
     } else if state.starts_with("Needs auth") {
@@ -125,10 +154,18 @@ fn opencode_line_status(list: &str, name: &str) -> Mcp {
         }
         out
     };
-    let Some(line) = plain.lines().find(|l| l.split_whitespace().any(|w| w == name)) else {
+    let Some(line) = plain
+        .lines()
+        .find(|l| l.split_whitespace().any(|w| w == name))
+    else {
         return Mcp::Added;
     };
-    let state = line.split_whitespace().skip_while(|w| *w != name).skip(1).collect::<Vec<_>>().join(" ");
+    let state = line
+        .split_whitespace()
+        .skip_while(|w| *w != name)
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join(" ");
     if state.starts_with("connected") {
         Mcp::Connected
     } else if state.contains("auth") {
@@ -150,11 +187,15 @@ pub fn mcp_connect_command(agent: Agent, state: &Mcp) -> String {
         }
         // Claude Code signs in to HTTP servers from its /mcp menu.
         Agent::Claude => match state {
-            Mcp::Missing => format!("claude mcp add --scope user --transport http cloudflare {MCP_URL} && claude /mcp"),
+            Mcp::Missing => format!(
+                "claude mcp add --scope user --transport http cloudflare {MCP_URL} && claude /mcp"
+            ),
             _ => "claude /mcp".into(),
         },
         Agent::OpenCode => match state {
-            Mcp::Missing => format!("opencode mcp add cloudflare --url {MCP_URL} && opencode mcp auth cloudflare"),
+            Mcp::Missing => format!(
+                "opencode mcp add cloudflare --url {MCP_URL} && opencode mcp auth cloudflare"
+            ),
             _ => "opencode mcp auth cloudflare".into(),
         },
         Agent::WorkersAi => String::new(),
@@ -164,12 +205,21 @@ pub fn mcp_connect_command(agent: Agent, state: &Mcp) -> String {
 /// The wrangler configs in `dir` or one folder below it (monorepos keep one per app).
 fn wrangler_files(dir: &Path) -> Vec<(PathBuf, bool)> {
     let mut dirs = vec![dir.to_path_buf()];
-    for parent in [dir.to_path_buf(), dir.join("apps"), dir.join("workers"), dir.join("packages")] {
+    for parent in [
+        dir.to_path_buf(),
+        dir.join("apps"),
+        dir.join("workers"),
+        dir.join("packages"),
+    ] {
         if let Ok(entries) = std::fs::read_dir(&parent) {
             for e in entries.flatten() {
                 let name = e.file_name();
                 let name = name.to_string_lossy();
-                if e.path().is_dir() && !name.starts_with('.') && name != "node_modules" && name != "target" {
+                if e.path().is_dir()
+                    && !name.starts_with('.')
+                    && name != "node_modules"
+                    && name != "target"
+                {
                     dirs.push(e.path());
                 }
             }
@@ -221,7 +271,10 @@ fn d1_pairs(text: &str) -> Vec<(String, String)> {
         text.match_indices(key)
             .filter_map(|(at, _)| {
                 let rest = text[at + key.len()..].trim_start_matches('"').trim_start();
-                let rest = rest.strip_prefix('=').or_else(|| rest.strip_prefix(':'))?.trim_start();
+                let rest = rest
+                    .strip_prefix('=')
+                    .or_else(|| rest.strip_prefix(':'))?
+                    .trim_start();
                 let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
                 let rest = &rest[1..];
                 let end = rest.find(quote)?;
@@ -233,7 +286,10 @@ fn d1_pairs(text: &str) -> Vec<(String, String)> {
     values("database_id")
         .into_iter()
         .filter_map(|(at, id)| {
-            let (_, name) = names.iter().filter(|(n, _)| n.abs_diff(at) < 400).min_by_key(|(n, _)| n.abs_diff(at))?;
+            let (_, name) = names
+                .iter()
+                .filter(|(n, _)| n.abs_diff(at) < 400)
+                .min_by_key(|(n, _)| n.abs_diff(at))?;
             Some((id, name.clone()))
         })
         .collect()
@@ -258,7 +314,11 @@ fn wrangler_name(text: &str, toml: bool) -> Option<String> {
     }
     // The first "name" key: wrangler writes it near the top, before any nested block.
     let at = text.find("\"name\"")?;
-    let rest = text[at + 6..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let rest = text[at + 6..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
     let end = rest.find('"')?;
     Some(rest[..end].to_string()).filter(|n| !n.is_empty())
 }
@@ -269,7 +329,10 @@ pub fn share_emails(s: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|e| e.contains('@') && !e.ends_with('@'))
         // They go on a shell command line.
-        .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric() || "@.*_+-".contains(c)))
+        .filter(|e| {
+            e.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "@.*_+-".contains(c))
+        })
         .map(str::to_string)
         .collect()
 }
@@ -277,7 +340,10 @@ pub fn share_emails(s: &str) -> Vec<String> {
 /// The command that shares `port` through a Quick Tunnel only `emails` can open.
 pub fn share_command(port: u16, emails: &[String]) -> String {
     // Quoted so a `*@domain` wildcard isn't expanded by the shell.
-    format!("cloudflared tunnel --url http://localhost:{port} --allowed-mail '{}'", emails.join(","))
+    format!(
+        "cloudflared tunnel --url http://localhost:{port} --allowed-mail '{}'",
+        emails.join(",")
+    )
 }
 
 #[cfg(test)]
@@ -291,37 +357,69 @@ mod tests {
         assert_eq!(mcp_line_status(list, "acme"), Mcp::Connected);
         assert_eq!(mcp_line_status(list, "cf2"), Mcp::Failing("failed".into()));
         assert_eq!(mcp_line_status(list, "other"), Mcp::Added);
-        assert_eq!(mcp_connect_command(Agent::Droid, &Mcp::Missing), "droid mcp add cloudflare https://mcp.cloudflare.com/mcp --type http; droid mcp auth");
+        assert_eq!(
+            mcp_connect_command(Agent::Droid, &Mcp::Missing),
+            "droid mcp add cloudflare https://mcp.cloudflare.com/mcp --type http; droid mcp auth"
+        );
         let claude = "Checking MCP server health…\n\ncloudflare: https://mcp.cloudflare.com/mcp (HTTP) - ! Needs authentication\nposthog: https://x (HTTP) - ✔ Connected\nbad: https://y (HTTP) - ✗ Failed to connect\n";
         assert_eq!(claude_line_status(claude, "cloudflare"), Mcp::NeedsAuth);
         assert_eq!(claude_line_status(claude, "posthog"), Mcp::Connected);
-        assert_eq!(claude_line_status(claude, "bad"), Mcp::Failing("failed to connect".into()));
+        assert_eq!(
+            claude_line_status(claude, "bad"),
+            Mcp::Failing("failed to connect".into())
+        );
         assert_eq!(claude_line_status(claude, "other"), Mcp::Added);
         let opencode = "\x1b[0m\n┌  MCP Servers\n│\n●  ⚠ cloudflare \x1b[90mneeds authentication\n│      \x1b[90mhttps://mcp.cloudflare.com/mcp\n●  ✓ posthog \x1b[90mconnected\n●  ✗ pencil \x1b[90mfailed\n";
         assert_eq!(opencode_line_status(opencode, "cloudflare"), Mcp::NeedsAuth);
         assert_eq!(opencode_line_status(opencode, "posthog"), Mcp::Connected);
-        assert_eq!(opencode_line_status(opencode, "pencil"), Mcp::Failing("failed".into()));
+        assert_eq!(
+            opencode_line_status(opencode, "pencil"),
+            Mcp::Failing("failed".into())
+        );
         assert_eq!(opencode_line_status(opencode, "other"), Mcp::Added);
     }
 
     #[test]
     fn wrangler_names() {
-        assert_eq!(wrangler_name("# x\nname = \"blog\"\nmain = \"a\"\n[vars]\nname = \"no\"", true).as_deref(), Some("blog"));
+        assert_eq!(
+            wrangler_name(
+                "# x\nname = \"blog\"\nmain = \"a\"\n[vars]\nname = \"no\"",
+                true
+            )
+            .as_deref(),
+            Some("blog")
+        );
         assert_eq!(wrangler_name("[vars]\nname = \"no\"", true), None);
-        assert_eq!(wrangler_name("{\n  // c\n  \"name\": \"example-viewers\",\n  \"main\": \"x\"\n}", false).as_deref(), Some("example-viewers"));
+        assert_eq!(
+            wrangler_name(
+                "{\n  // c\n  \"name\": \"example-viewers\",\n  \"main\": \"x\"\n}",
+                false
+            )
+            .as_deref(),
+            Some("example-viewers")
+        );
     }
 
     #[test]
     fn d1_ids_get_their_names() {
         let toml = "[[d1_databases]]\nbinding = \"DB\"\ndatabase_name = \"auth\"\ndatabase_id = \"5ef5\"\n\n[[d1_databases]]\nbinding = \"LOGS\"\ndatabase_id = \"aa11\"\ndatabase_name = \"logs\"\n";
-        assert_eq!(d1_pairs(toml), vec![("5ef5".into(), "auth".into()), ("aa11".into(), "logs".into())]);
+        assert_eq!(
+            d1_pairs(toml),
+            vec![
+                ("5ef5".into(), "auth".into()),
+                ("aa11".into(), "logs".into())
+            ]
+        );
         let json = "{ \"d1_databases\": [ { \"binding\": \"DB\", \"database_name\": \"prod\", \"database_id\": \"2b01\" } ] }";
         assert_eq!(d1_pairs(json), vec![("2b01".into(), "prod".into())]);
     }
 
     #[test]
     fn share() {
-        assert_eq!(share_emails("a@x.dev, *@example.com b nope@ x'@y.dev"), vec!["a@x.dev".to_string(), "*@example.com".to_string()]);
+        assert_eq!(
+            share_emails("a@x.dev, *@example.com b nope@ x'@y.dev"),
+            vec!["a@x.dev".to_string(), "*@example.com".to_string()]
+        );
         assert_eq!(
             share_command(3000, &["a@x.dev".into(), "*@c.dev".into()]),
             "cloudflared tunnel --url http://localhost:3000 --allowed-mail 'a@x.dev,*@c.dev'"

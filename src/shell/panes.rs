@@ -8,8 +8,15 @@ use crate::model::{Split, SplitDir};
 
 impl Shell {
     /// Registers the pane and tab actions, and the divider drag, on the window root.
-    pub(super) fn pane_handlers(&self, root: gpui::Stateful<gpui::Div>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let dir = self.has_projects().then(|| self.env().split.map(|s| s.dir)).flatten();
+    pub(super) fn pane_handlers(
+        &self,
+        root: gpui::Stateful<gpui::Div>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let dir = self
+            .has_projects()
+            .then(|| self.env().split.map(|s| s.dir))
+            .flatten();
         root.when(self.split_drag, |d| {
             d.when(dir == Some(SplitDir::Right), |d| d.cursor_col_resize())
                 .when(dir == Some(SplitDir::Down), |d| d.cursor_row_resize())
@@ -27,14 +34,30 @@ impl Shell {
         })
         .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))
         .on_action(cx.listener(|this, _: &PrevTab, window, cx| this.cycle_tab(-1, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab1, window, cx| this.select_tab_number(0, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab2, window, cx| this.select_tab_number(1, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab3, window, cx| this.select_tab_number(2, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab4, window, cx| this.select_tab_number(3, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab5, window, cx| this.select_tab_number(4, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab6, window, cx| this.select_tab_number(5, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab7, window, cx| this.select_tab_number(6, window, cx)))
-        .on_action(cx.listener(|this, _: &SelectTab8, window, cx| this.select_tab_number(7, window, cx)))
+        .on_action(
+            cx.listener(|this, _: &SelectTab1, window, cx| this.select_tab_number(0, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectTab2, window, cx| this.select_tab_number(1, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectTab3, window, cx| this.select_tab_number(2, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectTab4, window, cx| this.select_tab_number(3, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectTab5, window, cx| this.select_tab_number(4, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectTab6, window, cx| this.select_tab_number(5, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectTab7, window, cx| this.select_tab_number(6, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectTab8, window, cx| this.select_tab_number(7, window, cx)),
+        )
         .on_action(cx.listener(|this, _: &SelectLastTab, window, cx| {
             this.select_tab_number(usize::MAX, window, cx)
         }))
@@ -97,7 +120,9 @@ impl Shell {
             TabKind::Browser { .. } => self.ensure_active_browser(true, window, cx),
             TabKind::File { .. } | TabKind::Diff { .. } => window.focus(&self.focus, cx),
             #[cfg(feature = "coderlabs")]
-            TabKind::Tasks => self.tasks_view.update(cx, |v, cx| v.focus_input(window, cx)),
+            TabKind::Tasks => self
+                .tasks_view
+                .update(cx, |v, cx| v.focus_input(window, cx)),
             TabKind::Runs => self.runs_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Memory => self.memory_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Cloudflare => self.cloudflare_view.update(cx, |v, cx| v.focus(window, cx)),
@@ -142,7 +167,13 @@ impl Shell {
 
     /// Shows tab `target` (or, without one, another recent tab) in a focused pane
     /// to the right of or below the active tab.
-    pub(super) fn split_with(&mut self, target: Option<usize>, dir: SplitDir, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn split_with(
+        &mut self,
+        target: Option<usize>,
+        dir: SplitDir,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }
@@ -155,11 +186,21 @@ impl Shell {
             Some(t) if t == env.active_tab => {
                 let other = companion(env);
                 let other_id = env.tabs[other].id;
-                env.split = Some(Split { other: other_id, dir, ratio, focus_first: false });
+                env.split = Some(Split {
+                    other: other_id,
+                    dir,
+                    ratio,
+                    focus_first: false,
+                });
             }
             target => {
                 let next = target.unwrap_or_else(|| companion(env));
-                env.split = Some(Split { other: active_id, dir, ratio, focus_first: false });
+                env.split = Some(Split {
+                    other: active_id,
+                    dir,
+                    ratio,
+                    focus_first: false,
+                });
                 env.active_tab = next;
             }
         }
@@ -185,7 +226,13 @@ impl Shell {
 
     /// Shows the tab `id` in the first (left or top) pane or the second, splitting if needed.
     /// Dropping the other pane's tab, or the focused one, on the opposite side swaps them.
-    pub(super) fn place_tab(&mut self, id: u64, first: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn place_tab(
+        &mut self,
+        id: u64,
+        first: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.lifted_tab = None;
         if !self.has_projects() {
             return;
@@ -215,13 +262,18 @@ impl Shell {
         let zone = |first: bool, cx: &mut Context<Self>| {
             div().p(px(6.)).child(
                 div()
-                    .id(if first { "tab-drop-first" } else { "tab-drop-second" })
+                    .id(if first {
+                        "tab-drop-first"
+                    } else {
+                        "tab-drop-second"
+                    })
                     .size_full()
                     .rounded(px(ui::RADIUS_LG))
                     .border_2()
                     .border_color(gpui::transparent_black())
                     .drag_over::<drag::DraggedTab>(|s, _, _, _| {
-                        s.bg(theme::accent().opacity(0.12)).border_color(theme::accent().opacity(0.55))
+                        s.bg(theme::accent().opacity(0.12))
+                            .border_color(theme::accent().opacity(0.55))
                     })
                     .on_drop(cx.listener(move |this, d: &drag::DraggedTab, window, cx| {
                         this.place_tab(d.id, first, window, cx)
@@ -229,9 +281,17 @@ impl Shell {
             )
         };
         let first = zone(true, cx).flex_none().map(|d| {
-            if row { d.h_full().w(relative(ratio)) } else { d.w_full().h(relative(ratio)) }
+            if row {
+                d.h_full().w(relative(ratio))
+            } else {
+                d.w_full().h(relative(ratio))
+            }
         });
-        let second = zone(false, cx).flex_1().min_w_0().min_h_0().map(|d| if row { d.h_full() } else { d.w_full() });
+        let second = zone(false, cx)
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .map(|d| if row { d.h_full() } else { d.w_full() });
         Some(
             div()
                 .absolute()
@@ -271,12 +331,15 @@ impl Shell {
                             .text_color(theme::text_subtle())
                             .child("Drop to open beside")
                             .drag_over::<crate::zoom::DraggedImage>(|s, _, _, _| {
-                                s.bg(theme::accent().opacity(0.12)).border_color(theme::accent().opacity(0.55))
+                                s.bg(theme::accent().opacity(0.12))
+                                    .border_color(theme::accent().opacity(0.55))
                             })
-                            .on_drop(cx.listener(move |this, d: &crate::zoom::DraggedImage, window, cx| {
-                                crate::zoom::drop_lifted_image();
-                                this.open_file_beside(&env_path, &d.path, None, window, cx);
-                            })),
+                            .on_drop(cx.listener(
+                                move |this, d: &crate::zoom::DraggedImage, window, cx| {
+                                    crate::zoom::drop_lifted_image();
+                                    this.open_file_beside(&env_path, &d.path, None, window, cx);
+                                },
+                            )),
                     ),
                 )
                 .into_any_element(),
@@ -306,7 +369,10 @@ impl Shell {
         // A click lands on whatever it hit, except the New session placeholder,
         // which turns into the composer and should take the typing.
         let env = self.env();
-        let fresh = matches!(env.tabs.get(env.active_tab).map(|t| &t.kind), Some(TabKind::NewSession));
+        let fresh = matches!(
+            env.tabs.get(env.active_tab).map(|t| &t.kind),
+            Some(TabKind::NewSession)
+        );
         if keyboard || fresh {
             self.focus_active_content(window, cx);
         }
@@ -327,7 +393,8 @@ impl Shell {
         if len.as_f32() <= 0. {
             return;
         }
-        split.ratio = ((pos - origin).as_f32() / len.as_f32()).clamp(Split::MIN_RATIO, Split::MAX_RATIO);
+        split.ratio =
+            ((pos - origin).as_f32() / len.as_f32()).clamp(Split::MIN_RATIO, Split::MAX_RATIO);
         cx.notify();
     }
 
@@ -360,14 +427,23 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn render_split(&self, other: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_split(
+        &self,
+        other: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let env = self.env();
         let Some(split) = env.split else {
             return self.render_pane(env.active_tab, true, window, cx);
         };
         let active = env.active_tab;
         let row = split.dir == SplitDir::Right;
-        let (first, second) = if split.focus_first { (active, other) } else { (other, active) };
+        let (first, second) = if split.focus_first {
+            (active, other)
+        } else {
+            (other, active)
+        };
         let bounds = self.split_bounds.clone();
 
         let mut pane = |index: usize, cx: &mut Context<Self>| {
@@ -393,29 +469,52 @@ impl Shell {
                     )
                 })
                 .when(!focused, |d| {
-                    d.capture_any_mouse_down(cx.listener(|this, _, window, cx| {
-                        this.focus_other_pane(false, window, cx)
-                    }))
+                    d.capture_any_mouse_down(
+                        cx.listener(|this, _, window, cx| this.focus_other_pane(false, window, cx)),
+                    )
                 })
         };
         let first_pane = pane(first, cx).flex_none().map(|d| {
-            if row { d.h_full().w(relative(split.ratio)) } else { d.w_full().h(relative(split.ratio)) }
+            if row {
+                d.h_full().w(relative(split.ratio))
+            } else {
+                d.w_full().h(relative(split.ratio))
+            }
         });
-        let second_pane = pane(second, cx).flex_1().map(|d| if row { d.h_full() } else { d.w_full() });
-        let line_color = if self.split_drag { theme::accent() } else { theme::stroke() };
-        let line = div()
-            .flex_none()
-            .bg(line_color)
-            .map(|d| if row { d.w(px(1.)).h_full() } else { d.h(px(1.)).w_full() });
+        let second_pane = pane(second, cx)
+            .flex_1()
+            .map(|d| if row { d.h_full() } else { d.w_full() });
+        let line_color = if self.split_drag {
+            theme::accent()
+        } else {
+            theme::stroke()
+        };
+        let line = div().flex_none().bg(line_color).map(|d| {
+            if row {
+                d.w(px(1.)).h_full()
+            } else {
+                d.h(px(1.)).w_full()
+            }
+        });
         // Last child, so it sits above both panes and wins the hit test.
         let handle = div()
             .id("split-resize")
             .absolute()
             .map(|d| {
                 if row {
-                    d.top_0().bottom_0().left(relative(split.ratio)).ml(px(-3.)).w(px(7.)).cursor_col_resize()
+                    d.top_0()
+                        .bottom_0()
+                        .left(relative(split.ratio))
+                        .ml(px(-3.))
+                        .w(px(7.))
+                        .cursor_col_resize()
                 } else {
-                    d.left_0().right_0().top(relative(split.ratio)).mt(px(-3.)).h(px(7.)).cursor_row_resize()
+                    d.left_0()
+                        .right_0()
+                        .top(relative(split.ratio))
+                        .mt(px(-3.))
+                        .h(px(7.))
+                        .cursor_row_resize()
                 }
             })
             .on_mouse_down(
@@ -453,7 +552,9 @@ impl Shell {
     }
 
     pub(super) fn render_tab_menu(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let mut panel = ui::menu_panel("tab-menu", 220.).min_h_0().overflow_y_scroll();
+        let mut panel = ui::menu_panel("tab-menu", 220.)
+            .min_h_0()
+            .overflow_y_scroll();
         let env = self.env();
         let Some(tab) = env.tabs.get(index) else {
             return panel.into_any_element();
@@ -462,60 +563,71 @@ impl Shell {
         let several = env.tabs.len() > 1;
         panel = panel
             .child(
-                ui::menu_item("tm-right", "layout-two-column", "Open to the right", false, true).on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        this.menu = None;
-                        this.split_with(Some(index), SplitDir::Right, window, cx)
-                    }),
-                ),
+                ui::menu_item(
+                    "tm-right",
+                    "layout-two-column",
+                    "Open to the right",
+                    false,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.menu = None;
+                    this.split_with(Some(index), SplitDir::Right, window, cx)
+                })),
             )
             .child(
-                ui::menu_item("tm-down", "layout-two-row", "Open below", false, true).on_click(cx.listener(
-                    move |this, _, window, cx| {
+                ui::menu_item("tm-down", "layout-two-row", "Open below", false, true).on_click(
+                    cx.listener(move |this, _, window, cx| {
                         this.menu = None;
                         this.split_with(Some(index), SplitDir::Down, window, cx)
-                    },
-                )),
+                    }),
+                ),
             )
             .when(split_open, |d| {
                 let icon = match env.split.map(|s| s.dir) {
                     Some(SplitDir::Down) => "arrow-data-transfer-vertical",
                     _ => "arrow-data-transfer-horizontal",
                 };
-                d.child(ui::menu_item("tm-swap", icon, "Swap sides", false, true).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.menu = None;
-                        this.swap_panes(cx)
-                    },
-                )))
+                d.child(
+                    ui::menu_item("tm-swap", icon, "Swap sides", false, true).on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.menu = None;
+                            this.swap_panes(cx)
+                        }),
+                    ),
+                )
                 .child(
-                    ui::menu_item("tm-unsplit", "square", "Close split", false, true).on_click(cx.listener(
-                        |this, _, _, cx| {
+                    ui::menu_item("tm-unsplit", "square", "Close split", false, true).on_click(
+                        cx.listener(|this, _, _, cx| {
                             this.menu = None;
                             this.close_split(cx)
-                        },
-                    )),
+                        }),
+                    ),
                 )
             })
             .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
             .child(
-                ui::menu_item("tm-close", "cancel01", "Close tab", false, true).on_click(cx.listener(
-                    move |this, _, window, cx| {
+                ui::menu_item("tm-close", "cancel01", "Close tab", false, true).on_click(
+                    cx.listener(move |this, _, window, cx| {
                         this.menu = None;
                         this.close_tab(index, window, cx)
-                    },
-                )),
+                    }),
+                ),
             )
             .child(
-                ui::menu_item("tm-close-others", "cancel01", "Close other tabs", false, several).when(
+                ui::menu_item(
+                    "tm-close-others",
+                    "cancel01",
+                    "Close other tabs",
+                    false,
                     several,
-                    |d| {
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu = None;
-                            this.close_other_tabs(index, window, cx)
-                        }))
-                    },
-                ),
+                )
+                .when(several, |d| {
+                    d.on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu = None;
+                        this.close_other_tabs(index, window, cx)
+                    }))
+                }),
             );
         if let TabKind::Session { id, .. } = &tab.kind
             && let Some(si) = env.session_index(id)

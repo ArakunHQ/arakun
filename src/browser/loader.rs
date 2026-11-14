@@ -137,7 +137,8 @@ mod linux {
                         path.display()
                     ));
                 }
-                let c_path = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+                let c_path =
+                    CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
                 let handle = unsafe { dlopen(c_path.as_ptr(), RTLD_NOW) };
                 if handle.is_null() {
                     return Err(format!("dlopen {}: {}", path.display(), last_error()));
@@ -160,7 +161,9 @@ mod linux {
         if err.is_null() {
             return "unknown error".into();
         }
-        unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy().into_owned()
+        unsafe { std::ffi::CStr::from_ptr(err) }
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -188,7 +191,8 @@ mod macos {
                         path.display()
                     ));
                 }
-                let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+                let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+                    .map_err(|e| e.to_string())?;
                 // SAFETY: a NUL-terminated path that outlives the call.
                 if unsafe { cef::load_library(Some(&*c_path.as_ptr().cast())) } != 1 {
                     return Err(format!("loading {} failed", path.display()));
@@ -204,7 +208,9 @@ mod windows {
     use std::os::windows::ffi::OsStrExt as _;
     use std::sync::OnceLock;
 
-    use windows_sys::Win32::System::LibraryLoader::{LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW};
+    use windows_sys::Win32::System::LibraryLoader::{
+        LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW,
+    };
 
     use super::runtime_dir;
 
@@ -224,14 +230,22 @@ mod windows {
                 let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
                 // The altered search path finds chrome_elf.dll and the other DLLs it
                 // imports next to it, wherever that is.
-                let handle =
-                    unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH) };
+                let handle = unsafe {
+                    LoadLibraryExW(
+                        wide.as_ptr(),
+                        std::ptr::null_mut(),
+                        LOAD_WITH_ALTERED_SEARCH_PATH,
+                    )
+                };
                 if handle.is_null() {
-                    return Err(format!("loading {}: {}", path.display(), std::io::Error::last_os_error()));
+                    return Err(format!(
+                        "loading {}: {}",
+                        path.display(),
+                        std::io::Error::last_os_error()
+                    ));
                 }
                 Ok(())
             })
             .clone()
     }
 }
-

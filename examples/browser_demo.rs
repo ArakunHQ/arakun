@@ -19,9 +19,10 @@ mod ui;
 
 use browser::{BrowserEvent, BrowserView};
 use gpui::{
-    App, AppContext as _, Bounds, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, WindowBounds, WindowOptions, div, prelude::FluentBuilder as _, px, size,
+    App, AppContext as _, Bounds, Context, Entity, Focusable as _, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, WindowBounds, WindowOptions, div,
+    prelude::FluentBuilder as _, px, size,
 };
 
 struct Tab {
@@ -39,23 +40,34 @@ struct Demo {
 impl Demo {
     fn open(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.new(|cx| BrowserView::new(url, window, cx));
-        let events = cx.subscribe_in(&view, window, |this, view, ev: &BrowserEvent, window, cx| match ev {
-            BrowserEvent::OpenInNewTab(url) => this.open(url.clone(), window, cx),
-            BrowserEvent::CloseRequested => {
-                if let Some(i) = this.tabs.iter().position(|t| &t.view == view) {
-                    this.close(i, window, cx);
+        let events = cx.subscribe_in(
+            &view,
+            window,
+            |this, view, ev: &BrowserEvent, window, cx| match ev {
+                BrowserEvent::OpenInNewTab(url) => this.open(url.clone(), window, cx),
+                BrowserEvent::CloseRequested => {
+                    if let Some(i) = this.tabs.iter().position(|t| &t.view == view) {
+                        this.close(i, window, cx);
+                    }
                 }
-            }
-            BrowserEvent::TitleChanged(t) => log(format_args!("title {t}"), cx),
-            BrowserEvent::UrlChanged(u) => log(format_args!("url {u}"), cx),
-            BrowserEvent::LoadingChanged(l) => {
-                let v = view.read(cx);
-                let state = format!("loading={l} back={} forward={}", v.can_go_back(), v.can_go_forward());
-                log(format_args!("{state}"), cx)
-            }
-            BrowserEvent::FaviconChanged => log(format_args!("favicon"), cx),
+                BrowserEvent::TitleChanged(t) => log(format_args!("title {t}"), cx),
+                BrowserEvent::UrlChanged(u) => log(format_args!("url {u}"), cx),
+                BrowserEvent::LoadingChanged(l) => {
+                    let v = view.read(cx);
+                    let state = format!(
+                        "loading={l} back={} forward={}",
+                        v.can_go_back(),
+                        v.can_go_forward()
+                    );
+                    log(format_args!("{state}"), cx)
+                }
+                BrowserEvent::FaviconChanged => log(format_args!("favicon"), cx),
+            },
+        );
+        self.tabs.push(Tab {
+            view,
+            _events: events,
         });
-        self.tabs.push(Tab { view, _events: events });
         self.switch(self.tabs.len() - 1, window, cx);
     }
 
@@ -138,12 +150,20 @@ impl Render for Demo {
                     .max_w(px(220.))
                     .rounded(px(6.))
                     .text_size(px(12.))
-                    .text_color(if active { theme::content() } else { theme::mix(0.5) })
+                    .text_color(if active {
+                        theme::content()
+                    } else {
+                        theme::mix(0.5)
+                    })
                     .when(active, |d| d.bg(theme::mix(0.08)))
                     .hover(|d| d.bg(theme::mix(0.06)))
                     .cursor_pointer()
-                    .when_some(v.favicon(), |d, f| d.child(gpui::img(f).size(px(14.)).flex_none()))
-                    .when(v.is_loading(), |d| d.child(ui::icon("loading03", 12.).text_color(theme::mix(0.5))))
+                    .when_some(v.favicon(), |d, f| {
+                        d.child(gpui::img(f).size(px(14.)).flex_none())
+                    })
+                    .when(v.is_loading(), |d| {
+                        d.child(ui::icon("loading03", 12.).text_color(theme::mix(0.5)))
+                    })
                     .child(div().truncate().child(v.title()))
                     .child(
                         div()
@@ -157,15 +177,18 @@ impl Render for Demo {
                     .on_click(cx.listener(move |this, _, window, cx| this.switch(i, window, cx)))
             }))
             .child(
-                ui::icon_button("new-tab", "add01", 14.)
-                    .on_click(cx.listener(|this, _, window, cx| this.open(String::new(), window, cx))),
+                ui::icon_button("new-tab", "add01", 14.).on_click(
+                    cx.listener(|this, _, window, cx| this.open(String::new(), window, cx)),
+                ),
             )
             .child(div().flex_1())
-            .child(div().text_size(px(11.)).text_color(theme::mix(0.35)).child(match browser::cdp_port() {
-                Some(p) => format!("CDP 127.0.0.1:{p}"),
-                None if browser::ENABLED => "CEF not started".into(),
-                None => "built without the browser feature".into(),
-            }));
+            .child(div().text_size(px(11.)).text_color(theme::mix(0.35)).child(
+                match browser::cdp_port() {
+                    Some(p) => format!("CDP 127.0.0.1:{p}"),
+                    None if browser::ENABLED => "CEF not started".into(),
+                    None => "built without the browser feature".into(),
+                },
+            ));
 
         div()
             .flex()
@@ -178,7 +201,11 @@ impl Render for Demo {
             // Capture phase: the page consumes Ctrl+key presses it receives.
             .capture_key_down(cx.listener(Self::key_down))
             .child(strip)
-            .children(self.tabs.get(self.active).map(|t| div().flex_1().min_h_0().child(t.view.clone())))
+            .children(
+                self.tabs
+                    .get(self.active)
+                    .map(|t| div().flex_1().min_h_0().child(t.view.clone())),
+            )
     }
 }
 
@@ -186,33 +213,39 @@ fn main() {
     browser::handle_subprocess();
     let started = std::time::Instant::now();
     let urls: Vec<String> = std::env::args().skip(1).collect();
-    gpui_platform::application().with_assets(assets::Assets).run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                app_id: Some("arakun-browser-demo".into()),
-                ..Default::default()
-            },
-            |window, cx| {
-                cx.new(|cx| {
-                    let mut demo = Demo { tabs: Vec::new(), active: 0, focus: cx.focus_handle() };
-                    window.focus(&demo.focus, cx);
-                    for url in urls {
-                        demo.open(url, window, cx);
-                    }
-                    if !demo.tabs.is_empty() {
-                        demo.switch(0, window, cx);
-                    }
-                    demo
-                })
-            },
-        )
-        .unwrap();
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
-        cx.activate(true);
-        if std::env::var_os("ARAKUN_TIMING").is_some() {
-            eprintln!("browser_demo: window opened in {:?}", started.elapsed());
-        }
-    });
+    gpui_platform::application()
+        .with_assets(assets::Assets)
+        .run(move |cx: &mut App| {
+            let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    app_id: Some("arakun-browser-demo".into()),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    cx.new(|cx| {
+                        let mut demo = Demo {
+                            tabs: Vec::new(),
+                            active: 0,
+                            focus: cx.focus_handle(),
+                        };
+                        window.focus(&demo.focus, cx);
+                        for url in urls {
+                            demo.open(url, window, cx);
+                        }
+                        if !demo.tabs.is_empty() {
+                            demo.switch(0, window, cx);
+                        }
+                        demo
+                    })
+                },
+            )
+            .unwrap();
+            cx.on_window_closed(|cx, _| cx.quit()).detach();
+            cx.activate(true);
+            if std::env::var_os("ARAKUN_TIMING").is_some() {
+                eprintln!("browser_demo: window opened in {:?}", started.elapsed());
+            }
+        });
 }

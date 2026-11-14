@@ -10,12 +10,16 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px, relative,
+    AnyElement, App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, FontWeight,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    Window, div, px, relative,
 };
 
-use crate::cloudflare::{self, Ask, Cert, Day, DnsRecord, Insight, Issue, LoadError, Mcp, Snapshot, Subject, Tunnel, Worker, Zone, bytes, count};
+use crate::cloudflare::{
+    self, Ask, Cert, Day, DnsRecord, Insight, Issue, LoadError, Mcp, Snapshot, Subject, Tunnel,
+    Worker, Zone, bytes, count,
+};
 use crate::input::{InputEvent, TextInput};
 use crate::model::Agent;
 use crate::theme;
@@ -50,7 +54,11 @@ pub enum CloudflareEvent {
     /// Run a command in a terminal (granting the sign-in more read access).
     Run(String),
     /// Something broke since the last look: a desktop notification.
-    Notify { title: String, body: String, critical: bool },
+    Notify {
+        title: String,
+        body: String,
+        critical: bool,
+    },
     /// Show the project (on this machine) that deploys a Worker.
     OpenProject(PathBuf),
 }
@@ -147,7 +155,10 @@ impl CloudflareView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let port = cx.new(|cx| TextInput::new("3000", cx));
         let emails = cx.new(|cx| TextInput::new("you@example.com, *@team.dev", cx));
-        let on_input = |this: &mut Self, _: Entity<TextInput>, ev: &InputEvent, cx: &mut Context<Self>| match ev {
+        let on_input = |this: &mut Self,
+                        _: Entity<TextInput>,
+                        ev: &InputEvent,
+                        cx: &mut Context<Self>| match ev {
             InputEvent::Submit => this.share(cx),
             InputEvent::Changed => {
                 this.share_note = None;
@@ -155,17 +166,27 @@ impl CloudflareView {
             }
             _ => {}
         };
-        let subs = [cx.subscribe(&port, on_input), cx.subscribe(&emails, on_input)];
+        let subs = [
+            cx.subscribe(&port, on_input),
+            cx.subscribe(&emails, on_input),
+        ];
         let poll = cx.spawn(async move |this, cx| {
             let mut tick = 0u32;
             loop {
                 cx.background_executor().timer(POLL).await;
                 tick += 1;
-                let Ok(agent) = this.read_with(cx, |this, _| this.agent) else { break };
-                let configured = cx.background_spawn(async move { cloudflare::mcp_server(agent).is_some() }).await;
+                let Ok(agent) = this.read_with(cx, |this, _| this.agent) else {
+                    break;
+                };
+                let configured = cx
+                    .background_spawn(async move { cloudflare::mcp_server(agent).is_some() })
+                    .await;
                 let alive = this.update(cx, |this, cx| {
-                    let watching = this.mcp_watch > crate::model::unix_now() && this.mcp != Mcp::Connected;
-                    if configured != (this.mcp != Mcp::Missing) || (watching && tick.is_multiple_of(2)) {
+                    let watching =
+                        this.mcp_watch > crate::model::unix_now() && this.mcp != Mcp::Connected;
+                    if configured != (this.mcp != Mcp::Missing)
+                        || (watching && tick.is_multiple_of(2))
+                    {
                         this.check_mcp(cx);
                     }
                 });
@@ -214,7 +235,11 @@ impl CloudflareView {
             homes: Default::default(),
             traffic: Default::default(),
             chart: cx.new(|_| overview::chart()),
-            mcp: if cloudflare::mcp_server(Agent::Claude).is_some() { Mcp::Added } else { Mcp::Missing },
+            mcp: if cloudflare::mcp_server(Agent::Claude).is_some() {
+                Mcp::Added
+            } else {
+                Mcp::Missing
+            },
             mcp_watch: 0,
             mcp_task: None,
             cloudflared: crate::agent::which("cloudflared").is_some(),
@@ -252,7 +277,11 @@ impl CloudflareView {
     pub fn set_agent(&mut self, agent: Agent, cx: &mut Context<Self>) {
         if self.agent != agent {
             self.agent = agent;
-            self.mcp = if cloudflare::mcp_server(agent).is_some() { Mcp::Added } else { Mcp::Missing };
+            self.mcp = if cloudflare::mcp_server(agent).is_some() {
+                Mcp::Added
+            } else {
+                Mcp::Missing
+            };
             self.mcp_task = None;
             self.check_mcp(cx);
             cx.notify();
@@ -275,7 +304,9 @@ impl CloudflareView {
         }
         let agent = self.agent;
         self.mcp_task = Some(cx.spawn(async move |this, cx| {
-            let state = cx.background_spawn(async move { cloudflare::mcp_status(agent) }).await;
+            let state = cx
+                .background_spawn(async move { cloudflare::mcp_status(agent) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.mcp_task = None;
                 if this.agent == agent && this.mcp != state {
@@ -287,7 +318,10 @@ impl CloudflareView {
     }
 
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
-        let fresh = self.snap.as_ref().is_some_and(|s| crate::model::unix_now().saturating_sub(s.fetched) < STALE);
+        let fresh = self
+            .snap
+            .as_ref()
+            .is_some_and(|s| crate::model::unix_now().saturating_sub(s.fetched) < STALE);
         if !fresh && self.error.is_none() {
             self.refresh(cx);
         }
@@ -361,7 +395,11 @@ impl CloudflareView {
             self.alerted = Some(now.into_iter().map(|a| a.0).collect());
             return;
         };
-        let fresh: Vec<_> = now.iter().filter(|a| !seen.contains(&a.0)).cloned().collect();
+        let fresh: Vec<_> = now
+            .iter()
+            .filter(|a| !seen.contains(&a.0))
+            .cloned()
+            .collect();
         // What got fixed may break again and should tell again.
         seen.retain(|k| now.iter().any(|a| &a.0 == k));
         seen.extend(fresh.iter().map(|a| a.0.clone()));
@@ -369,13 +407,22 @@ impl CloudflareView {
             let critical = fresh.iter().any(|a| a.3);
             cx.emit(CloudflareEvent::Notify {
                 title: format!("Cloudflare: {} new problems", fresh.len()),
-                body: fresh.iter().take(3).map(|a| a.1.clone()).collect::<Vec<_>>().join("\n"),
+                body: fresh
+                    .iter()
+                    .take(3)
+                    .map(|a| a.1.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 critical,
             });
             return;
         }
         for (_, title, body, critical) in fresh {
-            cx.emit(CloudflareEvent::Notify { title, body, critical });
+            cx.emit(CloudflareEvent::Notify {
+                title,
+                body,
+                critical,
+            });
         }
     }
 
@@ -391,7 +438,14 @@ impl CloudflareView {
     }
 
     fn share(&mut self, cx: &mut Context<Self>) {
-        let port = self.port.read(cx).text().trim().parse::<u16>().ok().filter(|p| *p > 0);
+        let port = self
+            .port
+            .read(cx)
+            .text()
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p > 0);
         let emails = cloudflare::share_emails(self.emails.read(cx).text());
         let note = match (port, emails.is_empty()) {
             (None, _) => Some("Type the local port the server listens on, like 3000."),
@@ -415,26 +469,43 @@ impl CloudflareView {
     }
 
     fn ask(&self, subject: &Subject, cx: &mut Context<Self>) {
-        if let Some(a) = self.snap.as_ref().and_then(|s| s.ask(subject, self.mcp(), crate::model::unix_now())) {
+        if let Some(a) = self
+            .snap
+            .as_ref()
+            .and_then(|s| s.ask(subject, self.mcp(), crate::model::unix_now()))
+        {
             cx.emit(CloudflareEvent::Ask(a));
         }
     }
 
     /// Hands `subject` to a new session of the agent.
-    fn ask_button(&self, id: String, label: &'static str, subject: Subject, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn ask_button(
+        &self,
+        id: String,
+        label: &'static str,
+        subject: Subject,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let tip = match self.agent {
             Agent::Claude => "Starts a Claude Code session with what Arakun sees",
             Agent::Droid => "Starts a Droid session with what Arakun sees",
             Agent::OpenCode => "Starts an OpenCode session with what Arakun sees",
             Agent::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
-        ui::button_with(SharedString::from(id), Some("sparkles"), label, ButtonKind::Outline, true)
-            .tooltip(ui::tip(tip))
-            .on_click(cx.listener(move |this, _, _, cx| this.ask(&subject, cx)))
+        ui::button_with(
+            SharedString::from(id),
+            Some("sparkles"),
+            label,
+            ButtonKind::Outline,
+            true,
+        )
+        .tooltip(ui::tip(tip))
+        .on_click(cx.listener(move |this, _, _, cx| this.ask(&subject, cx)))
     }
 
     fn open_button(&self, id: String, path: String, cx: &mut Context<Self>) -> Stateful<Div> {
-        icon_button(SharedString::from(id), "link-square02", 13.).on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
+        icon_button(SharedString::from(id), "link-square02", 13.)
+            .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
     }
 
     fn render_body(&self, s: &Snapshot, cx: &mut Context<Self>) -> AnyElement {
@@ -487,27 +558,46 @@ impl CloudflareView {
                     .flex_1()
                     .min_w_0()
                     .gap(px(2.))
-                    .child(div().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(issue.title.clone()))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_MD))
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(issue.title.clone()),
+                    )
                     .child(
                         div()
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::text_subtle())
                             .truncate()
-                            .when(code, |d| d.font_family(theme::FONT_MONO).text_size(px(ui::TEXT_XS)))
+                            .when(code, |d| {
+                                d.font_family(theme::FONT_MONO).text_size(px(ui::TEXT_XS))
+                            })
                             .child(issue.detail.clone()),
                     ),
             )
-            .child(self.ask_button(format!("cf-issue-ask-{i}"), "Investigate", issue.subject.clone(), cx))
-            .when_some(subject_path(&issue.subject), |d, path| d.child(self.open_button(format!("cf-issue-open-{i}"), path, cx)))
+            .child(self.ask_button(
+                format!("cf-issue-ask-{i}"),
+                "Investigate",
+                issue.subject.clone(),
+                cx,
+            ))
+            .when_some(subject_path(&issue.subject), |d, path| {
+                d.child(self.open_button(format!("cf-issue-open-{i}"), path, cx))
+            })
     }
 
     fn render_mcp(&self, cx: &mut Context<Self>) -> Div {
         let connected = self.mcp == Mcp::Connected;
         let name = agent_name(self.agent);
         let body = if connected {
-            format!("{name} sessions can search Cloudflare's docs and query this account (logs, DNS, Tunnels, Workers, analytics) through Cloudflare's MCP server. Writes ask for permission first: Cloudflare grants extra scopes only when a session needs them.")
+            format!(
+                "{name} sessions can search Cloudflare's docs and query this account (logs, DNS, Tunnels, Workers, analytics) through Cloudflare's MCP server. Writes ask for permission first: Cloudflare grants extra scopes only when a session needs them."
+            )
         } else {
-            format!("Lets {name} sessions search Cloudflare's docs and query this account through Cloudflare's MCP server. It starts read-only; when a session needs to change something, Cloudflare asks you to approve that one permission. Sessions can already read the account with the cf CLI without it.")
+            format!(
+                "Lets {name} sessions search Cloudflare's docs and query this account through Cloudflare's MCP server. It starts read-only; when a session needs to change something, Cloudflare asks you to approve that one permission. Sessions can already read the account with the cf CLI without it."
+            )
         };
         card(match self.agent {
             Agent::Claude => "Cloudflare MCP for Claude Code",
@@ -515,29 +605,62 @@ impl CloudflareView {
             Agent::OpenCode => "Cloudflare MCP for OpenCode",
             Agent::WorkersAi => "Cloudflare MCP",
         })
-            .child(div().text_size(px(ui::TEXT_SM)).line_height(px(18.)).text_color(theme::text_muted()).child(body))
-            .child(div().flex().items_center().gap(px(8.)).map(|d| {
-                if connected {
-                    return d
-                        .child(icon("checkmark-circle02", 14.).text_color(good()))
-                        .child(div().text_size(px(ui::TEXT_SM)).text_color(theme::text_muted()).child(format!("Connected: Investigate uses it in {name}")));
-                }
-                let how = if self.agent == Agent::Claude { "Opens Claude Code: pick cloudflare in /mcp and approve in the browser." } else { "Opens a terminal; approve access when the browser asks." };
-                let (label, hint): (SharedString, String) = match &self.mcp {
-                    Mcp::Missing => (format!("Connect to {name}").into(), how.to_string()),
-                    Mcp::NeedsAuth => ("Sign in".into(), format!("Added to {name}; it still needs your approval. {how}")),
-                    Mcp::Failing(why) => ("Sign in again".into(), format!("{name} can't reach it ({why}).")),
-                    _ => ("Sign in".into(), format!("Checking with {name}…")),
-                };
-                let (agent, state) = (self.agent, self.mcp.clone());
-                d.child(
-                    outline(ui::button("cf-mcp-connect", label, ButtonKind::Primary, true)).on_click(cx.listener(move |this, _, _, cx| {
-                        this.watch_mcp();
-                        cx.emit(CloudflareEvent::ConnectMcp(agent, state.clone()))
-                    })),
-                )
-                .child(div().min_w_0().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(hint))
-            }))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .line_height(px(18.))
+                .text_color(theme::text_muted())
+                .child(body),
+        )
+        .child(div().flex().items_center().gap(px(8.)).map(|d| {
+            if connected {
+                return d
+                    .child(icon("checkmark-circle02", 14.).text_color(good()))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_muted())
+                            .child(format!("Connected: Investigate uses it in {name}")),
+                    );
+            }
+            let how = if self.agent == Agent::Claude {
+                "Opens Claude Code: pick cloudflare in /mcp and approve in the browser."
+            } else {
+                "Opens a terminal; approve access when the browser asks."
+            };
+            let (label, hint): (SharedString, String) = match &self.mcp {
+                Mcp::Missing => (format!("Connect to {name}").into(), how.to_string()),
+                Mcp::NeedsAuth => (
+                    "Sign in".into(),
+                    format!("Added to {name}; it still needs your approval. {how}"),
+                ),
+                Mcp::Failing(why) => (
+                    "Sign in again".into(),
+                    format!("{name} can't reach it ({why})."),
+                ),
+                _ => ("Sign in".into(), format!("Checking with {name}…")),
+            };
+            let (agent, state) = (self.agent, self.mcp.clone());
+            d.child(
+                outline(ui::button(
+                    "cf-mcp-connect",
+                    label,
+                    ButtonKind::Primary,
+                    true,
+                ))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.watch_mcp();
+                    cx.emit(CloudflareEvent::ConnectMcp(agent, state.clone()))
+                })),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_subtle())
+                    .child(hint),
+            )
+        }))
     }
 
     fn render_share(&self, cx: &mut Context<Self>) -> Div {
@@ -548,7 +671,12 @@ impl CloudflareView {
                 .gap(px(4.))
                 .when(w.is_none(), |d| d.flex_1().min_w_0())
                 .when_some(w, |d, w| d.w(px(w)))
-                .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(label))
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_subtle())
+                        .child(label),
+                )
                 .child(
                     div()
                         .flex()
@@ -610,33 +738,93 @@ impl CloudflareView {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().min_w_0().truncate().text_size(px(ui::TEXT_LG)).font_weight(FontWeight::MEDIUM).child(name.clone()))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(ui::TEXT_LG))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(name.clone()),
+            )
             .child(ui::tag(z.plan.clone(), theme::mix(0.6)))
-            .when(z.status != "active", |d| d.child(ui::tag(z.status.clone(), theme::warn())))
-            .when(z.settings.read, |d| {
-                d.child(ui::tag(format!("SSL {}", z.settings.ssl_label()), if z.settings.weak_ssl() { theme::warn().into() } else { theme::mix(0.6) }))
+            .when(z.status != "active", |d| {
+                d.child(ui::tag(z.status.clone(), theme::warn()))
             })
-            .when(z.settings.dev_mode, |d| d.child(ui::tag("dev mode", theme::warn())))
-            .children(z.certs.iter().filter(|c| c.expires > 0).map(|c| c.days_left(crate::model::unix_now())).min().map(|days| {
-                ui::tag(format!("cert {days}d"), if days < 14 { theme::danger().into() } else if days < 30 { theme::warn().into() } else { theme::mix(0.6) })
-            }))
-            .when(z.email_enabled == Some(true), |d| d.child(ui::tag(format!("email · {} rules", z.email_rules.len()), theme::mix(0.6))))
+            .when(z.settings.read, |d| {
+                d.child(ui::tag(
+                    format!("SSL {}", z.settings.ssl_label()),
+                    if z.settings.weak_ssl() {
+                        theme::warn().into()
+                    } else {
+                        theme::mix(0.6)
+                    },
+                ))
+            })
+            .when(z.settings.dev_mode, |d| {
+                d.child(ui::tag("dev mode", theme::warn()))
+            })
+            .children(
+                z.certs
+                    .iter()
+                    .filter(|c| c.expires > 0)
+                    .map(|c| c.days_left(crate::model::unix_now()))
+                    .min()
+                    .map(|days| {
+                        ui::tag(
+                            format!("cert {days}d"),
+                            if days < 14 {
+                                theme::danger().into()
+                            } else if days < 30 {
+                                theme::warn().into()
+                            } else {
+                                theme::mix(0.6)
+                            },
+                        )
+                    }),
+            )
+            .when(z.email_enabled == Some(true), |d| {
+                d.child(ui::tag(
+                    format!("email · {} rules", z.email_rules.len()),
+                    theme::mix(0.6),
+                ))
+            })
             .when(z.live_server_errors() > 0, |d| {
-                d.child(ui::tag(format!("{} × 5xx", count(z.live_server_errors())), theme::danger()))
+                d.child(ui::tag(
+                    format!("{} × 5xx", count(z.live_server_errors())),
+                    theme::danger(),
+                ))
             })
             .child(div().flex_1())
             .when(z.live_server_errors() > 0, |d| {
-                d.child(self.ask_button(format!("cf-zone-ask-{name}"), "Investigate 5xx", Subject::Zone(name.clone()), cx))
+                d.child(self.ask_button(
+                    format!("cf-zone-ask-{name}"),
+                    "Investigate 5xx",
+                    Subject::Zone(name.clone()),
+                    cx,
+                ))
             })
             .child({
                 let id = z.id.clone();
                 let open = self.traffic_open.contains(&z.id);
-                ui::button_with(SharedString::from(format!("cf-traffic-{name}")), Some("chart-breakout-square"), if open { "Hide traffic" } else { "Traffic" }, ButtonKind::Outline, true)
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_traffic(id.clone(), cx)))
+                ui::button_with(
+                    SharedString::from(format!("cf-traffic-{name}")),
+                    Some("chart-breakout-square"),
+                    if open { "Hide traffic" } else { "Traffic" },
+                    ButtonKind::Outline,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_traffic(id.clone(), cx)))
             })
             .child({
                 let security = format!("{name}/security/events");
-                ui::button_with(SharedString::from(format!("cf-sec-{name}")), Some("shield-alert"), "Security events", ButtonKind::Outline, true).on_click(cx.listener(move |this, _, _, cx| this.open(&security, cx)))
+                ui::button_with(
+                    SharedString::from(format!("cf-sec-{name}")),
+                    Some("shield-alert"),
+                    "Security events",
+                    ButtonKind::Outline,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.open(&security, cx)))
             })
             .child(self.open_button(format!("cf-zone-{name}"), name.clone(), cx));
         let week = div()
@@ -659,7 +847,12 @@ impl CloudflareView {
                         .flex()
                         .items_center()
                         .gap(px(12.))
-                        .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(format!("{} responses · 24h", count(served))))
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .child(format!("{} responses · 24h", count(served))),
+                        )
                         .child(div().flex_1())
                         .children((0..5).filter(|&i| classes[i] > 0).map(|i| {
                             div()
@@ -668,8 +861,16 @@ impl CloudflareView {
                                 .gap(px(6.))
                                 .text_size(px(ui::TEXT_XS))
                                 .child(div().size(px(6.)).rounded_full().bg(class_color(i)))
-                                .child(div().text_color(theme::text_muted()).child(format!("{}xx", i + 1)))
-                                .child(div().text_color(theme::text_subtle()).child(pct(classes[i], served)))
+                                .child(
+                                    div()
+                                        .text_color(theme::text_muted())
+                                        .child(format!("{}xx", i + 1)),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(theme::text_subtle())
+                                        .child(pct(classes[i], served)),
+                                )
                         })),
                 )
                 .child(share_bar(&classes, served))
@@ -680,7 +881,12 @@ impl CloudflareView {
                 .flex_col()
                 .gap(px(4.))
                 .pt(px(2.))
-                .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child("Most 5xx · 24h"))
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_subtle())
+                        .child("Most 5xx · 24h"),
+                )
                 .children(z.failing.iter().map(|f| {
                     div()
                         .flex()
@@ -698,13 +904,22 @@ impl CloudflareView {
                                 .truncate()
                                 .child(format!("{}{}", f.host, f.path)),
                         )
-                        .child(div().flex_none().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(format!("{}×", count(f.count))))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .child(format!("{}×", count(f.count))),
+                        )
                 }))
         });
         let network = self.render_zone_network(s, z, cx);
         let mut meta = Vec::new();
         if let Some((code, _)) = worst {
-            meta.push(format!("Mostly {code}: {}", cloudflare::status_meaning(code)));
+            meta.push(format!(
+                "Mostly {code}: {}",
+                cloudflare::status_meaning(code)
+            ));
         }
         if !workers.is_empty() {
             meta.push(format!("Workers: {}", workers.join(", ")));
@@ -730,7 +945,10 @@ impl CloudflareView {
         let st = &z.settings;
         let mut facts = Vec::new();
         if st.read {
-            facts.push(format!("Always HTTPS {}", if st.always_https { "on" } else { "off" }));
+            facts.push(format!(
+                "Always HTTPS {}",
+                if st.always_https { "on" } else { "off" }
+            ));
             if !st.min_tls.is_empty() {
                 facts.push(format!("min TLS {}", st.min_tls));
             }
@@ -747,15 +965,24 @@ impl CloudflareView {
         let shown: Vec<&DnsRecord> = z.dns.iter().filter(|r| open || flagged(r)).collect();
         let name = z.name.clone();
         let toggle = (!z.dns.is_empty()).then(|| {
-            let label = if open { "Hide records".to_string() } else { format!("DNS records · {}", z.dns.len()) };
-            ui::button_with(SharedString::from(format!("cf-dns-{name}")), Some(if open { "arrow-up01" } else { "arrow-down01" }), label, ButtonKind::Ghost, true).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    if !this.dns_open.remove(&name) {
-                        this.dns_open.insert(name.clone());
-                    }
-                    cx.notify();
-                },
-            ))
+            let label = if open {
+                "Hide records".to_string()
+            } else {
+                format!("DNS records · {}", z.dns.len())
+            };
+            ui::button_with(
+                SharedString::from(format!("cf-dns-{name}")),
+                Some(if open { "arrow-up01" } else { "arrow-down01" }),
+                label,
+                ButtonKind::Ghost,
+                true,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.dns_open.remove(&name) {
+                    this.dns_open.insert(name.clone());
+                }
+                cx.notify();
+            }))
         });
         div()
             .flex()
@@ -769,9 +996,23 @@ impl CloudflareView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(div().flex_1().min_w_0().child(meta_line(if facts.is_empty() { "DNS and SSL settings unavailable".into() } else { facts.join(" · ") })))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(meta_line(if facts.is_empty() {
+                                "DNS and SSL settings unavailable".into()
+                            } else {
+                                facts.join(" · ")
+                            })),
+                    )
                     .when(!z.dns.is_empty(), |d| {
-                        d.child(self.ask_button(format!("cf-dns-ask-{}", z.name), "Check DNS", Subject::Dns(z.name.clone()), cx))
+                        d.child(self.ask_button(
+                            format!("cf-dns-ask-{}", z.name),
+                            "Check DNS",
+                            Subject::Dns(z.name.clone()),
+                            cx,
+                        ))
                     })
                     .children(toggle),
             )
@@ -782,44 +1023,82 @@ impl CloudflareView {
         let now = crate::model::unix_now();
         let latest = s.latest_cloudflared();
         let local = &s.cloudflared;
-        let here = div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(12.))
-            .py(px(10.))
-            .rounded(px(ui::RADIUS_LG))
-            .bg(theme::fill_raised())
-            .child(icon("computer", 14.).text_color(theme::text_subtle()))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(px(2.))
-                    .child(div().text_size(px(ui::TEXT_MD)).child(if local.installed.is_empty() {
-                        "cloudflared isn't installed on this machine".to_string()
+        let here =
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(12.))
+                .py(px(10.))
+                .rounded(px(ui::RADIUS_LG))
+                .bg(theme::fill_raised())
+                .child(icon("computer", 14.).text_color(theme::text_subtle()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(2.))
+                        .child(div().text_size(px(ui::TEXT_MD)).child(
+                            if local.installed.is_empty() {
+                                "cloudflared isn't installed on this machine".to_string()
+                            } else {
+                                format!("cloudflared {} on this machine", local.installed)
+                            },
+                        ))
+                        .child(meta_line(if latest.is_empty() {
+                            "Couldn't read the latest release".into()
+                        } else {
+                            format!("Latest release: {latest}")
+                        })),
+                )
+                .map(|d| {
+                    if cloudflare::outdated(&local.installed, &latest) {
+                        d.child(ui::tag("outdated", theme::warn()))
+                            .child(self.ask_button(
+                                "cf-cfd-update".into(),
+                                "Update",
+                                Subject::Cloudflared,
+                                cx,
+                            ))
+                    } else if local.installed.is_empty() {
+                        d
                     } else {
-                        format!("cloudflared {} on this machine", local.installed)
-                    }))
-                    .child(meta_line(if latest.is_empty() { "Couldn't read the latest release".into() } else { format!("Latest release: {latest}") })),
-            )
-            .map(|d| {
-                if cloudflare::outdated(&local.installed, &latest) {
-                    d.child(ui::tag("outdated", theme::warn())).child(self.ask_button("cf-cfd-update".into(), "Update", Subject::Cloudflared, cx))
-                } else if local.installed.is_empty() {
-                    d
-                } else {
-                    d.child(ui::tag("up to date", good()))
-                }
-            });
+                        d.child(ui::tag("up to date", good()))
+                    }
+                });
         if !s.tunnels_read {
-            return div().flex().flex_col().gap(px(16.)).child(here).child(quiet("This sign-in can't read Tunnels yet. Grant read access in Tools."));
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(16.))
+                .child(here)
+                .child(quiet(
+                    "This sign-in can't read Tunnels yet. Grant read access in Tools.",
+                ));
         }
-        let (live, idle): (Vec<&Tunnel>, Vec<&Tunnel>) = s.tunnels.iter().partition(|t| t.up() || !t.hostnames.is_empty());
-        let open = ui::button_with(SharedString::from("cf-tunnels-open"), Some("link-square02"), "Open in dashboard", ButtonKind::Outline, true).on_click(cx.listener(|this, _, _, cx| this.open("tunnels", cx)));
-        let mut list = section("Tunnels", Some(format!("{} · {} up", s.tunnels.len(), s.tunnels.iter().filter(|t| t.up()).count())), Some(open.into_any_element()));
+        let (live, idle): (Vec<&Tunnel>, Vec<&Tunnel>) = s
+            .tunnels
+            .iter()
+            .partition(|t| t.up() || !t.hostnames.is_empty());
+        let open = ui::button_with(
+            SharedString::from("cf-tunnels-open"),
+            Some("link-square02"),
+            "Open in dashboard",
+            ButtonKind::Outline,
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.open("tunnels", cx)));
+        let mut list = section(
+            "Tunnels",
+            Some(format!(
+                "{} · {} up",
+                s.tunnels.len(),
+                s.tunnels.iter().filter(|t| t.up()).count()
+            )),
+            Some(open.into_any_element()),
+        );
         if live.is_empty() {
             list = list.child(quiet("No Tunnel is running or routed to."));
         }
@@ -828,8 +1107,17 @@ impl CloudflareView {
         }
         let mut unused = section("Unused", Some(idle.len().to_string()), None);
         for t in &idle {
-            let last = if t.inactive_at > 0 { format!("last connected {}", cloudflare::ago(t.inactive_at, now)) } else { "never connected".into() };
-            unused = unused.child(line_item("circle-dashed", t.name.clone(), format!("{} · no DNS record routes to it", t.status), last));
+            let last = if t.inactive_at > 0 {
+                format!("last connected {}", cloudflare::ago(t.inactive_at, now))
+            } else {
+                "never connected".into()
+            };
+            unused = unused.child(line_item(
+                "circle-dashed",
+                t.name.clone(),
+                format!("{} · no DNS record routes to it", t.status),
+                last,
+            ));
         }
         div()
             .flex()
@@ -855,19 +1143,53 @@ impl CloudflareView {
             .items_center()
             .gap(px(8.))
             .child(div().size(px(8.)).rounded_full().bg(color))
-            .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(name.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(ui::TEXT_MD))
+                    .font_weight(FontWeight::MEDIUM)
+                    .truncate()
+                    .child(name.clone()),
+            )
             .child(ui::tag(t.status.clone(), color))
-            .child(ui::tag(if t.remote { "dashboard config" } else { "local config" }, theme::mix(0.5)))
-            .child(self.ask_button(format!("cf-tun-ask-{name}"), "Investigate", Subject::Tunnel(name.clone()), cx))
+            .child(ui::tag(
+                if t.remote {
+                    "dashboard config"
+                } else {
+                    "local config"
+                },
+                theme::mix(0.5),
+            ))
+            .child(self.ask_button(
+                format!("cf-tun-ask-{name}"),
+                "Investigate",
+                Subject::Tunnel(name.clone()),
+                cx,
+            ))
             .child(self.open_button(format!("cf-tun-open-{name}"), "tunnels".into(), cx));
-        let hosts = if t.hostnames.is_empty() { "No DNS record routes to it".to_string() } else { t.hostnames.join(", ") };
+        let hosts = if t.hostnames.is_empty() {
+            "No DNS record routes to it".to_string()
+        } else {
+            t.hostnames.join(", ")
+        };
         row()
             .gap(px(8.))
             .child(header)
-            .child(div().font_family(theme::FONT_MONO).text_size(px(ui::TEXT_XS)).text_color(theme::text_muted()).truncate().child(hosts))
+            .child(
+                div()
+                    .font_family(theme::FONT_MONO)
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_muted())
+                    .truncate()
+                    .child(hosts),
+            )
             .when(t.connectors.is_empty(), |d| {
                 d.child(meta_line(if t.inactive_at > 0 {
-                    format!("No connector: the last one left {}", cloudflare::ago(t.inactive_at, now))
+                    format!(
+                        "No connector: the last one left {}",
+                        cloudflare::ago(t.inactive_at, now)
+                    )
                 } else {
                     "No connector has ever run it".into()
                 }))
@@ -881,10 +1203,38 @@ impl CloudflareView {
                     .h(px(20.))
                     .text_size(px(ui::TEXT_XS))
                     .child(icon("computer", 12.).text_color(theme::text_subtle()))
-                    .child(ui::tag(c.version.clone(), if old { theme::warn().into() } else { theme::mix(0.6) }))
-                    .when(old, |d| d.child(div().text_color(theme::warn()).child(format!("update to {latest}"))))
-                    .child(div().flex_1().min_w_0().truncate().text_color(theme::text_muted()).child(format!("{} · {}", c.origin_ip, c.colos.join(", "))))
-                    .child(div().flex_none().text_color(theme::text_subtle()).child(format!("up {}", cloudflare::ago(c.opened, now).trim_end_matches(" ago"))))
+                    .child(ui::tag(
+                        c.version.clone(),
+                        if old {
+                            theme::warn().into()
+                        } else {
+                            theme::mix(0.6)
+                        },
+                    ))
+                    .when(old, |d| {
+                        d.child(
+                            div()
+                                .text_color(theme::warn())
+                                .child(format!("update to {latest}")),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme::text_muted())
+                            .child(format!("{} · {}", c.origin_ip, c.colos.join(", "))),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme::text_subtle())
+                            .child(format!(
+                                "up {}",
+                                cloudflare::ago(c.opened, now).trim_end_matches(" ago")
+                            )),
+                    )
             }))
     }
 
@@ -892,7 +1242,16 @@ impl CloudflareView {
         let now = crate::model::unix_now();
         let requests: u64 = s.workers.iter().map(|w| w.requests).sum();
         let busy = s.workers.iter().filter(|w| w.requests > 0).count();
-        let mut list = section("Workers", Some(format!("{} · {} active · {} requests in 24h", s.workers.len(), busy, count(requests))), None);
+        let mut list = section(
+            "Workers",
+            Some(format!(
+                "{} · {} active · {} requests in 24h",
+                s.workers.len(),
+                busy,
+                count(requests)
+            )),
+            None,
+        );
         if s.workers.is_empty() {
             list = list.child(quiet("No Workers in this account."));
         }
@@ -913,7 +1272,15 @@ impl CloudflareView {
             };
             let mut meta = Vec::new();
             if p.deployed > 0 {
-                meta.push(format!("deployed {}{}", cloudflare::ago(p.deployed, now), if p.branch.is_empty() { String::new() } else { format!(" from {}", p.branch) }));
+                meta.push(format!(
+                    "deployed {}{}",
+                    cloudflare::ago(p.deployed, now),
+                    if p.branch.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" from {}", p.branch)
+                    }
+                ));
             }
             if !p.repo.is_empty() {
                 meta.push(format!("{} {}", p.source, p.repo));
@@ -928,15 +1295,48 @@ impl CloudflareView {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(name.clone()))
-                            .when(!p.status.is_empty(), |d| d.child(ui::tag(if p.stage.is_empty() { p.status.clone() } else { format!("{} · {}", p.stage, p.status) }, color)))
-                            .when(p.failed(), |d| d.child(self.ask_button(format!("cf-pages-ask-{name}"), "Investigate", Subject::Pages(name.clone()), cx)))
-                            .child(self.open_button(format!("cf-pages-open-{name}"), format!("pages/view/{name}"), cx)),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(name.clone()),
+                            )
+                            .when(!p.status.is_empty(), |d| {
+                                d.child(ui::tag(
+                                    if p.stage.is_empty() {
+                                        p.status.clone()
+                                    } else {
+                                        format!("{} · {}", p.stage, p.status)
+                                    },
+                                    color,
+                                ))
+                            })
+                            .when(p.failed(), |d| {
+                                d.child(self.ask_button(
+                                    format!("cf-pages-ask-{name}"),
+                                    "Investigate",
+                                    Subject::Pages(name.clone()),
+                                    cx,
+                                ))
+                            })
+                            .child(self.open_button(
+                                format!("cf-pages-open-{name}"),
+                                format!("pages/view/{name}"),
+                                cx,
+                            )),
                     )
                     .child(meta_line(meta.join(" · "))),
             );
         }
-        div().flex().flex_col().gap(px(24.)).child(list).child(pages)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .child(list)
+            .child(pages)
     }
 
     fn render_worker(&self, w: &Worker, now: u64, cx: &mut Context<Self>) -> Div {
@@ -945,13 +1345,20 @@ impl CloudflareView {
             format!(
                 "deployed {}{}",
                 cloudflare::ago(w.deployed, now),
-                if w.deployed_from.is_empty() { String::new() } else { format!(" from {}", w.deployed_from) }
+                if w.deployed_from.is_empty() {
+                    String::new()
+                } else {
+                    format!(" from {}", w.deployed_from)
+                }
             )
         } else {
             "never deployed".into()
         }];
         if !w.author.is_empty() {
-            meta.push(format!("by {}", w.author.split('@').next().unwrap_or(&w.author)));
+            meta.push(format!(
+                "by {}",
+                w.author.split('@').next().unwrap_or(&w.author)
+            ));
         }
         if !w.domains.is_empty() {
             meta.push(w.domains.join(", "));
@@ -960,41 +1367,99 @@ impl CloudflareView {
             meta.push(format!("cron {}", w.crons.join(", ")));
         }
         let sample = w.samples.first().map(|e| {
-            let first = e.message.lines().next().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-            (first, format!("{} · {}", cloudflare::ago(e.when, now), e.trigger))
+            let first = e
+                .message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            (
+                first,
+                format!("{} · {}", cloudflare::ago(e.when, now), e.trigger),
+            )
         });
         let header = div()
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(name.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(ui::TEXT_MD))
+                    .font_weight(FontWeight::MEDIUM)
+                    .truncate()
+                    .child(name.clone()),
+            )
             .when(w.errors > 0, |d| {
-                let color: Hsla = if w.bot_noise() { theme::warn().into() } else { theme::danger().into() };
-                d.child(ui::tag(format!("{} {}", count(w.errors), if w.errors == 1 { "error" } else { "errors" }), color))
+                let color: Hsla = if w.bot_noise() {
+                    theme::warn().into()
+                } else {
+                    theme::danger().into()
+                };
+                d.child(ui::tag(
+                    format!(
+                        "{} {}",
+                        count(w.errors),
+                        if w.errors == 1 { "error" } else { "errors" }
+                    ),
+                    color,
+                ))
             })
-            .when(w.bot_noise(), |d| d.child(ui::tag("from bots", theme::text_subtle())))
-            .when(w.requests == 0, |d| d.child(ui::tag("idle", theme::text_subtle())))
+            .when(w.bot_noise(), |d| {
+                d.child(ui::tag("from bots", theme::text_subtle()))
+            })
+            .when(w.requests == 0, |d| {
+                d.child(ui::tag("idle", theme::text_subtle()))
+            })
             .child(self.ask_button(
                 format!("cf-inv-{name}"),
-                if w.errors > 0 { "Investigate" } else { "Health check" },
+                if w.errors > 0 {
+                    "Investigate"
+                } else {
+                    "Health check"
+                },
                 Subject::Worker(name.clone()),
                 cx,
             ))
             .children(self.homes.get(&name).cloned().map(|root| {
-                let label = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().to_string());
-                ui::button_with(SharedString::from(format!("cf-home-{name}")), Some("folder01"), label, ButtonKind::Ghost, true)
-                    .tooltip(ui::tip("Its project on this machine: open it"))
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(CloudflareEvent::OpenProject(root.clone()))))
+                let label = root.file_name().map_or_else(
+                    || root.display().to_string(),
+                    |n| n.to_string_lossy().to_string(),
+                );
+                ui::button_with(
+                    SharedString::from(format!("cf-home-{name}")),
+                    Some("folder01"),
+                    label,
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .tooltip(ui::tip("Its project on this machine: open it"))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(CloudflareEvent::OpenProject(root.clone()))
+                }))
             }))
             .child({
                 let worker = name.clone();
-                ui::button_with(SharedString::from(format!("cf-tail-{name}")), Some("activity01"), "Live logs", ButtonKind::Outline, true)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.page = Page::Logs;
-                        this.start_tail(worker.clone(), cx);
-                    }))
+                ui::button_with(
+                    SharedString::from(format!("cf-tail-{name}")),
+                    Some("activity01"),
+                    "Live logs",
+                    ButtonKind::Outline,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.page = Page::Logs;
+                    this.start_tail(worker.clone(), cx);
+                }))
             })
-            .child(self.open_button(format!("cf-open-{name}"), format!("workers/services/view/{name}/production"), cx));
+            .child(self.open_button(
+                format!("cf-open-{name}"),
+                format!("workers/services/view/{name}/production"),
+                cx,
+            ));
         let stats = (w.requests > 0).then(|| {
             div()
                 .flex()
@@ -1003,7 +1468,9 @@ impl CloudflareView {
                 .child(stat("Error rate", pct(w.errors, w.requests)))
                 .child(stat("CPU median", cloudflare::ms(w.cpu_p50)))
                 .child(stat("CPU p99", cloudflare::ms(w.cpu_p99)))
-                .when(w.subrequests > 0, |d| d.child(stat("Subrequests", count(w.subrequests))))
+                .when(w.subrequests > 0, |d| {
+                    d.child(stat("Subrequests", count(w.subrequests)))
+                })
         });
         row()
             .gap(px(8.))
@@ -1011,7 +1478,13 @@ impl CloudflareView {
             .children(stats)
             .child(meta_line(meta.join(" · ")))
             .when(!w.bindings.is_empty(), |d| {
-                d.child(div().flex().flex_wrap().gap(px(4.)).children(w.bindings.iter().map(|b| chip(&b.kind, &b.target))))
+                d.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .children(w.bindings.iter().map(|b| chip(&b.kind, &b.target))),
+                )
             })
             .when_some(sample, |d, (msg, when)| {
                 d.child(
@@ -1023,8 +1496,21 @@ impl CloudflareView {
                         .py(px(6.))
                         .rounded(px(4.))
                         .bg(theme::fill_hover())
-                        .child(div().font_family(theme::FONT_MONO).text_size(px(ui::TEXT_XS)).text_color(theme::text_muted()).truncate().child(msg))
-                        .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).truncate().child(when)),
+                        .child(
+                            div()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_muted())
+                                .truncate()
+                                .child(msg),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .truncate()
+                                .child(when),
+                        ),
                 )
             })
     }
@@ -1044,11 +1530,33 @@ impl CloudflareView {
                 None,
                 if !s.usage {
                     "analytics unavailable right now".into()
-                } else if monthly >= 0.5 { format!("≈ ${monthly:.0}/month at Standard rates") } else { "within the free 10 GB".into() },
+                } else if monthly >= 0.5 {
+                    format!("≈ ${monthly:.0}/month at Standard rates")
+                } else {
+                    "within the free 10 GB".into()
+                },
             ))
-            .child(metric("R2 objects", known(s.usage, count(objects)), None, format!("in {}", plural(s.buckets.len(), "bucket", "buckets"))))
-            .child(metric("D1 queries · 7d", known(s.usage, count(queries)), None, plural(s.databases.len(), "database", "databases")))
-            .child(metric("AI Gateway requests", count(logged), None, format!("logged by {}", plural(s.gateways.len(), "gateway", "gateways"))));
+            .child(metric(
+                "R2 objects",
+                known(s.usage, count(objects)),
+                None,
+                format!("in {}", plural(s.buckets.len(), "bucket", "buckets")),
+            ))
+            .child(metric(
+                "D1 queries · 7d",
+                known(s.usage, count(queries)),
+                None,
+                plural(s.databases.len(), "database", "databases"),
+            ))
+            .child(metric(
+                "AI Gateway requests",
+                count(logged),
+                None,
+                format!(
+                    "logged by {}",
+                    plural(s.gateways.len(), "gateway", "gateways")
+                ),
+            ));
 
         let largest = s.buckets.first().map_or(1, |b| b.size.max(1));
         let mut r2 = section("R2 buckets", Some(s.buckets.len().to_string()), None);
@@ -1060,9 +1568,17 @@ impl CloudflareView {
             let users = s.bucket_users(&b.name);
             let mut meta = vec![format!("{} objects", count(b.objects))];
             if b.reads + b.writes > 0 {
-                meta.push(format!("{} reads, {} writes in 24h", count(b.reads), count(b.writes)));
+                meta.push(format!(
+                    "{} reads, {} writes in 24h",
+                    count(b.reads),
+                    count(b.writes)
+                ));
             }
-            meta.push(if users.is_empty() { format!("created {}", cloudflare::ago(b.created, now)) } else { format!("used by {}", users.join(", ")) });
+            meta.push(if users.is_empty() {
+                format!("created {}", cloudflare::ago(b.created, now))
+            } else {
+                format!("used by {}", users.join(", "))
+            });
             r2 = r2.child(
                 row()
                     .id(SharedString::from(format!("cf-r2-{}", b.name)))
@@ -1075,8 +1591,22 @@ impl CloudflareView {
                             .items_center()
                             .gap(px(10.))
                             .child(icon("archive02", 14.).text_color(theme::text_subtle()))
-                            .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(b.name.clone()))
-                            .child(div().flex_none().text_size(px(ui::TEXT_SM)).font_weight(FontWeight::MEDIUM).child(bytes(b.size))),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(b.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(ui::TEXT_SM))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(bytes(b.size)),
+                            ),
                     )
                     .child(meter(b.size as f32 / largest as f32, theme::accent()))
                     .child(meta_line(meta.join(" · "))),
@@ -1101,9 +1631,22 @@ impl CloudflareView {
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .child(icon("left-to-right-list-bullet", 14.).text_color(theme::text_subtle()))
-                            .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(db.name.clone()))
-                            .when(!db.used_by.is_empty(), |d| d.child(meta_line(format!("used by {}", db.used_by.join(", "))))),
+                            .child(
+                                icon("left-to-right-list-bullet", 14.)
+                                    .text_color(theme::text_subtle()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(db.name.clone()),
+                            )
+                            .when(!db.used_by.is_empty(), |d| {
+                                d.child(meta_line(format!("used by {}", db.used_by.join(", "))))
+                            }),
                     )
                     .child(
                         div()
@@ -1125,9 +1668,20 @@ impl CloudflareView {
             queues = queues.child(quiet("No Queues."));
         }
         for q in &s.queues {
-            let flow = format!("{} → {}", list_or(&q.producers, "no producer"), list_or(&q.consumers, "no consumer"));
-            let when = if q.paused { "paused".into() } else { format!("created {}", cloudflare::ago(q.created, now)) };
-            queues = queues.child(line_item("inbox", q.name.clone(), flow, when).when(q.paused, |d| d.text_color(theme::warn())));
+            let flow = format!(
+                "{} → {}",
+                list_or(&q.producers, "no producer"),
+                list_or(&q.consumers, "no consumer")
+            );
+            let when = if q.paused {
+                "paused".into()
+            } else {
+                format!("created {}", cloudflare::ago(q.created, now))
+            };
+            queues = queues.child(
+                line_item("inbox", q.name.clone(), flow, when)
+                    .when(q.paused, |d| d.text_color(theme::warn())),
+            );
         }
 
         let mut flows = section("Workflows", Some(s.flows.len().to_string()), None);
@@ -1153,19 +1707,56 @@ impl CloudflareView {
                             .flex_1()
                             .min_w_0()
                             .gap(px(2.))
-                            .child(div().text_size(px(ui::TEXT_MD)).truncate().child(name.clone()))
+                            .child(
+                                div()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .truncate()
+                                    .child(name.clone()),
+                            )
                             .child(meta_line(if f.triggered > 0 {
-                                format!("Worker {} · last run {}", f.script, cloudflare::ago(f.triggered, now))
+                                format!(
+                                    "Worker {} · last run {}",
+                                    f.script,
+                                    cloudflare::ago(f.triggered, now)
+                                )
                             } else {
                                 format!("Worker {}", f.script)
                             })),
                     )
-                    .when(f.running > 0, |d| d.child(ui::tag(format!("{} running", count(f.running)), theme::accent())))
-                    .when(f.queued > 0, |d| d.child(ui::tag(format!("{} queued", count(f.queued)), theme::mix(0.6))))
-                    .when(f.errored > 0, |d| d.child(ui::tag(format!("{} errored", count(f.errored)), theme::danger())))
-                    .when(f.complete > 0, |d| d.child(ui::tag(format!("{} complete", count(f.complete)), good())))
-                    .when(f.errored > 0, |d| d.child(self.ask_button(format!("cf-flow-ask-{name}"), "Investigate", Subject::Workflow(name.clone()), cx)))
-                    .child(self.open_button(format!("cf-flow-{name}"), "workers/workflows".into(), cx)),
+                    .when(f.running > 0, |d| {
+                        d.child(ui::tag(
+                            format!("{} running", count(f.running)),
+                            theme::accent(),
+                        ))
+                    })
+                    .when(f.queued > 0, |d| {
+                        d.child(ui::tag(
+                            format!("{} queued", count(f.queued)),
+                            theme::mix(0.6),
+                        ))
+                    })
+                    .when(f.errored > 0, |d| {
+                        d.child(ui::tag(
+                            format!("{} errored", count(f.errored)),
+                            theme::danger(),
+                        ))
+                    })
+                    .when(f.complete > 0, |d| {
+                        d.child(ui::tag(format!("{} complete", count(f.complete)), good()))
+                    })
+                    .when(f.errored > 0, |d| {
+                        d.child(self.ask_button(
+                            format!("cf-flow-ask-{name}"),
+                            "Investigate",
+                            Subject::Workflow(name.clone()),
+                            cx,
+                        ))
+                    })
+                    .child(self.open_button(
+                        format!("cf-flow-{name}"),
+                        "workers/workflows".into(),
+                        cx,
+                    )),
             );
         }
 
@@ -1186,40 +1777,104 @@ impl CloudflareView {
                             .items_center()
                             .gap(px(8.))
                             .child(icon("ai-idea", 14.).text_color(theme::text_subtle()))
-                            .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).truncate().child(id.clone()))
-                            .child(ui::tag(format!("{} logged", count(g.logged)), theme::mix(0.6)))
-                            .when(failed > 0, |d| d.child(ui::tag(format!("{failed} of last {} failed", g.recent.len()), theme::danger())))
-                            .when(failed > 0, |d| d.child(self.ask_button(format!("cf-gw-ask-{id}"), "Investigate", Subject::Gateway(id.clone()), cx)))
-                            .child(self.open_button(format!("cf-gw-{id}"), "ai/ai-gateway".into(), cx)),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(id.clone()),
+                            )
+                            .child(ui::tag(
+                                format!("{} logged", count(g.logged)),
+                                theme::mix(0.6),
+                            ))
+                            .when(failed > 0, |d| {
+                                d.child(ui::tag(
+                                    format!("{failed} of last {} failed", g.recent.len()),
+                                    theme::danger(),
+                                ))
+                            })
+                            .when(failed > 0, |d| {
+                                d.child(self.ask_button(
+                                    format!("cf-gw-ask-{id}"),
+                                    "Investigate",
+                                    Subject::Gateway(id.clone()),
+                                    cx,
+                                ))
+                            })
+                            .child(self.open_button(
+                                format!("cf-gw-{id}"),
+                                "ai/ai-gateway".into(),
+                                cx,
+                            )),
                     )
-                    .when(g.recent.is_empty(), |d| d.child(meta_line("No requests yet.".into())))
+                    .when(g.recent.is_empty(), |d| {
+                        d.child(meta_line("No requests yet.".into()))
+                    })
                     .when(!g.recent.is_empty(), |d| {
                         d.child(meta_line(format!(
                             "Last {} requests{}",
                             g.recent.len(),
-                            if spent > 0. { format!(" cost {}", dollars(spent)) } else { String::new() }
+                            if spent > 0. {
+                                format!(" cost {}", dollars(spent))
+                            } else {
+                                String::new()
+                            }
                         )))
                     })
                     .children(g.recent.iter().take(6).map(|c| {
-                        let tokens = if c.tokens_in + c.tokens_out > 0 { format!("{} → {} tokens", count(c.tokens_in), count(c.tokens_out)) } else { String::new() };
+                        let tokens = if c.tokens_in + c.tokens_out > 0 {
+                            format!("{} → {} tokens", count(c.tokens_in), count(c.tokens_out))
+                        } else {
+                            String::new()
+                        };
                         div()
                             .flex()
                             .items_center()
                             .gap(px(8.))
                             .h(px(20.))
                             .text_size(px(ui::TEXT_XS))
-                            .child(ui::tag(c.status.to_string(), if c.ok { good() } else { theme::danger().into() }))
+                            .child(ui::tag(
+                                c.status.to_string(),
+                                if c.ok { good() } else { theme::danger().into() },
+                            ))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
                                     .text_color(theme::text_muted())
-                                    .child(format!("{} · {}{}", c.provider, c.model, if c.cached { " · cached" } else { "" })),
+                                    .child(format!(
+                                        "{} · {}{}",
+                                        c.provider,
+                                        c.model,
+                                        if c.cached { " · cached" } else { "" }
+                                    )),
                             )
-                            .child(div().flex_none().text_color(theme::text_subtle()).child(tokens))
-                            .when(c.cost > 0., |d| d.child(div().flex_none().text_color(theme::text_subtle()).child(dollars(c.cost))))
-                            .child(div().flex_none().w(px(56.)).text_right().text_color(theme::text_subtle()).child(cloudflare::ago(c.when, now)))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme::text_subtle())
+                                    .child(tokens),
+                            )
+                            .when(c.cost > 0., |d| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(theme::text_subtle())
+                                        .child(dollars(c.cost)),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(56.))
+                                    .text_right()
+                                    .text_color(theme::text_subtle())
+                                    .child(cloudflare::ago(c.when, now)),
+                            )
                     })),
             );
         }
@@ -1229,11 +1884,39 @@ impl CloudflareView {
             kv = kv.child(quiet("No KV namespaces."));
         }
         for n in &s.kv {
-            let users: Vec<&str> = s.workers.iter().filter(|w| w.bindings.iter().any(|b| b.kind == "KV" && (b.target == n.title || n.title.ends_with(&b.target)))).map(|w| w.name.as_str()).collect();
-            kv = kv.child(line_item("archive02", n.title.clone(), if users.is_empty() { String::new() } else { format!("bound by {}", users.join(", ")) }, String::new()));
+            let users: Vec<&str> = s
+                .workers
+                .iter()
+                .filter(|w| {
+                    w.bindings.iter().any(|b| {
+                        b.kind == "KV" && (b.target == n.title || n.title.ends_with(&b.target))
+                    })
+                })
+                .map(|w| w.name.as_str())
+                .collect();
+            kv = kv.child(line_item(
+                "archive02",
+                n.title.clone(),
+                if users.is_empty() {
+                    String::new()
+                } else {
+                    format!("bound by {}", users.join(", "))
+                },
+                String::new(),
+            ));
         }
 
-        div().flex().flex_col().gap(px(24.)).child(metrics).child(r2).child(d1).child(kv).child(ai).child(flows).child(queues)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .child(metrics)
+            .child(r2)
+            .child(d1)
+            .child(kv)
+            .child(ai)
+            .child(flows)
+            .child(queues)
     }
 
     fn render_activity(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
@@ -1243,23 +1926,59 @@ impl CloudflareView {
             alerts = alerts.child(quiet("No notifications sent."));
         }
         for a in &s.alerts {
-            alerts = alerts.child(line_item("alert-circle", a.name.clone(), a.detail.clone(), cloudflare::ago(a.sent, now)));
+            alerts = alerts.child(line_item(
+                "alert-circle",
+                a.name.clone(),
+                a.detail.clone(),
+                cloudflare::ago(a.sent, now),
+            ));
         }
-        let open = ui::button_with(SharedString::from("cf-audit-open"), Some("link-square02"), "Open in dashboard", ButtonKind::Outline, true).on_click(cx.listener(|this, _, _, cx| this.open("audit-log", cx)));
-        let mut audit = section("Audit log", Some(s.audit.len().to_string()), Some(open.into_any_element()));
+        let open = ui::button_with(
+            SharedString::from("cf-audit-open"),
+            Some("link-square02"),
+            "Open in dashboard",
+            ButtonKind::Outline,
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.open("audit-log", cx)));
+        let mut audit = section(
+            "Audit log",
+            Some(s.audit.len().to_string()),
+            Some(open.into_any_element()),
+        );
         if s.audit.is_empty() {
             audit = audit.child(quiet("Nothing changed recently."));
         }
         for e in &s.audit {
-            let who = if e.resource.is_empty() { e.actor.clone() } else { format!("{} · {}", e.actor, e.resource) };
-            audit = audit.child(line_item("clock01", e.action.clone(), who, cloudflare::ago(e.when, now)));
+            let who = if e.resource.is_empty() {
+                e.actor.clone()
+            } else {
+                format!("{} · {}", e.actor, e.resource)
+            };
+            audit = audit.child(line_item(
+                "clock01",
+                e.action.clone(),
+                who,
+                cloudflare::ago(e.when, now),
+            ));
         }
-        div().flex().flex_col().gap(px(24.)).child(alerts).child(audit)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .child(alerts)
+            .child(audit)
     }
 
     fn render_tools(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         let command = cloudflare::access_command(&s.profile);
-        let grant = outline(ui::button("cf-grant", "Grant read access", ButtonKind::Primary, true)).on_click(cx.listener(move |_, _, _, cx| cx.emit(CloudflareEvent::Run(command.clone()))));
+        let grant = outline(ui::button(
+            "cf-grant",
+            "Grant read access",
+            ButtonKind::Primary,
+            true,
+        ))
+        .on_click(cx.listener(move |_, _, _, cx| cx.emit(CloudflareEvent::Run(command.clone()))));
         let access = card("What this tab and agent sessions can read")
             .child(
                 div().text_size(px(ui::TEXT_SM)).line_height(px(18.)).text_color(theme::text_muted()).child(format!(
@@ -1275,38 +1994,77 @@ impl CloudflareView {
                     .child(grant)
                     .child(div().min_w_0().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child("Opens a terminal; approve in the browser, then refresh.")),
             );
-        div().flex().flex_col().gap(px(10.)).child(access).child(div().flex().gap(px(10.)).when(self.agent != Agent::WorkersAi, |d| d.child(self.render_mcp(cx))).child(self.render_share(cx)))
+        div().flex().flex_col().gap(px(10.)).child(access).child(
+            div()
+                .flex()
+                .gap(px(10.))
+                .when(self.agent != Agent::WorkersAi, |d| {
+                    d.child(self.render_mcp(cx))
+                })
+                .child(self.render_share(cx)),
+        )
     }
 
     fn render_state(&self, cx: &mut Context<Self>) -> AnyElement {
-        let center = || div().flex().flex_col().items_center().gap(px(10.)).pt(px(60.)).text_size(px(ui::TEXT_MD)).text_color(theme::text_subtle());
+        let center = || {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(10.))
+                .pt(px(60.))
+                .text_size(px(ui::TEXT_MD))
+                .text_color(theme::text_subtle())
+        };
         match &self.error {
             Some(LoadError::NoCli) => center()
                 .child("Cloudflare's cf CLI isn't installed.")
-                .child(quiet("Arakun reads your account through its sign-in (read-only)."))
-                .child(outline(ui::button("cf-install", "Install cf and sign in", ButtonKind::Primary, true)).on_click(cx.listener(
-                    |this, _, _, cx| {
+                .child(quiet(
+                    "Arakun reads your account through its sign-in (read-only).",
+                ))
+                .child(
+                    outline(ui::button(
+                        "cf-install",
+                        "Install cf and sign in",
+                        ButtonKind::Primary,
+                        true,
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
                         this.signing_in(cx);
                         cx.emit(CloudflareEvent::SignIn { install: true })
-                    },
-                )))
+                    })),
+                )
                 .into_any_element(),
             Some(LoadError::SignedOut(why)) => center()
                 .child("Sign in to Cloudflare to see your account here.")
                 .child(quiet(format!("cf says: {why}")))
-                .child(outline(ui::button("cf-login", "Sign in with cf", ButtonKind::Primary, true)).on_click(cx.listener(
-                    |this, _, _, cx| {
+                .child(
+                    outline(ui::button(
+                        "cf-login",
+                        "Sign in with cf",
+                        ButtonKind::Primary,
+                        true,
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
                         this.signing_in(cx);
                         cx.emit(CloudflareEvent::SignIn { install: false })
-                    },
-                )))
+                    })),
+                )
                 .into_any_element(),
             Some(LoadError::Failed(e)) => center()
                 .child("Couldn't read your Cloudflare account.")
                 .child(quiet(e.clone()))
-                .child(ui::button("cf-retry", "Try again", ButtonKind::Outline, true).on_click(cx.listener(|this, _, _, cx| this.refresh(cx))))
+                .child(
+                    ui::button("cf-retry", "Try again", ButtonKind::Outline, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                )
                 .into_any_element(),
-            None => center().child(ui::loading("cf-loading", "Reading your Cloudflare account…")).into_any_element(),
+            None => center()
+                .child(ui::loading(
+                    "cf-loading",
+                    "Reading your Cloudflare account…",
+                ))
+                .into_any_element(),
         }
     }
 }
@@ -1359,10 +2117,21 @@ fn alerts(s: &Snapshot) -> Vec<(String, String, String, bool)> {
         .issues()
         .into_iter()
         .filter(|i| !i.bots)
-        .map(|i| (format!("issue/{:?}/{}", i.subject, i.high), format!("Cloudflare: {}", i.title), i.detail.clone(), i.high))
+        .map(|i| {
+            (
+                format!("issue/{:?}/{}", i.subject, i.high),
+                format!("Cloudflare: {}", i.title),
+                i.detail.clone(),
+                i.high,
+            )
+        })
         .collect();
     for z in &s.zones {
-        for c in z.certs.iter().filter(|c| c.expires > 0 && c.days_left(now) < 14) {
+        for c in z
+            .certs
+            .iter()
+            .filter(|c| c.expires > 0 && c.days_left(now) < 14)
+        {
             let host = c.hosts.first().cloned().unwrap_or_else(|| z.name.clone());
             out.push((
                 format!("cert/{host}/{}", c.expires),
@@ -1373,7 +2142,12 @@ fn alerts(s: &Snapshot) -> Vec<(String, String, String, bool)> {
         }
     }
     for i in s.insights.iter().filter(|i| i.rank() <= 1) {
-        out.push((format!("insight/{}/{}", i.class, i.subject), format!("Cloudflare Security: {}", i.title()), format!("{} · {} severity", i.subject, i.severity), true));
+        out.push((
+            format!("insight/{}/{}", i.class, i.subject),
+            format!("Cloudflare Security: {}", i.title()),
+            format!("{} · {} severity", i.subject, i.severity),
+            true,
+        ));
     }
     out
 }
@@ -1402,7 +2176,16 @@ fn rate_limited(problem: &str) -> bool {
 /// Whether a load problem comes from a permission the sign-in lacks.
 fn access_denied(problem: &str) -> bool {
     let p = problem.to_ascii_lowercase();
-    ["authentication error", "unauthorized", "can't list", "not authorized", "insufficient", "permission"].iter().any(|w| p.contains(w))
+    [
+        "authentication error",
+        "unauthorized",
+        "can't list",
+        "not authorized",
+        "insufficient",
+        "permission",
+    ]
+    .iter()
+    .any(|w| p.contains(w))
 }
 
 /// The agent's short name, for button labels.
@@ -1424,7 +2207,8 @@ fn record_note(s: &Snapshot, r: &DnsRecord) -> Option<(String, bool)> {
             None => ("Tunnel".into(), false),
         });
     }
-    r.exposes_origin().then(|| ("origin IP visible (not proxied)".into(), false))
+    r.exposes_origin()
+        .then(|| ("origin IP visible (not proxied)".into(), false))
 }
 
 fn dns_row(s: &Snapshot, r: &DnsRecord) -> Div {
@@ -1435,11 +2219,41 @@ fn dns_row(s: &Snapshot, r: &DnsRecord) -> Div {
         .gap(px(8.))
         .h(px(22.))
         .text_size(px(ui::TEXT_XS))
-        .child(div().flex_none().w(px(44.)).child(ui::tag(r.kind.clone(), theme::mix(0.6))))
-        .child(div().flex_none().max_w(px(260.)).truncate().font_family(theme::FONT_MONO).text_color(theme::content()).child(r.name.clone()))
-        .child(div().flex_1().min_w_0().truncate().font_family(theme::FONT_MONO).text_color(theme::text_subtle()).child(format!("→ {}", r.content)))
+        .child(
+            div()
+                .flex_none()
+                .w(px(44.))
+                .child(ui::tag(r.kind.clone(), theme::mix(0.6))),
+        )
+        .child(
+            div()
+                .flex_none()
+                .max_w(px(260.))
+                .truncate()
+                .font_family(theme::FONT_MONO)
+                .text_color(theme::content())
+                .child(r.name.clone()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(theme::FONT_MONO)
+                .text_color(theme::text_subtle())
+                .child(format!("→ {}", r.content)),
+        )
         .when(r.proxied, |d| d.child(ui::tag("proxied", theme::accent())))
-        .when_some(note, |d, (text, bad)| d.child(ui::tag(text, if bad { theme::danger().into() } else { theme::mix(0.5) })))
+        .when_some(note, |d, (text, bad)| {
+            d.child(ui::tag(
+                text,
+                if bad {
+                    theme::danger().into()
+                } else {
+                    theme::mix(0.5)
+                },
+            ))
+        })
 }
 
 fn good() -> Hsla {
@@ -1487,11 +2301,19 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 fn dollars(v: f64) -> String {
-    if v < 0.01 { "<$0.01".into() } else { format!("${v:.2}") }
+    if v < 0.01 {
+        "<$0.01".into()
+    } else {
+        format!("${v:.2}")
+    }
 }
 
 fn list_or(v: &[String], none: &str) -> String {
-    if v.is_empty() { none.into() } else { v.join(", ") }
+    if v.is_empty() {
+        none.into()
+    } else {
+        v.join(", ")
+    }
 }
 
 fn outline(b: Stateful<Div>) -> Stateful<Div> {
@@ -1509,7 +2331,12 @@ fn card(title: &'static str) -> Div {
         .rounded(px(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::stroke())
-        .child(div().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).child(title))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_MD))
+                .font_weight(FontWeight::MEDIUM)
+                .child(title),
+        )
 }
 
 fn metric(label: &'static str, value: String, color: Option<Hsla>, sub: String) -> Div {
@@ -1522,9 +2349,26 @@ fn metric(label: &'static str, value: String, color: Option<Hsla>, sub: String) 
         .p(px(12.))
         .rounded(px(ui::RADIUS_LG))
         .bg(theme::fill_raised())
-        .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(label))
-        .child(div().text_size(px(ui::TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(color.unwrap_or_else(theme::content)).child(value))
-        .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).truncate().child(sub))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_subtle())
+                .child(label),
+        )
+        .child(
+            div()
+                .text_size(px(ui::TEXT_TITLE))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(color.unwrap_or_else(theme::content))
+                .child(value),
+        )
+        .child(
+            div()
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_subtle())
+                .truncate()
+                .child(sub),
+        )
 }
 
 fn section(title: &'static str, count: Option<String>, action: Option<AnyElement>) -> Div {
@@ -1545,7 +2389,14 @@ fn section(title: &'static str, count: Option<String>, action: Option<AnyElement
 }
 
 fn row() -> Div {
-    div().flex().flex_col().gap(px(6.)).px(px(12.)).py(px(10.)).rounded(px(ui::RADIUS)).bg(theme::fill_raised())
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .px(px(12.))
+        .py(px(10.))
+        .rounded(px(ui::RADIUS))
+        .bg(theme::fill_raised())
 }
 
 fn line_item(icon_name: &str, title: String, sub: String, when: String) -> Div {
@@ -1566,13 +2417,31 @@ fn line_item(icon_name: &str, title: String, sub: String, when: String) -> Div {
                 .min_w_0()
                 .gap(px(2.))
                 .child(div().text_size(px(ui::TEXT_MD)).truncate().child(title))
-                .when(!sub.is_empty(), |d| d.child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).truncate().child(sub))),
+                .when(!sub.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .truncate()
+                            .child(sub),
+                    )
+                }),
         )
-        .child(div().flex_none().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(when))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_subtle())
+                .child(when),
+        )
 }
 
 fn meta_line(text: String) -> Div {
-    div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).truncate().child(text)
+    div()
+        .text_size(px(ui::TEXT_XS))
+        .text_color(theme::text_subtle())
+        .truncate()
+        .child(text)
 }
 
 /// A binding: its kind, then what it points at.
@@ -1588,16 +2457,42 @@ fn chip(kind: &str, target: &str) -> Div {
         .rounded(px(ui::RADIUS_SM))
         .bg(theme::fill_hover())
         .text_size(px(ui::TEXT_XS))
-        .child(div().flex_none().text_color(theme::text_subtle()).font_weight(FontWeight::MEDIUM).child(kind.to_string()))
-        .when(!target.eq_ignore_ascii_case(kind), |d| d.child(div().min_w_0().truncate().text_color(theme::text_muted()).child(target.to_string())))
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme::text_subtle())
+                .font_weight(FontWeight::MEDIUM)
+                .child(kind.to_string()),
+        )
+        .when(!target.eq_ignore_ascii_case(kind), |d| {
+            d.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme::text_muted())
+                    .child(target.to_string()),
+            )
+        })
 }
 
 fn quiet(text: impl Into<SharedString>) -> Div {
-    div().px(px(2.)).py(px(4.)).text_size(px(ui::TEXT_SM)).text_color(theme::text_subtle()).child(text.into())
+    div()
+        .px(px(2.))
+        .py(px(4.))
+        .text_size(px(ui::TEXT_SM))
+        .text_color(theme::text_subtle())
+        .child(text.into())
 }
 
 fn note(text: impl Into<SharedString>, error: bool) -> Div {
-    div().text_size(px(ui::TEXT_XS)).text_color(if error { theme::danger().into() } else { theme::mix(0.6) }).child(text.into())
+    div()
+        .text_size(px(ui::TEXT_XS))
+        .text_color(if error {
+            theme::danger().into()
+        } else {
+            theme::mix(0.6)
+        })
+        .child(text.into())
 }
 
 fn stat(label: &'static str, value: String) -> Div {
@@ -1605,16 +2500,37 @@ fn stat(label: &'static str, value: String) -> Div {
         .flex()
         .flex_col()
         .gap(px(2.))
-        .child(div().text_size(px(ui::TEXT_MD)).font_weight(FontWeight::MEDIUM).child(value))
-        .child(div().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child(label))
+        .child(
+            div()
+                .text_size(px(ui::TEXT_MD))
+                .font_weight(FontWeight::MEDIUM)
+                .child(value),
+        )
+        .child(
+            div()
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_subtle())
+                .child(label),
+        )
 }
 
 /// Requests per day as bars.
 fn spark(days: &[Day]) -> Div {
     let max = days.iter().map(|d| d.requests).max().unwrap_or(0).max(1) as f32;
-    div().flex().flex_none().items_end().gap(px(2.)).h(px(30.)).w(px(76.)).children(
-        days.iter().map(|d| div().w(px(7.)).h(px(2. + 28. * d.requests as f32 / max)).rounded(px(4.)).bg(theme::mix(0.3))),
-    )
+    div()
+        .flex()
+        .flex_none()
+        .items_end()
+        .gap(px(2.))
+        .h(px(30.))
+        .w(px(76.))
+        .children(days.iter().map(|d| {
+            div()
+                .w(px(7.))
+                .h(px(2. + 28. * d.requests as f32 / max))
+                .rounded(px(4.))
+                .bg(theme::mix(0.3))
+        }))
 }
 
 /// A thin bar filled to `fraction`.
@@ -1624,27 +2540,53 @@ fn meter(fraction: f32, color: Hsla) -> Div {
         .w_full()
         .rounded(px(4.))
         .bg(theme::fill_hover())
-        .child(div().h_full().min_w(px(2.)).rounded(px(4.)).w(relative(fraction.clamp(0., 1.))).bg(color))
+        .child(
+            div()
+                .h_full()
+                .min_w(px(2.))
+                .rounded(px(4.))
+                .w(relative(fraction.clamp(0., 1.)))
+                .bg(color),
+        )
 }
 
 /// The day's responses split by status class.
 fn share_bar(classes: &[u64; 5], total: u64) -> Div {
-    div().flex().gap(px(2.)).h(px(6.)).w_full().children((0..5).filter(|&i| classes[i] > 0).map(|i| {
-        div().h_full().min_w(px(3.)).rounded(px(4.)).w(relative(classes[i] as f32 / total as f32)).bg(class_color(i))
-    }))
+    div()
+        .flex()
+        .gap(px(2.))
+        .h(px(6.))
+        .w_full()
+        .children((0..5).filter(|&i| classes[i] > 0).map(|i| {
+            div()
+                .h_full()
+                .min_w(px(3.))
+                .rounded(px(4.))
+                .w(relative(classes[i] as f32 / total as f32))
+                .bg(class_color(i))
+        }))
 }
 
 impl Render for CloudflareView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = crate::model::unix_now();
         let header = self.render_header(now, cx);
-        let problems = self.snap.as_ref().map(|s| s.problems.clone()).unwrap_or_default();
+        let problems = self
+            .snap
+            .as_ref()
+            .map(|s| s.problems.clone())
+            .unwrap_or_default();
         // Parts the sign-in has no permission for go in one line with the fix.
-        let (denied, failed): (Vec<String>, Vec<String>) = problems.into_iter().partition(|p| access_denied(p));
+        let (denied, failed): (Vec<String>, Vec<String>) =
+            problems.into_iter().partition(|p| access_denied(p));
         // The analytics rate limit passes by itself: a quiet line, and a reload is on its way.
-        let (waiting, failed): (Vec<String>, Vec<String>) = failed.into_iter().partition(|p| rate_limited(p));
+        let (waiting, failed): (Vec<String>, Vec<String>) =
+            failed.into_iter().partition(|p| rate_limited(p));
         let waiting = (!waiting.is_empty()).then(|| {
-            let parts: Vec<&str> = waiting.iter().map(|p| p.split(':').next().unwrap_or_default()).collect();
+            let parts: Vec<&str> = waiting
+                .iter()
+                .map(|p| p.split(':').next().unwrap_or_default())
+                .collect();
             div()
                 .flex()
                 .items_center()
@@ -1652,11 +2594,18 @@ impl Render for CloudflareView {
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_subtle())
                 .child(icon("clock01", 12.).text_color(theme::text_subtle()))
-                .child(format!("{} paused by Cloudflare's rate limit; reloading in about 5 minutes.", parts.join(" and ")))
+                .child(format!(
+                    "{} paused by Cloudflare's rate limit; reloading in about 5 minutes.",
+                    parts.join(" and ")
+                ))
         });
         let access = (!denied.is_empty()).then(|| {
-            let parts: Vec<&str> = denied.iter().map(|p| p.split(':').next().unwrap_or_default()).collect();
-            let command = cloudflare::access_command(self.snap.as_ref().map_or("", |s| s.profile.as_str()));
+            let parts: Vec<&str> = denied
+                .iter()
+                .map(|p| p.split(':').next().unwrap_or_default())
+                .collect();
+            let command =
+                cloudflare::access_command(self.snap.as_ref().map_or("", |s| s.profile.as_str()));
             div()
                 .flex()
                 .items_center()
@@ -1666,10 +2615,23 @@ impl Render for CloudflareView {
                 .rounded(px(ui::RADIUS_LG))
                 .bg(Hsla::from(theme::warn()).opacity(0.1))
                 .child(icon("square-lock02", 14.).text_color(theme::warn()))
-                .child(div().flex_1().min_w_0().text_size(px(ui::TEXT_SM)).child(format!("The sign-in can't read {} yet.", parts.join(", "))))
                 .child(
-                    outline(ui::button("cf-grant-top", "Grant read access", ButtonKind::Outline, true))
-                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(CloudflareEvent::Run(command.clone())))),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(ui::TEXT_SM))
+                        .child(format!("The sign-in can't read {} yet.", parts.join(", "))),
+                )
+                .child(
+                    outline(ui::button(
+                        "cf-grant-top",
+                        "Grant read access",
+                        ButtonKind::Outline,
+                        true,
+                    ))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(CloudflareEvent::Run(command.clone()))
+                    })),
                 )
         });
         let content = match self.snap.clone() {
@@ -1699,7 +2661,11 @@ impl Render for CloudflareView {
                                 .py(px(24.))
                                 .children(access)
                                 .children(waiting)
-                                .children(failed.into_iter().map(|p| note(format!("Couldn't read {p}"), true)))
+                                .children(
+                                    failed
+                                        .into_iter()
+                                        .map(|p| note(format!("Couldn't read {p}"), true)),
+                                )
                                 .child(self.render_body(&s, cx)),
                         ),
                 )
@@ -1708,7 +2674,14 @@ impl Render for CloudflareView {
                 .id("cloudflare-body")
                 .flex_1()
                 .overflow_y_scroll()
-                .child(div().w_full().max_w(px(980.)).mx_auto().p(px(ui::PAGE_PAD)).child(self.render_state(cx)))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(980.))
+                        .mx_auto()
+                        .p(px(ui::PAGE_PAD))
+                        .child(self.render_state(cx)),
+                )
                 .into_any_element(),
         };
         div()
@@ -1732,8 +2705,24 @@ mod tests {
     #[test]
     fn alert_keys_ignore_counts() {
         let now = crate::model::unix_now();
-        let z = Zone { name: "a.dev".into(), certs: vec![Cert { hosts: vec!["a.dev".into()], expires: now + 5 * 86_400, ..Default::default() }], ..Default::default() };
-        let mut s = Snapshot { workers: vec![Worker { name: "blog".into(), errors: 36, ..Default::default() }], zones: vec![z], ..Default::default() };
+        let z = Zone {
+            name: "a.dev".into(),
+            certs: vec![Cert {
+                hosts: vec!["a.dev".into()],
+                expires: now + 5 * 86_400,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut s = Snapshot {
+            workers: vec![Worker {
+                name: "blog".into(),
+                errors: 36,
+                ..Default::default()
+            }],
+            zones: vec![z],
+            ..Default::default()
+        };
         let before: Vec<String> = alerts(&s).into_iter().map(|a| a.0).collect();
         s.workers[0].errors = 40;
         let after: Vec<String> = alerts(&s).into_iter().map(|a| a.0).collect();
@@ -1745,8 +2734,26 @@ mod tests {
 
     #[test]
     fn shares() {
-        assert_eq!((pct(0, 10), pct(6, 2000), pct(1, 3), pct(1446, 4034), pct(1, 2000)), ("0%".into(), "0.3%".into(), "33%".into(), "36%".into(), "<0.1%".into()));
+        assert_eq!(
+            (
+                pct(0, 10),
+                pct(6, 2000),
+                pct(1, 3),
+                pct(1446, 4034),
+                pct(1, 2000)
+            ),
+            (
+                "0%".into(),
+                "0.3%".into(),
+                "33%".into(),
+                "36%".into(),
+                "<0.1%".into()
+            )
+        );
         assert_eq!(pct(2, 100), "2%");
-        assert_eq!((dollars(0.004), dollars(1.5)), ("<$0.01".into(), "$1.50".into()));
+        assert_eq!(
+            (dollars(0.004), dollars(1.5)),
+            ("<$0.01".into(), "$1.50".into())
+        );
     }
 }

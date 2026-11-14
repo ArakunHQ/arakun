@@ -37,7 +37,9 @@ impl Stuck {
         let s = format!("{open}{}{close}", self.subject);
         match self.pattern {
             Pattern::Failing => format!("{s} failed {} times with the same output", self.times),
-            Pattern::Repeating => format!("{s} ran {} times in a row with the same result", self.times),
+            Pattern::Repeating => {
+                format!("{s} ran {} times in a row with the same result", self.times)
+            }
             Pattern::Reverting => format!("the edits to {s} keep undoing each other"),
         }
     }
@@ -45,7 +47,9 @@ impl Stuck {
     pub fn message(&self) -> String {
         let text = self.describe("“", "”");
         let mut chars = text.chars();
-        chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+        chars
+            .next()
+            .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
     }
 
     /// What "Stop and rethink" sends once the turn has stopped.
@@ -95,7 +99,15 @@ pub fn detect(entries: &[Entry], dismissed: &[String]) -> Option<Stuck> {
             *times += 1;
             if *times >= FAILS {
                 let times = *times;
-                keep(n, Stuck { key: format!("fail {key}"), pattern: Pattern::Failing, subject: subject(t), times });
+                keep(
+                    n,
+                    Stuck {
+                        key: format!("fail {key}"),
+                        pattern: Pattern::Failing,
+                        subject: subject(t),
+                        times,
+                    },
+                );
             }
             continue;
         }
@@ -108,17 +120,42 @@ pub fn detect(entries: &[Entry], dismissed: &[String]) -> Option<Stuck> {
             && *times >= REPEATS
         {
             let times = *times;
-            keep(n, Stuck { key: format!("repeat {key}"), pattern: Pattern::Repeating, subject: subject(t), times });
+            keep(
+                n,
+                Stuck {
+                    key: format!("repeat {key}"),
+                    pattern: Pattern::Repeating,
+                    subject: subject(t),
+                    times,
+                },
+            );
         }
         for c in &t.content {
-            if let ToolContent::Diff { path, old_text: Some(old), new_text } = c
+            if let ToolContent::Diff {
+                path,
+                old_text: Some(old),
+                new_text,
+            } = c
                 && old != new_text
             {
-                let times = edits.entry((path.as_path(), old.as_str(), new_text.as_str())).or_default();
+                let times = edits
+                    .entry((path.as_path(), old.as_str(), new_text.as_str()))
+                    .or_default();
                 *times += 1;
                 if *times >= 2 {
-                    let name = path.file_name().map_or_else(|| path.display().to_string(), |f| f.to_string_lossy().into_owned());
-                    keep(n, Stuck { key: format!("edit {}", path.display()), pattern: Pattern::Reverting, subject: name, times: *times });
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |f| f.to_string_lossy().into_owned(),
+                    );
+                    keep(
+                        n,
+                        Stuck {
+                            key: format!("edit {}", path.display()),
+                            pattern: Pattern::Reverting,
+                            subject: name,
+                            times: *times,
+                        },
+                    );
                 }
             }
         }
@@ -172,7 +209,11 @@ fn command(t: &ToolCall) -> Option<String> {
 
 fn normalize(cmd: &str) -> String {
     let mut s = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
-    while let Some(rest) = s.strip_prefix("cd ").and_then(|r| r.split_once(" && ")).map(|(_, r)| r.to_string()) {
+    while let Some(rest) = s
+        .strip_prefix("cd ")
+        .and_then(|r| r.split_once(" && "))
+        .map(|(_, r)| r.to_string())
+    {
         s = rest;
     }
     match s.strip_suffix(" 2>&1") {
@@ -207,7 +248,11 @@ fn fingerprint(output: &str) -> String {
         .filter(|l| !l.is_empty())
         .rev()
         .take(6)
-        .map(|l| l.chars().map(|c| if c.is_ascii_digit() { '#' } else { c }).collect())
+        .map(|l| {
+            l.chars()
+                .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                .collect()
+        })
         .collect();
     lines.join("\n")
 }
@@ -217,7 +262,9 @@ fn failed(t: &ToolCall) -> bool {
         return true;
     }
     let code = t.exit_code.or_else(|| {
-        (t.kind == "execute").then(|| t.raw_output.as_deref().and_then(reported_exit)).flatten()
+        (t.kind == "execute")
+            .then(|| t.raw_output.as_deref().and_then(reported_exit))
+            .flatten()
     });
     code.is_some_and(|c| c != 0)
 }
@@ -225,13 +272,18 @@ fn failed(t: &ToolCall) -> bool {
 /// Droid reports a command's exit in its output instead of failing the call.
 fn reported_exit(out: &str) -> Option<i64> {
     let number = |s: &str| {
-        let digits: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
+        let digits: String = s
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
         digits.parse().ok()
     };
     if let Some((_, rest)) = out.rsplit_once("[Process exited with code ") {
         return number(rest);
     }
-    out.trim_start().strip_prefix("Command failed (exit code: ").and_then(number)
+    out.trim_start()
+        .strip_prefix("Command failed (exit code: ")
+        .and_then(number)
 }
 
 #[cfg(test)]
@@ -260,8 +312,10 @@ mod tests {
         .unwrap()
     }
 
-    const FAIL: &str = "test a ... FAILED\ntest result: FAILED. 3 passed; 1 failed; finished in 0.41s";
-    const FAIL_SLOWER: &str = "test a ... FAILED\ntest result: FAILED. 3 passed; 1 failed; finished in 1.07s";
+    const FAIL: &str =
+        "test a ... FAILED\ntest result: FAILED. 3 passed; 1 failed; finished in 0.41s";
+    const FAIL_SLOWER: &str =
+        "test a ... FAILED\ntest result: FAILED. 3 passed; 1 failed; finished in 1.07s";
 
     #[test]
     fn same_failure_three_times_is_stuck_even_with_edits_between() {
@@ -273,7 +327,10 @@ mod tests {
             run(5, "cargo test 2>&1", "failed", FAIL),
         ];
         let stuck = detect(&entries, &[]).unwrap();
-        assert_eq!(stuck.message(), "“cargo test” failed 3 times with the same output");
+        assert_eq!(
+            stuck.message(),
+            "“cargo test” failed 3 times with the same output"
+        );
         assert!(stuck.prompt().contains("`cargo test` failed 3 times"));
         assert!(detect(&entries[..4], &[]).is_none());
         assert!(detect(&entries, &[stuck.key]).is_none());
@@ -299,10 +356,14 @@ mod tests {
     #[test]
     fn droid_exit_codes_in_the_output_count_as_failures() {
         let out = "Command failed (exit code: 101)\nerror[E0308]: mismatched types\n\n[Process exited with code 101]";
-        let entries: Vec<_> = (0..3).map(|i| run(i, "cargo build", "completed", out)).collect();
+        let entries: Vec<_> = (0..3)
+            .map(|i| run(i, "cargo build", "completed", out))
+            .collect();
         assert_eq!(detect(&entries, &[]).unwrap().pattern, Pattern::Failing);
         let ok = "Command completed successfully\n\n[Process exited with code 0]";
-        let entries: Vec<_> = (0..3).map(|i| run(i, "cargo build", "completed", ok)).collect();
+        let entries: Vec<_> = (0..3)
+            .map(|i| run(i, "cargo build", "completed", ok))
+            .collect();
         assert!(detect(&entries, &[]).is_none());
     }
 
@@ -311,7 +372,10 @@ mod tests {
         let read = |i, out| tool(i, "read", json!({"file_path": "/p/a.rs"}), "completed", out);
         let entries: Vec<_> = (0..4).map(|i| read(i, "fn main() {}")).collect();
         let stuck = detect(&entries, &[]).unwrap();
-        assert_eq!(stuck.message(), "“Read a.rs” ran 4 times in a row with the same result");
+        assert_eq!(
+            stuck.message(),
+            "“Read a.rs” ran 4 times in a row with the same result"
+        );
         assert!(detect(&entries[..3], &[]).is_none());
         let mut changing = entries.clone();
         changing[2] = read(2, "fn main() { run() }");
@@ -322,13 +386,18 @@ mod tests {
     fn reapplying_an_undone_edit_is_reverting() {
         let entries = [edit(1, "a", "b"), edit(2, "b", "a"), edit(3, "a", "b")];
         let stuck = detect(&entries, &[]).unwrap();
-        assert_eq!(stuck.message(), "The edits to “a.rs” keep undoing each other");
+        assert_eq!(
+            stuck.message(),
+            "The edits to “a.rs” keep undoing each other"
+        );
         assert!(detect(&entries[..2], &[]).is_none());
     }
 
     #[test]
     fn a_pattern_that_stops_recurring_goes_stale() {
-        let mut entries: Vec<_> = (0..3).map(|i| run(i, "cargo test", "failed", FAIL)).collect();
+        let mut entries: Vec<_> = (0..3)
+            .map(|i| run(i, "cargo test", "failed", FAIL))
+            .collect();
         for i in 0..STALE - 1 {
             entries.push(run(10 + i, &format!("ls {i}"), "completed", ""));
         }
@@ -340,8 +409,16 @@ mod tests {
     #[test]
     fn commands_normalize_across_shapes() {
         assert_eq!(normalize("cd /p/x && cd sub &&  npm test 2>&1"), "npm test");
-        let codex: Entry = tool(1, "execute", json!({"command": ["/bin/bash", "-lc", "npm  test"]}), "failed", "");
-        let Entry::Tool(t) = codex else { unreachable!() };
+        let codex: Entry = tool(
+            1,
+            "execute",
+            json!({"command": ["/bin/bash", "-lc", "npm  test"]}),
+            "failed",
+            "",
+        );
+        let Entry::Tool(t) = codex else {
+            unreachable!()
+        };
         assert_eq!(command(&t).as_deref(), Some("npm test"));
         assert_eq!(reported_exit("x\n[Process exited with code 2]"), Some(2));
         assert_eq!(reported_exit("all good"), None);

@@ -132,16 +132,16 @@ pub fn file_kind(path: &Path) -> FileKind {
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg" | "bmp" | "tif" | "tiff" | "ico" | "pbm"
-        | "pgm" | "ppm" => FileKind::Image,
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg" | "bmp" | "tif" | "tiff" | "ico"
+        | "pbm" | "pgm" | "ppm" => FileKind::Image,
         "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "csv" | "tsv" => FileKind::Sheet,
-        "pdf" | "epub" | "doc" | "docx" | "ppt" | "pptx" | "odt" | "odp"
-        | "rtf" | "pages" | "numbers" | "key" | "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi"
-        | "wmv" | "flv" | "mp3" | "wav" | "ogg" | "oga" | "opus" | "flac" | "m4a" | "aac"
-        | "mid" | "midi" | "avif" | "heic" | "heif" | "psd" | "xcf" | "kra" | "ai" | "sketch"
-        | "fig" | "blend" | "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar"
-        | "ttf" | "otf" | "woff" | "woff2" | "exe" | "msi" | "dmg" | "iso" | "deb" | "rpm"
-        | "appimage" | "apk" | "jar" | "sqlite" | "sqlite3" | "db" => FileKind::External,
+        "pdf" | "epub" | "doc" | "docx" | "ppt" | "pptx" | "odt" | "odp" | "rtf" | "pages"
+        | "numbers" | "key" | "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "wmv" | "flv"
+        | "mp3" | "wav" | "ogg" | "oga" | "opus" | "flac" | "m4a" | "aac" | "mid" | "midi"
+        | "avif" | "heic" | "heif" | "psd" | "xcf" | "kra" | "ai" | "sketch" | "fig" | "blend"
+        | "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" | "ttf" | "otf"
+        | "woff" | "woff2" | "exe" | "msi" | "dmg" | "iso" | "deb" | "rpm" | "appimage" | "apk"
+        | "jar" | "sqlite" | "sqlite3" | "db" => FileKind::External,
         _ => FileKind::Text,
     }
 }

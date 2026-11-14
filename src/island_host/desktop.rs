@@ -23,15 +23,21 @@ pub fn start(notice: impl Fn(Alert) + Send + 'static) {
     if apps.trim() == "0" {
         return;
     }
-    let apps: Vec<String> = apps.split(',').map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
-    let _ = std::thread::Builder::new().name("arakun-notices".into()).spawn(move || {
-        loop {
-            if let Err(e) = watch(&apps, &notice) {
-                eprintln!("arakun: island: notifications: {e}; again in 30 s");
+    let apps: Vec<String> = apps
+        .split(',')
+        .map(|a| a.trim().to_lowercase())
+        .filter(|a| !a.is_empty())
+        .collect();
+    let _ = std::thread::Builder::new()
+        .name("arakun-notices".into())
+        .spawn(move || {
+            loop {
+                if let Err(e) = watch(&apps, &notice) {
+                    eprintln!("arakun: island: notifications: {e}; again in 30 s");
+                }
+                std::thread::sleep(Duration::from_secs(30));
             }
-            std::thread::sleep(Duration::from_secs(30));
-        }
-    });
+        });
 }
 
 fn watch(apps: &[String], notice: &dyn Fn(Alert)) -> Result<(), String> {
@@ -53,7 +59,10 @@ fn watch(apps: &[String], notice: &dyn Fn(Alert)) -> Result<(), String> {
     let mut child = cmd.spawn().map_err(|e| format!("busctl: {e}"))?;
     let out = child.stdout.take().ok_or("no output")?;
     for line in BufReader::new(out).lines().map_while(Result::ok) {
-        if let Some(alert) = serde_json::from_str::<Value>(&line).ok().and_then(|m| card(&m, apps)) {
+        if let Some(alert) = serde_json::from_str::<Value>(&line)
+            .ok()
+            .and_then(|m| card(&m, apps))
+        {
             notice(alert);
         }
     }
@@ -66,8 +75,14 @@ fn watch(apps: &[String], notice: &dyn Fn(Alert)) -> Result<(), String> {
 fn card(msg: &Value, apps: &[String]) -> Option<Alert> {
     let data = msg.pointer("/payload/data")?.as_array()?;
     let text = |i: usize| data.get(i).and_then(Value::as_str).unwrap_or_default();
-    let entry = data.get(6).and_then(|h| h.pointer("/desktop-entry/data")).and_then(Value::as_str).unwrap_or_default();
-    let from = |a: &String| text(0).to_lowercase().contains(a.as_str()) || entry.to_lowercase().contains(a.as_str());
+    let entry = data
+        .get(6)
+        .and_then(|h| h.pointer("/desktop-entry/data"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let from = |a: &String| {
+        text(0).to_lowercase().contains(a.as_str()) || entry.to_lowercase().contains(a.as_str())
+    };
     if !apps.iter().any(from) {
         return None;
     }
@@ -75,8 +90,19 @@ fn card(msg: &Value, apps: &[String]) -> Option<Alert> {
     if title.is_empty() && body.is_empty() {
         return None;
     }
-    let image = data.get(6).and_then(|h| picture(h, text(2))).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    Some(Alert { key: "".into(), kind: AlertKind::Info, title: title.to_string().into(), subtitle: body.into(), req: "".into(), image: image.into() })
+    let image = data
+        .get(6)
+        .and_then(|h| picture(h, text(2)))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Some(Alert {
+        key: "".into(),
+        kind: AlertKind::Info,
+        title: title.to_string().into(),
+        subtitle: body.into(),
+        req: "".into(),
+        image: image.into(),
+    })
 }
 
 /// The name a sender shows, without where they wrote: Discord titles a
@@ -92,11 +118,17 @@ fn sender(summary: &str) -> &str {
 /// The notification's picture as a file: its pixels (`image-data`, written
 /// once as a PNG), else the file it names (`image-path` or the icon).
 fn picture(hints: &Value, icon: &str) -> Option<PathBuf> {
-    let hint = |names: &[&str]| names.iter().find_map(|n| hints.pointer(&format!("/{n}/data")));
+    let hint = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|n| hints.pointer(&format!("/{n}/data")))
+    };
     if let Some(png) = hint(&["image-data", "image_data", "icon_data"]).and_then(pixels) {
         return Some(png);
     }
-    let path = hint(&["image-path", "image_path"]).and_then(Value::as_str).unwrap_or(icon);
+    let path = hint(&["image-path", "image_path"])
+        .and_then(Value::as_str)
+        .unwrap_or(icon);
     let path = Path::new(path.strip_prefix("file://").unwrap_or(path));
     (path.is_absolute() && path.is_file()).then(|| path.to_path_buf())
 }
@@ -107,13 +139,26 @@ fn pixels(d: &Value) -> Option<PathBuf> {
     let d = d.as_array()?;
     let int = |i: usize| d.get(i).and_then(Value::as_u64).map(|n| n as usize);
     let (w, h, stride, channels) = (int(0)?, int(1)?, int(2)?, int(5)?);
-    let bytes: Vec<u8> = d.get(6)?.as_array()?.iter().map(|b| b.as_u64().unwrap_or(0) as u8).collect();
-    if int(4)? != 8 || !(channels == 3 || channels == 4) || w == 0 || h == 0 || bytes.len() < stride * (h - 1) + w * channels {
+    let bytes: Vec<u8> = d
+        .get(6)?
+        .as_array()?
+        .iter()
+        .map(|b| b.as_u64().unwrap_or(0) as u8)
+        .collect();
+    if int(4)? != 8
+        || !(channels == 3 || channels == 4)
+        || w == 0
+        || h == 0
+        || bytes.len() < stride * (h - 1) + w * channels
+    {
         return None;
     }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut hasher);
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("arakun-notices");
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("arakun-notices");
     let file = dir.join(format!("{:016x}.png", hasher.finish()));
     if file.is_file() {
         return Some(file);
@@ -141,7 +186,15 @@ mod tests {
     #[test]
     fn only_the_apps_asked_for() {
         let apps = vec!["discord".to_string()];
-        let alert = card(&notify("discord", "Dani (#general, Arakun)", "ya quedó **el** deploy"), &apps).unwrap();
+        let alert = card(
+            &notify(
+                "discord",
+                "Dani (#general, Arakun)",
+                "ya quedó **el** deploy",
+            ),
+            &apps,
+        )
+        .unwrap();
         assert_eq!(alert.title.as_ref(), "Dani");
         assert_eq!(alert.subtitle.as_ref(), "ya quedó el deploy");
         assert!(!alert.buttons());

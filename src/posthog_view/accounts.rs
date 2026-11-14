@@ -10,7 +10,10 @@ impl PostHogView {
     /// After a sign-in was saved: the new session's projects, and back to the project.
     fn signed_in(&mut self, s: &Session, cx: &mut Context<Self>) {
         self.sessions = posthog::sessions();
-        self.connect_note = Some((format!("Signed in as {} on {}.", s.email, s.region_label()), false));
+        self.connect_note = Some((
+            format!("Signed in as {} on {}.", s.email, s.region_label()),
+            false,
+        ));
         self.key_input.update(cx, |i, cx| i.set_text("", cx));
         self.page = Page::Main;
         self.directory_force(cx);
@@ -70,14 +73,22 @@ impl PostHogView {
     /// The form that adds an account. `first`: nothing is saved yet.
     pub(super) fn render_connect(&self, first: bool, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.connecting;
-        let regions: Vec<(Option<Region>, &'static str)> = vec![(None, "Auto"), (Some(Region::Us), "US"), (Some(Region::Eu), "EU")];
+        let regions: Vec<(Option<Region>, &'static str)> = vec![
+            (None, "Auto"),
+            (Some(Region::Us), "US"),
+            (Some(Region::Eu), "EU"),
+        ];
         let region = ui::toggle_group("ph-region", &regions, self.region, |seg, r| {
             seg.on_click(cx.listener(move |this, _, _, cx| {
                 this.region = r;
                 cx.notify();
             }))
         });
-        let field = ui::field().flex_1().min_w_0().child(icon("square-lock02", 14.).text_color(theme::text_subtle())).child(self.key_input.clone());
+        let field = ui::field()
+            .flex_1()
+            .min_w_0()
+            .child(icon("square-lock02", 14.).text_color(theme::text_subtle()))
+            .child(self.key_input.clone());
         let mut card = div()
             .flex()
             .flex_col()
@@ -136,13 +147,20 @@ impl PostHogView {
             "Every sign-in stays saved. Each one sees all the organizations its user belongs to.",
         ));
         for (i, s) in self.sessions.iter().enumerate() {
-            let projects: Vec<&Project> = dir.map(|d| d.projects.iter().filter(|p| p.session == s.id).collect()).unwrap_or_default();
+            let projects: Vec<&Project> = dir
+                .map(|d| d.projects.iter().filter(|p| p.session == s.id).collect())
+                .unwrap_or_default();
             let mut orgs: Vec<&str> = projects.iter().map(|p| p.org.as_str()).collect();
             orgs.dedup();
             let summary = if projects.is_empty() {
                 "no projects read yet".to_string()
             } else {
-                format!("{} · {} project{}", orgs.join(", "), projects.len(), if projects.len() == 1 { "" } else { "s" })
+                format!(
+                    "{} · {} project{}",
+                    orgs.join(", "),
+                    projects.len(),
+                    if projects.len() == 1 { "" } else { "s" }
+                )
             };
             let id = s.id.clone();
             list = list.child(
@@ -171,14 +189,26 @@ impl PostHogView {
                                     .child(ui::text(Type::Body, theme::text(), s.email.clone()))
                                     .child(ui::badge(s.region_label(), Tone::Neutral)),
                             )
-                            .child(ui::text(Type::Caption, theme::text_faint(), summary).truncate()),
+                            .child(
+                                ui::text(Type::Caption, theme::text_faint(), summary).truncate(),
+                            ),
                     )
-                    .child(ui::button(("ph-remove", i), "Remove", ButtonKind::Ghost, true).on_click(cx.listener(move |this, _, _, cx| this.remove(id.clone(), cx)))),
+                    .child(
+                        ui::button(("ph-remove", i), "Remove", ButtonKind::Ghost, true).on_click(
+                            cx.listener(move |this, _, _, cx| this.remove(id.clone(), cx)),
+                        ),
+                    ),
             );
         }
         for p in dir.map(|d| d.problems.clone()).unwrap_or_default() {
             list = list.child(notice("alert-circle", Tone::Warning, p));
         }
-        div().flex().flex_col().gap(px(28.)).child(list).child(self.render_connect(false, cx)).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .child(list)
+            .child(self.render_connect(false, cx))
+            .into_any_element()
     }
 }

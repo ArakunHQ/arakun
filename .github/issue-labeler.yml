@@ -1,0 +1,19 @@
+# Area labels for issues. Read by github/issue-labeler in
+# .github/workflows/issue-labeler.yml, from the default branch.
+#
+# Each label has ONE regex: when a label lists several, the action requires all
+# of them to match. The text matched is the title, a blank line, then the body.
+#
+# - `^` without the `m` flag is the start of the title, so the prefixes below
+#   only count at the start of the title (case-insensitive, an optional
+#   Conventional Commits scope allowed: "CI:", "ci:", "ci(release):", "CI/CD:").
+# - The issue forms' optional Area dropdown writes "### Area", a blank line, then
+#   the chosen options joined by ", " (or "_No response_"). `[^\r\n]*` keeps the
+#   match on that one answer line.
+
+"area: app": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bApp\b/i'
+"area: browser": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bBrowser\b/i'
+"area: relay": '/^Relay(\([^)]*\))?\s*:|### Area[ \t]*\r?\n\s*[^\r\n]*\bRelay\b/i'
+"area: phone": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bPhone\b/i'
+"area: iso": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bIsometric\b/i'
+"area: ci": '/^(CI|CI\/CD|Release)(\([^)]*\))?\s*:|### Area[ \t]*\r?\n\s*[^\r\n]*\bCI\/release\b/i'

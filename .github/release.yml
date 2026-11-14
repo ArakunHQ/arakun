@@ -1,0 +1,16 @@
+# Groups the release notes that release.yml generates (generate_release_notes)
+# by the labels of the merged pull requests. A pull request is listed once, under
+# the first category that matches one of its labels. Dependencies comes first:
+# a Cargo.toml bump is also `area: app`, and belongs with the other updates.
+changelog:
+  categories:
+    - title: Dependencies
+      labels: ["dependencies"]
+    - title: App
+      labels: ["area: app", "area: browser", "area: iso"]
+    - title: Relay and phone
+      labels: ["area: relay", "area: phone"]
+    - title: CI and releases
+      labels: ["area: ci"]
+    - title: Other changes
+      labels: ["*"]

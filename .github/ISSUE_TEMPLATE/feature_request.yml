@@ -22,6 +22,19 @@ body:
       label: Alternatives
       description: Workarounds you use now, or other approaches you considered.
   - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Arakun this is about, if you know. It sets the issue's area label.
+      multiple: true
+      options:
+        - App
+        - Browser
+        - Relay
+        - Phone
+        - Isometric
+        - CI/release
+  - type: dropdown
     id: platform
     attributes:
       label: Platforms it matters on

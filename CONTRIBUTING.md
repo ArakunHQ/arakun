@@ -22,6 +22,12 @@ without chasing every past contributor. Unsigned pull requests can't be merged.
 - Keep changes focused: one fix or feature per pull request.
 - Describe what changed and how you checked it (a screenshot helps for UI changes).
 
+You don't need to set labels. A workflow gives pull requests area labels
+(`area: relay`, `area: ci`, ...) from the paths they change, and issues from
+their title prefix (`CI:`, `Relay:`) or the issue form's Area field. The release
+notes are grouped by these labels. The labels themselves live in
+`.github/labels.yml`.
+
 ## License
 
 By contributing you agree that your contribution is released under the

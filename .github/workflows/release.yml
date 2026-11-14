@@ -3,6 +3,14 @@ name: Release
 # Builds release binaries for a pushed `v*` tag and publishes them as a GitHub
 # Release with SHA256SUMS and a build provenance attestation.
 #
+# - The CI jobs (ci.yml) run first; the builds wait for them, so a tag on a
+#   commit that fails them never publishes. For a tag, every CI job runs. They
+#   restore main's cache like any CI run, but nothing they build goes into the
+#   archives.
+# - A dry run (a pull request that changes this file, or a manual run) builds,
+#   smoke-tests and uploads both archives as `arakun-dev-<short sha>-…`, and
+#   does not publish. Only a pushed tag publishes; a manual run never does,
+#   even on a tag.
 # - Linux x86_64 and Windows x86_64 (MSVC) only. macOS is not built yet.
 # - Linux builds inside an ubuntu:22.04 container, so the binary needs glibc 2.35
 #   or newer (Ubuntu 22.04+, Debian 12+). A runner image links against its own,
@@ -21,10 +29,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # A change to this file builds both archives without publishing (the release
-  # job only runs for tags), so a broken release build shows up before a tag.
+  # Dry runs: a change to this file, or a manual run from the Actions tab,
+  # builds both archives without publishing, so a broken release build shows up
+  # before a tag.
   pull_request:
     paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,8 +47,18 @@ env:
   CARGO_PROFILE_RELEASE_DEBUG: 0
 
 jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    # A called workflow gets at most what its caller job allows; the "What
+    # changed" job in ci.yml lists a pull request's files.
+    permissions:
+      contents: read
+      pull-requests: read
+
   linux:
     name: Build (Linux x86_64)
+    needs: ci
     runs-on: depot-ubuntu-24.04-8
     # The image's glibc is the binary's floor; see the header. Raising it drops
     # support for older distributions, so update README.md and GLIBC_FLOOR too.
@@ -87,15 +107,26 @@ jobs:
 
       - name: Package
         env:
-          # Pull request runs have no tag (ref_name is "<n>/merge").
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+          # Empty on a dry run; then the name carries the commit (for a pull
+          # request its head, not the merge commit GitHub tests).
+          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # Steps in this container run under sh (dash), not bash: POSIX only.
         run: |
-          name="arakun-${TAG}-linux-x86_64"
+          tag=${TAG:-dev-$(printf %.7s "$SHA")}
+          name="arakun-$tag-linux-x86_64"
           mkdir -p "dist/$name"
           cp target/x86_64-unknown-linux-gnu/release/arakun "dist/$name/"
           strip "dist/$name/arakun"
           cp LICENSE NOTICE README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      # The archive as a user gets it: unpacks, and the binary loads and runs.
+      - name: Smoke test
+        run: |
+          mkdir smoke
+          tar -C smoke -xzf dist/*.tar.gz
+          smoke/*/arakun --version
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,6 +136,7 @@ jobs:
 
   windows:
     name: Build (Windows x86_64)
+    needs: ci
     runs-on: depot-windows-2025-8
     steps:
       - uses: actions/checkout@v4
@@ -124,14 +156,26 @@ jobs:
       - name: Package
         shell: pwsh
         env:
-          # Pull request runs have no tag (ref_name is "<n>/merge").
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+          # Empty on a dry run; then the name carries the commit (for a pull
+          # request its head, not the merge commit GitHub tests).
+          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          $name = "arakun-$env:TAG-windows-x86_64"
+          $tag = if ($env:TAG) { $env:TAG } else { "dev-" + $env:SHA.Substring(0, 7) }
+          $name = "arakun-$tag-windows-x86_64"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/arakun.exe "dist/$name/"
           Copy-Item LICENSE, NOTICE, README.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+
+      # The archive as a user gets it: unpacks, and the binary loads and runs.
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          Expand-Archive -Path (Get-Item dist/*.zip).FullName -DestinationPath smoke
+          $exe = (Get-Item smoke/*/arakun.exe).FullName
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "arakun.exe --version exited with $LASTEXITCODE" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -142,7 +186,8 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [linux, windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Not on a manual run, even one started on a tag: that is a dry run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04
     permissions:
       contents: write

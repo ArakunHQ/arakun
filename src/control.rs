@@ -206,6 +206,7 @@ arakun — command line for the running arakun window
 
 Usage:
   arakun                       start arakun
+  arakun --version             print the version
   arakun <dir> | add [dir]     add a project (or switch to it) and show it
   arakun browse [-s] <url>     open a browser tab (a path opens as file://)
   arakun open [-s] <file[:N]>  open a file tab, at line N
@@ -338,6 +339,12 @@ fn cli(args: Vec<String>) -> Cli {
     let Some(first) = args.first() else {
         return Cli::App;
     };
+    // Needs no display or running window, so the release workflow can run the
+    // packaged binary with it.
+    if first == "--version" || first == "-V" {
+        println!("arakun {}", env!("CARGO_PKG_VERSION"));
+        return Cli::Exit(0);
+    }
     if first == "mem" {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         return Cli::Exit(crate::memory::cli(&args[1..], &cwd));
@@ -994,6 +1001,12 @@ mod tests {
         assert_eq!(fresh_output("ok\nCompiled\n", "ok\nCompiled\n"), "");
         // Nothing recognisable left: all of it is new.
         assert_eq!(fresh_output("gone\n", "fresh\n"), "fresh\n");
+    }
+
+    #[test]
+    fn version_exits_without_the_app() {
+        assert!(matches!(cli(vec!["--version".into()]), Cli::Exit(0)));
+        assert!(matches!(cli(vec!["-V".into()]), Cli::Exit(0)));
     }
 
     #[test]

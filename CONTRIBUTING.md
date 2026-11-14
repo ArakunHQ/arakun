@@ -127,8 +127,28 @@ Some notes:
 - **One fix or feature per pull request.** Split unrelated cleanups into their own.
 - **Fill in the template:** what changed and why, the issue it fixes, and how you
   checked it (the commands you ran and what you tried by hand).
-- **Commit messages:** a short first line that says what the commit does
-  ("Fix the terminal tab name on resize"), and a body for the why if it is not obvious.
+- **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+  ```
+  <type>(<scope>): <what the commit does>
+
+  <why, if it is not obvious>
+  ```
+
+  - **type:** `feat` (a new feature), `fix` (a bug fix), `docs`, `refactor` (no change
+    in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci` or
+    `chore`.
+  - **scope** (optional): the part of Arakun it touches, usually the module or folder:
+    `terminal`, `agent`, `browser`, `phone`, `relay`, `iso`, `windows`...
+  - **description:** imperative and lower case, with no period at the end, for example
+    `fix(terminal): keep the tab name on resize` or
+    `feat(phone): answer permission prompts`.
+  - **Breaking changes** (a CLI flag, a setting or a stored file format that no longer
+    works as before): add `!` after the type or scope, and a `BREAKING CHANGE:` line in
+    the body that says what to do instead.
+
+  Give the pull request title the same format. It becomes the commit message when the
+  pull request is squashed.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

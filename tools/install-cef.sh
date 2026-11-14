@@ -6,7 +6,9 @@
 #
 # CEF_DIST is an unpacked CEF 156.0.15 linux64 distribution (the version cef 156.3 is built
 # for; https://cef-builds.spotifycdn.com/index.html). DEST defaults to
-# ${XDG_DATA_HOME:-~/.local/share}/arakun/cef. Re-running replaces DEST.
+# ${XDG_DATA_HOME:-~/.local/share}/arakun/cef. Re-running replaces DEST. Either layout works:
+# the archive as unpacked (Release/, Resources/, include/), or the flat directory with an
+# archive.json that the `cef` crate's own download leaves.
 #
 # DEST/            what the app dlopens on the first browser tab (~300 MB)
 #   libcef.so      stripped
@@ -52,10 +54,21 @@ fi
 src=${1:?usage: tools/install-cef.sh CEF_DIST [DEST]}
 dest=${2:-${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef}
 
-[ -f "$src/libcef.so" ] && [ -f "$src/archive.json" ] || {
+if [ -f "$src/Release/libcef.so" ] && [ -d "$src/Resources" ]; then
+  bin=$src/Release res=$src/Resources
+  # The `cef` crate takes the version from the name in archive.json, and the folder may
+  # have been renamed, so the name comes from the headers.
+  version=$(sed -n 's/^#define CEF_VERSION "\(.*\)"$/\1/p' "$src/include/cef_version.h")
+  [ -n "$version" ] || {
+    echo "install-cef: no CEF_VERSION in $src/include/cef_version.h" >&2
+    exit 1
+  }
+elif [ -f "$src/libcef.so" ] && [ -f "$src/archive.json" ]; then
+  bin=$src res=$src version=
+else
   echo "install-cef: $src is not an unpacked CEF distribution" >&2
   exit 1
-}
+fi
 
 tmp="$dest.tmp.$$"
 rm -rf "$tmp"
@@ -63,18 +76,26 @@ mkdir -p "$tmp/locales" "$tmp/sdk/locales"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "install-cef: stripping libcef.so"
-strip --strip-unneeded -o "$tmp/libcef.so" "$src/libcef.so"
-for f in icudtl.dat v8_context_snapshot.bin resources.pak chrome_100_percent.pak \
-  chrome_200_percent.pak libvk_swiftshader.so libvulkan.so.1 vk_swiftshader_icd.json; do
-  cp "$src/$f" "$tmp/$f"
+strip --strip-unneeded -o "$tmp/libcef.so" "$bin/libcef.so"
+for f in v8_context_snapshot.bin libvk_swiftshader.so libvulkan.so.1 vk_swiftshader_icd.json; do
+  cp "$bin/$f" "$tmp/$f"
+done
+for f in icudtl.dat resources.pak chrome_100_percent.pak chrome_200_percent.pak; do
+  cp "$res/$f" "$tmp/$f"
 done
 strip --strip-unneeded "$tmp/libvk_swiftshader.so" "$tmp/libvulkan.so.1"
 for l in en-US es es-419; do
-  cp "$src/locales/$l.pak" "$tmp/locales/"
+  cp "$res/locales/$l.pak" "$tmp/locales/"
 done
-cp "$src/archive.json" "$tmp/archive.json"
+if [ -n "$version" ]; then
+  # The fields the `cef` crate reads. The archive's checksum is not known here.
+  printf '{\n  "type": "minimal",\n  "name": "cef_binary_%s_linux64_minimal",\n  "sha1": ""\n}\n' \
+    "$version" >"$tmp/archive.json"
+else
+  cp "$src/archive.json" "$tmp/archive.json"
+fi
 
-cp "$src/archive.json" "$tmp/sdk/"
+cp "$tmp/archive.json" "$tmp/sdk/"
 cp -r "$src/include" "$tmp/sdk/"
 cc -shared -o "$tmp/sdk/libcef.so" -x c /dev/null
 

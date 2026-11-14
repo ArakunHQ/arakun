@@ -16,8 +16,9 @@
 // to the CPU count, so ratios between sizes hold whatever the rate.
 //
 // Env: GITHUB_TOKEN, GITHUB_REPOSITORY, optional GITHUB_API_URL, DAYS (7),
-// GITHUB_STEP_SUMMARY (the report is appended there too) and OUT_JSON (path to
-// write the raw numbers to).
+// GITHUB_STEP_SUMMARY (the report is appended there too), OUT_JSON (path to
+// write the raw numbers to), OUT_MD (path to write the report to) and
+// GITHUB_OUTPUT (gets changes=<number of jobs whose runner should change>).
 
 import { appendFileSync, writeFileSync } from "node:fs";
 
@@ -140,13 +141,21 @@ function analyze(group) {
   });
 
   const memFitsHalf = memPeak < MEM_HEADROOM * (memTotal / 2);
-  if (sampled.length < MIN_RUNS) result.verdict = `Too few sampled runs (${sampled.length})`;
-  else if (memPeak > 0.9 * memTotal) result.verdict = `**Memory-bound**: peak at ${pct(memPeak / memTotal)} of memory; try ${relabel(group.label, cpus * 2)}`;
-  else if (cpus > 2 && half <= MAX_HALF_SLOWDOWN && memFitsHalf)
+  // change: what the issue counts (see runner-sizing.yml); verdict: the cell.
+  if (sampled.length < MIN_RUNS) {
+    result.verdict = `Too few sampled runs (${sampled.length})`;
+  } else if (memPeak > 0.9 * memTotal) {
+    result.change = "memory";
+    result.verdict = `**Memory-bound**: peak at ${pct(memPeak / memTotal)} of memory; try \`${relabel(group.label, cpus * 2)}\``;
+  } else if (cpus > 2 && half <= MAX_HALF_SLOWDOWN && memFitsHalf) {
+    result.change = "downsize";
     result.verdict = `**Downsize** to \`${relabel(group.label, cpus / 2)}\`: about ${pct(1 - result.half_cost)} cheaper, ${slower(half)}`;
-  else if (share[9] >= UPSIZE_SATURATED && result.duration_median >= UPSIZE_MIN_SECONDS)
+  } else if (share[9] >= UPSIZE_SATURATED && result.duration_median >= UPSIZE_MIN_SECONDS) {
+    result.change = "upsize";
     result.verdict = `**Upsize** to \`${relabel(group.label, cpus * 2)}\` might pay: at best ${pct(1 - double)} faster for ${result.double_cost.toFixed(2)}x the cost`;
-  else result.verdict = "Right-sized";
+  } else {
+    result.verdict = "Right-sized";
+  }
   return result;
 }
 
@@ -226,4 +235,6 @@ const results = [...groups.values()].map(analyze);
 const markdown = report(results, day(since), day(until));
 console.log(markdown);
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
+if (process.env.OUT_MD) writeFileSync(process.env.OUT_MD, markdown);
+if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `changes=${results.filter((r) => r.change).length}\n`);
 if (process.env.OUT_JSON) writeFileSync(process.env.OUT_JSON, JSON.stringify({ since, until, results }, null, 2));

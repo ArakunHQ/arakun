@@ -599,7 +599,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
         let sh = |c: &str| {
-            let ok = std::process::Command::new("sh").arg("-c").arg(c).current_dir(&repo).status().unwrap().success();
+            let ok = crate::git::unpinned(&mut std::process::Command::new("sh")).arg("-c").arg(c).current_dir(&repo).status().unwrap().success();
             assert!(ok, "{c}");
         };
         let g = "git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t";

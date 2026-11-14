@@ -1014,7 +1014,7 @@ mod tests {
     fn changes_since_the_session_started_count_however_they_were_made() {
         let repo = tmp("changed");
         let sh = |c: &str| {
-            let ok = std::process::Command::new("sh").arg("-c").arg(c).current_dir(&repo).status().unwrap().success();
+            let ok = crate::git::unpinned(&mut std::process::Command::new("sh")).arg("-c").arg(c).current_dir(&repo).status().unwrap().success();
             assert!(ok, "{c}");
         };
         sh("export GIT_COMMITTER_DATE=2001-01-01T00:00:00 \

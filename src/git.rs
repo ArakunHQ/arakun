@@ -21,6 +21,18 @@ pub(crate) fn git(dir: &Path) -> Command {
     cmd
 }
 
+/// For tests that build a throwaway repository. In a linked worktree, git gives
+/// hooks GIT_DIR (and GIT_INDEX_FILE) pointing at the real repository; a test run
+/// from a hook inherits them, and its `git init` and `git commit` would land on
+/// the branch being pushed instead of in its temporary folder.
+#[cfg(test)]
+pub(crate) fn unpinned(cmd: &mut Command) -> &mut Command {
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 fn run(cmd: &mut Command) -> Result<Output> {
     let out = cmd.output().context("could not run git")?;
     if !out.status.success() {

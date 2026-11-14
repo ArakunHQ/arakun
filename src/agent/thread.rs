@@ -3408,7 +3408,7 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         let tracked: String = (1..=100).map(|i| format!("line {i}\n")).collect();
         std::fs::write(repo.join("a.txt"), &tracked).unwrap();
-        let ok = std::process::Command::new("sh")
+        let ok = crate::git::unpinned(&mut std::process::Command::new("sh"))
             .arg("-c")
             .arg("git init -q && git add a.txt && git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -qm a")
             .current_dir(&repo)

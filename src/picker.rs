@@ -848,7 +848,7 @@ mod tests {
     use super::*;
 
     fn git(dir: &Path, args: &[&str]) {
-        let ok = crate::git::git(dir)
+        let ok = crate::git::unpinned(&mut crate::git::git(dir))
             .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
             .args(args)
             .status()

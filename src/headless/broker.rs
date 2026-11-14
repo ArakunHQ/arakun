@@ -549,7 +549,7 @@ mod tests {
     fn pushes_go_from_a_clean_copy_of_what_was_approved() {
         let ws = tmpdir("push");
         let sh = |dir: &Path, c: &str| {
-            let out = Command::new("sh").arg("-c").arg(c).current_dir(dir).output().unwrap();
+            let out = crate::git::unpinned(&mut Command::new("sh")).arg("-c").arg(c).current_dir(dir).output().unwrap();
             assert!(out.status.success(), "{c}: {}", String::from_utf8_lossy(&out.stderr));
         };
         sh(&ws, "git init -q --bare remote.git && git init -q -b main repo && cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m one && git remote add origin ../remote.git");
@@ -561,7 +561,7 @@ mod tests {
         assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
         execute(&v, &j.workspace).unwrap();
         assert!(!ws.join("pwned").exists());
-        let pushed = Command::new("git").args(["-C", "remote.git", "rev-parse", "main"]).current_dir(&ws).output().unwrap();
+        let pushed = crate::git::unpinned(&mut Command::new("git")).args(["-C", "remote.git", "rev-parse", "main"]).current_dir(&ws).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&pushed.stdout).trim(), v["sha"].as_str().unwrap());
         // A commit after the approval is not what was approved.
         sh(&ws, "cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two");

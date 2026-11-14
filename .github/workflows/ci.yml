@@ -9,6 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The jobs only check out and build; none of them writes to the repository.
+permissions:
+  contents: read
+
 # Cargo.toml optimizes every dependency in dev builds (opt-level 2), which pays
 # off locally where they build once. In CI they build cold on every cache miss,
 # so here dependencies stay unoptimized and nothing carries debug info.

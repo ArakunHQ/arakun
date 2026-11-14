@@ -483,14 +483,18 @@ mod tests {
         let bad = |a: Value| prepare(&a, &j).unwrap_err();
         assert!(bad(json!({"action": "send_email", "to": ["x"], "subject": "S", "body": "b"})).contains("not an email"));
         assert!(bad(json!({"action": "send_email", "to": ["a@x.com"], "subject": "S\nBcc: z@z", "body": "b"})).contains("line break"));
-        assert!(bad(json!({"action": "send_email", "to": ["a@x.com"], "subject": "S", "body": "b", "attachments": ["/etc/hostname"]})).contains("not inside"));
+        let away = tmpdir("mail-away");
+        let outside = away.join("secret.txt");
+        std::fs::write(&outside, "x").unwrap();
+        assert!(bad(json!({"action": "send_email", "to": ["a@x.com"], "subject": "S", "body": "b", "attachments": [outside]})).contains("not inside"));
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("/etc/hostname", ws.join("link")).unwrap();
+            std::os::unix::fs::symlink(&outside, ws.join("link")).unwrap();
             assert!(bad(json!({"action": "send_email", "to": ["a@x.com"], "subject": "S", "body": "b", "attachments": ["link"]})).contains("not inside"));
         }
         assert!(bad(json!({"action": "teleport"})).contains("unknown action"));
         std::fs::remove_dir_all(&ws).unwrap();
+        std::fs::remove_dir_all(&away).unwrap();
     }
 
     #[test]

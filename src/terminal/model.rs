@@ -827,7 +827,8 @@ mod tests {
         assert!(find_in(&mut term, "zzz", None, true).is_none());
     }
 
-    #[cfg(unix)]
+    // Finding a session's members reads /proc, which only Linux has.
+    #[cfg(target_os = "linux")]
     #[test]
     fn hanging_up_ends_the_session_but_spares_nohup() {
         use std::os::unix::process::CommandExt as _;

@@ -227,6 +227,51 @@ jobs:
       - name: cargo test
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
 
+  # macOS builds other code (cfg(target_os = "macos"), no /proc, BSD tools), so
+  # Linux passing says little about it. No runner-usage step: it supports only
+  # Linux and Windows.
+  clippy-macos:
+    name: Clippy (macOS)
+    needs: changes
+    permissions:
+      contents: read
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy-macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
+
+  test-macos:
+    name: Tests (macOS, no browser)
+    needs: changes
+    permissions:
+      contents: read
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo test
+        run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
+
   # The phone relay (Cloudflare Worker) is TypeScript apart from the app; its
   # tests run the real Worker inside workerd, no account needed.
   relay:

@@ -1,8 +1,11 @@
 //! The shell's side of the Dynamic Island (`crate::island_host`): the link to
 //! it, what it shows of every project's sessions, its alerts, and "Ver".
 
-// The link to the island is Unix-only: elsewhere this builds but does nothing.
-#![cfg_attr(not(unix), allow(unused_variables, unused_imports, dead_code))]
+// The island runs only on Linux (Wayland): elsewhere this builds but does nothing.
+#![cfg_attr(
+    not(target_os = "linux"),
+    allow(unused_variables, unused_imports, dead_code, clippy::needless_return)
+)]
 
 use super::*;
 

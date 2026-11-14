@@ -1020,7 +1020,7 @@ mod tests {
         sh("export GIT_COMMITTER_DATE=2001-01-01T00:00:00 \
             && git init -q && git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m root \
             && echo a > old.txt && git add old.txt && git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q -m old \
-            && echo dirty > before.txt && touch -d '2001-01-01' before.txt");
+            && echo dirty > before.txt && touch -t 200101010000 before.txt");
         let since = now();
         sh("echo b > new.txt && mkdir -p src && echo c > src/lib.rs && git add src && \
             git -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q -m lib && echo d >> old.txt");

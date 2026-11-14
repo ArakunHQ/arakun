@@ -3,7 +3,11 @@ name: Release
 # Builds release binaries for a pushed `v*` tag and publishes them as a GitHub
 # Release with SHA256SUMS.
 #
-# - Linux x86_64 (ubuntu) and Windows x86_64 (MSVC) only. macOS is not built yet.
+# - Linux x86_64 and Windows x86_64 (MSVC) only. macOS is not built yet.
+# - Linux builds inside an ubuntu:22.04 container, so the binary needs glibc 2.35
+#   or newer (Ubuntu 22.04+, Debian 12+). A runner image links against its own,
+#   newer glibc (ubuntu-24.04: 2.39), and the binary then refuses to start on
+#   older systems. A step after the build fails if the floor is exceeded.
 # - Built with --no-default-features: no `browser` feature, so no CEF in the
 #   archives. Browser tabs need a build from source (see README.md).
 # - Dependencies resolve exactly as in ci.yml (same Cargo.toml and --locked, no
@@ -13,6 +17,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A change to this file builds both archives without publishing (the release
+  # job only runs for tags), so a broken release build shows up before a tag.
+  pull_request:
+    paths: [".github/workflows/release.yml"]
 
 permissions:
   contents: read
@@ -28,30 +36,58 @@ jobs:
   linux:
     name: Build (Linux x86_64)
     runs-on: depot-ubuntu-24.04-8
+    # The image's glibc is the binary's floor; see the header. Raising it drops
+    # support for older distributions, so update README.md and GLIBC_FLOOR too.
+    # Pinned by digest so a moved tag cannot change what the release is built in.
+    # To update: look up the current digest of the ubuntu:22.04 tag and replace it.
+    container: ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c
+    env:
+      GLIBC_FLOOR: "2.35"
     steps:
-      - uses: actions/checkout@v4
+      # Same libraries as ci.yml (installed directly: cache-apt-pkgs-action expects
+      # a runner, not a container), plus what the bare image lacks. Before checkout,
+      # which needs git to make a repository rather than a tarball download.
+      - name: System packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
 
-      # Same packages as ci.yml.
-      - name: GPUI system libraries
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
-          version: 1
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
 
+      # The key names the image: build scripts cached from a newer one would not
+      # run against this glibc.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-linux
+          shared-key: release-linux-ubuntu22.04
 
       - name: cargo build
         run: cargo build --release --locked --no-default-features --target x86_64-unknown-linux-gnu
 
+      - name: Check glibc floor
+        run: |
+          bin=target/x86_64-unknown-linux-gnu/release/arakun
+          max=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9.]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
+          [ -n "$max" ] || { echo "::error::no GLIBC_ symbol versions found in $bin"; exit 1; }
+          echo "highest GLIBC_ symbol version: $max (floor $GLIBC_FLOOR)"
+          if [ "$(printf '%s\n' "$max" "$GLIBC_FLOOR" | sort -V | tail -1)" != "$GLIBC_FLOOR" ]; then
+            echo "::error::arakun needs glibc $max, above the $GLIBC_FLOOR floor"
+            objdump -T "$bin" | grep -F "GLIBC_$max"
+            exit 1
+          fi
+
       - name: Package
         env:
-          TAG: ${{ github.ref_name }}
+          # Pull request runs have no tag (ref_name is "<n>/merge").
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
         run: |
           name="arakun-${TAG}-linux-x86_64"
           mkdir -p "dist/$name"
@@ -88,7 +124,8 @@ jobs:
       - name: Package
         shell: pwsh
         env:
-          TAG: ${{ github.ref_name }}
+          # Pull request runs have no tag (ref_name is "<n>/merge").
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
         run: |
           $name = "arakun-$env:TAG-windows-x86_64"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
@@ -105,6 +142,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04
     permissions:
       contents: write

@@ -68,8 +68,10 @@ Download the archive for your platform from
 `SHA256SUMS`. Release builds are built without the browser feature.
 
 **Linux:** extract `arakun-<version>-linux-x86_64.tar.gz` and put `arakun` somewhere on
-your `PATH`, for example `~/.local/bin`. You need a Vulkan driver and the usual desktop
-libraries (libxkbcommon, Wayland or X11, fontconfig, freetype).
+your `PATH`, for example `~/.local/bin`. It needs glibc 2.35 or newer (Ubuntu 22.04+,
+Debian 12+, Fedora 36+); on older systems, build from source. You also need a Vulkan
+driver and the usual desktop libraries (libxkbcommon, Wayland or X11, fontconfig,
+freetype).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
 

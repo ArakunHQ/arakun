@@ -149,6 +149,20 @@ Some notes:
 
   Give the pull request title the same format. It becomes the commit message when the
   pull request is squashed.
+
+  CI checks both: the **Pull request title** and **Commit messages** checks fail on a
+  title or a commit that does not follow this format (merge commits and bot commits are
+  skipped). Fix a title by editing it; the check runs again by itself. Fix commits with
+  `git rebase -i` (`reword`, or `--autosquash` for `fixup!` commits) and force-push. To
+  check before you push:
+
+  ```sh
+  tools/conventional-commits.sh range origin/main..HEAD   # your commits
+  git config core.hooksPath tools/hooks                    # check every new commit
+  ```
+
+  The second line turns on a `commit-msg` hook that rejects a message CI would reject.
+  Undo it with `git config --unset core.hooksPath`.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

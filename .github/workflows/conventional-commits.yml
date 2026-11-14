@@ -1,0 +1,52 @@
+name: Conventional Commits
+
+# A separate workflow from CI, so editing a pull request's title reruns these
+# two quick checks and not the Rust build. Both run on every event, `edited`
+# included: a skipped required check counts as passed.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: conventional-commits-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BASE: ${{ github.event.pull_request.base.sha }}
+  HEAD: ${{ github.event.pull_request.head.sha }}
+  # Through env, never ${{ }} in a script: the title is untrusted input.
+  TITLE: ${{ github.event.pull_request.title }}
+
+jobs:
+  # A squash merge uses the title as the commit message on main.
+  title:
+    name: Pull request title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      # The base branch's copy, so a pull request can't loosen the check it is
+      # checked with. The pull request's copy only until the base has one.
+      - name: Take the checker from the base branch
+        run: git show "$BASE:tools/conventional-commits.sh" > "$RUNNER_TEMP/check.sh" || cp tools/conventional-commits.sh "$RUNNER_TEMP/check.sh"
+      - name: Check the title
+        run: bash "$RUNNER_TEMP/check.sh" title "$TITLE"
+
+  # A rebase merge or merge commit puts every commit on main as it is.
+  commits:
+    name: Commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Take the checker from the base branch
+        run: git show "$BASE:tools/conventional-commits.sh" > "$RUNNER_TEMP/check.sh" || cp tools/conventional-commits.sh "$RUNNER_TEMP/check.sh"
+      - name: Check each commit
+        run: bash "$RUNNER_TEMP/check.sh" range "$BASE..$HEAD"

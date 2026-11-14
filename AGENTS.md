@@ -25,6 +25,10 @@ Every commit message and pull request title follows
 - **Breaking changes** (a CLI flag, a setting or a stored file format that no longer
   works as before): `!` after the type or scope, and a `BREAKING CHANGE:` line in the
   body that says what to do instead.
+- CI fails the pull request if its title or any commit in it breaks these rules. Check
+  your commits before you push with `tools/conventional-commits.sh range origin/main..HEAD`,
+  and a title with `tools/conventional-commits.sh title "<title>"`. Fold `fixup!` commits
+  in before you push.
 - One logical change per commit, and one fix or feature per pull request. Put unrelated
   cleanups in their own commit or pull request.
 - Fill in `.github/pull_request_template.md`. Under "How I checked it", list the

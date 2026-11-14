@@ -1,0 +1,68 @@
+# The repository's labels. `.github/workflows/labels.yml` creates and updates
+# them from this file on pushes to main, and dry-runs a change on its pull request.
+#
+# - Labels are matched by name. To rename one, change `name` and set `from_name`
+#   to the old name; a plain rename would create a new label instead, and the
+#   old one stays on its issues.
+# - A label removed here is not deleted from the repository (skip-delete):
+#   deleting a label also strips it from every issue and pull request.
+# - The `area: *` labels are also used by .github/labeler.yml (pull requests),
+#   .github/issue-labeler.yml (issues) and .github/release.yml (release notes).
+
+# GitHub's defaults, unchanged.
+- name: bug
+  color: "#d73a4a"
+  description: Something isn't working
+- name: documentation
+  color: "#0075ca"
+  description: Improvements or additions to documentation
+- name: duplicate
+  color: "#cfd3d7"
+  description: This issue or pull request already exists
+- name: enhancement
+  color: "#a2eeef"
+  description: New feature or request
+- name: good first issue
+  color: "#7057ff"
+  description: Good for newcomers
+- name: help wanted
+  color: "#008672"
+  description: Extra attention is needed
+- name: invalid
+  color: "#e4e669"
+  description: This doesn't seem right
+- name: question
+  color: "#d876e3"
+  description: Further information is requested
+- name: wontfix
+  color: "#ffffff"
+  description: This will not be worked on
+
+- name: accessibility
+  color: "#f143ab"
+  description: Barrier affecting people with disabilities
+
+# Areas.
+- name: "area: app"
+  color: "#1d76db"
+  description: The desktop app (src/, examples/, assets/)
+- name: "area: browser"
+  color: "#5319e7"
+  description: CEF browser tabs
+- name: "area: relay"
+  color: "#f9a03f"
+  description: The Cloudflare Worker (relay/)
+- name: "area: phone"
+  color: "#fbca04"
+  description: The phone page and remote (phone/, src/phone/)
+- name: "area: iso"
+  color: "#0e8a16"
+  description: Isometric scenes
+- name: "area: ci"
+  color: "#bfdadc"
+  description: Workflows and releases
+
+# Dependabot applies this one to its pull requests too.
+- name: dependencies
+  color: "#0366d6"
+  description: Lockfile and dependency updates

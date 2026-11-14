@@ -25,18 +25,18 @@
 
 ## Checks
 
-<!-- Tick only what you ran. CI builds with `--no-default-features`; do the same without CEF set up. -->
+<!-- Tick only what you ran; leave the rest unchecked. The commands are in CONTRIBUTING.md under "Checks". With CEF set up you can leave out `--no-default-features`. -->
 
-- [ ] `cargo clippy --all-targets -- -D warnings` passes
-- [ ] `cargo test` passes (includes `design_lint`: grays, text sizes and fonts come from `theme`/`ui`)
-- [ ] Touched `relay/`: `npx tsc --noEmit` and `npx vitest run` pass there
-- [ ] Touched `phone/` or the phone's encryption: `node --test "test/*.test.mjs"` passes in `phone/`
+- [ ] `cargo clippy --locked --all-targets --no-default-features -- -D warnings` passes
+- [ ] `cargo test --locked --no-default-features` passes (includes `design_lint`: colors, text sizes and fonts come from `theme` and `ui`)
+- [ ] If `relay/` or `phone/` changed: the relay's `tsc` and `vitest`, and the phone tests pass
 - [ ] One fix or feature per pull request
+- [ ] The title follows [Conventional Commits](https://github.com/arakunhq/arakun/blob/main/CONTRIBUTING.md#pull-requests) (CI checks it; it becomes the commit message on `main`)
 - [ ] I have signed the [CLA](https://github.com/arakunhq/arakun/blob/main/CLA.md) (the bot asks on your first pull request; reply with the sentence it gives)
 
 ## Docs
 
-<!-- Changed something a user or agent reads about: README features, install or build steps, the platform table, docs/, a CLI usage string, or a skill in .claude/skills? Name what you updated, or write "- None." -->
+<!-- Changed a command, flag, shortcut or storage path? Update the README (and docs/windows.md if it differs on Windows). Also the platform table, a CLI usage string, or a skill in .claude/skills if they changed. Name what you updated, or write "- None." -->
 
 ## 🤖 Agent context
 
@@ -69,13 +69,13 @@
 </details>
 
 <!-- Rules for agents opening a pull request here:
-- Title: <area>: <what changed>, lowercase, imperative, no period, under 72 characters.
-  Area is the part of the app: agent, terminal, browser, island, phone, relay, headless, ci, git, ui, cli, docs...
-  ✅ terminal: keep scrollback when the dock resizes
+- Title: Conventional Commits, <type>(<scope>): <description>, as AGENTS.md and CONTRIBUTING.md describe. Pull requests are squashed, so the title becomes the commit on main, and CI fails a title that breaks the rules. Check one with `tools/conventional-commits.sh title "<title>"`.
+  ✅ fix(terminal): keep the tab name on resize
   ❌ Fixed some terminal bugs.
 - Voice: the subject of each sentence is the change, not its author. No "I" in the body; authorship is stated once, under Agent context.
 - Body: describe the rationale, not a replay of the session. Pass it straight to `gh pr create --body-file -` on stdin so markdown and newlines survive.
 - Draft first: open with `--draft`, get clippy and the tests green locally, then mark it ready.
+- Labels: don't set them; a workflow adds area labels from the changed paths.
 - Split instead of stuffing: if the diff holds separable steps (a rename then a rewrite, a refactor then a feature), open them as separate pull requests.
 - Never write an @mention you have not verified this session (`gh api user`, `gh pr view --json author,assignees`); never guess a handle from a display name.
 - This repository is public (AGPL-3.0): no secrets, private logs or other people's data in code, fixtures, commits or this description.

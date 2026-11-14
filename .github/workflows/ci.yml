@@ -23,9 +23,12 @@ jobs:
   # run side by side instead of one after the other.
   clippy:
     name: Clippy (no warnings)
-    runs-on: ubuntu-24.04
+    runs-on: depot-ubuntu-24.04-8
     steps:
       - uses: actions/checkout@v4
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
 
       # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
       - name: GPUI system libraries
@@ -38,9 +41,12 @@ jobs:
         with:
           components: clippy
 
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Without the `browser` feature the CEF SDK is not needed. Includes design_lint.
       - name: cargo clippy
@@ -48,9 +54,12 @@ jobs:
 
   test:
     name: Tests (Linux, no browser)
-    runs-on: ubuntu-24.04
+    runs-on: depot-ubuntu-24.04-8
     steps:
       - uses: actions/checkout@v4
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
 
       # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
       - name: GPUI system libraries
@@ -61,9 +70,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
@@ -72,12 +84,15 @@ jobs:
   # tests run the real Worker inside workerd, no account needed.
   relay:
     name: Relay (types and tests)
-    runs-on: ubuntu-24.04
+    runs-on: depot-ubuntu-24.04
     defaults:
       run:
         working-directory: relay
     steps:
       - uses: actions/checkout@v4
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
 
       - uses: actions/setup-node@v4
         with:

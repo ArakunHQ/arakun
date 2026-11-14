@@ -164,8 +164,7 @@ fn encrypt(sub: &Subscription, payload: &[u8]) -> Option<Vec<u8>> {
     let rng = rand::SystemRandom::new();
     let as_private = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).ok()?;
     let as_public = as_private.compute_public_key().ok()?;
-    let mut salt = [0u8; 16];
-    rand::SecureRandom::fill(&rng, &mut salt).ok()?;
+    let salt: [u8; 16] = rand::generate(&rng).ok()?.expose();
     let peer = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, &ua_public);
     let (cek, nonce) = agreement::agree_ephemeral(as_private, &peer, |shared| {
         derive(shared, &auth, &ua_public, as_public.as_ref(), &salt)

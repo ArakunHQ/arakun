@@ -1,3 +1,12 @@
 {
-   "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "rikvisser-dev",
+      "id": 102914580,
+      "comment_id": 6883356556,
+      "created_at": "2026-11-14T19:57:07Z",
+      "repoId": 1458074519,
+      "pullRequestNo": 22
+    }
+  ]
 }

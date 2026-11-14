@@ -31,7 +31,7 @@ Every commit message and pull request title follows
   `tools/conventional-commits.sh title "<title>"`.
 - One logical change per commit, and one fix or feature per pull request. Put unrelated
   cleanups in their own commit or pull request.
-- Fill in `.github/pull_request_template.md`. Under "How I checked it", list the
+- Fill in `.github/pull_request_template.md`. Under "How did you test this?", list the
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
 
 ## Before you commit

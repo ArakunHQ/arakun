@@ -111,8 +111,10 @@ jobs:
           # request its head, not the merge commit GitHub tests).
           TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # Steps in this container run under sh (dash), not bash: POSIX only.
         run: |
-          name="arakun-${TAG:-dev-${SHA:0:7}}-linux-x86_64"
+          tag=${TAG:-dev-$(printf %.7s "$SHA")}
+          name="arakun-$tag-linux-x86_64"
           mkdir -p "dist/$name"
           cp target/x86_64-unknown-linux-gnu/release/arakun "dist/$name/"
           strip "dist/$name/arakun"

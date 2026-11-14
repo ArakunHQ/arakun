@@ -11,5 +11,6 @@
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 - [ ] `cargo test` passes
 <!-- Without CEF set up, add `--no-default-features` to both, as CI does. -->
+- [ ] If `relay/` or `phone/` changed: the relay's `tsc` and `vitest`, and the phone tests pass (see CONTRIBUTING.md)
 - [ ] One fix or feature per pull request
 - [ ] I have signed the [CLA](https://github.com/arakunhq/arakun/blob/main/CLA.md) (the bot asks on your first pull request; reply with the sentence it gives)

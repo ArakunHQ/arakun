@@ -178,6 +178,7 @@ arakun notify "done"              # desktop notification
 arakun ls                         # projects, environments and sessions
 arakun mem search <words>         # search what agents remember about this project
 arakun agent run <prompt>         # start a headless agent
+arakun --version                  # print the version (needs no running Arakun)
 ```
 
 `arakun run` and `arakun logs` take `--ready <text>`, `--port <n>` and `--timeout <s>`

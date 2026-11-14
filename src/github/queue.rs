@@ -1,0 +1,1205 @@
+//! The review queue: everything that waits on the user or that they wait on,
+//! gathered from two places. The inbox alone misses what was already read on
+//! github.com, so searches add the pull requests whose review is asked of the
+//! user, the user's own open pull requests, what is assigned to them or
+//! mentions them, and what closed today. Each entry is then placed in a group
+//! by what is known of it: its details when they were read, otherwise where it
+//! was found.
+
+use std::collections::HashMap;
+
+use serde::Deserialize;
+
+use super::pr::{self, ItemKind, ItemRef, WaitingOn};
+use super::{Kind, Notification, Problem};
+
+// ---------------------------------------------------------------------------
+// Searches
+
+/// Why a search found an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Why {
+    /// An open pull request whose review is asked of the user.
+    ReviewRequested,
+    /// An open pull request the user opened.
+    Authored,
+    /// An open issue or pull request assigned to the user.
+    Assigned,
+    /// An open issue or pull request that mentions the user, lately.
+    Mentioned,
+    /// Closed or merged today, with the user involved.
+    ClosedToday,
+    /// An open pull request the user reviewed today.
+    ReviewedToday,
+}
+
+impl Why {
+    pub const ALL: [Why; 6] = [
+        Why::ReviewRequested,
+        Why::Authored,
+        Why::Assigned,
+        Why::Mentioned,
+        Why::ClosedToday,
+        Why::ReviewedToday,
+    ];
+}
+
+/// How many items one search asks for.
+const SEARCH_LIMIT: &str = "50";
+const PULL_FIELDS: &str =
+    "number,title,repository,author,state,isDraft,createdAt,updatedAt,closedAt,url";
+const ISSUE_FIELDS: &str =
+    "number,title,repository,author,state,isPullRequest,createdAt,updatedAt,closedAt,url";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FoundRepo {
+    pub name_with_owner: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct FoundAuthor {
+    pub login: String,
+}
+
+/// One result of `gh search prs` or `gh search issues`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Found {
+    pub number: u64,
+    pub title: String,
+    pub repository: FoundRepo,
+    pub author: FoundAuthor,
+    /// `open`, `closed` or `merged`, in lower case.
+    pub state: String,
+    pub is_draft: bool,
+    /// Only `gh search issues` says it; a pull request search leaves it None.
+    pub is_pull_request: Option<bool>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub closed_at: String,
+    pub url: String,
+}
+
+impl Found {
+    pub fn item(&self, why: Why) -> Option<ItemRef> {
+        let pull = match why {
+            Why::ReviewRequested | Why::Authored | Why::ReviewedToday | Why::ClosedToday => true,
+            Why::Assigned | Why::Mentioned => self.is_pull_request.unwrap_or(false),
+        };
+        let kind = if pull {
+            ItemKind::Pull
+        } else {
+            ItemKind::Issue
+        };
+        let item = ItemRef::from_url(&self.url).map(|mut i| {
+            i.kind = kind;
+            i
+        });
+        item.or_else(|| {
+            let parsed = ItemRef::parse(&format!(
+                "{}#{}",
+                self.repository.name_with_owner, self.number
+            ))?;
+            Some(ItemRef { kind, ..parsed })
+        })
+    }
+}
+
+/// The arguments of one search. `today` and `since` are dates
+/// (`2026-11-14`): the start of the local day, and how far back mentions count.
+pub fn search_args(why: Why, today: &str, since: &str) -> Vec<String> {
+    let mut args: Vec<String> = match why {
+        Why::ReviewRequested => vec![
+            "prs".into(),
+            "--review-requested=@me".into(),
+            "--state=open".into(),
+        ],
+        Why::Authored => vec!["prs".into(), "--author=@me".into(), "--state=open".into()],
+        Why::Assigned => vec![
+            "issues".into(),
+            "--include-prs".into(),
+            "--assignee=@me".into(),
+            "--state=open".into(),
+        ],
+        Why::Mentioned => {
+            vec![
+                "issues".into(),
+                "--include-prs".into(),
+                "--mentions=@me".into(),
+                "--state=open".into(),
+                format!("--updated=>={since}"),
+            ]
+        }
+        Why::ClosedToday => vec![
+            "prs".into(),
+            "--involves=@me".into(),
+            "--state=closed".into(),
+            format!("--closed=>={today}"),
+        ],
+        Why::ReviewedToday => vec![
+            "prs".into(),
+            "--reviewed-by=@me".into(),
+            "--state=open".into(),
+            format!("--updated=>={today}"),
+        ],
+    };
+    let fields = if args[0] == "issues" {
+        ISSUE_FIELDS
+    } else {
+        PULL_FIELDS
+    };
+    let mut all = vec!["search".to_string()];
+    all.append(&mut args);
+    all.extend([
+        "--archived=false".into(),
+        "--limit".into(),
+        SEARCH_LIMIT.into(),
+        "--json".into(),
+        fields.into(),
+    ]);
+    all
+}
+
+pub fn parse_found(bytes: &[u8]) -> Result<Vec<Found>, Problem> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|e| Problem::Other(format!("unexpected answer from gh: {e}")))?;
+    serde_json::from_value(strip_nulls(value))
+        .map_err(|e| Problem::Other(format!("unexpected answer from gh: {e}")))
+}
+
+fn strip_nulls(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_nulls(v)))
+                .collect(),
+        ),
+        Value::Array(list) => Value::Array(
+            list.into_iter()
+                .filter(|v| !v.is_null())
+                .map(strip_nulls)
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Every search, at once. What failed is left out, and the first failure is
+/// returned with the rest, so one bad search doesn't empty the queue.
+pub fn search_all(today: &str, since: &str) -> (Vec<(Why, Found)>, Option<Problem>) {
+    let results: Vec<(Why, Result<Vec<Found>, Problem>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = Why::ALL
+            .into_iter()
+            .map(|why| {
+                let args = search_args(why, today, since);
+                (
+                    why,
+                    s.spawn(move || {
+                        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                        super::gh_out(&refs).and_then(|out| parse_found(&out))
+                    }),
+                )
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|(why, h)| {
+                (
+                    why,
+                    h.join()
+                        .unwrap_or_else(|_| Err(Problem::Other("a search failed".into()))),
+                )
+            })
+            .collect()
+    });
+    let mut found = Vec::new();
+    let mut problem = None;
+    for (why, result) in results {
+        match result {
+            Ok(list) => found.extend(list.into_iter().map(|f| (why, f))),
+            Err(p) => {
+                problem.get_or_insert(p);
+            }
+        }
+    }
+    (found, problem)
+}
+
+// ---------------------------------------------------------------------------
+// Entries
+
+/// One thing in the queue: a pull request or issue, or a notification about
+/// something else (a CI run, a release).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// None for a notification that is not about a pull request or issue.
+    pub item: Option<ItemRef>,
+    pub title: String,
+    /// Empty when only a notification named it.
+    pub author: String,
+    /// ISO 8601: the newest activity any source knows of.
+    pub updated_at: String,
+    pub closed_at: String,
+    /// What a search said of its state: `open`, `closed`, `merged`, or empty.
+    pub state: String,
+    pub why: Vec<Why>,
+    /// Its notification, read or not.
+    pub notification: Option<Notification>,
+}
+
+impl Entry {
+    /// `owner/repo#12` in lower case, or the notification's id: what tells
+    /// two entries apart.
+    pub fn key(&self) -> String {
+        match (&self.item, &self.notification) {
+            (Some(item), _) => key_of(item),
+            (None, Some(n)) => format!("thread:{}", n.id),
+            (None, None) => String::new(),
+        }
+    }
+
+    pub fn unread(&self) -> bool {
+        self.notification.as_ref().is_some_and(|n| n.unread)
+    }
+
+    pub fn updated(&self) -> u64 {
+        crate::ci::parse_time(&self.updated_at).unwrap_or(0)
+    }
+
+    pub fn repo(&self) -> String {
+        match (&self.item, &self.notification) {
+            (Some(item), _) => item.repo.clone(),
+            (None, Some(n)) => n.repository.full_name.clone(),
+            _ => String::new(),
+        }
+    }
+}
+
+pub fn key_of(item: &ItemRef) -> String {
+    format!("{}#{}", item.repo.to_ascii_lowercase(), item.number)
+}
+
+/// The notifications and the search results as one list, each item once.
+pub fn gather(notifications: &[Notification], found: &[(Why, Found)]) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for (why, f) in found {
+        let Some(item) = f.item(*why) else { continue };
+        let key = key_of(&item);
+        match at.get(&key) {
+            Some(&i) => {
+                let e = &mut out[i];
+                if !e.why.contains(why) {
+                    e.why.push(*why);
+                }
+                if f.updated_at > e.updated_at {
+                    e.updated_at = f.updated_at.clone();
+                }
+            }
+            None => {
+                at.insert(key, out.len());
+                out.push(Entry {
+                    item: Some(item),
+                    title: f.title.clone(),
+                    author: f.author.login.clone(),
+                    updated_at: f.updated_at.clone(),
+                    closed_at: f.closed_at.clone(),
+                    state: f.state.clone(),
+                    why: vec![*why],
+                    notification: None,
+                });
+            }
+        }
+    }
+    for n in notifications {
+        let item = pr::ItemRef::from_notification(n);
+        let key = item
+            .as_ref()
+            .map(key_of)
+            .unwrap_or_else(|| format!("thread:{}", n.id));
+        match at.get(&key) {
+            Some(&i) => {
+                let e = &mut out[i];
+                if n.updated_at > e.updated_at {
+                    e.updated_at = n.updated_at.clone();
+                }
+                e.notification = Some(n.clone());
+            }
+            None => {
+                at.insert(key, out.len());
+                out.push(Entry {
+                    item,
+                    title: n.subject.title.clone(),
+                    author: String::new(),
+                    updated_at: n.updated_at.clone(),
+                    closed_at: String::new(),
+                    state: String::new(),
+                    why: Vec::new(),
+                    notification: Some(n.clone()),
+                });
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Placing
+
+/// What was read of an item.
+#[derive(Clone, Debug)]
+pub enum Details {
+    Pull(Box<pr::Pull>),
+    Issue(Box<pr::Issue>),
+}
+
+impl Details {
+    pub fn updated_at(&self) -> &str {
+        match self {
+            Details::Pull(p) => &p.updated_at,
+            Details::Issue(i) => &i.updated_at,
+        }
+    }
+}
+
+/// The groups of the queue, in the order they show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Group {
+    NeedsReview,
+    Mentions,
+    Yours,
+    Ready,
+    Other,
+    Done,
+}
+
+impl Group {
+    pub const ALL: [Group; 6] = [
+        Group::NeedsReview,
+        Group::Mentions,
+        Group::Yours,
+        Group::Ready,
+        Group::Other,
+        Group::Done,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::NeedsReview => "Needs your review",
+            Group::Mentions => "Mentions",
+            Group::Yours => "Your pull requests",
+            Group::Ready => "Ready to merge",
+            Group::Other => "Other",
+            Group::Done => "Done today",
+        }
+    }
+}
+
+/// Whose move it is, for the bar above the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    OnYou,
+    OnOthers,
+    Ready,
+    Done,
+    /// Counted nowhere: a notification that asks nothing of anyone.
+    None,
+}
+
+/// The row's round icon: what kind of thing it is, in which state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    Pull,
+    Issue,
+    Mention,
+    Merge,
+    Done,
+    Closed,
+    Ci,
+    Other,
+}
+
+/// An entry in its place, with what its row says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub group: Group,
+    pub lane: Lane,
+    pub mark: Mark,
+    /// The monospace line under the title: `#34 · rik · +487 −0`.
+    pub sub: String,
+}
+
+/// `+9.2k`: changes counted short.
+pub fn short_count(n: u32) -> String {
+    if n >= 10_000 {
+        format!("{}k", n / 1000)
+    } else if n >= 1000 {
+        format!("{:.1}k", n as f32 / 1000.)
+    } else {
+        n.to_string()
+    }
+}
+
+fn closed_since(at: &str, day_start: u64) -> bool {
+    crate::ci::parse_time(at).is_some_and(|t| t >= day_start)
+}
+
+/// Where an entry goes, seen by `me`. None for something closed before today:
+/// nothing is left to do with it. `day_start` is the start of the local day,
+/// in unix seconds.
+pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> Option<Placed> {
+    let num = e
+        .item
+        .as_ref()
+        .map(|i| format!("#{}", i.number))
+        .unwrap_or_default();
+    let reason = e
+        .notification
+        .as_ref()
+        .map(|n| n.reason.as_str())
+        .unwrap_or("");
+    let mentioned = e.why.contains(&Why::Mentioned) || matches!(reason, "mention" | "team_mention");
+    let assigned = e.why.contains(&Why::Assigned) || reason == "assign";
+    let mine = |login: &str| !login.is_empty() && login.eq_ignore_ascii_case(me);
+    let join = |parts: &[&str]| {
+        parts
+            .iter()
+            .filter(|p| !p.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+
+    match details {
+        Some(Details::Pull(p)) => {
+            let changes = format!(
+                "+{} −{}",
+                short_count(p.additions),
+                short_count(p.deletions)
+            );
+            let author = p.author.login.as_str();
+            if !p.open() {
+                let at = if p.merged() {
+                    &p.merged_at
+                } else {
+                    &p.closed_at
+                };
+                if !closed_since(at, day_start) {
+                    return None;
+                }
+                let what = if p.merged() { "merged" } else { "closed" };
+                let mark = if p.merged() { Mark::Done } else { Mark::Closed };
+                return Some(Placed {
+                    group: Group::Done,
+                    lane: Lane::Done,
+                    mark,
+                    sub: join(&[&num, what, author]),
+                });
+            }
+            let waiting = pr::waiting_on(p, me);
+            let blockers = pr::blockers(p);
+            let verdict = pr::my_verdict(p, me);
+            let approved_by_me = verdict.is_some_and(|r| r.state == "APPROVED");
+            if let WaitingOn::You(why) = &waiting {
+                if mine(author) {
+                    return Some(Placed {
+                        group: Group::Yours,
+                        lane: Lane::OnYou,
+                        mark: Mark::Pull,
+                        sub: join(&[&num, why]),
+                    });
+                }
+                return Some(Placed {
+                    group: Group::NeedsReview,
+                    lane: Lane::OnYou,
+                    mark: Mark::Pull,
+                    sub: join(&[&num, author, &changes]),
+                });
+            }
+            if blockers.is_empty() && (mine(author) || approved_by_me) {
+                let checks = pr::checks_summary(p);
+                let by = if approved_by_me {
+                    "approved by you".to_string()
+                } else {
+                    approval_text(p)
+                };
+                let passed = match checks.passed {
+                    0 => String::new(),
+                    1 => "1 check passed".into(),
+                    n => format!("{n} checks passed"),
+                };
+                return Some(Placed {
+                    group: Group::Ready,
+                    lane: Lane::Ready,
+                    mark: Mark::Merge,
+                    sub: join(&[&num, &by, &passed]),
+                });
+            }
+            if mine(author) {
+                return Some(Placed {
+                    group: Group::Yours,
+                    lane: Lane::OnOthers,
+                    mark: Mark::Pull,
+                    sub: join(&[&num, &waiting_text(&waiting)]),
+                });
+            }
+            if mentioned || assigned {
+                let asked = if assigned {
+                    "assigned to you".to_string()
+                } else {
+                    format!("{author} mentioned you")
+                };
+                return Some(Placed {
+                    group: Group::Mentions,
+                    lane: Lane::OnYou,
+                    mark: Mark::Mention,
+                    sub: join(&[&num, &asked]),
+                });
+            }
+            if let Some(v) = verdict {
+                let gave = if v.state == "APPROVED" {
+                    "you approved"
+                } else {
+                    "you asked for changes"
+                };
+                let at = crate::ci::parse_time(&v.submitted_at).unwrap_or(0);
+                let group = if at >= day_start {
+                    Group::Done
+                } else {
+                    Group::Other
+                };
+                let mark = if group == Group::Done {
+                    Mark::Done
+                } else {
+                    Mark::Pull
+                };
+                return Some(Placed {
+                    group,
+                    lane: Lane::OnOthers,
+                    mark,
+                    sub: join(&[&num, gave, &waiting_text(&waiting)]),
+                });
+            }
+            Some(Placed {
+                group: Group::Other,
+                lane: Lane::None,
+                mark: Mark::Pull,
+                sub: join(&[&num, author, &waiting_text(&waiting)]),
+            })
+        }
+        Some(Details::Issue(i)) => {
+            let author = i.author.login.as_str();
+            if !i.open() {
+                if !closed_since(&i.closed_at, day_start) {
+                    return None;
+                }
+                return Some(Placed {
+                    group: Group::Done,
+                    lane: Lane::Done,
+                    mark: Mark::Closed,
+                    sub: join(&[&num, "issue", "closed"]),
+                });
+            }
+            let assigned = assigned || i.assignees.iter().any(|a| mine(&a.login));
+            if assigned || mentioned {
+                let asked = if assigned {
+                    "assigned to you".to_string()
+                } else {
+                    format!("{author} mentioned you")
+                };
+                return Some(Placed {
+                    group: Group::Mentions,
+                    lane: Lane::OnYou,
+                    mark: Mark::Mention,
+                    sub: join(&[&num, "issue", &asked]),
+                });
+            }
+            Some(Placed {
+                group: Group::Other,
+                lane: Lane::None,
+                mark: Mark::Issue,
+                sub: join(&[&num, "issue", author]),
+            })
+        }
+        None => place_unread(e, &num, reason, mentioned, assigned, day_start, &join),
+    }
+}
+
+/// Where an entry goes before its details are read: by where it was found.
+fn place_unread(
+    e: &Entry,
+    num: &str,
+    reason: &str,
+    mentioned: bool,
+    assigned: bool,
+    day_start: u64,
+    join: &dyn Fn(&[&str]) -> String,
+) -> Option<Placed> {
+    let author = e.author.as_str();
+    let issue = e.item.as_ref().is_some_and(|i| i.kind == ItemKind::Issue);
+    let what = if issue { "issue" } else { "" };
+    if e.why.contains(&Why::ClosedToday) || matches!(e.state.as_str(), "closed" | "merged") {
+        if !closed_since(&e.closed_at, day_start) {
+            return None;
+        }
+        let merged = e.state == "merged";
+        let mark = if merged { Mark::Done } else { Mark::Closed };
+        return Some(Placed {
+            group: Group::Done,
+            lane: Lane::Done,
+            mark,
+            sub: join(&[num, if merged { "merged" } else { "closed" }, author]),
+        });
+    }
+    if e.why.contains(&Why::ReviewRequested) || reason == "review_requested" {
+        return Some(Placed {
+            group: Group::NeedsReview,
+            lane: Lane::OnYou,
+            mark: Mark::Pull,
+            sub: join(&[num, author]),
+        });
+    }
+    if mentioned || assigned {
+        let asked = if assigned {
+            "assigned to you".to_string()
+        } else if author.is_empty() {
+            "mentioned you".into()
+        } else {
+            format!("{author} mentioned you")
+        };
+        return Some(Placed {
+            group: Group::Mentions,
+            lane: Lane::OnYou,
+            mark: Mark::Mention,
+            sub: join(&[num, what, &asked]),
+        });
+    }
+    if e.why.contains(&Why::Authored) || reason == "author" && !issue && e.item.is_some() {
+        return Some(Placed {
+            group: Group::Yours,
+            lane: Lane::OnOthers,
+            mark: Mark::Pull,
+            sub: join(&[num, "your pull request"]),
+        });
+    }
+    if e.why.contains(&Why::ReviewedToday) {
+        return Some(Placed {
+            group: Group::Done,
+            lane: Lane::OnOthers,
+            mark: Mark::Done,
+            sub: join(&[num, "you reviewed it today"]),
+        });
+    }
+    // Only an unread notification keeps something here that no search found.
+    if !e.unread() {
+        return None;
+    }
+    let mark = match (
+        e.item.as_ref().map(|i| i.kind),
+        e.notification.as_ref().map(Notification::kind),
+    ) {
+        (Some(ItemKind::Pull), _) => Mark::Pull,
+        (Some(ItemKind::Issue), _) => Mark::Issue,
+        (None, Some(Kind::Ci)) => Mark::Ci,
+        _ => Mark::Other,
+    };
+    let label = super::reason_label(reason);
+    let noun = e
+        .notification
+        .as_ref()
+        .map(|n| n.kind().noun())
+        .unwrap_or("");
+    Some(Placed {
+        group: Group::Other,
+        lane: Lane::None,
+        mark,
+        sub: join(&[num, if num.is_empty() { noun } else { what }, &label]),
+    })
+}
+
+/// Who approved, for a ready pull request that isn't the user's approval.
+fn approval_text(p: &pr::Pull) -> String {
+    let who: Vec<&str> = p
+        .latest_reviews
+        .iter()
+        .filter(|r| r.state == "APPROVED")
+        .map(|r| r.author.login.as_str())
+        .collect();
+    match who.as_slice() {
+        [] => "no review needed".into(),
+        [one] => format!("approved by {one}"),
+        [one, rest @ ..] => format!("approved by {one} +{}", rest.len()),
+    }
+}
+
+/// "waiting on ana, Core" in a row's line.
+pub fn waiting_text(w: &WaitingOn) -> String {
+    match w {
+        WaitingOn::You(why) => format!("on you: {why}"),
+        WaitingOn::Author => "waiting on the author".into(),
+        WaitingOn::Reviewers(who) if who.is_empty() => "needs a reviewer".into(),
+        WaitingOn::Reviewers(who) => format!("waiting on {}", who.join(", ")),
+        WaitingOn::Checks => "waiting on checks".into(),
+        WaitingOn::Nobody => "nothing pending".into(),
+    }
+}
+
+/// The queue laid out: each group's rows in order, and the lane counts.
+#[derive(Clone, Debug, Default)]
+pub struct Queue {
+    pub rows: Vec<(Entry, Placed)>,
+    pub on_you: usize,
+    pub on_others: usize,
+    pub ready: usize,
+    pub done: usize,
+}
+
+impl Queue {
+    pub fn group(&self, g: Group) -> impl Iterator<Item = &(Entry, Placed)> {
+        self.rows.iter().filter(move |(_, p)| p.group == g)
+    }
+
+    pub fn count(&self, g: Group) -> usize {
+        self.group(g).count()
+    }
+
+    /// Rows in the order they show, the done ones last.
+    pub fn tracked(&self) -> usize {
+        self.rows.len()
+    }
+}
+
+/// Every entry placed, then sorted: groups in their order; what waits on the
+/// user longest first, what is done newest first.
+pub fn build(
+    entries: &[Entry],
+    details: &HashMap<String, Details>,
+    me: &str,
+    day_start: u64,
+) -> Queue {
+    let mut q = Queue::default();
+    for e in entries {
+        let Some(p) = place(e, details.get(&e.key()), me, day_start) else {
+            continue;
+        };
+        match p.lane {
+            Lane::OnYou => q.on_you += 1,
+            Lane::OnOthers => q.on_others += 1,
+            Lane::Ready => q.ready += 1,
+            Lane::Done => q.done += 1,
+            Lane::None => {}
+        }
+        q.rows.push((e.clone(), p));
+    }
+    // Done counts what finished today, whichever lane it came from.
+    q.done = q
+        .rows
+        .iter()
+        .filter(|(_, p)| p.group == Group::Done)
+        .count();
+    q.on_others = q
+        .rows
+        .iter()
+        .filter(|(_, p)| p.lane == Lane::OnOthers && p.group != Group::Done)
+        .count();
+    q.rows.sort_by(|(a, pa), (b, pb)| {
+        pa.group.cmp(&pb.group).then_with(|| match pa.group {
+            Group::Done | Group::Other => b.updated_at.cmp(&a.updated_at),
+            _ => a.updated_at.cmp(&b.updated_at),
+        })
+    });
+    q
+}
+
+// ---------------------------------------------------------------------------
+// Inbox-zero streak
+
+/// The days (`2026-11-14`, local) the "on you" count reached zero, kept in
+/// `github-streak.json` next to `github.json`.
+fn streak_file() -> std::path::PathBuf {
+    super::file().with_file_name("github-streak.json")
+}
+
+pub fn load_zero_days() -> Vec<String> {
+    std::fs::read(streak_file())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Adds `day` when it isn't there yet; keeps the last 60 days.
+pub fn record_zero_day(days: &mut Vec<String>, day: &str) -> bool {
+    if days.iter().any(|d| d == day) {
+        return false;
+    }
+    days.push(day.to_string());
+    days.sort();
+    let extra = days.len().saturating_sub(60);
+    days.drain(..extra);
+    true
+}
+
+pub fn store_zero_days(days: &[String]) {
+    let path = streak_file();
+    if let Err(e) = crate::durable::write(&path, &serde_json::to_vec(days).unwrap_or_default()) {
+        eprintln!("arakun: could not save {}: {e}", path.display());
+    }
+}
+
+/// How many days in a row reached zero, counting back from `recent[0]`
+/// (today). Today not reached yet doesn't break a streak that held until
+/// yesterday. `recent` is today first, then each day before.
+pub fn streak(days: &[String], recent: &[String]) -> usize {
+    let has = |d: &String| days.contains(d);
+    let start = usize::from(recent.first().is_some_and(|d| !has(d)));
+    recent.iter().skip(start).take_while(|d| has(d)).count()
+}
+
+/// The local day of unix time `t`, as `2026-11-14`.
+pub fn day_key(t: u64) -> String {
+    match crate::platform::local_time(t) {
+        Some(l) => format!("{:04}-{:02}-{:02}", l.year, l.month + 1, l.day),
+        None => String::new(),
+    }
+}
+
+/// The start of the local day `days_back` days before the one of `now`.
+pub fn day_start(now: u64, days_back: i32) -> u64 {
+    crate::platform::local_time(now)
+        .and_then(|l| crate::platform::from_local(l.year, l.month, l.day - days_back, 0, 0))
+        .unwrap_or_else(|| (now / 86_400).saturating_sub(days_back.max(0) as u64) * 86_400)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Owner, Repository, Subject};
+    use super::*;
+
+    const ME: &str = "KarloAldrete";
+    const DAY: u64 = 1_763_078_400; // 2025-11-14T00:00:00Z
+
+    const SEARCH: &str = r#"[{"author":{"id":"U_1","is_bot":false,"login":"rikvisser-dev","type":"User","url":"https://github.com/rikvisser-dev"},
+      "createdAt":"2026-11-14T22:21:33Z","isDraft":false,"number":55,"repository":{"name":"arakun","nameWithOwner":"ArakunHQ/arakun"},
+      "state":"open","title":"ci: run clippy and tests on macos","updatedAt":"2026-11-14T22:22:11Z","url":"https://github.com/ArakunHQ/arakun/pull/55"},
+      {"author":null,"number":16,"repository":{"name":"Habitae","nameWithOwner":"KarloAldrete/Habitae"},"isPullRequest":false,
+      "state":"open","title":"landing review","updatedAt":"2026-06-14T05:01:21Z","url":"https://github.com/KarloAldrete/Habitae/issues/16","closedAt":null}]"#;
+
+    fn found(why: Why, repo: &str, n: u64, state: &str, pull: Option<bool>) -> (Why, Found) {
+        let page = if pull == Some(false) {
+            "issues"
+        } else {
+            "pull"
+        };
+        (
+            why,
+            Found {
+                number: n,
+                title: format!("title {n}"),
+                repository: FoundRepo {
+                    name_with_owner: repo.into(),
+                },
+                author: FoundAuthor {
+                    login: "rik".into(),
+                },
+                state: state.into(),
+                is_pull_request: pull,
+                updated_at: "2025-11-14T10:00:00Z".into(),
+                url: format!("https://github.com/{repo}/{page}/{n}"),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn note(id: &str, reason: &str, kind: &str, url: Option<&str>) -> Notification {
+        Notification {
+            id: id.into(),
+            unread: true,
+            reason: reason.into(),
+            updated_at: "2025-11-14T12:00:00Z".into(),
+            subject: Subject {
+                title: format!("note {id}"),
+                url: url.map(str::to_string),
+                latest_comment_url: None,
+                kind: kind.into(),
+            },
+            repository: Repository {
+                full_name: "ArakunHQ/arakun".into(),
+                html_url: "https://github.com/ArakunHQ/arakun".into(),
+                owner: Owner {
+                    login: "ArakunHQ".into(),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn search_results_are_read() {
+        let list = parse_found(SEARCH.as_bytes()).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].repository.name_with_owner, "ArakunHQ/arakun");
+        assert_eq!(list[0].author.login, "rikvisser-dev");
+        assert_eq!(
+            list[0].item(Why::ReviewRequested).unwrap().kind,
+            ItemKind::Pull
+        );
+        assert_eq!(list[1].author.login, "");
+        let issue = list[1].item(Why::Mentioned).unwrap();
+        assert_eq!(
+            (issue.repo.as_str(), issue.number, issue.kind),
+            ("KarloAldrete/Habitae", 16, ItemKind::Issue)
+        );
+    }
+
+    #[test]
+    fn searches_ask_gh_for_the_right_things() {
+        let args = search_args(Why::ReviewRequested, "2026-11-14", "2026-10-15");
+        assert_eq!(
+            &args[..4],
+            ["search", "prs", "--review-requested=@me", "--state=open"]
+        );
+        assert!(args.ends_with(&["--json".into(), PULL_FIELDS.into()]));
+        let args = search_args(Why::Mentioned, "2026-11-14", "2026-10-15");
+        assert!(
+            args.contains(&"--include-prs".into())
+                && args.contains(&"--updated=>=2026-10-15".into()),
+            "{args:?}"
+        );
+        assert!(args.ends_with(&["--json".into(), ISSUE_FIELDS.into()]));
+        let args = search_args(Why::ClosedToday, "2026-11-14", "2026-10-15");
+        assert!(
+            args.contains(&"--closed=>=2026-11-14".into())
+                && args.contains(&"--involves=@me".into()),
+            "{args:?}"
+        );
+        for why in Why::ALL {
+            assert!(search_args(why, "a", "b").contains(&"--archived=false".into()));
+        }
+    }
+
+    #[test]
+    fn sources_join_into_one_entry_per_item() {
+        let list = [
+            found(Why::ReviewRequested, "ArakunHQ/arakun", 34, "open", None),
+            found(Why::Mentioned, "arakunhq/arakun", 34, "open", Some(true)),
+            found(Why::Assigned, "ArakunHQ/arakun", 33, "open", Some(false)),
+        ];
+        let notes = [
+            note(
+                "1",
+                "review_requested",
+                "PullRequest",
+                Some("https://api.github.com/repos/ArakunHQ/arakun/pulls/34"),
+            ),
+            note("2", "ci_activity", "CheckSuite", None),
+        ];
+        let entries = gather(&notes, &list);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].why, [Why::ReviewRequested, Why::Mentioned]);
+        assert_eq!(
+            entries[0].notification.as_ref().map(|n| n.id.as_str()),
+            Some("1")
+        );
+        // The notification is newer than the search's answer.
+        assert_eq!(entries[0].updated_at, "2025-11-14T12:00:00Z");
+        assert_eq!(entries[1].item.as_ref().unwrap().kind, ItemKind::Issue);
+        assert_eq!(entries[2].key(), "thread:2");
+        assert!(entries[2].item.is_none());
+    }
+
+    #[test]
+    fn before_details_an_entry_goes_where_it_was_found() {
+        let place_of = |e: &Entry| place(e, None, ME, DAY).map(|p| (p.group, p.lane));
+        let entries = gather(
+            &[
+                note("9", "ci_activity", "CheckSuite", None),
+                note("8", "subscribed", "Release", None),
+            ],
+            &[
+                found(Why::ReviewRequested, "o/r", 1, "open", None),
+                found(Why::Mentioned, "o/r", 2, "open", Some(false)),
+                found(Why::Authored, "o/r", 3, "open", None),
+                found(Why::ReviewedToday, "o/r", 4, "open", None),
+            ],
+        );
+        assert_eq!(
+            place_of(&entries[0]),
+            Some((Group::NeedsReview, Lane::OnYou))
+        );
+        assert_eq!(place_of(&entries[1]), Some((Group::Mentions, Lane::OnYou)));
+        assert_eq!(
+            place(&entries[1], None, ME, DAY).unwrap().sub,
+            "#2 · issue · rik mentioned you"
+        );
+        assert_eq!(place_of(&entries[2]), Some((Group::Yours, Lane::OnOthers)));
+        assert_eq!(place_of(&entries[3]), Some((Group::Done, Lane::OnOthers)));
+        assert_eq!(place_of(&entries[4]), Some((Group::Other, Lane::None)));
+        assert_eq!(place(&entries[4], None, ME, DAY).unwrap().mark, Mark::Ci);
+
+        // Closed today is done; closed before today is gone.
+        let mut closed =
+            gather(&[], &[found(Why::ClosedToday, "o/r", 5, "merged", None)]).remove(0);
+        closed.closed_at = "2025-11-14T09:00:00Z".into();
+        assert_eq!(place_of(&closed), Some((Group::Done, Lane::Done)));
+        closed.closed_at = "2025-11-13T09:00:00Z".into();
+        assert_eq!(place_of(&closed), None);
+
+        // A read notification that no search found is not kept.
+        let mut read = note(
+            "7",
+            "subscribed",
+            "Issue",
+            Some("https://api.github.com/repos/o/r/issues/9"),
+        );
+        read.unread = false;
+        assert_eq!(place_of(&gather(&[read], &[]).remove(0)), None);
+    }
+
+    fn pull(json: &str) -> Details {
+        let mut value: serde_json::Value = serde_json::from_str(
+            r#"{"number":34,"title":"t","state":"OPEN","author":{"login":"rik"},"baseRefName":"main","headRefName":"x",
+            "mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"","additions":487,"deletions":0,
+            "updatedAt":"2025-11-14T10:00:00Z"}"#,
+        )
+        .unwrap();
+        let extra: serde_json::Value = serde_json::from_str(json).unwrap();
+        for (k, v) in extra.as_object().unwrap() {
+            value[k] = v.clone();
+        }
+        Details::Pull(Box::new(serde_json::from_value(value).unwrap()))
+    }
+
+    #[test]
+    fn details_decide_the_group() {
+        let e = gather(&[], &[found(Why::ReviewRequested, "o/r", 34, "open", None)]).remove(0);
+        let at =
+            |d: &Details| place(&e, Some(d), ME, DAY).map(|p| (p.group, p.lane, p.mark, p.sub));
+
+        let asked = pull(
+            r#"{"reviewRequests":[{"login":"karloaldrete"}],"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED"}"#,
+        );
+        assert_eq!(
+            at(&asked),
+            Some((
+                Group::NeedsReview,
+                Lane::OnYou,
+                Mark::Pull,
+                "#34 · rik · +487 −0".into()
+            ))
+        );
+
+        let approved = pull(
+            r#"{"reviewDecision":"APPROVED","reviews":[{"author":{"login":"KarloAldrete"},"state":"APPROVED","submittedAt":"2025-11-13T10:00:00Z"}],
+            "statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}"#,
+        );
+        assert_eq!(
+            at(&approved),
+            Some((
+                Group::Ready,
+                Lane::Ready,
+                Mark::Merge,
+                "#34 · approved by you · 1 check passed".into()
+            ))
+        );
+
+        let mine = pull(
+            r#"{"author":{"login":"KarloAldrete"},"reviewRequests":[{"login":"ana"}],"reviewDecision":"REVIEW_REQUIRED"}"#,
+        );
+        assert_eq!(
+            at(&mine),
+            Some((
+                Group::Yours,
+                Lane::OnOthers,
+                Mark::Pull,
+                "#34 · waiting on ana".into()
+            ))
+        );
+
+        let mine_conflicts =
+            pull(r#"{"author":{"login":"KarloAldrete"},"mergeable":"CONFLICTING"}"#);
+        assert_eq!(
+            at(&mine_conflicts).map(|p| (p.0, p.1)),
+            Some((Group::Yours, Lane::OnYou))
+        );
+
+        let changes_today = pull(
+            r#"{"reviewDecision":"CHANGES_REQUESTED","latestReviews":[{"author":{"login":"KarloAldrete"},"state":"CHANGES_REQUESTED"}],
+            "reviews":[{"author":{"login":"KarloAldrete"},"state":"CHANGES_REQUESTED","submittedAt":"2025-11-14T11:00:00Z"}]}"#,
+        );
+        assert_eq!(
+            at(&changes_today).map(|p| (p.0, p.1)),
+            Some((Group::Done, Lane::OnOthers))
+        );
+
+        let merged = pull(
+            r#"{"state":"MERGED","mergedAt":"2025-11-14T08:00:00Z","closedAt":"2025-11-14T08:00:00Z"}"#,
+        );
+        assert_eq!(
+            at(&merged).map(|p| (p.0, p.1, p.3)),
+            Some((Group::Done, Lane::Done, "#34 · merged · rik".into()))
+        );
+        let merged_before = pull(r#"{"state":"MERGED","mergedAt":"2025-11-12T08:00:00Z"}"#);
+        assert_eq!(at(&merged_before), None);
+    }
+
+    #[test]
+    fn the_queue_counts_lanes_and_sorts_groups() {
+        let entries = gather(
+            &[],
+            &[
+                found(Why::ReviewRequested, "o/r", 1, "open", None),
+                found(Why::Authored, "o/r", 2, "open", None),
+                found(Why::Mentioned, "o/r", 3, "open", Some(false)),
+            ],
+        );
+        let mut older = entries[0].clone();
+        older.item.as_mut().unwrap().number = 9;
+        older.updated_at = "2025-11-13T10:00:00Z".into();
+        let mut all = entries.clone();
+        all.push(older);
+        let q = build(&all, &HashMap::new(), ME, DAY);
+        assert_eq!(
+            (q.on_you, q.on_others, q.ready, q.done, q.tracked()),
+            (3, 1, 0, 0, 4)
+        );
+        let order: Vec<u64> = q
+            .rows
+            .iter()
+            .map(|(e, _)| e.item.as_ref().unwrap().number)
+            .collect();
+        // Waiting longest first within a group.
+        assert_eq!(order, [9, 1, 3, 2]);
+        assert_eq!(q.count(Group::NeedsReview), 2);
+    }
+
+    #[test]
+    fn the_streak_counts_days_in_a_row() {
+        let days: Vec<String> = ["2026-11-10", "2026-11-12", "2026-11-13"]
+            .map(String::from)
+            .to_vec();
+        let recent: Vec<String> = ["2026-11-14", "2026-11-13", "2026-11-12", "2026-11-11"]
+            .map(String::from)
+            .to_vec();
+        // Today not reached yet: the streak up to yesterday still holds.
+        assert_eq!(streak(&days, &recent), 2);
+        let mut with_today = days.clone();
+        assert!(record_zero_day(&mut with_today, "2026-11-14"));
+        assert!(!record_zero_day(&mut with_today, "2026-11-14"));
+        assert_eq!(streak(&with_today, &recent), 3);
+        assert_eq!(streak(&[], &recent), 0);
+        let mut many: Vec<String> = (0..70).map(|i| format!("2026-01-{i:02}")).collect();
+        record_zero_day(&mut many, "2026-12-01");
+        assert_eq!(many.len(), 60);
+        assert_eq!(many.last().map(String::as_str), Some("2026-12-01"));
+    }
+
+    #[test]
+    fn counts_read_short() {
+        assert_eq!(short_count(487), "487");
+        assert_eq!(short_count(9_200), "9.2k");
+        assert_eq!(short_count(12_345), "12k");
+    }
+}

@@ -32,6 +32,7 @@ pub enum Target {
     Tasks,
     Runs,
     Branches,
+    GitHub,
     #[cfg(feature = "coderlabs")]
     Canvas,
     /// A branch of the visible project, shown in the Branches tab.

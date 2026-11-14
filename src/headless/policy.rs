@@ -1469,6 +1469,8 @@ fn simple(
                     args.get(1).copied(),
                     Some("search" | "get" | "list" | "context")
                 ) => {}
+            // Only writes a local draft; posting it takes the user, in the GitHub tab.
+            Some("github") if args.get(1) == Some(&"draft") => {}
             Some("agent")
                 if matches!(
                     args.get(1).copied(),
@@ -2789,6 +2791,7 @@ mod tests {
             "curl -s https://api.example.com/status",
             "systemctl --user status pipewire",
             "arakun mem search workers",
+            "arakun github draft o/r#7 --verdict approve --body-file /tmp/review.md --agent Claude",
             "cd src && ls",
             "jq .name package.json",
             "for f in *.rs; do wc -l $f; done",

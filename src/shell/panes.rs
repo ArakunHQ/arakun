@@ -132,6 +132,7 @@ impl Shell {
             TabKind::Team => self.team_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::PostHog => self.posthog_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Branches => self.branches_view.update(cx, |v, cx| v.focus(window, cx)),
+            TabKind::GitHub => self.github_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Phone => self.phone_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Usage => self.usage_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Gallery => self.gallery_view.update(cx, |v, cx| v.focus(window, cx)),

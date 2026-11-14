@@ -31,6 +31,8 @@ mod fetch;
 mod gallery_view;
 mod git;
 mod git_dialogs;
+mod github;
+mod github_view;
 mod headless;
 mod highlight;
 mod history;

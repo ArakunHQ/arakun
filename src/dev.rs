@@ -333,6 +333,9 @@ fn start(args: &[String]) -> Result<String, String> {
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_RUNTIME_DIR", root.join("run"))
             .env("ARAKUN_CI", "off")
+            // The test Arakun runs with the person's own gh session: it may show
+            // their notifications but must not mark them read.
+            .env("ARAKUN_GITHUB", "readonly")
             .env(ENV, format!("{width}x{height}")),
         &root.join("arakun.log"),
     )

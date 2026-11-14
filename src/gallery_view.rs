@@ -753,6 +753,90 @@ impl Render for GalleryView {
                 Some(ui::button("ds-empty", "Show 90 days", ButtonKind::Outline, true).into_any_element()),
             ));
 
+        // ---- work surfaces --------------------------------------------------------------------
+        let amber = theme::accent();
+        let green: Hsla = theme::success().into();
+        let blue: Hsla = theme::link().into();
+        let surfaces = ui::surface_card()
+            .w(px(440.))
+            .child(
+                row()
+                    .gap(px(11.))
+                    .px(px(16.))
+                    .pt(px(14.))
+                    .pb(px(12.))
+                    .child(ui::icon_chip("github", 34., None))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .child(ui::text(Type::Heading, theme::text(), "Review queue"))
+                            .child(ui::text(
+                                Type::Label,
+                                theme::text_subtle(),
+                                "ArakunHQ · 11 tracked",
+                            )),
+                    )
+                    .child(ui::pill("4 waiting on you", amber)),
+            )
+            .child(div().px(px(16.)).child(ui::segment_bar(
+                &[
+                    (4., amber),
+                    (2., blue),
+                    (1., green),
+                    (4., theme::border_strong()),
+                ],
+                7.,
+            )))
+            .child(
+                ui::inset_panel().m(px(10.)).child(
+                    row()
+                        .gap(px(11.))
+                        .px(px(14.))
+                        .py(px(8.))
+                        .child(ui::icon_chip("git-pull-request", 28., Some(amber)))
+                        .child(div().flex_1().child(ui::text(
+                            Type::Body,
+                            theme::text(),
+                            "ci: add a weekly report on runner sizing",
+                        )))
+                        .child(ui::mini_squares(&[green, green, green, amber], 9.)),
+                ),
+            );
+        let pills = row()
+            .gap(px(8.))
+            .child(ui::key_pill(
+                "ds-kp-1",
+                None,
+                "Comment",
+                Some("C"),
+                ui::PillKind::Normal,
+                true,
+            ))
+            .child(ui::key_pill(
+                "ds-kp-2",
+                None,
+                "Discard",
+                None,
+                ui::PillKind::Quiet,
+                true,
+            ))
+            .child(ui::key_pill(
+                "ds-kp-3",
+                Some(("tick02", None)),
+                "Approve",
+                Some("A"),
+                ui::PillKind::Primary,
+                true,
+            ))
+            .child(ui::outline_tab("ds-ot-1", "Timeline", None, true))
+            .child(ui::outline_tab("ds-ot-2", "Files", Some("8".into()), false))
+            .child(ui::key_hint("Next", "J"))
+            .child(ui::icon_tile("git-pull-request", 26., green))
+            .child(ui::avatar("rikvisser-dev", 24.))
+            .child(ui::avatar("karlo", 24.));
+
         let body = div()
             .flex()
             .flex_col()
@@ -791,6 +875,11 @@ impl Render for GalleryView {
                     .child(specimen("Stats", stats))
                     .child(row().items_start().gap(px(40.)).child(specimen("Limits", limits)).child(specimen("Key and value", kvs)))
                     .child(specimen("Area chart", chart)),
+            ))
+            .child(section(
+                "Work surfaces",
+                "A card of its own inside a view, the darker panel nested in it, round status chips, pills with their key, outlined tabs.",
+                div().flex().flex_col().gap(px(20.)).child(specimen("Card and inset", surfaces)).child(specimen("Pills, tabs and people", pills)),
             ))
             .child(section(
                 "Feedback",

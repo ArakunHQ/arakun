@@ -173,6 +173,9 @@ impl Shell {
                 TabKind::Branches => icon("git-branch", 14.)
                     .text_color(theme::content())
                     .into_any_element(),
+                TabKind::GitHub => icon("github", 14.)
+                    .text_color(theme::content())
+                    .into_any_element(),
                 TabKind::Cloudflare => icon("internet", 14.)
                     .text_color(theme::content())
                     .into_any_element(),

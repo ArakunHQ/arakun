@@ -61,6 +61,8 @@ pub(super) enum Open {
     Branches {
         root: PathBuf,
     },
+    /// A GitHub notification, by thread id; the inbox when a notice was about several.
+    GitHub(Option<String>),
     /// A CoderSpace task, by id.
     #[cfg(feature = "coderlabs")]
     Task(String),
@@ -84,6 +86,8 @@ impl Open {
                 run: Some(run),
             } => format!("open:run:{run}:{}", root.display()).into(),
             Open::Branches { root } => format!("open:branches:{}", root.display()).into(),
+            Open::GitHub(None) => "open:github".into(),
+            Open::GitHub(Some(thread)) => format!("open:github:{thread}").into(),
             #[cfg(feature = "coderlabs")]
             Open::Task(id) => format!("open:task:{id}").into(),
             Open::Cloudflare => "open:cloudflare".into(),
@@ -114,6 +118,8 @@ impl Open {
                 })
             }
             ("branches", root) if !root.is_empty() => Some(Open::Branches { root: root.into() }),
+            ("github", "") => Some(Open::GitHub(None)),
+            ("github", thread) => Some(Open::GitHub(Some(thread.to_string()))),
             #[cfg(feature = "coderlabs")]
             ("task", id) if !id.is_empty() => Some(Open::Task(id.to_string())),
             ("cloudflare", "") => Some(Open::Cloudflare),
@@ -223,6 +229,7 @@ impl Shell {
                     self.open_branches_tab(window, cx);
                 }
             }
+            Some(Open::GitHub(thread)) => self.open_github_notice(thread, window, cx),
             #[cfg(feature = "coderlabs")]
             Some(Open::Task(id)) => {
                 self.open_tasks_tab(window, cx);
@@ -627,6 +634,8 @@ mod tests {
             Open::Branches {
                 root: "/home/k/app".into(),
             },
+            Open::GitHub(None),
+            Open::GitHub(Some("27219075342".into())),
             #[cfg(feature = "coderlabs")]
             Open::Task("tsk_9".into()),
             Open::Cloudflare,

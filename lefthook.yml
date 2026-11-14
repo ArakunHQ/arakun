@@ -4,6 +4,11 @@
 # `LEFTHOOK_EXCLUDE=clippy git commit ...`. Personal changes go in
 # lefthook-local.yml, which git ignores.
 
+# In a linked worktree, git gives hooks GIT_DIR (and GIT_INDEX_FILE) pointing at
+# your repository. A test that runs `git init` and `git commit` in a temporary
+# folder would then commit to your branch, and the push would send those
+# commits. So the cargo jobs run without git's variables.
+
 # Quick checks on every commit. They run on the working tree, so changes you
 # have not staged count too.
 pre-commit:
@@ -14,7 +19,7 @@ pre-commit:
     # ci.yml; cargo-test reuses it. The app embeds phone/, so it counts too.
     - name: clippy
       glob: &rust ["*.rs", "src/*", "examples/*", "assets/*", "phone/*", "Cargo.toml", "Cargo.lock", "clippy.toml", ".cargo/*"]
-      run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE cargo clippy --locked --all-targets --no-default-features -- -D warnings
 
     # npx would download an unrelated `tsc` package if node_modules is missing.
     - name: relay-types
@@ -34,7 +39,7 @@ pre-push:
   jobs:
     - name: cargo-test
       glob: *rust
-      run: cargo test --locked --no-default-features
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE cargo test --locked --no-default-features
 
     - name: relay-tests
       root: relay/

@@ -28,6 +28,15 @@ without the `browser` feature. For browser tabs, build from source as described 
   Windows* component of Visual Studio Build Tools (selected by default in *Desktop
   development with C++*) and are on the `PATH` of the Developer PowerShell.
 
+`tools\setup-dev.ps1` installs Git, the Build Tools and Rust with winget and rustup. Add
+`-Relay` for Node, and `-Browser` to check for CMake and Ninja. It cannot add a workload
+to a Visual Studio you already have; it tells you what to add in the Visual Studio
+Installer instead. It has not been run on real Windows yet; please report what fails.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1          # -Check only reports
+```
+
 There is no need to install CEF by hand: the first build downloads the CEF 156.0.15
 distribution for Windows (a few hundred MB) into `.cef-sdk\` and copies its runtime
 (`libcef.dll`, the `.pak` files, `locales\`...) next to `arakun.exe` in

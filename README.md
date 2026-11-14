@@ -92,6 +92,10 @@ Tailscale), `cf` (Cloudflare tab).
 
 You need a recent stable Rust toolchain ([rustup](https://rustup.rs)).
 
+`tools/setup-dev.sh` (Linux and macOS) or `tools\setup-dev.ps1` (Windows) installs
+everything below for you; see [CONTRIBUTING.md](CONTRIBUTING.md#setting-up). To do it by
+hand:
+
 **Ubuntu / Debian:**
 
 ```sh

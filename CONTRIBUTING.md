@@ -34,8 +34,33 @@ without chasing every past contributor. Unsigned pull requests can't be merged.
 
 ## Setting up
 
-Follow [Build from source](README.md#build-from-source) in the README. For most
-work, build **without the browser**. You do not need CEF, and it is what CI does:
+A script installs what you need to build Arakun and run the checks CI runs: the
+system libraries, Rust with clippy, and with the flags below Node for the relay and the
+`commit-msg` hook. It asks before it installs anything, and you can run it again
+safely.
+
+```sh
+tools/setup-dev.sh --hooks             # Linux (apt or pacman) and macOS
+tools/setup-dev.sh --check             # only report what is missing
+```
+
+```powershell
+# Windows (winget; Visual Studio Build Tools asks for administrator rights)
+powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Hooks
+```
+
+`--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
+tesseract for `arakun dev`, `--build` (`-Build`) builds the tests once, and `--yes`
+(`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,
+follow [Build from source](README.md#build-from-source) in the README.
+
+**Coding agents** run `tools/setup-dev.sh --yes --relay` (on Windows,
+`tools\setup-dev.ps1 -Yes -Relay`). In Claude Code on the web, `.claude/settings.json`
+already runs it when a session starts. For other hosted agents, such as Codex cloud, put it
+in the environment's setup script.
+
+For most work, build **without the browser**. You do not need CEF, and it is what CI
+does:
 
 ```sh
 cargo run --no-default-features

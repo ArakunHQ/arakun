@@ -3,6 +3,25 @@
 These rules come from [CONTRIBUTING.md](CONTRIBUTING.md). If the two disagree,
 CONTRIBUTING.md is right; update this file to match.
 
+## Setting up
+
+If the build or a check fails because a tool or system library is missing, run the
+setup script. It does not ask questions, and you can run it again safely:
+
+```sh
+tools/setup-dev.sh --yes --relay       # Linux and macOS
+tools/setup-dev.sh --check --relay     # only report what is missing
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Yes -Relay   # Windows
+```
+
+If it says sudo needs a password, ask the user to run the command it prints. In Claude
+Code on the web, `.claude/settings.json` runs it when the session starts, and the log is
+in `$TMPDIR/arakun-setup-dev.log` (`/tmp` if `TMPDIR` is not set). Build without the
+browser (`--no-default-features`), as CI does.
+
 ## Commits and pull requests
 
 Every commit message and pull request title follows

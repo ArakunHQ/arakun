@@ -41,9 +41,12 @@ jobs:
         with:
           components: clippy
 
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Without the `browser` feature the CEF SDK is not needed. Includes design_lint.
       - name: cargo clippy
@@ -67,9 +70,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"

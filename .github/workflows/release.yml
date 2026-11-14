@@ -13,6 +13,8 @@ name: Release
 # - Dependencies resolve exactly as in ci.yml (same Cargo.toml and --locked, no
 #   rewriting of the [patch] section), so this builds wherever ci.yml does.
 #   CI_CARGO_CONFIG is not used: it only tunes the dev profile.
+# - No build cache: every release builds cold, so nothing another run saved can
+#   end up in a published binary. Depot Cache does not keep refs apart.
 
 on:
   push:
@@ -66,12 +68,6 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      # The key names the image: build scripts cached from a newer one would not
-      # run against this glibc.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-linux-ubuntu22.04
-
       - name: cargo build
         run: cargo build --release --locked --no-default-features --target x86_64-unknown-linux-gnu
 
@@ -117,10 +113,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-windows
 
       # gpui compiles its HLSL shaders with fxc.exe from the Windows SDK in
       # release builds; the runner image ships the SDK (GPUI_FXC_PATH overrides).

@@ -78,7 +78,7 @@ cargo deny check
 Some notes:
 
 - The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
-  it; it runs `cargo fmt --all`, which on its own stops at the private modules this
+  it; it runs `cargo fmt`, which on its own stops at the private modules this
   repository does not have. Format-on-save in your editor is fine.
 - `--locked` fails if `Cargo.lock` would change. If you add or update a dependency,
   commit the new `Cargo.lock` in the same pull request.

@@ -27,6 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
+
       # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
       - name: GPUI system libraries
         uses: awalsh128/cache-apt-pkgs-action@v1
@@ -54,6 +57,9 @@ jobs:
     runs-on: depot-ubuntu-24.04-8
     steps:
       - uses: actions/checkout@v4
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
 
       # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
       - name: GPUI system libraries
@@ -84,6 +90,9 @@ jobs:
         working-directory: relay
     steps:
       - uses: actions/checkout@v4
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
 
       - uses: actions/setup-node@v4
         with:

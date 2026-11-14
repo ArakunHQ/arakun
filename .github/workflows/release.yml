@@ -100,7 +100,9 @@ jobs:
 
   windows:
     name: Build (Windows x86_64)
-    runs-on: depot-windows-2025-8
+    # GitHub-hosted for now: no Depot runner picks up Windows jobs from this
+    # repository (#33). Back to depot-windows-2025-8 once that is sorted out.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 

@@ -256,6 +256,55 @@ pub fn relaunch() -> std::io::Result<()> {
     Err(std::io::Error::other("not supported on this platform"))
 }
 
+/// Gives the Dock the raccoon when arakun runs as a bare binary (`cargo run`,
+/// `target/debug/arakun`). Such a process has no bundle and so no icon: macOS shows the
+/// generic executable. Inside Arakun.app the bundle's icon is left alone, so the system
+/// can still style it.
+#[cfg(target_os = "macos")]
+pub fn set_dock_icon(png: &[u8]) {
+    use std::ffi::{c_char, c_void};
+
+    let bundled = std::env::current_exe()
+        .is_ok_and(|exe| exe.parent().is_some_and(|dir| dir.ends_with("Contents/MacOS")));
+    if bundled || png.is_empty() {
+        return;
+    }
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    type Id = *mut c_void;
+    // SAFETY: Objective-C runtime calls on the main thread (gpui's launch callback), each
+    // objc_msgSend cast to the signature of the method it sends. The alloc'ed objects are
+    // released here; setApplicationIconImage: keeps its own reference.
+    unsafe {
+        let send0: extern "C" fn(Id, Id) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
+        let send1: extern "C" fn(Id, Id, Id) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
+        let send_bytes: extern "C" fn(Id, Id, *const u8, usize) -> Id =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        let sel = |name: &std::ffi::CStr| sel_registerName(name.as_ptr());
+
+        let data = send0(objc_getClass(c"NSData".as_ptr()), sel(c"alloc"));
+        let data = send_bytes(data, sel(c"initWithBytes:length:"), png.as_ptr(), png.len());
+        if data.is_null() {
+            return;
+        }
+        let image = send0(objc_getClass(c"NSImage".as_ptr()), sel(c"alloc"));
+        let image = send1(image, sel(c"initWithData:"), data);
+        send0(data, sel(c"release"));
+        if image.is_null() {
+            return;
+        }
+        let app = send0(objc_getClass(c"NSApplication".as_ptr()), sel(c"sharedApplication"));
+        if !app.is_null() {
+            send1(app, sel(c"setApplicationIconImage:"), image);
+        }
+        send0(image, sel(c"release"));
+    }
+}
+
 /// Opens a file, folder or URL with the desktop's default application.
 pub fn open(target: impl AsRef<OsStr>) {
     #[cfg(windows)]

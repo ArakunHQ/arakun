@@ -115,6 +115,10 @@ fn main() {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             assets::load_fonts(cx);
+            #[cfg(target_os = "macos")]
+            if let Some(icon) = assets::Assets::get("brand/arakun.png") {
+                platform::set_dock_icon(&icon.data);
+            }
             cx.bind_keys([
                 // Keys a shell needs (ctrl-w, ctrl-t, alt-arrows...) stay with the terminal;
                 // on macOS `bind` makes most of them Cmd chords, which a shell never sees.

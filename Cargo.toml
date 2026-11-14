@@ -52,7 +52,7 @@ ttf-parser = "0.25"
 # its renders run on a pool of their own, below the UI thread (gpui already pulls it in)
 rayon = "1"
 # spreadsheets shown in file tabs (src/sheet.rs): xlsx, xls, xlsb and ods, pure Rust
-calamine = { version = "0.37", features = ["dates"] }
+calamine = { version = "0.38", features = ["dates"] }
 
 # the phone's remote control (src/phone): WebSocket over plain TCP on the LAN,
 # the QR code the Phone tab shows to open it, and the key in that link (0.3 is

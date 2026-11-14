@@ -685,7 +685,7 @@ fn hang_up(sid: i32, grace: Duration) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 /// Live processes of session `sid`, each with whether it ignores SIGHUP.
 fn session_members(sid: i32) -> Vec<(i32, bool)> {
     let ours = std::process::id() as i32;
@@ -706,7 +706,7 @@ fn session_members(sid: i32) -> Vec<(i32, bool)> {
         .collect()
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn ignores_hup(pid: i32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/status"))
         .ok()
@@ -716,6 +716,122 @@ fn ignores_hup(pid: i32) -> bool {
         })
         .is_some_and(|mask| mask & (1 << (libc::SIGHUP - 1)) != 0)
 }
+
+// macOS has no /proc. The pids come from `proc_listallpids`, the session
+// from `getsid`, and the state and ignored signals from
+// `sysctl(KERN_PROC_PID)`; `proc_pidinfo` doesn't report ignored signals.
+#[cfg(target_os = "macos")]
+fn session_members(sid: i32) -> Vec<(i32, bool)> {
+    let ours = std::process::id() as i32;
+    // With no buffer it returns how many pids there are; ask for some extra
+    // room in case processes start in between.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    let mut pids = vec![0i32; count as usize + 64];
+    let bytes = (pids.len() * std::mem::size_of::<i32>()) as libc::c_int;
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(count.max(0) as usize);
+    pids.into_iter()
+        .filter(|&pid| pid > 0 && pid != ours && unsafe { libc::getsid(pid) } == sid)
+        .filter_map(|pid| {
+            let proc = extern_proc(pid)?;
+            (u32::from(proc.p_stat) != libc::SZOMB).then(|| (pid, proc_ignores_hup(&proc)))
+        })
+        .collect()
+}
+
+// Only the tests ask about a single pid on macOS.
+#[cfg(all(target_os = "macos", test))]
+fn ignores_hup(pid: i32) -> bool {
+    extern_proc(pid).is_some_and(|proc| proc_ignores_hup(&proc))
+}
+
+#[cfg(target_os = "macos")]
+fn proc_ignores_hup(proc: &ExternProc) -> bool {
+    proc.p_sigignore & (1 << (libc::SIGHUP - 1)) != 0
+}
+
+#[cfg(target_os = "macos")]
+fn extern_proc(pid: i32) -> Option<ExternProc> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut info = std::mem::MaybeUninit::<KinfoProc>::zeroed();
+    let mut len = std::mem::size_of::<KinfoProc>();
+    let ok = unsafe {
+        libc::sysctl(mib.as_mut_ptr(), mib.len() as u32, info.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+    } == 0;
+    // A pid that is gone succeeds with nothing written.
+    (ok && len == std::mem::size_of::<KinfoProc>()).then(|| unsafe { info.assume_init() }.kp_proc)
+}
+
+// libc doesn't declare `struct kinfo_proc` for macOS. This copies
+// `struct extern_proc` from <sys/proc.h> with pointers as `usize`, and keeps
+// `struct eproc` as bytes since nothing here reads it. The sizes are those of
+// the 64-bit SDK; the asserts catch a field out of place.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct KinfoProc {
+    kp_proc: ExternProc,
+    kp_eproc: [u8; 352],
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct ExternProc {
+    p_starttime: [u64; 2],
+    p_vmspace: usize,
+    p_sigacts: usize,
+    p_flag: i32,
+    p_stat: u8,
+    p_pid: i32,
+    p_oppid: i32,
+    p_dupfd: i32,
+    user_stack: usize,
+    exit_thread: usize,
+    p_debugger: i32,
+    sigwait: i32,
+    p_estcpu: u32,
+    p_cpticks: i32,
+    p_pctcpu: u32,
+    p_wchan: usize,
+    p_wmesg: usize,
+    p_swtime: u32,
+    p_slptime: u32,
+    p_realtimer: [u64; 4],
+    p_rtime: [u64; 2],
+    p_uticks: u64,
+    p_sticks: u64,
+    p_iticks: u64,
+    p_traceflag: i32,
+    p_tracep: usize,
+    p_siglist: i32,
+    p_textvp: usize,
+    p_holdcnt: i32,
+    p_sigmask: u32,
+    p_sigignore: u32,
+    p_sigcatch: u32,
+    p_priority: u8,
+    p_usrpri: u8,
+    p_nice: i8,
+    p_comm: [u8; 17],
+    p_pgrp: usize,
+    p_addr: usize,
+    p_xstat: u16,
+    p_acflag: u16,
+    p_ru: usize,
+}
+
+#[cfg(target_os = "macos")]
+const _: () = {
+    assert!(std::mem::size_of::<ExternProc>() == 296);
+    assert!(std::mem::offset_of!(ExternProc, p_sigignore) == 232);
+    assert!(std::mem::size_of::<KinfoProc>() == 648);
+};
 
 fn find_in<T: EventListener>(
     term: &mut Term<T>,
@@ -827,8 +943,7 @@ mod tests {
         assert!(find_in(&mut term, "zzz", None, true).is_none());
     }
 
-    // Finding a session's members reads /proc, which only Linux has.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn hanging_up_ends_the_session_but_spares_nohup() {
         use std::os::unix::process::CommandExt as _;

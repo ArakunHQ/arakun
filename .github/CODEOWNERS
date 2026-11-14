@@ -1,3 +1,7 @@
-# GitHub requests a review from these owners on every pull request, leaving
-# out the author. Later lines override earlier ones for the paths they match.
 * @KarloAldrete @rikvisser-dev
+
+# Windows: Dani can check these on a real machine. The last matching line wins,
+# so all three are listed.
+/docs/windows.md                   @KarloAldrete @rikvisser-dev @daniektj
+/src/platform.rs                   @KarloAldrete @rikvisser-dev @daniektj
+/src/bin/arakun-helper.manifest    @KarloAldrete @rikvisser-dev @daniektj

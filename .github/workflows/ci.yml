@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml runs these jobs on a tag and builds only if they pass.
+  workflow_call:
 
+# In a called run, github.workflow is the caller's name, so a release's run of
+# these jobs never cancels (or is cancelled by) CI's own run on the same ref.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Cargo.toml optimizes every dependency in dev builds (opt-level 2), which pays

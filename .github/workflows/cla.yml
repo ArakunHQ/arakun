@@ -12,13 +12,28 @@ permissions:
   pull-requests: write
   statuses: write
 
+# One run per pull request at a time, so two runs never race to commit to
+# the signatures branch.
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   cla-assistant:
+    # Comments only count on pull requests. contains() and == ignore case, so
+    # "Recheck" or the sign sentence with extra spaces or text around it still
+    # trigger the bot; the action itself matches the sentence loosely.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+        (contains(github.event.comment.body, 'recheck') ||
+         contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')))
     runs-on: ubuntu-latest
     steps:
       - name: CLA assistant
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
-        uses: contributor-assistant/github-action@v2.6.1
+        # Pinned to the commit of v2.6.1: this job runs with write access on
+        # pull_request_target, so a moved tag must not change what runs.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

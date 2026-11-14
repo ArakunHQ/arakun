@@ -1,0 +1,99 @@
+# Depot CI copy of .github/workflows/ci.yml (https://depot.dev/docs/ci/overview).
+# Depot runs this file itself, on its own sandboxes; GitHub Actions does not read
+# .depot/. Until the GitHub workflow is removed both run on every push and PR, so
+# keep the two files in step. The only difference is `runs-on`.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Cargo.toml optimizes every dependency in dev builds (opt-level 2), which pays
+# off locally where they build once. In CI they build cold on every cache miss,
+# so here dependencies stay unoptimized and nothing carries debug info.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CI_CARGO_CONFIG: profile.dev.package."*".opt-level=0
+
+jobs:
+  # Clippy and the tests build different artifacts (metadata vs. code), so they
+  # run side by side instead of one after the other.
+  clippy:
+    name: Clippy (no warnings)
+    runs-on: depot-ubuntu-24.04-8
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
+      - name: GPUI system libraries
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
+          version: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+
+      # Without the `browser` feature the CEF SDK is not needed. Includes design_lint.
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
+
+  test:
+    name: Tests (Linux, no browser)
+    runs-on: depot-ubuntu-24.04-8
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
+      - name: GPUI system libraries
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
+          version: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+
+      - name: cargo test
+        run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
+
+  # The phone relay (Cloudflare Worker) is TypeScript apart from the app; its
+  # tests run the real Worker inside workerd, no account needed.
+  relay:
+    name: Relay (types and tests)
+    runs-on: depot-ubuntu-24.04
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+      # The phone's encryption against the vectors the Rust side wrote.
+      - name: phone e2e vectors
+        working-directory: phone
+        run: node --test "test/*.test.mjs"

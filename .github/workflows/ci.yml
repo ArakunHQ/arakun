@@ -23,7 +23,7 @@ jobs:
   # run side by side instead of one after the other.
   clippy:
     name: Clippy (no warnings)
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +48,7 @@ jobs:
 
   test:
     name: Tests (Linux, no browser)
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +72,7 @@ jobs:
   # tests run the real Worker inside workerd, no account needed.
   relay:
     name: Relay (types and tests)
-    runs-on: depot-ubuntu-24.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: relay

@@ -31,6 +31,7 @@ mod documents;
 mod drag;
 mod extensions;
 mod git_actions;
+mod github;
 mod headless;
 mod home;
 mod island;
@@ -77,6 +78,8 @@ use crate::explorer;
 use crate::extensions_view::ExtensionsView;
 use crate::gallery_view::GalleryView;
 use crate::git;
+use crate::github::GitHub;
+use crate::github_view::GitHubView;
 use crate::highlight;
 use crate::input::{InputEvent, TextInput};
 use crate::memory_view::{MemoryEvent, MemoryView};
@@ -356,6 +359,9 @@ pub struct Shell {
     posthog_view: Entity<PostHogView>,
     _posthog_view: Subscription,
     branches_view: Entity<BranchesView>,
+    github: Entity<GitHub>,
+    github_view: Entity<GitHubView>,
+    _github: [Subscription; 3],
     extensions_view: Entity<ExtensionsView>,
     _extensions_view: Subscription,
     _branches_view: Subscription,
@@ -455,6 +461,8 @@ impl Shell {
                 .update(cx, |cs, cx| cs.set_window_active(active, cx));
             this.ci
                 .update(cx, |ci, cx| ci.set_window_active(active, cx));
+            this.github
+                .update(cx, |g, cx| g.set_window_active(active, cx));
         });
         let focus = cx.focus_handle();
         let composer_focus = cx.focus_handle();
@@ -604,6 +612,18 @@ impl Shell {
         let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
             this.on_branches_event(ev, window, cx)
         });
+        let github = cx.new(GitHub::new);
+        let github_view = cx.new(|cx| GitHubView::new(github.clone(), cx));
+        let github_subs = [
+            // The rail badge counts what the model holds.
+            cx.observe(&github, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&github_view, window, |this, _, ev, window, cx| {
+                this.on_github_view_event(ev, window, cx)
+            }),
+            cx.subscribe_in(&github, window, |this, _, ev, window, cx| {
+                this.on_github_event(ev, window, cx)
+            }),
+        ];
         let phone_view = cx.new(crate::phone_view::PhoneView::new);
         let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
             this.on_phone_event(ev, window, cx)
@@ -722,6 +742,9 @@ impl Shell {
             _posthog_view: posthog_sub,
             branches_view,
             _branches_view: branches_sub,
+            github,
+            github_view,
+            _github: github_subs,
             extensions_view,
             _extensions_view: extensions_sub,
             phone: None,
@@ -1804,6 +1827,11 @@ impl Shell {
                 "Branches: map of branches and PRs",
                 Target::Branches,
             ));
+            items.push(command(
+                "github",
+                "GitHub: your review queue",
+                Target::GitHub,
+            ));
             #[cfg(feature = "coderlabs")]
             items.push(command(
                 "artboard",
@@ -1898,6 +1926,7 @@ impl Shell {
             Target::Tasks => self.open_tasks_tab(window, cx),
             Target::Runs => self.open_runs_tab(None, window, cx),
             Target::Branches => self.open_branches_tab(window, cx),
+            Target::GitHub => self.open_github_tab(window, cx),
             #[cfg(feature = "coderlabs")]
             Target::Canvas => self.open_canvas_tab(None, window, cx),
             Target::Branch(name) => self.reveal_branch(name, window, cx),
@@ -2363,6 +2392,7 @@ impl Shell {
                 self.sync_branches_view(cx);
                 self.branches_view.clone().into_any_element()
             }
+            Some(TabKind::GitHub) => self.github_view.clone().into_any_element(),
             Some(TabKind::Extensions) => {
                 // Follows the visible environment, also when it changes under an open tab.
                 let dir = env.path.clone();

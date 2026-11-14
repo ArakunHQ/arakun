@@ -58,6 +58,7 @@ pub(super) fn view_id(view: View) -> &'static str {
         View::Tasks => "nav-tasks",
         View::Runs => "nav-runs",
         View::Branches => "nav-branches",
+        View::GitHub => "nav-github",
         View::Notes => "nav-notes",
         View::Memory => "nav-memory",
         View::Usage => "nav-usage",
@@ -180,6 +181,13 @@ impl Shell {
             View::Branches => Some(self.branches_badge(cx))
                 .filter(|n| *n > 0)
                 .map(|n| loud(n, theme::error().into())),
+            View::GitHub => self.github_badge(cx).map(|(n, wanted)| {
+                if wanted {
+                    loud(n, theme::accent())
+                } else {
+                    quiet(n)
+                }
+            }),
             View::Extensions => Some(self.extensions_view.read(cx).problems())
                 .filter(|n| *n > 0)
                 .map(|n| loud(n, theme::attention().into())),
@@ -210,6 +218,7 @@ impl Shell {
             View::Tasks => self.open_tasks_tab(window, cx),
             View::Runs => self.open_runs_tab(None, window, cx),
             View::Branches => self.open_branches_tab(window, cx),
+            View::GitHub => self.open_github_tab(window, cx),
             View::Notes => self.open_notes_tab(window, cx),
             View::Memory => self.open_memory_tab(window, cx),
             View::Usage => self.open_usage_tab(window, cx),

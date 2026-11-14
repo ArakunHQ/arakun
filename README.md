@@ -32,6 +32,20 @@ window, and exposes the same workspace to the agents through a command line.
   `arakun page` (screenshot, console, click, type, eval).
 - **GitHub CI and checks.** GitHub Actions runs for each project, with jobs, annotations
   and the failing log, read through the `gh` CLI.
+- **GitHub review queue.** The GitHub tab is a work queue of what waits on you: pull
+  requests whose review is asked of you, mentions and assignments, your own open pull
+  requests, what is ready to merge and what was done today. It reads your notifications
+  and runs searches through the `gh` CLI and its session, so what you already read on
+  github.com still shows. Pick an item to see its state, checks, what blocks the merge,
+  its timeline, files and commits; comment, approve, request changes or merge from
+  there (each write asks a second time). An agent can review a pull request for you
+  and leave a draft (`arakun github draft`) that you post, edit or discard. Review
+  requests, mentions and assignments raise an alert; so does anything new in the
+  organizations and repositories on your watch list. Click the line under "Review
+  queue" to show only some organizations or repositories; the rest doesn't show, count
+  or alert. Arakun keeps the watch list and that choice in `github.json` next to its
+  state, the days your queue reached zero in
+  `github-streak.json`, and drafts in `github/drafts/` beside them.
 - **Dynamic Island** (Linux/Wayland only for now). A small overlay at the top of the
   screen that shows what the agents of every project are doing: a dot per busy session, a
   card when one finishes, fails or needs an answer. It runs as its own process
@@ -126,9 +140,9 @@ Arakun does not bundle the agents. Install the ones you want to use:
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
-Optional tools: `git` (Changes, worktrees, branches), `gh` (CI), `bwrap` (headless
-agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale` (phone over
-Tailscale), `cf` (Cloudflare tab).
+Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
+(headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
+(phone over Tailscale), `cf` (Cloudflare tab).
 
 ## Build from source
 
@@ -216,6 +230,8 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun ls                         # projects, environments and sessions
 arakun mem search <words>         # search what agents remember about this project
+arakun github draft o/r#12 --verdict approve --body-file review.md --agent Claude
+                                  # save a review draft for the GitHub tab; sends nothing
 arakun agent run <prompt>         # start a headless agent
 arakun --version                  # print the version (needs no running Arakun)
 ```
@@ -233,6 +249,9 @@ out first.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them
+- In the GitHub tab: `J` / `K` next and previous item, `A` approve, `C` comment, `R`
+  review with an agent, `U` catch me up, `S` summarize, `O` open on GitHub;
+  `Ctrl+Enter` sends a comment, `/` in the comment box lists the actions
 
 ## Contributing
 

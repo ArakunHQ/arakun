@@ -11,7 +11,8 @@
 //! Once clicked the island takes keys: 1-5 jump to a state, 6 pins the list,
 //! space goes to the next, p pauses.
 
-#[allow(dead_code)]
+// Off Linux, island.rs allows dead code itself; a second allow trips clippy.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 #[path = "../src/island.rs"]
 mod island;
 #[allow(dead_code)]

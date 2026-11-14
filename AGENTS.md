@@ -15,7 +15,8 @@ Every commit message and pull request title follows
 ```
 
 - **type:** `feat`, `fix`, `docs`, `refactor` (no change in behavior), `perf`, `test`,
-  `build` (Cargo, dependencies, tools), `ci` or `chore`. Pick the one that matches the
+  `build` (Cargo, dependencies, tools), `ci`, `chore` or `revert`
+  (`revert: <the title of the change you undo>`). Pick the one that matches the
   effect for the user: a bug fix that needs a refactor is still `fix`.
 - **scope** (optional): the module or folder it touches, such as `terminal`, `agent`,
   `browser`, `phone`, `relay`, `iso` or `windows`. Leave it out if the change spans
@@ -25,6 +26,9 @@ Every commit message and pull request title follows
 - **Breaking changes** (a CLI flag, a setting or a stored file format that no longer
   works as before): `!` after the type or scope, and a `BREAKING CHANGE:` line in the
   body that says what to do instead.
+- Pull requests are squashed, so the title becomes the commit on `main`. CI fails the
+  pull request if the title breaks these rules; check one with
+  `tools/conventional-commits.sh title "<title>"`.
 - One logical change per commit, and one fix or feature per pull request. Put unrelated
   cleanups in their own commit or pull request.
 - Fill in `.github/pull_request_template.md`. Under "How I checked it", list the

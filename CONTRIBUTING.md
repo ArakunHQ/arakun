@@ -136,8 +136,8 @@ Some notes:
   ```
 
   - **type:** `feat` (a new feature), `fix` (a bug fix), `docs`, `refactor` (no change
-    in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci` or
-    `chore`.
+    in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci`, `chore`
+    or `revert` (`revert: <the title of the change you undo>`).
   - **scope** (optional): the part of Arakun it touches, usually the module or folder:
     `terminal`, `agent`, `browser`, `phone`, `relay`, `iso`, `windows`...
   - **description:** imperative and lower case, with no period at the end, for example
@@ -147,8 +147,15 @@ Some notes:
     works as before): add `!` after the type or scope, and a `BREAKING CHANGE:` line in
     the body that says what to do instead.
 
-  Give the pull request title the same format. It becomes the commit message when the
-  pull request is squashed.
+  Give the pull request title the same format. Pull requests are squashed, so the title
+  becomes the commit message on `main`. The **Pull request title** check fails on a title
+  that does not follow it; edit the title and the check runs again by itself. GitHub's
+  Revert button writes `Revert "…"`, so reword that to `revert: …`.
+
+  Commits inside the pull request are not checked, because they do not reach `main`. If
+  you want to check them as you write them, turn on the `commit-msg` hook with
+  `git config core.hooksPath tools/hooks` (undo it with
+  `git config --unset core.hooksPath`).
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

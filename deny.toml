@@ -1,0 +1,85 @@
+# cargo-deny checks the dependencies in Cargo.lock: known vulnerabilities,
+# licenses, and where crates come from. CI runs it in .github/workflows/deny.yml.
+# Run it yourself with `cargo deny check` (install: `cargo install --locked cargo-deny`).
+
+[graph]
+# The platforms Arakun builds for. Crates used only on other targets are not checked.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# RustSec advisories. A vulnerable, unsound or yanked crate anywhere in the
+# tree fails the check. An unmaintained crate fails only if Arakun depends on it
+# directly: deeper ones come from gpui and the like, and need a fix there first.
+[advisories]
+unmaintained = "workspace"
+yanked = "deny"
+ignore = [
+    # gpui (fontdb, rustybuzz) needs ttf-parser too, so moving src/iso/text.rs
+    # to skrifa alone would not drop it.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; gpui uses it as well" },
+]
+
+# Arakun is AGPL-3.0-only and is also offered under commercial licenses (see
+# the CLA), so every dependency's license must allow both. That rules out GPL,
+# LGPL and AGPL crates, unless they offer another license as well.
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.93
+# MPL-2.0 is copyleft per file: fine for both licenses while the files are not
+# changed, but it should be a choice for each crate, not a default.
+exceptions = [
+    # Build time only, for gpui on macOS: none of it ends up in Arakun.
+    { allow = ["MPL-2.0"], crate = "cbindgen" },
+    # Windows fonts, through gpui's font-kit.
+    { allow = ["MPL-2.0"], crate = "dwrote" },
+    # Through dirs.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # Through rhai (src/iso/script.rs).
+    { allow = ["MPL-2.0"], crate = "smartstring" },
+]
+
+[licenses.private]
+# Arakun itself (publish = false) is not checked against the allow-list.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# gpui and gpui_platform come from git, with no version. Arakun is not published,
+# so that is fine (crates.io would refuse it).
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Our forks of GPUI and wgpu-hal (see [patch] in Cargo.toml), and the forks
+# GPUI itself takes from git. zed-industries/zed is not here: the [patch]
+# replaces every crate Cargo.toml names from it.
+allow-git = [
+    "https://github.com/arakunhq/zed",
+    "https://github.com/arakunhq/wgpu-hal-fork",
+    "https://github.com/zed-industries/font-kit",
+    "https://github.com/zed-industries/xim-rs.git",
+]

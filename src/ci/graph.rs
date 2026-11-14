@@ -152,7 +152,7 @@ mod tests {
 
     fn git_at(dir: &Path, t: u64, args: &[&str]) {
         let date = format!("@{} +0000", 1_700_000_000 + t);
-        let out = crate::platform::command("git")
+        let out = crate::git::unpinned(&mut crate::platform::command("git"))
             .current_dir(dir)
             .args(args)
             .env("GIT_AUTHOR_DATE", &date)

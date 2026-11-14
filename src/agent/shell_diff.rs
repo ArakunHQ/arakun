@@ -123,7 +123,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
         let sh = |c: &str| {
-            let ok = Command::new("sh").arg("-c").arg(c).current_dir(&repo).status().unwrap().success();
+            let ok = crate::git::unpinned(&mut Command::new("sh")).arg("-c").arg(c).current_dir(&repo).status().unwrap().success();
             assert!(ok, "{c}");
         };
         sh("git init -q && printf 'a\\nb\\n' > kept.txt && printf 'x\\n' > gone.txt && echo target > .gitignore \
@@ -141,7 +141,7 @@ mod tests {
         assert_eq!((got[1].old.as_deref(), got[1].new.as_str(), got[1].added, got[1].removed), (Some("a\nb\n"), "a\nB\n", 1, 1));
         assert_eq!((got[2].old.as_deref(), got[2].new.as_str()), (None, "n\n"));
         // The checkout's own index is left as it was.
-        let status = Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
+        let status = crate::git::unpinned(&mut Command::new("git")).args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
         assert!(String::from_utf8_lossy(&status.stdout).contains("A  staged.txt"));
         assert!(String::from_utf8_lossy(&status.stdout).contains("?? new.txt"));
         assert!(changes(&after, &snapshot(&repo).unwrap()).is_empty());

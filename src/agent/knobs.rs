@@ -705,7 +705,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("arakun-tree-mark-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+        let git = |args: &[&str]| crate::git::unpinned(&mut std::process::Command::new("git")).arg("-C").arg(&dir).args(args).output().unwrap();
         assert!(tree_mark(&dir).is_none(), "not a repository yet");
         git(&["init", "-q"]);
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();

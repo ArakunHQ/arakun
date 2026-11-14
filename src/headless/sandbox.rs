@@ -820,6 +820,8 @@ mod tests {
     fn hidden_paths_follow_caps_and_links() {
         let home = std::env::temp_dir().join(format!("arakun-sbx-home-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        // macOS's temp dir is itself a link (/var -> /private/var), and links resolve.
+        let home = crate::platform::canonicalize(&home).unwrap();
         std::fs::create_dir_all(home.join("real")).unwrap();
         std::fs::write(home.join(".modal.toml"), "token").unwrap();
         std::fs::write(home.join("x-key.txt"), "k").unwrap();

@@ -96,7 +96,13 @@ pub struct Seats {
 impl Seats {
     /// The seat Claude Code runs on right now.
     pub fn active(&self) -> Option<&PlanUsage> {
-        if active_is_borrowed() {
+        self.in_use(active_is_borrowed())
+    }
+
+    /// Kept apart from [`Self::active`] so tests don't depend on which account
+    /// this machine happens to be signed in with.
+    fn in_use(&self, borrowed: bool) -> Option<&PlanUsage> {
+        if borrowed {
             self.borrowed.as_ref()
         } else {
             self.own.as_ref()
@@ -848,8 +854,10 @@ mod tests {
             borrowed_at: 1,
             borrowed: Some(borrowed.clone()),
         };
-        // Signed in on this machine's own account: that is the seat in use.
-        assert_eq!(seats.active(), Some(&own));
+        // Signed in on the machine's own account, that seat is in use; with a
+        // borrowed token, the borrowed one.
+        assert_eq!(seats.in_use(false), Some(&own));
+        assert_eq!(seats.in_use(true), Some(&borrowed));
         // Both survive a round trip through the cache file's JSON.
         let json = serde_json::to_string(&seats).unwrap();
         let back: Seats = serde_json::from_str(&json).unwrap();

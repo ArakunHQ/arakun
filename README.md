@@ -67,6 +67,14 @@ Download the archive for your platform from
 [GitHub Releases](https://github.com/arakunhq/arakun/releases) and check it against
 `SHA256SUMS`. Release builds are built without the browser feature.
 
+Each archive also has a build provenance attestation. It shows that this repository's
+release workflow built the archive, and from which commit. Check it with the
+[GitHub CLI](https://cli.github.com):
+
+```sh
+gh attestation verify arakun-<version>-linux-x86_64.tar.gz -R arakunhq/arakun
+```
+
 **Linux:** extract `arakun-<version>-linux-x86_64.tar.gz` and put `arakun` somewhere on
 your `PATH`, for example `~/.local/bin`. It needs glibc 2.35 or newer (Ubuntu 22.04+,
 Debian 12+, Fedora 36+); on older systems, build from source. You also need a Vulkan

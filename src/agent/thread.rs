@@ -3162,7 +3162,12 @@ fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
                 None => {
                     let before = known.get(&abs).cloned().or_else(|| {
                         let top = top.as_ref()?;
-                        let rel = abs.strip_prefix(top).ok()?.to_str()?.to_string();
+                        // Git resolves links in the toplevel, so resolve them in the path too.
+                        let rel = match abs.strip_prefix(top) {
+                            Ok(rel) => rel.to_path_buf(),
+                            Err(_) => crate::platform::canonicalize(&abs).ok()?.strip_prefix(top).ok()?.to_path_buf(),
+                        };
+                        let rel = rel.to_str()?.to_string();
                         let rev = revs
                             .entry(turn_at)
                             .or_insert_with(|| {

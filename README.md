@@ -145,8 +145,9 @@ The default `browser` feature needs CEF at build time and at run time.
   This puts the runtime in `~/.local/share/arakun/cef` (loaded on the first browser tab)
   and links the build-time SDK at `.cef-sdk`, which `.cargo/config.toml` points `CEF_PATH`
   at.
-- **Windows and macOS:** the first build downloads CEF into `.cef-sdk` by itself. On
-  Windows it also needs CMake and Ninja; see [docs/windows.md](docs/windows.md).
+- **Windows and macOS:** the first build downloads CEF into `.cef-sdk` by itself. It
+  also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
+  [docs/windows.md](docs/windows.md).
 
 ### Install for your user (Linux)
 

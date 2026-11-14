@@ -75,6 +75,8 @@ jobs:
               relay/*) relay=true ;;
               # The app embeds phone/ (rust_embed) and tests against its vectors.
               phone/*) rust=true relay=true ;;
+              # The browser job prepares CEF with it.
+              tools/install-cef.sh) rust=true ;;
               # Nothing the Rust build or its tests read. Anything not listed
               # here, such as a new top-level folder, runs the Rust jobs.
               docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore) ;;
@@ -123,6 +125,65 @@ jobs:
       # Without the `browser` feature the CEF SDK is not needed. Includes design_lint.
       - name: cargo clippy
         run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
+
+  # The default `browser` feature needs CEF, so the other jobs leave it out. This one
+  # prepares CEF as the README does on Linux, so src/browser/ and arakun-helper compile.
+  clippy-browser:
+    name: Clippy (Linux, browser)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    runs-on: depot-ubuntu-24.04-8
+    env:
+      # The version the `cef` crate in Cargo.lock is built for. The minimal archive has
+      # all that tools/install-cef.sh takes. The SHA-1 is the one cef-builds publishes.
+      CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_linux64_minimal.tar.bz2
+      CEF_SHA1: 09235427222e026a4f34399742df27c5d98a4f8a
+    steps:
+      - uses: actions/checkout@v4
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
+
+      # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
+      - name: GPUI system libraries
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
+          version: 1
+
+      # 330 MB that never changes for a given version.
+      - name: Cache the CEF archive
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cef-archive
+          key: ${{ env.CEF_ARCHIVE }}
+
+      - name: Prepare CEF
+        run: |
+          archive="$RUNNER_TEMP/cef-archive/$CEF_ARCHIVE"
+          if [ ! -f "$archive" ]; then
+            mkdir -p "$RUNNER_TEMP/cef-archive"
+            curl -fsSL --retry 3 -o "$archive" "https://cef-builds.spotifycdn.com/${CEF_ARCHIVE//+/%2B}"
+          fi
+          # On a cache hit too: any branch can save this cache entry.
+          echo "$CEF_SHA1  $archive" | sha1sum -c -
+          mkdir -p "$RUNNER_TEMP/cef-dist"
+          tar -xjf "$archive" -C "$RUNNER_TEMP/cef-dist" --strip-components=1
+          tools/install-cef.sh "$RUNNER_TEMP/cef-dist" "$RUNNER_TEMP/cef"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy-browser
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets --config "$CI_CARGO_CONFIG" -- -D warnings
 
   test:
     name: Tests (Linux, no browser)

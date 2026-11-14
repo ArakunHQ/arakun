@@ -105,6 +105,10 @@ Some notes:
 - The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
   it; it runs `cargo fmt`, which on its own stops at the private modules this
   repository does not have. Format-on-save in your editor is fine.
+- The Rust version is pinned in `rust-toolchain.toml`, so a new stable release does not
+  bring new lints or formatting into your pull request. Bump it in its own pull request
+  that also fixes what the new version changes. A weekly workflow opens an issue when
+  clippy fails on the latest stable.
 - `--locked` fails if `Cargo.lock` would change. If you add or update a dependency,
   commit the new `Cargo.lock` in the same pull request.
 - `cargo deny check` reads [`deny.toml`](deny.toml). It fails on a crate with a

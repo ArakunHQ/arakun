@@ -12,8 +12,9 @@
 #   --build    build the tests once, so the first clippy or test run is quick
 #
 # Always: the system libraries GPUI needs (apt or pacman; on macOS the Xcode Command
-# Line Tools), and Rust with clippy through rustup. It builds without the browser, as
-# CI does; for CEF see "With the browser" in the README. Running it again is safe.
+# Line Tools), and the Rust version in rust-toolchain.toml with clippy, through rustup.
+# It builds without the browser, as CI does; for CEF see "With the browser" in the
+# README. Running it again is safe.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -153,8 +154,9 @@ cargo_bin=${CARGO_HOME:-$HOME/.cargo}/bin
 case :$PATH: in *:"$cargo_bin":*) ;; *) [ -d "$cargo_bin" ] && PATH=$cargo_bin:$PATH ;; esac
 installed_rustup=0
 if command -v rustup >/dev/null; then
-  ok "rustup ($(rustc --version 2>/dev/null || echo 'no default toolchain'))"
-  if ! rustc --version >/dev/null 2>&1; then
+  # From /, so rust-toolchain.toml does not apply: this is the default toolchain.
+  ok "rustup ($(cd / && rustc --version 2>/dev/null || echo 'no default toolchain'))"
+  if ! (cd / && rustc --version) >/dev/null 2>&1; then
     if [ $check = 1 ]; then lack "a default toolchain (rustup default stable)"
     else rustup default stable
     fi
@@ -174,12 +176,14 @@ else
   exit 1
 fi
 
-if cargo clippy --version >/dev/null 2>&1; then
-  ok "$(cargo clippy --version)"
+# In the checkout, rustup uses the version in rust-toolchain.toml, with clippy. The
+# check must not install it, so rustup's own install on first use is off for it.
+if (cd "$here" && RUSTUP_AUTO_INSTALL=0 cargo clippy --version) >/dev/null 2>&1; then
+  ok "$(cd "$here" && cargo clippy --version)"
 elif [ $check = 1 ]; then
-  lack "clippy (rustup component add clippy)"
+  lack "clippy of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)"
 elif command -v rustup >/dev/null; then
-  rustup component add clippy
+  (cd "$here" && rustup toolchain install --no-self-update)
 else
   say "no clippy; install it with your distribution's Rust" >&2
   exit 1

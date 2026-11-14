@@ -132,7 +132,8 @@ Tailscale), `cf` (Cloudflare tab).
 
 ## Build from source
 
-You need a recent stable Rust toolchain ([rustup](https://rustup.rs)).
+You need [rustup](https://rustup.rs). The first `cargo` command in the checkout
+installs the Rust version named in `rust-toolchain.toml`, the one CI uses.
 
 `tools/setup-dev.sh` (Linux and macOS) or `tools\setup-dev.ps1` (Windows) installs
 everything below for you; see [CONTRIBUTING.md](CONTRIBUTING.md#setting-up). To do it by

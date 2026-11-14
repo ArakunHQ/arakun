@@ -13,8 +13,9 @@ For contributors and for coding agents. Linux and macOS: tools/setup-dev.sh.
   -Build    build the tests once, so the first clippy or test run is quick
 
 Always: Git, Visual Studio Build Tools 2022 with the C++ workload (MSVC and a Windows
-SDK), and Rust (stable-x86_64-pc-windows-msvc) with clippy through rustup. Installs use
-winget; Build Tools asks for administrator rights. Running it again is safe.
+SDK), and Rust through rustup: stable-x86_64-pc-windows-msvc as the default, and the
+version in rust-toolchain.toml with clippy. Installs use winget; Build Tools asks for
+administrator rights. Running it again is safe.
 See docs/windows.md for what each part is for.
 #>
 [CmdletBinding()]
@@ -171,13 +172,15 @@ if ($Browser) {
 Say 'Rust'
 $installedRustup = $false
 if (Has 'rustup') {
-    $active = Quiet { rustup show active-toolchain }
+    # The default, not the active toolchain: in the checkout that is the one in
+    # rust-toolchain.toml, and asking for it would install it, even with -Check.
+    $active = Quiet { rustup default }
     if (-not $active) {
         if ($Check) { Lack 'a default toolchain (rustup default stable-msvc)' }
         else { & rustup default stable-msvc; if ($LASTEXITCODE -ne 0) { Fail 'rustup default failed' } }
     } elseif ($active -notlike '*msvc*') {
         # The gnu toolchain builds too, but docs/windows.md and the CEF download expect MSVC.
-        Say "the active toolchain is $active; Arakun is built with MSVC (rustup default stable-msvc)"
+        Say "the default toolchain is $active; Arakun is built with MSVC (rustup default stable-msvc)"
     } else {
         Ok "rustup ($active)"
     }
@@ -200,15 +203,22 @@ if (Has 'rustup') {
     Fail 'skipped; the build needs Rust'
 }
 
+# In the checkout, rustup uses the version in rust-toolchain.toml, with clippy. The
+# check must not install it, so rustup's own install on first use is off for it.
 if (Has 'cargo') {
-    $clippy = Quiet { cargo clippy --version }
+    Push-Location $Root
+    $autoInstall = $env:RUSTUP_AUTO_INSTALL
+    $env:RUSTUP_AUTO_INSTALL = '0'
+    try { $clippy = Quiet { cargo clippy --version } }
+    finally { $env:RUSTUP_AUTO_INSTALL = $autoInstall; Pop-Location }
     if ($clippy) {
         Ok $clippy
     } elseif ($Check) {
-        Lack 'clippy (rustup component add clippy)'
+        Lack 'clippy of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)'
     } elseif (Has 'rustup') {
-        & rustup component add clippy
-        if ($LASTEXITCODE -ne 0) { Fail 'rustup component add clippy failed' }
+        Push-Location $Root
+        try { & rustup toolchain install --no-self-update } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { Fail 'rustup toolchain install failed' }
     } else {
         Fail 'no clippy; install Rust with rustup'
     }

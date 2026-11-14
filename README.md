@@ -72,7 +72,7 @@ release workflow built the archive, and from which commit. Check it with the
 [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify arakun-<version>-linux-x86_64.tar.gz -R ArakunHQ/arakun
+gh attestation verify arakun-<version>-linux-x86_64.tar.gz -R arakunhq/arakun
 ```
 
 **Linux:** extract `arakun-<version>-linux-x86_64.tar.gz` and put `arakun` somewhere on

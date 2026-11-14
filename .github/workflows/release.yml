@@ -163,9 +163,9 @@ jobs:
           cat SHA256SUMS
 
       # Signs which workflow run and commit built each archive, so
-      # `gh attestation verify <archive> -R ArakunHQ/arakun` can check a download.
+      # `gh attestation verify <archive> -R arakunhq/arakun` can check a download.
       # Before publishing, so a failure here leaves no unattested release.
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS
 

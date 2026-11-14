@@ -1,0 +1,47 @@
+name: Runner sizing
+
+# Every Monday: are the CI and release runners the right size? Reads the CPU
+# and memory use that .github/actions/runner-usage reports for each job over
+# the past week and estimates, per job, what a runner with half or double the
+# CPUs would do to its time and cost. The report is the run's summary page and
+# the runner-sizing artifact (raw numbers). See .github/scripts/runner-sizing.mjs.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Days to look back
+        default: "7"
+
+permissions:
+  actions: read # workflow runs and jobs
+  checks: read # the jobs' annotations
+  contents: read
+
+jobs:
+  report:
+    name: Report
+    runs-on: depot-ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Analyze the past week's jobs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.days || '7' }}
+          OUT_JSON: runner-sizing.json
+        run: node .github/scripts/runner-sizing.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runner-sizing
+          path: runner-sizing.json
+          if-no-files-found: error

@@ -287,8 +287,9 @@ jobs:
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
+          # -x: the private key cannot be exported again, only used by codesign.
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
-            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -x
           rm "$RUNNER_TEMP/certificate.p12"
           # Lets codesign use the key without a dialog nobody can click.
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
@@ -362,6 +363,14 @@ jobs:
           mkdir dist
           tar -C work -czf "dist/$name.tar.gz" "$name"
 
+      # Before the smoke test runs the binary: it comes from a job that ran
+      # third-party build scripts, and must not find the signing key.
+      - name: Remove the keychain
+        if: always() && steps.keychain.outputs.keychain != ''
+        env:
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+        run: security delete-keychain "$KEYCHAIN"
+
       # The archive as a user gets it: Gatekeeper accepts it as notarized (what
       # it checks for a browser download), and the binary loads and runs.
       - name: Smoke test
@@ -373,12 +382,6 @@ jobs:
           spctl --assess --type execute --verbose=2 "$app" 2>&1 | tee spctl.txt
           grep -q 'source=Notarized Developer ID' spctl.txt
           "$app/Contents/MacOS/arakun" --version
-
-      - name: Remove the keychain
-        if: always() && steps.keychain.outputs.keychain != ''
-        env:
-          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
-        run: security delete-keychain "$KEYCHAIN"
 
       - uses: actions/upload-artifact@v4
         with:

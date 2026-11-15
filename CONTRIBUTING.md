@@ -226,7 +226,9 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
 - **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
   GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
   while CI runs. Once the checks pass, mark it ready with `gh pr ready` or the button on
-  GitHub. That requests the reviewers.
+  GitHub. That starts CodeRabbit's review. When it finishes, people are asked to review
+  unless CodeRabbit approved. CodeRabbit never approves a pull request from outside the
+  team on its own.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

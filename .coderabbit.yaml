@@ -15,6 +15,8 @@ reviews:
   # minimal risk, once those findings are resolved. Merging still takes a
   # person with write access. No security-risk limit: that assessment needs a
   # higher CodeRabbit plan, and a missing one would withhold every approval.
+  # The Reviewers workflow dismisses an approval of a pull request from
+  # outside the team, because overrides can only match members of a team.
   auto_approvals:
     enabled: true
     max_merge_risk: minimal
@@ -44,7 +46,8 @@ reviews:
   assess_linked_issues: true
   related_issues: true
   related_prs: true
-  # actions/labeler sets the area labels; GitHub requests the reviewers.
+  # actions/labeler sets the area labels; the Reviewers workflow requests
+  # the reviewers.
   suggested_labels: false
   suggested_reviewers: false
   poem: false

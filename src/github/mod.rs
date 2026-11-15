@@ -369,6 +369,9 @@ pub struct Settings {
     /// everything. What is left out doesn't show, count or alert.
     #[serde(default)]
     pub focus: Vec<String>,
+    /// The GitHub tab was opened at least once: until then nothing polls gh.
+    #[serde(default)]
+    pub opened: bool,
 }
 
 fn file() -> PathBuf {
@@ -416,6 +419,15 @@ impl Problem {
             Problem::Other(e) => e.clone(),
         }
     }
+}
+
+/// Whether to read GitHub in the background. Most people never open the
+/// GitHub tab, and starting gh every minute for them costs processes, battery
+/// and API quota for nothing; so the reads start once the tab was opened.
+/// Without gh, or signed out, the reads would only fail again: they wait
+/// until the tab is opened again, which reads once and resumes them on success.
+fn polls(opened: bool, problem: Option<&Problem>) -> bool {
+    opened && !matches!(problem, Some(Problem::NoGh | Problem::SignedOut))
 }
 
 /// What `gh` wrote on a failed call, as a problem.
@@ -636,7 +648,12 @@ impl GitHub {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                if this.update(cx, |this, cx| this.refresh(cx)).is_err() {
+                let polled = this.update(cx, |this, cx| {
+                    if this.polls() {
+                        this.refresh(cx);
+                    }
+                });
+                if polled.is_err() {
                     break;
                 }
                 let Ok(wait) = this.read_with(cx, |this, _| this.poll_interval()) else {
@@ -677,6 +694,20 @@ impl GitHub {
             avatars_busy: false,
             _poll: poll,
         }
+    }
+
+    /// Whether the background reads run: the timer and the window coming back.
+    fn polls(&self) -> bool {
+        polls(self.settings.opened, self.problem.as_ref())
+    }
+
+    /// The GitHub tab is in front: from now on the inbox is kept fresh.
+    pub fn opened(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.opened {
+            self.settings.opened = true;
+            store(&self.settings);
+        }
+        self.refresh_if_stale(Duration::from_secs(20), cx);
     }
 
     fn poll_interval(&self) -> Duration {
@@ -756,7 +787,7 @@ impl GitHub {
     pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
         let was = self.window_active;
         self.window_active = active;
-        if active && !was {
+        if active && !was && self.polls() {
             self.refresh_if_stale(STALE, cx);
             // Views read what may have changed on disk meanwhile (a review draft).
             cx.notify();
@@ -1228,6 +1259,19 @@ impl GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polls_only_after_the_tab_was_opened_and_gh_works() {
+        assert!(!polls(false, None));
+        assert!(polls(true, None));
+        assert!(!polls(true, Some(&Problem::NoGh)));
+        assert!(!polls(true, Some(&Problem::SignedOut)));
+        // A passing failure (the network) doesn't stop the reads.
+        assert!(polls(true, Some(&Problem::Other("timeout".into()))));
+        // Settings written before the flag existed read as never opened.
+        let old: Settings = serde_json::from_str(r#"{"watch": ["arakunhq"]}"#).unwrap();
+        assert!(!old.opened);
+    }
 
     #[test]
     fn focus_keeps_owners_and_repositories() {

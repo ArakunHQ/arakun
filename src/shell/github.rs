@@ -23,8 +23,7 @@ impl Shell {
         }
         self.show_view_tab("GitHub", TabKind::GitHub, |k| matches!(k, TabKind::GitHub));
         self.note_active_tab();
-        self.github
-            .update(cx, |g, cx| g.refresh_if_stale(Duration::from_secs(20), cx));
+        self.github.update(cx, |g, cx| g.opened(cx));
         self.github_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }

@@ -325,6 +325,8 @@ impl Shell {
             let close_path = env_path.clone();
             tabs = tabs.child(
                 ui::tab(("term", i), active)
+                    .w(px(DOCK_TAB_W))
+                    .h(px(DOCK_TAB_H))
                     .group(group.clone())
                     .pr(crate::ui::sp(28.))
                     .child(icon("computer-terminal01", 14.).text_color(if active {
@@ -355,7 +357,7 @@ impl Shell {
                             .id(("term-close", i))
                             .absolute()
                             .right(px(4.))
-                            .top(px(ui::TAB_CLOSE_TOP))
+                            .top(px(DOCK_TAB_CLOSE_TOP))
                             .flex()
                             .items_center()
                             .justify_center()

@@ -5,7 +5,7 @@
 //! runs, sessions); this file is the pure part: the shapes, the checks, the
 //! sentence parser and the JSON a model may answer with.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -405,6 +405,24 @@ pub fn sounds_like_rule(text: &str) -> bool {
             ],
         )
         && !text.trim_end().ends_with('?')
+}
+
+/// Where a fired rule's commands and agents run: only the folder saved with
+/// it. Another project would run a command meant for this one, so a rule
+/// whose folder is gone fails instead of falling back to what is open.
+pub fn workdir(rule: &Rule, exists: impl Fn(&Path) -> bool) -> Result<Option<PathBuf>, String> {
+    if !rule
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::Run { .. } | Step::Agent { .. }))
+    {
+        return Ok(None);
+    }
+    match &rule.dir {
+        Some(d) if exists(d) => Ok(Some(d.clone())),
+        Some(d) => Err(format!("folder is gone: {}", d.display())),
+        None => Err("no folder was saved with it".into()),
+    }
 }
 
 /// The `#64` in a sentence.
@@ -960,5 +978,40 @@ mod tests {
         );
         let back: Rules = serde_json::from_slice(&serde_json::to_vec(&rules).unwrap()).unwrap();
         assert_eq!(back, rules);
+    }
+
+    #[test]
+    fn a_rule_runs_only_in_its_own_folder() {
+        let run = |dir: Option<&str>| {
+            let mut r = rule(
+                Trigger::CiFailed {
+                    branch: "main".into(),
+                },
+                vec![Step::Run {
+                    command: "make deploy".into(),
+                }],
+            );
+            r.dir = dir.map(PathBuf::from);
+            r
+        };
+        let here = |p: &Path| p == Path::new("/work/app");
+        assert_eq!(
+            workdir(&run(Some("/work/app")), here),
+            Ok(Some(PathBuf::from("/work/app")))
+        );
+        assert_eq!(
+            workdir(&run(Some("/work/gone")), here),
+            Err("folder is gone: /work/gone".into())
+        );
+        assert!(workdir(&run(None), here).is_err());
+        let mut agent = run(Some("/work/gone"));
+        agent.steps = vec![Step::Agent {
+            prompt: "fix it".into(),
+        }];
+        assert!(workdir(&agent, here).is_err());
+        // Merging and telling need no folder.
+        let mut notify = run(Some("/work/gone"));
+        notify.steps = vec![Step::Notify { text: "hi".into() }];
+        assert_eq!(workdir(&notify, here), Ok(None));
     }
 }

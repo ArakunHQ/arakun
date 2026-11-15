@@ -340,7 +340,7 @@ impl Palette {
                 out.push(hints(vec![hint(&["→"], "fix, re-run, copy log")]));
                 out
             }
-            Preview::File { path, rel, line } => self.file_preview(path, rel, *line),
+            Preview::File { path, rel, line } => self.file_preview(path, rel, *line, cx),
             Preview::Command { blurb, keys, cli } => {
                 let mut props = kit::props();
                 if !keys.is_empty() {
@@ -469,8 +469,14 @@ impl Palette {
         path: &std::path::Path,
         rel: &str,
         line: Option<u32>,
+        cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let snip = self.snippet(path, line);
+        let Some(snip) = self.snippet(path, line, cx) else {
+            return vec![
+                kit::preview_eyebrow("folder01", rel.to_string()).into_any_element(),
+                kit::palette_note("Reading…").into_any_element(),
+            ];
+        };
         let total = snip.as_ref().map(|(_, n)| *n).unwrap_or(0);
         let mut out = vec![
             kit::preview_eyebrow("folder01", format!("{rel} · {} lines", thousands(total)))

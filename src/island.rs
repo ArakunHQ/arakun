@@ -59,6 +59,8 @@ const CARD_W: f32 = 440.;
 const PILL_W: f32 = 330.;
 const PILL_H: f32 = 54.;
 const BADGE: f32 = 26.;
+/// How long a new card ignores the pointer, which may be resting where it drops.
+const CARD_SETTLE: Duration = Duration::from_millis(400);
 /// A card's buttons' height.
 const BUTTON_H: f32 = 28.;
 /// A notice's picture, where the badge goes.
@@ -974,6 +976,11 @@ pub struct Island {
     /// The card (by its seq) the pointer is on: its buttons show only then,
     /// the way a phone shows a notification's actions on a swipe.
     card_hot: Option<u64>,
+    /// Where the pointer was first seen on the card: it only counts as a
+    /// hover once it moves from there. A card can drop under a pointer that
+    /// rests on the window below (its tabs), and that must not hold the
+    /// card or catch the next click.
+    card_pointer: Option<(u64, Point<Pixels>)>,
     /// Bumped on every pointer change, so a delayed leave knows if it still holds.
     leaving: u64,
     /// Off after a click, so the next state shows under the pointer.
@@ -1004,7 +1011,11 @@ impl Island {
                     .timer(Duration::from_millis(500))
                     .await;
                 let alive = this.update(cx, |island, cx| {
-                    if island.alerts.tick(Instant::now(), island.hovered) {
+                    // A card waits while it is really hovered; one that just
+                    // sits under a resting pointer times out as usual.
+                    let hold =
+                        island.hovered && (island.card.is_none() || island.card_hot.is_some());
+                    if island.alerts.tick(Instant::now(), hold) {
                         cx.emit(IslandEvent::Dismissed);
                     }
                     island.refresh(cx);
@@ -1032,6 +1043,7 @@ impl Island {
             busy_at: None,
             hovered: false,
             card_hot: None,
+            card_pointer: None,
             leaving: 0,
             peek: true,
             pinned: false,
@@ -1630,10 +1642,32 @@ impl Island {
             .pr(px(18.))
             .id(("card", seq as usize))
             .on_hover(cx.listener(move |this, on: &bool, _, cx| {
-                let hot = on.then_some(seq);
-                if this.card_hot != hot {
-                    this.card_hot = hot;
-                    cx.notify();
+                if !*on {
+                    this.card_pointer = None;
+                    if this.card_hot.take().is_some() {
+                        cx.notify();
+                    }
+                }
+            }))
+            // Hot only after the pointer moves on the card, and not in the
+            // card's first moments, when it may have just dropped under it.
+            .on_mouse_move(cx.listener(move |this, ev: &gpui::MouseMoveEvent, _, cx| {
+                if this.card_hot == Some(seq) {
+                    return;
+                }
+                let settled = this
+                    .card
+                    .as_ref()
+                    .is_some_and(|c| c.seq == seq && c.born.elapsed() > CARD_SETTLE);
+                match this.card_pointer {
+                    Some((s, at)) if s == seq => {
+                        let moved = (ev.position.x - at.x).abs() + (ev.position.y - at.y).abs();
+                        if settled && moved > px(4.) {
+                            this.card_hot = Some(seq);
+                            cx.notify();
+                        }
+                    }
+                    _ => this.card_pointer = Some((seq, ev.position)),
                 }
             }))
             // A click anywhere on a notice opens what it is about, like "Ver".
@@ -1642,7 +1676,9 @@ impl Island {
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        if this.showing(seq) {
+                        // Only a pointer that came to the card opens it; a
+                        // click meant for the window below does nothing.
+                        if this.showing(seq) && this.card_hot == Some(seq) {
                             this.see(cx)
                         }
                     }),

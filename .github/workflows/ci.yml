@@ -10,8 +10,13 @@ on:
 
 # github.workflow is the caller's name when release.yml calls this file, so
 # that run and a pull request's own CI run don't cancel each other.
+# A pull request's runs share a group, so a new push cancels the old run. Other
+# runs (pushes to main, schedules) get a group per commit: they never cancel or
+# replace each other, so every commit on main keeps its own result. GitHub
+# keeps only one pending run per group, so turning off cancel-in-progress alone
+# would still drop runs when several commits land at once.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 # The jobs only check out and build; none of them writes to the repository.

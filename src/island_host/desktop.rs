@@ -102,6 +102,7 @@ fn card(msg: &Value, apps: &[String]) -> Option<Alert> {
         subtitle: body.into(),
         req: "".into(),
         image: image.into(),
+        brand: Default::default(),
     })
 }
 

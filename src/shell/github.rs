@@ -90,25 +90,25 @@ impl Shell {
             .collect();
         if alerting.len() > NOTICES_AT_ONCE {
             let repos = repo_names(&alerting);
-            self.notify(
+            self.notify_from(
                 AlertKind::Info,
-                &format!("{} new GitHub notifications", alerting.len()),
+                &format!("{} new on GitHub", alerting.len()),
                 &repos,
                 Some(Open::GitHub(None)),
+                None,
+                "github",
             );
             return;
         }
         for n in alerting {
-            let title = format!(
-                "{} · {}",
-                n.repository.full_name,
-                github::reason_label(&n.reason)
-            );
-            self.notify(
+            let (title, line, image) = self.github.read(cx).notice(n);
+            self.notify_from(
                 AlertKind::Info,
                 &title,
-                &n.subject.title,
+                &line,
                 Some(Open::GitHub(Some(n.id.clone()))),
+                image.as_deref(),
+                "github",
             );
         }
     }

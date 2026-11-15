@@ -104,6 +104,7 @@ impl Watch {
                 subtitle: subtitle.into(),
                 req: SharedString::default(),
                 image: SharedString::default(),
+                brand: SharedString::default(),
             };
             match status {
                 Status::Idle if ended => seen.alerts.push(card(
@@ -133,6 +134,7 @@ impl Watch {
                         subtitle: format!("{model} · {}", brief(&p.why)).into(),
                         req: p.req_id.clone().into(),
                         image: SharedString::default(),
+                        brand: SharedString::default(),
                     });
                 }
                 seen.pending.insert(ask);

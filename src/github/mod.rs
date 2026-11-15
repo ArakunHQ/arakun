@@ -188,6 +188,54 @@ pub fn direct(reason: &str) -> bool {
     DIRECT.contains(&reason)
 }
 
+/// What an island notice about a notification says under its title:
+/// `arakun #61 · rik asked for your review`. `who` is the item's author when
+/// known, empty otherwise.
+pub fn notice_line(n: &Notification, number: Option<u64>, who: &str) -> String {
+    let what = match n.kind() {
+        Kind::PullRequest => "pull request",
+        Kind::Issue => "issue",
+        Kind::Ci => "workflow run",
+        Kind::Release => "release",
+        Kind::Commit => "commit",
+        Kind::Discussion => "discussion",
+        Kind::Other => "thread",
+    };
+    let by = |verb: &str, alone: &str| {
+        if who.is_empty() {
+            alone.to_string()
+        } else {
+            format!("{who} {verb}")
+        }
+    };
+    let why = match n.reason.as_str() {
+        "review_requested" => by("asked for your review", "Your review was requested"),
+        "mention" | "team_mention" => by("mentioned you", "You were mentioned"),
+        "assign" => "Assigned to you".to_string(),
+        "author" => format!("New activity on your {what}"),
+        "comment" => "New reply in a thread you're in".to_string(),
+        "ci_activity" => "A workflow run you started finished".to_string(),
+        "approval_requested" => "A deployment waits for your approval".to_string(),
+        other => {
+            let label = reason_label(other);
+            let mut c = label.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect())
+                .unwrap_or_default()
+        }
+    };
+    let repo = n
+        .repository
+        .full_name
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    match number {
+        Some(num) => format!("{repo} #{num} · {why}"),
+        None => format!("{repo} · {why}"),
+    }
+}
+
 /// The reason as a badge: "review requested", "mentioned", "assigned".
 pub fn reason_label(reason: &str) -> String {
     match reason {
@@ -963,6 +1011,40 @@ impl GitHub {
         &self.zero_days
     }
 
+    /// An island notice for a notification: its title, the line under it and
+    /// a picture (the author's, or the owner's when the author isn't known
+    /// yet), when one is on disk.
+    pub fn notice(&self, n: &Notification) -> (String, String, Option<std::path::PathBuf>) {
+        let item = pr::ItemRef::from_notification(n);
+        let key = item.as_ref().map(queue::key_of);
+        let who = self
+            .queue
+            .rows
+            .iter()
+            .find(|(e, _)| {
+                e.notification.as_ref().is_some_and(|m| m.id == n.id)
+                    || key.as_ref().is_some_and(|k| *k == e.key())
+            })
+            .map(|(e, p)| {
+                if p.author.is_empty() {
+                    e.author.clone()
+                } else {
+                    p.author.clone()
+                }
+            })
+            .unwrap_or_default();
+        let image = [who.as_str(), n.repository.owner.login.as_str()]
+            .into_iter()
+            .filter(|l| !l.is_empty())
+            .find_map(|l| self.avatar(l))
+            .map(std::path::Path::to_path_buf);
+        (
+            n.subject.title.clone(),
+            notice_line(n, item.map(|i| i.number), &who),
+            image,
+        )
+    }
+
     /// A login's profile picture on disk, once there is one.
     pub fn avatar(&self, login: &str) -> Option<&std::path::Path> {
         match self.avatars.get(&login.to_ascii_lowercase())? {
@@ -976,6 +1058,9 @@ impl GitHub {
     fn shown_people(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         out.extend(self.me.clone());
+        // Owners too: an island notice shows the organization's picture when
+        // the author isn't known yet.
+        out.extend(self.unread.iter().map(|n| n.repository.owner.login.clone()));
         out.extend(self.queue.rows.iter().map(|(e, p)| {
             if p.author.is_empty() {
                 e.author.clone()
@@ -1323,6 +1408,33 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn notices_say_who_wants_what() {
+        let n = note(
+            "1",
+            "PullRequest",
+            "review_requested",
+            None,
+            "ArakunHQ/arakun",
+            AT,
+        );
+        assert_eq!(
+            notice_line(&n, Some(61), "rik"),
+            "arakun #61 · rik asked for your review"
+        );
+        assert_eq!(
+            notice_line(&n, Some(61), ""),
+            "arakun #61 · Your review was requested"
+        );
+        let n = note("2", "Issue", "author", None, "ArakunHQ/arakun", AT);
+        assert_eq!(
+            notice_line(&n, None, "rik"),
+            "arakun · New activity on your issue"
+        );
+        let n = note("3", "PullRequest", "state_change", None, "a/b", AT);
+        assert_eq!(notice_line(&n, Some(2), ""), "b #2 · State changed");
     }
 
     const AT: &str = "2026-11-14T21:20:45Z";

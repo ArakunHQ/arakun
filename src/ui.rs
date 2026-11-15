@@ -140,6 +140,18 @@ pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> 
         })
 }
 
+/// How far a tab (or a chip as tall as one) sits from the edges of a bar:
+/// the same on the sides as above and below, so it is framed evenly.
+pub const BAR_INSET: f32 = (BAR_H - TAB_H) / 2.;
+/// The same for an icon button at the end of a bar.
+pub const ICON_INSET: f32 = (BAR_H - ICON_BUTTON) / 2.;
+
+/// Pixels that must not follow the Spacing setting: an inset matched to a
+/// fixed height (`BAR_INSET`), so the sides stay equal to the top.
+pub fn fixed(n: f32) -> Pixels {
+    px(n)
+}
+
 /// Where a tab's 20 px close button sits, centered on the tab.
 pub const TAB_CLOSE_TOP: f32 = (TAB_H - 20.) / 2.;
 /// What a tab keeps clear at its end for that button and its offset. Fixed,

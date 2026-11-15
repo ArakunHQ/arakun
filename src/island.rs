@@ -59,6 +59,8 @@ const CARD_W: f32 = 440.;
 const PILL_W: f32 = 330.;
 const PILL_H: f32 = 54.;
 const BADGE: f32 = 26.;
+/// A card's buttons' height.
+const BUTTON_H: f32 = 28.;
 /// A notice's picture, where the badge goes.
 const AVATAR: f32 = 32.;
 const TITLE_SIZE: f32 = 14.5;
@@ -696,7 +698,7 @@ impl CardLayout {
         } else {
             Self::face(alert)
         };
-        let foot = if buttons { 10. + 26. + 14. } else { 14. };
+        let foot = if buttons { 12. + BUTTON_H + 14. } else { 14. };
         CardLayout {
             title,
             body,
@@ -1508,19 +1510,43 @@ impl Island {
         } else {
             ("Luego", "Ver")
         };
-        let pill = |label: &'static str, strong: bool| {
+        // The action is a white pill with an arrow, the way out a quiet word
+        // beside it: the eye lands on what the card is for.
+        let primary = |label: &'static str| {
             div()
                 .id(label)
-                .h(px(26.))
-                .px(px(16.))
+                .h(px(BUTTON_H))
+                .pl(px(13.))
+                .pr(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .rounded_full()
+                .bg(gpui::white())
+                .hover(|s| s.bg(hsla(0., 0., 0.86, 1.)))
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(gpui::black())
+                .child(label)
+                .child(
+                    gpui::svg()
+                        .path("icons/arrow-right01.svg")
+                        .size(px(13.))
+                        .text_color(gpui::black()),
+                )
+        };
+        let quiet = |label: &'static str| {
+            div()
+                .id(label)
+                .h(px(BUTTON_H))
+                .px(px(11.))
                 .flex()
                 .items_center()
                 .rounded_full()
-                .bg(hsla(0., 0., if strong { 0.24 } else { 0.15 }, 1.))
-                .hover(|s| s.bg(hsla(0., 0., if strong { 0.3 } else { 0.2 }, 1.)))
+                .hover(|s| s.bg(hsla(0., 0., 1., 0.1)))
                 .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(gpui::white())
+                .text_color(hsla(0., 0., 1., 0.62))
                 .child(label)
         };
         let face = if session {
@@ -1560,25 +1586,16 @@ impl Island {
             .when(!layout.pill && layout.body_lines > 0, |d| d.gap(px(3.)))
             .child(title)
             .when(layout.body_lines > 0, |d| d.child(body));
+        // Under the text, not in the far corner, so the card has no empty
+        // stretch at the bottom left.
+        let indent = CardLayout::text_x(a) - if session { 18. } else { 14. };
         let buttons = a.buttons().then(|| {
             div()
                 .flex()
-                .justify_end()
-                .gap(px(8.))
-                .child(pill(no, false).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.showing(seq) {
-                            if confirm {
-                                this.answer(false, cx)
-                            } else {
-                                this.later(cx)
-                            }
-                        }
-                    }),
-                ))
-                .child(pill(yes, true).on_mouse_down(
+                .items_center()
+                .pl(px(indent))
+                .gap(px(4.))
+                .child(primary(yes).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -1587,6 +1604,19 @@ impl Island {
                                 this.answer(true, cx)
                             } else {
                                 this.see(cx)
+                            }
+                        }
+                    }),
+                ))
+                .child(quiet(no).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if this.showing(seq) {
+                            if confirm {
+                                this.answer(false, cx)
+                            } else {
+                                this.later(cx)
                             }
                         }
                     }),

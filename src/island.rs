@@ -1511,11 +1511,6 @@ impl Island {
         let session = a.kind.session();
         let confirm = a.kind == AlertKind::Confirm;
         let seq = card.seq;
-        let (no, yes) = if confirm {
-            ("Rechazar", "Aprobar")
-        } else {
-            ("Luego", "Ver")
-        };
         // The action is a white pill with an arrow, the way out a quiet word
         // beside it: the eye lands on what the card is for.
         let primary = |label: &'static str| {
@@ -1601,35 +1596,23 @@ impl Island {
                 .flex()
                 .items_center()
                 .when(confirm, |d| d.pl(px(indent)))
-                // On hover the action sits at the far right edge, under the thumb's reach.
-                .when(!confirm, |d| d.flex_row_reverse())
                 .gap(px(4.))
-                .child(primary(yes).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.showing(seq) {
-                            if confirm {
-                                this.answer(true, cx)
-                            } else {
-                                this.see(cx)
+                .children(card_buttons(confirm).map(|(label, action)| {
+                    let pill = if action { primary(label) } else { quiet(label) };
+                    pill.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if this.showing(seq) {
+                                match (confirm, action) {
+                                    (true, approve) => this.answer(approve, cx),
+                                    (false, true) => this.see(cx),
+                                    (false, false) => this.later(cx),
+                                }
                             }
-                        }
-                    }),
-                ))
-                .child(quiet(no).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.showing(seq) {
-                            if confirm {
-                                this.answer(false, cx)
-                            } else {
-                                this.later(cx)
-                            }
-                        }
-                    }),
-                ))
+                        }),
+                    )
+                }))
         });
         div()
             .absolute()
@@ -2192,6 +2175,18 @@ fn avatar(alert: &Alert) -> impl IntoElement {
         })
 }
 
+/// A card's buttons, left to right, and whether each is the action. The
+/// action stays on the right, where "Aprobar" has always been: swapping it
+/// with "Rechazar" would turn a habit into the wrong answer. On hover the row
+/// sits at the card's right edge, so "Ver" lands under the thumb too.
+fn card_buttons(confirm: bool) -> [(&'static str, bool); 2] {
+    if confirm {
+        [("Rechazar", false), ("Aprobar", true)]
+    } else {
+        [("Luego", false), ("Ver", true)]
+    }
+}
+
 /// The service's logo file under `icons/`, for a notice's `brand`.
 fn brand_icon(brand: &str) -> Option<&'static str> {
     match brand {
@@ -2694,6 +2689,18 @@ mod tests {
         let c = rearm(b, Some(9), true, late);
         assert!(!may_approve(c, Some(9), late + Duration::from_secs(5)));
         assert_eq!(rearm(c, None, false, late), None);
+    }
+
+    #[test]
+    fn approve_stays_right_of_reject() {
+        assert_eq!(
+            super::card_buttons(true),
+            [("Rechazar", false), ("Aprobar", true)]
+        );
+        assert_eq!(
+            super::card_buttons(false),
+            [("Luego", false), ("Ver", true)]
+        );
     }
 
     #[test]

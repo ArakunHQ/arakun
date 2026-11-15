@@ -628,11 +628,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .h(px(if dock_open {
-                self.dock_height
-            } else {
-                DOCK_BAR_H
-            }))
+            // Open, the user's height; closed, as tall as its header plus its
+            // border, from the layout itself: a fixed number here cut the
+            // header by the border and pushed the chips to the bottom.
+            .when(dock_open, |d| d.h(px(self.dock_height)))
+            .when(!dock_open, |d| d.flex_none())
             .bg(theme::background())
             .border_color(if self.dock_drag {
                 theme::accent()

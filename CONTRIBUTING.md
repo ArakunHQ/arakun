@@ -227,8 +227,9 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
   while CI runs. Once the checks pass, mark it ready with `gh pr ready` or the button on
   GitHub. That starts CodeRabbit's review. When it finishes, people are asked to review
-  unless CodeRabbit approved. On a pull request from outside the team, a workflow
-  dismisses CodeRabbit's approval and asks a person.
+  unless CodeRabbit approved. A pull request from outside the team always needs a
+  maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
+  status waits for a person.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

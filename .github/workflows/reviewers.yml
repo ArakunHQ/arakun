@@ -11,6 +11,11 @@ name: Reviewers
 # not in .coderabbit.yaml, because CodeRabbit's approval overrides can only
 # match members of a team, not everyone outside it.
 #
+# The dismissal comes after the approval, so it can't stop a merge in
+# between. The "Human approval" commit status does: it stays pending on a pull
+# request from outside the team until someone on the team approves its head
+# commit, and the main ruleset requires it. It passes at once for the team.
+#
 # Each pull request goes to the person who can check it on their own machine:
 # Karlo for Linux and for changes that are not platform specific (Rik if Karlo
 # wrote it), Rik for macOS and Dani for Windows. A pull request that touches a
@@ -31,19 +36,27 @@ name: Reviewers
 # - issue_comment: CodeRabbit edits its summary comment when it approves
 #   later, after the author resolves its threads. This catches an approval of
 #   an outside pull request that came after the check run.
-# - workflow_dispatch: by hand, for a pull request CodeRabbit never reviewed.
-#   It doesn't wait for CodeRabbit.
-# Drafts are skipped. CodeRabbit reviews a pull request once it is marked
+# - pull_request_target: a new head commit needs its "Human approval" status.
+# - workflow_run: the "Review submitted" workflow ran, so a review was
+#   submitted or dismissed and "Human approval" may change.
+# - workflow_dispatch: by hand, for a pull request CodeRabbit never reviewed,
+#   or whose status is missing. It doesn't wait for CodeRabbit.
+# Drafts get no reviewers. CodeRabbit reviews a pull request once it is marked
 # ready, and that review starts this workflow.
 #
-# These events run with a write token even for pull requests from forks, and
-# that is safe only because the job never checks out or runs code from the
-# pull request: the reviewers are in this file, read from the default branch,
-# and the changed files come from the API. Keep it that way. A change to this
-# file takes effect once it is on main.
+# These events run this file from the default branch with a write token, even
+# for pull requests from forks. That is safe only because no job checks out or
+# runs code from the pull request: the reviewers are in this file, and the
+# changed files and reviews come from the API. Keep it that way. A change to
+# this file takes effect once it is on main.
 
 on:
   check_run:
+    types: [completed]
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_run:
+    workflows: [Review submitted]
     types: [completed]
   issue_comment:
     types: [created, edited]
@@ -54,6 +67,11 @@ on:
         required: true
 
 permissions: {}
+
+env:
+  # The members of the ArakunHQ/maintainers team. The workflow's token can't
+  # read team membership, so keep this in step by hand.
+  TEAM: KarloAldrete rikvisser-dev daniektj
 
 jobs:
   request:
@@ -86,9 +104,6 @@ jobs:
           # How long to wait, after CodeRabbit's check run completes, for its
           # approval of a team pull request. It can come about a minute later.
           APPROVAL_WAIT: 120
-          # The members of the ArakunHQ/maintainers team. The workflow's token
-          # can't read team membership, so keep this in step by hand.
-          TEAM: KarloAldrete rikvisser-dev daniektj
           # Every pull request: from the team, the first of these who is not
           # the author; from outside, the one with the fewest open requests.
           DEFAULT_REVIEWERS: KarloAldrete rikvisser-dev
@@ -255,4 +270,72 @@ jobs:
           fi
           for pr in $prs; do
             handle "$pr"
+          done
+
+  approval:
+    name: Human approval status
+    if: >-
+      ${{ github.event_name == 'pull_request_target' ||
+      github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' }}
+    concurrency:
+      group: approval-${{ github.event.pull_request.number || inputs.pr || github.event.workflow_run.head_sha }}
+      cancel-in-progress: true
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Set the Human approval status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          # On workflow_run, the head commit of the pull request that was reviewed.
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
+
+          if [ "$EVENT" = workflow_run ]; then
+            # The event lists no pull request when the branch is on a fork.
+            prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
+              --jq '.[] | select(.head.sha == env.SHA) | .number')
+          else
+            if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+              echo "::error::Not a pull request number: $PR"
+              exit 1
+            fi
+            prs=$PR
+          fi
+
+          for pr in $prs; do
+            read -r author HEAD < <(gh api "repos/$GH_REPO/pulls/$pr" --jq '[.user.login, .head.sha] | @tsv')
+            export HEAD
+            if in_team "$author"; then
+              state=success description="Not needed: the author is on the team."
+            else
+              # Each reviewer's last verdict on the head commit. A dismissed
+              # review reads DISMISSED, so it drops out.
+              approvers=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq \
+                '.[] | select(.commit_id == env.HEAD and (.state == "APPROVED" or .state == "CHANGES_REQUESTED")) | "\(.user.login) \(.state)"' |
+                awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }')
+              approver=""
+              for user in $approvers; do
+                if in_team "$user"; then
+                  approver=$user
+                  break
+                fi
+              done
+              if [ -n "$approver" ]; then
+                state=success description="Approved by $approver."
+              else
+                state=pending description="Waiting for a maintainer to approve: the author is outside the team."
+              fi
+            fi
+            gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
+              -f context="Human approval" -f description="$description" -f target_url="$RUN_URL"
+            echo "#$pr ($HEAD): $state, $description"
           done

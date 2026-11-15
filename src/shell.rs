@@ -40,6 +40,7 @@ mod limits;
 mod menus;
 mod notes;
 pub(crate) mod pages;
+mod palette;
 mod panel;
 mod panes;
 mod paste;
@@ -94,7 +95,6 @@ use crate::settings_view::{SettingsDialog, SettingsEvent};
 #[cfg(feature = "coderlabs")]
 use crate::site_view::SiteView;
 use crate::state;
-use crate::switcher::{self, Switcher, SwitcherEvent};
 #[cfg(feature = "coderlabs")]
 use crate::tasks_view::TasksView;
 #[cfg(feature = "team")]
@@ -164,7 +164,7 @@ enum Modal {
     Account(Entity<AccountDialog>),
     Commit(Entity<crate::git_dialogs::CommitDialog>),
     GitConfirm(Entity<crate::git_dialogs::ConfirmDialog>),
-    Switcher(Entity<Switcher>),
+    Palette(Entity<crate::palette::Palette>),
     Settings(Entity<SettingsDialog>),
     Automations(Entity<crate::automations_view::AutomationsDialog>),
     /// Rename, remove or import sessions (`session_actions`).
@@ -328,6 +328,10 @@ pub struct Shell {
     /// What the chrome showed (rail, panel) before Ctrl+B hid it all.
     left_before_hide: Option<(bool, bool)>,
     arcade: bool,
+    /// What the person pinned from the palette (`pins.json`).
+    pins: crate::palette::pins::Pins,
+    /// Automations made from a sentence in the palette (`rules.json`).
+    rules: crate::palette::rules::Rules,
     session_query: Entity<TextInput>,
     session_filter: Option<Agent>,
     _session_query: Subscription,
@@ -718,6 +722,8 @@ impl Shell {
             subagent_tick: None,
             left_before_hide: None,
             arcade: layout.arcade,
+            pins: crate::palette::pins::Pins::load(),
+            rules: crate::palette::rules::Rules::load(),
             session_query,
             session_filter: None,
             _session_query: session_query_sub,
@@ -820,6 +826,7 @@ impl Shell {
         this.listen_for_commands(window, cx);
         this.watch_headless(window, cx);
         this.start_scheduler(window, cx);
+        this.start_rule_ticker(window, cx);
         this.restore_phone(window, cx);
         this
     }
@@ -1713,245 +1720,7 @@ impl Shell {
     }
 
     fn open_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.menu = None;
-        self.env_menu_open = false;
-        let items = self.switcher_items(cx);
-        let switcher = cx.new(|cx| Switcher::new(items, window, cx));
-        let sub = cx.subscribe_in(
-            &switcher,
-            window,
-            |this, _, ev: &SwitcherEvent, window, cx| match ev {
-                SwitcherEvent::Picked(target) => {
-                    let target = target.clone();
-                    this.close_modal(window, cx);
-                    this.switch_to(target, window, cx);
-                }
-                SwitcherEvent::Dismissed => this.close_modal(window, cx),
-            },
-        );
-        self.modal = Some((Modal::Switcher(switcher), sub));
-        cx.notify();
-    }
-
-    /// Sessions of the visible environment first, then everything else, then commands.
-    fn switcher_items(&self, cx: &App) -> Vec<switcher::Item> {
-        use switcher::{Item, Target};
-        let mut here = Vec::new();
-        let mut envs = Vec::new();
-        let mut elsewhere = Vec::new();
-        for (pi, p) in self.projects.iter().enumerate() {
-            envs.push(Item {
-                icon: "folder01",
-                label: p.name.clone(),
-                detail: "Project".into(),
-                target: Target::Project(pi),
-            });
-            for (ei, e) in p.environments.iter().enumerate() {
-                let visible = pi == self.active_project && ei == p.active_env;
-                envs.push(Item {
-                    icon: if e.is_checkout {
-                        "folder01"
-                    } else {
-                        "git-branch"
-                    },
-                    label: format!("{} / {}", p.name, e.name).into(),
-                    detail: "Environment".into(),
-                    target: Target::Env(pi, ei),
-                });
-                for sess in &e.sessions {
-                    let item = Item {
-                        icon: "message01",
-                        label: sess.title.clone(),
-                        detail: format!(
-                            "{} · {}/{} · {}",
-                            sess.agent.label(),
-                            p.name,
-                            e.name,
-                            model::age(sess.updated)
-                        )
-                        .into(),
-                        target: Target::Session(pi, ei, sess.id.clone()),
-                    };
-                    if visible {
-                        here.push(item)
-                    } else {
-                        elsewhere.push(item)
-                    }
-                }
-            }
-        }
-        let command = |icon, label: &str, target| Item {
-            icon,
-            label: label.to_string().into(),
-            detail: "Command".into(),
-            target,
-        };
-        let mut items = here;
-        items.extend(envs);
-        items.extend(elsewhere);
-        if self.has_projects() {
-            items.push(command("comment-add01", "New session", Target::NewSession));
-            items.push(command(
-                "git-branch",
-                "New environment",
-                Target::NewEnvironment,
-            ));
-            items.push(command(
-                "computer-terminal01",
-                "New terminal",
-                Target::NewTerminal,
-            ));
-            items.push(command("globe", "New browser tab", Target::NewBrowserTab));
-            items.push(command(
-                "layout-bottom",
-                "Toggle terminal dock",
-                Target::ToggleDock,
-            ));
-            items.push(command(
-                "sidebar-left",
-                "Toggle sidebar",
-                Target::ToggleSidebar,
-            ));
-            items.push(command(
-                "layout-align-right",
-                "Toggle workspace panel",
-                Target::TogglePanel,
-            ));
-            items.push(command(
-                "bot",
-                "Toggle subagents panel",
-                Target::ToggleSubagents,
-            ));
-        }
-        items.push(command("folder-add", "Add project", Target::AddProject));
-        #[cfg(feature = "coderlabs")]
-        items.push(command(
-            "checkmark-circle02",
-            "CoderSpace tasks",
-            Target::Tasks,
-        ));
-        if self.has_projects() {
-            items.push(command("activity01", "Runs: CI and deploys", Target::Runs));
-            items.push(command(
-                "git-branch",
-                "Branches: map of branches and PRs",
-                Target::Branches,
-            ));
-            items.push(command(
-                "github",
-                "GitHub: your review queue",
-                Target::GitHub,
-            ));
-            #[cfg(feature = "coderlabs")]
-            items.push(command(
-                "artboard",
-                "Canvas: design frames, drawn natively",
-                Target::Canvas,
-            ));
-            // The branches the Branches tab last read, with their PR, by name or number.
-            for (name, pr) in self.branches_view.read(cx).branch_list() {
-                items.push(Item {
-                    icon: if pr.is_some() {
-                        "git-pull-request"
-                    } else {
-                        "git-branch"
-                    },
-                    label: match &pr {
-                        Some((n, title)) => format!("#{n} {title}").into(),
-                        None => name.clone().into(),
-                    },
-                    detail: match &pr {
-                        Some(_) => format!("Pull request · {name}").into(),
-                        None => "Branch".into(),
-                    },
-                    target: Target::Branch(name),
-                });
-            }
-        }
-        #[cfg(feature = "coderlabs")]
-        if self.has_projects() {
-            let cs = self.coderspace.read(cx);
-            for t in cs.pending() {
-                items.push(Item {
-                    icon: "checkmark-circle02",
-                    label: format!("{} {}", t.key, t.title).trim().to_string().into(),
-                    detail: format!(
-                        "Task · {} · {}",
-                        cs.project_name(&t.project).unwrap_or("CoderSpace"),
-                        t.status.label()
-                    )
-                    .into(),
-                    target: Target::Task(t.id.clone()),
-                });
-            }
-        }
-        items.push(command(
-            "gauge",
-            "Factory account and usage",
-            Target::Account,
-        ));
-        items.push(command("settings01", "Settings", Target::Settings));
-        items.push(command(
-            "sparkles",
-            "Extensions: plugins, skills & MCP",
-            Target::Extensions,
-        ));
-        items.push(command(
-            "square-lock02",
-            "Sign in to Claude Code",
-            Target::SignIn(crate::agent::AgentKind::Claude),
-        ));
-        items.push(command(
-            "square-lock02",
-            "Sign in to Droid",
-            Target::SignIn(crate::agent::AgentKind::Droid),
-        ));
-        items.push(command(
-            "square-lock02",
-            "Sign in to OpenCode",
-            Target::SignIn(crate::agent::AgentKind::OpenCode),
-        ));
-        items
-    }
-
-    fn switch_to(&mut self, target: switcher::Target, window: &mut Window, cx: &mut Context<Self>) {
-        use switcher::Target;
-        match target {
-            Target::Project(pi) if pi < self.projects.len() => self.select_project(pi, window, cx),
-            Target::Env(pi, ei) => self.select_env(pi, ei, window, cx),
-            Target::Session(pi, ei, id) => self.open_session_at(pi, ei, id, window, cx),
-            Target::NewSession => self.new_session(window, cx),
-            Target::NewEnvironment => self.open_create_env(self.active_project, window, cx),
-            Target::NewTerminal => self.new_terminal(window, cx),
-            Target::NewBrowserTab => self.open_browser_tab(String::new(), window, cx),
-            Target::AddProject => self.open_picker(window, cx),
-            Target::ToggleDock => self.toggle_dock(window, cx),
-            Target::ToggleSidebar => self.toggle_sidebar(cx),
-            Target::TogglePanel => self.toggle_panel(cx),
-            Target::ToggleSubagents => self.toggle_subagents(cx),
-            Target::Account => self.open_account(window, cx),
-            Target::Settings => self.open_settings(window, cx),
-            Target::Extensions => self.open_extensions_tab(window, cx),
-            #[cfg(feature = "coderlabs")]
-            Target::Tasks => self.open_tasks_tab(window, cx),
-            Target::Runs => self.open_runs_tab(None, window, cx),
-            Target::Branches => self.open_branches_tab(window, cx),
-            Target::GitHub => self.open_github_tab(window, cx),
-            #[cfg(feature = "coderlabs")]
-            Target::Canvas => self.open_canvas_tab(None, window, cx),
-            Target::Branch(name) => self.reveal_branch(name, window, cx),
-            #[cfg(feature = "coderlabs")]
-            Target::Task(id) => {
-                self.open_tasks_tab(window, cx);
-                self.tasks_view.update(cx, |v, cx| v.select_task(&id, cx));
-            }
-            Target::SignIn(kind) => {
-                if let Some(cmd) = crate::agent::login_command(kind) {
-                    self.spawn_terminal_command(Some(cmd), true, window, cx);
-                }
-            }
-            Target::Project(_) => {}
-        }
+        self.open_palette(window, cx);
     }
 
     fn open_session_at(
@@ -2396,6 +2165,7 @@ impl Render for Shell {
             self.render_welcome(window, cx).into_any_element()
         };
 
+        let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
         let modal: Option<AnyElement> = self.modal.as_ref().map(|(m, _)| match m {
             Modal::Picker(e) => e.clone().into_any_element(),
             Modal::Attach(e) => e.clone().into_any_element(),
@@ -2405,7 +2175,7 @@ impl Render for Shell {
             Modal::Account(e) => e.clone().into_any_element(),
             Modal::Commit(e) => e.clone().into_any_element(),
             Modal::GitConfirm(e) => e.clone().into_any_element(),
-            Modal::Switcher(e) => e.clone().into_any_element(),
+            Modal::Palette(e) => e.clone().into_any_element(),
             Modal::Settings(e) => e.clone().into_any_element(),
             Modal::Automations(e) => e.clone().into_any_element(),
             Modal::Session(v) => v.clone().into_any_element(),
@@ -2542,6 +2312,33 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &AddProject, window, cx| this.open_picker(window, cx)))
             .on_action(
                 cx.listener(|this, _: &QuickSwitch, window, cx| this.open_switcher(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned1, w, cx| this.open_pinned(0, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned2, w, cx| this.open_pinned(1, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned3, w, cx| this.open_pinned(2, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned4, w, cx| this.open_pinned(3, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned5, w, cx| this.open_pinned(4, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned6, w, cx| this.open_pinned(5, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned7, w, cx| this.open_pinned(6, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned8, w, cx| this.open_pinned(7, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned9, w, cx| this.open_pinned(8, w, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, _, cx| this.toggle_panel(cx)))
@@ -2697,7 +2494,8 @@ impl Render for Shell {
                         .pt(relative(0.10))
                         .pb(px(12.))
                         .px(px(12.))
-                        .bg(gpui::black().opacity(0.4))
+                        // The palette dims the app further: gpui has no backdrop blur.
+                        .bg(gpui::black().opacity(if palette_open { 0.62 } else { 0.4 }))
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,

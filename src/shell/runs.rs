@@ -208,7 +208,13 @@ impl Shell {
 
     /// Starts Droid on a failed run, with the failure as its first prompt, in the
     /// environment of the run's branch. A branch with no environment gets one.
-    fn fix_run(&mut self, root: &Path, run_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn fix_run(
+        &mut self,
+        root: &Path,
+        run_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(pi) = self.projects.iter().position(|p| p.path == root) else {
             return;
         };

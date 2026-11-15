@@ -342,6 +342,30 @@ impl GitHubView {
         self.picked.as_ref().and_then(|e| e.item.clone())
     }
 
+    /// Shows a pull request or issue, as the palette opens one.
+    pub fn reveal(&mut self, item: &ItemRef, cx: &mut Context<Self>) {
+        let key = crate::github::queue::key_of(item);
+        let found = self
+            .github
+            .read(cx)
+            .queue()
+            .rows
+            .iter()
+            .find(|(e, _)| e.key() == key)
+            .map(|(e, _)| e.clone());
+        let entry = found.unwrap_or_else(|| Entry {
+            item: Some(item.clone()),
+            title: item.label(),
+            author: String::new(),
+            updated_at: String::new(),
+            closed_at: String::new(),
+            state: String::new(),
+            why: Vec::new(),
+            notification: None,
+        });
+        self.select(entry, true, cx);
+    }
+
     /// Picks an entry; `open` shows it in the narrow layout too (a click,
     /// not the first pick made for the user).
     fn select(&mut self, entry: Entry, open: bool, cx: &mut Context<Self>) {

@@ -156,12 +156,18 @@ impl Shell {
                     .iter()
                     .filter(|i| i.status != Status::Working)
                     .count();
-                (waiting > 0).then(|| Badge {
-                    count: waiting,
-                    bg: theme::warn().into(),
-                    fg: theme::background(),
-                    urgent: true,
-                })
+                // A session waiting on the user outranks notices read later.
+                let unseen = self.unseen_notices();
+                if waiting > 0 {
+                    Some(Badge {
+                        count: waiting + unseen,
+                        bg: theme::warn().into(),
+                        fg: theme::background(),
+                        urgent: true,
+                    })
+                } else {
+                    (unseen > 0).then(|| loud(unseen, theme::accent()))
+                }
             }
             #[cfg(feature = "coderlabs")]
             View::Tasks => self.tasks_badge(cx).map(|(n, overdue)| {

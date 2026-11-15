@@ -190,7 +190,13 @@ impl Shell {
                 )),
             },
             "notify" => {
-                self.notify(AlertKind::Info, &format!("Arakun · {place}"), &arg, None);
+                self.notify(
+                    AlertKind::Info,
+                    &format!("Arakun · {place}"),
+                    &arg,
+                    None,
+                    cx,
+                );
                 Reply::ok("")
             }
             other => Reply::err(format!("unknown command `{other}` (see arakun help)")),

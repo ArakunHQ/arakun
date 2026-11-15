@@ -447,8 +447,13 @@ fn gap() -> f32 {
     crate::ui::window_gap()
 }
 /// The dock card's collapsed height: the status chips live in its header.
-/// The dock's header, as tall as the main area's tab bar so their tabs match.
-const DOCK_BAR_H: f32 = ui::BAR_H;
+const DOCK_BAR_H: f32 = 32.;
+/// The dock's terminal tabs: shorter than the main tab bar's, so they fit
+/// its header, and all one width.
+const DOCK_TAB_H: f32 = 24.;
+const DOCK_TAB_W: f32 = 224.;
+/// Where a dock tab's 20 px close button sits, centered on the tab.
+const DOCK_TAB_CLOSE_TOP: f32 = (DOCK_TAB_H - 20.) / 2.;
 
 /// Which side card its gap handle is resizing.
 #[derive(Clone, Copy, PartialEq)]
@@ -2711,7 +2716,26 @@ fn chip(
 
 #[cfg(test)]
 mod tests {
-    use super::hunk_start;
+    use super::*;
+
+    /// The dock's sizes before corners and spacing became settings. At the
+    /// default scales it must look exactly as it did.
+    #[test]
+    fn dock_keeps_its_default_sizes() {
+        assert_eq!(DOCK_BAR_H, 32.);
+        assert_eq!(
+            (DOCK_TAB_W, DOCK_TAB_H, DOCK_TAB_CLOSE_TOP),
+            (224., 24., 2.)
+        );
+        // Tab padding, gap and corner; chip padding and corner; body padding.
+        for n in [8., 28., 6., 2., 12., 10.] {
+            assert_eq!(ui::sp(n), px(n));
+        }
+        for r in [4., ui::RADIUS] {
+            assert_eq!(ui::rad(r), px(r));
+        }
+        assert_eq!(ui::RADIUS, 8.);
+    }
 
     #[test]
     fn hunk_lines() {

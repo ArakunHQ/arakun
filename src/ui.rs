@@ -111,11 +111,10 @@ impl Render for Tip {
     }
 }
 
-/// Builds the tooltip closure for `.tooltip()`: tip("New session").
-/// Shortcuts in it ("New session (Ctrl+T)") show as macOS writes them there.
-/// A tab of a tab strip, the same in every strip: as wide as its title
-/// between 112 and 224, `TAB_H` tall, filled when active. Callers add the
-/// icon, the title and a close button (`right(px(4.))`, `TAB_CLOSE_TOP`).
+/// A tab of a tab strip: as wide as its title between 112 and 224, `TAB_H`
+/// tall, filled when active. Callers add the icon, the title and a close
+/// button (`right(px(4.))`, `TAB_CLOSE_TOP`). The dock's shorter tabs set
+/// their own width and height on top.
 pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -143,6 +142,8 @@ pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> 
 /// Where a tab's 20 px close button sits, centered on the tab.
 pub const TAB_CLOSE_TOP: f32 = (TAB_H - 20.) / 2.;
 
+/// Builds the tooltip closure for `.tooltip()`: tip("New session").
+/// Shortcuts in it ("New session (Ctrl+T)") show as macOS writes them there.
 pub fn tip(label: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView {
     let label = SharedString::from(crate::platform::shortcut_label(label));
     move |_, cx| {
@@ -356,7 +357,7 @@ pub const INPUT_H: f32 = 32.;
 pub const BAR_H: f32 = 40.;
 /// Bars inside a view: browser toolbar, dock header, find bar.
 pub const TOOLBAR_H: f32 = 36.;
-/// A tab in a tab strip: the main area's tabs and the terminal dock's.
+/// A tab in the main area's tab strip.
 pub const TAB_H: f32 = 30.;
 
 /// Room around a full-page view (Tasks, Runs, Memory…).
@@ -732,4 +733,27 @@ pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoEle
         gpui::Animation::new(std::time::Duration::from_millis(900)).repeat(),
         |svg, t| svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// At the default scales every size is exactly what the view asked for,
+    /// so the app looks as it did before the scales existed.
+    #[test]
+    fn defaults_leave_sizes_alone() {
+        assert_eq!(radius_scale(), 1.);
+        assert_eq!(space_scale(), 1.);
+        assert_eq!(window_gap(), 8.);
+        let mut n = 0.;
+        while n <= 64. {
+            assert_eq!(sp(n), px(n), "sp({n})");
+            assert_eq!(rad(n), px(n), "rad({n})");
+            n += 0.5;
+        }
+        for r in [RADIUS_SM, RADIUS, RADIUS_LG, RADIUS_XL, 2.5, 3.5] {
+            assert_eq!(rad(r), px(r));
+        }
+    }
 }

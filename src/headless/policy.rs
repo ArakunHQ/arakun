@@ -1199,9 +1199,12 @@ fn script(src: &str, cwd: &mut Option<PathBuf>, cx: &Ctx, out: &mut Vec<Finding>
     }
 }
 
-/// A value with nothing left to expand.
+/// A value with nothing left to expand. Whitespace too: the shell splits an
+/// unquoted `$X` there, into words this would read as one.
 fn literal(v: &str) -> bool {
-    !v.is_empty() && !v.contains(['$', '`', '*', '?', '[', '~', '\\'])
+    !v.is_empty()
+        && !v.contains(['$', '`', '*', '?', '[', '{', '~', '\\'])
+        && !v.contains(char::is_whitespace)
 }
 
 /// `$X`/`${X}` replaced by the plain values set earlier on the line.
@@ -2121,6 +2124,17 @@ fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Findi
     // the very file the command opens (`--agent` takes the next word, even
     // one that looks like a flag).
     let rest: Vec<String> = args.iter().skip(2).map(|a| a.to_string()).collect();
+    // The shell expands globs, braces and variables before the command parses
+    // its arguments, into files and words we can't see from here: `rev*` to a
+    // symlink, or `--agent --*` to a later `--body-file=…`, which wins. Quotes
+    // are gone by now, so even a quoted one asks.
+    if rest.iter().any(|a| a.contains(['*', '?', '[', '{', '$'])) {
+        return out.push(always(
+            "borrador de GitHub con argumentos que el shell expande",
+            format!("Ejecutar: {line}"),
+            "confirmo: borrador de GitHub",
+        ));
+    }
     let body = match crate::github::pr::parse_draft_args(&rest) {
         Ok(parsed) => parsed.body_file.to_string_lossy().into_owned(),
         // The command refuses these too, but don't bet on it: ask.
@@ -2134,12 +2148,6 @@ fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Findi
     };
     if body == "-" {
         return;
-    }
-    // The shell expands a glob to files we can't see from here (`rev*` to a
-    // symlink), and the literal name rarely exists, so it would pass as "not
-    // written yet". Don't guess.
-    if body.contains(['*', '?', '[']) {
-        return ask(out, &body);
     }
     // `..` is resolved after symlinks when the file is opened, but lexically
     // here, so `link/../x` could pass for a workspace file. Don't guess.
@@ -2950,6 +2958,10 @@ mod tests {
             "arakun github draft o/r#7 --verdict comment --body-file docs/../../.netrc",
             "arakun github draft o/r#7 --verdict comment --body-file docs/../review.md",
             "arakun github draft o/r#7 --verdict comment --bogus x --body-file -",
+            // The shell can expand these into a later `--body-file`, which wins.
+            "arakun github draft o/r#7 --verdict comment --body-file - --agent --*",
+            "arakun github draft o/r#7 --verdict comment --body-file lin{k,}/hostname",
+            "X='a --body-file=/etc/shadow'; arakun github draft o/r#7 --verdict comment --body-file - --agent $X",
         ] {
             all(cmd, [X, X, X]);
         }

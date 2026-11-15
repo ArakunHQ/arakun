@@ -234,6 +234,38 @@ jobs:
       - name: cargo test
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
 
+  # The cfg(windows) code and the Windows-only crates (windows, windows-sys,
+  # uds_windows) compile nowhere else, so without this job a Windows break
+  # first showed up while building a release. Same runner as release.yml's
+  # Windows build. Clippy only, no tests: it compiles the tests too, and running
+  # them on Windows is a separate step.
+  clippy-windows:
+    name: Clippy (Windows)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    runs-on: depot-windows-2025-8
+    steps:
+      - uses: actions/checkout@v4
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # bash (Git for Windows), so "$CI_CARGO_CONFIG" expands as on the other jobs.
+      - name: cargo clippy
+        shell: bash
+        run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
+
   # macOS builds other code (cfg(target_os = "macos"), no /proc, BSD tools), so
   # Linux passing says little about it. No runner-usage step: it supports only
   # Linux and Windows.

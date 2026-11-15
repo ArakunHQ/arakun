@@ -9,7 +9,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
 };
 
 use crate::agent::plan::{self, PlanUsage};
@@ -216,6 +216,8 @@ const SHORTCUTS: &[Shortcut] = &[
 
 /// The queue key of the "Test voice" sample.
 const TEST_KEY: &str = "settings-test";
+/// How long a palette edit waits for the next before it is saved.
+const PALETTE_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 const LIST_W: f32 = 232.;
 const BODY_H: f32 = 420.;
@@ -252,7 +254,11 @@ pub struct SettingsDialog {
     name_input: Entity<TextInput>,
     /// Whether the field to paste a shared palette is open.
     show_import: bool,
-    _subs: [Subscription; 5],
+    /// The save of a palette edit that waits for the slider to stop.
+    palette_save: Option<Task<()>>,
+    /// A palette edit is shown but not saved yet.
+    palette_dirty: bool,
+    _subs: [Subscription; 7],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -368,7 +374,22 @@ impl SettingsDialog {
             confirm_delete: false,
             name_input,
             show_import: false,
-            _subs: [sub, key_sub, voice_sub, share_sub, name_sub],
+            palette_save: None,
+            palette_dirty: false,
+            _subs: [
+                sub,
+                key_sub,
+                voice_sub,
+                share_sub,
+                name_sub,
+                // An edit made just before the dialog closes or the app quits
+                // is saved then rather than lost with its wait.
+                cx.on_release(|this, _| this.flush_palette()),
+                cx.on_app_quit(|this, _| {
+                    this.flush_palette();
+                    async {}
+                }),
+            ],
         }
     }
 
@@ -908,7 +929,14 @@ impl SettingsDialog {
     }
 
     fn apply_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette_save = None;
+        self.palette_dirty = false;
         crate::palettes::store(&self.palettes);
+        self.show_palette(cx);
+    }
+
+    /// Shows the palette in use across the app without saving it.
+    fn show_palette(&mut self, cx: &mut Context<Self>) {
         // The name field follows the palette in use, unless it is what changed.
         let name = self.palettes.active().name;
         if self.name_input.read(cx).text().trim() != name {
@@ -928,7 +956,21 @@ impl SettingsDialog {
         }
         change(&mut p);
         self.palettes.update(p);
-        self.apply_palette(cx);
+        self.show_palette(cx);
+        self.palette_dirty = true;
+        // A slider drag or typing a name changes the palette many times a
+        // second, and each save is a synced write; save once it settles.
+        self.palette_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(PALETTE_SAVE_DELAY).await;
+            let _ = this.update(cx, |this, _| this.flush_palette());
+        }));
+    }
+
+    /// Saves a palette edit that is still waiting, if there is one.
+    fn flush_palette(&mut self) {
+        if std::mem::take(&mut self.palette_dirty) {
+            crate::palettes::store(&self.palettes);
+        }
     }
 
     /// A copy of the palette in use that the user can change.

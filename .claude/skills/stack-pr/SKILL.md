@@ -23,12 +23,16 @@ The full rules are in `CONTRIBUTING.md` under "Stacked pull requests". Use
 git switch -c pr/refactor main
 # ...commit, run the checks...
 git push -u origin pr/refactor
-gh pr create --draft --base main --body-file - <<'EOF' ... EOF
+gh pr create --draft --base main --title "<title>" --body-file - <<'EOF'
+...the filled-in template...
+EOF
 
 git switch -c pr/feature pr/refactor
 # ...commit, run the checks...
 git push -u origin pr/feature
-gh pr create --draft --base pr/refactor --body-file - <<'EOF' ... EOF
+gh pr create --draft --base pr/refactor --title "<title>" --body-file - <<'EOF'
+...the filled-in template...
+EOF
 ```
 
 End the Changes section of each upper pull request with `Stacked on #<number>.`

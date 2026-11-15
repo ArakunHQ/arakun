@@ -20,17 +20,21 @@ order to apply them in. If the two disagree, CONTRIBUTING.md is right.
 
 ## 2. Run the checks the diff needs
 
-List the changed files (`git diff --name-only main...HEAD`, plus uncommitted ones)
-and run what CI would run for them. CI's "What changed" job in
-`.github/workflows/ci.yml` decides; in short:
+List the changed files with `git diff --name-status main...HEAD` and
+`git status --short` (for uncommitted ones). A rename counts at both its old and
+new path, as in CI: moving a file out of `src/` still needs the Rust checks. Run
+what CI would run for them. CI's "What changed" job in
+`.github/workflows/ci.yml` decides; in short, the first row that matches wins:
 
 | Changed | Run |
 | --- | --- |
 | `src/`, `examples/`, `assets/`, `build.rs`, `Cargo.*`, `clippy.toml`, `.cargo/`, `rust-toolchain.toml`, `tools/rustfmt.sh`, any new top-level path | rustfmt, clippy, tests |
 | `phone/` | rustfmt, clippy, tests, relay, phone |
 | `relay/` | relay, phone |
+| `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |
+| `tools/install-cef.sh` | rustfmt, clippy, tests (CI also builds with the browser) |
 | `Cargo.toml`, `Cargo.lock`, `deny.toml` | also `cargo deny check` |
-| only `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, `*.md` | nothing to build; proofread |
+| only other files in `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, or `*.md` | nothing to build; proofread |
 
 ```sh
 tools/rustfmt.sh --check        # fix with tools/rustfmt.sh, never plain cargo fmt

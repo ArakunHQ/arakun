@@ -49,7 +49,7 @@ cargo build --no-default-features
 ./target/debug/arakun dev start            # this checkout as its project
 ./target/debug/arakun dev click "Settings" # by visible text, or x y
 ./target/debug/arakun dev key ctrl-f       # also: type, scroll, move, wait, text
-./target/debug/arakun dev shot "$TMPDIR/after.png"
+./target/debug/arakun dev shot "${TMPDIR:-/tmp}/after.png"
 ./target/debug/arakun dev stop
 ```
 
@@ -62,8 +62,8 @@ first edit.
 
 ## Hand it over
 
-- Keep screenshots outside the repository (`$TMPDIR`), not in `docs/screenshots/`,
-  which holds the README's images.
+- Keep screenshots outside the repository (`${TMPDIR:-/tmp}`), not in
+  `docs/screenshots/`, which holds the README's images.
 - The pull request needs before and after screenshots (a short GIF for an
   interaction). GitHub has no API to upload images, so give the user the paths
   and say they need to be dragged into the pull request.

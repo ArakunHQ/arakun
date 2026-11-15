@@ -46,9 +46,12 @@ Reproduce before you fix. A fix you could not reproduce is a guess; say so.
   platforms still build. Say in the pull request that you could not run it.
 - **Phone tests:** the encryption format in `src/phone` and `phone/` must change
   together.
-- **cargo-deny with no dependency change:** a new RustSec advisory on `main`, not
-  your change. Say so in the pull request; the fix (`fix(deps): ...`) goes in its
-  own pull request. Never add a license to `deny.toml` without asking.
+- **cargo-deny:** read which rule failed (advisory, license, source) and the
+  crate it names, then check `gh run list --branch main --workflow Dependencies
+  --limit 3`. A license or source error after a change to `deny.toml` or
+  `Cargo.*` is yours to fix. An advisory that fails on `main` too is not: say so
+  in the pull request, and the fix (`fix(deps): ...`) goes in its own pull
+  request. Never add a license to `deny.toml` without asking.
 - **Title check:** `gh pr edit --title "<fixed title>"`. The check reruns by itself.
 - **A test that fails on CI only:** look for time, ordering, environment
   variables (`GIT_DIR`, `HOME`) or this machine's state. Tests marked `#[ignore]`

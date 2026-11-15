@@ -199,6 +199,7 @@ pub(super) fn code_block(path: &str, line: Option<u32>, lines: Vec<AnyElement>) 
 }
 
 /// One line of a diff: its number, a colored edge and tint when it changed.
+/// A long line wraps rather than being cut: its end may be the change.
 pub(super) fn code_line(kind: LineKind, number: Option<u32>, text: &str) -> AnyElement {
     let (edge, tint, color): (Option<Hsla>, Option<Hsla>, Hsla) = match kind {
         LineKind::Add => (
@@ -216,10 +217,11 @@ pub(super) fn code_line(kind: LineKind, number: Option<u32>, text: &str) -> AnyE
     div()
         .relative()
         .flex()
-        .items_center()
-        .h(px(20.))
+        .items_start()
+        .min_h(px(20.))
         .pr(px(12.))
         .ty(Type::Mono)
+        .line_height(px(20.))
         .when_some(tint, |d, t| d.bg(t))
         .when_some(edge, |d, e| {
             d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(e))
@@ -237,7 +239,6 @@ pub(super) fn code_line(kind: LineKind, number: Option<u32>, text: &str) -> AnyE
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
                 .text_color(color)
                 .child(text.replace('\t', "    ")),
         )

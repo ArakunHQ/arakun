@@ -12,6 +12,7 @@ use crate::github::queue::{Entry, Group, Lane, Mark, Placed, short_count};
 use crate::github::{GitHub, Problem};
 use crate::theme;
 use crate::ui::{self, Type, Typography as _, icon};
+use std::collections::BTreeSet;
 
 /// The color of a lane, in the bar, its legend and its rows.
 pub(super) fn lane_color(lane: Lane) -> Hsla {
@@ -563,7 +564,10 @@ impl GitHubView {
         let g: &GitHub = self.github.read(cx);
         let to_mark: Vec<String> = g.list(false).iter().map(|n| n.id.clone()).collect();
         let can_mark = !to_mark.is_empty();
-        let armed = can_mark && self.confirm_all == Some(to_mark.len());
+        // The same threads, not just as many: one that left and one that
+        // arrived would keep the count.
+        let ids: BTreeSet<String> = to_mark.iter().cloned().collect();
+        let armed = can_mark && self.confirm_all.as_ref() == Some(&ids);
         let mark_label = if armed {
             format!("Mark {} read? GitHub can't undo it", to_mark.len())
         } else {
@@ -596,8 +600,8 @@ impl GitHubView {
             .child(
                 ui::menu_item("gh-mark-all", "tick-double02", mark_label, armed, can_mark).when(can_mark, |d| {
                     d.on_click(cx.listener(move |this, _, _, cx| {
-                        if this.confirm_all != Some(to_mark.len()) {
-                            this.confirm_all = Some(to_mark.len());
+                        if this.confirm_all.as_ref() != Some(&ids) {
+                            this.confirm_all = Some(ids.clone());
                             cx.notify();
                             return;
                         }

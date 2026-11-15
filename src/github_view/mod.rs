@@ -12,7 +12,7 @@ mod queue;
 mod timeline;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -114,6 +114,20 @@ enum DiffState {
     Ready { files: Rc<Vec<FileDiff>>, cut: bool },
 }
 
+/// A pull request's diff, for the head commit it was read at.
+struct Diff {
+    head: String,
+    /// Which load this is: an older load that ends late is dropped.
+    load: u64,
+    state: DiffState,
+}
+
+/// Whether a diff read at `read_at` still shows the pull request at `head`.
+/// An unknown head (details not read yet) keeps what there is.
+fn diff_is_current(read_at: &str, head: &str) -> bool {
+    head.is_empty() || read_at == head
+}
+
 /// What the last action did, shown in the card.
 struct Note {
     ok: bool,
@@ -155,10 +169,10 @@ pub struct GitHubView {
     focus_at: Option<Point<Pixels>>,
     watch_input: Entity<TextInput>,
     watch_note: Option<&'static str>,
-    /// How many threads "Mark all read" would mark when it was first clicked.
+    /// The threads "Mark all read" would mark when it was first clicked.
     /// It asks once more before marking, since GitHub cannot undo it; a list
     /// that changed in between asks again.
-    confirm_all: Option<usize>,
+    confirm_all: Option<BTreeSet<String>>,
     comment: Entity<TextInput>,
     /// The text of a review being confirmed, or of the draft being edited.
     body_input: Entity<TextInput>,
@@ -173,7 +187,9 @@ pub struct GitHubView {
     busy: Option<&'static str>,
     note: Option<Note>,
     draft: Option<Draft>,
-    diffs: HashMap<String, DiffState>,
+    diffs: HashMap<String, Diff>,
+    /// Counts diff loads, to tell a late one from the latest.
+    diff_loads: u64,
     /// Files of the open diff the user folded.
     folded: HashSet<usize>,
     /// Files of the open diff shown in full past the first lines.
@@ -246,6 +262,7 @@ impl GitHubView {
             note: None,
             draft: None,
             diffs: HashMap::new(),
+            diff_loads: 0,
             folded: HashSet::new(),
             unfolded_lines: HashSet::new(),
             merge_methods: HashMap::new(),
@@ -323,6 +340,12 @@ impl GitHubView {
             (Some(e), false) if !self.narrow() => self.select(e, false, cx),
             _ => {}
         }
+        // A push moves the head: the files shown must move with it.
+        if self.tab == Tab::Files
+            && let Some(item) = self.item()
+        {
+            self.load_diff(item, cx);
+        }
         self.reload_draft();
         cx.notify();
     }
@@ -393,12 +416,30 @@ impl GitHubView {
         .detach();
     }
 
+    /// Reads the diff unless the one there is for the current head (or on its way).
     fn load_diff(&mut self, item: ItemRef, cx: &mut Context<Self>) {
         let key = crate::github::queue::key_of(&item);
-        if self.diffs.contains_key(&key) {
+        let head = match self.github.read(cx).details(&item) {
+            Some(Details::Pull(p)) => p.head_ref_oid.clone(),
+            _ => String::new(),
+        };
+        if self
+            .diffs
+            .get(&key)
+            .is_some_and(|d| diff_is_current(&d.head, &head))
+        {
             return;
         }
-        self.diffs.insert(key.clone(), DiffState::Loading);
+        self.diff_loads += 1;
+        let load = self.diff_loads;
+        self.diffs.insert(
+            key.clone(),
+            Diff {
+                head,
+                load,
+                state: DiffState::Loading,
+            },
+        );
         cx.spawn(async move |this, cx| {
             let read = cx
                 .background_spawn(async move {
@@ -413,8 +454,11 @@ impl GitHubView {
                     },
                     Err(p) => DiffState::Failed(p.text()),
                 };
-                this.diffs.insert(key, state);
-                cx.notify();
+                // A newer load (a push, a refresh) replaced this one.
+                if let Some(d) = this.diffs.get_mut(&key).filter(|d| d.load == load) {
+                    d.state = state;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -621,9 +665,10 @@ impl GitHubView {
                         if let Some(id) = &thread {
                             this.github.update(cx, |g, cx| g.mark_read(id, cx));
                         }
+                        // The diff stays: it changes only with the head,
+                        // which this read brings and `load_diff` follows.
                         this.github
                             .update(cx, |g, cx| g.fetch_item(item.clone(), cx));
-                        this.diffs.remove(&crate::github::queue::key_of(&item));
                         after(this, cx);
                     }
                     Err(p) if pr::refused_read_only(&p) => {
@@ -658,11 +703,18 @@ impl GitHubView {
             return;
         }
         let body = text.clone();
+        let on = self.item();
         self.write(
             "comment",
             "Comment posted.".into(),
             move |item| pr::comment(item, &body).map(|_| ()),
-            |this, cx| this.comment.update(cx, |i, cx| i.set_text("", cx)),
+            // The input stays usable while gh works: keep anything typed since,
+            // or meant for another item.
+            move |this, cx| {
+                if this.item() == on && this.comment.read(cx).text() == text {
+                    this.comment.update(cx, |i, cx| i.set_text("", cx))
+                }
+            },
             cx,
         );
     }
@@ -883,8 +935,14 @@ impl GitHubView {
             move |i| pr::post_draft(i, &posted, verdict),
             move |this, _| {
                 this.confirm = None;
-                let _ = pr::delete_draft(&draft.item());
-                this.draft = None;
+                // An agent (or an edit) may have saved a new draft while this
+                // one was sent: that one wasn't posted, so it stays.
+                if pr::load_draft(&draft.item()).as_ref() == Some(&draft) {
+                    let _ = pr::delete_draft(&draft.item());
+                }
+                if this.draft.as_ref() == Some(&draft) {
+                    this.draft = None;
+                }
             },
             cx,
         );
@@ -1271,6 +1329,16 @@ impl Render for GitHubView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_diff_follows_the_head() {
+        assert!(diff_is_current("aaa", "aaa"));
+        // A push moved the head: the old files must not show.
+        assert!(!diff_is_current("aaa", "bbb"));
+        assert!(!diff_is_current("", "bbb"));
+        // Details not read yet: keep what there is.
+        assert!(diff_is_current("aaa", ""));
+    }
 
     #[test]
     fn an_old_draft_says_so_before_it_goes_out() {

@@ -24,7 +24,13 @@ impl GitHubView {
         };
         let key = crate::github::queue::key_of(&item);
         let pad = |d: gpui::Div| d.px(px(18.)).py(px(14.));
-        let (files, cut) = match self.diffs.get(&key) {
+        // Files of an older head never show beside this head's checks.
+        let diff = self
+            .diffs
+            .get(&key)
+            .filter(|d| super::diff_is_current(&d.head, &p.head_ref_oid))
+            .map(|d| &d.state);
+        let (files, cut) = match diff {
             None | Some(DiffState::Loading) => {
                 return ui::loading("gh-diff-loading", "Reading the diff…").into_any_element();
             }

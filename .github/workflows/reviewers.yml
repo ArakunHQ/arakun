@@ -1,0 +1,78 @@
+name: Reviewers
+
+# Requests reviewers once a pull request is ready for review. It replaces
+# CODEOWNERS, so the main ruleset no longer has to require a code owner's
+# approval: any approval from someone with write access counts.
+#
+# The maintainers review every pull request, and Dani also reviews the
+# Windows files, which Dani can check on a real machine. Nobody reviews their
+# own pull request. Someone already requested, or who has already reviewed,
+# is not asked again, so a push doesn't notify everyone again.
+#
+# pull_request_target is what lets this request reviewers on pull requests
+# from forks, and it is safe here only because the job never checks out or
+# runs code from the pull request: the reviewers are in this file, read from
+# the base branch, and the changed files come from the API. Keep it that way.
+#
+# GitHub doesn't run a pull_request_target workflow on the pull request that
+# adds it, so a change to this file is first seen on the next pull request.
+
+on:
+  pull_request_target:
+    # synchronize: a later push can touch the Windows files.
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: reviewers-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  request:
+    name: Request reviewers
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Request reviewers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          MAINTAINERS: KarloAldrete rikvisser-dev
+          WINDOWS_REVIEWERS: daniektj
+          # A whole-line regular expression over the changed paths.
+          WINDOWS_FILES: docs/windows\.md|src/platform\.rs|src/bin/arakun-helper\.manifest
+        run: |
+          set -euo pipefail
+          want="$MAINTAINERS"
+          # Old paths too, so moving a Windows file away still asks for Dani.
+          files=$(gh api "repos/$GH_REPO/pulls/$PR/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+          if grep -qxE "$WINDOWS_FILES" <<<"$files"; then
+            want="$want $WINDOWS_REVIEWERS"
+          fi
+
+          requested=$(gh api "repos/$GH_REPO/pulls/$PR/requested_reviewers" --jq '.users[].login')
+          reviewed=$(gh api "repos/$GH_REPO/pulls/$PR/reviews" --paginate --jq '.[].user.login')
+          add=()
+          for user in $want; do
+            if [ "$user" = "$AUTHOR" ] || grep -qxF "$user" <<<"$requested"$'\n'"$reviewed"; then
+              continue
+            fi
+            add+=("$user")
+          done
+
+          if [ ${#add[@]} -eq 0 ]; then
+            echo "Everyone who should review is already asked."
+            exit 0
+          fi
+          args=()
+          for user in "${add[@]}"; do
+            args+=(-f "reviewers[]=$user")
+          done
+          gh api -X POST "repos/$GH_REPO/pulls/$PR/requested_reviewers" "${args[@]}" --silent
+          echo "Requested: ${add[*]}"

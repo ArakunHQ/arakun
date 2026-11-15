@@ -2124,7 +2124,17 @@ fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Findi
     };
     let inside = place(body, cwd, cx) == Place::Inside
         && expand(body, cwd, cx).is_some_and(|p| {
-            crate::platform::canonicalize(&p).map_or(true, |real| real.starts_with(&cx.workspace))
+            match crate::platform::canonicalize(&p) {
+                Ok(real) => real.starts_with(&cx.workspace),
+                // A link that leads nowhere can't be shown to stay inside.
+                Err(_)
+                    if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) =>
+                {
+                    false
+                }
+                // Not written yet: the agent writes it in the workspace first.
+                Err(_) => true,
+            }
         });
     if !inside {
         out.push(always(
@@ -2937,6 +2947,7 @@ mod tests {
         let ws = std::env::temp_dir().join(format!("arakun-policy-draft-{}", std::process::id()));
         std::fs::create_dir_all(&ws).unwrap();
         std::os::unix::fs::symlink("/etc/hostname", ws.join("review.md")).unwrap();
+        std::os::unix::fs::symlink("/nowhere/at/all", ws.join("dangling.md")).unwrap();
         std::fs::write(ws.join("real.md"), "LGTM").unwrap();
         let cx = Ctx::new(&ws);
         let lvl = |f: &str| {
@@ -2948,7 +2959,10 @@ mod tests {
             .level
         };
         assert_eq!(lvl("review.md"), X);
+        // Fails closed, also where the target doesn't exist (macOS has no /etc/hostname).
+        assert_eq!(lvl("dangling.md"), X);
         assert_eq!(lvl("real.md"), A);
+        assert_eq!(lvl("not-written-yet.md"), A);
         std::fs::remove_dir_all(&ws).unwrap();
     }
 

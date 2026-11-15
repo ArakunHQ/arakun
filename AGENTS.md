@@ -69,15 +69,19 @@ it, and the bottom one targets `main`.
   `git switch -c pr/feature pr/refactor`, then
   `gh pr create --draft --base pr/refactor`. Write `Stacked on #<number>.` at the end of
   Changes.
-- To fix a lower pull request, commit on its branch, rebase every branch above it from
-  the bottom up (`git rebase --update-refs` on the top branch does it in one go), and
-  push each with `git push --force-with-lease`.
+- To fix a lower pull request, commit on its branch, then rebase the top branch on it:
+  `git switch pr/top && git rebase --update-refs pr/refactor`. `--update-refs` moves the
+  branches in between. Push every branch above the changed one:
+  `git push --force-with-lease origin pr/feature pr/top`.
 - Merge from the bottom, always into `main`; never merge a pull request into the branch
   below it. Merging is a person's job, not yours.
-- After the bottom one merges, GitHub moves the next to `main`, but the branch still holds
-  the squashed commits. Run
-  `git fetch origin && git rebase --onto origin/main pr/refactor pr/feature`, push with
-  `--force-with-lease`, and check the base is `main` (`gh pr edit --base main`).
+- After the bottom one merges, GitHub moves the next to `main`, but the branches above
+  still hold the squashed commits. Take the merged pull request's last commit from GitHub
+  (`gh pr view <number> --json headRefOid --jq .headRefOid`, then
+  `git fetch origin main "pull/<number>/head"`), not from your local branch. Run
+  `git rebase --update-refs --onto origin/main <that commit>` on the top branch, push
+  every remaining branch with `--force-with-lease`, and check the next pull request's
+  base is `main` (`gh pr edit --base main`).
 
 ## Before you commit
 

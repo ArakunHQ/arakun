@@ -263,27 +263,35 @@ and you can keep working without waiting for the first one to merge.
 2. Open it as a draft against the branch below: `gh pr create --draft --base pr/refactor`.
    Write `Stacked on #<number>.` at the end of Changes, so reviewers read the stack in
    order.
-3. To change a lower pull request, commit on its branch. Then rebase each branch above
-   it on the one below, from the bottom up, and push each with
-   `git push --force-with-lease`. `git rebase --update-refs`, run on the top branch,
-   moves all the branches in between at once.
+3. To change a lower pull request, commit on its branch. Then rebase the top branch on
+   the branch you changed. `--update-refs` (git 2.38 or newer) moves every branch in
+   between with it. Push every branch above the one you changed:
+
+   ```sh
+   git switch pr/top
+   git rebase --update-refs pr/refactor
+   git push --force-with-lease origin pr/feature pr/top
+   ```
+
 4. Merge from the bottom, always into `main`. Don't merge a pull request into the branch
    below it: its title then never becomes a commit on `main`, and the release notes
    lose it.
 5. When the bottom one merges, GitHub deletes its branch and moves the next pull request
-   to `main`. Pull requests are squashed, so the next branch still holds the old
-   commits. Drop them, then push:
+   to `main`. Pull requests are squashed, so the branches above still hold the merged
+   pull request's commits. Drop them by rebasing the top branch onto `main`, from the
+   merged pull request's last commit. Take that commit from GitHub, not from your local
+   branch, which can be behind it. Then push every remaining branch:
 
    ```sh
-   git fetch origin
-   # pr/refactor is your local copy of the merged branch.
-   git rebase --onto origin/main pr/refactor pr/feature
-   git push --force-with-lease
+   old=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+   git fetch origin main "pull/<number>/head"
+   git switch pr/top
+   git rebase --update-refs --onto origin/main "$old"
+   git push --force-with-lease origin pr/feature pr/top
    ```
 
-   If you no longer have the merged branch, use its last commit instead:
-   `gh pr view <number> --json headRefOid`. Check that the pull request now targets
-   `main` (`gh pr edit --base main` if not).
+   Check that the next pull request now targets `main` (`gh pr edit --base main` if
+   not).
 
 ## License
 

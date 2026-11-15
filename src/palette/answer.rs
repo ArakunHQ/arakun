@@ -5,7 +5,9 @@
 //! against their plan and needs no API key. It runs on a thread of its own;
 //! the palette polls a channel, so typing never waits.
 
-use std::sync::{Arc, Mutex, mpsc};
+use std::process::Child;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -143,53 +145,108 @@ pub fn parse_event(data: &str) -> Option<Event> {
     }
 }
 
+/// How long an answer may take before its process is stopped.
+const ANSWER_LIMIT: Duration = Duration::from_secs(60);
+/// Reading a sentence as a rule is shorter work.
+const RULE_LIMIT: Duration = Duration::from_secs(30);
+
 /// The Claude Code process behind one request. Dropping it stops the
 /// process: each one holds a few hundred MB, and a request the person
 /// typed past is not worth finishing.
-pub struct Job(Arc<Mutex<Slot>>);
+pub struct Job(Arc<Shared>);
 
 /// The thread's side of a `Job`: where it records its process.
-struct Watch(Arc<Mutex<Slot>>);
+struct Watch(Arc<Shared>);
+
+#[derive(Default)]
+struct Shared {
+    slot: Mutex<Slot>,
+    /// Wakes the time-limit thread when the process is done.
+    over: Condvar,
+}
 
 #[derive(Default)]
 struct Slot {
+    /// Set only while the process is unreaped, so a stop never hits a reused pid.
     pid: Option<u32>,
     dropped: bool,
+    timed_out: bool,
 }
 
 fn job() -> (Job, Watch) {
-    let slot = Arc::new(Mutex::new(Slot::default()));
-    (Job(slot.clone()), Watch(slot))
+    let shared = Arc::new(Shared::default());
+    (Job(shared.clone()), Watch(shared))
+}
+
+fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, Slot> {
+    shared.slot.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Watch {
-    fn slot(&self) -> std::sync::MutexGuard<'_, Slot> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Records the process; false if the job was already dropped, and the
-    /// process is then stopped at once.
-    fn started(&self, child: &mut std::process::Child) -> bool {
-        let mut slot = self.slot();
+    /// Records the process and gives it `limit` to finish. None if the job
+    /// was already dropped; the process is then stopped and reaped at once.
+    fn started(&self, child: Child, limit: Duration) -> Option<Proc<'_>> {
+        let proc = Proc { child, watch: self };
+        let mut slot = lock(&self.0);
         if slot.dropped {
-            let _ = child.kill();
-            let _ = child.wait();
-            return false;
+            drop(slot);
+            return None;
         }
-        slot.pid = Some(child.id());
-        true
+        slot.pid = Some(proc.child.id());
+        drop(slot);
+        let shared = self.0.clone();
+        let _ = std::thread::Builder::new()
+            .name("palette-limit".into())
+            .spawn(move || {
+                let deadline = Instant::now() + limit;
+                let mut slot = lock(&shared);
+                while let Some(pid) = slot.pid {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        slot.timed_out = true;
+                        crate::platform::terminate(pid);
+                        return;
+                    }
+                    slot = shared
+                        .over
+                        .wait_timeout(slot, left)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+            });
+        Some(proc)
     }
 
-    fn finished(&self) {
-        self.slot().pid = None;
+    fn timed_out(&self) -> bool {
+        lock(&self.0).timed_out
+    }
+}
+
+/// A started process that is always reaped: on drop it is forgotten by its
+/// `Job` first, then stopped if still running, then waited for, on every path.
+struct Proc<'a> {
+    child: Child,
+    watch: &'a Watch,
+}
+
+impl Drop for Proc<'_> {
+    fn drop(&mut self) {
+        // Under the lock: after this neither the job nor the time limit
+        // signals the pid, which stays ours until the wait below.
+        lock(&self.watch.0).pid = None;
+        self.watch.0.over.notify_all();
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
     }
 }
 
 impl Drop for Job {
     fn drop(&mut self) {
-        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = lock(&self.0);
         slot.dropped = true;
-        if let Some(pid) = slot.pid.take() {
+        if let Some(pid) = slot.pid {
             crate::platform::terminate(pid);
         }
     }
@@ -279,11 +336,11 @@ pub fn rule_body(sentence: &str, sessions: &[String]) -> Value {
 fn read_rule(sentence: &str, sessions: &[String], job: &Watch) -> Result<Value, String> {
     let request = rule_body(sentence, sessions);
     let schema = &request["output_config"]["format"]["schema"];
-    let mut child = claude_code(&request, Some(schema))?;
-    if !job.started(&mut child) {
+    let child = claude_code(&request, Some(schema))?;
+    let Some(mut proc) = job.started(child, RULE_LIMIT) else {
         return Err("stopped".into());
-    }
-    let stdout = child.stdout.take().ok_or("no output")?;
+    };
+    let stdout = proc.child.stdout.take().ok_or("no output")?;
     use std::io::{BufRead as _, BufReader};
     let mut last = None;
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -293,8 +350,10 @@ fn read_rule(sentence: &str, sessions: &[String], job: &Watch) -> Result<Value, 
             last = Some(v);
         }
     }
-    let _ = child.wait();
-    job.finished();
+    drop(proc);
+    if job.timed_out() {
+        return Err(too_slow(RULE_LIMIT));
+    }
     let v = last.ok_or("Claude Code gave no answer")?;
     if v["is_error"].as_bool().unwrap_or(false) {
         return Err(v["result"]
@@ -307,6 +366,14 @@ fn read_rule(sentence: &str, sessions: &[String], job: &Watch) -> Result<Value, 
     }
     serde_json::from_str(v["result"].as_str().unwrap_or_default())
         .map_err(|e| format!("not JSON: {e}"))
+}
+
+/// What a request that passed its time limit says.
+fn too_slow(limit: Duration) -> String {
+    format!(
+        "Claude Code took longer than {} s, so it was stopped.",
+        limit.as_secs()
+    )
 }
 
 /// Starts Claude Code for one request built as a Messages body (its system
@@ -391,17 +458,17 @@ pub fn no_key() -> String {
 }
 
 fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
-    let mut child = match claude_code(&body(ctx), None) {
+    let child = match claude_code(&body(ctx), None) {
         Ok(c) => c,
         Err(e) => {
             let _ = tx.send(Event::Failed(e));
             return;
         }
     };
-    if !job.started(&mut child) {
+    let Some(mut proc) = job.started(child, ANSWER_LIMIT) else {
         return;
-    }
-    let Some(stdout) = child.stdout.take() else {
+    };
+    let Some(stdout) = proc.child.stdout.take() else {
         let _ = tx.send(Event::Failed("no output".into()));
         return;
     };
@@ -413,14 +480,14 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
         };
         finished |= matches!(ev, Event::Done { .. } | Event::Failed(_));
         if tx.send(ev).is_err() {
-            // The palette closed or the question changed.
-            let _ = child.kill();
+            // The palette closed or the question changed; `proc` stops and reaps it.
             return;
         }
     }
-    let _ = child.wait();
-    job.finished();
-    if !finished {
+    drop(proc);
+    if job.timed_out() {
+        let _ = tx.send(Event::Failed(too_slow(ANSWER_LIMIT)));
+    } else if !finished {
         let _ = tx.send(Event::Done {
             input: 0,
             output: 0,
@@ -544,23 +611,61 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn sleep(secs: &str) -> Child {
+        std::process::Command::new("sleep")
+            .arg(secs)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Whether `pid` is still a process of ours, zombie or not.
+    #[cfg(unix)]
+    fn exists(pid: u32) -> bool {
+        // SAFETY: signal 0 only checks the pid.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn dropping_a_job_stops_its_process() {
+    fn dropping_a_job_stops_and_reaps_its_process() {
         let (job, watch) = job();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        assert!(watch.started(&mut child));
+        let proc = watch.started(sleep("30"), ANSWER_LIMIT).unwrap();
+        let pid = proc.child.id();
+        let t = Instant::now();
         drop(job);
-        // SIGTERM ends `sleep` at once; wait() returns rather than after 30 s.
-        let status = child.wait().unwrap();
-        assert!(!status.success());
+        // The reader sees the end of output and drops its process: reaped.
+        drop(proc);
+        assert!(t.elapsed() < Duration::from_secs(10));
+        assert!(!exists(pid), "no zombie left");
         // A process started after the job was dropped is stopped right away.
-        let mut late = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
+        let late = sleep("30");
+        let pid = late.id();
+        assert!(watch.started(late, ANSWER_LIMIT).is_none());
+        assert!(!exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_request_is_stopped_at_its_limit() {
+        let (_job, watch) = job();
+        let mut proc = watch
+            .started(sleep("30"), Duration::from_millis(200))
             .unwrap();
-        assert!(!watch.started(&mut late));
+        let pid = proc.child.id();
+        let t = Instant::now();
+        // As the readers do: output ends when the limit stops the process.
+        use std::io::Read as _;
+        let _ = proc
+            .child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut Vec::new());
+        drop(proc);
+        assert!(t.elapsed() < Duration::from_secs(10));
+        assert!(watch.timed_out());
+        assert!(!exists(pid));
+        assert!(too_slow(RULE_LIMIT).contains("30 s"));
     }
 }

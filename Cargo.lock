@@ -281,7 +281,7 @@ dependencies = [
  "cef",
  "dunce",
  "futures",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "gpui",
  "gpui_platform",
  "ignore",

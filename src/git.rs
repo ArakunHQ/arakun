@@ -18,17 +18,15 @@ pub(crate) fn git(dir: &Path) -> Command {
         .env("LC_ALL", "C");
     // A status scan of a big repository shouldn't compete with the window for the CPU.
     crate::platform::lower_priority(&mut cmd);
-    // Tests run these on throwaway repositories, never on the one a hook started them in.
-    #[cfg(test)]
+    // `dir` picks the repository, not a GIT_DIR inherited from whatever started arakun.
     unpinned(&mut cmd);
     cmd
 }
 
-/// For tests that build a throwaway repository. In a linked worktree, git gives
-/// hooks GIT_DIR (and GIT_INDEX_FILE) pointing at the real repository; a test run
-/// from a hook inherits them, and its `git init` and `git commit` would land on
-/// the branch being pushed instead of in its temporary folder.
-#[cfg(test)]
+/// Clears the variables that pin git to one repository. In a linked worktree, git
+/// gives hooks GIT_DIR (and GIT_INDEX_FILE) pointing at the real repository; a
+/// test run from a hook inherits them, and its `git init` and `git commit` would
+/// land on the branch being pushed instead of in its temporary folder.
 pub(crate) fn unpinned(cmd: &mut Command) -> &mut Command {
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
         cmd.env_remove(var);
@@ -78,6 +76,12 @@ pub fn top_level(dir: &Path) -> Result<PathBuf> {
 pub fn init(dir: &Path) -> Result<()> {
     run(git(dir).args(["init", "-q"]))?;
     Ok(())
+}
+
+/// The branch checked out in `dir`; None on a detached HEAD.
+pub fn current_branch(dir: &Path) -> Option<String> {
+    let out = stdout(git(dir).args(["symbolic-ref", "--short", "-q", "HEAD"])).ok()?;
+    Some(out.trim().to_string()).filter(|b| !b.is_empty())
 }
 
 /// Branch checked out in a repository, read straight from `.git/HEAD` (no process),
@@ -938,6 +942,24 @@ mod tests {
         );
         // Someone renamed it already: leave it alone.
         assert!(super::rename_branch(&dir, "env/brave-otter", "fix/other", false).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reads_the_current_branch() {
+        let dir = repo();
+        assert_eq!(
+            super::current_branch(&dir).as_deref(),
+            Some("env/brave-otter")
+        );
+        let ok = super::unpinned(&mut Command::new("git"))
+            .arg("-C")
+            .arg(&dir)
+            .args(["checkout", "-q", "--detach"])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert_eq!(super::current_branch(&dir), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

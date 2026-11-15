@@ -43,6 +43,9 @@ pub struct CreateEnvDialog {
     /// Who renames a branch that keeps `suggested`; None when naming is off.
     namer: Option<crate::agent::AgentKind>,
     branches: git::Branches,
+    /// The local branches are read. Until then a random name could match one, which
+    /// would be checked out and later renamed.
+    branches_loaded: bool,
     /// None = current HEAD.
     base: Option<String>,
     base_open: bool,
@@ -93,6 +96,7 @@ impl CreateEnvDialog {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.branches = branches;
+                this.branches_loaded = true;
                 let untouched = this.name(cx) == this.suggested;
                 if untouched && this.branches.local.contains(&this.suggested) {
                     let project = this.project.clone();
@@ -118,6 +122,7 @@ impl CreateEnvDialog {
             suggested,
             namer: env_name::namer().agent,
             branches: git::Branches::default(),
+            branches_loaded: false,
             base: None,
             base_open: false,
             busy: false,
@@ -132,7 +137,7 @@ impl CreateEnvDialog {
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         let name = self.name(cx);
-        if self.busy || name.is_empty() {
+        if self.busy || name.is_empty() || !self.branches_loaded {
             return;
         }
         if name.contains(char::is_whitespace) || !git::branch_name_ok(&self.repo, &name) {
@@ -146,7 +151,8 @@ impl CreateEnvDialog {
         let repo = self.repo.clone();
         let path = worktree_path(&self.project, &name);
         let base = self.base.clone();
-        let auto_name = name == self.suggested;
+        // An existing branch is the user's, whatever it is called.
+        let auto_name = name == self.suggested && !self.branches.local.contains(&name);
         cx.spawn(async move |this, cx| {
             let target = path.clone();
             let branch = name.clone();
@@ -218,7 +224,7 @@ impl Render for CreateEnvDialog {
             .then_some(self.namer)
             .flatten();
         let target = (!name.is_empty()).then(|| worktree_path(&self.project, &name));
-        let ready = !name.is_empty() && !self.busy;
+        let ready = !name.is_empty() && !self.busy && self.branches_loaded;
 
         let base_picker = div()
             .relative()

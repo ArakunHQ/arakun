@@ -225,6 +225,9 @@ enum MenuKey {
 
 pub struct Shell {
     projects: Vec<Project>,
+    /// The latest `refresh_project` of each project root. An older one that ends
+    /// later would put back what it read before, such as a branch renamed since.
+    refresh_gen: std::collections::HashMap<std::path::PathBuf, u64>,
     active_project: usize,
     panel_tab: PanelTab,
     dock_open: bool,
@@ -625,6 +628,7 @@ impl Shell {
         });
         let mut this = Self {
             projects,
+            refresh_gen: Default::default(),
             active_project,
             panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,
@@ -860,11 +864,17 @@ impl Shell {
         let Some(root) = self.projects.get(pi).map(|p| p.path.clone()) else {
             return;
         };
+        let gen_ = self.refresh_gen.entry(root.clone()).or_default();
+        *gen_ += 1;
+        let gen_ = *gen_;
         cx.spawn(async move |this, cx| {
             let r = root.clone();
             let trees = cx.background_spawn(async move { git::worktrees(&r) }).await;
             let paths = this
                 .update(cx, |this, cx| {
+                    if this.refresh_gen.get(&root) != Some(&gen_) {
+                        return None;
+                    }
                     let pi = this.projects.iter().position(|p| p.path == root)?;
                     if let Ok(trees) = trees {
                         this.projects[pi].sync_worktrees(trees);

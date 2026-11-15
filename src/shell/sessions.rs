@@ -450,10 +450,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let env_path = self.env().path.clone();
-        self.name_after_first_prompt(&env_path, &text, cx);
         if let Some(id) = self.active_session_id() {
             let path = self.env().path.clone();
+            self.name_after_first_prompt(&path, &text, cx);
             if text.trim() == "/stage" {
                 self.stage_session(&path, &id, window, cx, |this, staged, path, id, _, cx| {
                     let text = match staged {
@@ -631,6 +630,8 @@ impl Shell {
             }
         }
         let env_path = env_path.to_path_buf();
+        // Every way a session starts (the composer, automations, `arakun agent new`) passes here.
+        self.name_after_first_prompt(&env_path, &text, cx);
         let thread = Thread::start(agent.kind(), env_path.clone(), None, cx);
         self.apply_env_settings(&env_path, agent, extra, &thread, cx);
         thread.update(cx, |t, cx| t.send(text, cx));

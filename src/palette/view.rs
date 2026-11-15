@@ -466,12 +466,25 @@ impl Palette {
                                 .flex()
                                 .items_center()
                                 .gap(crate::ui::sp(10.))
-                                .child(kit::glow_tile("flash", Tint::Violet))
+                                .child(kit::glow_tile(
+                                    if matches!(d.trigger, rules::Trigger::At { .. }) { "alarm-clock" } else { "flash" },
+                                    Tint::Violet,
+                                ))
                                 .child(kit::card_text(
-                                    "Create an automation",
+                                    if matches!(d.trigger, rules::Trigger::At { .. }) {
+                                        "Set a reminder"
+                                    } else {
+                                        "Create an automation"
+                                    },
                                     Some(
                                         div()
-                                            .child("Understood as one rule. Nothing runs until you confirm.")
+                                            .child(match &d.trigger {
+                                                rules::Trigger::At { at } => format!(
+                                                    "Rings at {} on the island. Nothing is set until you confirm.",
+                                                    rules::clock(*at)
+                                                ),
+                                                _ => "Understood as one rule. Nothing runs until you confirm.".into(),
+                                            })
                                             .into_any_element(),
                                     ),
                                 ))

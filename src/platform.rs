@@ -1153,7 +1153,7 @@ fn normalize(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> (i32, i
 /// Days since 1970-01-01 of a proleptic Gregorian date (month 1-based). Howard Hinnant's
 /// algorithm, exact for every year an i64 holds.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
@@ -1164,7 +1164,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;

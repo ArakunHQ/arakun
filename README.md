@@ -292,8 +292,11 @@ out first.
   your Claude account (no API key): `Enter` on the offer asks, and nothing is sent
   before. A sentence such as "merge #64 when the checks pass and tell me" becomes an
   automation once you confirm it; one Arakun cannot read itself offers to have Claude
-  read it, again only on `Enter`. Pins
-  are kept in `pins.json`, rules in `rules.json` and what you open in
+  read it, again only on `Enter`.
+  "recuérdame en 20 min revisar el PR", "remind me at 5pm to stretch" or
+  "timer 10 min" sets a reminder that rings on the island. One that comes due while
+  Arakun is closed rings, marked as missed, the next time it opens. Pins are kept in
+  `pins.json`, rules (reminders too) in `rules.json` and what you open in
   `palette-frecency.json`, next to the state file.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer

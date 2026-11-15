@@ -8,10 +8,14 @@ name: Release
 #   restore main's cache like any CI run, but nothing they build goes into the
 #   archives.
 # - A dry run (a pull request that changes this file, or a manual run) builds,
-#   smoke-tests and uploads both archives as `arakun-dev-<short sha>-…`, and
+#   smoke-tests and uploads the archives as `arakun-dev-<short sha>-…`, and
 #   does not publish. Only a pushed tag publishes; a manual run never does,
 #   even on a tag.
-# - Linux x86_64 and Windows x86_64 (MSVC) only. macOS is not built yet.
+# - Linux x86_64, Windows x86_64 (MSVC) and macOS arm64. No Intel Mac build.
+# - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it,
+#   signed ad-hoc only (no Developer ID, so no notarization). Downloaded with
+#   curl it has no quarantine flag, so Gatekeeper lets it run; downloaded with a
+#   browser it is blocked.
 # - Linux builds inside an ubuntu:22.04 container, so the binary needs glibc 2.35
 #   or newer (Ubuntu 22.04+, Debian 12+). A runner image links against its own,
 #   newer glibc (ubuntu-24.04: 2.39), and the binary then refuses to start on
@@ -29,11 +33,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Dry runs: a change to this file, or a manual run from the Actions tab,
-  # builds both archives without publishing, so a broken release build shows up
-  # before a tag.
+  # Dry runs: a change to this file or to the macOS bundle script, or a manual
+  # run from the Actions tab, builds the archives without publishing, so a
+  # broken release build shows up before a tag.
   pull_request:
-    paths: [".github/workflows/release.yml"]
+    paths: [".github/workflows/release.yml", "tools/macos-app.sh"]
   workflow_dispatch:
 
 permissions:
@@ -183,9 +187,62 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+  macos:
+    name: Build (macOS arm64)
+    needs: ci
+    # GitHub-hosted like ci.yml's macOS jobs, but a fixed image rather than
+    # macos-latest, so the toolchain does not change under a release. arm64.
+    # No runner-usage step: it supports only Linux and Windows.
+    runs-on: macos-15
+    env:
+      # The oldest macOS the binary runs on. LSMinimumSystemVersion in
+      # Info.plist (tools/macos-app.sh) says the same.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: cargo build
+        run: cargo build --release --locked --no-default-features --target aarch64-apple-darwin
+
+      - name: Package
+        env:
+          # Empty on a dry run; then the name carries the commit (for a pull
+          # request its head, not the merge commit GitHub tests).
+          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Keeps tar from adding ._* files for extended attributes.
+          COPYFILE_DISABLE: "1"
+        run: |
+          tag=${TAG:-dev-$(printf %.7s "$SHA")}
+          name="arakun-$tag-macos-arm64"
+          mkdir -p "dist/$name"
+          tools/macos-app.sh --strip target/aarch64-apple-darwin/release/arakun "dist/$name/Arakun.app"
+          cp LICENSE NOTICE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      # The archive as a user gets it: unpacks, the signature holds, and the
+      # binary loads and runs.
+      - name: Smoke test
+        run: |
+          mkdir smoke
+          tar -C smoke -xzf dist/*.tar.gz
+          app=$(echo smoke/*/Arakun.app)
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/arakun" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     # Not on a manual run, even one started on a tag: that is a dry run.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04

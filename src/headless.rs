@@ -220,6 +220,15 @@ fn write_json<T: Serialize>(path: &Path, v: &T) -> std::io::Result<()> {
     )
 }
 
+/// `write_json` into a session folder that must still be there. The check and
+/// the write can't race a delete: with the folder gone, the write fails.
+fn save_json<T: Serialize>(path: &Path, v: &T) -> std::io::Result<()> {
+    crate::durable::replace(
+        path,
+        &serde_json::to_vec_pretty(v).map_err(std::io::Error::other)?,
+    )
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
@@ -232,10 +241,12 @@ pub fn read_meta(id: &str) -> Option<Meta> {
 /// deleted on purpose, and saving would make it again and bring the session
 /// back: a host still saving while it stops writes nothing.
 fn write_meta(m: &Meta) {
-    if !dir(&m.id).is_dir() {
-        return;
+    match save_json(&meta_path(&m.id), m) {
+        Ok(()) => {}
+        // Deleted: nothing to save into.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("arakun: could not save {}: {e}", meta_path(&m.id).display()),
     }
-    create_meta(m);
 }
 
 /// Saves a session, making its folder if needed: only for a new session.
@@ -274,7 +285,9 @@ pub fn discard(id: &str) {
         }
         return;
     }
-    if let Some(pid) = read_meta(id).and_then(|m| m.pid.filter(|_| alive(m.pid))) {
+    // Only the host of this very session is signalled: a stale pid can belong
+    // to another session's host, or to anything else, by now.
+    if let Some(pid) = read_meta(id).and_then(|m| m.pid.filter(|p| hosts(*p, id))) {
         #[cfg(unix)]
         // SAFETY: a plain signal to the host, which saves and exits on it.
         unsafe {
@@ -288,7 +301,7 @@ pub fn discard(id: &str) {
         // writes nothing once the folder is gone (see `write_meta`), but it
         // would keep spending the person's tokens.
         #[cfg(unix)]
-        if alive(Some(pid)) {
+        if hosts(pid, id) {
             // SAFETY: a plain signal to the same host, checked just above.
             unsafe {
                 libc::kill(pid as libc::pid_t, libc::SIGKILL);
@@ -365,6 +378,46 @@ pub fn alive(pid: Option<u32>) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// `pid` is the host of session `id`: `arakun agent-host <id>`, read from its
+/// arguments. Checked before a signal, so a reused pid is never hit.
+fn hosts(pid: u32, id: &str) -> bool {
+    if !alive(Some(pid)) {
+        return false;
+    }
+    host_args(pid).is_some_and(|args| args.windows(2).any(|w| w[0] == "agent-host" && w[1] == id))
+}
+
+#[cfg(target_os = "linux")]
+fn host_args(pid: u32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(
+        raw.split(|b| *b == 0)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
+}
+
+/// No /proc here: `ps` gives the arguments. Only on a delete, so the extra
+/// process is rare.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn host_args(pid: u32) -> Option<Vec<String>> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+#[cfg(not(unix))]
+fn host_args(_: u32) -> Option<Vec<String>> {
+    None
 }
 
 /// The process `pid` runs this same program (macOS has no /proc to read).
@@ -1660,6 +1713,14 @@ impl Host {
         if self.done {
             return;
         }
+        // The session was deleted, maybe before this host's pid was saved, so
+        // nothing could signal it: stop on our own, saving nothing.
+        if !dir(&self.meta.id).is_dir() {
+            self.done = true;
+            self.code.set(0);
+            cx.quit();
+            return;
+        }
         let gated = self.waiting.as_ref().is_some_and(|(c, _)| c == NO_SANDBOX);
         if self.stopping.is_none() && !gated {
             for text in take_inbox(&self.meta.id) {
@@ -1740,7 +1801,7 @@ impl Host {
             self.dirty = false;
             return;
         }
-        if let Err(e) = write_json(&transcript_path(&m.id), &transcript) {
+        if let Err(e) = save_json(&transcript_path(&m.id), &transcript) {
             eprintln!("arakun: could not save the transcript: {e}");
         }
         write_meta(m);
@@ -1958,6 +2019,28 @@ mod tests {
         assert!(!discarding(id));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn only_the_sessions_own_host_is_signalled() {
+        // `sh -c … agent-host h-1` has the arguments a host for h-1 has.
+        let mut host = std::process::Command::new("sh")
+            .args(["-c", "sleep 30", "agent-host", "h-1"])
+            .spawn()
+            .unwrap();
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert!(hosts(host.id(), "h-1"));
+        assert!(!hosts(host.id(), "h-2"));
+        assert!(!hosts(other.id(), "h-1"));
+        assert!(!hosts(std::process::id(), "h-1"));
+        for c in [&mut host, &mut other] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
     #[test]
     fn a_deleted_session_folder_stays_gone() {
         let tmp =
@@ -1997,6 +2080,8 @@ mod tests {
         assert!(discarding(&id));
         // A host still saving afterwards does not make it again.
         write_meta(&m);
+        assert!(!dir(&id).exists());
+        assert!(save_json(&transcript_path(&id), &1).is_err());
         assert!(!dir(&id).exists());
         TEST_ROOT.with(|r| *r.borrow_mut() = None);
         let _ = std::fs::remove_dir_all(&tmp);

@@ -29,7 +29,7 @@ env:
 
 jobs:
   # Decides which of the jobs below a change needs, so a docs-only or relay-only
-  # change does not pay for two Rust builds on 8-CPU runners. The jobs are still
+  # change does not pay for the Rust builds. The jobs are still
   # required checks: a job skipped by its `if` counts as passed, while a
   # workflow-level `paths` filter would leave the checks pending forever.
   changes:
@@ -105,13 +105,16 @@ jobs:
 
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
+  #
+  # The three Linux Rust jobs run on 4 CPUs. With a warm cache, 8 CPUs were only
+  # 21-29% busy, and halving them cost 3-8% more time (runner sizing, #98).
   clippy:
     name: Clippy (no warnings)
     needs: changes
     # Runs unless `changes` said no: if it failed, its outputs are empty and
     # the job runs, because a skipped required check would count as passed.
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: depot-ubuntu-24.04-4
     steps:
       - uses: actions/checkout@v4
 
@@ -151,7 +154,7 @@ jobs:
     name: Clippy (Linux, browser)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: depot-ubuntu-24.04-4
     env:
       # The version the `cef` crate in Cargo.lock is built for. The minimal archive has
       # all that tools/install-cef.sh takes. The SHA-1 is the one cef-builds publishes.
@@ -208,7 +211,7 @@ jobs:
     name: Tests (Linux, no browser)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: depot-ubuntu-24.04-4
     steps:
       - uses: actions/checkout@v4
 

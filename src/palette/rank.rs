@@ -26,6 +26,43 @@ fn is_boundary(prev: Option<char>, c: char) -> bool {
 
 /// One query word against `hay`: a run of letters scores most at the start
 /// of a word, else the letters in order with gaps, at less.
+/// `needle` as one piece of `hay` (any case), not letters spread through it.
+/// Cheap enough for the long details of every row on every keystroke.
+fn substring(hay: &str, needle: &str) -> Option<Hit> {
+    if needle.is_empty() {
+        return word(hay, needle);
+    }
+    let lower = hay.to_lowercase();
+    if lower.len() == hay.len() {
+        return exact(hay, &lower, &needle.to_lowercase());
+    }
+    // Lowercasing moved byte offsets: the general path handles that.
+    word(hay, needle).filter(|h| h.ranges.len() == 1)
+}
+
+/// The best place `needle_l` sits in `lower` (`hay` lowercased, same byte length).
+fn exact(hay: &str, lower: &str, needle_l: &str) -> Option<Hit> {
+    let mut best: Option<Hit> = None;
+    for (at, _) in lower.match_indices(needle_l) {
+        let prev = hay[..at].chars().next_back();
+        let c = hay[at..].chars().next().unwrap_or(' ');
+        let mut score = 100 + 4 * needle_l.chars().count() as i32;
+        if at == 0 {
+            score += 60;
+        } else if is_boundary(prev, c) {
+            score += 40;
+        }
+        score -= (at as i32).min(30);
+        if best.as_ref().is_none_or(|b| score > b.score) {
+            best = Some(Hit {
+                score,
+                ranges: std::iter::once(at..at + needle_l.len()).collect(),
+            });
+        }
+    }
+    best
+}
+
 fn word(hay: &str, needle: &str) -> Option<Hit> {
     if needle.is_empty() {
         return Some(Hit {
@@ -37,28 +74,10 @@ fn word(hay: &str, needle: &str) -> Option<Hit> {
     let needle_l = needle.to_lowercase();
     // Lowercasing can change byte lengths (rare outside ASCII): only use the
     // substring path when it did not.
-    if lower.len() == hay.len() {
-        let mut best: Option<Hit> = None;
-        for (at, _) in lower.match_indices(&needle_l) {
-            let prev = hay[..at].chars().next_back();
-            let c = hay[at..].chars().next().unwrap_or(' ');
-            let mut score = 100 + 4 * needle_l.chars().count() as i32;
-            if at == 0 {
-                score += 60;
-            } else if is_boundary(prev, c) {
-                score += 40;
-            }
-            score -= (at as i32).min(30);
-            if best.as_ref().is_none_or(|b| score > b.score) {
-                best = Some(Hit {
-                    score,
-                    ranges: std::iter::once(at..at + needle_l.len()).collect(),
-                });
-            }
-        }
-        if best.is_some() {
-            return best;
-        }
+    if lower.len() == hay.len()
+        && let Some(h) = exact(hay, &lower, &needle_l)
+    {
+        return Some(h);
     }
     // Letters in order, for three letters or more. Each one prefers the start of a word.
     if needle_l.chars().count() < 3 {
@@ -120,7 +139,8 @@ pub fn fuzzy(hay: &str, query: &str) -> Option<Hit> {
 /// A row's title and its detail: the title must carry the match or the
 /// detail can (at a third of the weight); highlights are only in the title.
 pub fn score_row(title: &str, detail: &str, query: &str) -> Option<Hit> {
-    let together = |hay: &str, w: &str| word(hay, w).filter(|h| h.ranges.len() == 1);
+    // As typed, in one piece: a substring match, not letters spread through the text.
+    let together = |hay: &str, w: &str| substring(hay, w);
     // Every word as text somewhere: in the title (highlighted) or the detail.
     let mut score = 0;
     let mut ranges = Vec::new();

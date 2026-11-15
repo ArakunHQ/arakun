@@ -11,8 +11,9 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
 - **Suggest a feature** with the feature request form. Say what gets in the way today,
   not only the fix you have in mind.
 - **Try Arakun on Windows or macOS.** Linux is the only platform used every day, and
-  no tests run on Windows in CI (see [docs/windows.md](docs/windows.md)). Reports of
-  what works there are useful too, not only of what breaks.
+  CI only compiles the Windows build, without running its tests (see
+  [docs/windows.md](docs/windows.md)). Reports of what works there are useful too, not
+  only of what breaks.
 - **Send a pull request.** For anything bigger than a small fix, open an issue first so
   we can agree on the approach before you spend time on it.
 

@@ -771,7 +771,14 @@ fn extern_proc(pid: i32) -> Option<ExternProc> {
     let mut info = std::mem::MaybeUninit::<KinfoProc>::zeroed();
     let mut len = std::mem::size_of::<KinfoProc>();
     let ok = unsafe {
-        libc::sysctl(mib.as_mut_ptr(), mib.len() as u32, info.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            info.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
     } == 0;
     // A pid that is gone succeeds with nothing written.
     (ok && len == std::mem::size_of::<KinfoProc>()).then(|| unsafe { info.assume_init() }.kp_proc)

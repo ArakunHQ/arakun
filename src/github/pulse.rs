@@ -1,5 +1,5 @@
 //! The review pulse: how the user's week of reviews went, from GitHub's own
-//! record. One GraphQL search reads, for every pull request the user was
+//! record. A few GraphQL searches read, for every pull request the user was
 //! involved in lately, when reviews were asked of whom and who reviewed when.
 //! Everything shown is worked out from that; where there is too little, the
 //! numbers say so instead of guessing.
@@ -90,10 +90,32 @@ pub fn parse(answer: &Value) -> Vec<Activity> {
     out
 }
 
-/// Reads the pull requests the user was involved in since `since` (a date,
-/// `2026-11-03`).
-pub fn fetch(since: &str) -> Result<Vec<Activity>, Problem> {
-    let q = format!("is:pr involves:@me updated:>={since} archived:false");
+/// The searches behind the pulse. `involves:` leaves out pull requests the
+/// user was only asked to review or only reviewed, so those are searched too;
+/// and a request still open counts however long ago it was last touched.
+fn searches(since: &str) -> [String; 3] {
+    [
+        format!("is:pr involves:@me updated:>={since} archived:false"),
+        format!("is:pr reviewed-by:@me updated:>={since} archived:false"),
+        "is:pr is:open review-requested:@me archived:false".to_string(),
+    ]
+}
+
+/// The searches' activities, each pull request once.
+fn merge(lists: Vec<Vec<Activity>>) -> Vec<Activity> {
+    let mut out: Vec<Activity> = Vec::new();
+    for a in lists.into_iter().flatten() {
+        let seen = out
+            .iter()
+            .any(|b| b.number == a.number && b.repo.eq_ignore_ascii_case(&a.repo));
+        if !seen {
+            out.push(a);
+        }
+    }
+    out
+}
+
+fn search(q: &str) -> Result<Vec<Activity>, Problem> {
     let out = super::gh_out(&[
         "api",
         "graphql",
@@ -105,6 +127,23 @@ pub fn fetch(since: &str) -> Result<Vec<Activity>, Problem> {
     let value: Value = serde_json::from_slice(&out)
         .map_err(|e| Problem::Other(format!("unexpected answer from gh: {e}")))?;
     Ok(parse(&value))
+}
+
+/// Reads the pull requests the user was involved in since `since` (a date,
+/// `2026-11-03`), and those whose review still waits on them. One failed
+/// search fails the pulse: a part of it would show wrong numbers.
+pub fn fetch(since: &str) -> Result<Vec<Activity>, Problem> {
+    let qs = searches(since);
+    let lists = std::thread::scope(|s| {
+        let jobs: Vec<_> = qs.iter().map(|q| s.spawn(move || search(q))).collect();
+        jobs.into_iter()
+            .map(|j| {
+                j.join()
+                    .unwrap_or_else(|_| Err(Problem::Other("a search failed".into())))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    Ok(merge(lists))
 }
 
 /// The week, worked out.
@@ -319,5 +358,31 @@ mod tests {
         assert_eq!(span(2 * 3600), "2h");
         assert_eq!(span(3 * 86_400 + 4 * 3600), "3d 4h");
         assert_eq!(span(2 * 86_400), "2d");
+    }
+
+    #[test]
+    fn the_pulse_also_reads_review_only_and_old_open_requests() {
+        let qs = searches("2026-11-03");
+        assert_eq!(
+            qs[0],
+            "is:pr involves:@me updated:>=2026-11-03 archived:false"
+        );
+        assert_eq!(
+            qs[1],
+            "is:pr reviewed-by:@me updated:>=2026-11-03 archived:false"
+        );
+        // No date: a request from three weeks ago still waits.
+        assert_eq!(qs[2], "is:pr is:open review-requested:@me archived:false");
+        let act = |repo: &str, number| Activity {
+            repo: repo.into(),
+            number,
+            ..Default::default()
+        };
+        let merged = merge(vec![
+            vec![act("o/r", 1), act("o/r", 2)],
+            vec![act("O/R", 2), act("o/r", 3)],
+            vec![act("o/r", 1)],
+        ]);
+        assert_eq!(merged, vec![act("o/r", 1), act("o/r", 2), act("o/r", 3)]);
     }
 }

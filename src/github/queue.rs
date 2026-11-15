@@ -190,7 +190,10 @@ fn strip_nulls(value: serde_json::Value) -> serde_json::Value {
 
 /// Every search, at once. What failed is left out, and the first failure is
 /// returned with the rest, so one bad search doesn't empty the queue.
-pub fn search_all(today: &str, since: &str) -> (Vec<(Why, Found)>, Option<Problem>) {
+/// What every search found, which ones failed, and the first failure.
+pub type Searches = (Vec<(Why, Found)>, Vec<Why>, Option<Problem>);
+
+pub fn search_all(today: &str, since: &str) -> Searches {
     let results: Vec<(Why, Result<Vec<Found>, Problem>)> = std::thread::scope(|s| {
         let handles: Vec<_> = Why::ALL
             .into_iter()
@@ -217,16 +220,35 @@ pub fn search_all(today: &str, since: &str) -> (Vec<(Why, Found)>, Option<Proble
             .collect()
     });
     let mut found = Vec::new();
+    let mut failed = Vec::new();
     let mut problem = None;
     for (why, result) in results {
         match result {
             Ok(list) => found.extend(list.into_iter().map(|f| (why, f))),
             Err(p) => {
+                failed.push(why);
                 problem.get_or_insert(p);
             }
         }
     }
-    (found, problem)
+    (found, failed, problem)
+}
+
+/// The searches' results after a read: what each search found now, and for
+/// a search that failed, what it found last time. A failed search must not
+/// empty its part of the queue (review requests already read on GitHub would
+/// vanish until the next good read).
+pub fn merge_found(
+    old: Vec<(Why, Found)>,
+    new: Vec<(Why, Found)>,
+    failed: &[Why],
+) -> Vec<(Why, Found)> {
+    let mut out: Vec<(Why, Found)> = old
+        .into_iter()
+        .filter(|(why, _)| failed.contains(why))
+        .collect();
+    out.extend(new.into_iter().filter(|(why, _)| !failed.contains(why)));
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +562,22 @@ fn place_only(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) ->
                     lane: Lane::OnYou,
                     mark: Mark::Pull,
                     sub: join(&[author]),
+                    ..Default::default()
+                });
+            }
+            // `review-requested:@me` also finds requests to the user's teams,
+            // which the details only name by team. While the search still
+            // finds it and a team is still asked, it waits on the user.
+            let team_asked = p
+                .review_requests
+                .iter()
+                .any(|r| r.login.is_empty() && !r.who().is_empty());
+            if e.why.contains(&Why::ReviewRequested) && team_asked && !mine(author) {
+                return Some(Placed {
+                    group: Group::NeedsReview,
+                    lane: Lane::OnYou,
+                    mark: Mark::Pull,
+                    sub: join(&[author, "your team's review is requested"]),
                     ..Default::default()
                 });
             }
@@ -1150,6 +1188,27 @@ mod tests {
             ))
         );
 
+        // Asked of a team the user is in: the search says so, the details
+        // only name the team.
+        let team = pull(
+            r#"{"reviewRequests":[{"slug":"core","name":"Core"}],"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED"}"#,
+        );
+        assert_eq!(
+            at(&team),
+            Some((
+                Group::NeedsReview,
+                Lane::OnYou,
+                Mark::Pull,
+                "rik · your team's review is requested".into()
+            ))
+        );
+        // Without the search's word (someone else's team), it doesn't wait on you.
+        let other = gather(&[], &[found(Why::ReviewedToday, "o/r", 34, "open", None)]).remove(0);
+        assert_eq!(
+            place(&other, Some(&team), ME, DAY).map(|p| p.lane),
+            Some(Lane::None)
+        );
+
         let mine_conflicts =
             pull(r#"{"author":{"login":"KarloAldrete"},"mergeable":"CONFLICTING"}"#);
         assert_eq!(
@@ -1239,5 +1298,21 @@ mod tests {
         assert_eq!(short_count(487), "487");
         assert_eq!(short_count(9_200), "9.2k");
         assert_eq!(short_count(12_345), "12k");
+    }
+
+    #[test]
+    fn a_failed_search_keeps_what_it_found_last_time() {
+        let old = vec![
+            found(Why::ReviewRequested, "o/r", 1, "open", Some(true)),
+            found(Why::Authored, "o/r", 2, "open", Some(true)),
+        ];
+        let new = vec![found(Why::Authored, "o/r", 3, "open", Some(true))];
+        let merged = merge_found(old.clone(), new.clone(), &[Why::ReviewRequested]);
+        // The review request stays; the authored search moved on.
+        assert_eq!(merged, vec![old[0].clone(), new[0].clone()]);
+        // When every search worked, only the new results count.
+        assert_eq!(merge_found(old.clone(), new.clone(), &[]), new);
+        // When all failed, nothing changes.
+        assert_eq!(merge_found(old.clone(), Vec::new(), &Why::ALL), old);
     }
 }

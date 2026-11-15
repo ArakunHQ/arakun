@@ -26,6 +26,8 @@ const POLL_IDLE: Duration = Duration::from_secs(300);
 const STALE: Duration = Duration::from_secs(30);
 /// How many pull requests or issues are read at once for the queue.
 const DETAILS_AT_ONCE: usize = 3;
+/// How long a failed read of an item waits before a poll may try it again.
+const DETAILS_RETRY: Duration = Duration::from_secs(60);
 /// The pulse changes slowly and its query is heavy: read it this often.
 const PULSE_EVERY: Duration = Duration::from_secs(300);
 /// How far back a mention still counts.
@@ -553,6 +555,37 @@ fn save_draft_cli(args: &[String]) -> Result<String, String> {
     ))
 }
 
+/// What is known of one item's details, for `details_settled`.
+struct DetailRead<'a> {
+    details: Option<&'a queue::Details>,
+    /// The entry's `updated_at` when its details were last asked for.
+    asked_at: Option<&'a str>,
+    busy: bool,
+    failed: bool,
+}
+
+/// Whether every item in the queue has details as new as the lists say, read
+/// without error. Before that, an item may sit in the wrong lane.
+fn details_settled<'a>(entries: &[queue::Entry], read: impl Fn(&str) -> DetailRead<'a>) -> bool {
+    entries
+        .iter()
+        .filter_map(|e| e.item.as_ref().map(|i| (i, e)))
+        .all(|(item, e)| {
+            let r = read(&queue::key_of(item));
+            // A list date the details never reach was asked for once: that counts.
+            let current = |d: &queue::Details| {
+                d.updated_at() >= e.updated_at.as_str() || r.asked_at == Some(e.updated_at.as_str())
+            };
+            !r.busy && !r.failed && r.details.is_some_and(current)
+        })
+}
+
+/// Whether to read an item's details: not yet asked at this date, or the last
+/// read failed a while ago.
+fn ask_details(asked: bool, failed_ago: Option<Duration>) -> bool {
+    !asked || failed_ago.is_some_and(|d| d >= DETAILS_RETRY)
+}
+
 // ---------------------------------------------------------------------------
 // The model
 
@@ -627,6 +660,8 @@ pub struct GitHub {
     asked_at: HashMap<String, String>,
     fetching: HashSet<String>,
     detail_problems: HashMap<String, Problem>,
+    /// When an item's last read failed, so a later poll tries it again.
+    failed_at: HashMap<String, Instant>,
     queue: queue::Queue,
     activity: Option<Vec<pulse::Activity>>,
     pulse_at: Option<Instant>,
@@ -691,6 +726,7 @@ impl GitHub {
             asked_at: HashMap::new(),
             fetching: HashSet::new(),
             detail_problems: HashMap::new(),
+            failed_at: HashMap::new(),
             queue: queue::Queue::default(),
             activity: None,
             pulse_at: None,
@@ -821,7 +857,7 @@ impl GitHub {
         let today = queue::day_key(queue::day_start(now, 0));
         let since = queue::day_key(queue::day_start(now, MENTIONS_DAYS));
         cx.spawn(async move |this, cx| {
-            let (unread, all, (found, search_problem), me) = cx
+            let (unread, all, (found, failed, search_problem), me) = cx
                 .background_spawn(async move {
                     std::thread::scope(|s| {
                         let searches = s.spawn(|| queue::search_all(&today, &since));
@@ -833,6 +869,7 @@ impl GitHub {
                         let found = searches.join().unwrap_or_else(|_| {
                             (
                                 Vec::new(),
+                                queue::Why::ALL.to_vec(),
                                 Some(Problem::Other("the searches failed".into())),
                             )
                         });
@@ -846,10 +883,8 @@ impl GitHub {
                 if me.is_some() {
                     this.me = me;
                 }
-                // A failed search keeps what the last one found rather than emptying the queue.
-                if search_problem.is_none() || !found.is_empty() || !this.searched {
-                    this.found = found;
-                }
+                // A failed search keeps what it found last time; the others update.
+                this.found = queue::merge_found(std::mem::take(&mut this.found), found, &failed);
                 this.searched = true;
                 this.search_problem = search_problem;
                 match unread {
@@ -1075,12 +1110,20 @@ impl GitHub {
         let now = crate::model::unix_now();
         let me = self.me.clone().unwrap_or_default();
         self.queue = queue::build(&entries, &self.details, &me, queue::day_start(now, 0));
-        // Only a full read can say nothing waits; a failed search knows less.
+        // Only a full read can say nothing waits; a failed search knows less,
+        // and so does an item whose details aren't read yet (an authored pull
+        // request with conflicts waits on you only once they are).
         if self.loaded
             && self.searched
             && self.search_problem.is_none()
             && self.me.is_some()
             && self.queue.on_you == 0
+            && details_settled(&entries, |key| DetailRead {
+                details: self.details.get(key),
+                asked_at: self.asked_at.get(key).map(String::as_str),
+                busy: self.fetching.contains(key),
+                failed: self.detail_problems.contains_key(key),
+            })
         {
             let today = queue::day_key(now);
             if !today.is_empty() && queue::record_zero_day(&mut self.zero_days, &today) {
@@ -1100,7 +1143,9 @@ impl GitHub {
             }
             let Some(item) = e.item.clone() else { continue };
             let key = queue::key_of(&item);
-            if self.fetching.contains(&key) || self.asked_at.get(&key) == Some(&e.updated_at) {
+            let asked = self.asked_at.get(&key) == Some(&e.updated_at);
+            let failed_ago = self.failed_at.get(&key).map(Instant::elapsed);
+            if self.fetching.contains(&key) || !ask_details(asked, failed_ago) {
                 continue;
             }
             if self
@@ -1143,9 +1188,13 @@ impl GitHub {
                 match read {
                     Ok(d) => {
                         this.detail_problems.remove(&key);
+                        this.failed_at.remove(&key);
                         this.details.insert(key, d);
                     }
                     Err(p) => {
+                        // Not retried here, which would loop while the
+                        // network is down; a later poll asks again.
+                        this.failed_at.insert(key.clone(), Instant::now());
                         this.detail_problems.insert(key, p);
                     }
                 }
@@ -1265,6 +1314,86 @@ impl GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_detail_read_is_tried_again_later() {
+        assert!(ask_details(false, None));
+        assert!(!ask_details(true, None));
+        // Not at once, which would loop while offline; on a later poll.
+        assert!(!ask_details(true, Some(Duration::from_secs(1))));
+        assert!(ask_details(true, Some(DETAILS_RETRY)));
+    }
+
+    #[test]
+    fn inbox_zero_waits_for_every_item_s_details() {
+        let item = pr::ItemRef {
+            repo: "o/r".into(),
+            number: 1,
+            kind: pr::ItemKind::Issue,
+        };
+        let entry = queue::Entry {
+            item: Some(item),
+            title: "t".into(),
+            author: String::new(),
+            updated_at: "2026-11-14T10:00:00Z".into(),
+            closed_at: String::new(),
+            state: "open".into(),
+            why: vec![queue::Why::Authored],
+            notification: None,
+        };
+        let at = |when: &str| {
+            queue::Details::Issue(Box::new(pr::Issue {
+                updated_at: when.into(),
+                ..Default::default()
+            }))
+        };
+        let (old, new) = (at("2026-11-13T00:00:00Z"), at("2026-11-14T10:00:00Z"));
+        let read = |details, asked_at, busy, failed| DetailRead {
+            details,
+            asked_at,
+            busy,
+            failed,
+        };
+        let entries = std::slice::from_ref(&entry);
+        assert!(!details_settled(entries, |_| read(
+            None, None, false, false
+        )));
+        assert!(!details_settled(entries, |_| read(None, None, true, false)));
+        assert!(!details_settled(entries, |_| read(
+            Some(&new),
+            None,
+            false,
+            true
+        )));
+        assert!(!details_settled(entries, |_| read(
+            Some(&old),
+            None,
+            false,
+            false
+        )));
+        assert!(details_settled(entries, |_| read(
+            Some(&new),
+            None,
+            false,
+            false
+        )));
+        // Details that never reach the list's date, asked for at that date.
+        let asked = Some("2026-11-14T10:00:00Z");
+        assert!(details_settled(entries, |_| read(
+            Some(&old),
+            asked,
+            false,
+            false
+        )));
+        // A notification about something else has no details to wait for.
+        let other = queue::Entry {
+            item: None,
+            ..entry.clone()
+        };
+        assert!(details_settled(&[other], |_| read(
+            None, None, false, false
+        )));
+    }
 
     #[test]
     fn polls_only_after_the_tab_was_opened_and_gh_works() {

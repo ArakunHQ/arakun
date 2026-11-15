@@ -217,7 +217,18 @@ pub fn read_meta(id: &str) -> Option<Meta> {
     read_json(&meta_path(id))
 }
 
+/// Saves a session that already has its folder. A folder that is gone was
+/// deleted on purpose, and saving would make it again and bring the session
+/// back: a host still saving while it stops writes nothing.
 fn write_meta(m: &Meta) {
+    if !dir(&m.id).is_dir() {
+        return;
+    }
+    create_meta(m);
+}
+
+/// Saves a session, making its folder if needed: only for a new session.
+fn create_meta(m: &Meta) {
     if let Err(e) = write_json(&meta_path(&m.id), m) {
         eprintln!("arakun: could not save {}: {e}", meta_path(&m.id).display());
     }
@@ -261,6 +272,20 @@ pub fn discard(id: &str) {
         let until = Instant::now() + Duration::from_secs(5);
         while alive(Some(pid)) && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(100));
+        }
+        // Still saving after 5 s: stop it outright. A host that keeps going
+        // writes nothing once the folder is gone (see `write_meta`), but it
+        // would keep spending the person's tokens.
+        #[cfg(unix)]
+        if alive(Some(pid)) {
+            // SAFETY: a plain signal to the same host, checked just above.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            let until = Instant::now() + Duration::from_secs(1);
+            while alive(Some(pid)) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
     }
     if let Err(e) = std::fs::remove_dir_all(dir(id)) {
@@ -312,7 +337,11 @@ pub fn alive(pid: Option<u32>) -> bool {
         }
         match std::fs::read(format!("/proc/{pid}/cmdline")) {
             Ok(cmd) => String::from_utf8_lossy(&cmd).contains("agent-host"),
-            Err(_) => !cfg!(target_os = "linux"),
+            #[cfg(target_os = "linux")]
+            Err(_) => false,
+            // No /proc: a pid the OS gave to another program is not ours.
+            #[cfg(not(target_os = "linux"))]
+            Err(_) => same_program(pid),
         }
     }
     #[cfg(not(unix))]
@@ -320,6 +349,32 @@ pub fn alive(pid: Option<u32>) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// The process `pid` runs this same program (macOS has no /proc to read).
+#[cfg(target_os = "macos")]
+fn same_program(pid: u32) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer is as long as the size passed with it.
+    let n = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buf.as_mut_ptr().cast(),
+            buf.len() as u32,
+        )
+    };
+    if n <= 0 {
+        return false;
+    }
+    let path = Path::new(std::ffi::OsStr::from_bytes(&buf[..n as usize]));
+    std::env::current_exe().is_ok_and(|me| me.file_name() == path.file_name())
+}
+
+/// Other Unix systems without /proc: trust the pid.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn same_program(_: u32) -> bool {
+    true
 }
 
 /// Status as a reader should take it: a host that died mid-turn left it stale.
@@ -740,7 +795,7 @@ fn run(r: Run, cwd: &Path) -> i32 {
         declined: 0,
         stop_reason: None,
     };
-    write_meta(&meta);
+    create_meta(&meta);
     if let Err(e) = post(&id, &r.prompt) {
         return fail(&format!("could not queue the prompt: {e}"));
     }
@@ -1660,6 +1715,11 @@ impl Host {
         m.updated = now();
         let pid = std::process::id();
         m.pid = Some(pid);
+        // Deleted while running: saving would bring the folder back.
+        if !dir(&m.id).is_dir() {
+            self.dirty = false;
+            return;
+        }
         if let Err(e) = write_json(&transcript_path(&m.id), &transcript) {
             eprintln!("arakun: could not save the transcript: {e}");
         }
@@ -1876,6 +1936,44 @@ mod tests {
         assert!(discarding(id));
         discard(id);
         assert!(!discarding(id));
+    }
+
+    #[test]
+    fn a_deleted_session_folder_stays_gone() {
+        let id = format!("h-test-discard-{}", std::process::id());
+        let m = Meta {
+            id: id.clone(),
+            agent: AgentKind::WorkersAi,
+            model: String::new(),
+            effort: String::new(),
+            policy: Policy::ReadOnly,
+            cwd: "/tmp/x".into(),
+            title: "t".into(),
+            created: 1,
+            updated: 2,
+            status: Status::Idle,
+            pid: None,
+            last: String::new(),
+            cost: 0.,
+            error: None,
+            session_id: None,
+            caps: Vec::new(),
+            reads: Vec::new(),
+            no_sandbox: false,
+            unsandboxed: false,
+            unattended: false,
+            declined: 0,
+            stop_reason: None,
+        };
+        create_meta(&m);
+        assert!(dir(&id).is_dir());
+        begin_discard(&id);
+        discard(&id);
+        assert!(!dir(&id).exists());
+        assert!(!discarding(&id));
+        // A host still saving afterwards does not make it again.
+        write_meta(&m);
+        assert!(!dir(&id).exists());
     }
 
     #[test]

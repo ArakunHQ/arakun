@@ -1011,11 +1011,10 @@ impl SettingsDialog {
                 |w: f32, c: gpui::Hsla| div().h(px(4.)).w(gpui::relative(w)).rounded_full().bg(c);
             // 6 px (padding and border) inside the card's 12 px corner; the
             // strip on its left rounds the same, as nothing clips it.
-            let corner = ui::nested(ui::RADIUS_LG, 6.);
             let preview = div()
                 .flex()
                 .h(px(54.))
-                .rounded(corner)
+                .rounded(ui::nested(ui::RADIUS_LG, 6.))
                 .overflow_hidden()
                 .bg(p.background())
                 .child(
@@ -1026,7 +1025,7 @@ impl SettingsDialog {
                         .flex_col()
                         .gap(crate::ui::sp(5.))
                         .p(crate::ui::sp(7.))
-                        .rounded_l(corner)
+                        .rounded_l(ui::nested(ui::RADIUS_LG, 6.))
                         .bg(p.surface(0.07))
                         .child(bar(0.6, p.accent()))
                         .child(bar(0.85, p.content().opacity(0.22)))

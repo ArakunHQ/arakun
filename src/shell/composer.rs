@@ -1161,7 +1161,8 @@ impl Shell {
             .flex()
             .flex_col()
             .w_full()
-            .rounded(crate::ui::rad(12.))
+            // As round as the window's cards; its buttons sit 8 px in.
+            .rounded(crate::ui::rad(ui::RADIUS_XL))
             .border_1()
             .border_color(if focused {
                 theme::mix(0.20)
@@ -1346,7 +1347,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(26.))
-                            .rounded(crate::ui::rad(8.))
+                            .rounded(ui::nested(ui::RADIUS_XL, 8.))
                             .bg(theme::selection())
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::selection_hover()))
@@ -1484,7 +1485,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(26.))
-                            .rounded(crate::ui::rad(8.))
+                            .rounded(ui::nested(ui::RADIUS_XL, 8.))
                             .bg(if lit { gpui::white() } else { theme::mix(0.14) })
                             .when(lit, |d| {
                                 d.cursor_pointer()

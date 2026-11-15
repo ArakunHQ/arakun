@@ -230,7 +230,7 @@ pub fn tile(mark: Mark, size: f32) -> Div {
         .items_center()
         .justify_center()
         .size(px(size))
-        .rounded(px(if size >= 28. {
+        .rounded(crate::ui::rad(if size >= 28. {
             ui::RADIUS
         } else {
             ui::RADIUS_SM

@@ -6,7 +6,7 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, ElementId, IntoElement, ParentElement as _,
-    Styled as _, div, px,
+    Styled as _, div,
 };
 
 use super::*;
@@ -19,7 +19,7 @@ fn hint(keys: &[&str], label: &str) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(crate::ui::sp(6.))
         .text_color(theme::text_faint())
         .child(kit::keycaps(keys))
         .child(label.to_string())
@@ -31,12 +31,12 @@ fn hints(parts: Vec<AnyElement>) -> AnyElement {
         .flex()
         .flex_wrap()
         .items_center()
-        .gap(px(10.))
+        .gap(crate::ui::sp(10.))
         .child(
             kit::props()
                 .flex_row()
                 .flex_wrap()
-                .gap(px(10.))
+                .gap(crate::ui::sp(10.))
                 .children(parts),
         )
         .into_any_element()
@@ -46,13 +46,13 @@ fn status_line(lead: AnyElement, word: &str, color: gpui::Hsla, rest: String) ->
     div()
         .flex()
         .items_center()
-        .gap(px(10.))
+        .gap(crate::ui::sp(10.))
         .child(lead)
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .child(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -85,7 +85,7 @@ impl Palette {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(crate::ui::sp(16.))
                     .min_h_0()
                     .children(body)
                     .with_animation(
@@ -193,7 +193,7 @@ impl Palette {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.))
+                        .gap(crate::ui::sp(10.))
                         .when_some(waiting.clone(), |d, (w, on_you)| {
                             d.child(kit::palette_pill(
                                 w,
@@ -220,7 +220,7 @@ impl Palette {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(crate::ui::sp(6.))
                             .child(kit::check_bars(&colors))
                             .child(kit::mono(format!("{passed}/{total}"), theme::text())),
                     ));
@@ -236,7 +236,7 @@ impl Palette {
                         "Changes",
                         div()
                             .flex()
-                            .gap(px(6.))
+                            .gap(crate::ui::sp(6.))
                             .child(kit::mono(format!("+{a}"), theme::success().into()))
                             .child(kit::mono(format!("−{d}"), theme::error().into()))
                             .child(kit::mono(format!("· {f} files"), theme::text())),
@@ -273,7 +273,7 @@ impl Palette {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(kit::ringed_avatar(login, avatar.as_deref(), 68.))
                     .child(kit::preview_title(login.clone()))
                     .child(kit::row_sub(format!("@{login}"), false))
@@ -664,7 +664,7 @@ fn error_preview(e: &clip::ErrorText) -> Vec<AnyElement> {
         div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .child(icon("sparkles", 12.).text_color(theme::accent()))
             .child(kit::row_sub(
                 "Enter starts a session with the error and its file as context",

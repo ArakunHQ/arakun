@@ -82,7 +82,7 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .pb(px(4.));
+            .pb(crate::ui::sp(4.));
         if !items.is_empty() {
             list = list.child(section("Waiting on you", items.len()));
             for (i, item) in items.into_iter().enumerate() {
@@ -99,16 +99,16 @@ impl Shell {
                     "What the island tells you stays here, for when you were away.",
                     None,
                 )
-                .py(px(24.)),
+                .py(crate::ui::sp(24.)),
             );
         }
         let now = model::unix_now();
         for (day, indices) in history.by_day(now) {
             list = list.child(
                 ui::text(Type::Caption, theme::text_faint(), day)
-                    .px(px(10.))
-                    .pt(px(8.))
-                    .pb(px(2.)),
+                    .px(crate::ui::sp(10.))
+                    .pt(crate::ui::sp(8.))
+                    .pb(crate::ui::sp(2.)),
             );
             for i in indices {
                 list = list.child(notice_row(i, &history.notices[i], now, cx));
@@ -120,7 +120,7 @@ impl Shell {
             .p_0()
             .gap_0()
             .child(self.inbox_header(unseen, !history.notices.is_empty(), cx))
-            .child(list.px(px(4.)))
+            .child(list.px(crate::ui::sp(4.)))
     }
 
     fn inbox_header(&self, unseen: usize, any: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -129,9 +129,9 @@ impl Shell {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
-            .pl(px(14.))
-            .pr(px(8.))
+            .gap(crate::ui::sp(8.))
+            .pl(crate::ui::sp(14.))
+            .pr(crate::ui::sp(8.))
             .h(px(44.))
             .border_b_1()
             .border_color(theme::border_subtle())
@@ -189,17 +189,17 @@ impl Shell {
             .id(("inbox-item", i))
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .px(px(10.))
-            .py(px(6.))
-            .rounded(px(8.))
+            .gap(crate::ui::sp(2.))
+            .px(crate::ui::sp(10.))
+            .py(crate::ui::sp(6.))
+            .rounded(crate::ui::rad(8.))
             .cursor_pointer()
             .hover(|s| s.bg(theme::selection_hover()))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(status_dot(item.status))
                     .child(
                         ui::text(Type::Body, theme::text(), item.title)
@@ -215,7 +215,7 @@ impl Shell {
                     theme::text_faint(),
                     format!("{} · {}", item.place, model::age(item.updated)),
                 )
-                .pl(px(14.)),
+                .pl(crate::ui::sp(14.)),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.menu = None;
@@ -229,10 +229,10 @@ fn section(title: &str, count: usize) -> impl IntoElement {
     div()
         .flex()
         .items_center()
-        .gap(px(6.))
-        .px(px(10.))
-        .pt(px(10.))
-        .pb(px(2.))
+        .gap(crate::ui::sp(6.))
+        .px(crate::ui::sp(10.))
+        .pt(crate::ui::sp(10.))
+        .pb(crate::ui::sp(2.))
         .child(ui::overline(title))
         .when(count > 0, |d| {
             d.child(ui::tag(count.to_string(), theme::text_subtle()))
@@ -248,9 +248,9 @@ fn header_action(id: &'static str, label: &str, danger: bool) -> gpui::Stateful<
     div()
         .id(id)
         .flex_none()
-        .px(px(8.))
-        .py(px(3.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(8.))
+        .py(crate::ui::sp(3.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .cursor_pointer()
         .text_color(color)
         .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
@@ -277,10 +277,10 @@ fn notice_row(i: usize, n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl I
         .id(("inbox-notice", i))
         .flex()
         .items_center()
-        .gap(px(10.))
-        .px(px(10.))
-        .py(px(7.))
-        .rounded(px(8.))
+        .gap(crate::ui::sp(10.))
+        .px(crate::ui::sp(10.))
+        .py(crate::ui::sp(7.))
+        .rounded(crate::ui::rad(8.))
         .when(opens, |d| d.cursor_pointer())
         .hover(|s| s.bg(theme::selection_hover()))
         .child(picture(n))
@@ -303,9 +303,9 @@ fn notice_row(i: usize, n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl I
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .self_start()
-                .pt(px(1.))
+                .pt(crate::ui::sp(1.))
                 .when(unseen, |d| {
                     d.child(div().size(px(6.)).rounded_full().bg(theme::accent()))
                 })
@@ -344,7 +344,7 @@ fn picture(n: &Notice) -> AnyElement {
         }
         return div()
             .flex_none()
-            .p(px(2.))
+            .p(crate::ui::sp(2.))
             .rounded_full()
             .bg(gpui::white())
             .child(face)

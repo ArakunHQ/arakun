@@ -201,22 +201,22 @@ impl MemoryView {
             .group(group.clone())
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(ui::RADIUS))
+            .gap(crate::ui::sp(4.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .bg(theme::fill_raised())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .flex_none()
-                            .px(px(6.))
-                            .py(px(1.))
-                            .rounded(px(ui::RADIUS_SM))
+                            .px(crate::ui::sp(6.))
+                            .py(crate::ui::sp(1.))
+                            .rounded(crate::ui::rad(ui::RADIUS_SM))
                             .bg(kind_color(&m.kind).opacity(0.14))
                             .text_color(kind_color(&m.kind))
                             .text_size(px(ui::TEXT_XS))
@@ -237,10 +237,10 @@ impl MemoryView {
                             .flex()
                             .flex_none()
                             .items_center()
-                            .gap(px(4.))
-                            .px(px(4.))
+                            .gap(crate::ui::sp(4.))
+                            .px(crate::ui::sp(4.))
                             .h(px(20.))
-                            .rounded(px(ui::RADIUS_SM))
+                            .rounded(crate::ui::rad(ui::RADIUS_SM))
                             .cursor_pointer()
                             .when(!confirming, |d| {
                                 d.invisible().group_hover(group.clone(), |s| s.visible())
@@ -306,10 +306,10 @@ impl MemoryView {
         let count = items.len();
         let file = source.file.clone();
         let editable = file.exists();
-        let mut list = div().flex().flex_col().gap(px(6.));
+        let mut list = div().flex().flex_col().gap(crate::ui::sp(6.));
         if items.is_empty() {
             list = list.child(
-                div().px(px(2.)).py(px(4.)).text_size(px(ui::TEXT_SM)).text_color(theme::text_faint()).child(match scope {
+                div().px(crate::ui::sp(2.)).py(crate::ui::sp(4.)).text_size(px(ui::TEXT_SM)).text_color(theme::text_faint()).child(match scope {
                     Scope::Project => "Nothing yet. Agents save what they learn here with `arakun mem save`.",
                     Scope::Global => "Nothing yet. Preferences you state to an agent end up here, for every project.",
                 }),
@@ -322,12 +322,12 @@ impl MemoryView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .h(px(ui::ICON_BUTTON))
                         .text_size(px(ui::TEXT_SM))
                         .font_weight(FontWeight::MEDIUM)
@@ -388,23 +388,23 @@ impl Render for MemoryView {
                 div()
                     .flex()
                     .flex_none()
-                    .px(px(ui::PAGE_PAD))
-                    .pt(px(ui::PAGE_PAD))
-                    .pb(px(12.))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .pt(crate::ui::sp(ui::PAGE_PAD))
+                    .pb(crate::ui::sp(12.))
                     .child(ui::page_title(
                         "Memory",
                         Some("What agents carry from one session to the next".into_any_element()),
                     )),
             )
             .child(
-                div().flex_none().px(px(ui::PAGE_PAD)).pb(px(12.)).border_b_1().border_color(theme::stroke()).child(
+                div().flex_none().px(crate::ui::sp(ui::PAGE_PAD)).pb(crate::ui::sp(12.)).border_b_1().border_color(theme::stroke()).child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .h(px(ui::INPUT_H))
-                        .px(px(10.))
-                        .rounded(px(ui::RADIUS))
+                        .px(crate::ui::sp(10.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .border_1()
                         .border_color(theme::border_strong())
                         .bg(theme::background())
@@ -422,9 +422,9 @@ impl Render for MemoryView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(ui::PAGE_PAD))
-                    .py(px(16.))
-                    .gap(px(20.))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .py(crate::ui::sp(16.))
+                    .gap(crate::ui::sp(20.))
                     .when_some(self.error.clone(), |d, e| {
                         d.child(div().text_size(px(ui::TEXT_SM)).text_color(theme::error()).child(e))
                     })

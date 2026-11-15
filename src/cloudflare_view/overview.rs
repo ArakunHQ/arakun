@@ -71,7 +71,7 @@ impl CloudflareView {
             return div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .ty(Type::Caption)
                 .text_color(theme::text_subtle())
                 .child(ui::spinner(
@@ -113,9 +113,9 @@ impl CloudflareView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .p(px(12.))
-                .rounded(px(ui::RADIUS))
+                .gap(crate::ui::sp(10.))
+                .p(crate::ui::sp(12.))
+                .rounded(crate::ui::rad(ui::RADIUS))
                 .border_1()
                 .border_color(theme::accent().opacity(0.5))
                 .bg(theme::background())
@@ -123,7 +123,7 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(icon("wrench01", 13.).text_color(theme::accent()))
                         .child(
                             div()
@@ -136,7 +136,7 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(icon("alert-circle", 13.).text_color(Tone::Warning.color()))
                         .child(
                             div()
@@ -154,7 +154,7 @@ impl CloudflareView {
                 .child(
                     div()
                         .flex()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(div().flex_1())
                         .child(
                             ui::button(
@@ -195,9 +195,9 @@ impl CloudflareView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .h(px(60.))
-            .px(px(20.))
+            .px(crate::ui::sp(20.))
             .border_b_1()
             .border_color(theme::border_subtle())
             .child(logos::tile(logos::mark("cloudflare", ""), 32.))
@@ -226,10 +226,10 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .h(px(24.))
-                        .px(px(8.))
-                        .rounded(px(ui::RADIUS))
+                        .px(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .bg(theme::fill_raised())
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
@@ -284,9 +284,9 @@ impl CloudflareView {
             .w(px(216.))
             .h_full()
             .overflow_y_scroll()
-            .gap(px(2.))
-            .px(px(12.))
-            .py(px(16.))
+            .gap(crate::ui::sp(2.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(16.))
             .border_r_1()
             .border_color(theme::border_subtle());
         let entries: [(Page, &str, Option<String>, Option<Tone>); 11] = [
@@ -360,10 +360,10 @@ impl CloudflareView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(ui::RADIUS))
+                    .px(crate::ui::sp(10.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
                     .cursor_pointer()
                     .ty(Type::Label)
                     .when(on, |d| {
@@ -383,7 +383,7 @@ impl CloudflareView {
                         match tone {
                             Some(t) => div()
                                 .flex_none()
-                                .px(px(6.))
+                                .px(crate::ui::sp(6.))
                                 .h(px(18.))
                                 .flex()
                                 .items_center()
@@ -442,7 +442,7 @@ impl CloudflareView {
 
         let kpis = div()
             .flex()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .child(kpi(
                 "Requests · 24h",
                 known(s.traffic, count(served)),
@@ -555,7 +555,7 @@ impl CloudflareView {
             .child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(crate::ui::sp(16.))
                     .child(ui::legend("Requests", Tone::Info.color()))
                     .child(ui::legend("From cache", Tone::Success.color()))
                     .child(ui::legend("Threats", Tone::Danger.color())),
@@ -571,7 +571,7 @@ impl CloudflareView {
             .flex_col()
             .flex_none()
             .w(px(360.))
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .child(self.security_card(s, cx))
             .child(self.billing_card(s, now, cx))
             .child(self.certs_card(s, now));
@@ -603,11 +603,11 @@ impl CloudflareView {
                 ));
             }
         }));
-        let mut attention = div().flex().flex_col().gap(px(10.)).child(
+        let mut attention = div().flex().flex_col().gap(crate::ui::sp(10.)).child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(
                     div()
                         .ty(Type::Heading)
@@ -632,9 +632,9 @@ impl CloudflareView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .p(px(14.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .gap(crate::ui::sp(10.))
+                    .p(crate::ui::sp(14.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::fill_raised())
@@ -649,12 +649,12 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(20.))
+            .gap(crate::ui::sp(20.))
             .child(kpis)
             .child(
                 div()
                     .flex()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .items_start()
                     .child(traffic)
                     .child(side),
@@ -687,7 +687,7 @@ impl CloudflareView {
         let mut card = div()
             .flex()
             .flex_col()
-            .rounded(px(ui::RADIUS_LG))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(theme::fill_raised())
@@ -697,9 +697,9 @@ impl CloudflareView {
                     .id(SharedString::from(format!("cf-group-{key}")))
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(14.))
-                    .py(px(12.))
+                    .gap(crate::ui::sp(12.))
+                    .px(crate::ui::sp(14.))
+                    .py(crate::ui::sp(12.))
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::fill_hover()))
                     .child(
@@ -715,12 +715,12 @@ impl CloudflareView {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
-                            .gap(px(2.))
+                            .gap(crate::ui::sp(2.))
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(8.))
+                                    .gap(crate::ui::sp(8.))
                                     .child(
                                         div()
                                             .ty(Type::Body)
@@ -754,8 +754,8 @@ impl CloudflareView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
-                    .p(px(10.))
+                    .gap(crate::ui::sp(6.))
+                    .p(crate::ui::sp(10.))
                     .border_t_1()
                     .border_color(theme::border_subtle())
                     .bg(theme::background())
@@ -783,7 +783,7 @@ impl CloudflareView {
         let mut out = div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .child(self.render_issue(i, issue, code, cx));
         for (n, f) in fixes.iter().enumerate() {
             let id = format!("cf-issue-fix-{i}-{n}");
@@ -792,8 +792,8 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .pl(px(40.))
+                        .gap(crate::ui::sp(10.))
+                        .pl(crate::ui::sp(40.))
                         .child(
                             div()
                                 .flex_1()
@@ -813,7 +813,7 @@ impl CloudflareView {
     fn security_card(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         let count_of = |sev: &str| s.insights.iter().filter(|i| i.severity == sev).count();
         let mut card = panel("Security Center").child(
-            div().flex().gap(px(8.)).children(
+            div().flex().gap(crate::ui::sp(8.)).children(
                 [
                     ("Critical", Tone::Danger),
                     ("High", Tone::Danger),
@@ -827,9 +827,9 @@ impl CloudflareView {
                         .flex()
                         .flex_col()
                         .flex_1()
-                        .gap(px(2.))
-                        .p(px(8.))
-                        .rounded(px(ui::RADIUS))
+                        .gap(crate::ui::sp(2.))
+                        .p(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .bg(if n > 0 {
                             tone.color().opacity(0.1)
                         } else {
@@ -859,7 +859,7 @@ impl CloudflareView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .flex_none()
@@ -906,7 +906,7 @@ impl CloudflareView {
             Some((v, when)) => div()
                 .flex()
                 .items_end()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(
                     div()
                         .ty(Type::Title)
@@ -915,7 +915,7 @@ impl CloudflareView {
                 )
                 .child(
                     div()
-                        .pb(px(3.))
+                        .pb(crate::ui::sp(3.))
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
                         .child(format!(
@@ -935,7 +935,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(
                                 div()
                                     .flex_1()
@@ -975,7 +975,7 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(
                             div()
                                 .flex_1()
@@ -1028,7 +1028,7 @@ impl CloudflareView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(icon("square-lock02", 13.).text_color(tone.color()))
                     .child(
                         div()
@@ -1071,9 +1071,9 @@ impl CloudflareView {
                     .id(SharedString::from(format!("cf-dom-{name}")))
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
-                    .p(px(14.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .gap(crate::ui::sp(10.))
+                    .p(crate::ui::sp(14.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::fill_raised())
@@ -1083,7 +1083,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(logos::tile(logos::mark(&z.name, ""), 28.))
                             .child(
                                 div()
@@ -1116,7 +1116,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .flex_wrap()
-                            .gap(px(4.))
+                            .gap(crate::ui::sp(4.))
                             .when(z.live_server_errors() > 0, |d| {
                                 d.child(ui::badge(
                                     format!("{} × 5xx", count(z.live_server_errors())),
@@ -1159,7 +1159,7 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(crate::ui::sp(10.))
             .child(
                 div()
                     .ty(Type::Heading)
@@ -1181,7 +1181,7 @@ impl CloudflareView {
             .filter_map(|i| fix::for_insight(i, s))
             .map(|f| f.key())
             .collect();
-        let mut out = div().flex().flex_col().gap(px(20.)).child(page_head(
+        let mut out = div().flex().flex_col().gap(crate::ui::sp(20.)).child(page_head(
             "Security Center",
             &format!(
                 "{} findings Cloudflare's Security Center has for this account · {} changes here fix {} of them; it rescans within a day",
@@ -1207,7 +1207,7 @@ impl CloudflareView {
             let mut rows = div()
                 .flex()
                 .flex_col()
-                .rounded(px(ui::RADIUS_LG))
+                .rounded(crate::ui::rad(ui::RADIUS_LG))
                 .border_1()
                 .border_color(theme::border())
                 .overflow_hidden();
@@ -1237,9 +1237,9 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
-                        .px(px(14.))
-                        .py(px(10.))
+                        .gap(crate::ui::sp(12.))
+                        .px(crate::ui::sp(14.))
+                        .py(crate::ui::sp(10.))
                         .when(n > 0, |d| {
                             d.border_t_1().border_color(theme::border_subtle())
                         })
@@ -1299,8 +1299,8 @@ impl CloudflareView {
                 if let Some(c) = confirm {
                     rows = rows.child(
                         div()
-                            .px(px(14.))
-                            .pb(px(12.))
+                            .px(crate::ui::sp(14.))
+                            .pb(crate::ui::sp(12.))
                             .bg(theme::fill_raised())
                             .child(c),
                     );
@@ -1310,12 +1310,12 @@ impl CloudflareView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(ui::badge(sev, tone))
                             .child(
                                 div()
@@ -1340,7 +1340,7 @@ impl CloudflareView {
             return div()
                 .flex()
                 .flex_col()
-                .gap(px(20.))
+                .gap(crate::ui::sp(20.))
                 .child(head)
                 .child(ui::empty_state(
                     "cube",
@@ -1368,9 +1368,9 @@ impl CloudflareView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
-                    .p(px(16.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .gap(crate::ui::sp(12.))
+                    .p(crate::ui::sp(16.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::fill_raised())
@@ -1378,7 +1378,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(icon("cube", 16.).text_color(theme::text_subtle()))
                             .child(
                                 div()
@@ -1403,7 +1403,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(crate::ui::sp(4.))
                             .child(
                                 div()
                                     .flex()
@@ -1419,7 +1419,7 @@ impl CloudflareView {
                     .child(
                         div()
                             .flex()
-                            .gap(px(16.))
+                            .gap(crate::ui::sp(16.))
                             .child(stat("vCPU", format!("{}", c.vcpu)))
                             .child(stat("Memory", c.memory.clone()))
                             .child(stat("Version", c.version.to_string()))
@@ -1439,7 +1439,7 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(20.))
+            .gap(crate::ui::sp(20.))
             .child(div().flex().items_end().child(head.flex_1()).child(open))
             .child(grid(cards, 2))
     }
@@ -1448,7 +1448,7 @@ impl CloudflareView {
         let mut out = div()
             .flex()
             .flex_col()
-            .gap(px(20.))
+            .gap(crate::ui::sp(20.))
             .child(page_head("Email Routing", "Where mail to each domain goes"));
         for z in &s.zones {
             let name = z.name.clone();
@@ -1457,7 +1457,7 @@ impl CloudflareView {
                 Some(false) => ui::badge("Off", Tone::Neutral),
                 None => ui::badge("Not readable", Tone::Warning),
             };
-            let mut rows = div().flex().flex_col().gap(px(6.));
+            let mut rows = div().flex().flex_col().gap(crate::ui::sp(6.));
             for r in &z.email_rules {
                 let to = match (r.targets.is_empty(), r.action.as_str()) {
                     (true, "drop") => "Dropped".to_string(),
@@ -1468,7 +1468,7 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.))
+                        .gap(crate::ui::sp(10.))
                         .when(!r.enabled, |d| d.opacity(0.5))
                         .child(
                             div()
@@ -1499,9 +1499,9 @@ impl CloudflareView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
-                    .p(px(16.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .gap(crate::ui::sp(12.))
+                    .p(crate::ui::sp(16.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::fill_raised())
@@ -1509,7 +1509,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(logos::tile(logos::mark(&z.name, ""), 24.))
                             .child(
                                 div()
@@ -1537,9 +1537,9 @@ fn kpi(label: &str, value: String, sub: String, tone: Tone, spark: Option<Vec<f6
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(6.))
-        .p(px(16.))
-        .rounded(px(ui::RADIUS_LG))
+        .gap(crate::ui::sp(6.))
+        .p(crate::ui::sp(16.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_raised())
@@ -1547,7 +1547,7 @@ fn kpi(label: &str, value: String, sub: String, tone: Tone, spark: Option<Vec<f6
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .child(div().size(px(6.)).rounded_full().bg(tone.color()))
                 .child(
                     div()
@@ -1560,7 +1560,7 @@ fn kpi(label: &str, value: String, sub: String, tone: Tone, spark: Option<Vec<f6
             div()
                 .flex()
                 .items_end()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(
                     div()
                         .flex_1()
@@ -1587,9 +1587,9 @@ fn panel(title: &str) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(12.))
-        .p(px(16.))
-        .rounded(px(ui::RADIUS_LG))
+        .gap(crate::ui::sp(12.))
+        .p(crate::ui::sp(16.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_raised())
@@ -1605,7 +1605,7 @@ fn page_head(title: &str, about: &str) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(2.))
+        .gap(crate::ui::sp(2.))
         .child(
             div()
                 .ty(Type::Subtitle)
@@ -1647,10 +1647,10 @@ fn subject_name(s: &Subject) -> String {
 /// Cards `per` to a line, each as wide as the others.
 fn grid(cards: Vec<AnyElement>, per: usize) -> Div {
     let cell = || div().flex().flex_col().flex_1().min_w_0();
-    let mut out = div().flex().flex_col().gap(px(12.));
+    let mut out = div().flex().flex_col().gap(crate::ui::sp(12.));
     let mut cards = cards.into_iter().peekable();
     while cards.peek().is_some() {
-        let mut line = div().flex().gap(px(12.));
+        let mut line = div().flex().gap(crate::ui::sp(12.));
         let mut n = 0;
         for c in cards.by_ref().take(per) {
             line = line.child(cell().child(c));
@@ -1735,7 +1735,7 @@ impl CloudflareView {
                 .then_with(|| a.name.cmp(&b.name))
         });
         let current = self.tail.as_ref().map(|(w, _)| w.clone());
-        let mut chips = div().flex().flex_wrap().gap(px(6.));
+        let mut chips = div().flex().flex_wrap().gap(crate::ui::sp(6.));
         for (i, w) in workers.iter().enumerate() {
             let name = w.name.clone();
             let on = current.as_ref() == Some(&w.name);
@@ -1757,9 +1757,9 @@ impl CloudflareView {
         let bar = div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .p(px(12.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(10.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(theme::fill_raised())
@@ -1767,7 +1767,7 @@ impl CloudflareView {
                 Some(w) => div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(div().size(px(8.)).rounded_full().bg(Tone::Success.color()))
                     .child(
                         div()
@@ -1795,7 +1795,7 @@ impl CloudflareView {
                     .id("cf-tail-errors")
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .cursor_pointer()
                     .child(ui::switch(self.tail_errors_only))
                     .child(
@@ -1836,12 +1836,12 @@ impl CloudflareView {
         let mut list = div()
             .flex()
             .flex_col()
-            .rounded(px(ui::RADIUS_LG))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .overflow_hidden();
         if shown.is_empty() {
-            list = list.child(div().p(px(16.)).ty(Type::Body).text_color(theme::text_subtle()).child(match (&current, self.tail_errors_only) {
+            list = list.child(div().p(crate::ui::sp(16.)).ty(Type::Body).text_color(theme::text_subtle()).child(match (&current, self.tail_errors_only) {
                 (None, _) => "Nothing yet.",
                 (Some(_), true) => "No failed requests since listening started.",
                 (Some(_), false) => "Waiting for the Worker's next request… (connecting takes a few seconds)",
@@ -1864,9 +1864,9 @@ impl CloudflareView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
-                    .px(px(14.))
-                    .py(px(8.))
+                    .gap(crate::ui::sp(4.))
+                    .px(crate::ui::sp(14.))
+                    .py(crate::ui::sp(8.))
                     .when(n > 0, |d| {
                         d.border_t_1().border_color(theme::border_subtle())
                     })
@@ -1879,7 +1879,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(
                                 div()
                                     .flex_none()
@@ -1937,7 +1937,7 @@ impl CloudflareView {
                     )
                     .children(e.exceptions.iter().map(|x| {
                         div()
-                            .pl(px(76.))
+                            .pl(crate::ui::sp(76.))
                             .ty(Type::Mono)
                             .text_color(Tone::Danger.color())
                             .child(x.clone())
@@ -1949,7 +1949,7 @@ impl CloudflareView {
                             _ => theme::text_muted(),
                         };
                         div()
-                            .pl(px(76.))
+                            .pl(crate::ui::sp(76.))
                             .truncate()
                             .ty(Type::Mono)
                             .text_color(color)
@@ -1960,7 +1960,7 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(crate::ui::sp(16.))
             .child(page_head("Live logs", "Each request, cron and queue batch of a Worker as it runs, with its logs and exceptions (wrangler tail)"))
             .children(self.tail_error.clone().map(|e| note(e, true)))
             .child(chips)
@@ -2017,10 +2017,10 @@ impl CloudflareView {
         let shell = div()
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(16.))
+            .gap(crate::ui::sp(16.))
+            .p(crate::ui::sp(16.))
             .mt(px(-4.))
-            .rounded(px(ui::RADIUS_LG))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(theme::background());
@@ -2041,13 +2041,13 @@ impl CloudflareView {
         let bars = div()
             .flex()
             .items_end()
-            .gap(px(3.))
+            .gap(crate::ui::sp(3.))
             .h(px(72.))
             .children(t.hours.iter().map(|(_, n)| {
                 div()
                     .flex_1()
                     .h(px(3. + 69. * *n as f32 / max))
-                    .rounded(px(2.))
+                    .rounded(crate::ui::rad(2.))
                     .bg(Tone::Info.color().opacity(0.7))
             }));
         let top = |title: &'static str, rows: &[(String, u64)], mono: bool| {
@@ -2057,17 +2057,17 @@ impl CloudflareView {
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .child(ui::overline(title))
                 .children(rows.iter().take(6).map(|(k, n)| {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
+                        .gap(crate::ui::sp(2.))
                         .child(
                             div()
                                 .flex()
-                                .gap(px(8.))
+                                .gap(crate::ui::sp(8.))
                                 .child(
                                     div()
                                         .flex_1()
@@ -2109,12 +2109,12 @@ impl CloudflareView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(ui::overline("Requests by hour · 24h"))
                             .child(
                                 div()
@@ -2128,7 +2128,7 @@ impl CloudflareView {
             .child(
                 div()
                     .flex()
-                    .gap(px(24.))
+                    .gap(crate::ui::sp(24.))
                     .child(top("Top paths", &t.paths, true))
                     .child(top("Hostnames", &t.hosts, true))
                     .child(top("Countries", &t.countries, false))

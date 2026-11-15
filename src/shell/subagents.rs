@@ -189,9 +189,9 @@ impl Shell {
             .flex_none()
             .items_center()
             .h(px(40.))
-            .pl(px(if opened.is_some() { 6. } else { 12. }))
-            .pr(px(6.))
-            .gap(px(6.))
+            .pl(crate::ui::sp(if opened.is_some() { 6. } else { 12. }))
+            .pr(crate::ui::sp(6.))
+            .gap(crate::ui::sp(6.))
             .border_b_1()
             .border_color(theme::stroke())
             .map(|d| match &opened {
@@ -294,8 +294,8 @@ impl Shell {
                         .id("subagent-list")
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
-                        .p(px(6.))
+                        .gap(crate::ui::sp(2.))
+                        .p(crate::ui::sp(6.))
                         .overflow_y_scroll()
                         .children(
                             rows.into_iter()
@@ -340,14 +340,14 @@ impl Shell {
             .id(("subagent-row", i))
             .flex()
             .items_start()
-            .gap(px(8.))
-            .px(px(8.))
-            .py(px(8.))
-            .rounded(px(8.))
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(8.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(8.))
             .cursor_pointer()
             .hover(|d| d.bg(theme::fill_hover()))
             .child(
-                div().flex_none().pt(px(6.)).child(
+                div().flex_none().pt(crate::ui::sp(6.)).child(
                     div()
                         .size(px(7.))
                         .rounded_full()
@@ -361,7 +361,7 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(
                         div()
                             .min_w_0()
@@ -387,7 +387,7 @@ impl Shell {
                     .flex_col()
                     .flex_none()
                     .items_end()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(ui::badge(state.label(), tone(state)))
                     .child(ui::text(Type::Caption, theme::text_faint(), fmt_secs(secs))),
             )

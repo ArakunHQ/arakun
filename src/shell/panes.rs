@@ -261,7 +261,7 @@ impl Shell {
         // to the share and push the zones past the middle and the bottom);
         // the inset preview, which takes the drop, sits inside its padding.
         let zone = |first: bool, cx: &mut Context<Self>| {
-            div().p(px(6.)).child(
+            div().p(crate::ui::sp(6.)).child(
                 div()
                     .id(if first {
                         "tab-drop-first"
@@ -269,7 +269,7 @@ impl Shell {
                         "tab-drop-second"
                     })
                     .size_full()
-                    .rounded(px(ui::RADIUS_LG))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_2()
                     .border_color(gpui::transparent_black())
                     .drag_over::<drag::DraggedTab>(|s, _, _, _| {
@@ -317,14 +317,14 @@ impl Shell {
                 .flex()
                 .child(div().flex_1())
                 .child(
-                    div().w(relative(0.5)).h_full().p(px(6.)).child(
+                    div().w(relative(0.5)).h_full().p(crate::ui::sp(6.)).child(
                         div()
                             .id("image-drop")
                             .size_full()
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(ui::RADIUS_LG))
+                            .rounded(crate::ui::rad(ui::RADIUS_LG))
                             .border_2()
                             .border_color(theme::accent().opacity(0.25))
                             .bg(theme::background().opacity(0.4))

@@ -62,10 +62,10 @@ impl GitHubView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(11.))
-            .px(px(16.))
-            .pt(px(14.))
-            .pb(px(12.))
+            .gap(crate::ui::sp(11.))
+            .px(crate::ui::sp(16.))
+            .pt(crate::ui::sp(14.))
+            .pb(crate::ui::sp(12.))
             .child(ui::icon_chip("github", 34., None))
             .child(
                 div()
@@ -79,7 +79,7 @@ impl GitHubView {
                             .id("gh-focus")
                             .flex()
                             .items_center()
-                            .gap(px(4.))
+                            .gap(crate::ui::sp(4.))
                             .min_w_0()
                             .cursor_pointer()
                             .ty(Type::Label)
@@ -154,28 +154,33 @@ impl GitHubView {
             ("Done today", q.done, Lane::Done),
         ];
         let bar = ui::segment_bar(&lanes.map(|(_, n, l)| (n as f32, lane_color(l))), 7.)
-            .px(px(16.))
+            .px(crate::ui::sp(16.))
             .mt(px(2.));
         let legend = div()
             .flex()
             .flex_none()
             .flex_wrap()
             .items_center()
-            .gap_x(px(14.))
-            .gap_y(px(4.))
-            .px(px(16.))
-            .pt(px(9.))
-            .pb(px(12.))
+            .gap_x(crate::ui::sp(14.))
+            .gap_y(crate::ui::sp(4.))
+            .px(crate::ui::sp(16.))
+            .pt(crate::ui::sp(9.))
+            .pb(crate::ui::sp(12.))
             .children(lanes.map(|(label, n, lane)| {
                 div()
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .ty(Type::Label)
                     .font_weight(FontWeight::NORMAL)
                     .text_color(theme::text_muted())
-                    .child(div().size(px(8.)).rounded(px(2.5)).bg(lane_color(lane)))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .rounded(crate::ui::rad(2.5))
+                            .bg(lane_color(lane)),
+                    )
                     .child(label)
                     .child(
                         div()
@@ -239,7 +244,7 @@ impl GitHubView {
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.queue_scroll)
-            .pb(px(6.));
+            .pb(crate::ui::sp(6.));
         if let Some(p) = problem {
             // GitHub's answers run long: the first sentence, the rest on hover.
             let full = p.text();
@@ -255,12 +260,12 @@ impl GitHubView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .mx(px(10.))
                     .mt(px(10.))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(ui::RADIUS))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
                     .bg(theme::error().opacity(0.08))
                     .child(icon("alert-circle", 14.).text_color(theme::error()))
                     .child(
@@ -305,10 +310,10 @@ impl GitHubView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(11.))
+                    .gap(crate::ui::sp(11.))
                     .mt(px(4.))
-                    .px(px(14.))
-                    .py(px(10.))
+                    .px(crate::ui::sp(14.))
+                    .py(crate::ui::sp(10.))
                     .border_t_1()
                     .border_color(theme::border_subtle())
                     .cursor_pointer()
@@ -327,7 +332,7 @@ impl GitHubView {
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(5.))
+                                    .gap(crate::ui::sp(5.))
                                     .ty(Type::Body)
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(
@@ -351,7 +356,7 @@ impl GitHubView {
                             .flex()
                             .flex_none()
                             .items_center()
-                            .gap(px(4.))
+                            .gap(crate::ui::sp(4.))
                             .child(super::mono(super::ago(newest), theme::text_muted()))
                             .child(
                                 icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.)
@@ -423,7 +428,7 @@ impl GitHubView {
         let line = div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .min_w_0()
             .when(!short_repo.is_empty(), |d| d.child(repo_tag(short_repo)))
             .when_some(number, |d, n| {
@@ -443,7 +448,7 @@ impl GitHubView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .when_some(p.changes, |d, (add, del)| {
                 d.child(super::mono(
                     format!("+{}", short_count(add)),
@@ -470,11 +475,11 @@ impl GitHubView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .mx(px(6.))
-            .px(px(10.))
-            .py(px(10.))
-            .rounded(px(ui::RADIUS))
+            .px(crate::ui::sp(10.))
+            .py(crate::ui::sp(10.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .cursor_pointer()
             .when(selected, |d| d.bg(theme::fill_raised()))
             .when(!selected, |d| d.hover(|s| s.bg(theme::fill_hover())))
@@ -497,12 +502,12 @@ impl GitHubView {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(
                                 div()
                                     .id(("gh-row-title", ix))
@@ -528,7 +533,7 @@ impl GitHubView {
                                     .flex()
                                     .flex_none()
                                     .items_center()
-                                    .gap(px(6.))
+                                    .gap(crate::ui::sp(6.))
                                     .when(unread, |d| {
                                         d.child(div().size(px(6.)).rounded_full().bg(theme::link()))
                                     })
@@ -546,7 +551,7 @@ impl GitHubView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(div().flex_1().min_w_0().child(line))
                             .child(right_bottom),
                     ),
@@ -574,8 +579,8 @@ impl GitHubView {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(6.))
-            .px(px(8.));
+            .gap(crate::ui::sp(6.))
+            .px(crate::ui::sp(8.));
         for (i, entry) in watch.into_iter().enumerate() {
             let name = entry.clone();
             chips = chips.child(
@@ -612,8 +617,8 @@ impl GitHubView {
             .child(ui::menu_heading("Alerts"))
             .child(
                 div()
-                    .px(px(8.))
-                    .pb(px(6.))
+                    .px(crate::ui::sp(8.))
+                    .pb(crate::ui::sp(6.))
                     .ty(Type::Caption)
                     .text_color(theme::text_subtle())
                     .child("Review requests, mentions and assignments always alert you. Add an organization or a repository to be alerted for everything there."),
@@ -623,18 +628,18 @@ impl GitHubView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .px(px(8.))
-                    .pt(px(6.))
-                    .pb(px(4.))
+                    .gap(crate::ui::sp(6.))
+                    .px(crate::ui::sp(8.))
+                    .pt(crate::ui::sp(6.))
+                    .pb(crate::ui::sp(4.))
                     .child(
                         div()
                             .flex()
                             .flex_1()
                             .items_center()
                             .h(px(ui::CONTROL_H))
-                            .px(px(8.))
-                            .rounded(px(ui::RADIUS))
+                            .px(crate::ui::sp(8.))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .border_1()
                             .border_color(theme::border_strong())
                             .ty(Type::Label)
@@ -647,7 +652,7 @@ impl GitHubView {
                             .on_click(cx.listener(|this, _, _, cx| this.add_watch(cx))),
                     ),
             )
-            .when_some(self.watch_note, |d, note| d.child(div().px(px(8.)).pb(px(4.)).ty(Type::Caption).text_color(theme::error()).child(note)))
+            .when_some(self.watch_note, |d, note| d.child(div().px(crate::ui::sp(8.)).pb(crate::ui::sp(4.)).ty(Type::Caption).text_color(theme::error()).child(note)))
             .into_any_element()
     }
 }
@@ -681,10 +686,10 @@ impl GitHubView {
                     .id(id)
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .h(px(ui::MENU_ROW_H))
-                    .px(px(8.))
-                    .rounded(px(ui::RADIUS))
+                    .px(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::selection_hover()))
                     .ty(Type::Label)
@@ -744,9 +749,9 @@ impl GitHubView {
         panel
             .child(
                 div()
-                    .px(px(8.))
-                    .pt(px(6.))
-                    .pb(px(4.))
+                    .px(crate::ui::sp(8.))
+                    .pt(crate::ui::sp(6.))
+                    .pb(crate::ui::sp(4.))
                     .ty(Type::Caption)
                     .text_color(theme::text_subtle())
                     .child("What is left out doesn't show, count or alert you."),
@@ -762,8 +767,8 @@ fn repo_tag(name: String) -> gpui::Div {
         .flex_none()
         .items_center()
         .h(px(18.))
-        .px(px(6.))
-        .rounded(px(ui::RADIUS_SM))
+        .px(crate::ui::sp(6.))
+        .rounded(crate::ui::rad(ui::RADIUS_SM))
         .bg(theme::fill_selected())
         .ty(Type::Caption)
         .font_weight(FontWeight::MEDIUM)
@@ -777,17 +782,17 @@ fn group_header(label: &str, n: usize) -> gpui::Div {
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(8.))
-        .px(px(16.))
-        .pt(px(16.))
-        .pb(px(6.))
+        .gap(crate::ui::sp(8.))
+        .px(crate::ui::sp(16.))
+        .pt(crate::ui::sp(16.))
+        .pb(crate::ui::sp(6.))
         .child(ui::overline(label))
         .child(
             div()
                 .flex()
                 .items_center()
                 .h(px(16.))
-                .px(px(6.))
+                .px(crate::ui::sp(6.))
                 .rounded_full()
                 .bg(theme::fill_selected())
                 .ty(Type::Caption)

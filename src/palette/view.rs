@@ -223,7 +223,7 @@ impl Palette {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(crate::ui::sp(12.))
                         .w_full()
                         .child(kit::glow_tile("github", Tint::Blue))
                         .child(kit::card_text(
@@ -239,7 +239,7 @@ impl Palette {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .w_full()
                     .child(kit::glow_tile("alert-circle", Tint::Red))
                     .child(kit::card_text(
@@ -272,7 +272,7 @@ impl Palette {
                 let sub: AnyElement = match (self.failure(), &branch) {
                     (Some(f), Some(_)) => div()
                         .flex()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .child("With the last failed run as context ·")
                         .child(div().text_color(theme::error()).child(f.what.clone()))
                         .into_any_element(),
@@ -289,7 +289,7 @@ impl Palette {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(crate::ui::sp(12.))
                         .w_full()
                         .child(kit::glow_tile("sparkles", Tint::Amber))
                         .child(kit::card_text(title, Some(sub)))
@@ -302,7 +302,7 @@ impl Palette {
                 div()
                     .flex()
                     .items_start()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .w_full()
                     .child(kit::glow_tile("bot", Tint::Amber))
                     .child(
@@ -311,12 +311,12 @@ impl Palette {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
-                            .gap(px(2.))
+                            .gap(crate::ui::sp(2.))
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(8.))
+                                    .gap(crate::ui::sp(8.))
                                     .child(kit::card_text("Arakun remembers", None).flex_none())
                                     .child(kit::palette_pill(
                                         format!("{} {}", m.memory.kind, m.id()),
@@ -365,7 +365,7 @@ impl Palette {
                                         div()
                                             .w(px(7.))
                                             .h(px(15.))
-                                            .rounded(px(1.))
+                                            .rounded(crate::ui::rad(1.))
                                             .bg(theme::accent())
                                             .with_animation(
                                                 "answer-cursor",
@@ -378,11 +378,16 @@ impl Palette {
                         })
                         .when(!sources.is_empty(), |d| {
                             d.child(
-                                div().flex().flex_wrap().gap(px(6.)).mt(px(12.)).children(
-                                    sources
-                                        .iter()
-                                        .map(|(ic, l)| kit::source_chip(ic, l.clone())),
-                                ),
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap(crate::ui::sp(6.))
+                                    .mt(px(12.))
+                                    .children(
+                                        sources
+                                            .iter()
+                                            .map(|(ic, l)| kit::source_chip(ic, l.clone())),
+                                    ),
                             )
                         })
                         .into_any_element(),
@@ -411,7 +416,7 @@ impl Palette {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(10.))
+                                .gap(crate::ui::sp(10.))
                                 .child(kit::glow_tile("flash", Tint::Violet))
                                 .child(kit::card_text(
                                     "Create an automation",
@@ -432,7 +437,7 @@ impl Palette {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .w_full()
                     .child(kit::glow_tile("git-merge", Tint::Amber))
                     .child(kit::card_text(
@@ -484,7 +489,7 @@ impl Palette {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .child(kit::keycaps(&["Ctrl", "1"]))
                         .when(n > 1, |d| {
                             d.child("…").child(kit::keycaps(&[
@@ -498,10 +503,10 @@ impl Palette {
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(8.))
-                    .pt(px(2.))
-                    .px(px(4.))
-                    .pb(px(6.))
+                    .gap(crate::ui::sp(8.))
+                    .pt(crate::ui::sp(2.))
+                    .px(crate::ui::sp(4.))
+                    .pb(crate::ui::sp(6.))
                     .children(self.pins.items.iter().enumerate().map(|(i, p)| {
                         let item = self.seed.items.iter().find(|it| it.key == p.key());
                         let (ic, tint) = match item.map(|it| &it.lead) {
@@ -554,9 +559,9 @@ impl Palette {
             .h_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .pt(px(8.))
-            .px(px(kit::PALETTE_LIST_PAD))
-            .pb(px(10.))
+            .pt(crate::ui::sp(8.))
+            .px(crate::ui::sp(kit::PALETTE_LIST_PAD))
+            .pb(crate::ui::sp(10.))
             .children(rows)
             .when(empty, |d| {
                 d.child(kit::palette_note(
@@ -585,7 +590,7 @@ impl Palette {
                         .ml_auto()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .min_w_0()
                         .text_color(if *ok {
                             theme::text_subtle()
@@ -713,18 +718,18 @@ impl Palette {
                 .right(px(kit::PALETTE_PREVIEW_W + 16.))
                 .bottom(px(58.))
                 .w(px(290.))
-                .p(px(6.))
+                .p(crate::ui::sp(6.))
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .rounded(px(12.))
+                .gap(crate::ui::sp(2.))
+                .rounded(crate::ui::rad(12.))
                 .bg(theme::surface(0.16))
                 .border_1()
                 .border_color(theme::border())
                 .shadow_xl()
                 .child(
                     kit::palette_section(format!("Actions · {}", menu.title), None, true)
-                        .px(px(8.))
+                        .px(crate::ui::sp(8.))
                         .child(kit::keycap("→")),
                 )
                 .children(menu.actions.iter().enumerate().map(|(n, a)| {
@@ -733,7 +738,7 @@ impl Palette {
                     let key = menu.key.clone();
                     kit::palette_row(ElementId::NamedInteger("palette-act".into(), n as u64), on)
                         .h(px(40.))
-                        .px(px(8.))
+                        .px(crate::ui::sp(8.))
                         .child(
                             div()
                                 .flex()
@@ -741,7 +746,7 @@ impl Palette {
                                 .items_center()
                                 .justify_center()
                                 .size(px(26.))
-                                .rounded(px(8.))
+                                .rounded(crate::ui::rad(8.))
                                 .bg(theme::fill_raised())
                                 .child(icon(a.icon, 14.).text_color(theme::text_muted())),
                         )

@@ -79,7 +79,7 @@ fn event(lead: AnyElement, last: bool, body: impl IntoElement) -> gpui::Div {
     div()
         .relative()
         .flex()
-        .gap(px(12.))
+        .gap(crate::ui::sp(12.))
         .w_full()
         .min_w_0()
         // The line runs in the event itself: the rail has no height of its own.
@@ -101,7 +101,7 @@ fn event(lead: AnyElement, last: bool, body: impl IntoElement) -> gpui::Div {
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .pb(px(24.))
+                .pb(crate::ui::sp(24.))
                 .child(body),
         )
 }
@@ -113,7 +113,7 @@ fn header(who: &str, what: &str, at: u64, extra: Vec<AnyElement>) -> gpui::Div {
         .flex()
         .flex_wrap()
         .items_center()
-        .gap_x(px(6.))
+        .gap_x(crate::ui::sp(6.))
         .min_h(px(RAIL))
         .ty(Type::Label)
         .child(
@@ -145,9 +145,9 @@ fn card() -> gpui::Div {
         .flex()
         .flex_col()
         .mt(px(6.))
-        .px(px(16.))
-        .py(px(12.))
-        .rounded(px(ui::RADIUS_LG))
+        .px(crate::ui::sp(16.))
+        .py(crate::ui::sp(12.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border_subtle())
         .bg(theme::background())
@@ -171,7 +171,7 @@ pub(super) fn code_block(path: &str, line: Option<u32>, lines: Vec<AnyElement>) 
         .mt(px(9.))
         .flex()
         .flex_col()
-        .rounded(px(ui::RADIUS_LG))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::background())
@@ -180,9 +180,9 @@ pub(super) fn code_block(path: &str, line: Option<u32>, lines: Vec<AnyElement>) 
             div()
                 .flex()
                 .justify_between()
-                .gap(px(12.))
-                .px(px(12.))
-                .py(px(7.))
+                .gap(crate::ui::sp(12.))
+                .px(crate::ui::sp(12.))
+                .py(crate::ui::sp(7.))
                 .border_b_1()
                 .border_color(theme::border_subtle())
                 .child(
@@ -195,7 +195,13 @@ pub(super) fn code_block(path: &str, line: Option<u32>, lines: Vec<AnyElement>) 
                     d.child(super::mono(format!(":{l}"), theme::text_subtle()))
                 }),
         )
-        .child(div().flex().flex_col().py(px(6.)).children(lines))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .py(crate::ui::sp(6.))
+                .children(lines),
+        )
 }
 
 /// One line of a diff: its number, a colored edge and tint when it changed.
@@ -218,7 +224,7 @@ pub(super) fn code_line(kind: LineKind, number: Option<u32>, text: &str) -> AnyE
         .flex()
         .items_center()
         .h(px(20.))
-        .pr(px(12.))
+        .pr(crate::ui::sp(12.))
         .ty(Type::Mono)
         .when_some(tint, |d, t| d.bg(t))
         .when_some(edge, |d, e| {
@@ -228,7 +234,7 @@ pub(super) fn code_line(kind: LineKind, number: Option<u32>, text: &str) -> AnyE
             div()
                 .w(px(42.))
                 .flex_none()
-                .pr(px(12.))
+                .pr(crate::ui::sp(12.))
                 .text_right()
                 .text_color(theme::text_faint())
                 .child(number.map(|n| n.to_string()).unwrap_or_default()),
@@ -270,18 +276,22 @@ fn verdict_word(v: Verdict) -> &'static str {
 
 impl GitHubView {
     fn render_thread(&self, key: &str, t: &Thread, cx: &App) -> AnyElement {
-        let mut comments = div().flex().flex_col().gap(px(12.)).pt(px(12.));
+        let mut comments = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(12.))
+            .pt(crate::ui::sp(12.));
         for (i, c) in t.comments.iter().enumerate() {
             comments = comments.child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(self.face(&c.user.login, 20., cx))
                             .child(header(
                                 &c.user.login,
@@ -290,7 +300,7 @@ impl GitHubView {
                                 Vec::new(),
                             )),
                     )
-                    .child(div().pl(px(28.)).child(self.markdown(
+                    .child(div().pl(crate::ui::sp(28.)).child(self.markdown(
                         gpui::SharedString::from(format!("{key}-c{i}")),
                         &c.body,
                         body_style(),
@@ -359,7 +369,7 @@ impl GitHubView {
                         .id(gpui::SharedString::from(format!("{key}-fold")))
                         .flex()
                         .items_center()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .mt(px(8.))
                         .cursor_pointer()
                         .ty(Type::Label)
@@ -395,7 +405,7 @@ impl GitHubView {
             .id(gpui::SharedString::from(format!("{key}-bot")))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .min_w_0()
             .h(px(RAIL))
             .cursor_pointer()
@@ -404,7 +414,7 @@ impl GitHubView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(header(who, "commented", 0, Vec::new()))
                     .child(ui::tag("bot", theme::text_subtle())),
             )
@@ -527,8 +537,8 @@ impl GitHubView {
                         .flex()
                         .flex_col()
                         .mt(px(6.))
-                        .py(px(4.))
-                        .rounded(px(ui::RADIUS_LG))
+                        .py(crate::ui::sp(4.))
+                        .rounded(crate::ui::rad(ui::RADIUS_LG))
                         .border_1()
                         .border_color(theme::border_subtle())
                         .bg(theme::background());
@@ -539,9 +549,9 @@ impl GitHubView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(10.))
+                                    .gap(crate::ui::sp(10.))
                                     .min_w_0()
-                                    .px(px(14.))
+                                    .px(crate::ui::sp(14.))
                                     .h(px(30.))
                                     .child(icon("git-commit", 14.).text_color(if new {
                                         theme::accent()
@@ -568,13 +578,17 @@ impl GitHubView {
                         }
                     }
                     if run.len() > 8 {
-                        list =
-                            list.child(div().px(px(14.)).h(px(26.)).flex().items_center().child(
-                                super::mono(
+                        list = list.child(
+                            div()
+                                .px(crate::ui::sp(14.))
+                                .h(px(26.))
+                                .flex()
+                                .items_center()
+                                .child(super::mono(
                                     format!("+{} more", run.len() - 8),
                                     theme::text_faint(),
-                                ),
-                            ));
+                                )),
+                        );
                     }
                     rows.push((
                         lead,
@@ -658,7 +672,11 @@ impl GitHubView {
             let sha: String = draft.head_sha.chars().take(7).collect();
             let busy = self.busy.is_some();
             let editing = self.editing_draft;
-            let mut actions = div().flex().items_center().gap(px(8.)).mt(px(10.));
+            let mut actions = div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .mt(px(10.));
             if editing {
                 actions = actions
                     .child(
@@ -746,7 +764,7 @@ impl GitHubView {
                             .flex()
                             .flex_wrap()
                             .items_center()
-                            .gap_x(px(6.))
+                            .gap_x(crate::ui::sp(6.))
                             .min_h(px(RAIL))
                             .ty(Type::Label)
                             .text_color(accent)
@@ -766,9 +784,9 @@ impl GitHubView {
                     .child(
                         div()
                             .mt(px(6.))
-                            .px(px(16.))
-                            .py(px(12.))
-                            .rounded(px(ui::RADIUS_LG))
+                            .px(crate::ui::sp(16.))
+                            .py(crate::ui::sp(12.))
+                            .rounded(crate::ui::rad(ui::RADIUS_LG))
                             .border_1()
                             .border_color(accent.opacity(0.25))
                             .bg(accent.opacity(0.04))
@@ -783,9 +801,9 @@ impl GitHubView {
         div()
             .flex()
             .flex_col()
-            .px(px(24.))
-            .pt(px(20.))
-            .pb(px(4.))
+            .px(crate::ui::sp(24.))
+            .pt(crate::ui::sp(20.))
+            .pb(crate::ui::sp(4.))
             .children(
                 rows.into_iter()
                     .enumerate()

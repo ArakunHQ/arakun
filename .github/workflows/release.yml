@@ -12,10 +12,11 @@ name: Release
 #   does not publish. Only a pushed tag publishes; a manual run never does,
 #   even on a tag.
 # - Linux x86_64, Windows x86_64 (MSVC) and macOS arm64. No Intel Mac build.
-# - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it,
-#   signed ad-hoc only (no Developer ID, so no notarization). Downloaded with
-#   curl it has no quarantine flag, so Gatekeeper lets it run; downloaded with a
-#   browser it is blocked.
+# - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it.
+#   The build job signs it ad-hoc. For a tag or a manual run, the notarize job
+#   signs it again with the Developer ID certificate, has Apple notarize it and
+#   staples the ticket, so Gatekeeper opens it however it was downloaded. A
+#   pull request's dry run stops at the ad-hoc app: it gets no secrets.
 # - Linux builds inside an ubuntu:22.04 container, so the binary needs glibc 2.35
 #   or newer (Ubuntu 22.04+, Debian 12+). A runner image links against its own,
 #   newer glibc (ubuntu-24.04: 2.39), and the binary then refuses to start on
@@ -238,6 +239,150 @@ jobs:
           codesign --verify --deep --strict "$app"
           "$app/Contents/MacOS/arakun" --version
 
+      # Ad-hoc signed; the notarize job turns it into the published macos-arm64.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-adhoc
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # A job of its own so the signing certificate and the App Store Connect key
+  # never reach a job that runs build scripts: this one runs no cargo and no
+  # code from the repository. It needs these secrets (repository secrets, or
+  # secrets of the `release` environment, which can limit them to v* tags and
+  # main):
+  #
+  #   MACOS_CERTIFICATE           base64 of a .p12 export of the "Developer ID
+  #                               Application" certificate with its private key
+  #   MACOS_CERTIFICATE_PASSWORD  the password of that .p12
+  #   APPLE_API_KEY               the text of the App Store Connect API key
+  #                               (AuthKey_<id>.p8), role Developer
+  #   APPLE_API_KEY_ID            that key's ID
+  #   APPLE_API_ISSUER_ID         the issuer ID shown above the keys list
+  macos-notarize:
+    name: Notarize (macOS arm64)
+    needs: macos
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-adhoc
+          path: adhoc
+
+      - name: Import the signing certificate
+        id: keychain
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          [ -n "$CERTIFICATE" ] && [ -n "$CERTIFICATE_PASSWORD" ] || {
+            echo "::error::MACOS_CERTIFICATE and MACOS_CERTIFICATE_PASSWORD are not set; see the comment above this job"
+            exit 1
+          }
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(openssl rand -hex 24)
+          printf %s "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          # -x: the private key cannot be exported again, only used by codesign.
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -x
+          rm "$RUNNER_TEMP/certificate.p12"
+          # Lets codesign use the key without a dialog nobody can click.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          # Added to the search list, which codesign and find-identity read.
+          old=()
+          while read -r k; do old+=("$(echo "$k" | tr -d '"')"); done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${old[@]}"
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/"Developer ID Application: / { print $2; exit }')
+          [ -n "$identity" ] || {
+            echo "::error::the certificate is not a valid Developer ID Application certificate"
+            security find-identity -v -p codesigning "$keychain"
+            exit 1
+          }
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Sign
+        env:
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+        run: |
+          mkdir work
+          tar -C work -xzf adhoc/*.tar.gz
+          app=$(echo work/*/Arakun.app)
+          # Hardened runtime, which notarization requires, with no entitlements:
+          # the build without the browser needs none (no JIT, no plugins). One
+          # binary and no frameworks, so signing the bundle signs everything;
+          # a CEF build would have to sign the framework and helpers first.
+          codesign --force --timestamp --options runtime \
+            --sign "$IDENTITY" --keychain "$KEYCHAIN" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
+      - name: Notarize
+        env:
+          API_KEY: ${{ secrets.APPLE_API_KEY }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          [ -n "$API_KEY" ] && [ -n "$API_KEY_ID" ] && [ -n "$API_ISSUER_ID" ] || {
+            echo "::error::APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER_ID are not set; see the comment above this job"
+            exit 1
+          }
+          key=$RUNNER_TEMP/AuthKey.p8
+          printf '%s\n' "$API_KEY" > "$key"
+          app=$(echo work/*/Arakun.app)
+          # notarytool takes a zip, not a tar.gz. The ticket is stapled to the
+          # app afterwards, so this zip is thrown away.
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          auth=(--key "$key" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID")
+          # Goes on after a refusal, to print the log below; the status decides.
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" "${auth[@]}" \
+            --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary.json" || true
+          cat "$RUNNER_TEMP/notary.json"
+          id=$(plutil -extract id raw "$RUNNER_TEMP/notary.json")
+          status=$(plutil -extract status raw "$RUNNER_TEMP/notary.json")
+          # The log says why Apple refused, and lists warnings when it accepts.
+          xcrun notarytool log "$id" "${auth[@]}" || true
+          rm "$key"
+          [ "$status" = Accepted ] || { echo "::error::notarization ended with status $status"; exit 1; }
+          # The ticket in the app lets Gatekeeper check it offline.
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+
+      - name: Package
+        env:
+          # Keeps tar from adding ._* files for extended attributes.
+          COPYFILE_DISABLE: "1"
+        run: |
+          name=$(basename work/*)
+          mkdir dist
+          tar -C work -czf "dist/$name.tar.gz" "$name"
+
+      # Before the smoke test runs the binary: it comes from a job that ran
+      # third-party build scripts, and must not find the signing key.
+      - name: Remove the keychain
+        if: always() && steps.keychain.outputs.keychain != ''
+        env:
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+        run: security delete-keychain "$KEYCHAIN"
+
+      # The archive as a user gets it: Gatekeeper accepts it as notarized (what
+      # it checks for a browser download), and the binary loads and runs.
+      - name: Smoke test
+        run: |
+          mkdir smoke
+          tar -C smoke -xzf dist/*.tar.gz
+          app=$(echo smoke/*/Arakun.app)
+          codesign --verify --deep --strict "$app"
+          spctl --assess --type execute --verbose=2 "$app" 2>&1 | tee spctl.txt
+          grep -q 'source=Notarized Developer ID' spctl.txt
+          "$app/Contents/MacOS/arakun" --version
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
@@ -246,7 +391,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [linux, windows, macos]
+    needs: [linux, windows, macos-notarize]
     # Not on a manual run, even one started on a tag: that is a dry run.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04
@@ -257,14 +402,25 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # By name: macos-arm64-adhoc holds an archive with the same file name as
+      # the notarized one, and must not be published.
       - uses: actions/download-artifact@v4
         with:
+          pattern: "*-x86_64"
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist
 
       - name: SHA256SUMS
         working-directory: dist
         run: |
+          ls -l
+          shopt -s nullglob
+          archives=(*.tar.gz *.zip)
+          [ ${#archives[@]} -eq 3 ] || { echo "::error::expected 3 archives, found ${#archives[@]}"; exit 1; }
           sha256sum *.tar.gz *.zip > SHA256SUMS
           cat SHA256SUMS
 

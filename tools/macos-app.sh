@@ -64,6 +64,6 @@ if [ -n "$framework" ]; then
   mkdir -p "$app/Contents/Frameworks"
   ditto "$framework" "$app/Contents/Frameworks/Chromium Embedded Framework.framework"
 fi
-# Ad-hoc: arm64 refuses to run unsigned code. There is no Developer ID, so no
-# notarization; a download with curl carries no quarantine flag, so Gatekeeper lets it run.
+# Ad-hoc: arm64 refuses to run unsigned code. Enough for a local install; the release
+# workflow signs it again with the Developer ID certificate and notarizes it.
 codesign --force --deep --sign - "$app"

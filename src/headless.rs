@@ -2019,7 +2019,9 @@ mod tests {
         assert!(!discarding(id));
     }
 
-    #[cfg(unix)]
+    // Linux only: on macOS `alive` also wants the process to be this very
+    // program (proc_pidpath), which a `sh` stand-in can't be.
+    #[cfg(target_os = "linux")]
     #[test]
     fn only_the_sessions_own_host_is_signalled() {
         // `sh -c … agent-host h-1` has the arguments a host for h-1 has.
@@ -2039,6 +2041,19 @@ mod tests {
             let _ = c.kill();
             let _ = c.wait();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_is_no_host_is_never_signalled() {
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert!(!hosts(other.id(), "h-1"));
+        assert!(!hosts(std::process::id(), "h-1"));
+        let _ = other.kill();
+        let _ = other.wait();
     }
 
     #[test]

@@ -238,8 +238,11 @@ out first.
   (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
   agent. A question gets a short answer from Claude Haiku through Claude Code, on
   your Claude account (no API key), and a sentence such as "merge #64
-  when the checks pass and tell me" becomes an automation once you confirm it. Pins
-  are kept in `pins.json`, rules in `rules.json` and what you open in
+  when the checks pass and tell me" becomes an automation once you confirm it.
+  "recuérdame en 20 min revisar el PR" or "remind me at 5pm to stretch" sets a
+  reminder that rings on the island; "to-do: …" (or a reminder with no time) adds a
+  to-do, and typing "to-do" or "pendiente" lists them, `Enter` ticking one off. Pins
+  are kept in `pins.json`, rules in `rules.json`, to-dos in `todos.json` and what you open in
   `palette-frecency.json`, next to the state file.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer

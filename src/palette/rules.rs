@@ -14,10 +14,25 @@ use serde_json::{Value, json};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Trigger {
-    PrChecksPass { repo: String, number: u64 },
-    PrMerged { repo: String, number: u64 },
-    CiFailed { branch: String },
-    SessionFinished { id: String, title: String },
+    PrChecksPass {
+        repo: String,
+        number: u64,
+    },
+    PrMerged {
+        repo: String,
+        number: u64,
+    },
+    CiFailed {
+        branch: String,
+    },
+    SessionFinished {
+        id: String,
+        title: String,
+    },
+    /// A moment: a reminder or a timer. Unix seconds.
+    At {
+        at: u64,
+    },
 }
 
 impl Trigger {
@@ -27,6 +42,7 @@ impl Trigger {
             Trigger::PrMerged { number, .. } => format!("#{number} is merged"),
             Trigger::CiFailed { branch } => format!("CI fails on {branch}"),
             Trigger::SessionFinished { title, .. } => format!("“{title}” finishes"),
+            Trigger::At { at } => format!("At {}", clock(*at)),
         }
     }
 
@@ -35,6 +51,7 @@ impl Trigger {
             Trigger::PrChecksPass { .. } | Trigger::PrMerged { .. } => "github",
             Trigger::CiFailed { .. } => "activity01",
             Trigger::SessionFinished { .. } => "message01",
+            Trigger::At { .. } => "alarm-clock",
         }
     }
 
@@ -218,6 +235,8 @@ pub fn check(rule: &mut Rule, facts: &Facts, now: u64) -> Outcome {
             Some((_, false)) => Outcome::Wait("Waiting for the session to start".into()),
             None => Outcome::Wait("Session not found".into()),
         },
+        Trigger::At { at } if now >= *at => Outcome::Fire,
+        Trigger::At { at } => Outcome::Wait(format!("Rings at {}", clock(*at))),
     };
     if let Outcome::Wait(note) = &outcome {
         rule.note = note.clone();
@@ -258,6 +277,13 @@ fn has_any(text: &str, words: &[&str]) -> bool {
 /// Reads common Spanish and English phrasings. `repo` is the project's GitHub
 /// repository, for `#64`; `sessions` are (id, title) to find "when X finishes".
 pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> Option<Draft> {
+    let now = crate::memory::now();
+    let local = crate::platform::local_time(now).map_or((0, 0, 0), |l| {
+        (l.hour as u32, l.minute as u32, (now % 60) as u32)
+    });
+    if let Some(d) = parse_reminder(text, now, local) {
+        return Some(d);
+    }
     let t = text.to_lowercase();
     let number = pr_number(&t);
     let when = has_any(
@@ -392,6 +418,9 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
 /// Whether a sentence reads like it asks for something to happen later.
 pub fn sounds_like_rule(text: &str) -> bool {
     let t = text.to_lowercase();
+    if REMIND_WORDS.iter().any(|w| t.contains(w)) {
+        return true;
+    }
     t.split_whitespace().count() >= 4
         && has_any(
             &t,
@@ -419,6 +448,7 @@ fn notice_text(trigger: &Trigger) -> String {
         Trigger::PrMerged { number, .. } => format!("#{number} was merged"),
         Trigger::CiFailed { branch } => format!("CI failed on {branch}"),
         Trigger::SessionFinished { title, .. } => format!("“{title}” finished"),
+        Trigger::At { .. } => "Reminder".into(),
     }
 }
 
@@ -431,7 +461,231 @@ pub fn title_for(trigger: &Trigger, steps: &[Step]) -> String {
         Trigger::PrMerged { number, .. } => format!("When #{number} merges"),
         Trigger::CiFailed { branch } => format!("When CI fails on {branch}"),
         Trigger::SessionFinished { title, .. } => format!("When “{title}” finishes"),
+        Trigger::At { .. } => match steps.first() {
+            Some(Step::Notify { text }) => format!("Reminder: {text}"),
+            _ => "Reminder".into(),
+        },
     }
+}
+
+/// `17:05`, or `mañana 09:00` style when it is not today: the local time of `at`.
+pub fn clock(at: u64) -> String {
+    let now = crate::memory::now();
+    let (Some(t), Some(n)) = (
+        crate::platform::local_time(at),
+        crate::platform::local_time(now),
+    ) else {
+        return String::new();
+    };
+    let hm = format!("{:02}:{:02}", t.hour, t.minute);
+    if (t.year, t.month, t.day) == (n.year, n.month, n.day) {
+        hm
+    } else if at.saturating_sub(now) < 2 * 86_400 {
+        format!("tomorrow {hm}")
+    } else {
+        format!("{:02}/{:02} {hm}", t.day, t.month + 1)
+    }
+}
+
+/// Words that ask for a reminder or a timer.
+const REMIND_WORDS: &[&str] = &[
+    "recuérdame",
+    "recuerdame",
+    "recordatorio",
+    "recuerda ",
+    "remind me",
+    "reminder",
+    "temporizador",
+    "timer",
+    "alarma",
+    "alarm",
+    "avísame en",
+    "avisame en",
+    "avísame a las",
+    "avisame a las",
+];
+
+/// A reminder or a timer in a sentence: "recuérdame en 20 min revisar el PR",
+/// "recordatorio mañana a las 9 de llamar a Dani", "remind me at 5pm to stretch",
+/// "timer 10 min". `now` and `local` (the local hour, minute and second of
+/// `now`) place clock times on the local day.
+pub fn parse_reminder(text: &str, now: u64, local: (u32, u32, u32)) -> Option<Draft> {
+    let t = text.to_lowercase();
+    if !REMIND_WORDS.iter().any(|w| t.contains(w)) {
+        return None;
+    }
+    let (at, span) = relative_time(&t, now).or_else(|| clock_time(&t, now, local))?;
+    let what = what_to_remember(&format!("{} {}", &text[..span.0], &text[span.1..]));
+    let text = if what.is_empty() {
+        "Time's up".to_string()
+    } else {
+        what
+    };
+    let steps = vec![Step::Notify { text }];
+    let trigger = Trigger::At { at };
+    Some(Draft {
+        title: title_for(&trigger, &steps),
+        trigger,
+        steps,
+        hours: 0,
+    })
+}
+
+/// "créame un recordatorio de comprar leche": a reminder with no time in it.
+/// What to remember, so it can be kept as a to-do instead of being lost.
+pub fn timeless_reminder(text: &str) -> Option<String> {
+    let t = text.to_lowercase();
+    let timed = relative_time(&t, 0)
+        .or_else(|| clock_time(&t, 0, (0, 0, 0)))
+        .is_some();
+    if timed || !REMIND_WORDS.iter().any(|w| t.contains(w)) {
+        return None;
+    }
+    Some(what_to_remember(text)).filter(|w| !w.is_empty())
+}
+
+/// The sentence without its asking words: what the person wants to remember.
+fn what_to_remember(text: &str) -> String {
+    let mut rest = text.to_string();
+    for w in REMIND_WORDS.iter().chain(&[
+        "créame un",
+        "creame un",
+        "crea un",
+        "pon un",
+        "ponme un",
+        "set a",
+        "set an",
+        "hazme un",
+        "make a",
+    ]) {
+        if let Some(i) = rest.to_lowercase().find(w) {
+            rest.replace_range(i..i + w.len(), " ");
+        }
+    }
+    let mut what = rest.split_whitespace().collect::<Vec<_>>().join(" ");
+    for lead in ["de ", "que ", "to ", "para ", "about ", "of ", "a ", "for "] {
+        if what.to_lowercase().starts_with(lead) {
+            what = what[lead.len()..].to_string();
+        }
+    }
+    what.trim_matches(|c: char| c == ',' || c == '.' || c == ':' || c.is_whitespace())
+        .to_string()
+}
+
+/// "en 20 min", "in 2 hours", "dentro de media hora": the moment and where it was in `t`.
+fn relative_time(t: &str, now: u64) -> Option<(u64, (usize, usize))> {
+    for head in ["dentro de ", "en ", "in "] {
+        for (i, _) in t.match_indices(head) {
+            let after = &t[i + head.len()..];
+            let (n, used) = if let Some(r) = after
+                .strip_prefix("media hora")
+                .or_else(|| after.strip_prefix("half an hour"))
+            {
+                (30.0, after.len() - r.len())
+            } else if let Some(r) = after
+                .strip_prefix("una hora")
+                .or_else(|| after.strip_prefix("an hour"))
+            {
+                (60.0, after.len() - r.len())
+            } else {
+                let num: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
+                let Ok(v) = num.parse::<f64>() else { continue };
+                let unit_start =
+                    num.len() + after[num.len()..].len() - after[num.len()..].trim_start().len();
+                let unit: String = after[unit_start..]
+                    .chars()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect();
+                let minutes = match unit.as_str() {
+                    "s" | "seg" | "segs" | "segundo" | "segundos" | "sec" | "secs" | "second"
+                    | "seconds" => v / 60.,
+                    "m" | "min" | "mins" | "minuto" | "minutos" | "minute" | "minutes" => v,
+                    "h" | "hr" | "hrs" | "hora" | "horas" | "hour" | "hours" => v * 60.,
+                    "d" | "dia" | "día" | "dias" | "días" | "day" | "days" => v * 1440.,
+                    _ => continue,
+                };
+                (minutes, unit_start + unit.len())
+            };
+            let secs = (n * 60.0).round() as u64;
+            if secs == 0 {
+                continue;
+            }
+            return Some((now + secs, (i, i + head.len() + used)));
+        }
+    }
+    None
+}
+
+/// "a las 5pm", "at 17:30", "mañana a las 9", "tomorrow at 9am": the moment and its span.
+fn clock_time(t: &str, now: u64, local: (u32, u32, u32)) -> Option<(u64, (usize, usize))> {
+    for head in ["a las ", "a la ", "at "] {
+        for (i, _) in t.match_indices(head) {
+            let after = &t[i + head.len()..];
+            let hour: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let Ok(mut h) = hour.parse::<u32>() else {
+                continue;
+            };
+            let mut used = hour.len();
+            let mut m = 0;
+            if let Some(r) = after[used..].strip_prefix(':') {
+                let min: String = r.chars().take_while(|c| c.is_ascii_digit()).collect();
+                m = min.parse().unwrap_or(0);
+                used += 1 + min.len();
+            }
+            let tail = after[used..].trim_start();
+            let gap = after[used..].len() - tail.len();
+            let mut pm = None;
+            for (word, is_pm) in [
+                ("pm", true),
+                ("p.m.", true),
+                ("am", false),
+                ("a.m.", false),
+                ("de la tarde", true),
+                ("de la noche", true),
+                ("de la mañana", false),
+                ("de la manana", false),
+            ] {
+                if tail.starts_with(word) {
+                    pm = Some(is_pm);
+                    used += gap + word.len();
+                    break;
+                }
+            }
+            match pm {
+                Some(true) if h < 12 => h += 12,
+                Some(false) if h == 12 => h = 0,
+                _ => {}
+            }
+            if h > 23 || m > 59 {
+                continue;
+            }
+            let (lh, lm, ls) = local;
+            let midnight = now - u64::from(lh * 3600 + lm * 60 + ls);
+            let mut at = midnight + u64::from(h * 3600 + m * 60);
+            let tomorrow = t.contains("mañana") && !t.contains("de la mañana")
+                || t.contains("manana") && !t.contains("de la manana")
+                || t.contains("tomorrow");
+            let mut start = i;
+            if tomorrow {
+                at += 86_400;
+                for w in ["mañana ", "manana ", "tomorrow "] {
+                    if let Some(j) = t[..i].rfind(w)
+                        && i - (j + w.len()) <= 1
+                    {
+                        start = j;
+                    }
+                }
+            } else if at <= now {
+                // A time already gone today means the next one.
+                at += 86_400;
+            }
+            return Some((at, (start, i + head.len() + used)));
+        }
+    }
+    None
 }
 
 fn word_after(text: &str, heads: &[&str]) -> Option<String> {
@@ -497,9 +751,10 @@ pub fn schema() -> Value {
             "trigger": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["type", "number", "branch", "session"],
+                "required": ["type", "number", "branch", "session", "minutes"],
                 "properties": {
-                    "type": {"type": "string", "enum": ["pr_checks_pass", "pr_merged", "ci_failed", "session_finished"]},
+                    "type": {"type": "string", "enum": ["pr_checks_pass", "pr_merged", "ci_failed", "session_finished", "at"]},
+                    "minutes": {"type": "integer"},
                     "number": {"type": "integer"},
                     "branch": {"type": "string"},
                     "session": {"type": "string"}
@@ -569,6 +824,15 @@ pub fn from_json(
                 title: title.clone(),
             }
         }
+        "at" => {
+            let m = tr["minutes"]
+                .as_u64()
+                .filter(|m| *m > 0 && *m <= 60 * 24 * 30)
+                .ok_or("a reminder needs minutes from now")?;
+            Trigger::At {
+                at: crate::memory::now() + m * 60,
+            }
+        }
         other => return Err(format!("unknown trigger {other:?}")),
     };
     let mut steps = Vec::new();
@@ -624,6 +888,10 @@ pub struct Rules {
 
 impl Rules {
     pub fn add(&mut self, d: Draft, dir: Option<PathBuf>, now: u64) -> u64 {
+        let expires_at = match d.trigger {
+            Trigger::At { at } => Some(at),
+            _ => None,
+        };
         self.next_id += 1;
         let id = self.next_id;
         self.items.push(Rule {
@@ -633,7 +901,11 @@ impl Rules {
             steps: d.steps,
             dir,
             created: now,
-            expires: now + d.hours * 3600,
+            // A reminder lasts until its moment and a little after, however far.
+            expires: match expires_at {
+                Some(at) => at.max(now) + 3600,
+                None => now + d.hours * 3600,
+            },
             state: State::Waiting,
             note: String::new(),
             seen_busy: false,
@@ -682,6 +954,100 @@ fn file() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reminders_and_timers_are_read() {
+        // 10:00:00 local, at unix 1_000_000.
+        let (now, local) = (1_000_000, (10, 0, 0));
+        let d = parse_reminder("recuérdame en 20 min revisar el PR de Rik", now, local).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 20 * 60 });
+        assert_eq!(
+            d.steps,
+            vec![Step::Notify {
+                text: "revisar el PR de Rik".into()
+            }]
+        );
+        let d = parse_reminder(
+            "créame un recordatorio de llamar a Dani a las 5pm",
+            now,
+            local,
+        )
+        .unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 7 * 3600 });
+        assert_eq!(
+            d.steps,
+            vec![Step::Notify {
+                text: "llamar a Dani".into()
+            }]
+        );
+        let d = parse_reminder("recordatorio mañana a las 9 de pagar la luz", now, local).unwrap();
+        assert_eq!(
+            d.trigger,
+            Trigger::At {
+                at: now - 3600 + 86_400
+            }
+        );
+        assert_eq!(
+            d.steps,
+            vec![Step::Notify {
+                text: "pagar la luz".into()
+            }]
+        );
+        let d = parse_reminder("remind me at 17:30 to stretch", now, local).unwrap();
+        assert_eq!(
+            d.trigger,
+            Trigger::At {
+                at: now + 7 * 3600 + 1800
+            }
+        );
+        assert_eq!(
+            d.steps,
+            vec![Step::Notify {
+                text: "stretch".into()
+            }]
+        );
+        // A time already gone today rings tomorrow.
+        let d = parse_reminder("recuérdame a las 8 de la mañana correr", now, local).unwrap();
+        assert_eq!(
+            d.trigger,
+            Trigger::At {
+                at: now - 2 * 3600 + 86_400
+            }
+        );
+        let d = parse_reminder("timer 10 min", now, local);
+        assert!(d.is_none(), "a timer needs “en/in” before its length");
+        let d = parse_reminder("pon un timer en 10 minutos", now, local).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 600 });
+        assert_eq!(
+            d.steps,
+            vec![Step::Notify {
+                text: "Time's up".into()
+            }]
+        );
+        let d = parse_reminder("recuérdame en media hora sacar la ropa", now, local).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 1800 });
+        assert!(parse_reminder("en 20 min revisa el PR", now, local).is_none());
+        assert!(sounds_like_rule("créame un recordatorio de algo"));
+        assert!(title_for(&d.trigger, &d.steps).starts_with("Reminder: "));
+    }
+
+    #[test]
+    fn a_reminder_fires_at_its_moment_and_lasts_until_then() {
+        let mut rules = Rules::default();
+        let d =
+            parse_reminder("recuérdame en 3 días renovar el dominio", 1_000, (0, 0, 0)).unwrap();
+        let id = rules.add(d, None, 1_000);
+        let r = rules.items.iter_mut().find(|r| r.id == id).unwrap();
+        assert!(r.expires > 1_000 + 3 * 86_400, "it outlives the usual day");
+        assert!(matches!(
+            check(r, &Facts::default(), 2_000),
+            Outcome::Wait(_)
+        ));
+        assert_eq!(
+            check(r, &Facts::default(), 1_000 + 3 * 86_400),
+            Outcome::Fire
+        );
+    }
 
     const REPO: &str = "ArakunHQ/arakun";
 
@@ -960,5 +1326,19 @@ mod tests {
         );
         let back: Rules = serde_json::from_slice(&serde_json::to_vec(&rules).unwrap()).unwrap();
         assert_eq!(back, rules);
+    }
+
+    #[test]
+    fn a_reminder_with_no_time_is_kept_as_a_to_do() {
+        assert_eq!(
+            timeless_reminder("créame un recordatorio de comprar leche").as_deref(),
+            Some("comprar leche")
+        );
+        assert_eq!(
+            timeless_reminder("recuérdame llamar a Dani").as_deref(),
+            Some("llamar a Dani")
+        );
+        assert_eq!(timeless_reminder("recuérdame en 5 min llamar a Dani"), None);
+        assert_eq!(timeless_reminder("abre el PR 12"), None);
     }
 }

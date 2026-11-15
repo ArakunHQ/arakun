@@ -624,15 +624,28 @@ impl Palette {
                 {
                     props = props.child(kit::prop("Merge method", format!("{method} (repo default)")));
                 }
-                props = props.child(kit::prop("Expires", format!("in {} h", d.hours)));
+                props = match &d.trigger {
+                    rules::Trigger::At { at } => props.child(kit::prop("Rings", rules::clock(*at))),
+                    _ => props.child(kit::prop("Expires", format!("in {} h", d.hours))),
+                };
                 vec![
-                    kit::preview_eyebrow("flash", "automation · draft").into_any_element(),
+                    if matches!(d.trigger, rules::Trigger::At { .. }) {
+                        kit::preview_eyebrow("alarm-clock", "reminder · draft")
+                    } else {
+                        kit::preview_eyebrow("flash", "automation · draft")
+                    }
+                    .into_any_element(),
                     kit::preview_title(d.title.clone()).into_any_element(),
                     props.into_any_element(),
                     kit::preview_text("It shows in Automations, and you can cancel it there or from here.")
                         .into_any_element(),
                 ]
             }
+            Card::Todo(text) => vec![
+                kit::preview_eyebrow("check-list", "to-do · draft").into_any_element(),
+                kit::preview_title(text.clone()).into_any_element(),
+                kit::preview_text("Kept in your to-dos. Type “to-do” or “pendiente” here to see them.").into_any_element(),
+            ],
             Card::Confirm(item, title) => vec![
                 kit::preview_eyebrow("git-merge", format!("{} · #{}", item.repo, item.number)).into_any_element(),
                 kit::preview_title(title.clone()).into_any_element(),

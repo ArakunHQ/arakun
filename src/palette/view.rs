@@ -81,7 +81,7 @@ impl Palette {
         let leads = self.entries.first().is_some_and(|e| {
             matches!(
                 e.card,
-                Some(Card::Answer | Card::Rule(_) | Card::Confirm(..))
+                Some(Card::Answer | Card::Rule(_) | Card::Todo(_) | Card::Confirm(..))
             )
         });
         if !self.pages.is_empty() || leads || self.tabs.len() <= 1 {
@@ -417,12 +417,25 @@ impl Palette {
                                 .flex()
                                 .items_center()
                                 .gap(crate::ui::sp(10.))
-                                .child(kit::glow_tile("flash", Tint::Violet))
+                                .child(kit::glow_tile(
+                                    if matches!(d.trigger, rules::Trigger::At { .. }) { "alarm-clock" } else { "flash" },
+                                    Tint::Violet,
+                                ))
                                 .child(kit::card_text(
-                                    "Create an automation",
+                                    if matches!(d.trigger, rules::Trigger::At { .. }) {
+                                        "Set a reminder"
+                                    } else {
+                                        "Create an automation"
+                                    },
                                     Some(
                                         div()
-                                            .child("Understood as one rule. Nothing runs until you confirm.")
+                                            .child(match &d.trigger {
+                                                rules::Trigger::At { at } => format!(
+                                                    "Rings at {} on the island. Nothing is set until you confirm.",
+                                                    rules::clock(*at)
+                                                ),
+                                                _ => "Understood as one rule. Nothing runs until you confirm.".into(),
+                                            })
                                             .into_any_element(),
                                     ),
                                 ))
@@ -432,6 +445,29 @@ impl Palette {
                         .into_any_element(),
                 )
             }
+            Card::Todo(text) => (
+                Tint::Green,
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(12.))
+                    .w_full()
+                    .child(kit::glow_tile("check-list", Tint::Green))
+                    .child(kit::card_text(
+                        format!("Add to-do: {text}"),
+                        Some(
+                            div()
+                                .child(if rules::timeless_reminder(&self.query(cx)).is_some() {
+                                    "No time given, so it's kept as a to-do. Add “en 30 min” or “a las 5” to make it ring."
+                                } else {
+                                    "Shows under To-do here; Enter on it ticks it off."
+                                })
+                                .into_any_element(),
+                        ),
+                    ))
+                    .when(selected, |d| d.child(enter()))
+                    .into_any_element(),
+            ),
             Card::Confirm(item, title) => (
                 Tint::Amber,
                 div()
@@ -648,7 +684,7 @@ impl Palette {
                     )
                     .into_any_element();
             }
-            Some(Card::Rule(_)) => {
+            Some(Card::Rule(_) | Card::Todo(_)) => {
                 return f
                     .child(kit::footer_hint(&["↵"], "confirm"))
                     .child(kit::footer_hint(&["Esc"], "cancel"))

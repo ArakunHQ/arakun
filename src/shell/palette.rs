@@ -229,8 +229,17 @@ impl Shell {
                 self.modal = None;
                 self.notify_from(
                     AlertKind::Info,
-                    "Automation on",
-                    &format!("{} · expires in {} h", draft.title, draft.hours),
+                    if matches!(draft.trigger, palette::rules::Trigger::At { .. }) {
+                        "Reminder set"
+                    } else {
+                        "Automation on"
+                    },
+                    &match draft.trigger {
+                        palette::rules::Trigger::At { at } => {
+                            format!("{} · at {}", draft.title, palette::rules::clock(at))
+                        }
+                        _ => format!("{} · expires in {} h", draft.title, draft.hours),
+                    },
                     None,
                     None,
                     "arakun",
@@ -1258,7 +1267,7 @@ impl Shell {
     ) {
         match target {
             Target::Project(pi) if pi < self.projects.len() => self.select_project(pi, window, cx),
-            Target::Project(_) => {}
+            Target::Project(_) | Target::Todo(_) => {}
             Target::Env(pi, ei) => self.select_env(pi, ei, window, cx),
             Target::Session(pi, ei, id) => self.open_session_at(pi, ei, id, window, cx),
             Target::NewSession => self.new_session(window, cx),
@@ -1602,9 +1611,14 @@ impl Shell {
                         .iter()
                         .any(|s| matches!(s, palette::rules::Step::Merge { .. }))
                     {
+                        // A reminder's title already holds its text.
+                        let title = match rule.trigger {
+                            palette::rules::Trigger::At { .. } => "Reminder",
+                            _ => rule.title.as_str(),
+                        };
                         self.notify_from(
                             AlertKind::Info,
-                            &rule.title,
+                            title,
                             text,
                             pull.as_ref().map(|_| Open::GitHub(None)),
                             None,

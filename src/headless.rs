@@ -227,6 +227,50 @@ pub fn read_pending(id: &str) -> Option<Pending> {
     read_json(&pending_path(id))
 }
 
+/// Sessions being deleted: their folder is still there while the host stops.
+static DISCARDING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn discarding(id: &str) -> bool {
+    DISCARDING.lock().is_ok_and(|d| d.iter().any(|x| x == id))
+}
+
+/// Hides `id` from [`list`] at once, before [`discard`] removes it.
+pub fn begin_discard(id: &str) {
+    if let Ok(mut d) = DISCARDING.lock() {
+        d.push(id.to_string());
+    }
+}
+
+/// Deletes a headless session for good: stops its host, then removes its folder.
+/// The folder is what lists a session, so leaving it would bring the session back
+/// on the app's next scan. Call [`begin_discard`] first, on the UI thread; this one
+/// blocks while the host stops.
+pub fn discard(id: &str) {
+    if !valid(id) || !dir(id).exists() {
+        if let Ok(mut d) = DISCARDING.lock() {
+            d.retain(|x| x != id);
+        }
+        return;
+    }
+    if let Some(pid) = read_meta(id).and_then(|m| m.pid.filter(|_| alive(m.pid))) {
+        #[cfg(unix)]
+        // SAFETY: a plain signal to the host, which saves and exits on it.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        while alive(Some(pid)) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    if let Err(e) = std::fs::remove_dir_all(dir(id)) {
+        eprintln!("arakun: could not remove {}: {e}", dir(id).display());
+    }
+    if let Ok(mut d) = DISCARDING.lock() {
+        d.retain(|x| x != id);
+    }
+}
+
 /// Every headless session, newest first.
 pub fn list() -> Vec<Meta> {
     let mut all: Vec<Meta> = std::fs::read_dir(root())
@@ -234,6 +278,7 @@ pub fn list() -> Vec<Meta> {
         .flatten()
         .flatten()
         .filter_map(|e| read_meta(&e.file_name().to_string_lossy()))
+        .filter(|m| !discarding(&m.id))
         .collect();
     all.sort_by_key(|m| std::cmp::Reverse(m.updated));
     all
@@ -1820,6 +1865,17 @@ mod tests {
         assert!(agent_for("workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017", "").is_ok());
         assert!(agent_for("claude", "").unwrap_err().contains("Claude Code"));
         assert!(agent_for("openai/gpt", "").is_err());
+    }
+
+    #[test]
+    fn a_session_being_deleted_stays_hidden_until_it_is_gone() {
+        // No folder by this name, so discard has nothing to stop or remove.
+        let id = "h-test-discard-0";
+        assert!(!discarding(id));
+        begin_discard(id);
+        assert!(discarding(id));
+        discard(id);
+        assert!(!discarding(id));
     }
 
     #[test]

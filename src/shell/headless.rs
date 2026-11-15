@@ -87,6 +87,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A scan that started before a delete can still carry the deleted session.
+        let found: Vec<_> = found
+            .into_iter()
+            .filter(|(_, m)| !headless::discarding(&m.id))
+            .collect();
         let ids: HashSet<&str> = found.iter().map(|(_, m)| m.id.as_str()).collect();
         let gone: Vec<(PathBuf, String)> = self
             .projects

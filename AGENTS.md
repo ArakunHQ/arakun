@@ -52,6 +52,38 @@ Every commit message and pull request title follows
   cleanups in their own commit or pull request.
 - Fill in `.github/pull_request_template.md`. Under "How did you test this?", list the
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
+- Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
+  checks below, wait for CI to pass, then mark it ready with `gh pr ready`. Marking it
+  ready requests the reviewers and starts CodeRabbit, so don't do it before then.
+
+### Stacked pull requests
+
+A stack is a chain of pull requests where each one targets the branch of the one below
+it, and the bottom one targets `main`.
+
+- **Stack** when a change splits into steps that are each reviewable alone, and a later
+  step needs an earlier one that is not merged yet (a refactor, then the feature on top).
+- **Don't stack** independent changes; branch each from `main`. Don't stack on a pull
+  request whose approach is still under discussion, or more than about four deep.
+- Name branches `pr/<topic>` and branch each from the one below:
+  `git switch -c pr/feature pr/refactor`, then
+  `gh pr create --draft --base pr/refactor`. Write `Stacked on #<number>.` at the end of
+  Changes.
+- To fix a lower pull request, commit on its branch, then rebase the top branch on it:
+  `git switch pr/top && git rebase --update-refs pr/refactor`. `--update-refs` moves the
+  branches in between, but not one checked out in another worktree; switch that worktree
+  away first. Push every branch above the changed one:
+  `git push --force-with-lease origin pr/feature pr/top`.
+- Merge from the bottom, always into `main`; never merge a pull request into the branch
+  below it. Merging is a person's job, not yours.
+- After the bottom one merges, GitHub moves the next to `main`, but the branches above
+  still hold the squashed commits. Take the merged pull request's last commit from GitHub
+  (`gh pr view <number> --json headRefOid --jq .headRefOid`, then
+  `git fetch origin main "pull/<number>/head"`), not from your local branch. Run
+  `git rebase --update-refs --onto origin/main <that commit>` on the top branch, push
+  every remaining branch with `--force-with-lease`, and check the next pull request's
+  base is `main` (`gh pr edit <next number> --base main`; without the number it edits the
+  top one).
 
 ## Before you commit
 

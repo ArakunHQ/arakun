@@ -242,7 +242,8 @@ if [ $hooks = 1 ]; then
   # is there to run them.
   on=1
   for h in pre-commit pre-push commit-msg; do
-    grep -qs lefthook "$hookdir/$h" || on=0
+    # Git skips a hook that isn't executable.
+    { [ -x "$hookdir/$h" ] && grep -qs lefthook "$hookdir/$h"; } || on=0
   done
   command -v lefthook >/dev/null || on=0
   if [ $on = 1 ]; then

@@ -36,7 +36,7 @@ without chasing every past contributor. Unsigned pull requests can't be merged.
 
 A script installs what you need to build Arakun and run the checks CI runs: the
 system libraries, Rust with clippy, and with the flags below Node for the relay and the
-`commit-msg` hook. It asks before it installs anything, and you can run it again
+[Git hooks](#git-hooks). It asks before it installs anything, and you can run it again
 safely.
 
 ```sh
@@ -49,6 +49,8 @@ tools/setup-dev.sh --check             # only report what is missing
 powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Hooks
 ```
 
+`--hooks` (`-Hooks`) runs `lefthook install`; on Windows it installs lefthook with winget
+first, and elsewhere it says how to install it if it is missing.
 `--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
 tesseract for `arakun dev`, `--build` (`-Build`) builds the tests once, and `--yes`
 (`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,

@@ -112,7 +112,8 @@ impl Shell {
                                     .gap(crate::ui::sp(6.))
                                     .h_full()
                                     .px(crate::ui::sp(8.))
-                                    .rounded(crate::ui::rad(4.))
+                                    // 2 px inside an 8 px track: parallel to it.
+                                    .rounded(ui::nested(ui::RADIUS, 2.))
                                     .text_size(px(ui::TEXT_SM))
                                     .line_height(px(12.))
                                     .cursor_pointer()

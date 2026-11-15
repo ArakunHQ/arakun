@@ -716,13 +716,14 @@ pub fn surface_card() -> gpui::Div {
         .overflow_hidden()
 }
 
-/// A darker panel nested in a `surface_card`: a list or code sits in it.
+/// A darker panel nested in a `surface_card`, 10 px in from its edge: a
+/// list or code sits in it. Its corner stays parallel to the card's.
 pub fn inset_panel() -> gpui::Div {
     div()
         .flex()
         .flex_col()
         .min_h_0()
-        .rounded(crate::ui::rad(super::RADIUS_LG))
+        .rounded(crate::ui::nested(super::RADIUS_XL, 10. + 1.))
         .border_1()
         .border_color(theme::border_subtle())
         .bg(theme::background())

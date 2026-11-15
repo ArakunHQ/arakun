@@ -367,12 +367,13 @@ impl Details {
 }
 
 /// The groups of the queue, in the order they show.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Group {
     NeedsReview,
     Mentions,
     Yours,
     Ready,
+    #[default]
     Other,
     Done,
 }
@@ -400,18 +401,19 @@ impl Group {
 }
 
 /// Whose move it is, for the bar above the queue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Lane {
     OnYou,
     OnOthers,
     Ready,
     Done,
     /// Counted nowhere: a notification that asks nothing of anyone.
+    #[default]
     None,
 }
 
 /// The row's round icon: what kind of thing it is, in which state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mark {
     Pull,
     Issue,
@@ -420,17 +422,25 @@ pub enum Mark {
     Done,
     Closed,
     Ci,
+    #[default]
     Other,
 }
 
 /// An entry in its place, with what its row says.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Placed {
     pub group: Group,
     pub lane: Lane,
     pub mark: Mark,
-    /// The monospace line under the title: `#34 · rik · +487 −0`.
+    /// Why it is here, under the title after the repository and number:
+    /// `rik`, `approved by you · 1 check passed`.
     pub sub: String,
+    /// Whose it is: the login its avatar shows. Empty when unknown.
+    pub author: String,
+    /// A pull request's lines added and removed, once read.
+    pub changes: Option<(u32, u32)>,
+    /// How a pull request's checks stand, when it has any.
+    pub checks: Option<pr::CheckState>,
 }
 
 /// `+9.2k`: changes counted short.
@@ -452,6 +462,21 @@ fn closed_since(at: &str, day_start: u64) -> bool {
 /// nothing is left to do with it. `day_start` is the start of the local day,
 /// in unix seconds.
 pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> Option<Placed> {
+    let mut p = place_only(e, details, me, day_start)?;
+    match details {
+        Some(Details::Pull(pull)) => {
+            p.author = pull.author.login.clone();
+            p.changes = Some((pull.additions, pull.deletions));
+            p.checks = pr::checks_summary(pull).overall();
+        }
+        Some(Details::Issue(i)) => p.author = i.author.login.clone(),
+        None => p.author = e.author.clone(),
+    }
+    Some(p)
+}
+
+/// `place` without what the row draws beside its text.
+fn place_only(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> Option<Placed> {
     let num = e
         .item
         .as_ref()
@@ -476,11 +501,6 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
 
     match details {
         Some(Details::Pull(p)) => {
-            let changes = format!(
-                "+{} −{}",
-                short_count(p.additions),
-                short_count(p.deletions)
-            );
             let author = p.author.login.as_str();
             if !p.open() {
                 let at = if p.merged() {
@@ -497,7 +517,8 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                     group: Group::Done,
                     lane: Lane::Done,
                     mark,
-                    sub: join(&[&num, what, author]),
+                    sub: join(&[what, author]),
+                    ..Default::default()
                 });
             }
             let waiting = pr::waiting_on(p, me);
@@ -510,14 +531,16 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                         group: Group::Yours,
                         lane: Lane::OnYou,
                         mark: Mark::Pull,
-                        sub: join(&[&num, why]),
+                        sub: join(&[why]),
+                        ..Default::default()
                     });
                 }
                 return Some(Placed {
                     group: Group::NeedsReview,
                     lane: Lane::OnYou,
                     mark: Mark::Pull,
-                    sub: join(&[&num, author, &changes]),
+                    sub: join(&[author]),
+                    ..Default::default()
                 });
             }
             if blockers.is_empty() && (mine(author) || approved_by_me) {
@@ -536,7 +559,8 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                     group: Group::Ready,
                     lane: Lane::Ready,
                     mark: Mark::Merge,
-                    sub: join(&[&num, &by, &passed]),
+                    sub: join(&[&by, &passed]),
+                    ..Default::default()
                 });
             }
             if mine(author) {
@@ -544,7 +568,8 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                     group: Group::Yours,
                     lane: Lane::OnOthers,
                     mark: Mark::Pull,
-                    sub: join(&[&num, &waiting_text(&waiting)]),
+                    sub: join(&[&waiting_text(&waiting)]),
+                    ..Default::default()
                 });
             }
             if mentioned || assigned {
@@ -557,7 +582,8 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                     group: Group::Mentions,
                     lane: Lane::OnYou,
                     mark: Mark::Mention,
-                    sub: join(&[&num, &asked]),
+                    sub: join(&[&asked]),
+                    ..Default::default()
                 });
             }
             if let Some(v) = verdict {
@@ -581,14 +607,16 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                     group,
                     lane: Lane::OnOthers,
                     mark,
-                    sub: join(&[&num, gave, &waiting_text(&waiting)]),
+                    sub: join(&[gave, &waiting_text(&waiting)]),
+                    ..Default::default()
                 });
             }
             Some(Placed {
                 group: Group::Other,
                 lane: Lane::None,
                 mark: Mark::Pull,
-                sub: join(&[&num, author, &waiting_text(&waiting)]),
+                sub: join(&[author, &waiting_text(&waiting)]),
+                ..Default::default()
             })
         }
         Some(Details::Issue(i)) => {
@@ -601,7 +629,8 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                     group: Group::Done,
                     lane: Lane::Done,
                     mark: Mark::Closed,
-                    sub: join(&[&num, "issue", "closed"]),
+                    sub: join(&["issue", "closed"]),
+                    ..Default::default()
                 });
             }
             let assigned = assigned || i.assignees.iter().any(|a| mine(&a.login));
@@ -615,14 +644,16 @@ pub fn place(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) -> 
                     group: Group::Mentions,
                     lane: Lane::OnYou,
                     mark: Mark::Mention,
-                    sub: join(&[&num, "issue", &asked]),
+                    sub: join(&["issue", &asked]),
+                    ..Default::default()
                 });
             }
             Some(Placed {
                 group: Group::Other,
                 lane: Lane::None,
                 mark: Mark::Issue,
-                sub: join(&[&num, "issue", author]),
+                sub: join(&["issue", author]),
+                ..Default::default()
             })
         }
         None => place_unread(e, &num, reason, mentioned, assigned, day_start, &join),
@@ -652,7 +683,8 @@ fn place_unread(
             group: Group::Done,
             lane: Lane::Done,
             mark,
-            sub: join(&[num, if merged { "merged" } else { "closed" }, author]),
+            sub: join(&[if merged { "merged" } else { "closed" }, author]),
+            ..Default::default()
         });
     }
     if e.why.contains(&Why::ReviewRequested) || reason == "review_requested" {
@@ -660,7 +692,8 @@ fn place_unread(
             group: Group::NeedsReview,
             lane: Lane::OnYou,
             mark: Mark::Pull,
-            sub: join(&[num, author]),
+            sub: join(&[author]),
+            ..Default::default()
         });
     }
     if mentioned || assigned {
@@ -675,7 +708,8 @@ fn place_unread(
             group: Group::Mentions,
             lane: Lane::OnYou,
             mark: Mark::Mention,
-            sub: join(&[num, what, &asked]),
+            sub: join(&[what, &asked]),
+            ..Default::default()
         });
     }
     if e.why.contains(&Why::Authored) || reason == "author" && !issue && e.item.is_some() {
@@ -683,7 +717,8 @@ fn place_unread(
             group: Group::Yours,
             lane: Lane::OnOthers,
             mark: Mark::Pull,
-            sub: join(&[num, "your pull request"]),
+            sub: join(&["your pull request"]),
+            ..Default::default()
         });
     }
     if e.why.contains(&Why::ReviewedToday) {
@@ -691,7 +726,8 @@ fn place_unread(
             group: Group::Done,
             lane: Lane::OnOthers,
             mark: Mark::Done,
-            sub: join(&[num, "you reviewed it today"]),
+            sub: join(&["you reviewed it today"]),
+            ..Default::default()
         });
     }
     // Only an unread notification keeps something here that no search found.
@@ -717,7 +753,8 @@ fn place_unread(
         group: Group::Other,
         lane: Lane::None,
         mark,
-        sub: join(&[num, if num.is_empty() { noun } else { what }, &label]),
+        sub: join(&[if num.is_empty() { noun } else { what }, &label]),
+        ..Default::default()
     })
 }
 
@@ -1032,7 +1069,7 @@ mod tests {
         assert_eq!(place_of(&entries[1]), Some((Group::Mentions, Lane::OnYou)));
         assert_eq!(
             place(&entries[1], None, ME, DAY).unwrap().sub,
-            "#2 · issue · rik mentioned you"
+            "issue · rik mentioned you"
         );
         assert_eq!(place_of(&entries[2]), Some((Group::Yours, Lane::OnOthers)));
         assert_eq!(place_of(&entries[3]), Some((Group::Done, Lane::OnOthers)));
@@ -1083,12 +1120,7 @@ mod tests {
         );
         assert_eq!(
             at(&asked),
-            Some((
-                Group::NeedsReview,
-                Lane::OnYou,
-                Mark::Pull,
-                "#34 · rik · +487 −0".into()
-            ))
+            Some((Group::NeedsReview, Lane::OnYou, Mark::Pull, "rik".into()))
         );
 
         let approved = pull(
@@ -1101,7 +1133,7 @@ mod tests {
                 Group::Ready,
                 Lane::Ready,
                 Mark::Merge,
-                "#34 · approved by you · 1 check passed".into()
+                "approved by you · 1 check passed".into()
             ))
         );
 
@@ -1114,7 +1146,7 @@ mod tests {
                 Group::Yours,
                 Lane::OnOthers,
                 Mark::Pull,
-                "#34 · waiting on ana".into()
+                "waiting on ana".into()
             ))
         );
 
@@ -1139,8 +1171,14 @@ mod tests {
         );
         assert_eq!(
             at(&merged).map(|p| (p.0, p.1, p.3)),
-            Some((Group::Done, Lane::Done, "#34 · merged · rik".into()))
+            Some((Group::Done, Lane::Done, "merged · rik".into()))
         );
+        // What the row draws beside the text comes with it.
+        let row = place(&e, Some(&approved), ME, DAY).unwrap();
+        assert_eq!(row.author, "rik");
+        assert_eq!(row.changes, Some((487, 0)));
+        assert_eq!(row.checks, Some(pr::CheckState::Passed));
+        assert_eq!(place(&e, None, ME, DAY).unwrap().changes, None);
         let merged_before = pull(r#"{"state":"MERGED","mergedAt":"2025-11-12T08:00:00Z"}"#);
         assert_eq!(at(&merged_before), None);
     }

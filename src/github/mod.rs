@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git;
 
+pub mod avatars;
 pub mod pr;
 pub mod pulse;
 pub mod queue;
@@ -613,7 +614,20 @@ pub struct GitHub {
     pulse_at: Option<Instant>,
     pulse_busy: bool,
     zero_days: Vec<String>,
+    /// Profile pictures by lower-case login.
+    avatars: HashMap<String, Avatar>,
+    avatars_busy: bool,
     _poll: Task<()>,
+}
+
+/// Where a profile picture is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Avatar {
+    /// Asked for; an old copy may already show.
+    Pending(Option<PathBuf>),
+    Ready(PathBuf),
+    /// Not to be asked again this run: the initials show.
+    Failed,
 }
 
 impl EventEmitter<GitHubEvent> for GitHub {}
@@ -659,6 +673,8 @@ impl GitHub {
             pulse_at: None,
             pulse_busy: false,
             zero_days: queue::load_zero_days(),
+            avatars: HashMap::new(),
+            avatars_busy: false,
             _poll: poll,
         }
     }
@@ -818,6 +834,7 @@ impl GitHub {
                 this.rebuild();
                 this.fetch_details(cx);
                 this.refresh_pulse(false, cx);
+                this.fetch_avatars(cx);
                 cx.notify();
                 if std::mem::take(&mut this.again) {
                     this.refresh(cx);
@@ -912,6 +929,108 @@ impl GitHub {
         &self.zero_days
     }
 
+    /// A login's profile picture on disk, once there is one.
+    pub fn avatar(&self, login: &str) -> Option<&std::path::Path> {
+        match self.avatars.get(&login.to_ascii_lowercase())? {
+            Avatar::Ready(p) | Avatar::Pending(Some(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Everyone the tab can show: the user, the queue's authors, the people
+    /// of every item read, and who waits in the pulse.
+    fn shown_people(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        out.extend(self.me.clone());
+        out.extend(self.queue.rows.iter().map(|(e, p)| {
+            if p.author.is_empty() {
+                e.author.clone()
+            } else {
+                p.author.clone()
+            }
+        }));
+        for d in self.details.values() {
+            out.extend(avatars::people(d));
+        }
+        if let Some(acts) = &self.activity {
+            out.extend(acts.iter().map(|a| a.author.clone()));
+        }
+        out
+    }
+
+    /// Downloads, one batch at a time, the pictures not on disk yet or older
+    /// than a week. What is on disk shows meanwhile.
+    fn fetch_avatars(&mut self, cx: &mut Context<Self>) {
+        if self.avatars_busy {
+            return;
+        }
+        let dir = avatars::dir();
+        let mut want: Vec<String> = Vec::new();
+        for login in self.shown_people() {
+            let key = login.to_ascii_lowercase();
+            if key.is_empty() || self.avatars.contains_key(&key) || want.contains(&key) {
+                continue;
+            }
+            match avatars::cached(&dir, &key) {
+                Some((path, false)) => {
+                    self.avatars.insert(key, Avatar::Ready(path));
+                }
+                Some((path, true)) => {
+                    self.avatars
+                        .insert(key.clone(), Avatar::Pending(Some(path)));
+                    want.push(key);
+                }
+                None => {
+                    self.avatars.insert(key.clone(), Avatar::Pending(None));
+                    want.push(key);
+                }
+            }
+        }
+        if want.is_empty() {
+            return;
+        }
+        self.avatars_busy = true;
+        cx.spawn(async move |this, cx| {
+            let got = cx
+                .background_spawn(async move {
+                    // A few at once: a queue's worth of people arrives in a second or two.
+                    std::thread::scope(|s| {
+                        let jobs: Vec<_> = want
+                            .chunks(want.len().div_ceil(4))
+                            .map(|part| {
+                                let dir = &dir;
+                                s.spawn(move || {
+                                    part.iter()
+                                        .map(|l| (l.clone(), avatars::download(dir, l).ok()))
+                                        .collect::<Vec<_>>()
+                                })
+                            })
+                            .collect();
+                        jobs.into_iter()
+                            .flat_map(|j| j.join().unwrap_or_default())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.avatars_busy = false;
+                for (login, path) in got {
+                    let state = match (path, this.avatars.get(&login)) {
+                        (Some(p), _) => Avatar::Ready(p),
+                        // A failed refresh keeps the old picture.
+                        (None, Some(Avatar::Pending(Some(old)))) => Avatar::Ready(old.clone()),
+                        (None, _) => Avatar::Failed,
+                    };
+                    this.avatars.insert(login, state);
+                }
+                cx.notify();
+                // People that showed up while this batch ran.
+                this.fetch_avatars(cx);
+            });
+        })
+        .detach();
+    }
+
     /// Lays the queue out again from what is known, and notes an inbox-zero day.
     fn rebuild(&mut self) {
         let mut entries = queue::gather(&self.unread, &self.found);
@@ -995,6 +1114,7 @@ impl GitHub {
                 }
                 this.rebuild();
                 this.fetch_details(cx);
+                this.fetch_avatars(cx);
                 cx.notify();
             });
         })
@@ -1025,6 +1145,7 @@ impl GitHub {
                 if let Ok(acts) = read {
                     this.activity = Some(acts);
                 }
+                this.fetch_avatars(cx);
                 cx.notify();
             });
         })

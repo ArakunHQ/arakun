@@ -45,7 +45,8 @@ window, and exposes the same workspace to the agents through a command line.
   queue" to show only some organizations or repositories; the rest doesn't show, count
   or alert. Arakun keeps the watch list and that choice in `github.json` next to its
   state, the days your queue reached zero in
-  `github-streak.json`, and drafts in `github/drafts/` beside them.
+  `github-streak.json`, drafts in `github/drafts/` beside them, and the profile
+  pictures it shows in `github/avatars/` (each downloaded again after a week).
 - **Dynamic Island** (Linux/Wayland only for now). A small overlay at the top of the
   screen that shows what the agents of every project are doing: a dot per busy session, a
   card when one finishes, fails or needs an answer. It runs as its own process

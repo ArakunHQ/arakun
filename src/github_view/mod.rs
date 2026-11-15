@@ -31,10 +31,56 @@ use crate::theme;
 use crate::ui::{self, Type, Typography as _};
 
 /// Under this width the queue and the item take turns instead of sharing.
-const NARROW: f32 = 980.;
-/// The left column's width when both show.
-const LEFT_W: f32 = 436.;
-const GAP: f32 = 14.;
+const NARROW: f32 = 900.;
+/// From this width the left column is at its full width, with the pulse.
+const WIDE: f32 = 1300.;
+/// The item card needs this much to keep its properties in a column beside
+/// the tabs; under it they wrap above them and the timeline gets the width.
+const SIDE_PROPS: f32 = 1050.;
+/// Under this height the pulse folds into a strip even when wide.
+const TALL: f32 = 860.;
+const GAP: f32 = 12.;
+
+/// How the tab lays itself out at a size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Layout {
+    /// The queue and the item take turns.
+    narrow: bool,
+    /// The left column's width (the whole width when narrow).
+    left_w: f32,
+    /// The pulse as a full card; else a strip that opens on a click.
+    pulse_full: bool,
+    /// The item's properties in a column beside the tabs.
+    side_props: bool,
+    /// The item card's width.
+    item_w: f32,
+}
+
+fn layout(w: f32, h: f32) -> Layout {
+    if w < NARROW {
+        return Layout {
+            narrow: true,
+            left_w: w,
+            pulse_full: false,
+            side_props: w - 2. * GAP >= SIDE_PROPS,
+            item_w: w - 2. * GAP,
+        };
+    }
+    let wide = w >= WIDE;
+    let left_w = if wide {
+        (w * 0.3).clamp(400., 440.)
+    } else {
+        (w * 0.34).clamp(340., 400.)
+    };
+    let item_w = w - left_w - 3. * GAP;
+    Layout {
+        narrow: false,
+        left_w,
+        pulse_full: wide && h >= TALL,
+        side_props: item_w >= SIDE_PROPS,
+        item_w,
+    }
+}
 
 pub enum GitHubViewEvent {
     /// Show a GitHub page.
@@ -128,7 +174,14 @@ pub struct GitHubView {
     merge_methods: HashMap<String, Option<Vec<MergeMethod>>>,
     /// Markdown already parsed, by its text.
     md: RefCell<HashMap<String, Rc<Vec<Block>>>>,
-    width: Rc<Cell<f32>>,
+    /// The size this view got last frame: (width, height).
+    size: Rc<Cell<(f32, f32)>>,
+    /// The folded pulse strip is open.
+    pulse_open: bool,
+    /// All the item's properties show in a short window.
+    head_open: bool,
+    /// Timeline bodies shown in full past their first lines, by key.
+    expanded: HashSet<String>,
     queue_scroll: ScrollHandle,
     body_scroll: ScrollHandle,
     focus: FocusHandle,
@@ -187,7 +240,10 @@ impl GitHubView {
             unfolded_lines: HashSet::new(),
             merge_methods: HashMap::new(),
             md: RefCell::new(HashMap::new()),
-            width: Rc::new(Cell::new(1200.)),
+            size: Rc::new(Cell::new((1200., 900.))),
+            pulse_open: false,
+            head_open: false,
+            expanded: HashSet::new(),
             queue_scroll: ScrollHandle::new(),
             body_scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -201,8 +257,18 @@ impl GitHubView {
         window.focus(&self.focus, cx);
     }
 
+    fn layout(&self) -> Layout {
+        let (w, h) = self.size.get();
+        layout(w, h)
+    }
+
     fn narrow(&self) -> bool {
-        self.width.get() < NARROW
+        self.layout().narrow
+    }
+
+    /// A person's avatar: their picture once downloaded, else initials.
+    fn face(&self, login: &str, size: f32, cx: &App) -> gpui::Div {
+        ui::avatar_image(login, self.github.read(cx).avatar(login), size)
     }
 
     /// After the focus changes: an item that left the queue isn't shown any
@@ -281,6 +347,7 @@ impl GitHubView {
             self.note = None;
             self.folded.clear();
             self.unfolded_lines.clear();
+            self.expanded.clear();
             self.body_scroll = ScrollHandle::new();
         }
         if let Some(item) = self.item() {
@@ -912,7 +979,7 @@ fn without_html(text: &str) -> String {
 fn body_style() -> MdStyle {
     MdStyle {
         size: ui::TEXT_LG,
-        line_height: 21.,
+        line_height: 22.,
         color: theme::text_muted(),
         strong: theme::text(),
         heading: theme::text(),
@@ -962,12 +1029,13 @@ impl Focusable for GitHubView {
 impl Render for GitHubView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The width this view got last frame decides the layout of this one.
-        let (cell, id) = (self.width.clone(), cx.entity_id());
+        let (cell, id) = (self.size.clone(), cx.entity_id());
         let measure = canvas(
             |_, _, _| {},
             move |bounds: Bounds<Pixels>, _, _: &mut Window, cx: &mut App| {
-                let now = bounds.size.width.as_f32();
-                if (now - cell.get()).abs() > 0.5 {
+                let now = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
+                let was = cell.get();
+                if (now.0 - was.0).abs() > 0.5 || (now.1 - was.1).abs() > 0.5 {
                     cell.set(now);
                     cx.notify(id);
                 }
@@ -976,7 +1044,8 @@ impl Render for GitHubView {
         .absolute()
         .size_full();
 
-        let narrow = self.narrow();
+        let lay = self.layout();
+        let narrow = lay.narrow;
         let root = div()
             .id("github-view")
             .track_focus(&self.focus)
@@ -1011,17 +1080,21 @@ impl Render for GitHubView {
             .min_h_0()
             .gap(px(GAP))
             .when(narrow, |d| d.flex_1().w_full())
-            .when(!narrow, |d| d.w(px(LEFT_W)))
+            .when(!narrow, |d| d.w(px(lay.left_w)))
             .child(self.render_queue(cx))
-            .child(self.render_pulse(cx));
+            .child(if lay.pulse_full {
+                self.render_pulse(cx)
+            } else {
+                self.render_pulse_strip(cx)
+            });
         let root = if narrow {
             if self.narrow_open && self.picked.is_some() {
-                root.child(self.render_item(true, cx))
+                root.child(self.render_item(lay, cx))
             } else {
                 root.child(left)
             }
         } else {
-            root.child(left).child(self.render_item(false, cx))
+            root.child(left).child(self.render_item(lay, cx))
         };
         let root = root.when_some(self.focus_at, |d, at| {
             d.child(
@@ -1078,6 +1151,26 @@ impl Render for GitHubView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_layout_follows_the_width() {
+        // Both sidebars open on a 1920 window: wide, properties above the tabs.
+        let l = layout(1400., 1000.);
+        assert!(!l.narrow && l.pulse_full && !l.side_props);
+        assert!((l.left_w - 420.).abs() < 0.5);
+        // Full width: room for the properties column.
+        let l = layout(1900., 1000.);
+        assert!(l.side_props && l.left_w == 440.);
+        // Medium: a narrower queue, the pulse folded.
+        let l = layout(1100., 1000.);
+        assert!(!l.narrow && !l.pulse_full && !l.side_props);
+        assert!(l.left_w >= 340. && l.left_w <= 400.);
+        // Wide but short: the pulse folds too.
+        assert!(!layout(1500., 700.).pulse_full);
+        // Narrow: one at a time.
+        assert!(layout(800., 900.).narrow);
+        assert!(!layout(900., 900.).narrow);
+    }
 
     #[test]
     fn html_in_bodies_reads_as_markdown() {

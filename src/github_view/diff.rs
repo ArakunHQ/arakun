@@ -282,48 +282,54 @@ impl GitHubView {
         list.into_any_element()
     }
 
-    pub(super) fn render_commits(&self, p: &Pull, me: &str, _cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_commits(&self, p: &Pull, me: &str, cx: &mut Context<Self>) -> AnyElement {
         let new: Vec<String> = pr::new_since_my_review(p, me)
             .iter()
             .map(|c| c.oid.clone())
             .collect();
-        let mut list = div().flex().flex_col().px(px(18.)).py(px(10.));
+        let mut list = div().flex().flex_col().px(px(16.)).py(px(12.));
         for c in p.commits.iter().rev() {
             let fresh = new.contains(&c.oid);
-            list =
-                list.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(12.))
-                        .py(px(7.))
-                        .border_b_1()
-                        .border_color(theme::border_subtle())
-                        .child(
-                            super::mono(c.short_oid().to_string(), theme::text_subtle())
-                                .flex_none(),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .ty(Type::Body)
-                                .child(c.message_headline.clone()),
-                        )
-                        .when(fresh, |d| d.child(ui::pill("new", theme::accent())))
-                        .child(
-                            div()
-                                .flex_none()
-                                .ty(Type::Label)
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(theme::text_muted())
-                                .child(c.author().to_string()),
-                        )
-                        .child(div().w(px(56.)).flex_none().flex().justify_end().child(
-                            super::mono(super::ago_iso(&c.committed_date), theme::text_subtle()),
-                        )),
-                );
+            let who = c.author().to_string();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(8.))
+                    .h(px(44.))
+                    .rounded(px(ui::RADIUS))
+                    .hover(|s| s.bg(theme::fill_hover()))
+                    .child(self.face(&who, 24., cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .ty(Type::Body)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(c.message_headline.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .ty(Type::Caption)
+                                    .text_color(theme::text_subtle())
+                                    .child(format!(
+                                        "{who} committed {} ago",
+                                        super::ago_iso(&c.committed_date)
+                                    )),
+                            ),
+                    )
+                    .when(fresh, |d| d.child(ui::tag("new", theme::accent())))
+                    .child(
+                        super::mono(c.short_oid().to_string(), theme::text_subtle()).flex_none(),
+                    ),
+            );
         }
         list.into_any_element()
     }

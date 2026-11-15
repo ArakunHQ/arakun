@@ -15,7 +15,7 @@ use crate::theme;
 use crate::ui::{self, PillKind, Type, Typography as _, icon};
 
 /// The left column's width inside the card.
-const SIDE_W: f32 = 332.;
+pub(super) const SIDE_W: f32 = 332.;
 /// The label column of the property list.
 const KEY_W: f32 = 96.;
 
@@ -53,81 +53,123 @@ pub(super) fn check_color(s: CheckState) -> Hsla {
     }
 }
 
-/// The first paragraph of a body, without markdown marks: what the pull
-/// request says it does, in a few lines.
-pub(super) fn first_paragraph(body: &str) -> String {
-    let mut out = String::new();
-    let mut in_comment = false;
-    for line in body.lines() {
-        let t = line.trim();
-        if t.starts_with("<!--") {
-            in_comment = !t.contains("-->");
-            continue;
-        }
-        if in_comment {
-            in_comment = !t.contains("-->");
-            continue;
-        }
-        if t.is_empty() {
-            if out.is_empty() {
-                continue;
-            }
-            break;
-        }
-        // Headings and template boxes say what a section is, not what the change does.
-        if t.starts_with('#') || t.starts_with("- [") || t.starts_with("```") {
-            if out.is_empty() {
-                continue;
-            }
-            break;
-        }
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(t);
-    }
-    let plain: String = out.replace("**", "").replace('`', "");
-    if plain.chars().count() > 280 {
-        format!(
-            "{}…",
-            plain.chars().take(278).collect::<String>().trim_end()
-        )
-    } else {
-        plain
-    }
-}
-
-/// A dot before a value in the property list.
+/// A dot before a value.
 fn dot(color: Hsla) -> gpui::Div {
     div().size(px(8.)).flex_none().rounded_full().bg(color)
 }
 
-fn prop(label: &str, value: impl IntoElement) -> gpui::Div {
+/// One property of the item: its icon, its name and its value.
+struct Prop {
+    icon: &'static str,
+    label: &'static str,
+    value: AnyElement,
+    /// Takes two cells of the grid: a sentence, not a word.
+    wide: bool,
+    /// One of the few the folded head shows.
+    key: bool,
+}
+
+impl Prop {
+    fn new(icon: &'static str, label: &'static str, value: impl IntoElement) -> Self {
+        Prop {
+            icon,
+            label,
+            value: value.into_any_element(),
+            wide: false,
+            key: false,
+        }
+    }
+
+    fn key(mut self) -> Self {
+        self.key = true;
+        self
+    }
+
+    fn wide(mut self) -> Self {
+        self.wide = true;
+        self
+    }
+}
+
+/// A grid cell's width, when the properties wrap above the tabs.
+const CELL_W: f32 = 188.;
+const CELL_GAP: f32 = 20.;
+
+/// A property as a row of the side column: icon, name, value.
+fn prop_row(p: Prop) -> gpui::Div {
     div()
         .flex()
-        .items_center()
-        .min_h(px(22.))
+        .items_start()
+        .min_h(px(24.))
         .child(
             div()
-                .w(px(KEY_W))
+                .flex()
                 .flex_none()
+                .items_center()
+                .gap(px(8.))
+                .w(px(KEY_W))
+                .h(px(24.))
                 .text_color(theme::text_subtle())
-                .child(label.to_string()),
+                .child(icon(p.icon, 14.).text_color(theme::text_faint()))
+                .child(p.label),
         )
         .child(
             div()
                 .flex()
                 .flex_1()
                 .min_w_0()
+                .min_h(px(24.))
                 .items_center()
                 .gap(px(8.))
-                .overflow_hidden()
-                .child(value),
+                .child(p.value),
         )
 }
 
+/// A property as a cell of the grid above the tabs: its name small over it.
+fn prop_cell(p: Prop) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .flex_none()
+        .w(px(if p.wide {
+            2. * CELL_W + CELL_GAP
+        } else {
+            CELL_W
+        }))
+        .min_w_0()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .ty(Type::Caption)
+                .text_color(theme::text_subtle())
+                .child(icon(p.icon, 12.).text_color(theme::text_faint()))
+                .child(p.label),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .min_w_0()
+                .min_h(px(22.))
+                .child(p.value),
+        )
+}
+
+/// A label in its own color, lightened enough to read on the dark card.
+fn label_chip(l: &pr::Label) -> gpui::Div {
+    let raw = u32::from_str_radix(l.color.trim_start_matches('#'), 16).unwrap_or(0x8b949e);
+    let mut c: Hsla = gpui::rgb(raw).into();
+    c.l = c.l.max(0.68);
+    c.s = c.s.min(0.75);
+    ui::tag(l.name.clone(), c)
+}
+
 impl GitHubView {
-    pub(super) fn render_item(&self, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_item(&self, lay: super::Layout, cx: &mut Context<Self>) -> AnyElement {
         let card = ui::surface_card().flex_1().min_w_0();
         let Some(entry) = self.picked.clone() else {
             return card
@@ -145,7 +187,7 @@ impl GitHubView {
         };
         let Some(item) = entry.item.clone() else {
             return card
-                .child(self.render_top(narrow, None, cx))
+                .child(self.render_top(lay, None, cx))
                 .child(self.render_notice(cx))
                 .into_any_element();
         };
@@ -153,7 +195,7 @@ impl GitHubView {
         let details = g.details(&item).cloned();
         let problem = g.detail_problem(&item).cloned();
         let card = card
-            .child(self.render_top(narrow, details.as_ref(), cx))
+            .child(self.render_top(lay, details.as_ref(), cx))
             .children(self.render_strip(cx));
         let Some(details) = details else {
             let body = match problem {
@@ -185,38 +227,46 @@ impl GitHubView {
             };
             return card.child(body).into_any_element();
         };
-        let side = match &details {
-            Details::Pull(p) => self.render_pull_side(p, cx),
-            Details::Issue(i) => self.render_issue_side(i, cx),
-        };
-        let main = self.render_main(&details, cx);
-        card.child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h_0()
+        if lay.side_props {
+            let side = self.render_side(&details, cx);
+            let main = self.render_main(&details, None, cx);
+            return card
                 .child(
                     div()
                         .flex()
-                        .flex_col()
-                        .flex_none()
-                        .w(px(SIDE_W))
+                        .flex_1()
                         .min_h_0()
-                        .border_r_1()
-                        .border_color(theme::border_subtle())
-                        .child(side),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_none()
+                                .w(px(SIDE_W))
+                                .min_h_0()
+                                .border_r_1()
+                                .border_color(theme::border_subtle())
+                                .child(side),
+                        )
+                        .child(main),
                 )
-                .child(main),
-        )
-        .into_any_element()
+                .into_any_element();
+        }
+        let head = self.render_head(&details, cx);
+        card.child(self.render_main(&details, Some(head), cx))
+            .into_any_element()
     }
 
     fn render_top(
         &self,
-        narrow: bool,
+        lay: super::Layout,
         details: Option<&Details>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let narrow = lay.narrow;
+        // Short bars drop what has another way in: the faces, then the
+        // Comment button (the bar below and C), then Request changes (/changes).
+        let roomy = lay.item_w >= 860.;
+        let tight = lay.item_w < 600.;
         let entry = self.picked.clone();
         let item = entry.as_ref().and_then(|e| e.item.clone());
         let (icon_name, color) = match details {
@@ -264,21 +314,13 @@ impl GitHubView {
             }
             None => {}
         }
-        // Overlapping circles, each placed by hand: negative margins don't give the row its width.
-        let shown = people.len().min(4);
-        let avatars = div()
-            .relative()
-            .flex_none()
-            .h(px(24.))
-            .w(px(24. + shown.saturating_sub(1) as f32 * 17.))
-            .children(people.iter().take(4).enumerate().map(|(i, login)| {
-                ui::avatar(login, 24.)
-                    .absolute()
-                    .top_0()
-                    .left(px(i as f32 * 17.))
-                    .border_2()
-                    .border_color(theme::background())
-            }));
+        let g = self.github.read(cx);
+        let faces: Vec<(String, Option<std::path::PathBuf>)> = people
+            .iter()
+            .take(4)
+            .map(|l| (l.clone(), g.avatar(l).map(|p| p.to_path_buf())))
+            .collect();
+        let avatars = ui::avatar_stack(&faces, 26., theme::fill_raised());
         let tip_people = people.join(", ");
 
         div()
@@ -323,7 +365,7 @@ impl GitHubView {
                             )
                     }),
             )
-            .when(!people.is_empty(), |d| {
+            .when(!people.is_empty() && roomy, |d| {
                 d.child(
                     div()
                         .id("gh-people")
@@ -333,7 +375,7 @@ impl GitHubView {
                         .tooltip(ui::tip_text(tip_people)),
                 )
             })
-            .when(item.is_some(), |d| {
+            .when(item.is_some() && roomy, |d| {
                 d.child(
                     ui::key_pill(
                         "gh-comment",
@@ -348,7 +390,7 @@ impl GitHubView {
                     })),
                 )
             })
-            .when(pull_open && !mine, |d| {
+            .when(pull_open && !mine && !tight, |d| {
                 d.child(
                     ui::key_pill(
                         "gh-changes",
@@ -362,7 +404,9 @@ impl GitHubView {
                         cx.listener(|this, _, _, cx| this.ask_confirm(Confirm::RequestChanges, cx)),
                     ),
                 )
-                .child(
+            })
+            .when(pull_open && !mine, |d| {
+                d.child(
                     ui::key_pill(
                         "gh-approve",
                         Some(("tick02", None)),
@@ -605,47 +649,17 @@ impl GitHubView {
             .into_any_element()
     }
 
-    fn render_pull_side(&self, p: &Pull, cx: &mut Context<Self>) -> AnyElement {
+    /// The pull request's properties. `grid` shapes values for the cells
+    /// above the tabs instead of the side column's rows.
+    fn pull_props(&self, p: &Pull, grid: bool, cx: &mut Context<Self>) -> Vec<Prop> {
         let g = self.github.read(cx);
         let me = g.me().unwrap_or_default().to_string();
         let (icon_name, color, status) = pull_look(p);
         let checks = pr::checks_summary(p);
         let blockers = pr::blockers(p);
         let waiting = pr::waiting_on(p, &me);
-        let desc = first_paragraph(&p.body);
 
-        let intro = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .px(px(18.))
-            .pt(px(18.))
-            .pb(px(16.))
-            .border_b_1()
-            .border_color(theme::border_subtle())
-            .child(ui::icon_tile(icon_name, 44., color))
-            .child(div().mt(px(14.)).truncate().child(super::mono(
-                format!("#{} · {} → {}", p.number, p.head_ref_name, p.base_ref_name),
-                theme::text_subtle(),
-            )))
-            .child(div().mt(px(5.)).ty(Type::Title).child(p.title.clone()))
-            .when(!desc.is_empty(), |d| {
-                d.child(
-                    div()
-                        .mt(px(8.))
-                        .ty(Type::Body)
-                        .line_height(px(19.))
-                        .text_color(theme::text_muted())
-                        .child(desc),
-                )
-            });
-
-        let status_v = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(dot(color))
-            .child(status);
+        let status_v = ui::state_pill(icon_name, status, color);
         let waiting_v = match &waiting {
             WaitingOn::You(why) => {
                 let why = if why == "your review is requested" {
@@ -662,15 +676,31 @@ impl GitHubView {
                     .child(dot(theme::accent()))
                     .child(div().truncate().child(format!("You · {why}")))
             }
+            WaitingOn::Author => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .min_w_0()
+                .child(self.face(&p.author.login, 20., cx))
+                .child(div().truncate().child(p.author.login.clone())),
             other => div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
                 .min_w_0()
                 .text_color(theme::text())
-                .child(dot(theme::link().into()))
+                .child(dot(match other {
+                    WaitingOn::Nobody => theme::border_strong(),
+                    _ => theme::link().into(),
+                }))
+                .when_some(
+                    match other {
+                        WaitingOn::Reviewers(who) if who.len() == 1 => Some(who[0].clone()),
+                        _ => None,
+                    },
+                    |d, who| d.child(self.face(&who, 20., cx)),
+                )
                 .child(div().truncate().child(match other {
-                    WaitingOn::Author => p.author.login.clone(),
                     WaitingOn::Reviewers(who) if who.is_empty() => "A reviewer".into(),
                     WaitingOn::Reviewers(who) => who.join(", "),
                     WaitingOn::Checks => "Checks".into(),
@@ -681,15 +711,16 @@ impl GitHubView {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(dot(theme::link().into()))
-            .child(p.author.login.clone());
+            .min_w_0()
+            .child(self.face(&p.author.login, 20., cx))
+            .child(div().truncate().child(p.author.login.clone()));
         let checks_v = if checks.total() == 0 {
             div().text_color(theme::text_subtle()).child("No checks")
         } else {
             let colors: Vec<Hsla> = checks
                 .checks
                 .iter()
-                .take(12)
+                .take(if grid { 6 } else { 12 })
                 .map(|c| check_color(c.state))
                 .collect();
             let what = if checks.failed > 0 {
@@ -732,19 +763,7 @@ impl GitHubView {
         };
         let review_text = match p.review_decision.as_str() {
             "APPROVED" => "Approved".to_string(),
-            "CHANGES_REQUESTED" => {
-                let who: Vec<String> = p
-                    .latest_reviews
-                    .iter()
-                    .filter(|r| r.state == "CHANGES_REQUESTED")
-                    .map(|r| r.author.login.clone())
-                    .collect();
-                if who.is_empty() {
-                    "Changes requested".into()
-                } else {
-                    format!("Changes requested by {}", who.join(", "))
-                }
-            }
+            "CHANGES_REQUESTED" => "Changes requested".to_string(),
             "REVIEW_REQUIRED" => "Approval required".into(),
             _ => "No review required".into(),
         };
@@ -753,11 +772,84 @@ impl GitHubView {
         } else {
             review_text
         };
-        let merge_v = if blockers.is_empty() {
+        let reviewers = pr::reviewers(p);
+        let reviewers_v = if reviewers.is_empty() {
+            div()
+                .text_color(theme::text_subtle())
+                .child(review_text.clone())
+        } else if grid && reviewers.len() > 2 {
+            // Many: faces with how each stands on a badge.
+            let mut row = div().flex().items_center().gap(px(6.));
+            for (login, state) in reviewers.iter().take(6) {
+                let (name, c) = reviewer_look(*state);
+                row = row.child(
+                    div()
+                        .id(gpui::SharedString::from(format!("gh-rev-{login}")))
+                        .child(ui::avatar_badge(
+                            login,
+                            g.avatar(login),
+                            22.,
+                            name,
+                            c,
+                            theme::fill_raised(),
+                        ))
+                        .tooltip(ui::tip_text(format!("{login} · {}", reviewer_word(*state)))),
+                );
+            }
+            row
+        } else if grid {
+            let mut row = div().flex().items_center().gap(px(16.)).min_w_0();
+            for (login, state) in &reviewers {
+                let (name, c) = reviewer_look(*state);
+                row = row.child(
+                    div()
+                        .id(gpui::SharedString::from(format!("gh-rev-{login}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .min_w_0()
+                        .child(self.face(login, 20., cx))
+                        .child(div().truncate().child(login.clone()))
+                        .child(icon(name, 13.).text_color(c))
+                        .tooltip(ui::tip_text(format!("{login} · {}", reviewer_word(*state)))),
+                );
+            }
+            row
+        } else {
+            let mut list = div().flex().flex_col().gap(px(6.)).w_full().py(px(2.));
+            for (login, state) in &reviewers {
+                let (name, c) = reviewer_look(*state);
+                list = list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .min_w_0()
+                        .child(self.face(login, 20., cx))
+                        .child(div().flex_1().min_w_0().truncate().child(login.clone()))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(4.))
+                                .ty(Type::Caption)
+                                .text_color(c)
+                                .child(icon(name, 12.).text_color(c))
+                                .child(reviewer_word(*state)),
+                        ),
+                );
+            }
+            list
+        };
+        let merge_v = if blockers.is_empty() && p.open() {
             div().text_color(theme::success()).child("Ready to merge")
+        } else if !p.open() {
+            div().text_color(theme::text_muted()).child(status)
         } else {
             div()
-                .truncate()
+                .flex_1()
+                .min_w_0()
                 .text_color(theme::text_muted())
                 .child(format!(
                     "Blocked · {}",
@@ -792,23 +884,127 @@ impl GitHubView {
                 )),
             None => div().text_color(theme::text_subtle()).child("—"),
         };
-        let props = div()
-            .flex()
-            .flex_col()
-            .gap(px(11.))
-            .px(px(18.))
-            .py(px(14.))
-            .ty(Type::Body)
-            .child(prop("Status", status_v))
-            .child(prop("Waiting on", waiting_v))
-            .child(prop("Author", author_v))
-            .child(prop("Checks", checks_v))
-            .child(prop("Review", div().truncate().child(review_text)))
-            .child(prop("Merge", merge_v))
-            .child(prop("Changes", changes_v))
-            .child(prop("Commit", commit_v));
+        // A merged or closed one waits on nobody and has nothing left to merge.
+        let open = p.open();
+        let mut props = vec![Prop::new(icon_name, "Status", status_v).key()];
+        if open {
+            props.push(Prop::new("clock01", "Waiting on", waiting_v).key());
+        }
+        props.push(Prop::new("user", "Author", author_v));
+        props.push(Prop::new("activity01", "Checks", checks_v).key());
+        if reviewers.is_empty() {
+            props.push(Prop::new("tick02", "Review", reviewers_v).key());
+        } else {
+            let many = grid && reviewers.len() == 2;
+            let prop = Prop::new("tick02", "Reviewers", reviewers_v).key();
+            props.push(if many { prop.wide() } else { prop });
+            if !grid {
+                props.push(Prop::new(
+                    "checkmark-circle02",
+                    "Review",
+                    div().truncate().child(review_text),
+                ));
+            }
+        }
+        if open {
+            props.push(Prop::new("git-merge", "Merge", merge_v).wide().key());
+        }
+        props.push(Prop::new("file01", "Changes", changes_v).key());
+        props.push(Prop::new("git-commit", "Commit", commit_v));
+        if !p.labels.is_empty() {
+            props.push(
+                Prop::new(
+                    "tag01",
+                    "Labels",
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .children(p.labels.iter().map(label_chip)),
+                )
+                .wide(),
+            );
+        }
+        props
+    }
 
-        // The merge button: the repository's method, blocked with its reason.
+    fn issue_props(&self, i: &pr::Issue, cx: &mut Context<Self>) -> Vec<Prop> {
+        let (icon_name, color, status) = issue_look(i);
+        let mut assignees = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.))
+            .min_w_0();
+        if i.assignees.is_empty() {
+            assignees = assignees.text_color(theme::text_subtle()).child("Nobody");
+        }
+        for a in i.assignees.iter().take(3) {
+            assignees = assignees.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(self.face(&a.login, 20., cx))
+                    .child(a.login.clone()),
+            );
+        }
+        let mut props = vec![
+            Prop::new(
+                icon_name,
+                "Status",
+                ui::state_pill(icon_name, status, color),
+            )
+            .key(),
+            Prop::new(
+                "user",
+                "Author",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .min_w_0()
+                    .child(self.face(&i.author.login, 20., cx))
+                    .child(div().truncate().child(i.author.login.clone())),
+            )
+            .key(),
+            Prop::new("user", "Assignees", assignees).key(),
+            Prop::new(
+                "comment01",
+                "Comments",
+                super::mono(i.comments.len().to_string(), theme::text()),
+            ),
+            Prop::new(
+                "calendar03",
+                "Opened",
+                super::mono(
+                    format!("{} ago", super::ago_iso(&i.created_at)),
+                    theme::text(),
+                ),
+            ),
+        ];
+        if !i.labels.is_empty() {
+            props.push(
+                Prop::new(
+                    "tag01",
+                    "Labels",
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .children(i.labels.iter().map(label_chip)),
+                )
+                .wide(),
+            );
+        }
+        props
+    }
+
+    /// The pull request's own actions: the agent's review and the merge
+    /// button, blocked with its reason. `row` lays them side by side.
+    fn pull_actions(&self, p: &Pull, row: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let (_, _, status) = pull_look(p);
+        let blockers = pr::blockers(p);
         let methods = self
             .merge_methods
             .get(&self.item().map(|i| i.repo).unwrap_or_default())
@@ -839,146 +1035,221 @@ impl GitHubView {
             b.on_click(cx.listener(|this, _, _, cx| this.ask_merge(cx)))
         })
         .when_some(why_not.clone(), |b, why| b.tooltip(ui::tip_text(why)));
-        let footer = div()
+        let agent = ui::key_pill(
+            "gh-agent",
+            Some(("sparkles", Some(theme::accent()))),
+            "Review with agent",
+            Some("R"),
+            PillKind::Normal,
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.review_with_agent(cx)));
+        if row {
+            return div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(8.))
+                .child(agent)
+                .when(p.open(), |d| d.child(merge_btn));
+        }
+        div()
             .flex()
             .flex_col()
             .gap(px(8.))
-            .mt_auto()
-            .px(px(18.))
-            .pt(px(12.))
-            .pb(px(16.))
-            .child(
-                div().flex().flex_wrap().gap(px(8.)).child(
-                    ui::key_pill(
-                        "gh-agent",
-                        Some(("sparkles", Some(theme::accent()))),
-                        "Review with agent",
-                        Some("R"),
-                        PillKind::Normal,
-                        true,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.review_with_agent(cx))),
-                ),
-            )
+            .child(div().flex().flex_wrap().gap(px(8.)).child(agent))
             .when(p.open(), |d| d.child(div().flex().child(merge_btn)))
-            .when_some(why_not.filter(|_| p.open()), |d, why| {
-                d.child(
+    }
+
+    /// The item's eyebrow and title.
+    fn title_block(&self, details: &Details, big: bool) -> gpui::Div {
+        let (eyebrow, title) = match details {
+            Details::Pull(p) => (
+                format!("#{} · {} → {}", p.number, p.head_ref_name, p.base_ref_name),
+                p.title.clone(),
+            ),
+            Details::Issue(i) => (format!("#{} · issue", i.number), i.title.clone()),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .gap(px(4.))
+            .child(
+                div()
+                    .truncate()
+                    .child(super::mono(eyebrow, theme::text_subtle())),
+            )
+            .child(
+                div()
+                    .ty(if big { Type::Title } else { Type::Subtitle })
+                    .text_color(theme::text())
+                    .child(title),
+            )
+    }
+
+    /// The side column beside the tabs: title, properties, actions.
+    fn render_side(&self, details: &Details, cx: &mut Context<Self>) -> AnyElement {
+        let (icon_name, color) = match details {
+            Details::Pull(p) => {
+                let (i, c, _) = pull_look(p);
+                (i, c)
+            }
+            Details::Issue(i) => {
+                let (n, c, _) = issue_look(i);
+                (n, c)
+            }
+        };
+        let props = match details {
+            Details::Pull(p) => self.pull_props(p, false, cx),
+            Details::Issue(i) => self.issue_props(i, cx),
+        };
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .px(px(20.))
+            .py(px(16.))
+            .ty(Type::Body);
+        for p in props {
+            list = list.child(prop_row(p));
+        }
+        div()
+            .id("gh-side")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .px(px(20.))
+                    .pt(px(20.))
+                    .pb(px(16.))
+                    .child(ui::icon_tile(icon_name, 40., color))
+                    .child(self.title_block(details, true)),
+            )
+            .child(div().mx(px(20.)).h(px(1.)).bg(theme::border_subtle()))
+            .child(list)
+            .when_some(
+                match details {
+                    Details::Pull(p) => Some(self.pull_actions(p, false, cx)),
+                    _ => None,
+                },
+                |d, actions| {
+                    d.child(
+                        div()
+                            .mt_auto()
+                            .px(px(20.))
+                            .pt(px(12.))
+                            .pb(px(20.))
+                            .child(actions),
+                    )
+                },
+            )
+            .into_any_element()
+    }
+
+    /// The item's head when the properties wrap above the tabs: title and
+    /// actions, then the properties as a grid.
+    fn render_head(&self, details: &Details, cx: &mut Context<Self>) -> AnyElement {
+        let props = match details {
+            Details::Pull(p) => self.pull_props(p, true, cx),
+            Details::Issue(i) => self.issue_props(i, cx),
+        };
+        // A short window folds the head to its key properties on one line.
+        let folded = !self.head_open && self.size.get().1 < super::TALL;
+        let mut grid = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(px(if folded { 20. } else { CELL_GAP }))
+            .gap_y(px(if folded { 8. } else { 14. }))
+            .ty(Type::Body);
+        for p in props {
+            if !folded {
+                grid = grid.child(prop_cell(p));
+            } else if p.key {
+                let first = p.label == "Status";
+                grid = grid.child(
                     div()
-                        .ty(Type::Caption)
-                        .text_color(theme::text_subtle())
-                        .line_clamp(2)
-                        .child(why),
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .min_w_0()
+                        .when(!first, |d| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .ty(Type::Caption)
+                                    .text_color(theme::text_subtle())
+                                    .child(p.label),
+                            )
+                        })
+                        .child(p.value),
+                );
+            }
+        }
+        let tall = self.size.get().1 >= super::TALL;
+        let grid = div()
+            .flex()
+            .items_start()
+            .gap(px(12.))
+            .child(grid.flex_1().min_w_0())
+            .when(!tall, |d| {
+                let open = self.head_open;
+                d.child(
+                    ui::icon_button(
+                        "gh-head-fold",
+                        if open { "arrow-up01" } else { "arrow-down01" },
+                        13.,
+                    )
+                    .tooltip(ui::tip(if open { "Fewer details" } else { "All details" }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.head_open = !this.head_open;
+                        cx.notify();
+                    })),
                 )
             });
-
         div()
-            .id("gh-side")
             .flex()
             .flex_col()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(intro)
-            .child(props)
-            .child(footer)
-            .into_any_element()
-    }
-
-    fn render_issue_side(&self, i: &pr::Issue, cx: &mut Context<Self>) -> AnyElement {
-        let _ = cx;
-        let (icon_name, color, status) = issue_look(i);
-        let desc = first_paragraph(&i.body);
-        let assignees: Vec<String> = i.assignees.iter().map(|a| a.login.clone()).collect();
-        let labels: Vec<String> = i.labels.iter().map(|l| l.name.clone()).collect();
-        div()
-            .id("gh-side")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
+            .flex_none()
+            .gap(px(14.))
+            .px(px(24.))
+            .pt(px(16.))
+            .pb(px(16.))
+            .border_b_1()
+            .border_color(theme::border_subtle())
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .px(px(18.))
-                    .pt(px(18.))
-                    .pb(px(16.))
-                    .border_b_1()
-                    .border_color(theme::border_subtle())
-                    .child(ui::icon_tile(icon_name, 44., color))
-                    .child(div().mt(px(14.)).child(super::mono(
-                        format!("#{} · issue", i.number),
-                        theme::text_subtle(),
-                    )))
-                    .child(div().mt(px(5.)).ty(Type::Title).child(i.title.clone()))
-                    .when(!desc.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .mt(px(8.))
-                                .ty(Type::Body)
-                                .line_height(px(19.))
-                                .text_color(theme::text_muted())
-                                .child(desc),
-                        )
-                    }),
+                    // A narrow card puts the actions under the title, not beside it.
+                    .when(self.layout().item_w < 760., |d| d.flex_col())
+                    .items_start()
+                    .gap(px(12.))
+                    .child(self.title_block(details, false).flex_1().w_full())
+                    .when_some(
+                        match details {
+                            Details::Pull(p) => Some(self.pull_actions(p, true, cx)),
+                            _ => None,
+                        },
+                        |d, a| d.child(a),
+                    ),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(11.))
-                    .px(px(18.))
-                    .py(px(14.))
-                    .ty(Type::Body)
-                    .child(prop(
-                        "Status",
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(dot(color))
-                            .child(status),
-                    ))
-                    .child(prop(
-                        "Author",
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(dot(theme::link().into()))
-                            .child(i.author.login.clone()),
-                    ))
-                    .child(prop(
-                        "Assignees",
-                        div()
-                            .truncate()
-                            .when(assignees.is_empty(), |d| d.text_color(theme::text_subtle()))
-                            .child(if assignees.is_empty() {
-                                "Nobody".to_string()
-                            } else {
-                                assignees.join(", ")
-                            }),
-                    ))
-                    .when(!labels.is_empty(), |d| {
-                        d.child(prop("Labels", div().truncate().child(labels.join(", "))))
-                    })
-                    .child(prop(
-                        "Comments",
-                        super::mono(i.comments.len().to_string(), theme::text()),
-                    ))
-                    .child(prop(
-                        "Opened",
-                        super::mono(
-                            format!("{} ago", super::ago_iso(&i.created_at)),
-                            theme::text(),
-                        ),
-                    )),
-            )
+            .child(grid)
             .into_any_element()
     }
 
-    fn render_main(&self, details: &Details, cx: &mut Context<Self>) -> AnyElement {
+    fn render_main(
+        &self,
+        details: &Details,
+        head: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let g = self.github.read(cx);
         let me = g.me().unwrap_or_default().to_string();
         let mut tabs = div()
@@ -1028,6 +1299,8 @@ impl GitHubView {
                 theme::text_subtle(),
             )));
         }
+        let lay = self.layout();
+        let main_w = lay.item_w - if lay.side_props { SIDE_W } else { 0. };
         let content = match (tab, details) {
             (Tab::Files, Details::Pull(p)) => self.render_files(p, cx),
             (Tab::Checks, Details::Pull(p)) => self.render_checks(p, cx),
@@ -1040,7 +1313,9 @@ impl GitHubView {
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .child(tabs)
+            .children(head)
+            // An issue has only its timeline: a row of one tab says nothing.
+            .when(matches!(details, Details::Pull(_)), |d| d.child(tabs))
             .child(
                 div()
                     .id("gh-body")
@@ -1050,22 +1325,24 @@ impl GitHubView {
                     .track_scroll(&self.body_scroll)
                     .child(content),
             )
-            .child(self.render_command_bar(cx))
+            .child(self.render_command_bar(main_w, cx))
             .into_any_element()
     }
 
-    fn render_command_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_command_bar(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        // The hints go first when the bar is short: typing needs the room.
+        let hints = width >= 720.;
+        let next_only = !hints && width >= 520.;
         let pull = self.item().is_some_and(|i| i.kind == ItemKind::Pull);
         let sending = self.busy == Some("comment");
-        div()
+        let me = self.github.read(cx).me().unwrap_or_default().to_string();
+        let bar = div()
             .flex()
-            .flex_none()
+            .flex_1()
             .items_center()
-            .gap(px(11.))
-            .mx(px(14.))
-            .mb(px(14.))
-            .mt(px(8.))
-            .px(px(14.))
+            .gap(px(12.))
+            .pl(px(10.))
+            .pr(px(14.))
             .h(px(44.))
             .rounded(px(ui::RADIUS_LG))
             .border_1()
@@ -1073,10 +1350,12 @@ impl GitHubView {
             .bg(theme::background())
             .child(if sending {
                 ui::spinner("gh-sending", 15., theme::text_faint()).into_any_element()
-            } else {
-                icon("search01", 15.)
+            } else if me.is_empty() {
+                icon("comment01", 15.)
                     .text_color(theme::text_faint())
                     .into_any_element()
+            } else {
+                self.face(&me, 24., cx).into_any_element()
             })
             .child(
                 div()
@@ -1085,36 +1364,69 @@ impl GitHubView {
                     .ty(Type::Body)
                     .child(self.comment.clone()),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(14.))
-                    .child(
-                        div()
-                            .id("gh-hint-u")
-                            .child(ui::key_hint("Catch me up", "U"))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.catch_up(cx))),
-                    )
-                    .child(
-                        div()
-                            .id("gh-hint-s")
-                            .child(ui::key_hint("Summarize", "S"))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.summarize(cx))),
-                    )
-                    .child(
-                        div()
-                            .id("gh-hint-j")
-                            .child(ui::key_hint("Next", "J"))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
-                    ),
-            )
-            .when(!pull, |d| d)
+            .when(hints || next_only, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(14.))
+                        .when(hints, |d| {
+                            d.child(
+                                div()
+                                    .id("gh-hint-u")
+                                    .child(ui::key_hint("Catch me up", "U"))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| this.catch_up(cx))),
+                            )
+                        })
+                        .when(hints, |d| {
+                            d.child(
+                                div()
+                                    .id("gh-hint-s")
+                                    .child(ui::key_hint("Summarize", "S"))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| this.summarize(cx))),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id("gh-hint-j")
+                                .child(ui::key_hint("Next", "J"))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                        ),
+                )
+            })
+            .when(!pull, |d| d);
+        div()
+            .flex()
+            .flex_none()
+            .px(px(16.))
+            .pt(px(12.))
+            .pb(px(16.))
+            .border_t_1()
+            .border_color(theme::border_subtle())
+            .child(bar)
             .into_any_element()
+    }
+}
+
+fn reviewer_look(s: pr::ReviewerState) -> (&'static str, Hsla) {
+    match s {
+        pr::ReviewerState::Approved => ("tick02", theme::success().into()),
+        pr::ReviewerState::ChangesRequested => ("alert-circle", theme::error().into()),
+        pr::ReviewerState::Commented => ("comment01", theme::text_muted()),
+        pr::ReviewerState::Requested => ("clock01", theme::accent()),
+    }
+}
+
+fn reviewer_word(s: pr::ReviewerState) -> &'static str {
+    match s {
+        pr::ReviewerState::Approved => "Approved",
+        pr::ReviewerState::ChangesRequested => "Changes",
+        pr::ReviewerState::Commented => "Commented",
+        pr::ReviewerState::Requested => "Pending",
     }
 }
 
@@ -1131,16 +1443,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_description_is_the_first_real_paragraph() {
-        let body = "<!-- template\nsays things -->\n## What\n\nSamples CPU and **memory** in every job,\nthen reports each Monday.\n\nMore later.";
-        assert_eq!(
-            first_paragraph(body),
-            "Samples CPU and memory in every job, then reports each Monday."
-        );
-        assert_eq!(first_paragraph(""), "");
-        assert_eq!(first_paragraph("- [ ] tests\n- [x] docs"), "");
-        let long = "word ".repeat(100);
-        assert!(first_paragraph(&long).ends_with('…'));
+    fn lower_first_lowers_only_the_first() {
         assert_eq!(
             lower_first("Needs an approving review"),
             "needs an approving review"

@@ -307,6 +307,13 @@ impl Shell {
 
     /// A card already made, when the island is connected; `false` and the
     /// caller tells it some other way.
+    #[cfg(feature = "team")]
+    pub(super) fn island_card(&self, alert: isl::Alert) -> bool {
+        self.island
+            .as_ref()
+            .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
+    }
+
     /// Keeps `alert` in the history, then shows it on the island when it is
     /// connected; `false` and the caller tells it some other way. Every notice
     /// the shell shows goes through here, so the Inbox misses none.

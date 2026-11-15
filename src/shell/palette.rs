@@ -1367,6 +1367,7 @@ impl Shell {
         let facts = self.rule_facts(cx);
         let now = crate::memory::now();
         let mut fire = Vec::new();
+        let mut failed = Vec::new();
         let mut changed = false;
         for rule in self.rules.items.iter_mut() {
             if rule.state != palette::rules::State::Waiting {
@@ -1375,9 +1376,18 @@ impl Shell {
             let before = rule.note.clone();
             match palette::rules::check(rule, &facts, now) {
                 palette::rules::Outcome::Fire => {
-                    rule.state = palette::rules::State::Done;
-                    fire.push(rule.clone());
                     changed = true;
+                    match palette::rules::workdir(rule, |d| d.exists()) {
+                        Ok(dir) => {
+                            rule.state = palette::rules::State::Done;
+                            fire.push((rule.clone(), dir));
+                        }
+                        Err(why) => {
+                            rule.note = why.clone();
+                            rule.state = palette::rules::State::Failed(why);
+                            failed.push(rule.clone());
+                        }
+                    }
                 }
                 palette::rules::Outcome::Expired => {
                     rule.state = palette::rules::State::Expired;
@@ -1391,22 +1401,30 @@ impl Shell {
             self.rules.save();
             self.refresh_automations(cx);
         }
-        for rule in fire {
-            self.run_rule(rule, window, cx);
+        for rule in failed {
+            self.notify_from(
+                AlertKind::Failure,
+                &rule.title,
+                &format!("Did not run: {}", rule.note),
+                None,
+                None,
+                "arakun",
+                cx,
+            );
+        }
+        for (rule, dir) in fire {
+            self.run_rule(rule, dir, window, cx);
         }
     }
 
     fn run_rule(
         &mut self,
         rule: palette::rules::Rule,
+        // From `rules::workdir`: the rule's own folder, checked to exist.
+        dir: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let dir = rule
-            .dir
-            .clone()
-            .filter(|d| d.exists())
-            .or_else(|| self.has_projects().then(|| self.env().path.clone()));
         let pull = match &rule.trigger {
             palette::rules::Trigger::PrChecksPass { repo, number }
             | palette::rules::Trigger::PrMerged { repo, number } => Some(ItemRef {

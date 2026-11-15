@@ -98,6 +98,7 @@ impl Shell {
                 Some(Open::GitHub(None)),
                 None,
                 "github",
+                cx,
             );
             return;
         }
@@ -110,6 +111,7 @@ impl Shell {
                 Some(Open::GitHub(Some(n.id.clone()))),
                 image.as_deref(),
                 "github",
+                cx,
             );
         }
     }

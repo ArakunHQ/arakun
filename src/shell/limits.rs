@@ -142,7 +142,7 @@ impl Shell {
             } else {
                 AlertKind::Warning
             };
-            self.notify(kind, &title, &body, Some(Open::Usage));
+            self.notify(kind, &title, &body, Some(Open::Usage), cx);
         }
         cx.notify();
     }

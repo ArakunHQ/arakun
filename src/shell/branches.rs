@@ -153,6 +153,7 @@ impl Shell {
                         Some(Open::Branches {
                             root: self.project().path.clone(),
                         }),
+                        cx,
                     );
                 }
             }
@@ -193,6 +194,7 @@ impl Shell {
                         &format!("Couldn't check out {branch}"),
                         &format!("{e}"),
                         Some(open),
+                        cx,
                     );
                 }
             });

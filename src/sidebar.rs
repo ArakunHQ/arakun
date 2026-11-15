@@ -119,7 +119,7 @@ impl View {
     #[allow(dead_code)] // the builder does not list views with a blurb yet
     pub fn blurb(self) -> &'static str {
         match self {
-            View::Inbox => "Sessions waiting for you",
+            View::Inbox => "Sessions waiting for you, and past notifications",
             #[cfg(feature = "coderlabs")]
             View::Tasks => "Your task list",
             View::Runs => "CI runs and their logs",

@@ -1669,7 +1669,9 @@ impl Island {
                 div()
                     .flex()
                     .gap(px(12.))
-                    .when(layout.pill, |d| d.items_center())
+                    // A notice's picture sits centered on its text; the raccoon
+                    // of a session card stays at the top.
+                    .when(layout.pill || !session, |d| d.items_center())
                     .child(face)
                     .child(text),
             )

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs `cargo fmt --all` in a checkout without the private modules. rustfmt
+# Runs `cargo fmt` in a checkout without the private modules. rustfmt
 # opens the file of every `mod`, even one a cfg feature turns off, and stops at
 # the first that is missing. The public repository does not have the `team` and
 # `coderlabs` modules, so while rustfmt runs this puts an empty file in place of
@@ -47,7 +47,9 @@ done < <(git ls-files '*.rs' | xargs grep -H -E '^(pub(\([a-z]+\))? )?mod [a-z0-
 
 while :; do
   status=0
-  out=$(cargo fmt --all "$@" 2>&1) || status=$?
+  # Not --all: that also formats path dependencies, such as a local GPUI checkout
+  # that [patch] points at.
+  out=$(cargo fmt "$@" 2>&1) || status=$?
   missing=$(printf '%s\n' "$out" | sed -n 's/.*failed to resolve mod `[^`]*`: \(.*\) does not exist.*/\1/p' | head -n 1)
   if [[ -z $missing ]]; then
     [[ -z $out ]] || printf '%s\n' "$out"

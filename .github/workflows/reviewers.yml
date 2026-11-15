@@ -279,9 +279,9 @@ jobs:
     if: >-
       ${{ github.event_name == 'pull_request_target' ||
       github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' }}
-    concurrency:
-      group: approval-${{ github.event.pull_request.number || inputs.pr || github.event.workflow_run.head_sha }}
-      cancel-in-progress: true
+    # No concurrency group: a cancelled or replaced run would skip the heads
+    # it was given, such as the old head after two quick pushes. Every run
+    # reads the reviews just before it writes, so overlapping runs agree.
     runs-on: depot-ubuntu-24.04
     permissions:
       pull-requests: read

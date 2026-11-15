@@ -27,8 +27,9 @@ name: Reviewers
 
 on:
   pull_request_target:
-    # synchronize: a later push can touch another platform.
-    types: [opened, reopened, ready_for_review, synchronize]
+    # synchronize: a later push can touch another platform. edited: a new
+    # base branch changes the diff without a push (title edits are skipped).
+    types: [opened, reopened, ready_for_review, synchronize, edited]
 
 permissions: {}
 
@@ -39,7 +40,9 @@ concurrency:
 jobs:
   request:
     name: Request reviewers
-    if: ${{ !github.event.pull_request.draft }}
+    if: >-
+      ${{ !github.event.pull_request.draft &&
+      (github.event.action != 'edited' || github.event.changes.base) }}
     runs-on: depot-ubuntu-24.04
     permissions:
       pull-requests: write

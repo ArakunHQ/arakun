@@ -659,6 +659,49 @@ impl Spring {
     }
 }
 
+/// Whether the pointer is really on a card. A card can drop under a pointer
+/// that rests on the window below (its tabs), and that must not hold the card
+/// or catch the next click: it only counts once the pointer moves on the card
+/// after the card settled. Any change of card or island starts it over, since
+/// gpui sends no leave for a card that is gone.
+#[derive(Default)]
+struct CardHover {
+    /// The card (by its seq) the pointer is on.
+    hot: Option<u64>,
+    /// Where the pointer was on that card when it settled.
+    anchor: Option<(u64, Point<Pixels>)>,
+}
+
+impl CardHover {
+    /// The pointer moved to `at` on card `seq`; returns whether that made it hot.
+    fn moved(&mut self, seq: u64, at: Point<Pixels>, settled: bool) -> bool {
+        if self.hot == Some(seq) {
+            return false;
+        }
+        match self.anchor {
+            // Moves before the card settled don't count: the anchor follows them.
+            Some((s, from)) if s == seq && settled => {
+                if (at.x - from.x).abs() + (at.y - from.y).abs() > px(4.) {
+                    self.hot = Some(seq);
+                    return true;
+                }
+            }
+            _ => self.anchor = Some((seq, at)),
+        }
+        false
+    }
+
+    fn is_hot(&self, seq: u64) -> bool {
+        self.hot == Some(seq)
+    }
+
+    /// Starts over; returns whether a card was hot.
+    fn reset(&mut self) -> bool {
+        self.anchor = None;
+        self.hot.take().is_some()
+    }
+}
+
 /// An alert's card: a shape of its own that drips out of the island, hangs
 /// under it and melts back in when the alert goes.
 struct Card {
@@ -1027,14 +1070,9 @@ pub struct Island {
     /// When an agent was last busy.
     busy_at: Option<Instant>,
     hovered: bool,
-    /// The card (by its seq) the pointer is on: its buttons show only then,
+    /// Whether the pointer is really on the card: its buttons show only then,
     /// the way a phone shows a notification's actions on a swipe.
-    card_hot: Option<u64>,
-    /// Where the pointer was first seen on the card: it only counts as a
-    /// hover once it moves from there. A card can drop under a pointer that
-    /// rests on the window below (its tabs), and that must not hold the
-    /// card or catch the next click.
-    card_pointer: Option<(u64, Point<Pixels>)>,
+    card_hover: CardHover,
     /// Bumped on every pointer change, so a delayed leave knows if it still holds.
     leaving: u64,
     /// Off after a click, so the next state shows under the pointer.
@@ -1067,8 +1105,7 @@ impl Island {
                 let alive = this.update(cx, |island, cx| {
                     // A card waits while it is really hovered; one that just
                     // sits under a resting pointer times out as usual.
-                    let hold =
-                        island.hovered && (island.card.is_none() || island.card_hot.is_some());
+                    let hold = island.hovered && (island.card.is_none() || island.card_is_hot());
                     if island.alerts.tick(Instant::now(), hold) {
                         cx.emit(IslandEvent::Dismissed);
                     }
@@ -1096,8 +1133,7 @@ impl Island {
             armed: None,
             busy_at: None,
             hovered: false,
-            card_hot: None,
-            card_pointer: None,
+            card_hover: CardHover::default(),
             leaving: 0,
             peek: true,
             pinned: false,
@@ -1264,6 +1300,7 @@ impl Island {
                 if card.gone.is_none() && want.as_ref().map(|w| w.0) != Some(card.seq) {
                     card.gone = Some(now);
                     self.melted = Some(now);
+                    self.card_hover.reset();
                     cx.notify();
                 }
             }
@@ -1286,6 +1323,7 @@ impl Island {
                         gone: None,
                         layout: None,
                     });
+                    self.card_hover.reset();
                     cx.notify();
                 }
             }
@@ -1326,6 +1364,13 @@ impl Island {
         }
         cx.emit(IslandEvent::Dismissed);
         self.refresh(cx);
+    }
+
+    /// Whether the pointer is really on the card out, which still shows.
+    fn card_is_hot(&self) -> bool {
+        self.card
+            .as_ref()
+            .is_some_and(|c| c.gone.is_none() && self.card_hover.is_hot(c.seq))
     }
 
     /// Whether `seq` is the card out and its alert still the one in front:
@@ -1491,6 +1536,10 @@ impl Island {
     }
 
     fn set_hover(&mut self, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            // Leaving the window sends no leave to the card under the pointer.
+            self.card_hover.reset();
+        }
         if self.hovered != on {
             self.hovered = on;
             self.peek = true;
@@ -1663,7 +1712,7 @@ impl Island {
         // Under the text, not in the far corner, so the card has no empty
         // stretch at the bottom left.
         let indent = CardLayout::text_x(a) - if session { 18. } else { 14. };
-        let hot = self.card_hot == Some(seq);
+        let hot = self.card_hover.is_hot(seq);
         let buttons = (a.buttons() && (confirm || hot)).then(|| {
             div()
                 .flex()
@@ -1703,32 +1752,18 @@ impl Island {
             .pr(px(18.))
             .id(("card", seq as usize))
             .on_hover(cx.listener(move |this, on: &bool, _, cx| {
-                if !*on {
-                    this.card_pointer = None;
-                    if this.card_hot.take().is_some() {
-                        cx.notify();
-                    }
+                if !*on && this.card_hover.reset() {
+                    cx.notify();
                 }
             }))
             // Hot only after the pointer moves on the card, and not in the
             // card's first moments, when it may have just dropped under it.
             .on_mouse_move(cx.listener(move |this, ev: &gpui::MouseMoveEvent, _, cx| {
-                if this.card_hot == Some(seq) {
-                    return;
-                }
-                let settled = this
-                    .card
-                    .as_ref()
-                    .is_some_and(|c| c.seq == seq && c.born.elapsed() > CARD_SETTLE);
-                match this.card_pointer {
-                    Some((s, at)) if s == seq => {
-                        let moved = (ev.position.x - at.x).abs() + (ev.position.y - at.y).abs();
-                        if settled && moved > px(4.) {
-                            this.card_hot = Some(seq);
-                            cx.notify();
-                        }
-                    }
-                    _ => this.card_pointer = Some((seq, ev.position)),
+                let settled = this.card.as_ref().is_some_and(|c| {
+                    c.seq == seq && c.gone.is_none() && c.born.elapsed() > CARD_SETTLE
+                });
+                if this.card_hover.moved(seq, ev.position, settled) {
+                    cx.notify();
                 }
             }))
             // A click anywhere on a notice opens what it is about, like "Ver".
@@ -1739,7 +1774,7 @@ impl Island {
                         cx.stop_propagation();
                         // Only a pointer that came to the card opens it; a
                         // click meant for the window below does nothing.
-                        if this.showing(seq) && this.card_hot == Some(seq) {
+                        if this.showing(seq) && this.card_hover.is_hot(seq) {
                             this.see(cx)
                         }
                     }),
@@ -2464,6 +2499,7 @@ impl Render for Island {
             .is_some_and(|at| at.elapsed().as_secs_f32() >= MELT_FOR)
         {
             self.card = None;
+            self.card_hover.reset();
             self.sync_card(cx);
         }
         let card = self.card.as_ref().and_then(|c| {
@@ -2739,6 +2775,31 @@ mod tests {
         }
         let w = REC_BARS as f32 * BAR_W + (REC_BARS - 1) as f32 * BAR_GAP;
         fits(View::Recording, w, BARS_H);
+    }
+
+    #[test]
+    fn a_card_is_hot_only_after_a_move_once_settled_and_until_it_changes() {
+        let at = |x: f32, y: f32| point(px(x), px(y));
+        let mut h = CardHover::default();
+        // Moves while the card drops don't count, however far.
+        assert!(!h.moved(1, at(0., 0.), false));
+        assert!(!h.moved(1, at(50., 0.), false));
+        // Once settled, a jitter isn't a move, a real one is.
+        assert!(!h.moved(1, at(52., 0.), true));
+        assert!(h.moved(1, at(60., 0.), true));
+        assert!(h.is_hot(1) && !h.is_hot(2));
+        // A new card under the same resting pointer starts cold.
+        assert!(h.reset());
+        assert!(!h.is_hot(1));
+        assert!(!h.moved(2, at(60., 0.), true));
+        assert!(!h.is_hot(2));
+        assert!(h.moved(2, at(70., 0.), true));
+        // A position seen on another card is no anchor for this one.
+        h.reset();
+        assert!(!h.moved(1, at(0., 0.), true));
+        assert!(!h.moved(2, at(90., 0.), true));
+        assert!(!h.is_hot(2));
+        assert!(!h.reset());
     }
 
     #[test]

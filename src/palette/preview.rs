@@ -598,6 +598,22 @@ impl Palette {
                     ],
                 }
             }
+            Card::OfferAnswer => vec![
+                kit::preview_eyebrow("sparkles", format!("quick answer · {}", answer::MODEL_LABEL)).into_any_element(),
+                kit::preview_title("Ask Claude for a short answer").into_any_element(),
+                kit::preview_text(
+                    "Enter sends the question, the memories that match it and the failed CI runs of this branch to Anthropic through Claude Code, on your Claude account. Nothing is sent before.",
+                )
+                .into_any_element(),
+            ],
+            Card::OfferRule => vec![
+                kit::preview_eyebrow("flash", format!("automation · {}", answer::MODEL_LABEL)).into_any_element(),
+                kit::preview_title("Read it as an automation").into_any_element(),
+                kit::preview_text(
+                    "Enter sends the sentence and your session titles to Anthropic through Claude Code, which reads it as a rule. You still confirm the rule before it waits. Nothing is sent before.",
+                )
+                .into_any_element(),
+            ],
             Card::Rule(d) => {
                 let pull = match &d.trigger {
                     rules::Trigger::PrChecksPass { number, repo } | rules::Trigger::PrMerged { number, repo } => self

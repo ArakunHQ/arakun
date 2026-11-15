@@ -125,9 +125,9 @@ jobs:
           packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
           version: 1
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # Takes seconds and builds nothing. The script stands in for the private
       # modules that rustfmt would otherwise stop at.
@@ -190,9 +190,9 @@ jobs:
           tar -xjf "$archive" -C "$RUNNER_TEMP/cef-dist" --strip-components=1
           tools/install-cef.sh "$RUNNER_TEMP/cef-dist" "$RUNNER_TEMP/cef"
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
@@ -222,7 +222,9 @@ jobs:
           packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
           version: 1
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
@@ -247,9 +249,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -269,7 +271,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       - uses: Swatinem/rust-cache@v2
         with:

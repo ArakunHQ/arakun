@@ -297,6 +297,55 @@ impl Palette {
                         .into_any_element(),
                 )
             }
+            Card::OfferAnswer => (
+                Tint::Neutral,
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .w_full()
+                    .child(kit::glow_tile("sparkles", Tint::Amber))
+                    .child(kit::card_text(
+                        format!("Quick answer from {}", answer::MODEL_LABEL),
+                        Some(
+                            div()
+                                .child("Enter to ask Claude. Nothing is sent before.")
+                                .into_any_element(),
+                        ),
+                    ))
+                    .when(selected, |d| d.child(enter()))
+                    .into_any_element(),
+            ),
+            Card::OfferRule => {
+                let reading = self.reading_rule.as_deref() == Some(q.as_str());
+                (
+                    Tint::Violet,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .w_full()
+                        .child(kit::glow_tile("flash", Tint::Violet))
+                        .child(kit::card_text(
+                            if reading {
+                                "Reading it as an automation…"
+                            } else {
+                                "Read as an automation"
+                            },
+                            Some(
+                                div()
+                                    .child(if reading {
+                                        "Claude is reading the sentence. Typing or closing stops it."
+                                    } else {
+                                        "Enter to have Claude read it. Nothing is sent before."
+                                    })
+                                    .into_any_element(),
+                            ),
+                        ))
+                        .when(selected && !reading, |d| d.child(enter()))
+                        .into_any_element(),
+                )
+            }
             Card::Remember(m) => (
                 Tint::Neutral,
                 div()
@@ -648,6 +697,23 @@ impl Palette {
                     .child(kit::footer_hint(&["↵"], "confirm"))
                     .child(kit::footer_hint(&["Esc"], "cancel"))
                     .child(right("Nothing runs until you confirm".into()))
+                    .into_any_element();
+            }
+            Some(Card::OfferAnswer | Card::OfferRule)
+                if self.selected_entry().is_some_and(|e| e.card == lead) =>
+            {
+                return f
+                    .child(kit::footer_hint(
+                        &["↵"],
+                        if lead == Some(Card::OfferAnswer) {
+                            "ask Claude"
+                        } else {
+                            "read as an automation"
+                        },
+                    ))
+                    .child(kit::footer_hint(&["↑", "↓"], "move"))
+                    .child(kit::footer_hint(&["Ctrl", "↵"], "ask an agent"))
+                    .child(right("Nothing is sent until you press Enter".into()))
                     .into_any_element();
             }
             Some(Card::Confirm(..)) => {

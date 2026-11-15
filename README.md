@@ -273,9 +273,11 @@ out first.
   goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
   a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
   (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
-  agent. A question gets a short answer from Claude Haiku through Claude Code, on
-  your Claude account (no API key), and a sentence such as "merge #64
-  when the checks pass and tell me" becomes an automation once you confirm it. Pins
+  agent. A question offers a short answer from Claude Haiku through Claude Code, on
+  your Claude account (no API key): `Enter` on the offer asks, and nothing is sent
+  before. A sentence such as "merge #64 when the checks pass and tell me" becomes an
+  automation once you confirm it; one Arakun cannot read itself offers to have Claude
+  read it, again only on `Enter`. Pins
   are kept in `pins.json`, rules in `rules.json` and what you open in
   `palette-frecency.json`, next to the state file.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)

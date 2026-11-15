@@ -183,6 +183,10 @@ pub enum Card {
     Ask,
     Remember(sources::MemoryHit),
     Answer,
+    /// A question: Enter sends it for a quick answer. Nothing goes out before.
+    OfferAnswer,
+    /// A sentence the parser could not read as a rule: Enter has the model read it.
+    OfferRule,
     Rule(rules::Draft),
     Confirm(crate::github::pr::ItemRef, String),
 }
@@ -245,7 +249,8 @@ pub struct Palette {
     /// A rule the small model read from a sentence the parser could not: (sentence, rule).
     model_rule: Option<(String, rules::Draft)>,
     rule_task: Option<Task<()>>,
-    debounce: Option<Task<()>>,
+    /// The sentence the model is reading as a rule, while it reads.
+    reading_rule: Option<String>,
     /// A merge waiting for Enter.
     confirm: Option<(crate::github::pr::ItemRef, String)>,
     /// A line under the list after something ran: "Copied", "Read-only…".
@@ -306,7 +311,7 @@ impl Palette {
             answer_task: None,
             model_rule: None,
             rule_task: None,
-            debounce: None,
+            reading_rule: None,
             confirm: None,
             note: None,
             scroll: ScrollHandle::new(),
@@ -397,7 +402,7 @@ impl Palette {
                 self.refilter(cx);
                 self.selected = self.default_selection();
                 self.scroll.scroll_to_item(0);
-                self.schedule_answer(cx);
+                self.drop_stale_requests(cx);
                 cx.notify();
             }
             InputEvent::Up => self.step(-1, cx),
@@ -471,12 +476,19 @@ impl Palette {
     }
 
     /// The row Enter takes with nothing moved: the first result, not a card,
-    /// unless the card is the point (a rule or a merge to confirm).
+    /// unless the card is the point (a rule or a merge to confirm, or an
+    /// offer to ask the model, which sends nothing until that Enter).
     fn default_selection(&self) -> usize {
         if self.entries.first().is_some_and(|e| {
             matches!(
                 e.card,
-                Some(Card::Rule(_) | Card::Confirm(..) | Card::Clip(clip::Clip::Error(_)))
+                Some(
+                    Card::Rule(_)
+                        | Card::Confirm(..)
+                        | Card::Clip(clip::Clip::Error(_))
+                        | Card::OfferAnswer
+                        | Card::OfferRule
+                )
             )
         }) {
             return 0;
@@ -526,6 +538,14 @@ impl Palette {
             Some(Card::Answer) => {
                 // Enter on the answer itself: copy it.
                 self.copy_answer(cx);
+                return;
+            }
+            Some(Card::OfferAnswer) => {
+                self.start_answer(cx);
+                return;
+            }
+            Some(Card::OfferRule) => {
+                self.start_rule(cx);
                 return;
             }
             Some(Card::Rule(d)) => {
@@ -1018,49 +1038,41 @@ impl Palette {
         });
     }
 
-    fn schedule_answer(&mut self, cx: &mut Context<Self>) {
+    /// Typing on stops a request made for the old text; nothing new starts
+    /// until Enter on an offer, since a request sends the text, memory and
+    /// CI logs to Anthropic.
+    fn drop_stale_requests(&mut self, cx: &mut Context<Self>) {
         let q = self.query(cx);
-        self.schedule_rule(&q, cx);
-        if self.scope.is_some() || !self.pages.is_empty() || !query::is_question(&q) {
+        if self.answer.as_ref().is_some_and(|a| a.question != q) {
+            // Dropping the task drops its job, which stops the process.
             self.answer = None;
             self.answer_task = None;
-            self.debounce = None;
-            return;
         }
-        if self.answer.as_ref().is_some_and(|a| a.question == q) {
-            return;
+        if self.reading_rule.as_ref().is_some_and(|s| *s != q) {
+            self.reading_rule = None;
+            self.rule_task = None;
         }
-        self.debounce = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(650))
-                .await;
-            let _ = this.update(cx, |this, cx| this.start_answer(cx));
-        }));
     }
 
-    /// A sentence that sounds like "do X when Y" but the parser did not get:
-    /// the small model reads it, and the answer is checked before it shows.
-    fn schedule_rule(&mut self, q: &str, cx: &mut Context<Self>) {
-        if self.model_rule.as_ref().is_some_and(|(s, _)| s == q) {
+    /// Whether an offer to ask the model fits here: not inside a scope or page.
+    fn offers(&self) -> bool {
+        self.scope.is_none() && self.pages.is_empty()
+    }
+
+    /// Enter on "read as an automation": the small model reads the sentence
+    /// the parser did not get, and the answer is checked before it shows.
+    fn start_rule(&mut self, cx: &mut Context<Self>) {
+        let q = self.query(cx);
+        if q.is_empty() || self.reading_rule.as_deref() == Some(q.as_str()) {
             return;
         }
-        self.rule_task = None;
-        let repo = self.repo_for(rules::pr_number(q));
-        if self.scope.is_some()
-            || !self.pages.is_empty()
-            || !rules::sounds_like_rule(q)
-            || rules::parse(q, repo.as_deref(), &self.seed.sessions).is_some()
-        {
-            return;
-        }
-        let sentence = q.to_string();
+        let repo = self.repo_for(rules::pr_number(&q));
+        let sentence = q.clone();
         let sessions = self.seed.sessions.clone();
         let titles: Vec<String> = sessions.iter().map(|(_, t)| t.clone()).collect();
+        self.reading_rule = Some(q);
         self.rule_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(800))
-                .await;
-            // Held here: when a new keystroke drops this task, the process stops.
+            // Held here: when typing or closing drops this task, the process stops.
             let (rx, _job) = answer::start_rule(sentence.clone(), titles);
             let result = cx
                 .background_spawn(
@@ -1068,17 +1080,26 @@ impl Palette {
                 )
                 .await;
             let _ = this.update(cx, |this, cx| {
-                let draft = result.and_then(|v| rules::from_json(&v, repo.as_deref(), &sessions));
-                if let Ok(d) = draft
-                    && this.query(cx) == sentence
-                {
-                    this.model_rule = Some((sentence, d));
-                    this.refilter(cx);
-                    this.selected = this.default_selection();
-                    cx.notify();
+                if this.reading_rule.as_deref() != Some(sentence.as_str()) {
+                    return;
                 }
+                this.reading_rule = None;
+                match result.and_then(|v| rules::from_json(&v, repo.as_deref(), &sessions)) {
+                    Ok(d) => {
+                        this.model_rule = Some((sentence, d));
+                        this.refilter(cx);
+                        this.selected = this.default_selection();
+                    }
+                    Err(e) => {
+                        this.refilter_keep(cx);
+                        this.note = Some((format!("Not read as an automation: {e}"), false));
+                    }
+                }
+                cx.notify();
             });
         }));
+        self.refilter_keep(cx);
+        cx.notify();
     }
 
     fn start_answer(&mut self, cx: &mut Context<Self>) {
@@ -1462,6 +1483,14 @@ impl Palette {
             out.push(Card::Answer);
             return out;
         }
+        // Offers only: the model hears nothing until Enter on one of these.
+        if self.offers() && (self.reading_rule.as_deref() == Some(q) || rules::sounds_like_rule(q))
+        {
+            out.push(Card::OfferRule);
+        }
+        if self.offers() && query::is_question(q) {
+            out.push(Card::OfferAnswer);
+        }
         if self.scope.is_none() && (self.tab == Tab::All || self.tab == Tab::Sessions) {
             out.push(Card::Ask);
         }
@@ -1834,6 +1863,8 @@ fn card_item(card: &Card) -> Item {
         Card::Ask => "card:ask",
         Card::Remember(_) => "card:remember",
         Card::Answer => "card:answer",
+        Card::OfferAnswer => "card:offer-answer",
+        Card::OfferRule => "card:offer-rule",
         Card::Rule(_) => "card:rule",
         Card::Confirm(..) => "card:confirm",
     };

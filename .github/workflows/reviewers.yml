@@ -37,6 +37,8 @@ name: Reviewers
 #   later, after the author resolves its threads. This catches an approval of
 #   an outside pull request that came after the check run.
 # - pull_request_target: a new head commit needs its "Human approval" status.
+#   The old head, or the head of a closed pull request, may be shared with
+#   another open pull request, so its status is worked out again.
 # - workflow_run: the "Review submitted" workflow ran, so a review was
 #   submitted or dismissed and "Human approval" may change.
 # - workflow_dispatch: by hand, for a pull request CodeRabbit never reviewed,
@@ -54,7 +56,7 @@ on:
   check_run:
     types: [completed]
   pull_request_target:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, closed]
   workflow_run:
     workflows: [Review submitted]
     types: [completed]
@@ -290,9 +292,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
-          # On workflow_run, the head commit of the pull request that was reviewed.
-          SHA: ${{ github.event.workflow_run.head_sha }}
-          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          # The commits whose status may change: on workflow_run, the head of
+          # the pull request that was reviewed; on pull_request_target, the
+          # head and, after a push, the head before it.
+          SHAS: >-
+            ${{ github.event.workflow_run.head_sha }}
+            ${{ github.event.pull_request.head.sha }}
+            ${{ github.event.before }}
+          PR: ${{ inputs.pr }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -301,55 +308,62 @@ jobs:
 
           # A status belongs to a commit, not a pull request, so it must hold
           # for every open pull request with this head.
-          if [ "$EVENT" != workflow_run ]; then
+          update() {
+            export HEAD=$1
+            # The workflow_run event lists no pull request when the branch is
+            # on a fork, so find them by their head commit.
+            local prs
+            prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
+              --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"')
+            if [ -z "$prs" ]; then
+              echo "No open pull request has $HEAD as its head."
+              return
+            fi
+
+            local state=success description="" pr author approvers approver user
+            while read -r pr author; do
+              if in_team "$author"; then
+                echo "#$pr: the author is on the team."
+                continue
+              fi
+              # Each reviewer's last verdict on the head commit. A dismissed
+              # review counts as the last verdict, so it clears an earlier
+              # approval from the same person.
+              approvers=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq \
+                '.[] | select(.commit_id == env.HEAD and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | "\(.user.login) \(.state)"' |
+                awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }')
+              approver=""
+              for user in $approvers; do
+                if in_team "$user"; then
+                  approver=$user
+                  break
+                fi
+              done
+              if [ -n "$approver" ]; then
+                echo "#$pr: approved by $approver."
+                description=${description:-"Approved by $approver."}
+              else
+                echo "#$pr: waiting for a maintainer."
+                state=pending
+              fi
+            done <<<"$prs"
+
+            if [ "$state" = pending ]; then
+              description="Waiting for a maintainer to approve: the author is outside the team."
+            fi
+            description=${description:-"Not needed: the author is on the team."}
+            gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
+              -f context="Human approval" -f description="$description" -f target_url="$RUN_URL"
+            echo "$HEAD: $state, $description"
+          }
+
+          if [ "$EVENT" = workflow_dispatch ]; then
             if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
               echo "::error::Not a pull request number: $PR"
               exit 1
             fi
-            SHA=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
+            SHAS=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
           fi
-          export HEAD=$SHA
-          # The workflow_run event lists no pull request when the branch is
-          # on a fork, so find them by their head commit.
-          prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
-            --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"')
-          if [ -z "$prs" ]; then
-            echo "No open pull request has $HEAD as its head."
-            exit 0
-          fi
-
-          state=success description=""
-          while read -r pr author; do
-            if in_team "$author"; then
-              echo "#$pr: the author is on the team."
-              continue
-            fi
-            # Each reviewer's last verdict on the head commit. A dismissed
-            # review counts as the last verdict, so it clears an earlier
-            # approval from the same person.
-            approvers=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq \
-              '.[] | select(.commit_id == env.HEAD and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | "\(.user.login) \(.state)"' |
-              awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }')
-            approver=""
-            for user in $approvers; do
-              if in_team "$user"; then
-                approver=$user
-                break
-              fi
-            done
-            if [ -n "$approver" ]; then
-              echo "#$pr: approved by $approver."
-              description=${description:-"Approved by $approver."}
-            else
-              echo "#$pr: waiting for a maintainer."
-              state=pending
-            fi
-          done <<<"$prs"
-
-          if [ "$state" = pending ]; then
-            description="Waiting for a maintainer to approve: the author is outside the team."
-          fi
-          description=${description:-"Not needed: the author is on the team."}
-          gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
-            -f context="Human approval" -f description="$description" -f target_url="$RUN_URL"
-          echo "$HEAD: $state, $description"
+          for sha in $(tr ' ' '\n' <<<"$SHAS" | grep -xE '[0-9a-f]{40}' | grep -vx 0000000000000000000000000000000000000000 | sort -u); do
+            update "$sha"
+          done

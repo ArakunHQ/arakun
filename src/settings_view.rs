@@ -711,7 +711,7 @@ impl SettingsDialog {
                     "Naming model",
                     match self.namer.agent {
                         Some(crate::agent::AgentKind::Claude) => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default.",
-                        Some(_) => "A small, fast model, as the CLI names it (provider/model for OpenCode). Empty uses the CLI's default.",
+                        Some(_) => "A small, fast model, as the CLI names it. Empty uses the CLI's default.",
                         None => "Naming is off: new branches keep their random name.",
                     },
                     field(self.namer_input.clone(), 180.).when(self.namer.agent.is_none(), |d| d.opacity(0.5)).into_any_element(),

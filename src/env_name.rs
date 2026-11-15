@@ -112,11 +112,13 @@ impl Default for Namer {
     }
 }
 
-/// The agents that can name a branch: the CLIs that answer a single prompt and exit.
-pub const AGENTS: [AgentKind; 3] = [AgentKind::Claude, AgentKind::Droid, AgentKind::OpenCode];
+/// The agents that can name a branch: CLIs that answer one prompt, then exit, without
+/// running tools. OpenCode is not one: `opencode run` may run shell commands and edit
+/// files by default, and its permission config differs between versions.
+pub const AGENTS: [AgentKind; 2] = [AgentKind::Claude, AgentKind::Droid];
 
-/// A small, fast model for each CLI. Droid and OpenCode name models by provider, which
-/// depends on what the user signed in to, so they start on the CLI's default.
+/// A small, fast model for each CLI. Droid's model ids depend on the user's plan, so it
+/// starts on the CLI's default.
 pub fn default_model(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::Claude => "haiku",
@@ -131,7 +133,8 @@ fn namer_path() -> PathBuf {
 pub fn namer() -> Namer {
     std::fs::read(namer_path())
         .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
+        .and_then(|b| serde_json::from_slice::<Namer>(&b).ok())
+        .filter(|n| n.agent.is_none_or(|a| AGENTS.contains(&a)))
         .unwrap_or_default()
 }
 
@@ -159,10 +162,6 @@ fn instruction(task: &str) -> String {
     )
 }
 
-/// OpenCode config that denies every tool: `permissions` is today's list, where the last
-/// matching rule wins; `permission` is the older form, for older installs.
-const OPENCODE_DENY: &str = r#"{"permissions":[{"action":"*","resource":"*","effect":"deny"}],"permission":{"edit":"deny","bash":"deny","webfetch":"deny"}}"#;
-
 /// Asks the namer's agent for a branch name for `task`. Blocks; run it in the background.
 pub fn suggest(namer: &Namer, task: &str) -> Result<String> {
     let agent = namer.agent.ok_or_else(|| anyhow!("naming is off"))?;
@@ -171,14 +170,6 @@ pub fn suggest(namer: &Namer, task: &str) -> Result<String> {
     // An empty folder: no project instructions, memory or tools to load.
     let dir = std::env::temp_dir().join("arakun-namer");
     let _ = std::fs::create_dir_all(&dir);
-    if agent == AgentKind::OpenCode {
-        // `opencode run` may run shell commands and edit files by default, and the prompt can
-        // hold pasted text that asks for that. The rule goes both in the folder's project
-        // config and in the variable OpenCode merges over every config; no run without it.
-        std::fs::write(dir.join("opencode.json"), OPENCODE_DENY)
-            .map_err(|e| anyhow!("could not write OpenCode's deny-all config: {e}"))?;
-        cmd.env("OPENCODE_CONFIG_CONTENT", OPENCODE_DENY);
-    }
     cmd.args(args)
         .current_dir(&dir)
         .env("PATH", crate::agent::child_path_env())
@@ -222,13 +213,9 @@ fn command(agent: AgentKind, model: &str, prompt: &str) -> Result<(PathBuf, Vec<
             args.push(prompt.into());
             (launch::droid_bin()?, args)
         }
-        AgentKind::OpenCode => {
-            let mut args = vec!["run".to_string()];
-            args.extend(model.into_iter().flatten());
-            args.push(prompt.into());
-            (launch::opencode_bin()?, args)
+        AgentKind::OpenCode | AgentKind::WorkersAi => {
+            bail!("{} cannot name branches", agent.label())
         }
-        AgentKind::WorkersAi => bail!("Workers AI cannot name branches"),
     };
     Ok((program, args))
 }
@@ -380,16 +367,9 @@ mod tests {
     }
 
     #[test]
-    fn opencode_config_denies_every_tool() {
-        let config: serde_json::Value = serde_json::from_str(OPENCODE_DENY).unwrap();
-        let rules = config["permissions"].as_array().unwrap();
-        assert_eq!(
-            rules.last().unwrap(),
-            &serde_json::json!({"action": "*", "resource": "*", "effect": "deny"})
-        );
-        for action in ["edit", "bash", "webfetch"] {
-            assert_eq!(config["permission"][action], "deny");
-        }
+    fn opencode_never_names_branches() {
+        assert!(!AGENTS.contains(&AgentKind::OpenCode));
+        assert!(command(AgentKind::OpenCode, "", "the task").is_err());
     }
 
     #[test]

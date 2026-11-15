@@ -1,59 +1,111 @@
 name: Reviewers
 
-# Requests reviewers once a pull request is ready for review. It replaces
-# CODEOWNERS, so the main ruleset no longer has to require a code owner's
-# approval: any approval from someone with write access counts.
+# Requests reviewers once CodeRabbit has finished reviewing a pull request and
+# has not approved it. A CodeRabbit approval is enough to merge a routine
+# change from the team, so nobody is asked then. It replaces CODEOWNERS, so
+# the main ruleset no longer has to require a code owner's approval: any
+# approval from someone with write access counts.
+#
+# CodeRabbit may not approve a pull request from outside the team: this
+# workflow dismisses such an approval and asks a person. That rule lives here,
+# not in .coderabbit.yaml, because CodeRabbit's approval overrides can only
+# match members of a team, not everyone outside it.
+#
+# The dismissal comes after the approval, so it can't stop a merge in
+# between. The "Human approval" commit status does: it stays pending on a pull
+# request from outside the team until someone on the team approves its head
+# commit, and the main ruleset requires it. It passes at once for the team.
 #
 # Each pull request goes to the person who can check it on their own machine:
 # Karlo for Linux and for changes that are not platform specific (Rik if Karlo
 # wrote it), Rik for macOS and Dani for Windows. A pull request that touches a
 # platform gets that platform's reviewer as well. A pull request from outside
 # the team goes to whichever of Karlo and Rik has fewer open review requests,
-# to spread the work. Nobody reviews their own pull request. Someone already requested, or who has already reviewed, is not
-# asked again, so a push doesn't notify everyone again.
+# to spread the work. Nobody reviews their own pull request. Someone already
+# requested, or who has already reviewed, is not asked again, so a push
+# doesn't notify everyone again.
 #
 # A platform counts as touched when a file only that platform uses changes, or
 # when a diff hunk mentions it (`cfg(windows)`, `target_os = "macos"`,
 # `runs-on: macos-15`...). An edit deep inside a long cfg block, whose cfg line
 # is not in the hunk, is missed; request the reviewer by hand then.
 #
-# pull_request_target is what lets this request reviewers on pull requests
-# from forks, and it is safe here only because the job never checks out or
-# runs code from the pull request: the reviewers are in this file, read from
-# the base branch, and the changed files come from the API. Keep it that way.
+# When it runs:
+# - check_run: CodeRabbit's "CodeRabbit" check run on the head commit
+#   completed, so its review is done (or skipped, or rate limited).
+# - issue_comment: CodeRabbit edits its summary comment when it approves
+#   later, after the author resolves its threads. This catches an approval of
+#   an outside pull request that came after the check run.
+# - pull_request_target: a new head commit needs its "Human approval" status.
+#   The old head, or the head of a closed pull request, may be shared with
+#   another open pull request, so its status is worked out again.
+# - workflow_run: the "Review submitted" workflow ran, so a review was
+#   submitted or dismissed and "Human approval" may change.
+# - workflow_dispatch: by hand, for a pull request CodeRabbit never reviewed,
+#   or whose status is missing. It doesn't wait for CodeRabbit.
+# Drafts get no reviewers. CodeRabbit reviews a pull request once it is marked
+# ready, and that review starts this workflow.
 #
-# GitHub doesn't run a pull_request_target workflow on the pull request that
-# adds it, so a change to this file is first seen on the next pull request.
+# These events run this file from the default branch with a write token, even
+# for pull requests from forks. That is safe only because no job checks out or
+# runs code from the pull request: the reviewers are in this file, and the
+# changed files and reviews come from the API. Keep it that way. A change to
+# this file takes effect once it is on main.
 
 on:
+  check_run:
+    types: [completed]
   pull_request_target:
-    # synchronize: a later push can touch another platform. edited: a new
-    # base branch changes the diff without a push (title edits are skipped).
-    types: [opened, reopened, ready_for_review, synchronize, edited]
+    types: [opened, reopened, synchronize, closed]
+  workflow_run:
+    workflows: [Review submitted]
+    types: [completed]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
 
 permissions: {}
 
-concurrency:
-  group: reviewers-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+env:
+  # The members of the ArakunHQ/maintainers team. The workflow's token can't
+  # read team membership, so keep this in step by hand.
+  TEAM: KarloAldrete rikvisser-dev daniektj
 
 jobs:
   request:
     name: Request reviewers
+    # On the job, not the workflow: a run whose job is skipped (any comment
+    # but CodeRabbit's) must not cancel one that is working.
+    concurrency:
+      group: reviewers-${{ github.event.issue.number || inputs.pr || github.event.check_run.head_sha }}
+      cancel-in-progress: true
     if: >-
-      ${{ !github.event.pull_request.draft &&
-      (github.event.action != 'edited' || github.event.changes.base) }}
+      ${{ github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'check_run' &&
+      github.event.check_run.app.slug == 'coderabbitai' &&
+      github.event.check_run.name == 'CodeRabbit') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      github.event.comment.user.login == 'coderabbitai[bot]') }}
     runs-on: depot-ubuntu-24.04
     permissions:
+      checks: read
       pull-requests: write
     steps:
       - name: Request reviewers
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-          TEAM: KarloAldrete rikvisser-dev daniektj
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.check_run.head_sha }}
+          PR: ${{ github.event.issue.number || inputs.pr }}
+          CODERABBIT: coderabbitai[bot]
+          # How long to wait, after CodeRabbit's check run completes, for its
+          # approval of a team pull request. It can come about a minute later.
+          APPROVAL_WAIT: 120
           # Every pull request: from the team, the first of these who is not
           # the author; from outside, the one with the fewest open requests.
           DEFAULT_REVIEWERS: KarloAldrete rikvisser-dev
@@ -70,72 +122,248 @@ jobs:
           LINUX_DIFF: (cfg|cfg_attr|cfg!)\(.*\bunix\b|target_os *= *"linux"|target_family *= *"unix"
         run: |
           set -euo pipefail
-          # Old paths too, so moving a platform's file away still counts.
-          paths=$(gh api "repos/$GH_REPO/pulls/$PR/files" --paginate \
-            --jq '.[] | .filename, (.previous_filename // empty)')
-          # GitHub leaves the patch out for very large files.
-          diff=$(gh api "repos/$GH_REPO/pulls/$PR/files" --paginate --jq '.[].patch // empty')
 
-          requested=$(gh api "repos/$GH_REPO/pulls/$PR/requested_reviewers" --jq '.users[].login')
-          reviewed=$(gh api "repos/$GH_REPO/pulls/$PR/reviews" --paginate --jq '.[].user.login')
-          asked="$requested"$'\n'"$reviewed"
+          in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
 
-          want=()
-          if grep -qxF "$AUTHOR" <<<"${TEAM// /$'\n'}"; then
-            for user in $DEFAULT_REVIEWERS; do
-              if [ "$user" != "$AUTHOR" ]; then
-                want+=("$user")
-                break
+          # CodeRabbit's verdict on the head commit: APPROVED, CHANGES_REQUESTED
+          # or nothing. COMMENTED doesn't change a reviewer's verdict on GitHub.
+          coderabbit_verdict() {
+            gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate --jq \
+              '.[] | select(.user.login == env.CODERABBIT and .commit_id == env.HEAD) | .state' |
+              grep -xE 'APPROVED|CHANGES_REQUESTED' | tail -n 1 || true
+          }
+
+          handle() {
+            local pr=$1
+            echo "::group::#$pr"
+            local state draft author
+            read -r state draft author HEAD < <(gh api "repos/$GH_REPO/pulls/$pr" \
+              --jq '[.state, .draft, .user.login, .head.sha] | @tsv')
+            export HEAD
+            if [ "$state" != open ] || [ "$draft" = true ]; then
+              echo "It is closed or a draft."
+              echo "::endgroup::"
+              return
+            fi
+
+            if [ "$EVENT" != workflow_dispatch ]; then
+              local check status completed
+              check=$(gh api "repos/$GH_REPO/commits/$HEAD/check-runs?check_name=CodeRabbit" \
+                --jq '[.check_runs[] | select(.app.slug == "coderabbitai")][0] // {} | [.status // "missing", .completed_at // ""] | @tsv')
+              read -r status completed <<<"$check"
+              if [ "$status" != completed ]; then
+                echo "CodeRabbit hasn't finished reviewing $HEAD ($status)."
+                echo "::endgroup::"
+                return
               fi
-            done
-          else
-            # Pick once: on a later push the load has changed, and picking
-            # again would ask a second person.
-            picked=""
-            for user in $DEFAULT_REVIEWERS; do
-              if grep -qxF "$user" <<<"$asked"; then
-                picked=$user
+              # CodeRabbit can approve a little after its check run ends. An
+              # outside pull request needn't wait: its approval is dismissed.
+              if in_team "$author"; then
+                local deadline
+                deadline=$(($(date -d "$completed" +%s) + APPROVAL_WAIT))
+                while [ -z "$(coderabbit_verdict "$pr")" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+                  sleep 15
+                done
               fi
-            done
-            if [ -z "$picked" ]; then
-              fewest=""
+            fi
+
+            if ! in_team "$author"; then
+              local id
+              for id in $(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate \
+                --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'); do
+                gh api -X PUT "repos/$GH_REPO/pulls/$pr/reviews/$id/dismissals" --silent \
+                  -f event=DISMISS \
+                  -f message="A pull request from outside the team needs a person's approval. CodeRabbit's comments still apply."
+                echo "Dismissed CodeRabbit's approval: $author is not on the team."
+              done
+            elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
+              echo "CodeRabbit approved $HEAD; no reviewer needed."
+              echo "::endgroup::"
+              return
+            fi
+
+            # Old paths too, so moving a platform's file away still counts.
+            local paths diff requested reviewed asked
+            paths=$(gh api "repos/$GH_REPO/pulls/$pr/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)')
+            # GitHub leaves the patch out for very large files.
+            diff=$(gh api "repos/$GH_REPO/pulls/$pr/files" --paginate --jq '.[].patch // empty')
+
+            requested=$(gh api "repos/$GH_REPO/pulls/$pr/requested_reviewers" --jq '.users[].login')
+            reviewed=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq '.[].user.login')
+            asked="$requested"$'\n'"$reviewed"
+
+            local want=() user
+            if in_team "$author"; then
               for user in $DEFAULT_REVIEWERS; do
-                load=$(gh api -X GET search/issues --jq .total_count \
-                  -f q="repo:$GH_REPO is:pr is:open review-requested:$user")
-                echo "$user has $load open review requests."
-                if [ -z "$fewest" ] || [ "$load" -lt "$fewest" ]; then
-                  fewest=$load
+                if [ "$user" != "$author" ]; then
+                  want+=("$user")
+                  break
+                fi
+              done
+            else
+              # Pick once: on a later push the load has changed, and picking
+              # again would ask a second person.
+              local picked="" fewest="" load
+              for user in $DEFAULT_REVIEWERS; do
+                if grep -qxF "$user" <<<"$asked"; then
                   picked=$user
                 fi
               done
-              want+=("$picked")
+              if [ -z "$picked" ]; then
+                for user in $DEFAULT_REVIEWERS; do
+                  load=$(gh api -X GET search/issues --jq .total_count \
+                    -f q="repo:$GH_REPO is:pr is:open review-requested:$user")
+                  echo "$user has $load open review requests."
+                  if [ -z "$fewest" ] || [ "$load" -lt "$fewest" ]; then
+                    fewest=$load
+                    picked=$user
+                  fi
+                done
+                want+=("$picked")
+              fi
             fi
+            local platform reviewer_var paths_var diff_var
+            for platform in WINDOWS MACOS LINUX; do
+              reviewer_var="${platform}_REVIEWER" paths_var="${platform}_PATHS" diff_var="${platform}_DIFF"
+              if { [ -n "${!paths_var}" ] && grep -qxE "${!paths_var}" <<<"$paths"; } ||
+                grep -qE "${!diff_var}" <<<"$diff"; then
+                echo "Touches ${platform,,}."
+                want+=("${!reviewer_var}")
+              fi
+            done
+
+            local add=()
+            for user in "${want[@]}"; do
+              if [ "$user" = "$author" ] ||
+                grep -qxF "$user" <<<"$asked"$'\n'"$(printf '%s\n' "${add[@]}")"; then
+                continue
+              fi
+              add+=("$user")
+            done
+
+            if [ ${#add[@]} -eq 0 ]; then
+              echo "Everyone who should review is already asked."
+            elif [ "$(gh api "repos/$GH_REPO/pulls/$pr" --jq .head.sha)" != "$HEAD" ]; then
+              # A push during the wait: the new commit's review decides.
+              echo "The head moved on from $HEAD; its own review will run this again."
+            else
+              local args=()
+              for user in "${add[@]}"; do
+                args+=(-f "reviewers[]=$user")
+              done
+              gh api -X POST "repos/$GH_REPO/pulls/$pr/requested_reviewers" "${args[@]}" --silent
+              echo "Requested: ${add[*]}"
+            fi
+            echo "::endgroup::"
+          }
+
+          if [ "$EVENT" = check_run ]; then
+            # The event lists no pull request when the branch is on a fork,
+            # so find them by their head commit.
+            prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
+              --jq '.[] | select(.head.sha == env.SHA) | .number')
+          else
+            if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+              echo "::error::Not a pull request number: $PR"
+              exit 1
+            fi
+            prs=$PR
           fi
-          for platform in WINDOWS MACOS LINUX; do
-            reviewer_var="${platform}_REVIEWER" paths_var="${platform}_PATHS" diff_var="${platform}_DIFF"
-            if { [ -n "${!paths_var}" ] && grep -qxE "${!paths_var}" <<<"$paths"; } ||
-              grep -qE "${!diff_var}" <<<"$diff"; then
-              echo "Touches ${platform,,}."
-              want+=("${!reviewer_var}")
-            fi
+          for pr in $prs; do
+            handle "$pr"
           done
 
-          add=()
-          for user in "${want[@]}"; do
-            if [ "$user" = "$AUTHOR" ] ||
-              grep -qxF "$user" <<<"$asked"$'\n'"$(printf '%s\n' "${add[@]}")"; then
-              continue
-            fi
-            add+=("$user")
-          done
+  approval:
+    name: Human approval status
+    if: >-
+      ${{ github.event_name == 'pull_request_target' ||
+      github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' }}
+    # No concurrency group: a cancelled or replaced run would skip the heads
+    # it was given, such as the old head after two quick pushes. Every run
+    # reads the reviews just before it writes, so overlapping runs agree.
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Set the Human approval status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          # The commits whose status may change: on workflow_run, the head of
+          # the pull request that was reviewed; on pull_request_target, the
+          # head and, after a push, the head before it.
+          SHAS: >-
+            ${{ github.event.workflow_run.head_sha }}
+            ${{ github.event.pull_request.head.sha }}
+            ${{ github.event.before }}
+          PR: ${{ inputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
 
-          if [ ${#add[@]} -eq 0 ]; then
-            echo "Everyone who should review is already asked."
-            exit 0
+          in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
+
+          # A status belongs to a commit, not a pull request, so it must hold
+          # for every open pull request with this head.
+          update() {
+            export HEAD=$1
+            # The workflow_run event lists no pull request when the branch is
+            # on a fork, so find them by their head commit.
+            local prs
+            prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
+              --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"')
+            if [ -z "$prs" ]; then
+              echo "No open pull request has $HEAD as its head."
+              return
+            fi
+
+            local state=success description="" pr author approvers approver user
+            while read -r pr author; do
+              if in_team "$author"; then
+                echo "#$pr: the author is on the team."
+                continue
+              fi
+              # Each reviewer's last verdict on the head commit. A dismissed
+              # review counts as the last verdict, so it clears an earlier
+              # approval from the same person.
+              approvers=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq \
+                '.[] | select(.commit_id == env.HEAD and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | "\(.user.login) \(.state)"' |
+                awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }')
+              approver=""
+              for user in $approvers; do
+                if in_team "$user"; then
+                  approver=$user
+                  break
+                fi
+              done
+              if [ -n "$approver" ]; then
+                echo "#$pr: approved by $approver."
+                description=${description:-"Approved by $approver."}
+              else
+                echo "#$pr: waiting for a maintainer."
+                state=pending
+              fi
+            done <<<"$prs"
+
+            if [ "$state" = pending ]; then
+              description="Waiting for a maintainer to approve: the author is outside the team."
+            fi
+            description=${description:-"Not needed: the author is on the team."}
+            gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
+              -f context="Human approval" -f description="$description" -f target_url="$RUN_URL"
+            echo "$HEAD: $state, $description"
+          }
+
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+              echo "::error::Not a pull request number: $PR"
+              exit 1
+            fi
+            SHAS=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
           fi
-          args=()
-          for user in "${add[@]}"; do
-            args+=(-f "reviewers[]=$user")
+          for sha in $(tr ' ' '\n' <<<"$SHAS" | grep -xE '[0-9a-f]{40}' | grep -vx 0000000000000000000000000000000000000000 | sort -u); do
+            update "$sha"
           done
-          gh api -X POST "repos/$GH_REPO/pulls/$PR/requested_reviewers" "${args[@]}" --silent
-          echo "Requested: ${add[*]}"

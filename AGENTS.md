@@ -54,7 +54,8 @@ Every commit message and pull request title follows
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
   checks below, wait for CI to pass, then mark it ready with `gh pr ready`. Marking it
-  ready requests the reviewers and starts CodeRabbit, so don't do it before then.
+  ready starts CodeRabbit, and the reviewers are asked once it finishes without
+  approving, so don't do it before then.
 
 ### Stacked pull requests
 

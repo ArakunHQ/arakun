@@ -59,9 +59,39 @@ window, and exposes the same workspace to the agents through a command line.
 |---|---|---|
 | Linux (x86_64) | Supported | Main platform. Wayland and X11. The Dynamic Island needs Wayland with wlr-layer-shell. |
 | Windows 10/11 (x86_64) | Beta | No Dynamic Island yet. Release builds do not include the browser yet; build from source with the `browser` feature to get it. See [docs/windows.md](docs/windows.md). |
-| macOS | Experimental | Build from source. Untested. |
+| macOS | Experimental | Release builds for Apple silicon, without the browser. Little tested. |
 
 ## Install
+
+**macOS (Apple silicon) and Linux (x86_64):**
+
+```sh
+curl -fsSL https://arakun.dev/install | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://arakun.dev/install.ps1 | iex
+```
+
+The scripts ([tools/install-release.sh](tools/install-release.sh) and
+[tools/install-release.ps1](tools/install-release.ps1)) download the latest release,
+check it against `SHA256SUMS`, and install it for your user:
+
+| Platform | Installs to | Uninstall |
+|---|---|---|
+| macOS | `~/Applications/Arakun.app`, linked as `~/.local/bin/arakun` | `rm -rf ~/Applications/Arakun.app ~/.local/bin/arakun` |
+| Linux | `~/.local/bin/arakun` | `rm ~/.local/bin/arakun` |
+| Windows | `%LOCALAPPDATA%\Programs\Arakun`, added to your user `PATH`, and a Start menu shortcut | delete that folder and the shortcut, and remove it from `PATH` |
+
+To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0`,
+or set `ARAKUN_VERSION=v0.1.0` (on Windows, `$env:ARAKUN_VERSION = "v0.1.0"`). The
+macOS app is signed ad-hoc, not notarized: installed this way it opens normally, but
+macOS blocks a copy downloaded with a web browser. There is no build for Intel Macs or
+Linux on ARM yet; build from source there.
+
+### Manual download
 
 Download the archive for your platform from
 [GitHub Releases](https://github.com/arakunhq/arakun/releases) and check it against
@@ -82,6 +112,10 @@ driver and the usual desktop libraries (libxkbcommon, Wayland or X11, fontconfig
 freetype).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
+
+**macOS:** `arakun-<version>-macos-arm64.tar.gz` holds `Arakun.app`. Download it with
+`curl`, not a web browser, or macOS refuses to open it (then
+`xattr -dr com.apple.quarantine Arakun.app` lets it open).
 
 Arakun does not bundle the agents. Install the ones you want to use:
 

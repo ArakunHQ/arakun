@@ -13,6 +13,12 @@ tested on real Windows**. If something fails, the sections below help diagnose i
 
 Release builds for Windows (from GitHub Releases) contain only `arakun.exe`, built
 without the `browser` feature. For browser tabs, build from source as described here.
+To install the latest release, run this in PowerShell; it puts `arakun.exe` in
+`%LOCALAPPDATA%\Programs\Arakun` and adds that folder to your user `PATH`:
+
+```powershell
+irm https://arakun.dev/install.ps1 | iex
+```
 
 ## Requirements
 

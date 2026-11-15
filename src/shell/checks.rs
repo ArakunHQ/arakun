@@ -513,8 +513,16 @@ fn run_check(dir: &Path, command: &str, timeout: Duration) -> std::io::Result<Ch
             timed_out = true;
             tree.kill();
             // Without a job object (Windows, if creating it failed) the tree
-            // kill does nothing, and an endless wait here would hold every
-            // project's checks behind this one.
+            // kill does nothing. Ending only cmd.exe would leave its cargo
+            // running beside the next check, and an endless wait here would
+            // hold every project's checks behind this one.
+            if cfg!(windows) {
+                let _ = crate::platform::command("taskkill")
+                    .args(["/T", "/F", "/PID", &child.id().to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
             let _ = child.kill();
             break child.wait()?;
         }

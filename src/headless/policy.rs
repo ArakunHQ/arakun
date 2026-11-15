@@ -2110,20 +2110,39 @@ fn paths_in(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>,
 /// be the agent's own: stdin (`-`) or a file in the workspace. Any other file
 /// (a key, a token) asks, symlinks followed.
 fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line: &str) {
-    let mut body = None;
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        if *a == "--body-file" {
-            body = it.next().copied();
-        } else if let Some(v) = a.strip_prefix("--body-file=") {
-            body = Some(v);
-        }
-    }
-    let Some(body) = body.filter(|b| *b != "-") else {
-        return;
+    let ask = |out: &mut Vec<Finding>, body: &str| {
+        out.push(always(
+            "pone en un borrador de GitHub un archivo fuera del espacio de trabajo",
+            format!("Borrador de GitHub con {}: {}", body, clip(line, 80)),
+            "confirmo: borrador con ese archivo",
+        ))
     };
-    let inside = place(body, cwd, cx) == Place::Inside
-        && expand(body, cwd, cx).is_some_and(|p| {
+    // Read the arguments with the command's own parser, so the policy judges
+    // the very file the command opens (`--agent` takes the next word, even
+    // one that looks like a flag).
+    let rest: Vec<String> = args.iter().skip(2).map(|a| a.to_string()).collect();
+    let body = match crate::github::pr::parse_draft_args(&rest) {
+        Ok(parsed) => parsed.body_file.to_string_lossy().into_owned(),
+        // The command refuses these too, but don't bet on it: ask.
+        Err(_) => {
+            return out.push(always(
+                "borrador de GitHub con argumentos que no se entienden",
+                format!("Ejecutar: {line}"),
+                "confirmo: borrador de GitHub",
+            ));
+        }
+    };
+    if body == "-" {
+        return;
+    }
+    // `..` is resolved after symlinks when the file is opened, but lexically
+    // here, so `link/../x` could pass for a workspace file. Don't guess.
+    let climbs = Path::new(&body)
+        .components()
+        .any(|c| c == std::path::Component::ParentDir);
+    let inside = !climbs
+        && place(&body, cwd, cx) == Place::Inside
+        && expand(&body, cwd, cx).is_some_and(|p| {
             match crate::platform::canonicalize(&p) {
                 Ok(real) => real.starts_with(&cx.workspace),
                 // A link that leads nowhere can't be shown to stay inside.
@@ -2137,11 +2156,7 @@ fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Findi
             }
         });
     if !inside {
-        out.push(always(
-            "pone en un borrador de GitHub un archivo fuera del espacio de trabajo",
-            format!("Borrador de GitHub con {}: {}", body, clip(line, 80)),
-            "confirmo: borrador con ese archivo",
-        ));
+        ask(out, &body);
     }
 }
 
@@ -2924,6 +2939,11 @@ mod tests {
             "arakun github draft o/r#7 --verdict comment --body-file ../other/notes.md",
             "arakun github draft o/r#7 --verdict comment --body-file /tmp/review.md",
             "arakun github draft o/r#7 --verdict comment --body-file \"$HOME/.netrc\"",
+            // `--agent` eats the stdin flag; the command reads the first file.
+            "arakun github draft o/r#7 --verdict comment --body-file /home/u/.netrc --agent --body-file=-",
+            "arakun github draft o/r#7 --verdict comment --body-file docs/../../.netrc",
+            "arakun github draft o/r#7 --verdict comment --body-file docs/../review.md",
+            "arakun github draft o/r#7 --verdict comment --bogus x --body-file -",
         ] {
             all(cmd, [X, X, X]);
         }
@@ -2963,6 +2983,9 @@ mod tests {
         assert_eq!(lvl("dangling.md"), X);
         assert_eq!(lvl("real.md"), A);
         assert_eq!(lvl("not-written-yet.md"), A);
+        // The kernel follows `sub` before `..`: this opens /real.md, not ours.
+        std::os::unix::fs::symlink("/etc", ws.join("sub")).unwrap();
+        assert_eq!(lvl("sub/../real.md"), X);
         std::fs::remove_dir_all(&ws).unwrap();
     }
 

@@ -248,7 +248,11 @@ pub struct SettingsDialog {
     palette_note: Option<(SharedString, bool)>,
     /// Delete was clicked once on the palette in use.
     confirm_delete: bool,
-    _subs: [Subscription; 4],
+    /// The name of the user's palette in use.
+    name_input: Entity<TextInput>,
+    /// Whether the field to paste a shared palette is open.
+    show_import: bool,
+    _subs: [Subscription; 5],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -304,6 +308,27 @@ impl SettingsDialog {
                     _ => {}
                 },
             );
+        let palettes = crate::palettes::load();
+        let name_input = cx.new(|cx| {
+            let mut i = TextInput::new("Name this palette", cx);
+            i.set_text(palettes.active().name, cx);
+            i
+        });
+        let name_sub =
+            cx.subscribe_in(
+                &name_input,
+                window,
+                |this: &mut Self, input, ev, _, cx| match ev {
+                    InputEvent::Changed => {
+                        let name = input.read(cx).text().trim().to_string();
+                        if !name.is_empty() && name != this.palettes.active().name {
+                            this.edit_palette(|p| p.name = name, cx);
+                        }
+                    }
+                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
+                    _ => {}
+                },
+            );
         cx.spawn(async move |this, cx| {
             let plan = cx.background_spawn(async move { plan::refresh() }).await;
             let _ = this.update(cx, |this, cx| {
@@ -337,11 +362,13 @@ impl SettingsDialog {
             voice_input,
             voice_note: None,
             voice_busy: false,
-            palettes: crate::palettes::load(),
+            palettes,
             share_input,
             palette_note: None,
             confirm_delete: false,
-            _subs: [sub, key_sub, voice_sub, share_sub],
+            name_input,
+            show_import: false,
+            _subs: [sub, key_sub, voice_sub, share_sub, name_sub],
         }
     }
 
@@ -882,6 +909,11 @@ impl SettingsDialog {
 
     fn apply_palette(&mut self, cx: &mut Context<Self>) {
         crate::palettes::store(&self.palettes);
+        // The name field follows the palette in use, unless it is what changed.
+        let name = self.palettes.active().name;
+        if self.name_input.read(cx).text().trim() != name {
+            self.name_input.update(cx, |i, cx| i.set_text(name, cx));
+        }
         theme::set_palette(&self.palettes.active());
         cx.refresh_windows();
         cx.notify();
@@ -913,6 +945,7 @@ impl SettingsDialog {
             Some(p) => {
                 self.palettes.add(&p);
                 self.share_input.update(cx, |i, cx| i.set_text("", cx));
+                self.show_import = false;
                 self.palette_note = Some(("Added and in use.".into(), false));
                 self.apply_palette(cx);
             }
@@ -1048,8 +1081,20 @@ impl SettingsDialog {
             .gap(px(12.))
             .child(label_block(
                 "Palette",
-                "The colors of the whole app. Pick one, or customize it to make your own.",
+                "The colors of the whole app. Customize one to make it yours.",
             ))
+            .child(
+                ui::button("palette-paste", "Paste a palette", ButtonKind::Ghost, true).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.show_import = !this.show_import;
+                        this.palette_note = None;
+                        if this.show_import {
+                            window.focus(&this.share_input.focus_handle(cx), cx);
+                        }
+                        cx.notify();
+                    }),
+                ),
+            )
             .when(!custom, |d| {
                 d.child(
                     ui::button("palette-customize", "Customize", ButtonKind::Outline, true)
@@ -1063,19 +1108,19 @@ impl SettingsDialog {
             .px(px(12.))
             .py(px(12.))
             .child(head)
-            .child(grid)
-            .when(custom, |d| d.child(self.render_palette_editor(&active, cx)))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(field(self.share_input.clone(), 0.).flex_1())
-                    .child(
-                        ui::button("palette-import", "Add", ButtonKind::Outline, true)
-                            .on_click(cx.listener(|this, _, _, cx| this.import_palette(cx))),
-                    ),
-            )
+            .when(self.show_import, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(field(self.share_input.clone(), 0.).flex_1())
+                        .child(
+                            ui::button("palette-import", "Add", ButtonKind::Outline, true)
+                                .on_click(cx.listener(|this, _, _, cx| this.import_palette(cx))),
+                        ),
+                )
+            })
             .when_some(self.palette_note.clone(), |d, (note, bad)| {
                 d.child(
                     div()
@@ -1088,6 +1133,8 @@ impl SettingsDialog {
                         .child(note),
                 )
             })
+            .child(grid)
+            .when(custom, |d| d.child(self.render_palette_editor(&active, cx)))
             .into_any_element()
     }
 
@@ -1174,6 +1221,19 @@ impl SettingsDialog {
             .bg(theme::fill_raised())
             .border_1()
             .border_color(theme::stroke())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_muted())
+                            .child("Name"),
+                    )
+                    .child(field(self.name_input.clone(), 0.).w_full()),
+            )
             .child(line(
                 "Tint",
                 format!("{}°", p.hue.round()),

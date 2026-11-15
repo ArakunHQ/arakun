@@ -40,7 +40,7 @@ fn badge_pill(b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
                 .justify_center()
                 .min_w(px(18.))
                 .h(px(18.))
-                .px(px(5.))
+                .px(crate::ui::sp(5.))
                 .rounded_full()
                 .bg(b.bg)
                 .text_size(px(ui::TEXT_XS))
@@ -346,7 +346,11 @@ impl Shell {
     fn render_section(&self, si: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.rail_narrow();
         let folded = section.collapsible && section.collapsed && !narrow;
-        let mut body = div().flex().flex_col().gap(px(1.)).px(px(8.));
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(1.))
+            .px(crate::ui::sp(8.));
         if !folded {
             for (ii, item) in section.items.iter().enumerate() {
                 if let Some(el) = self.render_item((si, ii), item, cx) {
@@ -377,11 +381,11 @@ impl Shell {
                 .group("rail-section")
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(crate::ui::sp(4.))
                 .h(px(28.))
                 .mx(px(8.))
-                .px(px(8.))
-                .rounded(px(8.))
+                .px(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
                 .when(collapsible, |d| {
@@ -434,7 +438,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(20.))
-                            .rounded(px(6.))
+                            .rounded(crate::ui::rad(6.))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::fill_selected()))
                             .tooltip(ui::tip(a.label()))
@@ -460,7 +464,7 @@ impl Shell {
         div()
             .flex()
             .flex_col()
-            .py(px(4.))
+            .py(crate::ui::sp(4.))
             .when(section.line_above, |d| {
                 d.border_t_1().border_color(theme::stroke()).mt(px(4.))
             })
@@ -506,10 +510,10 @@ impl Shell {
                 .group("rail-row")
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .h(px(style.density.row_h()))
-                .px(px(8.))
-                .rounded(px(8.))
+                .px(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
                 .w_full()
                 .text_size(px(ui::TEXT_LG))
                 .font_weight(FontWeight::MEDIUM)
@@ -518,7 +522,7 @@ impl Shell {
                 .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
                 .when(narrow, |d| {
                     d.justify_center()
-                        .px(px(0.))
+                        .px(crate::ui::sp(0.))
                         .tooltip(ui::tip_text(name.clone()))
                 })
                 .child(lead)
@@ -614,9 +618,9 @@ impl Shell {
                     .id(gpui::ElementId::Name(row_id.clone()))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .p(px(6.))
-                    .rounded(px(8.))
+                    .gap(crate::ui::sp(8.))
+                    .p(crate::ui::sp(6.))
+                    .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::fill_selected()))
                     .when(narrow, |d| {
@@ -701,9 +705,9 @@ impl Shell {
                     return None;
                 }
                 div()
-                    .px(px(8.))
-                    .pt(px(6.))
-                    .pb(px(2.))
+                    .px(crate::ui::sp(8.))
+                    .pt(crate::ui::sp(6.))
+                    .pb(crate::ui::sp(2.))
                     .text_size(px(ui::TEXT_XS))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text_faint())
@@ -735,11 +739,8 @@ impl Shell {
 
     /// Projects narrowed to icons: each project's art, the open one lit.
     fn render_projects_narrow(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .children(self.projects.iter().enumerate().map(|(pi, project)| {
+        div().flex().flex_col().gap(crate::ui::sp(2.)).children(
+            self.projects.iter().enumerate().map(|(pi, project)| {
                 let selected = pi == self.active_project;
                 div()
                     .id(("rail-project-icon", pi))
@@ -747,7 +748,7 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .h(px(32.))
-                    .rounded(px(8.))
+                    .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
                     .tooltip(ui::tip_text(project.name.clone()))
                     .when(selected, |d| d.bg(theme::selection_strong()))
@@ -762,7 +763,8 @@ impl Shell {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_project(pi, window, cx)),
                     )
-            }))
+            }),
+        )
     }
 
     /// The right-click menu of a rail item.

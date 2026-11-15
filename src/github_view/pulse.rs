@@ -40,8 +40,8 @@ impl GitHubView {
             .id("gh-pulse-strip")
             .flex()
             .items_center()
-            .gap(px(12.))
-            .px(px(12.))
+            .gap(crate::ui::sp(12.))
+            .px(crate::ui::sp(12.))
             .h(px(48.))
             .cursor_pointer()
             .hover(|s| s.bg(theme::fill_hover()))
@@ -60,7 +60,7 @@ impl GitHubView {
         match &p {
             Some(p) => {
                 let top = p.days.iter().map(|(a, b)| a + b).max().unwrap_or(0).max(1) as f32;
-                let mut bars = div().flex().items_end().gap(px(2.)).h(px(20.));
+                let mut bars = div().flex().items_end().gap(crate::ui::sp(2.)).h(px(20.));
                 for (i, (got, gave)) in p.days.iter().enumerate() {
                     let n = (got + gave) as f32;
                     let today = i as i32 == wday;
@@ -68,7 +68,7 @@ impl GitHubView {
                         div()
                             .w(px(4.))
                             .h(px((n / top * 20.).max(2.)))
-                            .rounded(px(1.))
+                            .rounded(crate::ui::rad(1.))
                             .bg(if n == 0. {
                                 theme::border()
                             } else if today {
@@ -82,7 +82,7 @@ impl GitHubView {
                     div()
                         .flex()
                         .items_baseline()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .child(super::mono(
                             p.avg.map_or("—".to_string(), pulse::span),
                             theme::text(),
@@ -106,7 +106,7 @@ impl GitHubView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(icon("flash", 12.).text_color(if streak > 0 {
                         theme::accent()
                     } else {
@@ -151,10 +151,10 @@ impl GitHubView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(11.))
-            .px(px(16.))
-            .pt(px(14.))
-            .pb(px(8.))
+            .gap(crate::ui::sp(11.))
+            .px(crate::ui::sp(16.))
+            .pt(crate::ui::sp(14.))
+            .pb(crate::ui::sp(8.))
             .child(ui::icon_chip("activity01", 34., None))
             .child(
                 div()
@@ -202,7 +202,7 @@ impl GitHubView {
             return ui::surface_card()
                 .flex_none()
                 .child(header)
-                .child(ui::loading("gh-pulse-loading", "Reading this week…").py(px(20.)))
+                .child(ui::loading("gh-pulse-loading", "Reading this week…").py(crate::ui::sp(20.)))
                 .into_any_element();
         };
 
@@ -210,7 +210,7 @@ impl GitHubView {
             Some(avg) => div()
                 .flex()
                 .items_baseline()
-                .gap(px(9.))
+                .gap(crate::ui::sp(9.))
                 .child(
                     div()
                         .ty(Type::Title)
@@ -221,7 +221,7 @@ impl GitHubView {
             None => div()
                 .flex()
                 .items_baseline()
-                .gap(px(9.))
+                .gap(crate::ui::sp(9.))
                 .child(
                     div()
                         .ty(Type::Title)
@@ -245,10 +245,10 @@ impl GitHubView {
         let mut week = div()
             .flex()
             .items_end()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .h(px(WEEK_H))
             .mt(px(10.));
-        let mut labels = div().flex().gap(px(8.)).mt(px(5.));
+        let mut labels = div().flex().gap(crate::ui::sp(8.)).mt(px(5.));
         for (i, (got, gave)) in p.days.iter().enumerate() {
             let today = i as i32 == wday;
             let (soft, strong) = if today {
@@ -260,17 +260,27 @@ impl GitHubView {
                 .flex()
                 .flex_col()
                 .justify_end()
-                .gap(px(2.))
+                .gap(crate::ui::sp(2.))
                 .flex_1()
                 .h_full();
             let col = if got + gave == 0 {
                 col.child(div().h(px(2.)).rounded_full().bg(theme::border()))
             } else {
                 col.when(*got > 0, |d| {
-                    d.child(div().h(px(*got as f32 * unit)).rounded(px(4.)).bg(soft))
+                    d.child(
+                        div()
+                            .h(px(*got as f32 * unit))
+                            .rounded(crate::ui::rad(4.))
+                            .bg(soft),
+                    )
                 })
                 .when(*gave > 0, |d| {
-                    d.child(div().h(px(*gave as f32 * unit)).rounded(px(4.)).bg(strong))
+                    d.child(
+                        div()
+                            .h(px(*gave as f32 * unit))
+                            .rounded(crate::ui::rad(4.))
+                            .bg(strong),
+                    )
                 })
             };
             week = week.child(col);
@@ -289,7 +299,7 @@ impl GitHubView {
         }
         let legend = div()
             .flex()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .mt(px(6.))
             .child(ui::legend("Requests you got", blue.opacity(0.33)).ty(Type::Caption))
             .child(ui::legend("Reviews you gave", blue).ty(Type::Caption));
@@ -323,13 +333,13 @@ impl GitHubView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .py(px(3.5))
+                        .gap(crate::ui::sp(10.))
+                        .py(crate::ui::sp(3.5))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(8.))
+                                .gap(crate::ui::sp(8.))
                                 .w(px(128.))
                                 .flex_none()
                                 .child(ui::avatar_image(who, g.avatar(who), 20.))
@@ -375,12 +385,12 @@ impl GitHubView {
         let streak = queue::streak(zero, &recent);
         let dots = div()
             .flex()
-            .gap(px(3.))
+            .gap(crate::ui::sp(3.))
             .ml_auto()
             .children((0..7).rev().map(|i| {
                 let hit = zero.contains(&recent[i]);
                 let fade = 1. - i as f32 * 0.12;
-                div().size(px(8.)).rounded(px(2.5)).bg(if hit {
+                div().size(px(8.)).rounded(crate::ui::rad(2.5)).bg(if hit {
                     theme::accent().opacity(fade)
                 } else {
                     theme::fill_selected()
@@ -394,10 +404,10 @@ impl GitHubView {
         let streak_pill = div()
             .flex()
             .items_center()
-            .gap(px(9.))
+            .gap(crate::ui::sp(9.))
             .mt(px(12.))
-            .px(px(14.))
-            .py(px(8.))
+            .px(crate::ui::sp(14.))
+            .py(crate::ui::sp(8.))
             .rounded_full()
             .border_1()
             .border_color(theme::border_subtle())
@@ -423,8 +433,8 @@ impl GitHubView {
                 div()
                     .flex()
                     .flex_col()
-                    .px(px(16.))
-                    .pb(px(14.))
+                    .px(crate::ui::sp(16.))
+                    .pb(crate::ui::sp(14.))
                     .child(big)
                     .child(week)
                     .child(labels)

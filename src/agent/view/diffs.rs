@@ -23,11 +23,11 @@ impl ThreadView {
         let mut col = div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .min_w_0()
-            .px(px(16.))
-            .pt(px(2.))
-            .pb(px(8.));
+            .px(crate::ui::sp(16.))
+            .pt(crate::ui::sp(2.))
+            .pb(crate::ui::sp(8.));
         for (n, (path, diffs)) in edits.files.iter().enumerate() {
             let full = if path.is_relative() {
                 cwd.join(path)
@@ -173,7 +173,7 @@ pub(super) fn diff_counts(added: u32, removed: u32) -> gpui::Div {
     div()
         .flex()
         .flex_none()
-        .gap(px(4.))
+        .gap(crate::ui::sp(4.))
         .text_size(px(crate::ui::TEXT_XS))
         .font_weight(FontWeight::SEMIBOLD)
         .when(added > 0, |d| {
@@ -279,7 +279,7 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
         .flex()
         .flex_col()
         .min_w_0()
-        .rounded(px(crate::ui::RADIUS_LG))
+        .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_hover())
@@ -288,9 +288,9 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(10.))
-                .py(px(8.))
+                .gap(crate::ui::sp(8.))
+                .px(crate::ui::sp(10.))
+                .py(crate::ui::sp(8.))
                 .child(icon("file01", 14.).text_color(theme::text_subtle()))
                 .child(
                     div()
@@ -306,7 +306,7 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                 .child(
                     div()
                         .flex()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .text_size(px(crate::ui::TEXT_XS))
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(added > 0, |d| {
@@ -339,13 +339,13 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                                 .flex_col()
                                 .flex_none()
                                 .min_w_full()
-                                .py(px(2.))
+                                .py(crate::ui::sp(2.))
                                 .children(hunks.iter().take(PREVIEW_LINES).enumerate().map(
                                     |(n, line)| {
                                         match line {
                                             None => div()
                                                 .h(px(18.))
-                                                .pl(px(28.))
+                                                .pl(crate::ui::sp(28.))
                                                 .font_family(theme::FONT_MONO)
                                                 .text_size(px(crate::ui::TEXT_XS))
                                                 .text_color(theme::text_faint())
@@ -387,7 +387,7 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                                                         div()
                                                             .flex_none()
                                                             .w(px(28.))
-                                                            .pr(px(4.))
+                                                            .pr(crate::ui::sp(4.))
                                                             .flex()
                                                             .justify_end()
                                                             .font_family(theme::FONT_MONO)
@@ -415,7 +415,7 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                                                     .child(
                                                         div()
                                                             .flex_none()
-                                                            .pr(px(8.))
+                                                            .pr(crate::ui::sp(8.))
                                                             .whitespace_nowrap()
                                                             .font_family(theme::FONT_MONO)
                                                             .text_size(px(crate::ui::TEXT_XS))
@@ -453,8 +453,8 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                 .when(total > PREVIEW_LINES, |d| {
                     d.child(
                         div()
-                            .px(px(10.))
-                            .py(px(4.))
+                            .px(crate::ui::sp(10.))
+                            .py(crate::ui::sp(4.))
                             .text_size(px(crate::ui::TEXT_XS))
                             .text_color(theme::text_faint())
                             .child(format!("… {} more lines", total - PREVIEW_LINES)),

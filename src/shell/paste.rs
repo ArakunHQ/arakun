@@ -112,9 +112,9 @@ impl Shell {
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(8.))
-                .px(px(12.))
-                .pt(px(10.))
+                .gap(crate::ui::sp(8.))
+                .px(crate::ui::sp(12.))
+                .pt(crate::ui::sp(10.))
                 .children(images.iter().enumerate().map(|(i, path)| {
                     let group: SharedString = format!("composer-image-{i}").into();
                     let open = path.clone();
@@ -124,7 +124,7 @@ impl Shell {
                         .relative()
                         .size(px(64.))
                         .flex_none()
-                        .rounded(px(12.))
+                        .rounded(crate::ui::rad(12.))
                         .overflow_hidden()
                         .border_1()
                         .border_color(theme::border_strong())
@@ -154,7 +154,7 @@ impl Shell {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(8.))
+                                .rounded(crate::ui::rad(8.))
                                 .bg(gpui::black().opacity(0.65))
                                 .opacity(0.)
                                 .group_hover(group, |s| s.opacity(1.))

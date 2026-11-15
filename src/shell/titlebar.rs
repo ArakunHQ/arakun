@@ -15,9 +15,9 @@ impl Shell {
             .min_w_0()
             .items_center()
             .h_full()
-            .pl(px(6.).max(ui::traffic_lights_inset(window) - px(self.titlebar_x())))
-            .pr(px(10.))
-            .gap(px(2.))
+            .pl(crate::ui::sp(6.).max(ui::traffic_lights_inset(window) - px(self.titlebar_x())))
+            .pr(crate::ui::sp(10.))
+            .gap(crate::ui::sp(2.))
             // Presses that land in the gaps around a tab stay here: aiming at a
             // tab and missing by a pixel must not slide the window away.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
@@ -37,7 +37,7 @@ impl Shell {
                         .justify_center()
                         .size(px(24.))
                         .mr(px(2.))
-                        .rounded(px(8.))
+                        .rounded(crate::ui::rad(8.))
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::hover()))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -87,7 +87,7 @@ impl Shell {
                     .justify_center()
                     .size(px(24.))
                     .mr(px(2.))
-                    .rounded(px(8.))
+                    .rounded(crate::ui::rad(8.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .when(enabled, |d| {
                         d.cursor_pointer()
@@ -119,7 +119,7 @@ impl Shell {
             .items_center()
             .min_w_0()
             .h_full()
-            .gap(px(2.))
+            .gap(crate::ui::sp(2.))
             .overflow_x_scroll()
             .track_scroll(&self.tab_scroll);
         let active_id = env.tabs.get(env.active_tab).map(|t| t.id);
@@ -215,29 +215,9 @@ impl Shell {
             };
             let group: SharedString = format!("tab-{i}").into();
             list = list.child(
-                div()
-                    .id(("tab", i))
+                ui::tab(("tab", i), active)
                     .group(group.clone())
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .flex_shrink(1.)
-                    .min_w(px(112.))
-                    .max_w(px(224.))
-                    .h(px(30.))
-                    .px(px(8.))
-                    .when(closable, |d| d.pr(px(28.)))
-                    .gap(px(6.))
-                    .rounded(px(8.))
-                    .text_size(px(ui::TEXT_MD))
-                    .cursor_pointer()
-                    .when(active, |d| {
-                        d.bg(theme::selection()).text_color(theme::content())
-                    })
-                    .when(!active, |d| {
-                        d.text_color(theme::text_subtle())
-                            .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
-                    })
+                    .when(closable, |d| d.pr(crate::ui::sp(28.)))
                     // The tab on screen in the other pane.
                     .when(shown_beside, |d| {
                         d.border_1()
@@ -272,12 +252,12 @@ impl Shell {
                                 .id(("tab-close", i))
                                 .absolute()
                                 .right(px(4.))
-                                .top(px(5.))
+                                .top(px(ui::TAB_CLOSE_TOP))
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .size(px(20.))
-                                .rounded(px(4.))
+                                .rounded(crate::ui::rad(4.))
                                 .invisible()
                                 .group_hover(group.clone(), |s| s.visible())
                                 .hover(|s| s.bg(theme::fill_selected()))
@@ -307,7 +287,7 @@ impl Shell {
             div()
                 .flex()
                 .flex_none()
-                .gap(px(2.))
+                .gap(crate::ui::sp(2.))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
                     icon_button("tab-new-session", "add01", 14.)
@@ -386,8 +366,8 @@ impl Shell {
                             d.h_full().border_l_1().border_color(theme::stroke())
                         })
                         .when(cfg!(not(windows)), |d| {
-                            d.gap(px(2.))
-                                .pr(px(8.))
+                            d.gap(crate::ui::sp(2.))
+                                .pr(crate::ui::sp(8.))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         })
                         .child(
@@ -442,7 +422,9 @@ pub(super) fn window_button(
         .justify_center()
         .cursor_pointer()
         .when(cfg!(windows), |d| d.w(px(40.)).h_full())
-        .when(cfg!(not(windows)), |d| d.size(px(28.)).rounded(px(8.)))
+        .when(cfg!(not(windows)), |d| {
+            d.size(px(28.)).rounded(crate::ui::rad(8.))
+        })
         // The hit test stops here, so Windows sees the button and not the
         // title bar's drag area around it.
         .when(cfg!(windows), |d| {

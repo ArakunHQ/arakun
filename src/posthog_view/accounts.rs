@@ -92,11 +92,11 @@ impl PostHogView {
         let mut card = div()
             .flex()
             .flex_col()
-            .gap(px(14.))
+            .gap(crate::ui::sp(14.))
             .w_full()
             .max_w(px(560.))
-            .p(px(20.))
-            .rounded(px(ui::RADIUS_LG))
+            .p(crate::ui::sp(20.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(theme::fill_raised());
@@ -113,13 +113,13 @@ impl PostHogView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .child(ui::text(Type::Label, theme::text_subtle(), "Personal API key"))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(field)
                         .child(region)
                         .child(
@@ -141,7 +141,7 @@ impl PostHogView {
 
     pub(super) fn render_accounts(&self, cx: &mut Context<Self>) -> AnyElement {
         let dir = self.directory.as_ref();
-        let mut list = div().flex().flex_col().gap(px(8.)).max_w(px(720.)).child(ui::heading("Accounts")).child(ui::text(
+        let mut list = div().flex().flex_col().gap(crate::ui::sp(8.)).max_w(px(720.)).child(ui::heading("Accounts")).child(ui::text(
             Type::Body,
             theme::text_muted(),
             "Every sign-in stays saved. Each one sees all the organizations its user belongs to.",
@@ -167,10 +167,10 @@ impl PostHogView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(12.))
-                    .py(px(10.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .gap(crate::ui::sp(12.))
+                    .px(crate::ui::sp(12.))
+                    .py(crate::ui::sp(10.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(theme::border_subtle())
                     .child(icon("user", 16.).text_color(theme::text_subtle()))
@@ -180,12 +180,12 @@ impl PostHogView {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(crate::ui::sp(2.))
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(8.))
+                                    .gap(crate::ui::sp(8.))
                                     .child(ui::text(Type::Body, theme::text(), s.email.clone()))
                                     .child(ui::badge(s.region_label(), Tone::Neutral)),
                             )
@@ -206,7 +206,7 @@ impl PostHogView {
         div()
             .flex()
             .flex_col()
-            .gap(px(28.))
+            .gap(crate::ui::sp(28.))
             .child(list)
             .child(self.render_connect(false, cx))
             .into_any_element()

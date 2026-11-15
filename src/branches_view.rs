@@ -298,16 +298,16 @@ impl BranchesView {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .p(px(12.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(8.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::stroke())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .text_size(px(ui::TEXT_SM))
                     .child(icon("git-pull-request", 14.).text_color(theme::text_subtle()))
                     .child(
@@ -321,7 +321,7 @@ impl BranchesView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .text_size(px(ui::TEXT_SM))
@@ -334,8 +334,8 @@ impl BranchesView {
                             .items_center()
                             .w(px(240.))
                             .h(px(ui::BUTTON_H))
-                            .px(px(8.))
-                            .rounded(px(ui::RADIUS))
+                            .px(crate::ui::sp(8.))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .border_1()
                             .border_color(theme::border_strong())
                             .font_family(theme::FONT_MONO)
@@ -425,7 +425,7 @@ impl BranchesView {
             }
         }
         counts.sort_by_key(|(s, _)| *s);
-        div().flex().flex_wrap().gap(px(8.)).children(
+        div().flex().flex_wrap().gap(crate::ui::sp(8.)).children(
             counts
                 .into_iter()
                 .filter(|(s, _)| *s != Status::Idle)
@@ -433,9 +433,9 @@ impl BranchesView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .h(px(26.))
-                        .px(px(10.))
+                        .px(crate::ui::sp(10.))
                         .rounded_full()
                         .bg(status_color(s).opacity(0.12))
                         .text_size(px(ui::TEXT_SM))
@@ -469,7 +469,7 @@ impl BranchesView {
         .right(px(STATUS_W))
         .h(px(height));
 
-        let mut list = div().relative().flex().flex_col().pt(px(AXIS_H));
+        let mut list = div().relative().flex().flex_col().pt(crate::ui::sp(AXIS_H));
         for (i, row) in rows.iter().enumerate() {
             list = list.child(self.render_row(map, row, i, now, cx));
         }
@@ -482,9 +482,9 @@ impl BranchesView {
                 .id(id)
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .h(px(28.))
-                .px(px(12.))
+                .px(crate::ui::sp(12.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
                 .cursor_pointer()
@@ -502,7 +502,7 @@ impl BranchesView {
         let plural = |n: usize| if n == 1 { "branch" } else { "branches" };
         let toggles = div()
             .flex()
-            .gap(px(4.))
+            .gap(crate::ui::sp(4.))
             .when(merged > 0, |d| {
                 let label = if self.show_merged {
                     "Hide merged".to_string()
@@ -530,7 +530,7 @@ impl BranchesView {
         div()
             .flex()
             .flex_col()
-            .rounded(px(ui::RADIUS_LG))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .bg(theme::fill_raised())
             .overflow_hidden()
             .child(div().relative().child(list).child(graph))
@@ -553,11 +553,11 @@ impl BranchesView {
         let label = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .w(px(LABEL_W))
             .flex_none()
-            .pl(px(14.))
-            .pr(px(8.))
+            .pl(crate::ui::sp(14.))
+            .pr(crate::ui::sp(8.))
             .child(div().flex_none().size(px(8.)).rounded_full().bg(color))
             .child(
                 div()
@@ -580,10 +580,10 @@ impl BranchesView {
             .flex()
             .items_center()
             .justify_end()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .w(px(STATUS_W))
             .flex_none()
-            .pr(px(14.))
+            .pr(crate::ui::sp(14.))
             .children(match row.branch {
                 None => vec![meta(format!("{} commits shown", map.main_commits.len()))],
                 Some(b) => row_status(b, row.status, row.env, now),
@@ -714,9 +714,9 @@ impl BranchesView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.))
-                .p(px(10.))
-                .rounded(px(ui::RADIUS))
+                .gap(crate::ui::sp(4.))
+                .p(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(ui::RADIUS))
                 .bg(Hsla::from(theme::danger()).opacity(0.08))
                 .child(
                     div()
@@ -739,52 +739,51 @@ impl BranchesView {
                 }))
         });
 
-        let sessions = env.map(|e| {
-            let (project, envi) = (e.project, e.env);
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(6.))
-                .children(e.sessions.iter().take(6).map(|s| {
-                    let id = s.id.clone();
-                    div()
-                        .id(SharedString::from(format!("branch-session-{}", s.id)))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .h(px(26.))
-                        .px(px(8.))
-                        .max_w(px(260.))
-                        .rounded(px(ui::RADIUS))
-                        .border_1()
-                        .border_color(theme::stroke())
-                        .cursor_pointer()
-                        .hover(|st| st.bg(theme::fill_hover()))
-                        .text_size(px(ui::TEXT_SM))
-                        .child(crate::shell::agent_icon(s.agent, 12.))
-                        .child(div().min_w_0().truncate().child(s.title.clone()))
-                        .when(matches!(s.status, SessionStatus::Working), |d| {
-                            d.child(ui::spinner(
-                                SharedString::from(format!("bs-spin-{}", s.id)),
-                                10.,
-                                theme::accent(),
-                            ))
-                        })
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(BranchesEvent::OpenSession {
-                                project,
-                                env: envi,
-                                id: id.clone(),
+        let sessions =
+            env.map(|e| {
+                let (project, envi) = (e.project, e.env);
+                div().flex().flex_wrap().gap(crate::ui::sp(6.)).children(
+                    e.sessions.iter().take(6).map(|s| {
+                        let id = s.id.clone();
+                        div()
+                            .id(SharedString::from(format!("branch-session-{}", s.id)))
+                            .flex()
+                            .items_center()
+                            .gap(crate::ui::sp(6.))
+                            .h(px(26.))
+                            .px(crate::ui::sp(8.))
+                            .max_w(px(260.))
+                            .rounded(crate::ui::rad(ui::RADIUS))
+                            .border_1()
+                            .border_color(theme::stroke())
+                            .cursor_pointer()
+                            .hover(|st| st.bg(theme::fill_hover()))
+                            .text_size(px(ui::TEXT_SM))
+                            .child(crate::shell::agent_icon(s.agent, 12.))
+                            .child(div().min_w_0().truncate().child(s.title.clone()))
+                            .when(matches!(s.status, SessionStatus::Working), |d| {
+                                d.child(ui::spinner(
+                                    SharedString::from(format!("bs-spin-{}", s.id)),
+                                    10.,
+                                    theme::accent(),
+                                ))
                             })
-                        }))
-                }))
-        });
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(BranchesEvent::OpenSession {
+                                    project,
+                                    env: envi,
+                                    id: id.clone(),
+                                })
+                            }))
+                    }),
+                )
+            });
 
         let commits = div().flex().flex_col().children(b.commits.iter().map(|c| {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(crate::ui::sp(10.))
                 .h(px(28.))
                 .text_size(px(ui::TEXT_SM))
                 .child(
@@ -832,16 +831,16 @@ impl BranchesView {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(16.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(12.))
+            .p(crate::ui::sp(16.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::stroke())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .child(div().size(px(10.)).rounded_full().bg(status_color(status)))
                     .child(
                         div()
@@ -865,7 +864,13 @@ impl BranchesView {
             .child(meta(facts.join(" · ")))
             .children(conflicts)
             .when(!actions.is_empty(), |d| {
-                d.child(div().flex().flex_wrap().gap(px(8.)).children(actions))
+                d.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(crate::ui::sp(8.))
+                        .children(actions),
+                )
             })
             .children(sessions)
             .when(!b.commits.is_empty(), |d| {
@@ -888,7 +893,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(crate::ui::sp(4.))
                 .child(crate::shell::agent_icon(s.agent, 12.))
                 .child(ui::spinner(
                     SharedString::from(format!("bw-{}", s.id)),
@@ -1381,9 +1386,9 @@ impl Render for BranchesView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .h(px(ui::TOOLBAR_H))
-            .px(px(12.))
+            .px(crate::ui::sp(12.))
             .border_b_1()
             .border_color(theme::stroke())
             .text_size(px(ui::TEXT_SM))
@@ -1428,7 +1433,7 @@ impl Render for BranchesView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .text_size(px(ui::TEXT_XS))
                     .child(legend(gpui::rgb(CLAUDE).into(), "Claude"))
                     .child(legend(gpui::rgb(DROID).into(), "Droid"))
@@ -1452,7 +1457,7 @@ impl Render for BranchesView {
             )
             .into_any_element(),
             None => div()
-                .pt(px(60.))
+                .pt(crate::ui::sp(60.))
                 .child(ui::loading("branches-first", "Reading branches…"))
                 .into_any_element(),
             Some(map) if map.main.is_empty() => ui::empty_state(
@@ -1472,7 +1477,7 @@ impl Render for BranchesView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(crate::ui::sp(16.))
                     .child(self.render_summary(&map, now))
                     // No remote is not a failure: a quiet link in the header opens the field.
                     .when_some(
@@ -1512,7 +1517,7 @@ impl Render for BranchesView {
                             .w_full()
                             .max_w(px(1200.))
                             .mx_auto()
-                            .p(px(ui::PAGE_PAD))
+                            .p(crate::ui::sp(ui::PAGE_PAD))
                             .child(body),
                     ),
             )
@@ -1523,7 +1528,7 @@ fn legend(color: Hsla, name: &'static str) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(crate::ui::sp(4.))
         .child(div().size(px(7.)).rounded_full().bg(color))
         .child(name)
 }

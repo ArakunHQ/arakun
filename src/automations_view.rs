@@ -212,10 +212,10 @@ impl AutomationsDialog {
             .id(("auto-rule", id as usize))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(10.))
-            .py(px(8.))
-            .rounded(px(ui::RADIUS))
+            .gap(crate::ui::sp(10.))
+            .px(crate::ui::sp(10.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .hover(|s| s.bg(theme::hover()))
             .when(!waiting, |d| d.opacity(0.55))
             .child(
@@ -232,7 +232,7 @@ impl AutomationsDialog {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(
                         div()
                             .text_size(px(ui::TEXT_MD))
@@ -444,10 +444,10 @@ impl AutomationsDialog {
             .id(("auto-row", i))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(10.))
-            .py(px(8.))
-            .rounded(px(ui::RADIUS))
+            .gap(crate::ui::sp(10.))
+            .px(crate::ui::sp(10.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .hover(|s| s.bg(theme::hover()))
             .child(
                 div()
@@ -463,7 +463,7 @@ impl AutomationsDialog {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(
                         div()
                             .text_size(px(ui::TEXT_MD))
@@ -519,16 +519,16 @@ impl AutomationsDialog {
             .id("auto-list")
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .p(px(8.))
+            .gap(crate::ui::sp(2.))
+            .p(crate::ui::sp(8.))
             .min_h_0()
             .overflow_y_scroll();
         if !self.rules.is_empty() {
             list = list.child(
                 div()
-                    .px(px(10.))
-                    .pt(px(4.))
-                    .pb(px(2.))
+                    .px(crate::ui::sp(10.))
+                    .pt(crate::ui::sp(4.))
+                    .pb(crate::ui::sp(2.))
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_faint())
                     .child("Waiting for something · made in the palette"),
@@ -539,9 +539,9 @@ impl AutomationsDialog {
             if !self.items.is_empty() {
                 list = list.child(
                     div()
-                        .px(px(10.))
-                        .pt(px(10.))
-                        .pb(px(2.))
+                        .px(crate::ui::sp(10.))
+                        .pt(crate::ui::sp(10.))
+                        .pb(crate::ui::sp(2.))
                         .text_size(px(ui::TEXT_XS))
                         .text_color(theme::text_faint())
                         .child("Saved"),
@@ -570,12 +570,12 @@ impl AutomationsDialog {
             .id("auto-editor")
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(16.))
+            .gap(crate::ui::sp(16.))
+            .p(crate::ui::sp(16.))
             .min_h_0()
             .overflow_y_scroll();
         if creating {
-            let mut chips = div().flex().flex_wrap().gap(px(6.));
+            let mut chips = div().flex().flex_wrap().gap(crate::ui::sp(6.));
             for (ti, t) in TEMPLATES.iter().enumerate() {
                 chips = chips.child(
                     div()
@@ -583,10 +583,10 @@ impl AutomationsDialog {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .h(px(ui::CONTROL_H))
-                        .px(px(10.))
-                        .rounded(px(ui::RADIUS))
+                        .px(crate::ui::sp(10.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .border_1()
                         .border_color(theme::border())
                         .text_size(px(ui::TEXT_SM))
@@ -659,7 +659,7 @@ impl AutomationsDialog {
                 .enumerate()
                 .map(|(i, (p, n))| (if i == 0 { None } else { Some(p.clone()) }, n.clone()))
                 .collect();
-            let mut row = div().flex().flex_wrap().gap(px(4.));
+            let mut row = div().flex().flex_wrap().gap(crate::ui::sp(4.));
             for (oi, (value, label)) in options.into_iter().enumerate() {
                 let selected = value == self.env;
                 row = row.child(
@@ -690,7 +690,7 @@ impl AutomationsDialog {
             ),
         ));
         if self.every == Every::Weekly {
-            let mut days = div().flex().flex_wrap().gap(px(4.));
+            let mut days = div().flex().flex_wrap().gap(crate::ui::sp(4.));
             for d in [1u8, 2, 3, 4, 5, 6, 0] {
                 days = days.child(
                     ui::chip(
@@ -723,7 +723,7 @@ impl AutomationsDialog {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .child(field_box().w(px(96.)).child(self.time.clone()))
                     .child(
                         div()
@@ -758,7 +758,7 @@ fn field(label: &str, content: impl IntoElement) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(crate::ui::sp(6.))
         .child(
             div()
                 .text_size(px(ui::TEXT_SM))
@@ -816,9 +816,9 @@ impl Render for AutomationsDialog {
             .flex()
             .flex_none()
             .justify_end()
-            .gap(px(8.))
-            .px(px(16.))
-            .py(px(12.))
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(12.))
             .border_t_1()
             .border_color(theme::border_subtle())
             .when(editing, |d| {

@@ -442,9 +442,13 @@ const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
 const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
 const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
 /// Air around and between the window's floating cards.
-const GAP: f32 = 8.;
+/// Room between the window's floating cards; set in Settings › Appearance.
+fn gap() -> f32 {
+    crate::ui::window_gap()
+}
 /// The dock card's collapsed height: the status chips live in its header.
-const DOCK_BAR_H: f32 = 32.;
+/// The dock's header, as tall as the main area's tab bar so their tabs match.
+const DOCK_BAR_H: f32 = ui::BAR_H;
 
 /// Which side card its gap handle is resizing.
 #[derive(Clone, Copy, PartialEq)]
@@ -1686,9 +1690,9 @@ impl Shell {
             } else {
                 self.rail_w
             };
-            GAP + w + GAP
+            gap() + w + gap()
         } else {
-            GAP
+            gap()
         }
     }
 
@@ -1697,7 +1701,7 @@ impl Shell {
         div()
             .id(("side-handle", side as usize))
             .flex_none()
-            .w(px(GAP))
+            .w(px(gap()))
             .h_full()
             .cursor_col_resize()
             .on_mouse_down(
@@ -2002,7 +2006,7 @@ impl Shell {
                                 .mx_auto()
                                 .w_full()
                                 .max_w(px(896.))
-                                .p(px(6.))
+                                .p(crate::ui::sp(6.))
                                 .pt_0()
                                 // Before the composer, so the bar hides its chin. It moves
                                 // itself on top of the card above the composer when one shows.
@@ -2091,7 +2095,7 @@ impl Shell {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
+                .gap(crate::ui::sp(10.))
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
                 .child(agent_icon(env.agent, 22.))
@@ -2211,8 +2215,8 @@ impl Render for Shell {
             .when(self.dock_drag, |d| {
                 d.cursor_row_resize()
                     .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
-                        // The dock card's bottom edge is one GAP above the window's edge.
-                        let bottom = window.viewport_size().height.as_f32() - GAP;
+                        // The dock card's bottom edge is one gap above the window's edge.
+                        let bottom = window.viewport_size().height.as_f32() - gap();
                         let max = (bottom - 160.).max(DOCK_MIN_H);
                         this.dock_height = (bottom - ev.position.y.as_f32())
                             .clamp(DOCK_MIN_H, max)
@@ -2236,14 +2240,14 @@ impl Render for Shell {
                             Some(SideDrag::Rail) => {
                                 let x = ev.position.x.as_f32();
                                 let w = if this.sidebar.style.side == crate::sidebar::Side::Right {
-                                    window_w - GAP - x
+                                    window_w - gap() - x
                                 } else {
-                                    x - GAP
+                                    x - gap()
                                 };
                                 this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
-                                this.panel_w = ((window_w - GAP) - ev.position.x.as_f32())
+                                this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())
                                     .clamp(PANEL_W_RANGE.start, PANEL_W_RANGE.end)
                             }
                             Some(SideDrag::Subagents) => {
@@ -2256,13 +2260,13 @@ impl Render for Shell {
                                     this.rail_w
                                 };
                                 let right = window_w
-                                    - GAP
+                                    - gap()
                                     - if this.panel_open {
-                                        this.panel_w + GAP
+                                        this.panel_w + gap()
                                     } else {
                                         0.
                                     }
-                                    - if rail { rail_w + GAP } else { 0. };
+                                    - if rail { rail_w + gap() } else { 0. };
                                 this.subagents_w = (right - ev.position.x.as_f32())
                                     .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end)
                             }
@@ -2415,8 +2419,8 @@ impl Render for Shell {
             .flex_col()
             .size_full()
             .bg(theme::window_bg())
-            .p(px(GAP))
-            .gap(px(GAP))
+            .p(crate::ui::sp(gap()))
+            .gap(crate::ui::sp(gap()))
             .text_color(theme::content())
             .font_family(theme::FONT_SANS)
             .child(
@@ -2493,8 +2497,8 @@ impl Render for Shell {
                         .flex_col()
                         .items_center()
                         .pt(relative(0.10))
-                        .pb(px(12.))
-                        .px(px(12.))
+                        .pb(crate::ui::sp(12.))
+                        .px(crate::ui::sp(12.))
                         // The palette dims the app further: gpui has no backdrop blur.
                         .bg(gpui::black().opacity(if palette_open { 0.62 } else { 0.4 }))
                         .occlude()
@@ -2561,8 +2565,8 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .p(px(16.))
-            .gap(px(6.));
+            .p(crate::ui::sp(16.))
+            .gap(crate::ui::sp(6.));
         if notes.is_empty() {
             list = list.child(ui::empty_state(
                 "note01",
@@ -2577,10 +2581,10 @@ impl Shell {
                 div()
                     .group(group.clone())
                     .flex()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(8.))
+                    .gap(crate::ui::sp(8.))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
                     .bg(theme::fill_raised())
                     .child(
                         div()
@@ -2618,9 +2622,9 @@ impl Shell {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .h(px(36.))
-                    .px(px(14.))
+                    .px(crate::ui::sp(14.))
                     .border_b_1()
                     .border_color(theme::stroke())
                     .text_size(px(ui::TEXT_SM))
@@ -2637,7 +2641,7 @@ impl Shell {
             .child(
                 div()
                     .flex_none()
-                    .p(px(10.))
+                    .p(crate::ui::sp(10.))
                     .border_b_1()
                     .border_color(theme::stroke())
                     .child(
@@ -2645,8 +2649,8 @@ impl Shell {
                             .flex()
                             .items_center()
                             .h(px(34.))
-                            .px(px(10.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(8.))
                             .border_1()
                             .border_color(theme::border())
                             .bg(theme::background())
@@ -2673,10 +2677,10 @@ fn chip(
         .min_w_0()
         .max_w(px(260.))
         .items_center()
-        .gap(px(5.))
+        .gap(crate::ui::sp(5.))
         .h(px(ui::CONTROL_H))
-        .px(px(7.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(7.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .text_size(px(ui::TEXT_SM))
         .text_color(theme::text_muted())
         .when(enabled, |d| {

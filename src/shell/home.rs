@@ -24,16 +24,16 @@ impl Shell {
                 .mx_auto()
                 .w_full()
                 .max_w(px(896.))
-                .px(px(6.))
-                .pt(px(48.))
+                .px(crate::ui::sp(6.))
+                .pt(crate::ui::sp(48.))
                 // Optical center: extra room below lifts the group above the
                 // geometric middle, where the eye expects it.
-                .pb(px(96.))
+                .pb(crate::ui::sp(96.))
                 .child(div().mb(px(10.)).child(self.home_face.clone()))
                 .child(
                     div()
                         .mb(px(16.))
-                        .px(px(10.))
+                        .px(crate::ui::sp(10.))
                         .ty(ui::Type::Title)
                         .font_weight(gpui::FontWeight::NORMAL)
                         .opacity(alpha)
@@ -94,9 +94,9 @@ impl Shell {
                     .flex_1()
                     .items_center()
                     .justify_center()
-                    .gap(px(14.))
-                    .px(px(24.))
-                    .pb(px(40.))
+                    .gap(crate::ui::sp(14.))
+                    .px(crate::ui::sp(24.))
+                    .pb(crate::ui::sp(40.))
                     .child(div().w_full().max_w(px(896.)).child(self.home_face.clone()))
                     .child(
                         div()
@@ -120,7 +120,7 @@ impl Shell {
                             .opacity(alpha)
                             .mt(px(8.))
                             .h(px(32.))
-                            .px(px(14.))
+                            .px(crate::ui::sp(14.))
                             .text_size(px(ui::TEXT_MD))
                             .child(
                                 div()

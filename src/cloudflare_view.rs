@@ -534,11 +534,11 @@ impl CloudflareView {
         div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .pl(px(10.))
-            .pr(px(8.))
-            .py(px(8.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(10.))
+            .pl(crate::ui::sp(10.))
+            .pr(crate::ui::sp(8.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .bg(theme::fill_raised())
             .child(
                 div()
@@ -557,7 +557,7 @@ impl CloudflareView {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(
                         div()
                             .text_size(px(ui::TEXT_MD))
@@ -612,7 +612,7 @@ impl CloudflareView {
                 .text_color(theme::text_muted())
                 .child(body),
         )
-        .child(div().flex().items_center().gap(px(8.)).map(|d| {
+        .child(div().flex().items_center().gap(crate::ui::sp(8.)).map(|d| {
             if connected {
                 return d
                     .child(icon("checkmark-circle02", 14.).text_color(good()))
@@ -668,7 +668,7 @@ impl CloudflareView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.))
+                .gap(crate::ui::sp(4.))
                 .when(w.is_none(), |d| d.flex_1().min_w_0())
                 .when_some(w, |d, w| d.w(px(w)))
                 .child(
@@ -682,8 +682,8 @@ impl CloudflareView {
                         .flex()
                         .items_center()
                         .h(px(ui::BUTTON_H))
-                        .px(px(8.))
-                        .rounded(px(ui::RADIUS))
+                        .px(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .border_1()
                         .border_color(theme::border_strong())
                         .text_size(px(ui::TEXT_MD))
@@ -702,7 +702,7 @@ impl CloudflareView {
                 div()
                     .flex()
                     .items_end()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(field("Port", self.port.clone(), Some(72.)))
                     .child(field("Who can open it", self.emails.clone(), None))
                     .child(
@@ -737,7 +737,7 @@ impl CloudflareView {
         let header = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(
                 div()
                     .min_w_0()
@@ -830,7 +830,7 @@ impl CloudflareView {
         let week = div()
             .flex()
             .items_end()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .child(spark(&z.days))
             .child(stat("Requests · 7d", count(z.requests())))
             .child(stat("Visitors / day", count(z.visitors_per_day())))
@@ -841,12 +841,12 @@ impl CloudflareView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(crate::ui::sp(12.))
                         .child(
                             div()
                                 .text_size(px(ui::TEXT_XS))
@@ -858,7 +858,7 @@ impl CloudflareView {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(crate::ui::sp(6.))
                                 .text_size(px(ui::TEXT_XS))
                                 .child(div().size(px(6.)).rounded_full().bg(class_color(i)))
                                 .child(
@@ -879,8 +879,8 @@ impl CloudflareView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.))
-                .pt(px(2.))
+                .gap(crate::ui::sp(4.))
+                .pt(crate::ui::sp(2.))
                 .child(
                     div()
                         .text_size(px(ui::TEXT_XS))
@@ -891,7 +891,7 @@ impl CloudflareView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .h(px(20.))
                         .child(ui::tag(f.status.to_string(), status_color(f.status)))
                         .child(
@@ -927,9 +927,9 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(16.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(12.))
+            .p(crate::ui::sp(16.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .bg(theme::fill_raised())
             .child(header)
             .child(week)
@@ -987,15 +987,15 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .pt(px(4.))
+            .gap(crate::ui::sp(4.))
+            .pt(crate::ui::sp(4.))
             .border_t_1()
             .border_color(theme::stroke())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .flex_1()
@@ -1027,10 +1027,10 @@ impl CloudflareView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(12.))
-                .py(px(10.))
-                .rounded(px(ui::RADIUS_LG))
+                .gap(crate::ui::sp(10.))
+                .px(crate::ui::sp(12.))
+                .py(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(ui::RADIUS_LG))
                 .bg(theme::fill_raised())
                 .child(icon("computer", 14.).text_color(theme::text_subtle()))
                 .child(
@@ -1039,7 +1039,7 @@ impl CloudflareView {
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .gap(px(2.))
+                        .gap(crate::ui::sp(2.))
                         .child(div().text_size(px(ui::TEXT_MD)).child(
                             if local.installed.is_empty() {
                                 "cloudflared isn't installed on this machine".to_string()
@@ -1072,7 +1072,7 @@ impl CloudflareView {
             return div()
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(crate::ui::sp(16.))
                 .child(here)
                 .child(quiet(
                     "This sign-in can't read Tunnels yet. Grant read access in Tools.",
@@ -1122,7 +1122,7 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .child(here)
             .child(list)
             .when(!idle.is_empty(), |d| {
@@ -1141,7 +1141,7 @@ impl CloudflareView {
         let header = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(div().size(px(8.)).rounded_full().bg(color))
             .child(
                 div()
@@ -1174,7 +1174,7 @@ impl CloudflareView {
             t.hostnames.join(", ")
         };
         row()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(header)
             .child(
                 div()
@@ -1199,7 +1199,7 @@ impl CloudflareView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .h(px(20.))
                     .text_size(px(ui::TEXT_XS))
                     .child(icon("computer", 12.).text_color(theme::text_subtle()))
@@ -1294,7 +1294,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(
                                 div()
                                     .flex_1()
@@ -1334,7 +1334,7 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .child(list)
             .child(pages)
     }
@@ -1383,7 +1383,7 @@ impl CloudflareView {
         let header = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(
                 div()
                     .flex_1()
@@ -1463,7 +1463,7 @@ impl CloudflareView {
         let stats = (w.requests > 0).then(|| {
             div()
                 .flex()
-                .gap(px(24.))
+                .gap(crate::ui::sp(24.))
                 .child(stat("Requests · 24h", count(w.requests)))
                 .child(stat("Error rate", pct(w.errors, w.requests)))
                 .child(stat("CPU median", cloudflare::ms(w.cpu_p50)))
@@ -1473,7 +1473,7 @@ impl CloudflareView {
                 })
         });
         row()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(header)
             .children(stats)
             .child(meta_line(meta.join(" · ")))
@@ -1482,7 +1482,7 @@ impl CloudflareView {
                     div()
                         .flex()
                         .flex_wrap()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .children(w.bindings.iter().map(|b| chip(&b.kind, &b.target))),
                 )
             })
@@ -1491,10 +1491,10 @@ impl CloudflareView {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
-                        .px(px(8.))
-                        .py(px(6.))
-                        .rounded(px(4.))
+                        .gap(crate::ui::sp(2.))
+                        .px(crate::ui::sp(8.))
+                        .py(crate::ui::sp(6.))
+                        .rounded(crate::ui::rad(4.))
                         .bg(theme::fill_hover())
                         .child(
                             div()
@@ -1523,7 +1523,7 @@ impl CloudflareView {
         let logged: u64 = s.gateways.iter().map(|g| g.logged).sum();
         let metrics = div()
             .flex()
-            .gap(px(10.))
+            .gap(crate::ui::sp(10.))
             .child(metric(
                 "R2 stored",
                 known(s.usage, bytes(s.r2_bytes())),
@@ -1589,7 +1589,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(icon("archive02", 14.).text_color(theme::text_subtle()))
                             .child(
                                 div()
@@ -1625,12 +1625,12 @@ impl CloudflareView {
                     .cursor_pointer()
                     .hover(|st| st.bg(theme::fill_hover()))
                     .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(
                                 icon("left-to-right-list-bullet", 14.)
                                     .text_color(theme::text_subtle()),
@@ -1651,8 +1651,8 @@ impl CloudflareView {
                     .child(
                         div()
                             .flex()
-                            .gap(px(24.))
-                            .pl(px(24.))
+                            .gap(crate::ui::sp(24.))
+                            .pl(crate::ui::sp(24.))
                             .child(stat("Reads · 7d", count(db.reads)))
                             .child(stat("Writes · 7d", count(db.writes)))
                             .child(stat("Rows read", count(db.rows_read)))
@@ -1694,10 +1694,10 @@ impl CloudflareView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(12.))
-                    .py(px(8.))
-                    .rounded(px(8.))
+                    .gap(crate::ui::sp(10.))
+                    .px(crate::ui::sp(12.))
+                    .py(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
                     .bg(theme::fill_raised())
                     .child(icon("git-branch", 14.).text_color(theme::text_subtle()))
                     .child(
@@ -1706,7 +1706,7 @@ impl CloudflareView {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
-                            .gap(px(2.))
+                            .gap(crate::ui::sp(2.))
                             .child(
                                 div()
                                     .text_size(px(ui::TEXT_MD))
@@ -1770,12 +1770,12 @@ impl CloudflareView {
             let spent: f64 = g.recent.iter().map(|c| c.cost).sum();
             ai = ai.child(
                 row()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(icon("ai-idea", 14.).text_color(theme::text_subtle()))
                             .child(
                                 div()
@@ -1833,7 +1833,7 @@ impl CloudflareView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .h(px(20.))
                             .text_size(px(ui::TEXT_XS))
                             .child(ui::tag(
@@ -1909,7 +1909,7 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .child(metrics)
             .child(r2)
             .child(d1)
@@ -1965,7 +1965,7 @@ impl CloudflareView {
         div()
             .flex()
             .flex_col()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .child(alerts)
             .child(audit)
     }
@@ -1990,19 +1990,24 @@ impl CloudflareView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(grant)
                     .child(div().min_w_0().text_size(px(ui::TEXT_XS)).text_color(theme::text_subtle()).child("Opens a terminal; approve in the browser, then refresh.")),
             );
-        div().flex().flex_col().gap(px(10.)).child(access).child(
-            div()
-                .flex()
-                .gap(px(10.))
-                .when(self.agent != Agent::WorkersAi, |d| {
-                    d.child(self.render_mcp(cx))
-                })
-                .child(self.render_share(cx)),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .child(access)
+            .child(
+                div()
+                    .flex()
+                    .gap(crate::ui::sp(10.))
+                    .when(self.agent != Agent::WorkersAi, |d| {
+                        d.child(self.render_mcp(cx))
+                    })
+                    .child(self.render_share(cx)),
+            )
     }
 
     fn render_state(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2011,8 +2016,8 @@ impl CloudflareView {
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(10.))
-                .pt(px(60.))
+                .gap(crate::ui::sp(10.))
+                .pt(crate::ui::sp(60.))
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
         };
@@ -2216,7 +2221,7 @@ fn dns_row(s: &Snapshot, r: &DnsRecord) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(crate::ui::sp(8.))
         .h(px(22.))
         .text_size(px(ui::TEXT_XS))
         .child(
@@ -2326,9 +2331,9 @@ fn card(title: &'static str) -> Div {
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(12.))
-        .p(px(16.))
-        .rounded(px(ui::RADIUS_LG))
+        .gap(crate::ui::sp(12.))
+        .p(crate::ui::sp(16.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::stroke())
         .child(
@@ -2345,9 +2350,9 @@ fn metric(label: &'static str, value: String, color: Option<Hsla>, sub: String) 
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(4.))
-        .p(px(12.))
-        .rounded(px(ui::RADIUS_LG))
+        .gap(crate::ui::sp(4.))
+        .p(crate::ui::sp(12.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .bg(theme::fill_raised())
         .child(
             div()
@@ -2372,11 +2377,11 @@ fn metric(label: &'static str, value: String, color: Option<Hsla>, sub: String) 
 }
 
 fn section(title: &'static str, count: Option<String>, action: Option<AnyElement>) -> Div {
-    div().flex().flex_col().gap(px(8.)).child(
+    div().flex().flex_col().gap(crate::ui::sp(8.)).child(
         div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .h(px(ui::BUTTON_H))
             .text_size(px(ui::TEXT_SM))
             .font_weight(FontWeight::MEDIUM)
@@ -2392,10 +2397,10 @@ fn row() -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
-        .px(px(12.))
-        .py(px(10.))
-        .rounded(px(ui::RADIUS))
+        .gap(crate::ui::sp(6.))
+        .px(crate::ui::sp(12.))
+        .py(crate::ui::sp(10.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .bg(theme::fill_raised())
 }
 
@@ -2403,10 +2408,10 @@ fn line_item(icon_name: &str, title: String, sub: String, when: String) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(10.))
-        .px(px(12.))
-        .py(px(8.))
-        .rounded(px(8.))
+        .gap(crate::ui::sp(10.))
+        .px(crate::ui::sp(12.))
+        .py(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(8.))
         .bg(theme::fill_raised())
         .child(icon(icon_name, 14.).text_color(theme::text_subtle()))
         .child(
@@ -2415,7 +2420,7 @@ fn line_item(icon_name: &str, title: String, sub: String, when: String) -> Div {
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .gap(px(2.))
+                .gap(crate::ui::sp(2.))
                 .child(div().text_size(px(ui::TEXT_MD)).truncate().child(title))
                 .when(!sub.is_empty(), |d| {
                     d.child(
@@ -2451,10 +2456,10 @@ fn chip(kind: &str, target: &str) -> Div {
         .items_center()
         .flex_none()
         .max_w(px(320.))
-        .gap(px(4.))
+        .gap(crate::ui::sp(4.))
         .h(px(20.))
-        .px(px(6.))
-        .rounded(px(ui::RADIUS_SM))
+        .px(crate::ui::sp(6.))
+        .rounded(crate::ui::rad(ui::RADIUS_SM))
         .bg(theme::fill_hover())
         .text_size(px(ui::TEXT_XS))
         .child(
@@ -2477,8 +2482,8 @@ fn chip(kind: &str, target: &str) -> Div {
 
 fn quiet(text: impl Into<SharedString>) -> Div {
     div()
-        .px(px(2.))
-        .py(px(4.))
+        .px(crate::ui::sp(2.))
+        .py(crate::ui::sp(4.))
         .text_size(px(ui::TEXT_SM))
         .text_color(theme::text_subtle())
         .child(text.into())
@@ -2499,7 +2504,7 @@ fn stat(label: &'static str, value: String) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(2.))
+        .gap(crate::ui::sp(2.))
         .child(
             div()
                 .text_size(px(ui::TEXT_MD))
@@ -2521,14 +2526,14 @@ fn spark(days: &[Day]) -> Div {
         .flex()
         .flex_none()
         .items_end()
-        .gap(px(2.))
+        .gap(crate::ui::sp(2.))
         .h(px(30.))
         .w(px(76.))
         .children(days.iter().map(|d| {
             div()
                 .w(px(7.))
                 .h(px(2. + 28. * d.requests as f32 / max))
-                .rounded(px(4.))
+                .rounded(crate::ui::rad(4.))
                 .bg(theme::mix(0.3))
         }))
 }
@@ -2538,13 +2543,13 @@ fn meter(fraction: f32, color: Hsla) -> Div {
     div()
         .h(px(4.))
         .w_full()
-        .rounded(px(4.))
+        .rounded(crate::ui::rad(4.))
         .bg(theme::fill_hover())
         .child(
             div()
                 .h_full()
                 .min_w(px(2.))
-                .rounded(px(4.))
+                .rounded(crate::ui::rad(4.))
                 .w(relative(fraction.clamp(0., 1.)))
                 .bg(color),
         )
@@ -2554,14 +2559,14 @@ fn meter(fraction: f32, color: Hsla) -> Div {
 fn share_bar(classes: &[u64; 5], total: u64) -> Div {
     div()
         .flex()
-        .gap(px(2.))
+        .gap(crate::ui::sp(2.))
         .h(px(6.))
         .w_full()
         .children((0..5).filter(|&i| classes[i] > 0).map(|i| {
             div()
                 .h_full()
                 .min_w(px(3.))
-                .rounded(px(4.))
+                .rounded(crate::ui::rad(4.))
                 .w(relative(classes[i] as f32 / total as f32))
                 .bg(class_color(i))
         }))
@@ -2590,7 +2595,7 @@ impl Render for CloudflareView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_subtle())
                 .child(icon("clock01", 12.).text_color(theme::text_subtle()))
@@ -2609,10 +2614,10 @@ impl Render for CloudflareView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(px(ui::RADIUS_LG))
+                .gap(crate::ui::sp(10.))
+                .px(crate::ui::sp(12.))
+                .py(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(ui::RADIUS_LG))
                 .bg(Hsla::from(theme::warn()).opacity(0.1))
                 .child(icon("square-lock02", 14.).text_color(theme::warn()))
                 .child(
@@ -2653,12 +2658,12 @@ impl Render for CloudflareView {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(16.))
+                                .gap(crate::ui::sp(16.))
                                 .w_full()
                                 .max_w(px(1320.))
                                 .mx_auto()
-                                .px(px(28.))
-                                .py(px(24.))
+                                .px(crate::ui::sp(28.))
+                                .py(crate::ui::sp(24.))
                                 .children(access)
                                 .children(waiting)
                                 .children(
@@ -2679,7 +2684,7 @@ impl Render for CloudflareView {
                         .w_full()
                         .max_w(px(980.))
                         .mx_auto()
-                        .p(px(ui::PAGE_PAD))
+                        .p(crate::ui::sp(ui::PAGE_PAD))
                         .child(self.render_state(cx)),
                 )
                 .into_any_element(),

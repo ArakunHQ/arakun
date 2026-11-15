@@ -1759,8 +1759,20 @@ fn reply_cmd(item: &ItemRef, comment_id: u64, body: &str) -> Result<Cmd, Problem
     })
 }
 
-fn merge_cmd(item: &ItemRef, method: MergeMethod) -> Result<Cmd, Problem> {
+/// A full commit SHA, as GitHub gives `headRefOid`.
+fn is_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `head` is the commit the user saw: GitHub refuses the merge when the
+/// branch moved since, so a late push is never merged unseen.
+fn merge_cmd(item: &ItemRef, method: MergeMethod, head: &str) -> Result<Cmd, Problem> {
     pulls_only(item)?;
+    if !is_sha(head) {
+        return Err(invalid(
+            "Arakun doesn't know the pull request's last commit yet; reload it, then merge.",
+        ));
+    }
     let flag = match method {
         MergeMethod::Squash => "--squash",
         MergeMethod::Merge => "--merge",
@@ -1774,9 +1786,24 @@ fn merge_cmd(item: &ItemRef, method: MergeMethod) -> Result<Cmd, Problem> {
             "-R",
             &item.repo,
             flag,
+            "--match-head-commit",
+            head,
         ]),
         stdin: None,
     })
+}
+
+/// A failed merge, said plainly when the branch moved after the user looked.
+fn merge_problem(p: Problem, head: &str) -> Problem {
+    match &p {
+        Problem::Other(text) if text.to_lowercase().contains("head branch was modified") => {
+            Problem::Other(format!(
+                "New commits were pushed after {}: nothing was merged. Look at them, then merge again.",
+                &head[..head.len().min(7)]
+            ))
+        }
+        _ => p,
+    }
 }
 
 #[allow(dead_code)] // Not offered in the view yet.
@@ -1882,8 +1909,11 @@ pub fn reply(item: &ItemRef, comment_id: u64, body: &str) -> Result<String, Prob
     act(reply_cmd(item, comment_id, body))
 }
 
-pub fn merge(item: &ItemRef, method: MergeMethod) -> Result<(), Problem> {
-    act(merge_cmd(item, method)).map(|_| ())
+/// Merges only if the head is still `head`, the commit the user saw.
+pub fn merge(item: &ItemRef, method: MergeMethod, head: &str) -> Result<(), Problem> {
+    act(merge_cmd(item, method, head))
+        .map(|_| ())
+        .map_err(|p| merge_problem(p, head))
 }
 
 /// Asks these people (`login`) or teams (`org/team`) for a review.
@@ -2296,6 +2326,9 @@ mod tests {
         p.inline.clear();
         p
     }
+
+    /// A head commit, as `headRefOid` gives it.
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn item(kind: ItemKind) -> ItemRef {
         ItemRef {
@@ -3478,17 +3511,32 @@ mod tests {
         assert_eq!(cmd.stdin.as_deref(), Some(body));
 
         assert_eq!(
-            args(merge_cmd(&pr, MergeMethod::Squash)),
-            "pr merge 41 -R ArakunHQ/arakun --squash"
+            args(merge_cmd(&pr, MergeMethod::Squash, SHA)),
+            format!("pr merge 41 -R ArakunHQ/arakun --squash --match-head-commit {SHA}")
         );
         assert_eq!(
-            args(merge_cmd(&pr, MergeMethod::Merge)),
-            "pr merge 41 -R ArakunHQ/arakun --merge"
+            args(merge_cmd(&pr, MergeMethod::Merge, SHA)),
+            format!("pr merge 41 -R ArakunHQ/arakun --merge --match-head-commit {SHA}")
         );
         assert_eq!(
-            args(merge_cmd(&pr, MergeMethod::Rebase)),
-            "pr merge 41 -R ArakunHQ/arakun --rebase"
+            args(merge_cmd(&pr, MergeMethod::Rebase, SHA)),
+            format!("pr merge 41 -R ArakunHQ/arakun --rebase --match-head-commit {SHA}")
         );
+        // Without the commit the user saw, or with something that isn't one, no merge.
+        assert!(merge_cmd(&pr, MergeMethod::Squash, "").is_err());
+        assert!(merge_cmd(&pr, MergeMethod::Squash, "--admin").is_err());
+        assert!(merge_cmd(&pr, MergeMethod::Squash, &SHA[..7]).is_err());
+        let moved = Problem::Other(
+            "GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)"
+                .into(),
+        );
+        assert!(
+            merge_problem(moved, SHA)
+                .text()
+                .starts_with("New commits were pushed after 0123456")
+        );
+        let other = Problem::Other("Pull request is not mergeable".into());
+        assert_eq!(merge_problem(other.clone(), SHA), other);
 
         let who = ["ana".to_string(), "ArakunHQ/core".to_string()];
         assert_eq!(
@@ -3515,7 +3563,7 @@ mod tests {
         assert!(request_review_cmd(&pr, &["--assignee x".to_string()]).is_err());
         assert!(review_cmd(&issue, Verdict::Approve, "").is_err());
         assert!(reply_cmd(&issue, 1, "x").is_err());
-        assert!(merge_cmd(&issue, MergeMethod::Squash).is_err());
+        assert!(merge_cmd(&issue, MergeMethod::Squash, SHA).is_err());
         assert!(request_review_cmd(&issue, &who).is_err());
     }
 
@@ -3527,7 +3575,7 @@ mod tests {
             comment_cmd(&pr, "hi"),
             review_cmd(&pr, Verdict::Approve, ""),
             reply_cmd(&pr, 1, "hi"),
-            merge_cmd(&pr, MergeMethod::Squash),
+            merge_cmd(&pr, MergeMethod::Squash, SHA),
             request_review_cmd(&pr, &["ana".to_string()]),
             Ok(state_cmd(&pr, "close")),
             Ok(state_cmd(&pr, "reopen")),

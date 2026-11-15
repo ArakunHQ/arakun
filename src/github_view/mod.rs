@@ -161,6 +161,9 @@ pub struct GitHubView {
     /// The text of a review being confirmed, or of the draft being edited.
     body_input: Entity<TextInput>,
     confirm: Option<Confirm>,
+    /// The pull request's head commit when the write was asked: what the user
+    /// saw. The write holds to it, so new commits make it stop.
+    confirm_head: String,
     editing_draft: bool,
     busy: Option<&'static str>,
     note: Option<Note>,
@@ -231,6 +234,7 @@ impl GitHubView {
             comment,
             body_input,
             confirm: None,
+            confirm_head: String::new(),
             editing_draft: false,
             busy: None,
             note: None,
@@ -624,7 +628,13 @@ impl GitHubView {
                             text: "Read-only in the test Arakun: nothing was sent.".into(),
                         });
                     }
-                    Err(p) => this.note = Some(Note::failed(p.text())),
+                    Err(p) => {
+                        this.note = Some(Note::failed(p.text()));
+                        // It may have failed because the pull request moved
+                        // (a push before a merge): show what it is now.
+                        this.github
+                            .update(cx, |g, cx| g.fetch_item(item.clone(), cx));
+                    }
                 }
                 cx.notify();
             });
@@ -701,6 +711,7 @@ impl GitHubView {
             return;
         }
         self.confirm = Some(c);
+        self.confirm_head = self.head(cx);
         self.editing_draft = false;
         self.note = None;
         let placeholder = match c {
@@ -710,6 +721,17 @@ impl GitHubView {
         self.body_input = cx.new(|cx| TextInput::new(placeholder, cx));
         self.resubscribe_body(cx);
         cx.notify();
+    }
+
+    /// The open pull request's head commit as last read; empty when unknown.
+    fn head(&self, cx: &App) -> String {
+        match self
+            .item()
+            .and_then(|i| self.github.read(cx).details(&i).cloned())
+        {
+            Some(Details::Pull(p)) => p.head_ref_oid.clone(),
+            _ => String::new(),
+        }
     }
 
     fn ask_merge(&mut self, cx: &mut Context<Self>) {
@@ -785,8 +807,19 @@ impl GitHubView {
                 )
             }
             Confirm::Merge(m) => {
+                let head = self.confirm_head.clone();
+                // A read between the two clicks brought new commits: the
+                // user hasn't seen them, so this merge would fail anyway.
+                if head != self.head(cx) {
+                    self.confirm = None;
+                    self.note = Some(Note::failed(
+                        "New commits arrived after you asked to merge. Look at them, then merge again.",
+                    ));
+                    cx.notify();
+                    return;
+                }
                 let done = format!("{} into {base}.", merged_label(m));
-                self.write("merge", done, move |i| pr::merge(i, m), clear, cx)
+                self.write("merge", done, move |i| pr::merge(i, m, &head), clear, cx)
             }
             Confirm::Close => self.write("close", "Closed.".into(), pr::close, clear, cx),
         }
@@ -993,6 +1026,11 @@ fn merged_label(m: MergeMethod) -> &'static str {
         MergeMethod::Merge => "Merged",
         MergeMethod::Rebase => "Rebased and merged",
     }
+}
+
+/// A commit as people quote it: its first seven characters.
+fn short_sha(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
 }
 
 fn merge_label(m: MergeMethod) -> &'static str {

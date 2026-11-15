@@ -38,7 +38,8 @@ window, and exposes the same workspace to the agents through a command line.
   and runs searches through the `gh` CLI and its session, so what you already read on
   github.com still shows. Pick an item to see its state, checks, what blocks the merge,
   its timeline, files and commits; comment, approve, request changes or merge from
-  there (each write asks a second time). An agent can review a pull request for you
+  there (each write asks a second time, and a merge stops if new commits came after you
+  looked). An agent can review a pull request for you
   and leave a draft (`arakun github draft`) that you post, edit or discard. Review
   requests, mentions and assignments raise an alert; so does anything new in the
   organizations and repositories on your watch list. Click the line under "Review

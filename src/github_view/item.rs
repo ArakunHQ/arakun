@@ -473,7 +473,11 @@ impl GitHubView {
                     true,
                 ),
                 Confirm::Merge(m) => (
-                    format!("{} into {base}?", super::merge_label(m)),
+                    format!(
+                        "{} {} into {base}?",
+                        super::merge_label(m),
+                        super::short_sha(&self.confirm_head)
+                    ),
                     super::merge_label(m).to_string(),
                     false,
                 ),

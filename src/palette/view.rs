@@ -737,6 +737,8 @@ impl Palette {
                     let what = a.what.clone();
                     let key = menu.key.clone();
                     kit::palette_row(ElementId::NamedInteger("palette-act".into(), n as u64), on)
+                        // 7 px (padding and border) inside the menu's 12 px corner.
+                        .rounded(kit::nested(12., 7.))
                         .h(px(40.))
                         .px(crate::ui::sp(8.))
                         .child(

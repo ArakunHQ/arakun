@@ -55,13 +55,14 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: reviewers-${{ github.event.issue.number || inputs.pr || github.event.check_run.head_sha }}
-  cancel-in-progress: true
-
 jobs:
   request:
     name: Request reviewers
+    # On the job, not the workflow: a run whose job is skipped (any comment
+    # but CodeRabbit's) must not cancel one that is working.
+    concurrency:
+      group: reviewers-${{ github.event.issue.number || inputs.pr || github.event.check_run.head_sha }}
+      cancel-in-progress: true
     if: >-
       ${{ github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'check_run' &&
@@ -107,10 +108,12 @@ jobs:
 
           in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
 
-          # CodeRabbit's reviews of the head commit, oldest first: "id state".
-          coderabbit_reviews() {
+          # CodeRabbit's verdict on the head commit: APPROVED, CHANGES_REQUESTED
+          # or nothing. COMMENTED doesn't change a reviewer's verdict on GitHub.
+          coderabbit_verdict() {
             gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate --jq \
-              '.[] | select(.user.login == env.CODERABBIT and .commit_id == env.HEAD) | "\(.id) \(.state)"'
+              '.[] | select(.user.login == env.CODERABBIT and .commit_id == env.HEAD) | .state' |
+              grep -xE 'APPROVED|CHANGES_REQUESTED' | tail -n 1 || true
           }
 
           handle() {
@@ -141,7 +144,7 @@ jobs:
               if in_team "$author"; then
                 local deadline
                 deadline=$(($(date -d "$completed" +%s) + APPROVAL_WAIT))
-                while [ -z "$(coderabbit_reviews "$pr")" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+                while [ -z "$(coderabbit_verdict "$pr")" ] && [ "$(date +%s)" -lt "$deadline" ]; do
                   sleep 15
                 done
               fi
@@ -156,9 +159,7 @@ jobs:
                   -f message="A pull request from outside the team needs a person's approval. CodeRabbit's comments still apply."
                 echo "Dismissed CodeRabbit's approval: $author is not on the team."
               done
-            # COMMENTED doesn't change a reviewer's verdict on GitHub either.
-            elif coderabbit_reviews "$pr" | grep -E ' (APPROVED|CHANGES_REQUESTED)$' |
-              tail -n 1 | grep -q ' APPROVED$'; then
+            elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
               echo "CodeRabbit approved $HEAD; no reviewer needed."
               echo "::endgroup::"
               return
@@ -226,6 +227,9 @@ jobs:
 
             if [ ${#add[@]} -eq 0 ]; then
               echo "Everyone who should review is already asked."
+            elif [ "$(gh api "repos/$GH_REPO/pulls/$pr" --jq .head.sha)" != "$HEAD" ]; then
+              # A push during the wait: the new commit's review decides.
+              echo "The head moved on from $HEAD; its own review will run this again."
             else
               local args=()
               for user in "${add[@]}"; do

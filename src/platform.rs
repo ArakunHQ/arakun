@@ -292,8 +292,10 @@ pub fn relaunch() -> std::io::Result<()> {
 pub fn set_dock_icon(png: &[u8]) {
     use std::ffi::{c_char, c_void};
 
-    let bundled = std::env::current_exe()
-        .is_ok_and(|exe| exe.parent().is_some_and(|dir| dir.ends_with("Contents/MacOS")));
+    let bundled = std::env::current_exe().is_ok_and(|exe| {
+        exe.parent()
+            .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
+    });
     if bundled || png.is_empty() {
         return;
     }
@@ -309,7 +311,8 @@ pub fn set_dock_icon(png: &[u8]) {
     // released here; setApplicationIconImage: keeps its own reference.
     unsafe {
         let send0: extern "C" fn(Id, Id) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
-        let send1: extern "C" fn(Id, Id, Id) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
+        let send1: extern "C" fn(Id, Id, Id) -> Id =
+            std::mem::transmute(objc_msgSend as *const c_void);
         let send_bytes: extern "C" fn(Id, Id, *const u8, usize) -> Id =
             std::mem::transmute(objc_msgSend as *const c_void);
         let sel = |name: &std::ffi::CStr| sel_registerName(name.as_ptr());
@@ -325,7 +328,10 @@ pub fn set_dock_icon(png: &[u8]) {
         if image.is_null() {
             return;
         }
-        let app = send0(objc_getClass(c"NSApplication".as_ptr()), sel(c"sharedApplication"));
+        let app = send0(
+            objc_getClass(c"NSApplication".as_ptr()),
+            sel(c"sharedApplication"),
+        );
         if !app.is_null() {
             send1(app, sel(c"setApplicationIconImage:"), image);
         }

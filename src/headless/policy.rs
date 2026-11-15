@@ -2135,6 +2135,12 @@ fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Findi
     if body == "-" {
         return;
     }
+    // The shell expands a glob to files we can't see from here (`rev*` to a
+    // symlink), and the literal name rarely exists, so it would pass as "not
+    // written yet". Don't guess.
+    if body.contains(['*', '?', '[']) {
+        return ask(out, &body);
+    }
     // `..` is resolved after symlinks when the file is opened, but lexically
     // here, so `link/../x` could pass for a workspace file. Don't guess.
     let climbs = Path::new(&body)
@@ -2983,6 +2989,10 @@ mod tests {
         assert_eq!(lvl("dangling.md"), X);
         assert_eq!(lvl("real.md"), A);
         assert_eq!(lvl("not-written-yet.md"), A);
+        // The shell expands these to review.md, the link out.
+        assert_eq!(lvl("rev*.md"), X);
+        assert_eq!(lvl("revie?.md"), X);
+        assert_eq!(lvl("[r]eview.md"), X);
         // The kernel follows `sub` before `..`: this opens /real.md, not ours.
         std::os::unix::fs::symlink("/etc", ws.join("sub")).unwrap();
         assert_eq!(lvl("sub/../real.md"), X);

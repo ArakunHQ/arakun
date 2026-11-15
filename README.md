@@ -40,7 +40,9 @@ window, and exposes the same workspace to the agents through a command line.
   its timeline, files and commits; comment, approve, request changes or merge from
   there (each write asks a second time, and a merge stops if new commits came after you
   looked). An agent can review a pull request for you
-  and leave a draft (`arakun github draft`) that you post, edit or discard. Review
+  and leave a draft (`arakun github draft`) that you post, edit or discard. Posting a
+  draft asks a second time, and an approval goes out only for the commit the agent read:
+  after new commits the draft can only be posted as a comment. Review
   requests, mentions and assignments raise an alert; so does anything new in the
   organizations and repositories on your watch list. Click the line under "Review
   queue" to show only some organizations or repositories; the rest doesn't show, count

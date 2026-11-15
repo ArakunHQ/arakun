@@ -2062,6 +2062,33 @@ pub fn draft_is_stale(draft: &Draft, pull: &Pull) -> bool {
         && draft.head_sha != pull.head_ref_oid
 }
 
+/// How a draft goes out. An approval counts only for the commit the agent
+/// read: once the pull request has other commits, or the draft doesn't say
+/// which one it read, it can go out as a comment but never as an approval.
+pub fn draft_posts_as(draft: &Draft, pull: &Pull) -> Verdict {
+    let current = !draft.head_sha.is_empty() && draft.head_sha == pull.head_ref_oid;
+    if draft.verdict == Verdict::Approve && !current {
+        Verdict::Comment
+    } else {
+        draft.verdict
+    }
+}
+
+/// Posts a draft review as `verdict`. An approval first asks GitHub for the
+/// head again: a push since the last read would otherwise be approved unseen.
+pub fn post_draft(item: &ItemRef, draft: &Draft, verdict: Verdict) -> Result<(), Problem> {
+    if verdict == Verdict::Approve {
+        let now = head_sha(item)?;
+        if now != draft.head_sha {
+            return Err(invalid(&format!(
+                "New commits were pushed after {}: nothing was approved. Read the draft against them, or post it as a comment.",
+                &draft.head_sha[..draft.head_sha.len().min(7)]
+            )));
+        }
+    }
+    review(item, verdict, &draft.body)
+}
+
 /// The prompt that hands a pull request to an agent for review: read it,
 /// check it, leave a draft, and send nothing to GitHub.
 pub fn review_prompt(item: &ItemRef, title: &str) -> String {
@@ -3719,6 +3746,44 @@ mod tests {
             },
             &p
         ));
+    }
+
+    #[test]
+    fn a_draft_approves_only_the_commit_it_was_written_for() {
+        let p = pull();
+        let draft = Draft {
+            repo: "ArakunHQ/arakun".into(),
+            number: 41,
+            verdict: Verdict::Approve,
+            body: "LGTM".into(),
+            author: "Claude".into(),
+            head_sha: p.head_ref_oid.clone(),
+            created: 1,
+        };
+        assert_eq!(draft_posts_as(&draft, &p), Verdict::Approve);
+        let old = Draft {
+            head_sha: "aaaaaaa1111111".into(),
+            ..draft.clone()
+        };
+        assert_eq!(draft_posts_as(&old, &p), Verdict::Comment);
+        let unknown = Draft {
+            head_sha: String::new(),
+            ..draft.clone()
+        };
+        assert_eq!(draft_posts_as(&unknown, &p), Verdict::Comment);
+        // The others say what they say on any commit; the view warns that it's old.
+        for v in [Verdict::RequestChanges, Verdict::Comment] {
+            assert_eq!(
+                draft_posts_as(
+                    &Draft {
+                        verdict: v,
+                        ..old.clone()
+                    },
+                    &p
+                ),
+                v
+            );
+        }
     }
 
     #[test]

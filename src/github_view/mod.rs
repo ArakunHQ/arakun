@@ -104,6 +104,8 @@ enum Confirm {
     RequestChanges,
     Merge(MergeMethod),
     Close,
+    /// Post the agent's draft review (`confirm_draft`).
+    PostDraft,
 }
 
 enum DiffState {
@@ -164,6 +166,9 @@ pub struct GitHubView {
     /// The pull request's head commit when the write was asked: what the user
     /// saw. The write holds to it, so new commits make it stop.
     confirm_head: String,
+    /// The draft as it was when its post was asked: an agent may write a new
+    /// one before the second click, and that one wasn't read.
+    confirm_draft: Option<Draft>,
     editing_draft: bool,
     busy: Option<&'static str>,
     note: Option<Note>,
@@ -235,6 +240,7 @@ impl GitHubView {
             body_input,
             confirm: None,
             confirm_head: String::new(),
+            confirm_draft: None,
             editing_draft: false,
             busy: None,
             note: None,
@@ -712,6 +718,7 @@ impl GitHubView {
         }
         self.confirm = Some(c);
         self.confirm_head = self.head(cx);
+        self.confirm_draft = self.draft.clone();
         self.editing_draft = false;
         self.note = None;
         let placeholder = match c {
@@ -822,24 +829,47 @@ impl GitHubView {
                 self.write("merge", done, move |i| pr::merge(i, m, &head), clear, cx)
             }
             Confirm::Close => self.write("close", "Closed.".into(), pr::close, clear, cx),
+            Confirm::PostDraft => self.post_draft(cx),
         }
     }
 
+    /// How the draft would go out now; None without a draft or a pull request.
+    fn draft_posts_as(&self, cx: &App) -> Option<Verdict> {
+        let draft = self.draft.as_ref()?;
+        match self.github.read(cx).details(&draft.item())? {
+            Details::Pull(p) => Some(pr::draft_posts_as(draft, p)),
+            Details::Issue(_) => None,
+        }
+    }
+
+    /// The second click on "Post as …".
     fn post_draft(&mut self, cx: &mut Context<Self>) {
         let Some(draft) = self.draft.clone() else {
             return;
         };
-        let done = match draft.verdict {
+        if self.confirm_draft.as_ref() != Some(&draft) {
+            self.confirm = None;
+            self.note = Some(Note::failed(
+                "The draft changed after you asked to post it. Read it again first.",
+            ));
+            cx.notify();
+            return;
+        }
+        let Some(verdict) = self.draft_posts_as(cx) else {
+            return;
+        };
+        let done = match verdict {
             Verdict::Approve => "Approval posted.",
             Verdict::RequestChanges => "Change request posted.",
             Verdict::Comment => "Review posted.",
         };
-        let (verdict, body) = (draft.verdict, draft.body.clone());
+        let posted = draft.clone();
         self.write(
             "post-draft",
             done.into(),
-            move |i| pr::review(i, verdict, &body),
+            move |i| pr::post_draft(i, &posted, verdict),
             move |this, _| {
+                this.confirm = None;
                 let _ = pr::delete_draft(&draft.item());
                 this.draft = None;
             },
@@ -872,6 +902,9 @@ impl GitHubView {
     }
 
     fn discard_draft(&mut self, cx: &mut Context<Self>) {
+        if self.confirm == Some(Confirm::PostDraft) {
+            self.confirm = None;
+        }
         if let Some(d) = self.draft.take()
             && let Err(e) = pr::delete_draft(&d.item())
         {
@@ -1026,6 +1059,42 @@ fn merged_label(m: MergeMethod) -> &'static str {
         MergeMethod::Merge => "Merged",
         MergeMethod::Rebase => "Rebased and merged",
     }
+}
+
+/// The question and the button of the confirmation before a draft goes out.
+/// An old draft says it is old, and an old approval only goes out as a comment.
+fn draft_question(draft: &Draft, stale: bool, posts_as: Verdict) -> (String, String) {
+    let who = if draft.author.is_empty() {
+        "the agent"
+    } else {
+        draft.author.as_str()
+    };
+    let sha = short_sha(&draft.head_sha);
+    let word = timeline::verdict_word(posts_as);
+    if draft.verdict == Verdict::Approve && posts_as != Verdict::Approve {
+        let when = if sha.is_empty() {
+            "doesn't say which commit it approves".to_string()
+        } else {
+            format!("approves {sha}, and new commits came since")
+        };
+        return (
+            format!("{who}'s draft {when}. Post it as a comment instead?"),
+            "Post as comment".into(),
+        );
+    }
+    if stale {
+        return (
+            format!(
+                "{who}'s draft is for {sha}, and new commits came since. Post it as a {word} anyway?"
+            ),
+            "Post anyway".into(),
+        );
+    }
+    let what = match posts_as {
+        Verdict::Approve => format!("Approve {sha} with {who}'s draft?"),
+        _ => format!("Post {who}'s draft as a {word}?"),
+    };
+    (what, format!("Post as {word}"))
 }
 
 /// A commit as people quote it: its first seven characters.
@@ -1189,6 +1258,40 @@ impl Render for GitHubView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_draft_says_so_before_it_goes_out() {
+        let draft = Draft {
+            repo: "o/r".into(),
+            number: 7,
+            verdict: Verdict::Approve,
+            body: "LGTM".into(),
+            author: "Claude".into(),
+            head_sha: "0123456789abcdef".into(),
+            created: 1,
+        };
+        let (q, verb) = draft_question(&draft, false, Verdict::Approve);
+        assert_eq!(q, "Approve 0123456 with Claude's draft?");
+        assert_eq!(verb, "Post as approval");
+        let (q, verb) = draft_question(&draft, true, Verdict::Comment);
+        assert!(
+            q.contains("approves 0123456, and new commits came since"),
+            "{q}"
+        );
+        assert_eq!(verb, "Post as comment");
+        let changes = Draft {
+            verdict: Verdict::RequestChanges,
+            ..draft.clone()
+        };
+        let (q, verb) = draft_question(&changes, true, Verdict::RequestChanges);
+        assert!(
+            q.contains("is for 0123456") && q.ends_with("anyway?"),
+            "{q}"
+        );
+        assert_eq!(verb, "Post anyway");
+        let (q, _) = draft_question(&changes, false, Verdict::RequestChanges);
+        assert_eq!(q, "Post Claude's draft as a change request?");
+    }
 
     #[test]
     fn the_layout_follows_the_width() {

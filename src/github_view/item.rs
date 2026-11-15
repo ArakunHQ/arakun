@@ -486,6 +486,20 @@ impl GitHubView {
                     "Close issue".to_string(),
                     false,
                 ),
+                Confirm::PostDraft => {
+                    let (draft, Some(Details::Pull(p))) = (
+                        self.draft.as_ref()?,
+                        self.github.read(cx).details(&self.item()?),
+                    ) else {
+                        return None;
+                    };
+                    let (q, verb) = super::draft_question(
+                        draft,
+                        pr::draft_is_stale(draft, p),
+                        pr::draft_posts_as(draft, p),
+                    );
+                    (q, verb, false)
+                }
             };
             let busy = self.busy.is_some();
             return Some(

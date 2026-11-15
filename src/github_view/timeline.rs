@@ -7,7 +7,7 @@ use gpui::{
     ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use super::{GitHubView, body_style};
+use super::{Confirm, GitHubView, body_style};
 use crate::github::pr::{self, Event, EventKind, LineKind, Thread, Verdict};
 use crate::github::queue::Details;
 use crate::theme;
@@ -260,7 +260,7 @@ fn hunk_lines(hunk: &str) -> Vec<AnyElement> {
         .collect()
 }
 
-fn verdict_word(v: Verdict) -> &'static str {
+pub(super) fn verdict_word(v: Verdict) -> &'static str {
     match v {
         Verdict::Approve => "approval",
         Verdict::RequestChanges => "change request",
@@ -654,7 +654,8 @@ impl GitHubView {
             } else {
                 draft.author.clone()
             };
-            let post = format!("Post as {}", verdict_word(draft.verdict));
+            let posts_as = pr::draft_posts_as(draft, p);
+            let post = format!("Post as {}", verdict_word(posts_as));
             let sha: String = draft.head_sha.chars().take(7).collect();
             let busy = self.busy.is_some();
             let editing = self.editing_draft;
@@ -695,7 +696,9 @@ impl GitHubView {
                             !busy,
                         )
                         .when(!busy, |b| {
-                            b.on_click(cx.listener(|this, _, _, cx| this.post_draft(cx)))
+                            b.on_click(cx.listener(|this, _, _, cx| {
+                                this.ask_confirm(Confirm::PostDraft, cx)
+                            }))
                         }),
                     )
                     .child(
@@ -717,7 +720,12 @@ impl GitHubView {
                     );
             }
             if !sha.is_empty() {
-                let (text, color) = if stale {
+                let (text, color) = if posts_as != draft.verdict {
+                    (
+                        format!("approves {sha} · new commits since: posts as a comment"),
+                        theme::accent(),
+                    )
+                } else if stale {
                     (
                         format!("written for {sha} · new commits since"),
                         theme::accent(),

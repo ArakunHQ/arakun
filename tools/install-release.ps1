@@ -72,13 +72,24 @@ function Install-Arakun {
             Copy-Item -Force (Join-Path $unpacked $f) $dir -ErrorAction SilentlyContinue
         }
 
-        # The user PATH as stored, not $env:Path, which also holds the machine PATH.
-        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        $entries = @($userPath -split ';' | Where-Object { $_ })
-        if ($entries -notcontains $dir) {
-            [Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User')
-            $env:Path = "$env:Path;$dir"
-            Write-Host "arakun: added $dir to your PATH (new terminals see it)"
+        # The user PATH as stored in the registry, with its %VAR% entries left
+        # unexpanded. [Environment]::GetEnvironmentVariable expands them and
+        # SetEnvironmentVariable writes REG_SZ, which would freeze entries such
+        # as %USERPROFILE%\AppData\Local\Microsoft\WindowsApps for good.
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        try {
+            $userPath = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+            $entries = @($userPath -split ';' | Where-Object { $_ })
+            if ($entries -notcontains $dir) {
+                $key.SetValue('Path', (($entries + $dir) -join ';'), 'ExpandString')
+                # A registry write doesn't tell Explorer; setting a user variable does.
+                [Environment]::SetEnvironmentVariable('ArakunInstall', '1', 'User')
+                [Environment]::SetEnvironmentVariable('ArakunInstall', $null, 'User')
+                $env:Path = "$env:Path;$dir"
+                Write-Host "arakun: added $dir to your PATH (new terminals see it)"
+            }
+        } finally {
+            $key.Close()
         }
 
         $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Arakun.lnk'

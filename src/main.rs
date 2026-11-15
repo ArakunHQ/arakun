@@ -49,6 +49,7 @@ mod memory;
 mod memory_view;
 mod model;
 mod notices;
+mod palette;
 mod phone;
 mod phone_view;
 mod picker;
@@ -68,7 +69,6 @@ mod site;
 #[cfg(feature = "coderlabs")]
 mod site_view;
 mod state;
-mod switcher;
 #[cfg(feature = "coderlabs")]
 mod tasks_view;
 #[cfg(feature = "team")]
@@ -194,6 +194,19 @@ fn main() {
                 bind("ctrl-0", shell::ZoomReset, "Shell && !Terminal && !Browser"),
             ]);
             input::bind_keys(cx);
+            palette::bind_keys(cx);
+            // Pinned things from anywhere; inside the palette Ctrl+1..9 opens them too.
+            cx.bind_keys([
+                bind("ctrl-alt-1", palette::Pinned1, "Shell"),
+                bind("ctrl-alt-2", palette::Pinned2, "Shell"),
+                bind("ctrl-alt-3", palette::Pinned3, "Shell"),
+                bind("ctrl-alt-4", palette::Pinned4, "Shell"),
+                bind("ctrl-alt-5", palette::Pinned5, "Shell"),
+                bind("ctrl-alt-6", palette::Pinned6, "Shell"),
+                bind("ctrl-alt-7", palette::Pinned7, "Shell"),
+                bind("ctrl-alt-8", palette::Pinned8, "Shell"),
+                bind("ctrl-alt-9", palette::Pinned9, "Shell"),
+            ]);
             app_menu::install(cx);
             signals::quit_on_signals(cx);
             cx.on_window_closed(|cx, _| {

@@ -241,6 +241,7 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun notices --unseen           # notifications you haven't read yet
 arakun ls                         # projects, environments and sessions
+arakun palette                    # bring the window up with Ctrl+K open
 arakun mem search <words>         # search what agents remember about this project
 arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md
                                   # save a review draft for the GitHub tab; sends nothing.
@@ -252,6 +253,9 @@ arakun agent run <prompt>         # start a headless agent
 arakun --version                  # print the version (needs no running Arakun)
 ```
 
+To open the palette from any app, bind `arakun palette` to a global key in your
+desktop. On Hyprland, for example: `bind = SUPER, K, exec, arakun palette`.
+
 `arakun run` and `arakun logs` take `--ready <text>`, `--port <n>` and `--timeout <s>`
 before the command, and fail with the tail of the output if the command exits or times
 out first.
@@ -262,6 +266,18 @@ out first.
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs; `Alt+Up` / `Alt+Down` switch environments
 - `Ctrl+F` search the conversation
+- `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
+  symbols, views, commands, settings and memory in one search. Start with `>` for
+  commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.
+  In it: `→` opens a row's actions or goes into it (a project, a person, Branches), `←`
+  goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
+  a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
+  (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
+  agent. A question gets a short answer from Claude Haiku when
+  `~/.config/arakun/anthropic-key` holds an API key, and a sentence such as "merge #64
+  when the checks pass and tell me" becomes an automation once you confirm it. Pins
+  are kept in `pins.json`, rules in `rules.json` and what you open in
+  `palette-frecency.json`, next to the state file.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them

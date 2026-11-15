@@ -143,6 +143,8 @@ impl Shell {
         );
         let (name, items) = (project.name.clone(), project.automations.clone());
         let dialog = cx.new(|cx| AutomationsDialog::new(name, items, envs, create, window, cx));
+        let rules = self.rules.items.clone();
+        dialog.update(cx, |d, cx| d.set_rules(rules, cx));
         let sub = cx.subscribe_in(
             &dialog,
             window,
@@ -192,6 +194,14 @@ impl Shell {
                         }
                         return;
                     }
+                    AutomationsEvent::CancelRule(id) => {
+                        if this.rules.cancel(*id) {
+                            this.rules.save();
+                        }
+                        this.refresh_automations(cx);
+                        cx.notify();
+                        return;
+                    }
                     AutomationsEvent::Dismissed => return this.close_modal(window, cx),
                 }
                 this.save(cx);
@@ -204,7 +214,7 @@ impl Shell {
     }
 
     /// Hands the open Automations dialog the current list (last runs, edits).
-    fn refresh_automations(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_automations(&mut self, cx: &mut Context<Self>) {
         let Some((Modal::Automations(dialog), _)) = &self.modal else {
             return;
         };
@@ -216,7 +226,11 @@ impl Shell {
         else {
             return;
         };
-        dialog.update(cx, |d, cx| d.set_items(items, cx));
+        let rules = self.rules.items.clone();
+        dialog.update(cx, |d, cx| {
+            d.set_items(items, cx);
+            d.set_rules(rules, cx);
+        });
     }
 }
 

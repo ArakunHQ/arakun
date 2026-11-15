@@ -8,7 +8,7 @@
 //! `acp_probe`, `thread_demo`), so unused-item lints would only be noise here.
 #![allow(dead_code)]
 
-mod anthropic;
+pub(crate) mod anthropic;
 pub mod attach;
 pub mod catalog;
 pub mod chart;

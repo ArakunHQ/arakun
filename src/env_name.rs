@@ -196,12 +196,23 @@ fn private_dir() -> std::io::Result<PathBuf> {
 
 /// The CLI and its arguments to answer `prompt` once, with no tools, and exit.
 fn command(agent: AgentKind, model: &str, prompt: &str) -> Result<(PathBuf, Vec<String>)> {
-    use crate::agent as launch;
-    let model = (!model.is_empty()).then(|| ["--model".to_string(), model.to_string()]);
-    let (program, args) = match agent {
+    // Checked first, so an agent that can't name branches fails without a lookup.
+    let args = args(agent, model, prompt)?;
+    let program = match agent {
         AgentKind::Claude => {
-            let program =
-                launch::claude_cli().ok_or_else(|| anyhow!("Claude Code is not installed"))?;
+            crate::agent::claude_cli().ok_or_else(|| anyhow!("Claude Code is not installed"))?
+        }
+        _ => crate::agent::droid_bin()?,
+    };
+    Ok((program, args))
+}
+
+/// The arguments [`command`] runs the CLI with. Kept apart from finding the CLI, which
+/// reads the user's home folder, so tests can check them on any machine.
+fn args(agent: AgentKind, model: &str, prompt: &str) -> Result<Vec<String>> {
+    let model = (!model.is_empty()).then(|| ["--model".to_string(), model.to_string()]);
+    let args = match agent {
+        AgentKind::Claude => {
             // The prompt goes right after -p: `--tools` takes every word up to the next flag.
             let mut args: Vec<String> = vec!["-p".into(), prompt.into()];
             args.extend(
@@ -218,20 +229,20 @@ fn command(agent: AgentKind, model: &str, prompt: &str) -> Result<(PathBuf, Vec<
                 .map(String::from),
             );
             args.extend(model.into_iter().flatten());
-            (program, args)
+            args
         }
         // `droid exec` without `--auto` may only read, which is all naming needs.
         AgentKind::Droid => {
             let mut args = vec!["exec".to_string()];
             args.extend(model.into_iter().flatten());
             args.push(prompt.into());
-            (launch::droid_bin()?, args)
+            args
         }
         AgentKind::OpenCode | AgentKind::WorkersAi => {
             bail!("{} cannot name branches", agent.label())
         }
     };
-    Ok((program, args))
+    Ok(args)
 }
 
 /// Runs `cmd` and returns its stdout; kills it after [`TIMEOUT`].
@@ -398,16 +409,25 @@ mod tests {
     #[test]
     fn opencode_never_names_branches() {
         assert!(!AGENTS.contains(&AgentKind::OpenCode));
+        assert!(args(AgentKind::OpenCode, "", "the task").is_err());
         assert!(command(AgentKind::OpenCode, "", "the task").is_err());
     }
 
     #[test]
     fn claude_command_has_no_tools() {
-        let Ok((_, args)) = command(AgentKind::Claude, "haiku", "the task") else {
-            return;
-        };
+        let args = args(AgentKind::Claude, "haiku", "the task").unwrap();
         assert_eq!(&args[..2], ["-p", "the task"]);
         assert!(args.windows(2).any(|w| w == ["--tools", ""]));
         assert!(args.ends_with(&["--model".into(), "haiku".into()]));
+    }
+
+    #[test]
+    fn droid_command_reads_only() {
+        let args = args(AgentKind::Droid, "", "the task").unwrap();
+        assert_eq!(
+            args,
+            ["exec", "the task"],
+            "no --auto: droid exec stays read-only"
+        );
     }
 }

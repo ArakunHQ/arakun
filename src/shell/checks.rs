@@ -902,4 +902,28 @@ mod tests {
         assert_eq!(run.output, "started");
         assert!(run.elapsed < Duration::from_secs(5));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_waiting_check_runs_after_the_other_with_its_full_time() {
+        let dir = std::env::temp_dir().join(format!("arakun-checks-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The first takes about a second; the second may only run 0.5 s, so it
+        // would time out if its time counted while it waited.
+        let first = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                run_check(&dir, "sleep 1; touch first-end", Duration::from_secs(10)).unwrap()
+            })
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        // It fails if it starts while the first one is still going.
+        let second = run_check(&dir, "test -f first-end", Duration::from_millis(500)).unwrap();
+        let first = first.join().unwrap();
+        assert_eq!(first.code, Some(0));
+        assert!(!second.timed_out);
+        assert_eq!(second.code, Some(0), "the two checks overlapped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

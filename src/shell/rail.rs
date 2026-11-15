@@ -162,6 +162,7 @@ impl Shell {
                 d.child(self.render_rail_narrow_header(window, cx))
             })
             .when(!narrow, |d| d.child(header))
+            .children(self.render_pinned_block(cx))
             .children(self.render_rail_sections(cx))
             .pb(px(4.))
     }

@@ -199,6 +199,16 @@ impl BranchesView {
     }
 
     /// Every branch read, with its PR's number and title: what Ctrl+K can jump to.
+    /// Each branch with how far it is ahead of the default one, for the palette.
+    pub fn branch_ahead(&self) -> Vec<(String, u64, u64)> {
+        self.map.as_ref().map_or_else(Vec::new, |m| {
+            m.branches
+                .iter()
+                .map(|b| (b.name.clone(), b.ahead, b.behind))
+                .collect()
+        })
+    }
+
     pub fn branch_list(&self) -> Vec<(String, Option<(u64, String)>)> {
         self.map.as_ref().map_or_else(Vec::new, |m| {
             m.branches

@@ -299,43 +299,57 @@ jobs:
 
           in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
 
-          if [ "$EVENT" = workflow_run ]; then
-            # The event lists no pull request when the branch is on a fork.
-            prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
-              --jq '.[] | select(.head.sha == env.SHA) | .number')
-          else
+          # A status belongs to a commit, not a pull request, so it must hold
+          # for every open pull request with this head.
+          if [ "$EVENT" != workflow_run ]; then
             if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
               echo "::error::Not a pull request number: $PR"
               exit 1
             fi
-            prs=$PR
+            SHA=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
+          fi
+          export HEAD=$SHA
+          # The workflow_run event lists no pull request when the branch is
+          # on a fork, so find them by their head commit.
+          prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
+            --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"')
+          if [ -z "$prs" ]; then
+            echo "No open pull request has $HEAD as its head."
+            exit 0
           fi
 
-          for pr in $prs; do
-            read -r author HEAD < <(gh api "repos/$GH_REPO/pulls/$pr" --jq '[.user.login, .head.sha] | @tsv')
-            export HEAD
+          state=success description=""
+          while read -r pr author; do
             if in_team "$author"; then
-              state=success description="Not needed: the author is on the team."
-            else
-              # Each reviewer's last verdict on the head commit. A dismissed
-              # review reads DISMISSED, so it drops out.
-              approvers=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq \
-                '.[] | select(.commit_id == env.HEAD and (.state == "APPROVED" or .state == "CHANGES_REQUESTED")) | "\(.user.login) \(.state)"' |
-                awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }')
-              approver=""
-              for user in $approvers; do
-                if in_team "$user"; then
-                  approver=$user
-                  break
-                fi
-              done
-              if [ -n "$approver" ]; then
-                state=success description="Approved by $approver."
-              else
-                state=pending description="Waiting for a maintainer to approve: the author is outside the team."
-              fi
+              echo "#$pr: the author is on the team."
+              continue
             fi
-            gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
-              -f context="Human approval" -f description="$description" -f target_url="$RUN_URL"
-            echo "#$pr ($HEAD): $state, $description"
-          done
+            # Each reviewer's last verdict on the head commit. A dismissed
+            # review counts as the last verdict, so it clears an earlier
+            # approval from the same person.
+            approvers=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq \
+              '.[] | select(.commit_id == env.HEAD and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | "\(.user.login) \(.state)"' |
+              awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }')
+            approver=""
+            for user in $approvers; do
+              if in_team "$user"; then
+                approver=$user
+                break
+              fi
+            done
+            if [ -n "$approver" ]; then
+              echo "#$pr: approved by $approver."
+              description=${description:-"Approved by $approver."}
+            else
+              echo "#$pr: waiting for a maintainer."
+              state=pending
+            fi
+          done <<<"$prs"
+
+          if [ "$state" = pending ]; then
+            description="Waiting for a maintainer to approve: the author is outside the team."
+          fi
+          description=${description:-"Not needed: the author is on the team."}
+          gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
+            -f context="Human approval" -f description="$description" -f target_url="$RUN_URL"
+          echo "$HEAD: $state, $description"

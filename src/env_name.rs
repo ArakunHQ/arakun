@@ -187,10 +187,11 @@ pub fn suggest(namer: &Namer, task: &str) -> Result<String> {
 fn private_dir() -> std::io::Result<PathBuf> {
     let [a, b, _] = random_numbers();
     let dir = std::env::temp_dir().join(format!("arakun-namer-{a:08x}{b:08x}"));
-    let mut builder = std::fs::DirBuilder::new();
+    // On Windows the folder keeps the access rules of the temporary folder.
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(&dir)?;
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir)?;
+    #[cfg(not(unix))]
+    std::fs::DirBuilder::new().create(&dir)?;
     Ok(dir)
 }
 

@@ -154,8 +154,9 @@ Manager (Windows Credentials, Generic Credentials).
   name.
 - **Primary selection** (select to copy, middle click to paste) does not exist on Windows;
   in the terminal use `Ctrl+Shift+C`/`Ctrl+Shift+V`.
-- **No Windows CI.** The release workflow builds `arakun.exe` on Windows, but no tests run
-  there automatically.
+- **No tests run on Windows in CI.** Every pull request that changes Rust code runs
+  Clippy on Windows, so it must compile there, but the tests run only on Linux and macOS.
+  Only the release workflow makes a release build, which also compiles the shaders.
 
 ## If something fails
 

@@ -92,10 +92,8 @@ check it against `SHA256SUMS`, and install it for your user:
 | Windows | `%LOCALAPPDATA%\Programs\Arakun`, added to your user `PATH`, and a Start menu shortcut | delete that folder and the shortcut, and remove it from `PATH` |
 
 To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0`,
-or set `ARAKUN_VERSION=v0.1.0` (on Windows, `$env:ARAKUN_VERSION = "v0.1.0"`). The
-macOS app is signed ad-hoc, not notarized: installed this way it opens normally, but
-macOS blocks a copy downloaded with a web browser. There is no build for Intel Macs or
-Linux on ARM yet; build from source there.
+or set `ARAKUN_VERSION=v0.1.0` (on Windows, `$env:ARAKUN_VERSION = "v0.1.0"`). There is
+no build for Intel Macs or Linux on ARM yet; build from source there.
 
 ### Manual download
 
@@ -119,9 +117,8 @@ freetype).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
 
-**macOS:** `arakun-<version>-macos-arm64.tar.gz` holds `Arakun.app`. Download it with
-`curl`, not a web browser, or macOS refuses to open it (then
-`xattr -dr com.apple.quarantine Arakun.app` lets it open).
+**macOS:** `arakun-<version>-macos-arm64.tar.gz` holds `Arakun.app`, signed with a
+Developer ID and notarized by Apple. Move it to `Applications` and open it.
 
 Arakun does not bundle the agents. Install the ones you want to use:
 

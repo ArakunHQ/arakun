@@ -2281,6 +2281,12 @@ fn gh_host() -> String {
 /// The arguments after `arakun github draft`. The pull request may also be
 /// given as its address.
 pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
+    parse_draft_args_on(args, &gh_host())
+}
+
+/// `parse_draft_args` for URLs on `host`: tests name it instead of reading
+/// `GH_HOST`, which other tests running at the same time may see.
+fn parse_draft_args_on(args: &[String], gh: &str) -> Result<DraftArgs, String> {
     let (mut item, mut verdict, mut body_file, mut agent, mut head) =
         (None, None, None, None, None);
     let mut args = args.iter();
@@ -2293,7 +2299,7 @@ pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
             if item.is_some() {
                 return Err(format!("unexpected argument `{arg}`\n{DRAFT_USAGE}"));
             }
-            let host = gh_host();
+            let host = gh.to_string();
             let found = ItemRef::parse(arg).or_else(|| ItemRef::from_url_on(arg, &host));
             let found = found.ok_or_else(|| {
                 if ItemRef::from_url(arg).is_some() {
@@ -4050,7 +4056,7 @@ mod tests {
 
     #[test]
     fn draft_arguments_are_parsed() {
-        let parse = |args: &[&str]| parse_draft_args(&strings(args));
+        let parse = |args: &[&str]| parse_draft_args_on(&strings(args), "github.com");
         let pr = ItemRef {
             repo: "ArakunHQ/arakun".into(),
             number: 41,
@@ -4122,7 +4128,7 @@ mod tests {
             ])
             .contains("is an issue")
         );
-        if gh_host() == "github.com" {
+        {
             assert!(
                 err(&[
                     "https://ghe.corp/o/r/pull/7",

@@ -31,7 +31,7 @@ dunce = "1"
 # agent transcripts (src/agent)
 pulldown-cmark = { version = "0.13", default-features = false }
 # image attachments sent to ACP agents (src/agent/attach.rs)
-base64 = "0.22"
+base64 = "0.23"
 # droid's login at ~/.factory is AES-256-GCM (src/account.rs)
 aes-gcm = "0.10"
 # file and diff tab colors (src/highlight.rs); fancy-regex keeps it pure Rust

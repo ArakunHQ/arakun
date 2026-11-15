@@ -30,7 +30,7 @@ one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 
 | Changed | Run |
 | --- | --- |
-| any path outside `relay/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `lefthook.yml`, `.coderabbit.yaml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
+| any path outside `relay/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, `.coderabbit.yaml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
 | `phone/` | rustfmt, clippy, tests, relay, phone |
 | `relay/` | relay, phone |
 | `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |

@@ -146,10 +146,16 @@ pub const BAR_INSET: f32 = (BAR_H - TAB_H) / 2.;
 /// The same for an icon button at the end of a bar.
 pub const ICON_INSET: f32 = (BAR_H - ICON_BUTTON) / 2.;
 
-/// Pixels that must not follow the Spacing setting: an inset matched to a
-/// fixed height (`BAR_INSET`), so the sides stay equal to the top.
-pub fn fixed(n: f32) -> Pixels {
-    px(n)
+/// `BAR_INSET` as padding. It does not follow the Spacing setting: the bar
+/// and the tab have fixed heights, so a scaled side would no longer match
+/// the top. The design lint allows only these two unscaled paddings.
+pub fn bar_inset() -> Pixels {
+    px(BAR_INSET)
+}
+
+/// `ICON_INSET` as padding, unscaled for the same reason as `bar_inset`.
+pub fn icon_inset() -> Pixels {
+    px(ICON_INSET)
 }
 
 /// Where a tab's 20 px close button sits, centered on the tab.

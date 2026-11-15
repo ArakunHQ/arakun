@@ -55,7 +55,7 @@ impl Shell {
             // The raccoon lines up with the list below; the buttons at the end
             // sit as far from the side as from the top.
             .pl(crate::ui::sp(14.).max(crate::ui::traffic_lights_inset(window) - px(gap())))
-            .pr(ui::fixed(ui::ICON_INSET))
+            .pr(ui::icon_inset())
             .gap(crate::ui::sp(2.))
             .when(!self.sidebar.has(&crate::sidebar::Piece::Mascot), |d| {
                 d.child(self.rail_mascot.clone())

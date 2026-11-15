@@ -49,6 +49,10 @@ const SCALED_ARGS: &[&str] = &[
     "ui::nested(",
     "ui::bar_inset()",
     "ui::icon_inset()",
+    // Built from `nested`, so it follows the Corners setting.
+    "ui::menu_row_radius()",
+    // Its own setting (Window gap), which Spacing leaves alone on purpose.
+    "ui::window_gap_px()",
     "relative(",
 ];
 

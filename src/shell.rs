@@ -1152,13 +1152,13 @@ impl Shell {
         if project.env_index(&path).is_none() {
             project
                 .environments
-                .push(Environment::new(path.clone(), Some(branch), false));
+                .push(Environment::new(path.clone(), Some(branch.clone()), false));
         }
         let ei = project.env_index(&path).unwrap_or(0);
         if auto_name {
             // The folder keeps the random name; the label follows the branch once renamed.
             let env = &mut project.environments[ei];
-            env.auto_name = true;
+            env.placeholder = Some(branch);
             env.follow_branch();
         }
         self.select_env(pi, ei, window, cx);

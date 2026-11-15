@@ -74,9 +74,9 @@ fn random_numbers() -> [u32; 3] {
     [word(0), word(4), word(8)]
 }
 
-/// Whether `name` is one [`random`] could have made: the branch was never given a
-/// real name.
-pub fn is_random(name: &str) -> bool {
+/// Whether `name` is one [`random`] could have made.
+#[cfg(test)]
+fn is_random(name: &str) -> bool {
     let Some(rest) = name.strip_prefix(PREFIX) else {
         return false;
     };

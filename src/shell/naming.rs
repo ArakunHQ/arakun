@@ -32,15 +32,16 @@ impl Shell {
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        if !env.auto_name {
+        if env.placeholder.is_none() {
             return;
         }
-        env.auto_name = false;
+        // Renamed by hand in the meantime, even to another random-looking name.
+        let pending = env.awaits_name();
+        env.placeholder = None;
         let old = env.branch.to_string();
         self.save(cx);
         let namer = env_name::namer();
-        // Renamed by hand in the meantime, or naming is off.
-        if !env_name::is_random(&old) || namer.agent.is_none() {
+        if !pending || namer.agent.is_none() {
             return;
         }
         let (dir, task) = (env_path.to_path_buf(), prompt.to_string());
@@ -124,7 +125,7 @@ impl Shell {
     /// Shows the environment at `dir` by its new branch name.
     fn branch_renamed(&mut self, dir: &Path, name: String, cx: &mut Context<Self>) {
         if let Some(env) = self.find_env_mut(dir) {
-            env.auto_name = false;
+            env.placeholder = None;
             env.set_branch(Some(name));
             env.follow_branch();
         }

@@ -1,13 +1,13 @@
 //! Quick answers in the palette: a question goes to a small fast model with
 //! what Arakun already knows about it (matching memory, the failed run on the
-//! branch), and the answer streams in under the query. The network runs on a
-//! thread of its own; the palette polls a channel, so typing never waits.
+//! branch), and the answer streams in under the query. It goes through Claude
+//! Code, signed in with the user's Claude account (OAuth), so it counts
+//! against their plan and needs no API key. It runs on a thread of its own;
+//! the palette polls a channel, so typing never waits.
 
 use std::sync::mpsc;
 
 use serde_json::{Value, json};
-
-use crate::agent::anthropic;
 
 /// Small and fast: answers in a second or two for a fraction of a cent.
 pub const MODEL: &str = "claude-haiku-5-5";
@@ -222,111 +222,141 @@ pub fn rule_body(sentence: &str, sessions: &[String]) -> Value {
 }
 
 fn read_rule(sentence: &str, sessions: &[String]) -> Result<Value, String> {
-    let (url, key) = anthropic::endpoint().map_err(|_| no_key())?;
-    let request = ureq::http::Request::builder()
-        .method("POST")
-        .uri(&url)
-        .header("x-api-key", key)
-        .header("anthropic-version", anthropic::VERSION)
-        .header("content-type", "application/json")
-        .body(rule_body(sentence, sessions).to_string())
-        .map_err(|e| e.to_string())?;
-    let response = crate::agent::workers_ai::http()
-        .run(request)
-        .map_err(|e| format!("could not reach the API ({e})"))?;
-    let status = response.status().as_u16();
-    let text = response
-        .into_body()
-        .with_config()
-        .limit(256 * 1024)
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
-    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    if status != 200 {
-        return Err(v["error"]["message"]
+    let request = rule_body(sentence, sessions);
+    let schema = &request["output_config"]["format"]["schema"];
+    let mut child = claude_code(&request, Some(schema))?;
+    let stdout = child.stdout.take().ok_or("no output")?;
+    use std::io::{BufRead as _, BufReader};
+    let mut last = None;
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if let Ok(v) = serde_json::from_str::<Value>(&line)
+            && v["type"] == "result"
+        {
+            last = Some(v);
+        }
+    }
+    let _ = child.wait();
+    let v = last.ok_or("Claude Code gave no answer")?;
+    if v["is_error"].as_bool().unwrap_or(false) {
+        return Err(v["result"]
             .as_str()
-            .unwrap_or("the API failed")
+            .unwrap_or("Claude Code failed")
             .to_string());
     }
-    let out = v["content"]
-        .as_array()
-        .and_then(|c| c.iter().find(|b| b["type"] == "text"))
-        .and_then(|b| b["text"].as_str())
-        .ok_or("no answer")?;
-    serde_json::from_str(out).map_err(|e| format!("not JSON: {e}"))
+    if v["structured_output"].is_object() {
+        return Ok(v["structured_output"].clone());
+    }
+    serde_json::from_str(v["result"].as_str().unwrap_or_default())
+        .map_err(|e| format!("not JSON: {e}"))
 }
 
-/// How to add a key, when there is none.
+/// Starts Claude Code for one request built as a Messages body (its system
+/// prompt, its user message and its model), with no tools, settings, MCP
+/// servers or saved session: just the model, on the user's Claude account.
+fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::Child, String> {
+    use std::io::Write as _;
+    let bin = crate::agent::claude_code_binary().ok_or_else(no_key)?;
+    let mut cmd = crate::platform::command(&bin);
+    cmd.args([
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    ])
+    .args(["--model", request["model"].as_str().unwrap_or(MODEL)])
+    .args([
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "",
+    ])
+    .args(["--no-session-persistence", "--disable-slash-commands"])
+    .args([
+        "--system-prompt",
+        request["system"].as_str().unwrap_or(SYSTEM),
+    ]);
+    if let Some(schema) = schema {
+        cmd.args(["--json-schema", &schema.to_string()]);
+    }
+    if let Some(max) = request["max_tokens"].as_u64() {
+        cmd.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max.to_string());
+    }
+    // With a key in the environment Claude Code would bill it instead of the plan.
+    cmd.env_remove("ANTHROPIC_API_KEY")
+        .env_remove("ANTHROPIC_AUTH_TOKEN")
+        // Away from any project, so no CLAUDE.md is read into a quick answer.
+        .current_dir(std::env::temp_dir())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not start Claude Code ({e})"))?;
+    let prompt = request["messages"][0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prompt.as_bytes());
+    }
+    Ok(child)
+}
+
+/// One line of Claude Code's `stream-json` output as an answer event.
+pub fn parse_line(line: &str) -> Option<Event> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    match v["type"].as_str()? {
+        // Its own end-of-message usage is left for the final result line.
+        "stream_event" => {
+            parse_event(&v["event"].to_string()).filter(|e| !matches!(e, Event::Done { .. }))
+        }
+        "result" if v["is_error"].as_bool().unwrap_or(false) => Some(Event::Failed(
+            v["result"]
+                .as_str()
+                .unwrap_or("Claude Code failed")
+                .to_string(),
+        )),
+        "result" => Some(Event::Done {
+            input: v["usage"]["input_tokens"].as_u64().unwrap_or(0),
+            output: v["usage"]["output_tokens"].as_u64().unwrap_or(0),
+        }),
+        _ => None,
+    }
+}
+
+/// What to do when Claude Code isn't there to answer.
 pub fn no_key() -> String {
-    format!(
-        "Quick answers need an Anthropic API key: put it in {} (one line).",
-        anthropic::key_path().display()
-    )
+    "Quick answers go through Claude Code: install it or sign in with `claude /login`.".to_string()
 }
 
 fn run(ctx: &Context, tx: &mpsc::Sender<Event>) {
-    let (url, key) = match anthropic::endpoint() {
-        Ok(e) => e,
-        Err(_) => {
-            let _ = tx.send(Event::Failed(no_key()));
-            return;
-        }
-    };
-    let request = ureq::http::Request::builder()
-        .method("POST")
-        .uri(&url)
-        .header("x-api-key", key)
-        .header("anthropic-version", anthropic::VERSION)
-        .header("content-type", "application/json")
-        .header("accept", "text/event-stream")
-        .body(body(ctx).to_string());
-    let request = match request {
-        Ok(r) => r,
+    let mut child = match claude_code(&body(ctx), None) {
+        Ok(c) => c,
         Err(e) => {
-            let _ = tx.send(Event::Failed(e.to_string()));
+            let _ = tx.send(Event::Failed(e));
             return;
         }
     };
-    let response = match crate::agent::workers_ai::http().run(request) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx.send(Event::Failed(format!("could not reach the API ({e})")));
-            return;
-        }
-    };
-    let status = response.status().as_u16();
-    if status != 200 {
-        let text = response
-            .into_body()
-            .with_config()
-            .limit(64 * 1024)
-            .read_to_string()
-            .unwrap_or_default();
-        let why = serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(String::from))
-            .unwrap_or_else(|| text.chars().take(200).collect());
-        let _ = tx.send(Event::Failed(format!("HTTP {status}: {why}")));
+    let Some(stdout) = child.stdout.take() else {
+        let _ = tx.send(Event::Failed("no output".into()));
         return;
-    }
+    };
     use std::io::{BufRead as _, BufReader};
-    let reader = BufReader::new(response.into_body().into_reader());
     let mut finished = false;
-    for line in reader.lines() {
-        let Ok(line) = line else {
-            break;
-        };
-        let Some(data) = line.strip_prefix("data:") else {
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let Some(ev) = parse_line(&line) else {
             continue;
         };
-        if let Some(ev) = parse_event(data.trim()) {
-            finished |= matches!(ev, Event::Done { .. } | Event::Failed(_));
-            if tx.send(ev).is_err() {
-                // The palette closed or the question changed.
-                return;
-            }
+        finished |= matches!(ev, Event::Done { .. } | Event::Failed(_));
+        if tx.send(ev).is_err() {
+            // The palette closed or the question changed.
+            let _ = child.kill();
+            return;
         }
     }
+    let _ = child.wait();
     if !finished {
         let _ = tx.send(Event::Done {
             input: 0,
@@ -411,6 +441,27 @@ mod tests {
         assert!(matches!(e, Some(Event::Failed(ref s)) if s == "Overloaded"));
         assert!(parse_event(r#"{"type":"ping"}"#).is_none());
         assert!(parse_event("not json").is_none());
+    }
+
+    #[test]
+    fn claude_code_lines_are_read() {
+        let t = parse_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"4"}}}"#,
+        );
+        assert!(matches!(t, Some(Event::Text(ref s)) if s == "4"));
+        let d = parse_line(
+            r#"{"type":"result","is_error":false,"result":"4","usage":{"input_tokens":2,"output_tokens":5}}"#,
+        );
+        assert!(matches!(
+            d,
+            Some(Event::Done {
+                input: 2,
+                output: 5
+            })
+        ));
+        let e = parse_line(r#"{"type":"result","is_error":true,"result":"Not logged in"}"#);
+        assert!(matches!(e, Some(Event::Failed(ref s)) if s == "Not logged in"));
+        assert!(parse_line(r#"{"type":"system","subtype":"init"}"#).is_none());
     }
 
     #[test]

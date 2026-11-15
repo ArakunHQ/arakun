@@ -233,8 +233,8 @@ out first.
   goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
   a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
   (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
-  agent. A question gets a short answer from Claude Haiku when
-  `~/.config/arakun/anthropic-key` holds an API key, and a sentence such as "merge #64
+  agent. A question gets a short answer from Claude Haiku through Claude Code, on
+  your Claude account (no API key), and a sentence such as "merge #64
   when the checks pass and tell me" becomes an automation once you confirm it. Pins
   are kept in `pins.json`, rules in `rules.json` and what you open in
   `palette-frecency.json`, next to the state file.

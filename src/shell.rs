@@ -451,7 +451,7 @@ fn gap() -> f32 {
 
 /// `gap()` as a length, for the root's padding and the side handles.
 fn gap_px() -> gpui::Pixels {
-    px(gap())
+    crate::ui::window_gap_px()
 }
 
 /// The dock card's collapsed height: the status chips live in its header.
@@ -2432,8 +2432,8 @@ impl Render for Shell {
             .flex_col()
             .size_full()
             .bg(theme::window_bg())
-            .p(gap_px())
-            .gap(gap_px())
+            .p(crate::ui::window_gap_px())
+            .gap(crate::ui::window_gap_px())
             .text_color(theme::content())
             .font_family(theme::FONT_SANS)
             .child(

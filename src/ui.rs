@@ -307,6 +307,12 @@ pub fn window_gap() -> f32 {
     WINDOW_GAP.load(std::sync::atomic::Ordering::Relaxed) as f32
 }
 
+/// The window gap as a length: the space at the window's edges and between its
+/// cards. It is its own setting, so Spacing does not scale it.
+pub fn window_gap_px() -> Pixels {
+    px(window_gap())
+}
+
 pub fn set_window_gap(g: f32) {
     WINDOW_GAP.store(
         g.clamp(0., 20.).round() as u32,

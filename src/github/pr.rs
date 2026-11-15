@@ -2100,8 +2100,8 @@ Read it with `gh` first: the description, the full diff, the existing reviews an
 Use the URL: this checkout may be another repository.\n\n\
 Verify what it claims against the code where you can: read the files around the change, and build or run the tests \
 if this checkout is that repository. Say what you checked and what you could not check.\n\n\
-Then write the review to a file and save it as a draft:\n\n\
-arakun github draft {label} --verdict <approve|request-changes|comment> --body-file <file> --agent <your name>\n\n\
+Then save the review as a draft, its text on stdin:\n\n\
+arakun github draft {label} --verdict <approve|request-changes|comment> --body-file - --agent <your name> <<'EOF'\n<the review>\nEOF\n\n\
 I read the draft in Arakun and post, edit or discard it myself. Never post a comment or a review, approve, \
 request changes, merge or close anything on GitHub yourself.",
         label = item.label(),
@@ -2198,7 +2198,7 @@ pub struct DraftArgs {
     pub agent: Option<String>,
 }
 
-pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file> [--agent <name>]";
+pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--agent <name>]";
 
 /// The arguments after `arakun github draft`. The pull request may also be
 /// given as its address.
@@ -3816,7 +3816,7 @@ mod tests {
             "{p}"
         );
         assert!(
-            p.contains("\narakun github draft ArakunHQ/arakun#41 --verdict <approve|request-changes|comment> --body-file <file> --agent <your name>\n"),
+            p.contains("\narakun github draft ArakunHQ/arakun#41 --verdict <approve|request-changes|comment> --body-file - --agent <your name> <<'EOF'\n"),
             "{p}"
         );
         assert!(p.ends_with("Never post a comment or a review, approve, request changes, merge or close anything on GitHub yourself."), "{p}");

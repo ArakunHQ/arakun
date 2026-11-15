@@ -293,10 +293,10 @@ Usage:
                              agent turns running go on by themselves after it
   arakun mem …                 memory agents keep across sessions: save, search,
                              get, context, list, forget (arakun mem help)
-  arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file> [--agent <name>]
+  arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--agent <name>]
                              save a review as a draft for the GitHub tab (v:
-                             approve, request-changes or comment); nothing is
-                             sent to GitHub until you post it there
+                             approve, request-changes or comment; - reads stdin);
+                             nothing is sent to GitHub until you post it there
   arakun dev …                 a test arakun on a virtual display, to screenshot
                              and click without touching this screen (arakun dev help)
 ";

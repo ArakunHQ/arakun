@@ -235,8 +235,10 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun ls                         # projects, environments and sessions
 arakun mem search <words>         # search what agents remember about this project
-arakun github draft o/r#12 --verdict approve --body-file review.md --agent Claude
-                                  # save a review draft for the GitHub tab; sends nothing
+arakun github draft o/r#12 --verdict approve --body-file - --agent Claude < review.md
+                                  # save a review draft for the GitHub tab; sends nothing.
+                                  # --body-file takes a file or - (stdin); an agent's file
+                                  # outside its workspace asks the user first
 arakun agent run <prompt>         # start a headless agent
 arakun --version                  # print the version (needs no running Arakun)
 ```

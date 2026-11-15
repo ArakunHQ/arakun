@@ -835,7 +835,27 @@ impl Render for GalleryView {
             .child(ui::key_hint("Next", "J"))
             .child(ui::icon_tile("git-pull-request", 26., green))
             .child(ui::avatar("rikvisser-dev", 24.))
-            .child(ui::avatar("karlo", 24.));
+            .child(ui::avatar("karlo", 24.))
+            // Pictures come from GitHub; with none on disk they show initials.
+            .child(ui::avatar_image("ana", None, 24.))
+            .child(ui::state_pill("tick02", "Approved", green))
+            .child(ui::avatar_badge(
+                "rikvisser-dev",
+                None,
+                32.,
+                "git-pull-request",
+                amber,
+                theme::background(),
+            ))
+            .child(ui::avatar_stack(
+                &[
+                    ("rikvisser-dev".into(), None),
+                    ("karlo".into(), None),
+                    ("ana".into(), None),
+                ],
+                24.,
+                theme::fill_raised(),
+            ));
 
         let body = div()
             .flex()

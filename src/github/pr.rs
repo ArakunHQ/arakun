@@ -736,6 +736,20 @@ impl ChecksSummary {
         self.checks.len()
     }
 
+    /// All the checks as one state: any failing fails, any running runs.
+    /// None when nothing ran or all were skipped.
+    pub fn overall(&self) -> Option<CheckState> {
+        if self.failed > 0 {
+            Some(CheckState::Failed)
+        } else if self.running > 0 {
+            Some(CheckState::Running)
+        } else if self.passed > 0 {
+            Some(CheckState::Passed)
+        } else {
+            None
+        }
+    }
+
     pub fn names(&self, state: CheckState) -> Vec<String> {
         self.checks
             .iter()
@@ -1026,6 +1040,46 @@ pub fn waiting_on(pull: &Pull, me: &str) -> WaitingOn {
     WaitingOn::Nobody
 }
 
+/// Where one reviewer stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewerState {
+    Approved,
+    ChangesRequested,
+    Commented,
+    /// Asked and not answered yet (again).
+    Requested,
+}
+
+/// Everyone who reviewed or was asked to, each once, with where they stand:
+/// a request asked again after a review wins, since it is what waits. The
+/// author's own answers in threads don't make them a reviewer.
+pub fn reviewers(pull: &Pull) -> Vec<(String, ReviewerState)> {
+    let mut out: Vec<(String, ReviewerState)> = Vec::new();
+    for r in &pull.latest_reviews {
+        let state = match r.state.as_str() {
+            "APPROVED" => ReviewerState::Approved,
+            "CHANGES_REQUESTED" => ReviewerState::ChangesRequested,
+            "COMMENTED" => ReviewerState::Commented,
+            _ => continue,
+        };
+        if r.author.login.is_empty() || same_login(&r.author.login, &pull.author.login) {
+            continue;
+        }
+        out.push((r.author.login.clone(), state));
+    }
+    for req in &pull.review_requests {
+        let who = req.who();
+        if who.is_empty() {
+            continue;
+        }
+        match out.iter_mut().find(|(l, _)| same_login(l, who)) {
+            Some(seen) => seen.1 = ReviewerState::Requested,
+            None => out.push((who.to_string(), ReviewerState::Requested)),
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // The user's own review
 
@@ -1236,6 +1290,48 @@ pub fn timeline(pull: &Pull) -> Vec<Event> {
     // Stable: things of the same second keep GitHub's order.
     events.sort_by_key(|e| e.at);
     events
+}
+
+/// The timeline in rows: each row a range of events. Commits one author
+/// pushed one after another read as one push; everything else is a row of
+/// its own.
+pub fn group_pushes(events: &[Event]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < events.len() {
+        let mut end = i + 1;
+        if matches!(events[i].kind, EventKind::Commit { .. }) {
+            while events.get(end).is_some_and(|n| {
+                matches!(n.kind, EventKind::Commit { .. }) && n.author == events[i].author
+            }) {
+                end += 1;
+            }
+        }
+        out.push(i..end);
+        i = end;
+    }
+    out
+}
+
+/// Whether a login is an app rather than a person: `dependabot[bot]`, or a
+/// bot GitHub names without the suffix in comments.
+pub fn is_bot(login: &str) -> bool {
+    const KNOWN: &[&str] = &[
+        "github-actions",
+        "dependabot",
+        "renovate",
+        "codecov",
+        "vercel",
+        "netlify",
+        "cla-assistant",
+        "claassistant",
+        "copilot",
+        "coderabbitai",
+        "sonarcloud",
+        "github-advanced-security",
+    ];
+    let l = login.to_ascii_lowercase();
+    l.ends_with("[bot]") || KNOWN.contains(&l.as_str())
 }
 
 /// The comments of an issue, oldest first.
@@ -2597,6 +2693,15 @@ mod tests {
         );
         assert_eq!(sum.checks[4].url, "https://cla.example/41");
         assert_eq!(sum.names(CheckState::Running), ["Tests", "deploy/preview"]);
+        assert_eq!(sum.overall(), Some(CheckState::Failed));
+        let only = |passed, running| ChecksSummary {
+            passed,
+            running,
+            ..Default::default()
+        };
+        assert_eq!(only(3, 1).overall(), Some(CheckState::Running));
+        assert_eq!(only(3, 0).overall(), Some(CheckState::Passed));
+        assert_eq!(only(0, 0).overall(), None);
 
         // The later run wins wherever GitHub lists it.
         let mut p = pull();
@@ -2874,6 +2979,64 @@ mod tests {
         );
         p.reviews = vec![review("A", "APPROVED", "2026-11-14T09:00:00Z", "")];
         assert_eq!(new_since_my_review(&p, ME).len(), 2);
+    }
+
+    #[test]
+    fn pushes_group_by_author_in_a_row() {
+        let ev = |author: &str, commit: bool| Event {
+            at: 0,
+            author: author.into(),
+            body: String::new(),
+            kind: if commit {
+                EventKind::Commit {
+                    oid: "a".into(),
+                    headline: "h".into(),
+                }
+            } else {
+                EventKind::Comment { url: String::new() }
+            },
+        };
+        let events = [
+            ev("rik", true),
+            ev("rik", true),
+            ev("ana", true),
+            ev("rik", false),
+            ev("rik", true),
+            ev("rik", false),
+            ev("rik", false),
+        ];
+        assert_eq!(group_pushes(&events), [0..2, 2..3, 3..4, 4..5, 5..6, 6..7]);
+        assert!(group_pushes(&[]).is_empty());
+    }
+
+    #[test]
+    fn reviewers_once_each_with_where_they_stand() {
+        let p: Pull = serde_json::from_str(
+            r#"{"number":1,"author":{"login":"rik"},
+            "latestReviews":[{"author":{"login":"ana"},"state":"APPROVED"},
+                {"author":{"login":"bo"},"state":"CHANGES_REQUESTED"},
+                {"author":{"login":"rik"},"state":"COMMENTED"},
+                {"author":{"login":"cy"},"state":"DISMISSED"}],
+            "reviewRequests":[{"login":"Bo"},{"slug":"core"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            reviewers(&p),
+            [
+                ("ana".to_string(), ReviewerState::Approved),
+                ("bo".to_string(), ReviewerState::Requested),
+                ("core".to_string(), ReviewerState::Requested),
+            ]
+        );
+    }
+
+    #[test]
+    fn bots_are_known_by_name() {
+        assert!(is_bot("github-actions"));
+        assert!(is_bot("renovate[bot]"));
+        assert!(is_bot("Dependabot"));
+        assert!(!is_bot("rikvisser-dev"));
+        assert!(!is_bot(""));
     }
 
     #[test]

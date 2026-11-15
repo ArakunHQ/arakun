@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use super::GitHubView;
-use crate::github::queue::{Entry, Group, Lane, Mark, Placed};
+use crate::github::queue::{Entry, Group, Lane, Mark, Placed, short_count};
 use crate::github::{GitHub, Problem};
 use crate::theme;
 use crate::ui::{self, Type, Typography as _, icon};
@@ -112,7 +112,8 @@ impl GitHubView {
                             ),
                     ),
             )
-            .when(q.on_you > 0, |d| {
+            // A narrow column keeps the room for the scope: the bar says it too.
+            .when(q.on_you > 0 && self.layout().left_w >= 380., |d| {
                 d.child(ui::pill(
                     format!("{} waiting on you", q.on_you),
                     theme::accent(),
@@ -158,8 +159,10 @@ impl GitHubView {
         let legend = div()
             .flex()
             .flex_none()
+            .flex_wrap()
             .items_center()
-            .gap(px(14.))
+            .gap_x(px(14.))
+            .gap_y(px(4.))
             .px(px(16.))
             .pt(px(9.))
             .pb(px(12.))
@@ -238,13 +241,38 @@ impl GitHubView {
             .track_scroll(&self.queue_scroll)
             .pb(px(6.));
         if let Some(p) = problem {
+            // GitHub's answers run long: the first sentence, the rest on hover.
+            let full = p.text();
+            let short = full
+                .split(". ")
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('.')
+                .to_string();
             list = list.child(
                 div()
-                    .px(px(14.))
-                    .pt(px(10.))
-                    .ty(Type::Caption)
-                    .text_color(theme::error())
-                    .child(p.text()),
+                    .id("gh-problem")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(8.))
+                    .mx(px(10.))
+                    .mt(px(10.))
+                    .px(px(10.))
+                    .py(px(8.))
+                    .rounded(px(ui::RADIUS))
+                    .bg(theme::error().opacity(0.08))
+                    .child(icon("alert-circle", 14.).text_color(theme::error()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .ty(Type::Caption)
+                            .text_color(theme::error())
+                            .line_clamp(2)
+                            .child(format!("{short}.")),
+                    )
+                    .tooltip(ui::tip_text(full)),
             );
         }
         let mut ix = 0;
@@ -256,25 +284,7 @@ impl GitHubView {
             if rows.is_empty() {
                 continue;
             }
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .gap(px(7.))
-                    .px(px(14.))
-                    .pt(px(11.))
-                    .pb(px(5.))
-                    .ty(Type::Label)
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(theme::text_subtle())
-                    .child(group.label())
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::text_muted())
-                            .child(rows.len().to_string()),
-                    ),
-            );
+            list = list.child(group_header(group.label(), rows.len()));
             for (e, p) in rows {
                 list =
                     list.child(self.render_row(ix, e, p, picked.as_deref() == Some(&e.key()), cx));
@@ -382,65 +392,164 @@ impl GitHubView {
         let late = p.lane == Lane::OnYou && waited > 3600;
         let unread = e.unread();
         let entry = e.clone();
+        let g = self.github.read(cx);
+        let who = if p.author.is_empty() {
+            e.author.as_str()
+        } else {
+            p.author.as_str()
+        };
+        // A notification about no one (a CI run) shows its kind instead of a face.
+        let lead = if who.is_empty() {
+            ui::icon_chip(icon_name, 32., Some(color))
+        } else {
+            ui::avatar_badge(
+                who,
+                g.avatar(who),
+                32.,
+                icon_name,
+                color,
+                if selected {
+                    theme::fill_raised()
+                } else {
+                    theme::background()
+                },
+            )
+        };
+        let repo = e.repo();
+        let short_repo = repo.rsplit('/').next().unwrap_or_default().to_string();
+        let number = e.item.as_ref().map(|i| format!("#{}", i.number));
+        let title = e.title.clone();
+
+        let line = div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .min_w_0()
+            .when(!short_repo.is_empty(), |d| d.child(repo_tag(short_repo)))
+            .when_some(number, |d, n| {
+                d.child(super::mono(n, theme::text_subtle()).flex_none())
+            })
+            .when(!p.sub.is_empty(), |d| {
+                d.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .ty(Type::Caption)
+                        .text_color(theme::text_subtle())
+                        .child(p.sub.clone()),
+                )
+            });
+        let right_bottom = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .when_some(p.changes, |d, (add, del)| {
+                d.child(super::mono(
+                    format!("+{}", short_count(add)),
+                    theme::diff_add().into(),
+                ))
+                .child(super::mono(
+                    format!("−{}", short_count(del)),
+                    theme::diff_del().into(),
+                ))
+            })
+            .when_some(p.checks, |d, c| {
+                d.child(
+                    div()
+                        .size(px(6.))
+                        .ml(px(2.))
+                        .rounded_full()
+                        .bg(super::item::check_color(c)),
+                )
+            });
+
         div()
             .id(("gh-row", ix))
             .relative()
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(11.))
-            .px(px(14.))
-            .py(px(8.))
+            .gap(px(12.))
+            .mx(px(6.))
+            .px(px(10.))
+            .py(px(10.))
+            .rounded(px(ui::RADIUS))
             .cursor_pointer()
-            .when(selected, |d| d.bg(theme::fill_selected()))
+            .when(selected, |d| d.bg(theme::fill_raised()))
             .when(!selected, |d| d.hover(|s| s.bg(theme::fill_hover())))
             .when(selected, |d| {
                 d.child(
                     div()
                         .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(2.))
+                        .left(px(-6.))
+                        .top(px(12.))
+                        .bottom(px(12.))
+                        .w(px(3.))
+                        .rounded_full()
                         .bg(theme::accent()),
                 )
             })
-            .child(ui::icon_chip(icon_name, 28., Some(color)))
+            .child(lead)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w_0()
+                    .gap(px(4.))
                     .child(
                         div()
-                            .truncate()
-                            .ty(Type::Body)
-                            .font_weight(if unread {
-                                FontWeight::SEMIBOLD
-                            } else {
-                                FontWeight::MEDIUM
-                            })
-                            .text_color(theme::text())
-                            .child(e.title.clone()),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id(("gh-row-title", ix))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .ty(Type::Body)
+                                    .font_weight(if unread {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::MEDIUM
+                                    })
+                                    .text_color(if unread || selected {
+                                        theme::text()
+                                    } else {
+                                        theme::text_muted()
+                                    })
+                                    .tooltip(ui::tip_text(title.clone()))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .when(unread, |d| {
+                                        d.child(div().size(px(6.)).rounded_full().bg(theme::link()))
+                                    })
+                                    .child(super::mono(
+                                        super::ago(e.updated()),
+                                        if late {
+                                            theme::accent()
+                                        } else {
+                                            theme::text_subtle()
+                                        },
+                                    )),
+                            ),
                     )
                     .child(
                         div()
-                            .truncate()
-                            .mt(px(1.))
-                            .child(super::mono(p.sub.clone(), theme::text_subtle())),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().flex_1().min_w_0().child(line))
+                            .child(right_bottom),
                     ),
-            )
-            .child(
-                super::mono(
-                    super::ago(e.updated()),
-                    if late {
-                        theme::accent()
-                    } else {
-                        theme::text_muted()
-                    },
-                )
-                .flex_none(),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select(entry.clone(), true, cx);
@@ -644,6 +753,48 @@ impl GitHubView {
             )
             .into_any_element()
     }
+}
+
+/// The repository's name on a quiet chip: `arakun`.
+fn repo_tag(name: String) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(18.))
+        .px(px(6.))
+        .rounded(px(ui::RADIUS_SM))
+        .bg(theme::fill_selected())
+        .ty(Type::Caption)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme::text_muted())
+        .child(name)
+}
+
+/// A group's heading in the queue: SMALL CAPS and a count on a chip.
+fn group_header(label: &str, n: usize) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .px(px(16.))
+        .pt(px(16.))
+        .pb(px(6.))
+        .child(ui::overline(label))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .h(px(16.))
+                .px(px(6.))
+                .rounded_full()
+                .bg(theme::fill_selected())
+                .ty(Type::Caption)
+                .font_family(theme::FONT_MONO)
+                .text_color(theme::text_muted())
+                .child(n.to_string()),
+        )
 }
 
 fn empty(icon_name: &str, title: &str, text: &str) -> AnyElement {

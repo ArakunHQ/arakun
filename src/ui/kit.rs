@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled, div, px, relative,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _,
+    div, px, relative,
 };
 
 use super::{MENU_ROW_H, RADIUS, RADIUS_LG, RADIUS_SM, icon};
@@ -778,6 +779,30 @@ pub fn pill(content: impl Into<SharedString>, color: impl Into<Hsla>) -> gpui::D
         .child(content.into())
 }
 
+/// A verdict or state with its icon on a tinted pill: `✓ Approved`.
+pub fn state_pill(
+    icon_name: &str,
+    content: impl Into<SharedString>,
+    color: impl Into<Hsla>,
+) -> gpui::Div {
+    let c: Hsla = color.into();
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(4.))
+        .h(px(20.))
+        .pl(px(6.))
+        .pr(px(8.))
+        .rounded_full()
+        .bg(c.opacity(0.13))
+        .ty(Type::Caption)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(c)
+        .child(icon(icon_name, 12.).text_color(c))
+        .child(content.into())
+}
+
 /// How a `key_pill` stands out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PillKind {
@@ -992,6 +1017,96 @@ pub fn avatar(login: &str, size: f32) -> gpui::Div {
         .font_weight(FontWeight::BOLD)
         .text_color(theme::background())
         .child(initial.to_string())
+}
+
+/// A person's GitHub picture, clipped round, when it is on disk; their
+/// `avatar` initials while it downloads or when it can't be read.
+pub fn avatar_image(login: &str, picture: Option<&std::path::Path>, size: f32) -> gpui::Div {
+    let Some(path) = picture else {
+        return avatar(login, size);
+    };
+    let initials = login.to_string();
+    div()
+        .flex_none()
+        .size(px(size))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(theme::fill_selected())
+        .child(
+            gpui::img(path.to_path_buf())
+                .size_full()
+                .rounded_full()
+                .object_fit(gpui::ObjectFit::Cover)
+                .with_fallback(move || avatar(&initials, size).into_any_element()),
+        )
+}
+
+/// An avatar with a small round badge on its lower right corner: what kind
+/// of thing a row is (a pull request, an issue), in its state color. The ring
+/// takes the color of what is behind it, `ground`.
+pub fn avatar_badge(
+    login: &str,
+    picture: Option<&std::path::Path>,
+    size: f32,
+    badge_icon: &str,
+    color: Hsla,
+    ground: Hsla,
+) -> gpui::Div {
+    let b = (size * 0.56).round();
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .child(avatar_image(login, picture, size))
+        .child(
+            div()
+                .absolute()
+                .right(px(-b * 0.22))
+                .bottom(px(-b * 0.22))
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(b))
+                .rounded_full()
+                .border_2()
+                .border_color(ground)
+                .bg(ground)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size_full()
+                        .rounded_full()
+                        .bg(color.opacity(0.22))
+                        .child(icon(badge_icon, b * 0.62).text_color(color)),
+                ),
+        )
+}
+
+/// Overlapping avatars, the first on top, each ringed in `ground` so the
+/// circles read apart: who took part.
+pub fn avatar_stack(
+    people: &[(String, Option<std::path::PathBuf>)],
+    size: f32,
+    ground: Hsla,
+) -> gpui::Div {
+    let step = (size * 0.7).round();
+    let n = people.len();
+    // Placed by hand: negative margins don't give the row its width.
+    div()
+        .relative()
+        .flex_none()
+        .h(px(size))
+        .w(px(size + n.saturating_sub(1) as f32 * step))
+        .children(people.iter().enumerate().rev().map(|(i, (login, pic))| {
+            avatar_image(login, pic.as_deref(), size)
+                .absolute()
+                .top_0()
+                .left(px(i as f32 * step))
+                .border_2()
+                .border_color(ground)
+        }))
 }
 
 #[cfg(test)]

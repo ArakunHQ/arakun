@@ -914,10 +914,17 @@ mod tests {
         let first = {
             let dir = dir.clone();
             std::thread::spawn(move || {
-                run_check(&dir, "sleep 1; touch first-end", Duration::from_secs(10)).unwrap()
+                let first = "touch first-start; sleep 1; touch first-end";
+                run_check(&dir, first, Duration::from_secs(10)).unwrap()
             })
         };
-        std::thread::sleep(Duration::from_millis(200));
+        // The second must queue behind the first, so wait until the first holds
+        // the turn. Other tests take it too, so this can take a while.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !dir.join("first-start").exists() {
+            assert!(Instant::now() < deadline, "the first check never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         // It fails if it starts while the first one is still going.
         let second = run_check(&dir, "test -f first-end", Duration::from_millis(500)).unwrap();
         let first = first.join().unwrap();

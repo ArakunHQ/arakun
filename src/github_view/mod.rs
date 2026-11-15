@@ -792,13 +792,26 @@ impl GitHubView {
         };
         let clear = |this: &mut Self, _: &mut Context<Self>| this.confirm = None;
         match c {
-            Confirm::Approve => self.write(
-                "approve",
-                "Approved.".into(),
-                move |i| pr::review(i, Verdict::Approve, &body),
-                clear,
-                cx,
-            ),
+            Confirm::Approve => {
+                let head = self.confirm_head.clone();
+                // Same as a merge: commits that arrived between the two
+                // clicks weren't seen, so they aren't approved.
+                if head != self.head(cx) {
+                    self.confirm = None;
+                    self.note = Some(Note::failed(
+                        "New commits arrived after you asked to approve. Look at them, then approve again.",
+                    ));
+                    cx.notify();
+                    return;
+                }
+                self.write(
+                    "approve",
+                    "Approved.".into(),
+                    move |i| pr::review(i, Verdict::Approve, &body, &head),
+                    clear,
+                    cx,
+                )
+            }
             Confirm::RequestChanges => {
                 if body.trim().is_empty() {
                     self.note = Some(Note::failed("Say what should change first."));
@@ -808,7 +821,7 @@ impl GitHubView {
                 self.write(
                     "request-changes",
                     "Changes requested.".into(),
-                    move |i| pr::review(i, Verdict::RequestChanges, &body),
+                    move |i| pr::review(i, Verdict::RequestChanges, &body, ""),
                     clear,
                     cx,
                 )

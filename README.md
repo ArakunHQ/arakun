@@ -38,8 +38,9 @@ window, and exposes the same workspace to the agents through a command line.
   and runs searches through the `gh` CLI and its session, so what you already read on
   github.com still shows. Pick an item to see its state, checks, what blocks the merge,
   its timeline, files and commits; comment, approve, request changes or merge from
-  there (each write asks a second time, and a merge stops if new commits came after you
-  looked). An agent can review a pull request for you
+  there. A comment posts at once; approve, request changes and merge ask a second time,
+  and an approval or a merge stops if new commits came after you looked. An agent can
+  review a pull request for you
   and leave a draft (`arakun github draft`) that you post, edit or discard. Posting a
   draft asks a second time, and an approval goes out only for the commit the agent read:
   after new commits the draft can only be posted as a comment. Review
@@ -235,10 +236,11 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun ls                         # projects, environments and sessions
 arakun mem search <words>         # search what agents remember about this project
-arakun github draft o/r#12 --verdict approve --body-file - --agent Claude < review.md
+arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md
                                   # save a review draft for the GitHub tab; sends nothing.
                                   # --body-file takes a file or - (stdin); an agent's file
-                                  # outside its workspace asks the user first
+                                  # outside its workspace asks the user first. --head is
+                                  # the commit the agent read; an approval needs it
 arakun agent run <prompt>         # start a headless agent
 arakun --version                  # print the version (needs no running Arakun)
 ```

@@ -67,8 +67,25 @@ impl ItemRef {
 
     /// From a web address (`https://github.com/o/r/pull/12/files`) or an API one
     /// (`https://api.github.com/repos/o/r/pulls/12`). The host is not kept: `gh`
-    /// is asked with `-R owner/name`, which means its default host.
+    /// is asked with `-R owner/name`, which means its default host. Only for
+    /// addresses `gh` itself gave (a notification, a search); one a person or
+    /// an agent typed goes through `from_url_on`.
     pub fn from_url(url: &str) -> Option<Self> {
+        Self::split_url(url).map(|(_, item)| item)
+    }
+
+    /// From a web address typed by someone, only when it is on `host`, the
+    /// host `gh` talks to. Any other would name a pull request there that
+    /// `-R owner/name` reads, and posts to, on `host`.
+    pub fn from_url_on(url: &str, host: &str) -> Option<Self> {
+        let (at, item) = Self::split_url(url)?;
+        let at = at.to_ascii_lowercase();
+        let host = host.to_ascii_lowercase();
+        let at = at.strip_prefix("www.").unwrap_or(&at);
+        (at == host).then_some(item)
+    }
+
+    fn split_url(url: &str) -> Option<(String, Self)> {
         let url = url.trim();
         let url = url
             .strip_prefix("https://")
@@ -77,9 +94,10 @@ impl ItemRef {
         let url = url.split(['?', '#']).next()?;
         let mut parts: Vec<&str> = url.split('/').filter(|p| !p.is_empty()).collect();
         // The host, then what an API address puts before the repository.
-        if parts.is_empty() || !parts.remove(0).contains('.') {
+        if parts.is_empty() || !parts[0].contains('.') {
             return None;
         }
+        let host = parts.remove(0).to_string();
         if parts.starts_with(&["api", "v3", "repos"]) {
             parts.drain(..3);
         } else if parts.first() == Some(&"repos") {
@@ -95,7 +113,7 @@ impl ItemRef {
         };
         let repo = format!("{owner}/{name}");
         let number = number.parse().ok().filter(|n| *n > 0)?;
-        valid_repo(&repo).then_some(Self { repo, number, kind })
+        valid_repo(&repo).then_some((host, Self { repo, number, kind }))
     }
 
     /// From `owner/repo#12`, the short form people and agents type. It does not
@@ -1714,24 +1732,51 @@ fn comment_cmd(item: &ItemRef, body: &str) -> Result<Cmd, Problem> {
     })
 }
 
-fn review_cmd(item: &ItemRef, verdict: Verdict, body: &str) -> Result<Cmd, Problem> {
+/// `head` is the commit the user (or the agent) read. An approval goes to
+/// GitHub's review endpoint with that commit, so a push after the last look is
+/// never approved unseen; without a full SHA nothing is approved.
+fn review_cmd(item: &ItemRef, verdict: Verdict, body: &str, head: &str) -> Result<Cmd, Problem> {
     pulls_only(item)?;
     let flag = match verdict {
-        Verdict::Approve => "--approve",
+        Verdict::Approve => return approve_cmd(item, body, head),
         Verdict::RequestChanges => "--request-changes",
         Verdict::Comment => "--comment",
     };
     let number = item.number.to_string();
     let mut args = strings(&["pr", "review", &number, "-R", &item.repo, flag]);
-    // An approval may come with no words; the other two say nothing without them.
-    let stdin = if verdict == Verdict::Approve && body.trim().is_empty() {
+    let stdin = with_body(body)?;
+    args.extend(strings(&["--body-file", "-"]));
+    Ok(Cmd { args, stdin })
+}
+
+/// `gh pr review --approve` sends no commit, so it approves whatever the head
+/// is when GitHub gets it. The REST call takes `commit_id`.
+fn approve_cmd(item: &ItemRef, body: &str, head: &str) -> Result<Cmd, Problem> {
+    if !is_sha(head) {
+        return Err(invalid(
+            "Arakun doesn't know which commit you looked at; reload the pull request, then approve.",
+        ));
+    }
+    let path = format!("repos/{}/pulls/{}/reviews", item.repo, item.number);
+    let commit = format!("commit_id={head}");
+    let mut args = strings(&[
+        "api",
+        "-X",
+        "POST",
+        &path,
+        "-f",
+        "event=APPROVE",
+        "-f",
+        &commit,
+    ]);
+    // An approval may come with no words; when it has some, they go on stdin.
+    let stdin = if body.trim().is_empty() {
         None
     } else {
-        with_body(body)?
+        args.extend(strings(&["-F", "body=@-"]));
+        Some(body.to_string())
     };
-    if stdin.is_some() {
-        args.extend(strings(&["--body-file", "-"]));
-    }
+    args.extend(strings(&["--jq", ".html_url"]));
     Ok(Cmd { args, stdin })
 }
 
@@ -1898,9 +1943,10 @@ pub fn comment(item: &ItemRef, body: &str) -> Result<String, Problem> {
     act(comment_cmd(item, body))
 }
 
-/// Sends a review. An approval may have an empty body.
-pub fn review(item: &ItemRef, verdict: Verdict, body: &str) -> Result<(), Problem> {
-    act(review_cmd(item, verdict, body)).map(|_| ())
+/// Sends a review. An approval may have an empty body, and is bound to
+/// `head`, the commit that was read; the other verdicts ignore it.
+pub fn review(item: &ItemRef, verdict: Verdict, body: &str, head: &str) -> Result<(), Problem> {
+    act(review_cmd(item, verdict, body, head)).map(|_| ())
 }
 
 /// Answers a thread on the diff (`Thread::id`); returns the answer's address.
@@ -2086,7 +2132,9 @@ pub fn post_draft(item: &ItemRef, draft: &Draft, verdict: Verdict) -> Result<(),
             )));
         }
     }
-    review(item, verdict, &draft.body)
+    // The check above words the usual case; the commit in the request is
+    // what holds when a push lands between the two.
+    review(item, verdict, &draft.body, &draft.head_sha)
 }
 
 /// The prompt that hands a pull request to an agent for review: read it,
@@ -2095,13 +2143,14 @@ pub fn review_prompt(item: &ItemRef, title: &str) -> String {
     let (url, repo, n) = (item.url(), &item.repo, item.number);
     format!(
         "Review the pull request \"{title}\" ({label}) for me and leave your review as a draft.\nURL: {url}\n\n\
-Read it with `gh` first: the description, the full diff, the existing reviews and comments, and the checks \
+First note the commit you are reviewing: `gh pr view {url} --json headRefOid --jq .headRefOid`. \
+Then read it with `gh`: the description, the full diff, the existing reviews and comments, and the checks \
 (`gh pr view {url} --comments`, `gh pr diff {url}`, `gh api repos/{repo}/pulls/{n}/comments`, `gh pr checks {url}`). \
 Use the URL: this checkout may be another repository.\n\n\
 Verify what it claims against the code where you can: read the files around the change, and build or run the tests \
 if this checkout is that repository. Say what you checked and what you could not check.\n\n\
 Then save the review as a draft, its text on stdin:\n\n\
-arakun github draft {label} --verdict <approve|request-changes|comment> --body-file - --agent <your name> <<'EOF'\n<the review>\nEOF\n\n\
+arakun github draft {label} --verdict <approve|request-changes|comment> --head <that commit> --body-file - --agent <your name> <<'EOF'\n<the review>\nEOF\n\n\
 I read the draft in Arakun and post, edit or discard it myself. Never post a comment or a review, approve, \
 request changes, merge or close anything on GitHub yourself.",
         label = item.label(),
@@ -2172,6 +2221,24 @@ still open or waiting on someone (name who).\n\n{HANDS_OFF}",
 }
 
 impl DraftArgs {
+    /// The commit the draft is for. An approval must say which commit the
+    /// agent read: the head when the draft is saved may be a later push, and
+    /// the approval would then go out for code nobody read. Other verdicts
+    /// fall back to `current`, which only words the "new commits" hint.
+    pub fn reviewed_head(
+        &self,
+        current: impl FnOnce() -> Result<String, String>,
+    ) -> Result<String, String> {
+        match (&self.head, self.verdict) {
+            (Some(head), _) => Ok(head.clone()),
+            (None, Verdict::Approve) => Err(format!(
+                "an approval needs --head <sha>, the commit you read; read it before the diff with `gh pr view {} --json headRefOid --jq .headRefOid`",
+                self.item.url()
+            )),
+            (None, _) => current(),
+        }
+    }
+
     /// The draft these arguments describe, with the review's text, the head
     /// commit it was written for, and the time now.
     pub fn draft(&self, body: String, head_sha: String, now: u64) -> Draft {
@@ -2196,14 +2263,26 @@ pub struct DraftArgs {
     pub body_file: PathBuf,
     /// `--agent <name>`: who wrote it, when the caller says.
     pub agent: Option<String>,
+    /// `--head <sha>`: the commit the agent read.
+    pub head: Option<String>,
 }
 
-pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--agent <name>]";
+pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--head <sha>] [--agent <name>]";
+
+/// The host `gh` reads `-R owner/name` on: `GH_HOST` when set, else GitHub.
+fn gh_host() -> String {
+    std::env::var("GH_HOST")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "github.com".into())
+}
 
 /// The arguments after `arakun github draft`. The pull request may also be
 /// given as its address.
 pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
-    let (mut item, mut verdict, mut body_file, mut agent) = (None, None, None, None);
+    let (mut item, mut verdict, mut body_file, mut agent, mut head) =
+        (None, None, None, None, None);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -2214,9 +2293,14 @@ pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
             if item.is_some() {
                 return Err(format!("unexpected argument `{arg}`\n{DRAFT_USAGE}"));
             }
-            let found = ItemRef::parse(arg).or_else(|| ItemRef::from_url(arg));
+            let host = gh_host();
+            let found = ItemRef::parse(arg).or_else(|| ItemRef::from_url_on(arg, &host));
             let found = found.ok_or_else(|| {
-                format!("`{arg}` is not a pull request (owner/repo#number)\n{DRAFT_USAGE}")
+                if ItemRef::from_url(arg).is_some() {
+                    format!("`{arg}` is not on {host}, the host gh works with; name it as owner/repo#number there")
+                } else {
+                    format!("`{arg}` is not a pull request (owner/repo#number)\n{DRAFT_USAGE}")
+                }
             })?;
             if found.kind != ItemKind::Pull {
                 return Err(format!(
@@ -2226,7 +2310,7 @@ pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
             item = Some(found);
             continue;
         }
-        if !matches!(flag, "--verdict" | "--body-file" | "--agent") {
+        if !matches!(flag, "--verdict" | "--body-file" | "--agent" | "--head") {
             return Err(format!("unknown option `{flag}`\n{DRAFT_USAGE}"));
         }
         let value = inline
@@ -2241,6 +2325,12 @@ pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
                 })?);
             }
             "--body-file" => body_file = Some(PathBuf::from(value)),
+            "--head" if is_sha(&value) => head = Some(value.to_ascii_lowercase()),
+            "--head" => {
+                return Err(format!(
+                    "`{value}` is not a full commit SHA (`gh pr view <url> --json headRefOid`)"
+                ));
+            }
             _ => agent = Some(value),
         }
     }
@@ -2250,6 +2340,7 @@ pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
         verdict: verdict.ok_or_else(|| missing("--verdict"))?,
         body_file: body_file.ok_or_else(|| missing("--body-file"))?,
         agent,
+        head,
     })
 }
 
@@ -2404,6 +2495,24 @@ mod tests {
         assert_eq!(
             ItemRef::from_url("https://ghe.corp/api/v3/repos/o/r/pulls/4"),
             pull("o/r", 4)
+        );
+        // A typed address counts only on gh's host: o/r#7 elsewhere is
+        // another pull request.
+        assert_eq!(
+            ItemRef::from_url_on("https://ghe.corp/o/r/pull/7", "github.com"),
+            None
+        );
+        assert_eq!(
+            ItemRef::from_url_on("https://github.com.evil.io/o/r/pull/7", "github.com"),
+            None
+        );
+        assert_eq!(
+            ItemRef::from_url_on("https://www.GitHub.com/o/r/pull/7", "github.com"),
+            pull("o/r", 7)
+        );
+        assert_eq!(
+            ItemRef::from_url_on("https://ghe.corp/o/r/pull/7", "GHE.corp"),
+            pull("o/r", 7)
         );
         for bad in [
             "",
@@ -3510,25 +3619,39 @@ mod tests {
             "issue comment 41 -R ArakunHQ/arakun --body-file -"
         );
 
-        let cmd = review_cmd(&pr, Verdict::RequestChanges, body).unwrap();
+        let cmd = review_cmd(&pr, Verdict::RequestChanges, body, "").unwrap();
         assert_eq!(
             cmd.args.join(" "),
             "pr review 41 -R ArakunHQ/arakun --request-changes --body-file -"
         );
         assert_eq!(cmd.stdin.as_deref(), Some(body));
         assert_eq!(
-            args(review_cmd(&pr, Verdict::Comment, "note")),
+            args(review_cmd(&pr, Verdict::Comment, "note", "")),
             "pr review 41 -R ArakunHQ/arakun --comment --body-file -"
         );
+        // An approval names the commit it is for.
+        let cmd = review_cmd(&pr, Verdict::Approve, "LGTM", SHA).unwrap();
         assert_eq!(
-            args(review_cmd(&pr, Verdict::Approve, "LGTM")),
-            "pr review 41 -R ArakunHQ/arakun --approve --body-file -"
+            cmd.args.join(" "),
+            format!(
+                "api -X POST repos/ArakunHQ/arakun/pulls/41/reviews -f event=APPROVE -f commit_id={SHA} -F body=@- --jq .html_url"
+            )
         );
-        let bare = review_cmd(&pr, Verdict::Approve, "  ").unwrap();
+        assert_eq!(cmd.stdin.as_deref(), Some("LGTM"));
+        let bare = review_cmd(&pr, Verdict::Approve, "  ", SHA).unwrap();
         assert_eq!(
-            (bare.args.join(" ").as_str(), bare.stdin),
-            ("pr review 41 -R ArakunHQ/arakun --approve", None)
+            (bare.args.join(" "), bare.stdin),
+            (
+                format!(
+                    "api -X POST repos/ArakunHQ/arakun/pulls/41/reviews -f event=APPROVE -f commit_id={SHA} --jq .html_url"
+                ),
+                None
+            )
         );
+        // Without the commit that was read, or with something that isn't one, no approval.
+        assert!(review_cmd(&pr, Verdict::Approve, "LGTM", "").is_err());
+        assert!(review_cmd(&pr, Verdict::Approve, "LGTM", &SHA[..7]).is_err());
+        assert!(review_cmd(&pr, Verdict::Approve, "LGTM", "-f event=COMMENT").is_err());
 
         let cmd = reply_cmd(&pr, 101, body).unwrap();
         assert_eq!(
@@ -3583,12 +3706,12 @@ mod tests {
 
         // Refused before gh: nothing to say, nobody to ask, or not a pull request.
         assert!(comment_cmd(&pr, " \n").is_err());
-        assert!(review_cmd(&pr, Verdict::RequestChanges, "").is_err());
-        assert!(review_cmd(&pr, Verdict::Comment, "").is_err());
+        assert!(review_cmd(&pr, Verdict::RequestChanges, "", "").is_err());
+        assert!(review_cmd(&pr, Verdict::Comment, "", "").is_err());
         assert!(reply_cmd(&pr, 101, "").is_err());
         assert!(request_review_cmd(&pr, &[]).is_err());
         assert!(request_review_cmd(&pr, &["--assignee x".to_string()]).is_err());
-        assert!(review_cmd(&issue, Verdict::Approve, "").is_err());
+        assert!(review_cmd(&issue, Verdict::Approve, "", SHA).is_err());
         assert!(reply_cmd(&issue, 1, "x").is_err());
         assert!(merge_cmd(&issue, MergeMethod::Squash, SHA).is_err());
         assert!(request_review_cmd(&issue, &who).is_err());
@@ -3600,7 +3723,7 @@ mod tests {
         let never = |_: &Cmd| -> Result<Vec<u8>, Problem> { panic!("gh was started") };
         let cmds = [
             comment_cmd(&pr, "hi"),
-            review_cmd(&pr, Verdict::Approve, ""),
+            review_cmd(&pr, Verdict::Approve, "", SHA),
             reply_cmd(&pr, 1, "hi"),
             merge_cmd(&pr, MergeMethod::Squash, SHA),
             request_review_cmd(&pr, &["ana".to_string()]),
@@ -3816,7 +3939,11 @@ mod tests {
             "{p}"
         );
         assert!(
-            p.contains("\narakun github draft ArakunHQ/arakun#41 --verdict <approve|request-changes|comment> --body-file - --agent <your name> <<'EOF'\n"),
+            p.contains("\narakun github draft ArakunHQ/arakun#41 --verdict <approve|request-changes|comment> --head <that commit> --body-file - --agent <your name> <<'EOF'\n"),
+            "{p}"
+        );
+        assert!(
+            p.contains("First note the commit you are reviewing: `gh pr view https://github.com/ArakunHQ/arakun/pull/41 --json headRefOid --jq .headRefOid`."),
             "{p}"
         );
         assert!(p.ends_with("Never post a comment or a review, approve, request changes, merge or close anything on GitHub yourself."), "{p}");
@@ -3899,6 +4026,29 @@ mod tests {
     }
 
     #[test]
+    fn an_approval_draft_needs_the_commit_the_agent_read() {
+        let parse = |args: &[&str]| parse_draft_args(&strings(args)).unwrap();
+        let later = || Ok::<_, String>("f".repeat(40));
+        let approve = parse(&["o/r#7", "--verdict", "approve", "--body-file", "-"]);
+        // The head at save time may be a push the agent never saw.
+        let err = approve.reviewed_head(later).unwrap_err();
+        assert!(err.starts_with("an approval needs --head <sha>"), "{err}");
+        let pinned = parse(&[
+            "o/r#7",
+            "--verdict",
+            "approve",
+            "--body-file",
+            "-",
+            "--head",
+            SHA,
+        ]);
+        assert_eq!(pinned.reviewed_head(later), Ok(SHA.to_string()));
+        // A comment only uses the head for the "new commits" hint.
+        let comment = parse(&["o/r#7", "--verdict", "comment", "--body-file", "-"]);
+        assert_eq!(comment.reviewed_head(later), Ok("f".repeat(40)));
+    }
+
+    #[test]
     fn draft_arguments_are_parsed() {
         let parse = |args: &[&str]| parse_draft_args(&strings(args));
         let pr = ItemRef {
@@ -3918,7 +4068,8 @@ mod tests {
                 item: pr.clone(),
                 verdict: Verdict::RequestChanges,
                 body_file: "/tmp/review.md".into(),
-                agent: None
+                agent: None,
+                head: None
             })
         );
         // Any order, `--flag=value`, the address instead of the short form, stdin.
@@ -3928,13 +4079,15 @@ mod tests {
                 "--agent",
                 "codex",
                 "--verdict=approve",
+                &format!("--head={}", SHA.to_uppercase()),
                 "https://github.com/ArakunHQ/arakun/pull/41"
             ]),
             Ok(DraftArgs {
                 item: pr,
                 verdict: Verdict::Approve,
                 body_file: "-".into(),
-                agent: Some("codex".into())
+                agent: Some("codex".into()),
+                head: Some(SHA.into())
             })
         );
         assert_eq!(
@@ -3955,6 +4108,8 @@ mod tests {
         assert!(err(&["o/r#1", "--verdict"]).starts_with("`--verdict` needs a value"));
         assert!(err(&["o/r#1", "--verdict="]).starts_with("`--verdict` needs a value"));
         assert!(err(&["o/r#1", "--post"]).starts_with("unknown option `--post`"));
+        assert!(err(&["o/r#1", "--head", "d0e6c32"]).contains("not a full commit SHA"));
+        assert!(err(&["o/r#1", "--head", "--agent"]).contains("not a full commit SHA"));
         assert!(err(&["o/r#1", "o/r#2"]).starts_with("unexpected argument `o/r#2`"));
         assert!(err(&["arakun 41"]).starts_with("`arakun 41` is not a pull request"));
         assert!(
@@ -3967,6 +4122,18 @@ mod tests {
             ])
             .contains("is an issue")
         );
+        if gh_host() == "github.com" {
+            assert!(
+                err(&[
+                    "https://ghe.corp/o/r/pull/7",
+                    "--verdict",
+                    "comment",
+                    "--body-file",
+                    "f"
+                ])
+                .contains("is not on github.com")
+            );
+        }
         assert!(err(&[]).contains(DRAFT_USAGE));
         for v in [Verdict::Approve, Verdict::RequestChanges, Verdict::Comment] {
             assert_eq!(Verdict::from_name(v.name()), Some(v));

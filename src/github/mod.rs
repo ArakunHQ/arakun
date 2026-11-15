@@ -491,9 +491,10 @@ pub fn read_only() -> bool {
 // ---------------------------------------------------------------------------
 // The command line
 
-pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--agent <name>]
+pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--head <sha>] [--agent <name>]
     save a review as a draft for the GitHub tab; nothing is sent to GitHub.
-    `--body-file -` reads the review from stdin.";
+    `--body-file -` reads the review from stdin.
+    `--head` is the commit you read (`gh pr view <url> --json headRefOid`); an approval needs it.";
 
 /// `arakun github …`. Only `draft`: it writes the draft file and needs no
 /// running Arakun.
@@ -537,9 +538,11 @@ fn save_draft_cli(args: &[String]) -> Result<String, String> {
         return Err("the review is empty; only an approval may say nothing".into());
     }
     // The draft says which commit it was written for, so the tab can warn
-    // when the pull request moved on.
-    let head = pr::head_sha(&parsed.item)
-        .map_err(|p| format!("could not read {}: {}", parsed.item.label(), p.text()))?;
+    // when the pull request moved on, and approves only that commit.
+    let head = parsed.reviewed_head(|| {
+        pr::head_sha(&parsed.item)
+            .map_err(|p| format!("could not read {}: {}", parsed.item.label(), p.text()))
+    })?;
     let draft = parsed.draft(body, head, crate::model::unix_now());
     pr::save_draft(&draft).map_err(|e| format!("could not save the draft: {e}"))?;
     Ok(format!(

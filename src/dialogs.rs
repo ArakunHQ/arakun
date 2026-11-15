@@ -123,7 +123,14 @@ impl CreateEnvDialog {
             setup,
             input,
             suggested,
-            namer: env_name::namer().agent,
+            namer: {
+                // A new environment's sessions start on the agent picked last.
+                let namer = env_name::namer();
+                namer
+                    .pick(crate::model::default_agent().kind())
+                    .map(|(agent, _)| agent)
+                    .filter(|a| namer.choice.agent().is_some() || env_name::installed(*a))
+            },
             branches: git::Branches::default(),
             branches_loaded: false,
             base: None,

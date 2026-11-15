@@ -228,6 +228,9 @@ pub struct Shell {
     /// The latest `refresh_project` of each project root. An older one that ends
     /// later would put back what it read before, such as a branch renamed since.
     refresh_gen: std::collections::HashMap<std::path::PathBuf, u64>,
+    /// A line for the next prompt to an environment's sessions after arakun renamed
+    /// its branch: they started on the old name.
+    rename_notes: std::collections::HashMap<std::path::PathBuf, String>,
     active_project: usize,
     panel_tab: PanelTab,
     dock_open: bool,
@@ -629,6 +632,7 @@ impl Shell {
         let mut this = Self {
             projects,
             refresh_gen: Default::default(),
+            rename_notes: Default::default(),
             active_project,
             panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,

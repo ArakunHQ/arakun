@@ -411,12 +411,12 @@ impl SettingsDialog {
     }
 
     /// Picks the agent that names branches; a new agent starts on its small model.
-    fn set_namer_agent(&mut self, agent: Option<crate::agent::AgentKind>, cx: &mut Context<Self>) {
-        if agent == self.namer.agent {
+    fn set_namer_choice(&mut self, choice: env_name::Choice, cx: &mut Context<Self>) {
+        if choice == self.namer.choice {
             return;
         }
-        self.namer.agent = agent;
-        if let Some(agent) = agent {
+        self.namer.choice = choice;
+        if let Some(agent) = choice.agent() {
             self.namer.model = env_name::default_model(agent).to_string();
             let model = self.namer.model.clone();
             self.namer_input.update(cx, |i, cx| i.set_text(model, cx));
@@ -690,31 +690,35 @@ impl SettingsDialog {
                     .into_any_element()
                 },
                 {
-                    let current = self.namer.agent;
-                    let choices = std::iter::once(None).chain(env_name::AGENTS.into_iter().map(Some));
+                    let current = self.namer.choice;
                     let mut chips = div().flex().flex_none().items_center().gap(px(6.));
-                    for (i, agent) in choices.enumerate() {
-                        let label = agent.map_or("Off", |a| a.label());
+                    for (i, choice) in env_name::Choice::ALL.into_iter().enumerate() {
                         chips = chips.child(
-                            ui::chip(("set-namer", i), label, agent == current)
-                                .on_click(cx.listener(move |this, _, _, cx| this.set_namer_agent(agent, cx))),
+                            ui::chip(("set-namer", i), choice.label(), choice == current)
+                                .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
                         );
                     }
                     row(
                         "Name new branches",
-                        "The New environment dialog fills in a random branch name. After the first prompt, this agent's CLI names the branch after the task and Arakun renames it. The folder keeps its name.",
+                        "The New environment dialog fills in a random branch name. After the first prompt, an agent names the branch after the task and Arakun renames it; the folder keeps its name. Session's agent: the agent the prompt went to, if it is Claude Code or Droid, so the prompt goes nowhere else. Claude Code names with no tools; Droid runs read-only (it can read files, not change them).",
                         chips.into_any_element(),
                     )
                     .into_any_element()
                 },
                 row(
                     "Naming model",
-                    match self.namer.agent {
-                        Some(crate::agent::AgentKind::Claude) => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default.",
-                        Some(_) => "A small, fast model, as the CLI names it. Empty uses the CLI's default.",
-                        None => "Naming is off: new branches keep their random name.",
+                    match self.namer.choice {
+                        env_name::Choice::Claude => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default.",
+                        env_name::Choice::Droid => "A small, fast model, as the CLI names it. Empty uses the CLI's default.",
+                        env_name::Choice::Session => "Following the session: haiku for Claude Code, the CLI's default for Droid.",
+                        env_name::Choice::Off => "Naming is off: new branches keep their random name.",
                     },
-                    field(self.namer_input.clone(), 180.).when(self.namer.agent.is_none(), |d| d.opacity(0.5)).into_any_element(),
+                    // Only an agent picked here takes a model of its own.
+                    if self.namer.choice.agent().is_some() {
+                        field(self.namer_input.clone(), 180.).into_any_element()
+                    } else {
+                        div().into_any_element()
+                    },
                 )
                 .into_any_element(),
                 row(

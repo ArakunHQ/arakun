@@ -4,7 +4,7 @@
 //! agent CLI turns the prompt into a name that says what the work is
 //! (`fix/terminal-tab-name`), and arakun renames the branch to it.
 
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -93,21 +93,62 @@ fn is_random(name: &str) -> bool {
 
 // ---- the namer -------------------------------------------------------------------
 
-/// Which agent CLI names environments after their first prompt, and with what model.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Who names a new environment's branch after its first prompt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Choice {
+    /// The agent the first prompt went to, when it is one of [`AGENTS`], so the prompt
+    /// reaches no service the user didn't pick. Other agents leave the branch alone.
+    #[default]
+    Session,
+    Off,
+    Claude,
+    Droid,
+}
+
+impl Choice {
+    pub const ALL: [Choice; 4] = [Choice::Session, Choice::Off, Choice::Claude, Choice::Droid];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Choice::Session => "Session's agent",
+            Choice::Off => "Off",
+            Choice::Claude => AgentKind::Claude.label(),
+            Choice::Droid => AgentKind::Droid.label(),
+        }
+    }
+
+    /// The agent picked for every environment, whatever its sessions use.
+    pub fn agent(self) -> Option<AgentKind> {
+        match self {
+            Choice::Claude => Some(AgentKind::Claude),
+            Choice::Droid => Some(AgentKind::Droid),
+            Choice::Session | Choice::Off => None,
+        }
+    }
+}
+
+/// Who names branches, and with what model.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Namer {
-    /// None turns naming off: the branch keeps its random name.
-    pub agent: Option<AgentKind>,
-    /// The model the CLI runs; empty uses the CLI's own default.
+    #[serde(default)]
+    pub choice: Choice,
+    /// The model of an agent picked in Settings; empty uses the CLI's own default.
+    /// Following the session uses [`default_model`].
     #[serde(default)]
     pub model: String,
 }
 
-impl Default for Namer {
-    fn default() -> Self {
-        Self {
-            agent: Some(AgentKind::Claude),
-            model: default_model(AgentKind::Claude).into(),
+impl Namer {
+    /// The agent and model that name a branch whose first prompt went to `session`;
+    /// None when nobody does.
+    pub fn pick(&self, session: AgentKind) -> Option<(AgentKind, String)> {
+        match self.choice {
+            Choice::Off => None,
+            Choice::Session => AGENTS
+                .contains(&session)
+                .then(|| (session, default_model(session).to_string())),
+            Choice::Claude | Choice::Droid => self.choice.agent().map(|a| (a, self.model.clone())),
         }
     }
 }
@@ -134,8 +175,16 @@ pub fn namer() -> Namer {
     std::fs::read(namer_path())
         .ok()
         .and_then(|b| serde_json::from_slice::<Namer>(&b).ok())
-        .filter(|n| n.agent.is_none_or(|a| AGENTS.contains(&a)))
         .unwrap_or_default()
+}
+
+/// Whether `agent`'s CLI is there to name a branch. Looks on disk; call it off the UI thread.
+pub fn installed(agent: AgentKind) -> bool {
+    match agent {
+        AgentKind::Claude => crate::agent::claude_cli().is_some(),
+        AgentKind::Droid => crate::agent::droid_bin().is_ok(),
+        AgentKind::OpenCode | AgentKind::WorkersAi => false,
+    }
 }
 
 pub fn set_namer(namer: &Namer) {
@@ -162,20 +211,21 @@ fn instruction(task: &str) -> String {
     )
 }
 
-/// Asks the namer's agent for a branch name for `task`. Blocks; run it in the background.
-pub fn suggest(namer: &Namer, task: &str) -> Result<String> {
-    let agent = namer.agent.ok_or_else(|| anyhow!("naming is off"))?;
-    let (program, args) = command(agent, namer.model.trim(), &instruction(task))?;
+/// Asks `agent` for a branch name for `task`. Blocks; run it in the background.
+pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
+    let (program, args) = command(agent, model.trim())?;
     let mut cmd = crate::platform::command(program);
     // An empty folder: no project instructions, memory or tools to load.
     let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the namer: {e}"))?;
     cmd.args(args)
         .current_dir(&dir)
         .env("PATH", crate::agent::child_path_env())
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let out = run(cmd);
+    // On stdin, not in argv: other local users can read a process's arguments, and
+    // Windows refuses arguments with line breaks for a `.cmd` such as npm's `claude.cmd`.
+    let out = run(cmd, instruction(task));
     let _ = std::fs::remove_dir_all(&dir);
     let out = out?;
     parse(&out).ok_or_else(|| anyhow!("the model answered with no usable name: {}", out.trim()))
@@ -195,10 +245,10 @@ fn private_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// The CLI and its arguments to answer `prompt` once, with no tools, and exit.
-fn command(agent: AgentKind, model: &str, prompt: &str) -> Result<(PathBuf, Vec<String>)> {
+/// The CLI and its arguments to answer the prompt on its stdin once, and exit.
+fn command(agent: AgentKind, model: &str) -> Result<(PathBuf, Vec<String>)> {
     // Checked first, so an agent that can't name branches fails without a lookup.
-    let args = args(agent, model, prompt)?;
+    let args = args(agent, model)?;
     let program = match agent {
         AgentKind::Claude => {
             crate::agent::claude_cli().ok_or_else(|| anyhow!("Claude Code is not installed"))?
@@ -210,12 +260,11 @@ fn command(agent: AgentKind, model: &str, prompt: &str) -> Result<(PathBuf, Vec<
 
 /// The arguments [`command`] runs the CLI with. Kept apart from finding the CLI, which
 /// reads the user's home folder, so tests can check them on any machine.
-fn args(agent: AgentKind, model: &str, prompt: &str) -> Result<Vec<String>> {
+fn args(agent: AgentKind, model: &str) -> Result<Vec<String>> {
     let model = (!model.is_empty()).then(|| ["--model".to_string(), model.to_string()]);
     let args = match agent {
         AgentKind::Claude => {
-            // The prompt goes right after -p: `--tools` takes every word up to the next flag.
-            let mut args: Vec<String> = vec!["-p".into(), prompt.into()];
+            let mut args: Vec<String> = vec!["-p".into()];
             args.extend(
                 [
                     "--tools",
@@ -232,11 +281,11 @@ fn args(agent: AgentKind, model: &str, prompt: &str) -> Result<Vec<String>> {
             args.extend(model.into_iter().flatten());
             args
         }
-        // `droid exec` without `--auto` may only read, which is all naming needs.
+        // `droid exec` without `--auto` is read-only: it may read files and run read-only
+        // commands, but not change anything. The reply is cut down to a branch name.
         AgentKind::Droid => {
             let mut args = vec!["exec".to_string()];
             args.extend(model.into_iter().flatten());
-            args.push(prompt.into());
             args
         }
         AgentKind::OpenCode | AgentKind::WorkersAi => {
@@ -246,11 +295,17 @@ fn args(agent: AgentKind, model: &str, prompt: &str) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Runs `cmd` and returns its stdout; kills it after [`TIMEOUT`].
-fn run(mut cmd: std::process::Command) -> Result<String> {
+/// Runs `cmd` with `input` on its stdin and returns its stdout; kills it after [`TIMEOUT`].
+fn run(mut cmd: std::process::Command, input: String) -> Result<String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("could not start the namer: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // Dropped at the end, which closes it: the CLI reads to the end before answering.
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
+    }
     let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
         std::thread::spawn(move || {
             let mut text = String::new();
@@ -410,25 +465,65 @@ mod tests {
     #[test]
     fn opencode_never_names_branches() {
         assert!(!AGENTS.contains(&AgentKind::OpenCode));
-        assert!(args(AgentKind::OpenCode, "", "the task").is_err());
-        assert!(command(AgentKind::OpenCode, "", "the task").is_err());
+        assert!(args(AgentKind::OpenCode, "").is_err());
+        assert!(command(AgentKind::OpenCode, "").is_err());
     }
 
     #[test]
     fn claude_command_has_no_tools() {
-        let args = args(AgentKind::Claude, "haiku", "the task").unwrap();
-        assert_eq!(&args[..2], ["-p", "the task"]);
+        let args = args(AgentKind::Claude, "haiku").unwrap();
+        assert_eq!(args[0], "-p");
         assert!(args.windows(2).any(|w| w == ["--tools", ""]));
         assert!(args.ends_with(&["--model".into(), "haiku".into()]));
     }
 
     #[test]
     fn droid_command_reads_only() {
-        let args = args(AgentKind::Droid, "", "the task").unwrap();
+        let args = args(AgentKind::Droid, "").unwrap();
+        assert_eq!(args, ["exec"], "no --auto: droid exec stays read-only");
+    }
+
+    #[test]
+    #[ignore = "live: runs Claude Code with haiku on this machine's sign-in"]
+    fn live_claude_names_a_branch_from_stdin() {
+        let name = suggest(
+            AgentKind::Claude,
+            "haiku",
+            "The terminal tab loses its name\nwhen the window is resized.",
+        )
+        .unwrap();
+        assert!(name.starts_with("fix/"), "{name}");
+    }
+
+    #[test]
+    fn by_default_the_prompt_goes_only_to_the_sessions_agent() {
+        let namer = Namer::default();
+        assert_eq!(namer.choice, Choice::Session);
         assert_eq!(
-            args,
-            ["exec", "the task"],
-            "no --auto: droid exec stays read-only"
+            namer.pick(AgentKind::Claude),
+            Some((AgentKind::Claude, "haiku".into()))
         );
+        assert_eq!(
+            namer.pick(AgentKind::Droid),
+            Some((AgentKind::Droid, String::new()))
+        );
+        assert_eq!(namer.pick(AgentKind::OpenCode), None);
+        assert_eq!(namer.pick(AgentKind::WorkersAi), None);
+        let off = Namer {
+            choice: Choice::Off,
+            model: String::new(),
+        };
+        assert_eq!(off.pick(AgentKind::Claude), None);
+        let claude = Namer {
+            choice: Choice::Claude,
+            model: "sonnet".into(),
+        };
+        assert_eq!(
+            claude.pick(AgentKind::OpenCode),
+            Some((AgentKind::Claude, "sonnet".into()))
+        );
+        // A file from before the choice existed follows the session.
+        let old: Namer = serde_json::from_str(r#"{"agent":"claude","model":"haiku"}"#).unwrap();
+        assert_eq!(old.choice, Choice::Session);
     }
 }

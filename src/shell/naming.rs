@@ -9,6 +9,7 @@ use futures::channel::oneshot;
 use gpui::{AppContext as _, Context};
 
 use super::Shell;
+use crate::agent::AgentKind;
 use crate::control::{Reply, Request};
 use crate::env_name;
 use crate::git;
@@ -17,11 +18,13 @@ use crate::island::AlertKind;
 impl Shell {
     /// After the first prompt in an environment whose branch still has the
     /// dialog's random name, asks the namer for a name that says what the work is
-    /// and renames the branch to it. Runs once, whatever comes of it.
+    /// and renames the branch to it. `session` is the agent the prompt went to; by
+    /// default only it may name the branch. Runs once, whatever comes of it.
     pub(super) fn name_after_first_prompt(
         &mut self,
         env_path: &Path,
         prompt: &str,
+        session: AgentKind,
         cx: &mut Context<Self>,
     ) {
         // A bare command such as `/stage` says nothing about the task; wait for a real prompt.
@@ -41,21 +44,27 @@ impl Shell {
         let old = env.branch.to_string();
         self.save(cx);
         let namer = env_name::namer();
-        if !pending || namer.agent.is_none() {
+        let Some((agent, model)) = namer.pick(session).filter(|_| pending) else {
             return;
-        }
+        };
+        // Nobody picked an agent in Settings: no CLI, no naming, and no warning about it.
+        let quiet = namer.choice.agent().is_none();
         let (dir, task) = (env_path.to_path_buf(), prompt.to_string());
         cx.spawn(async move |this, cx| {
             let d = dir.clone();
             let o = old.clone();
             let renamed = cx
                 .background_spawn(async move {
-                    let name = env_name::suggest(&namer, &task)?;
-                    git::rename_branch(&d, &o, &name, true)
+                    if quiet && !env_name::installed(agent) {
+                        return Ok(None);
+                    }
+                    let name = env_name::suggest(agent, &model, &task)?;
+                    git::rename_branch(&d, &o, &name, true).map(Some)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| match renamed {
-                Ok(name) => this.branch_renamed(&dir, name, cx),
+                Ok(Some(name)) => this.branch_renamed(&dir, &old, name, cx),
+                Ok(None) => {}
                 Err(e) => this.notify(
                     AlertKind::Warning,
                     "Could not name the branch",
@@ -112,7 +121,7 @@ impl Shell {
                         "renamed {old} to {name}; the folder stays {}",
                         dir.display()
                     );
-                    let _ = this.update(cx, |this, cx| this.branch_renamed(&dir, name, cx));
+                    let _ = this.update(cx, |this, cx| this.branch_renamed(&dir, &old, name, cx));
                     Reply::ok(message)
                 }
                 Err(e) => Reply::err(format!("{e:#}")),
@@ -122,8 +131,16 @@ impl Shell {
         .detach();
     }
 
-    /// Shows the environment at `dir` by its new branch name.
-    fn branch_renamed(&mut self, dir: &Path, name: String, cx: &mut Context<Self>) {
+    /// Shows the environment at `dir` by its new branch name, and has the next
+    /// prompt to one of its sessions say so: they started on the old name.
+    fn branch_renamed(&mut self, dir: &Path, old: &str, name: String, cx: &mut Context<Self>) {
+        self.rename_notes.insert(
+            dir.to_path_buf(),
+            format!(
+                "(Arakun renamed this environment's branch from `{old}` to `{name}`; \
+                 use the new name for pushes and pull requests.)"
+            ),
+        );
         if let Some(env) = self.find_env_mut(dir) {
             env.placeholder = None;
             env.set_branch(Some(name));

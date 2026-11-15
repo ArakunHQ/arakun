@@ -83,7 +83,10 @@ impl CreateEnvDialog {
                 }
             }
             InputEvent::Changed => {
-                this.error = None;
+                // A new suggestion arrives with the error that explains it; typing clears it.
+                if this.name(cx) != this.suggested {
+                    this.error = None;
+                }
                 cx.notify();
             }
             _ => {}
@@ -156,9 +159,10 @@ impl CreateEnvDialog {
         cx.spawn(async move |this, cx| {
             let target = path.clone();
             let branch = name.clone();
+            // The branch list can be stale or empty (a failed read): git decides.
             let result = cx
                 .background_spawn(async move {
-                    git::add_worktree(&repo, &target, &name, base.as_deref())
+                    git::add_worktree(&repo, &target, &name, base.as_deref(), auto_name)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -169,6 +173,22 @@ impl CreateEnvDialog {
                         branch,
                         auto_name,
                     }),
+                    Err(e) if auto_name => {
+                        // Someone made a branch with the random name since: offer another.
+                        let project = this.project.clone();
+                        let local = &this.branches.local;
+                        let taken = branch.clone();
+                        this.suggested = env_name::random(|n| {
+                            n == taken || local.iter().any(|b| b == n) || folder_taken(&project, n)
+                        });
+                        let next = this.suggested.clone();
+                        this.input.update(cx, |i, cx| {
+                            i.set_text(next, cx);
+                            i.select_all_text(cx);
+                        });
+                        this.error = Some(format!("{e}. Here is another name.").into());
+                        cx.notify();
+                    }
                     Err(e) => {
                         this.error = Some(e.to_string().into());
                         cx.notify();

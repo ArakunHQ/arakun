@@ -169,20 +169,29 @@ pub fn branches(repo: &Path) -> Result<Branches> {
 
 /// Creates a worktree at `path`. A branch that already exists locally is checked out;
 /// otherwise a new branch is made from `base` (a ref, or the current HEAD when None).
-pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> Result<()> {
+/// `only_new` fails instead of checking out a branch that exists: one made for a random
+/// name gets renamed later, and an existing branch with that name is someone's work.
+pub fn add_worktree(
+    repo: &Path,
+    path: &Path,
+    branch: &str,
+    base: Option<&str>,
+    only_new: bool,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
-    let exists = git(repo)
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .status()
-        .is_ok_and(|s| s.success());
+    let exists = !only_new
+        && git(repo)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .status()
+            .is_ok_and(|s| s.success());
     let mut cmd = git(repo);
     cmd.args(["worktree", "add"]);
     if exists {
@@ -980,6 +989,18 @@ mod tests {
         assert!(super::rename_branch(&dir, "env/brave-otter", "fix/x", true).is_err());
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(remote);
+    }
+
+    #[test]
+    fn only_new_never_checks_out_an_existing_branch() {
+        let dir = repo();
+        let tree = dir.with_extension("tree");
+        assert!(super::add_worktree(&dir, &tree, "taken", None, true).is_err());
+        assert!(!tree.join(".git").exists());
+        super::add_worktree(&dir, &tree, "taken", None, false).unwrap();
+        assert_eq!(super::current_branch(&tree).as_deref(), Some("taken"));
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(tree);
     }
 
     #[test]

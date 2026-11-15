@@ -455,7 +455,20 @@ fn suggest_check(dir: &Path) -> Option<String> {
 /// Runs `command` with the system shell (`sh`, `cmd` on Windows) in `dir`
 /// without a terminal, stdout and stderr together, stopping it (and whatever
 /// it started) after `timeout`.
+/// One check at a time across every session and project: several agents
+/// finishing a turn together each started a full build and test run, which
+/// took every core and filled the memory until the whole desktop crawled.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Build jobs a check may use: half the cores (at least 2), so a build
+/// leaves room for the desktop and its peak memory stays lower.
+fn check_jobs() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(2))
+}
+
 fn run_check(dir: &Path, command: &str, timeout: Duration) -> std::io::Result<CheckRun> {
+    // Waits for the one running; the timeout counts from when this one starts.
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let start = Instant::now();
     let (mut stdout, writer) = std::io::pipe()?;
     let mut cmd = crate::platform::shell_command(command);
@@ -468,6 +481,9 @@ fn run_check(dir: &Path, command: &str, timeout: Duration) -> std::io::Result<Ch
     crate::platform::ProcessTree::prepare(&mut cmd);
     // A full test run shouldn't make the window stutter.
     crate::platform::lower_priority(&mut cmd);
+    if std::env::var_os("CARGO_BUILD_JOBS").is_none() {
+        cmd.env("CARGO_BUILD_JOBS", check_jobs().to_string());
+    }
     let spawned = cmd.spawn();
     // The pipe ends only when every writer is gone, ours included.
     drop(cmd);

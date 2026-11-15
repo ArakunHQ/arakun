@@ -512,6 +512,10 @@ fn run_check(dir: &Path, command: &str, timeout: Duration) -> std::io::Result<Ch
         if start.elapsed() >= timeout {
             timed_out = true;
             tree.kill();
+            // Without a job object (Windows, if creating it failed) the tree
+            // kill does nothing, and an endless wait here would hold every
+            // project's checks behind this one.
+            let _ = child.kill();
             break child.wait()?;
         }
         std::thread::sleep(Duration::from_millis(100));

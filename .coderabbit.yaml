@@ -15,6 +15,8 @@ reviews:
   # minimal risk, once those findings are resolved. Merging still takes a
   # person with write access. No security-risk limit: that assessment needs a
   # higher CodeRabbit plan, and a missing one would withhold every approval.
+  # The Reviewers workflow dismisses an approval of a pull request from
+  # outside the team, because overrides can only match members of a team.
   auto_approvals:
     enabled: true
     max_merge_risk: minimal
@@ -44,7 +46,8 @@ reviews:
   assess_linked_issues: true
   related_issues: true
   related_prs: true
-  # actions/labeler sets the area labels; GitHub requests the reviewers.
+  # actions/labeler sets the area labels; the Reviewers workflow requests
+  # the reviewers.
   suggested_labels: false
   suggested_reviewers: false
   poem: false
@@ -131,7 +134,7 @@ reviews:
         Adding a license to the allow-list needs a maintainer's agreement in an issue first. Flag any new license or advisory exception and ask for the reason.
     - path: ".github/workflows/**"
       instructions: |
-        Check permissions are as narrow as the job needs, a new third-party action is pinned to a release tag or commit SHA rather than a branch (`dtolnay/rust-toolchain@stable` is fine), untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)" and "cla-assistant"; renaming those jobs blocks every merge.
+        Check permissions are as narrow as the job needs, a new third-party action is pinned to a release tag or commit SHA rather than a branch (`dtolnay/rust-toolchain@stable` is fine), untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Reviewers workflow); renaming those jobs or that status blocks every merge.
     - path: "tools/**"
       instructions: |
         The setup and install scripts run on contributors' and users' machines, often with sudo. Check quoting, `set -eu` (or `$ErrorActionPreference = 'Stop'` in PowerShell), idempotence (safe to run again) and that a .sh change has a matching .ps1 change where one exists.

@@ -5,7 +5,7 @@
 //! against their plan and needs no API key. It runs on a thread of its own;
 //! the palette polls a channel, so typing never waits.
 
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 
 use serde_json::{Value, json};
 
@@ -143,8 +143,61 @@ pub fn parse_event(data: &str) -> Option<Event> {
     }
 }
 
-/// Starts answering on a thread; the answer fills from the channel.
-pub fn start(ctx: Context) -> (Answer, mpsc::Receiver<Event>) {
+/// The Claude Code process behind one request. Dropping it stops the
+/// process: each one holds a few hundred MB, and a request the person
+/// typed past is not worth finishing.
+pub struct Job(Arc<Mutex<Slot>>);
+
+/// The thread's side of a `Job`: where it records its process.
+struct Watch(Arc<Mutex<Slot>>);
+
+#[derive(Default)]
+struct Slot {
+    pid: Option<u32>,
+    dropped: bool,
+}
+
+fn job() -> (Job, Watch) {
+    let slot = Arc::new(Mutex::new(Slot::default()));
+    (Job(slot.clone()), Watch(slot))
+}
+
+impl Watch {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Slot> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Records the process; false if the job was already dropped, and the
+    /// process is then stopped at once.
+    fn started(&self, child: &mut std::process::Child) -> bool {
+        let mut slot = self.slot();
+        if slot.dropped {
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        }
+        slot.pid = Some(child.id());
+        true
+    }
+
+    fn finished(&self) {
+        self.slot().pid = None;
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        slot.dropped = true;
+        if let Some(pid) = slot.pid.take() {
+            crate::platform::terminate(pid);
+        }
+    }
+}
+
+/// Starts answering on a thread; the answer fills from the channel, and
+/// dropping the `Job` stops it.
+pub fn start(ctx: Context) -> (Answer, mpsc::Receiver<Event>, Job) {
     let mut sources: Vec<(&'static str, String)> = Vec::new();
     let mut failure = None;
     for (_, what, _) in &ctx.failures {
@@ -165,10 +218,11 @@ pub fn start(ctx: Context) -> (Answer, mpsc::Receiver<Event>) {
         ..Default::default()
     };
     let (tx, rx) = mpsc::channel();
+    let (job, mine) = job();
     let _ = std::thread::Builder::new()
         .name("palette-answer".into())
-        .spawn(move || run(&ctx, &tx));
-    (answer, rx)
+        .spawn(move || run(&ctx, &tx, &mine));
+    (answer, rx, job)
 }
 
 const RULE_SYSTEM: &str = "You turn one sentence into an automation rule for Arakun, a desktop app for coding agents. \
@@ -184,14 +238,15 @@ Unused trigger fields are 0 or empty strings.";
 pub fn start_rule(
     sentence: String,
     sessions: Vec<String>,
-) -> mpsc::Receiver<Result<Value, String>> {
+) -> (mpsc::Receiver<Result<Value, String>>, Job) {
     let (tx, rx) = mpsc::channel();
+    let (job, mine) = job();
     let _ = std::thread::Builder::new()
         .name("palette-rule".into())
         .spawn(move || {
-            let _ = tx.send(read_rule(&sentence, &sessions));
+            let _ = tx.send(read_rule(&sentence, &sessions, &mine));
         });
-    rx
+    (rx, job)
 }
 
 pub fn rule_body(sentence: &str, sessions: &[String]) -> Value {
@@ -221,10 +276,13 @@ pub fn rule_body(sentence: &str, sessions: &[String]) -> Value {
     })
 }
 
-fn read_rule(sentence: &str, sessions: &[String]) -> Result<Value, String> {
+fn read_rule(sentence: &str, sessions: &[String], job: &Watch) -> Result<Value, String> {
     let request = rule_body(sentence, sessions);
     let schema = &request["output_config"]["format"]["schema"];
     let mut child = claude_code(&request, Some(schema))?;
+    if !job.started(&mut child) {
+        return Err("stopped".into());
+    }
     let stdout = child.stdout.take().ok_or("no output")?;
     use std::io::{BufRead as _, BufReader};
     let mut last = None;
@@ -236,6 +294,7 @@ fn read_rule(sentence: &str, sessions: &[String]) -> Result<Value, String> {
         }
     }
     let _ = child.wait();
+    job.finished();
     let v = last.ok_or("Claude Code gave no answer")?;
     if v["is_error"].as_bool().unwrap_or(false) {
         return Err(v["result"]
@@ -331,7 +390,7 @@ pub fn no_key() -> String {
     "Quick answers go through Claude Code: install it or sign in with `claude /login`.".to_string()
 }
 
-fn run(ctx: &Context, tx: &mpsc::Sender<Event>) {
+fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
     let mut child = match claude_code(&body(ctx), None) {
         Ok(c) => c,
         Err(e) => {
@@ -339,6 +398,9 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>) {
             return;
         }
     };
+    if !job.started(&mut child) {
+        return;
+    }
     let Some(stdout) = child.stdout.take() else {
         let _ = tx.send(Event::Failed("no output".into()));
         return;
@@ -357,6 +419,7 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>) {
         }
     }
     let _ = child.wait();
+    job.finished();
     if !finished {
         let _ = tx.send(Event::Done {
             input: 0,
@@ -478,5 +541,26 @@ mod tests {
         let mut b = Answer::default();
         assert!(b.take(Event::Failed("x".into())));
         assert_eq!(b.error.as_deref(), Some("x"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_job_stops_its_process() {
+        let (job, watch) = job();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert!(watch.started(&mut child));
+        drop(job);
+        // SIGTERM ends `sleep` at once; wait() returns rather than after 30 s.
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+        // A process started after the job was dropped is stopped right away.
+        let mut late = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert!(!watch.started(&mut late));
     }
 }

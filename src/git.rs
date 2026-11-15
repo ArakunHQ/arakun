@@ -921,6 +921,9 @@ mod tests {
                 "user.name=t",
                 "-c",
                 "user.email=t@t",
+                // A contributor's commit.gpgsign would need a key the tests don't have.
+                "-c",
+                "commit.gpgsign=false",
                 "commit",
                 "-q",
                 "--allow-empty",

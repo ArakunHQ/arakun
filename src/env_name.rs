@@ -168,16 +168,30 @@ pub fn suggest(namer: &Namer, task: &str) -> Result<String> {
     let (program, args) = command(agent, namer.model.trim(), &instruction(task))?;
     let mut cmd = crate::platform::command(program);
     // An empty folder: no project instructions, memory or tools to load.
-    let dir = std::env::temp_dir().join("arakun-namer");
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the namer: {e}"))?;
     cmd.args(args)
         .current_dir(&dir)
         .env("PATH", crate::agent::child_path_env())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let out = run(cmd)?;
+    let out = run(cmd);
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = out?;
     parse(&out).ok_or_else(|| anyhow!("the model answered with no usable name: {}", out.trim()))
+}
+
+/// A new folder only this user can open, for one naming run. A fixed name in a shared
+/// temporary folder could be made first by another user, with a CLAUDE.md or AGENTS.md
+/// in it that the agent would read; creating fails rather than reuse a folder that exists.
+fn private_dir() -> std::io::Result<PathBuf> {
+    let [a, b, _] = random_numbers();
+    let dir = std::env::temp_dir().join(format!("arakun-namer-{a:08x}{b:08x}"));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    Ok(dir)
 }
 
 /// The CLI and its arguments to answer `prompt` once, with no tools, and exit.
@@ -364,6 +378,21 @@ mod tests {
         assert!(!long.ends_with('-'));
         let one_word = parse(&format!("fix/{}", "a".repeat(60))).unwrap();
         assert_eq!(one_word, format!("fix/{}", "a".repeat(MAX_LEN - 4)));
+    }
+
+    #[test]
+    fn namer_folders_are_new_and_private() {
+        let (a, b) = (private_dir().unwrap(), private_dir().unwrap());
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read_dir(&a).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+        }
+        let _ = std::fs::remove_dir(a);
+        let _ = std::fs::remove_dir(b);
     }
 
     #[test]

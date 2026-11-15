@@ -35,11 +35,11 @@ jobs:
     name: Report
     runs-on: depot-ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: .github/scripts
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -52,7 +52,7 @@ jobs:
           OUT_MD: runner-sizing.md
         run: node .github/scripts/runner-sizing.mjs
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: runner-sizing
           path: runner-sizing.json

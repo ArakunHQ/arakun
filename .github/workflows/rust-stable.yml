@@ -33,7 +33,7 @@ jobs:
     name: Clippy on latest stable
     runs-on: depot-ubuntu-24.04-8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: GPUI system libraries
         uses: awalsh128/cache-apt-pkgs-action@v1

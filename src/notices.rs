@@ -11,6 +11,10 @@ use crate::island::AlertKind;
 /// Older notices fall off past this many.
 pub const CAP: usize = 300;
 
+/// How much of a subtitle (often the start of an agent's reply) is kept: the
+/// Inbox shows one line of it, so more would only sit on disk.
+const PREVIEW_CHARS: usize = 140;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Notice {
     /// Unix seconds.
@@ -41,13 +45,20 @@ impl Notice {
             at,
             kind: alert.kind,
             title: alert.title.to_string(),
-            subtitle: alert.subtitle.to_string(),
+            subtitle: preview(&alert.subtitle),
             key: alert.key.to_string(),
             req: alert.req.to_string(),
             image: alert.image.to_string(),
             brand: alert.brand.to_string(),
             seen: false,
         }
+    }
+}
+
+fn preview(text: &str) -> String {
+    match text.char_indices().nth(PREVIEW_CHARS) {
+        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
+        None => text.to_string(),
     }
 }
 
@@ -274,8 +285,9 @@ pub fn store(history: &History) {
     store_to(&file(), history);
 }
 
+/// Private: subtitles hold the start of agent replies.
 fn store_to(path: &Path, history: &History) {
-    if let Err(e) = crate::durable::write(
+    if let Err(e) = crate::durable::write_private(
         path,
         &serde_json::to_vec_pretty(history).unwrap_or_default(),
     ) {
@@ -489,5 +501,28 @@ mod tests {
         assert_eq!(load_from(&dir.join("notices.json"), 1), History::default());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_file_is_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("private");
+        let path = dir.join("notices.json");
+        let mut h = History::default();
+        h.push(notice(1, "Claude terminó"));
+        store_to(&path, &h);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_long_reply_is_kept_short() {
+        let long = "word ".repeat(100);
+        let kept = preview(&long);
+        assert!(kept.chars().count() <= PREVIEW_CHARS + 1);
+        assert!(kept.ends_with('…'));
+        assert_eq!(preview("short"), "short");
     }
 }

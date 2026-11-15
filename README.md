@@ -82,6 +82,13 @@ window, and exposes the same workspace to the agents through a command line.
   accent; Arakun warns when text or the accent gets hard to read. A palette fits in one
   line (`arakun:palette/v1:…`) that anyone can paste there to get it. The choice and your
   palettes are kept in `palettes.json` next to the state.
+- **Corners and spacing.** Settings › Appearance also sets the shape of the whole app,
+  live. Corners makes cards, buttons and fields sharper or rounder (0 to 200%; presets
+  Sharp, Default, Round). Spacing makes the room inside and between things tighter or
+  roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space around and
+  between the sidebar, the main area, the panel and the dock (0 to 20 px; None, Default,
+  Wide). The defaults (100%, 100%, 8 px) look as before. These are kept in
+  `palettes.json` too.
 
 ## Platform status
 

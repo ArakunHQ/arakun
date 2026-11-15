@@ -238,7 +238,14 @@ if [ $hooks = 1 ]; then
   # --path-format=absolute needs Git 2.31+; with an older Git, --check may report
   # the hooks as off when they are on.
   hookdir=$(cd "$here" && git rev-parse --path-format=absolute --git-path hooks)
-  if grep -qs lefthook "$hookdir/commit-msg"; then
+  # On only when every hook lefthook.yml sets is lefthook's and lefthook itself
+  # is there to run them.
+  on=1
+  for h in pre-commit pre-push commit-msg; do
+    grep -qs lefthook "$hookdir/$h" || on=0
+  done
+  command -v lefthook >/dev/null || on=0
+  if [ $on = 1 ]; then
     ok "lefthook hooks are on"
   elif ! command -v lefthook >/dev/null; then
     lack "lefthook (https://lefthook.dev/installation/, e.g. brew install lefthook), then run tools/setup-dev.sh --hooks again"

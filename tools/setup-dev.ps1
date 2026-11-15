@@ -265,8 +265,14 @@ if ($Hooks) {
     # --path-format=absolute needs Git 2.31+; with an older Git, -Check may report the
     # hooks as off when they are on.
     $hookDir = Quiet { git -C $Root rev-parse --path-format=absolute --git-path hooks }
-    $commitMsg = if ($hookDir) { Join-Path $hookDir 'commit-msg' } else { '' }
-    if ($commitMsg -and (Test-Path $commitMsg) -and (Select-String -Quiet -Path $commitMsg -Pattern 'lefthook')) {
+    # On only when every hook lefthook.yml sets is lefthook's and lefthook itself is
+    # there to run them.
+    $on = [bool]$hookDir -and (Has 'lefthook')
+    foreach ($h in 'pre-commit', 'pre-push', 'commit-msg') {
+        $file = if ($hookDir) { Join-Path $hookDir $h } else { '' }
+        if (-not ($file -and (Test-Path $file) -and (Select-String -Quiet -Path $file -Pattern 'lefthook'))) { $on = $false }
+    }
+    if ($on) {
         Ok 'lefthook hooks are on'
     } elseif ($Check) {
         if (Has 'lefthook') { Lack 'lefthook hooks (lefthook install)' }

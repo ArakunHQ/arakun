@@ -94,6 +94,7 @@ build with the browser.
 | State, sessions, transcripts | `%LOCALAPPDATA%\arakun\` |
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
+| Branch naming agent and model (Settings › General) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
@@ -122,6 +123,9 @@ Manager (Windows Credentials, Generic Credentials).
   agent's whole process tree, like the process group on Linux. Arakun looks for `droid`,
   `claude` and `npm` on the `PATH`, in `~\.local\bin`, `~\bin` and `%APPDATA%\npm`, with
   the extensions in `%PATHEXT%`.
+- **Branch naming:** each naming run works in a new folder in `%TEMP%`. On Linux and
+  macOS Arakun makes that folder owner-only (mode 0700). On Windows it keeps the access
+  rules of `%TEMP%`, which is inside your profile, so other users cannot open it.
 - **Notifications:** Windows toasts through PowerShell; they appear under the name
   "Windows PowerShell".
 - **Opening external files and links:** with the Windows default program.

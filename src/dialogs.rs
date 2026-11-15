@@ -9,14 +9,20 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
+use crate::env_name;
 use crate::git;
 use crate::input::{InputEvent, TextInput};
-use crate::model::{pretty_path, worktree_path};
+use crate::model::{pretty_path, workspaces_root, worktree_path};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
 pub enum DialogEvent {
-    Created(PathBuf),
+    /// `auto_name`: the branch kept the random name the dialog filled in.
+    Created {
+        path: PathBuf,
+        branch: String,
+        auto_name: bool,
+    },
     Deleted(PathBuf),
     /// A project command (setup script, check) was saved; None clears it.
     Command(Option<String>),
@@ -31,6 +37,11 @@ pub struct CreateEnvDialog {
     /// Project setup script, shown so the user knows it will run.
     setup: Option<String>,
     input: Entity<TextInput>,
+    /// The random name filled in; a branch created with it gets renamed after
+    /// the first prompt.
+    suggested: String,
+    /// Who renames a branch that keeps `suggested`; None when naming is off.
+    namer: Option<crate::agent::AgentKind>,
     branches: git::Branches,
     /// None = current HEAD.
     base: Option<String>,
@@ -50,7 +61,14 @@ impl CreateEnvDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| TextInput::new("feature/my-task", cx).mono());
+        let suggested = env_name::random(|n| folder_taken(&project, n));
+        // Selected, so typing a name of your own replaces it.
+        let input = cx.new(|cx| {
+            let mut i = TextInput::new("feature/my-task", cx).mono();
+            i.set_text(suggested.clone(), cx);
+            i.select_all_text(cx);
+            i
+        });
         let sub = cx.subscribe_in(&input, window, |this: &mut Self, _, ev, _, cx| match ev {
             InputEvent::Submit => this.submit(cx),
             InputEvent::Cancel => {
@@ -75,6 +93,19 @@ impl CreateEnvDialog {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.branches = branches;
+                let untouched = this.name(cx) == this.suggested;
+                if untouched && this.branches.local.contains(&this.suggested) {
+                    let project = this.project.clone();
+                    let local = &this.branches.local;
+                    this.suggested = env_name::random(|n| {
+                        local.iter().any(|b| b == n) || folder_taken(&project, n)
+                    });
+                    let name = this.suggested.clone();
+                    this.input.update(cx, |i, cx| {
+                        i.set_text(name, cx);
+                        i.select_all_text(cx);
+                    });
+                }
                 cx.notify();
             });
         })
@@ -84,6 +115,8 @@ impl CreateEnvDialog {
             project,
             setup,
             input,
+            suggested,
+            namer: env_name::namer().agent,
             branches: git::Branches::default(),
             base: None,
             base_open: false,
@@ -113,8 +146,10 @@ impl CreateEnvDialog {
         let repo = self.repo.clone();
         let path = worktree_path(&self.project, &name);
         let base = self.base.clone();
+        let auto_name = name == self.suggested;
         cx.spawn(async move |this, cx| {
             let target = path.clone();
+            let branch = name.clone();
             let result = cx
                 .background_spawn(async move {
                     git::add_worktree(&repo, &target, &name, base.as_deref())
@@ -123,7 +158,11 @@ impl CreateEnvDialog {
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {
-                    Ok(()) => cx.emit(DialogEvent::Created(path)),
+                    Ok(()) => cx.emit(DialogEvent::Created {
+                        path,
+                        branch,
+                        auto_name,
+                    }),
                     Err(e) => {
                         this.error = Some(e.to_string().into());
                         cx.notify();
@@ -151,6 +190,15 @@ impl Focusable for CreateEnvDialog {
     }
 }
 
+/// A random name is taken when its worktree folder exists: the new one would get a
+/// `-2` folder that no longer matches it.
+fn folder_taken(project: &str, name: &str) -> bool {
+    workspaces_root()
+        .join(project)
+        .join(name.replace('/', "-"))
+        .exists()
+}
+
 fn field_label(text: &str) -> impl IntoElement {
     div()
         .text_size(px(ui::TEXT_SM))
@@ -166,6 +214,9 @@ impl Render for CreateEnvDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.name(cx);
         let existing = self.branches.local.contains(&name);
+        let namer = (name == self.suggested && !existing)
+            .then_some(self.namer)
+            .flatten();
         let target = (!name.is_empty()).then(|| worktree_path(&self.project, &name));
         let ready = !name.is_empty() && !self.busy;
 
@@ -278,6 +329,17 @@ impl Render for CreateEnvDialog {
                                         .text_size(px(ui::TEXT_XS))
                                         .text_color(theme::text_subtle())
                                         .child("This branch already exists; it will be checked out."),
+                                )
+                            })
+                            .when_some(namer, |d, agent| {
+                                d.child(
+                                    div()
+                                        .text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::text_subtle())
+                                        .child(format!(
+                                            "A placeholder: after your first prompt, {} names the branch after the task.",
+                                            agent.label()
+                                        )),
                                 )
                             }),
                     )

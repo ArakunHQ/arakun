@@ -450,6 +450,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let env_path = self.env().path.clone();
+        self.name_after_first_prompt(&env_path, &text, cx);
         if let Some(id) = self.active_session_id() {
             let path = self.env().path.clone();
             if text.trim() == "/stage" {

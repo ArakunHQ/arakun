@@ -148,6 +148,12 @@ pub struct EnvState {
     pub branch: Option<String>,
     #[serde(default)]
     pub is_main: bool,
+    /// The branch has a random name the first prompt replaces.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_name: bool,
+    /// The rail shows the branch, not the folder.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub follow_branch: bool,
     #[serde(default)]
     pub agent: Option<String>,
     /// Native Droid settings picked on the New session tab, as (key, value).
@@ -185,6 +191,10 @@ pub struct EnvState {
 
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize, Deserialize)]
@@ -344,6 +354,8 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                         path: e.path.clone(),
                         branch: Some(e.branch.to_string()),
                         is_main: e.is_checkout,
+                        auto_name: e.auto_name,
+                        follow_branch: e.follow_branch,
                         agent: Some(e.agent.key().into()),
                         settings: e
                             .draft_settings
@@ -454,7 +466,10 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                 .envs
                 .into_iter()
                 .map(|e| {
-                    let mut env = Environment::new(e.path, e.branch, e.is_main);
+                    let mut env = Environment::new(e.path, None, e.is_main);
+                    env.auto_name = e.auto_name;
+                    env.follow_branch = e.follow_branch;
+                    env.set_branch(e.branch);
                     if let Some(agent) = e.agent {
                         env.agent = Agent::from_key(&agent);
                     }

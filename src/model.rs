@@ -406,6 +406,12 @@ pub struct Environment {
     pub name: SharedString,
     pub branch: SharedString,
     pub is_checkout: bool,
+    /// The branch got a random name in the "New environment" dialog; the first
+    /// prompt sent here renames it to one that says what the work is.
+    pub auto_name: bool,
+    /// Shown by its branch, not its folder: arakun named or renamed the branch, so
+    /// the folder no longer says what the environment is.
+    pub follow_branch: bool,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     /// Tab ids visited, newest last (the active tab on top), for Back.
@@ -468,6 +474,8 @@ impl Environment {
             explorer: Explorer::new(path.clone()),
             path,
             is_checkout,
+            auto_name: false,
+            follow_branch: false,
             tabs: vec![Tab::new("New session", TabKind::NewSession)],
             active_tab: 0,
             tab_back: Vec::new(),
@@ -496,9 +504,15 @@ impl Environment {
         env
     }
 
+    /// Shows the environment by its branch from now on, and relabels it.
+    pub fn follow_branch(&mut self) {
+        self.follow_branch = true;
+        self.name = self.branch.clone();
+    }
+
     pub fn set_branch(&mut self, branch: Option<String>) {
         let branch: SharedString = branch.unwrap_or_else(|| "detached HEAD".into()).into();
-        self.name = if self.is_checkout {
+        self.name = if self.is_checkout || self.follow_branch {
             branch.clone()
         } else {
             dir_name(&self.path).into()

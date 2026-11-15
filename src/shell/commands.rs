@@ -32,6 +32,10 @@ impl Shell {
                     let _ = done.send(reply);
                     continue;
                 }
+                if req.cmd == "rename" {
+                    let _ = this.update(cx, |this, cx| this.rename_command(req, done, cx));
+                    continue;
+                }
                 if req.cmd == "page" {
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.page_command(req, done, window, cx)

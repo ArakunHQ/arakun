@@ -36,6 +36,7 @@ mod home;
 mod island;
 mod limits;
 mod menus;
+mod naming;
 mod notes;
 pub(crate) mod pages;
 mod panel;
@@ -1109,10 +1110,14 @@ impl Shell {
             &dialog,
             window,
             move |this, _, ev: &DialogEvent, window, cx| match ev {
-                DialogEvent::Created(path) => {
-                    let path = path.clone();
+                DialogEvent::Created {
+                    path,
+                    branch,
+                    auto_name,
+                } => {
+                    let (path, branch, auto_name) = (path.clone(), branch.clone(), *auto_name);
                     this.close_modal(window, cx);
-                    this.environment_created(pi, path, window, cx);
+                    this.environment_created(pi, path, branch, auto_name, window, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
@@ -1126,6 +1131,8 @@ impl Shell {
         &mut self,
         pi: usize,
         path: std::path::PathBuf,
+        branch: String,
+        auto_name: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1135,9 +1142,15 @@ impl Shell {
         if project.env_index(&path).is_none() {
             project
                 .environments
-                .push(Environment::new(path.clone(), None, false));
+                .push(Environment::new(path.clone(), Some(branch), false));
         }
         let ei = project.env_index(&path).unwrap_or(0);
+        if auto_name {
+            // The folder keeps the random name; the label follows the branch once renamed.
+            let env = &mut project.environments[ei];
+            env.auto_name = true;
+            env.follow_branch();
+        }
         self.select_env(pi, ei, window, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.

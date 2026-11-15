@@ -13,6 +13,10 @@ window, and exposes the same workspace to the agents through a command line.
   checkout plus git worktrees). Every environment has its own tabs, sessions, terminals
   and draft prompt. The Workspace panel shows Sessions, an Explorer and the uncommitted
   Changes; the Branches tab draws every live branch against the default one.
+  A new environment starts on a random branch name (`env/brave-otter`); after the first
+  prompt, a small model names it after the task (`fix/terminal-tab-name`) and Arakun
+  renames the branch. The folder keeps its name. Settings › General picks the agent CLI
+  and model that name branches (Claude Code with `haiku` by default), or turns it off.
 - **Agent sessions.** Claude Code (through the ACP adapter
   `@agentclientprotocol/claude-agent-acp`), Factory's Droid, OpenCode, and Cloudflare
   Workers AI (a tool loop Arakun runs itself against the Workers AI API). Transcripts
@@ -212,6 +216,7 @@ arakun open -s src/main.rs:42     # open a file in the side pane at line 42
 arakun run --port 5173 npm run dev   # new terminal; wait until the port answers
 arakun logs 2 --until compiled    # wait until terminal 2 prints "compiled"
 arakun check                      # run the project check here
+arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun ls                         # projects, environments and sessions

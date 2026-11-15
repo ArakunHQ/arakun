@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use crate::agent::plan::{self, PlanUsage};
+use crate::env_name;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{self, DiffPalette};
 use crate::ui::{self, ButtonKind, icon};
@@ -120,11 +121,11 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone branch name environment worktree rename model haiku"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts branch name environment worktree rename model haiku"
             }
             Section::Appearance => {
                 "theme diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
@@ -240,7 +241,10 @@ pub struct SettingsDialog {
     /// What the last save or test did, and whether it failed.
     voice_note: Option<(SharedString, bool)>,
     voice_busy: bool,
-    _subs: [Subscription; 3],
+    /// Who names the branch of a new environment after its first prompt.
+    namer: env_name::Namer,
+    namer_input: Entity<TextInput>,
+    _subs: [Subscription; 4],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -284,6 +288,28 @@ impl SettingsDialog {
                     _ => {}
                 },
             );
+        let namer = env_name::namer();
+        let namer_input = cx.new(|cx| {
+            let mut i = TextInput::new("CLI default", cx).mono();
+            i.set_text(namer.model.clone(), cx);
+            i
+        });
+        let namer_sub =
+            cx.subscribe_in(
+                &namer_input,
+                window,
+                |this: &mut Self, _, ev, _, cx| match ev {
+                    InputEvent::Changed => {
+                        let model = this.namer_input.read(cx).text().trim().to_string();
+                        if model != this.namer.model {
+                            this.namer.model = model;
+                            env_name::set_namer(&this.namer);
+                        }
+                    }
+                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
+                    _ => {}
+                },
+            );
         cx.spawn(async move |this, cx| {
             let plan = cx.background_spawn(async move { plan::refresh() }).await;
             let _ = this.update(cx, |this, cx| {
@@ -317,7 +343,9 @@ impl SettingsDialog {
             voice_input,
             voice_note: None,
             voice_busy: false,
-            _subs: [sub, key_sub, voice_sub],
+            namer,
+            namer_input,
+            _subs: [sub, key_sub, voice_sub, namer_sub],
         }
     }
 
@@ -378,6 +406,21 @@ impl SettingsDialog {
             });
         })
         .detach();
+    }
+
+    /// Picks the agent that names branches; a new agent starts on its small model.
+    fn set_namer_agent(&mut self, agent: Option<crate::agent::AgentKind>, cx: &mut Context<Self>) {
+        if agent == self.namer.agent {
+            return;
+        }
+        self.namer.agent = agent;
+        if let Some(agent) = agent {
+            self.namer.model = env_name::default_model(agent).to_string();
+            let model = self.namer.model.clone();
+            self.namer_input.update(cx, |i, cx| i.set_text(model, cx));
+        }
+        env_name::set_namer(&self.namer);
+        cx.notify();
     }
 
     fn set_tone(&mut self, tone: Tone, cx: &mut Context<Self>) {
@@ -632,6 +675,34 @@ impl SettingsDialog {
                     )
                     .into_any_element()
                 },
+                {
+                    let current = self.namer.agent;
+                    let choices = std::iter::once(None).chain(env_name::AGENTS.into_iter().map(Some));
+                    let mut chips = div().flex().flex_none().items_center().gap(px(6.));
+                    for (i, agent) in choices.enumerate() {
+                        let label = agent.map_or("Off", |a| a.label());
+                        chips = chips.child(
+                            ui::chip(("set-namer", i), label, agent == current)
+                                .on_click(cx.listener(move |this, _, _, cx| this.set_namer_agent(agent, cx))),
+                        );
+                    }
+                    row(
+                        "Name new branches",
+                        "The New environment dialog fills in a random branch name. After the first prompt, this agent's CLI names the branch after the task and Arakun renames it. The folder keeps its name.",
+                        chips.into_any_element(),
+                    )
+                    .into_any_element()
+                },
+                row(
+                    "Naming model",
+                    match self.namer.agent {
+                        Some(crate::agent::AgentKind::Claude) => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default.",
+                        Some(_) => "A small, fast model, as the CLI names it (provider/model for OpenCode). Empty uses the CLI's default.",
+                        None => "Naming is off: new branches keep their random name.",
+                    },
+                    field(self.namer_input.clone(), 180.).when(self.namer.agent.is_none(), |d| d.opacity(0.5)).into_any_element(),
+                )
+                .into_any_element(),
                 row(
                     "Raccoon animation",
                     "Arakun's raccoon follows the cursor and acts out what agents do. Off, it holds still.",

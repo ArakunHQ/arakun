@@ -19,6 +19,7 @@ pub mod query;
 pub mod rank;
 pub mod rules;
 pub mod sources;
+pub mod todos;
 mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -196,6 +197,8 @@ pub enum Card {
     /// A sentence the parser could not read as a rule: Enter has the model read it.
     OfferRule,
     Rule(rules::Draft),
+    /// "to-do: …": Enter adds it.
+    Todo(String),
     Confirm(crate::github::pr::ItemRef, String),
 }
 
@@ -245,6 +248,7 @@ pub struct Palette {
     reading: HashSet<(PathBuf, Option<u32>)>,
     frecency: rank::Frecency,
     pub pins: pins::Pins,
+    todos: todos::Todos,
     clip: Option<clip::Clip>,
     scope: Option<Scope>,
     chips: Vec<Chip>,
@@ -303,6 +307,11 @@ impl Palette {
             reading: HashSet::new(),
             frecency: rank::Frecency::load(),
             pins: pins::Pins::load(),
+            todos: {
+                let mut t = todos::Todos::load();
+                t.tidy(crate::memory::now());
+                t
+            },
             clip,
             scope: None,
             chips: Vec::new(),
@@ -532,6 +541,7 @@ impl Palette {
                 e.card,
                 Some(
                     Card::Rule(_)
+                        | Card::Todo(_)
                         | Card::Confirm(..)
                         | Card::Clip(clip::Clip::Error(_))
                         | Card::OfferAnswer
@@ -600,6 +610,13 @@ impl Palette {
                 cx.emit(PaletteEvent::AddRule(d.clone()));
                 return;
             }
+            Some(Card::Todo(text)) => {
+                self.todos.add(text, crate::memory::now());
+                self.todos.save();
+                self.input.update(cx, |i, cx| i.set_text("", cx));
+                self.show_note("Added to your to-dos", true, cx);
+                return;
+            }
             Some(Card::Confirm(item, _)) => {
                 cx.emit(PaletteEvent::Merge(item.clone()));
                 self.confirm = None;
@@ -609,6 +626,13 @@ impl Palette {
             _ => {}
         }
         match &entry.item.target {
+            Target::Todo(id) => {
+                let done = self.todos.toggle(*id, crate::memory::now());
+                self.todos.save();
+                self.refilter_keep(cx);
+                self.show_note(if done { "Done" } else { "Back on your list" }, true, cx);
+                return;
+            }
             Target::Setting(_) => {
                 cx.emit(PaletteEvent::Run {
                     target: entry.item.target.clone(),
@@ -1261,6 +1285,7 @@ impl Palette {
             cands.extend(self.file_items(root, &q));
         }
         cands.extend(self.memory_items(&q));
+        cands.extend(self.todo_items());
         // The memory a card already shows is not listed again under it.
         // Built once: each card may search memory, and that is the slow part of a keystroke.
         let cards = self.cards(&q, cx);
@@ -1588,6 +1613,10 @@ impl Palette {
         {
             return out;
         }
+        if let Some(text) = todos::parse(q).or_else(|| rules::timeless_reminder(q)) {
+            out.push(Card::Todo(text));
+            return out;
+        }
         let repo = self.repo_for(rules::pr_number(q));
         if let Some(d) = rules::parse(q, repo.as_deref(), &self.seed.sessions).or_else(|| {
             self.model_rule
@@ -1841,6 +1870,34 @@ impl Palette {
         out
     }
 
+    /// The open to-dos, and the ones ticked off today, dimmed.
+    fn todo_items(&self) -> Vec<Item> {
+        let now = crate::memory::now();
+        self.todos
+            .shown(now)
+            .into_iter()
+            .map(|t| {
+                let done = t.done.is_some();
+                let mut item = Item::new(
+                    format!("todo:{}", t.id),
+                    Kind::Todo,
+                    t.text.clone(),
+                    Target::Todo(t.id),
+                )
+                .icon(
+                    if done { "checkmark-circle01" } else { "circle" },
+                    if done { Tint::Green } else { Tint::Neutral },
+                )
+                .section("To-do")
+                .meta(crate::memory::ago(t.done.unwrap_or(t.created), now))
+                .extra("todo to-do pendiente pendientes".to_string())
+                .boost(if done { -20 } else { 30 });
+                item.dim = done;
+                item
+            })
+            .collect()
+    }
+
     fn memory_items(&self, q: &str) -> Vec<Item> {
         let wants = self.tab == Tab::Memory || (!q.is_empty() && q.chars().count() >= 2);
         if !wants || self.memory.iter().all(|(_, s)| s.items.is_empty()) {
@@ -2008,6 +2065,7 @@ fn card_item(card: &Card) -> Item {
         Card::OfferAnswer => "card:offer-answer",
         Card::OfferRule => "card:offer-rule",
         Card::Rule(_) => "card:rule",
+        Card::Todo(_) => "card:todo",
         Card::Confirm(..) => "card:confirm",
     };
     let target = match card {
@@ -2120,6 +2178,7 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::Branch => "Branches",
         Kind::Memory => "Memory",
         Kind::Rule => "Automations",
+        Kind::Todo => "To-do",
         Kind::Card => "",
     }
 }

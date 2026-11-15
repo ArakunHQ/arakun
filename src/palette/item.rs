@@ -44,6 +44,8 @@ pub enum Target {
     View(crate::sidebar::View),
     /// A pull request or issue, in the GitHub tab.
     Pull(crate::github::pr::ItemRef),
+    /// A to-do: Enter ticks it off, or opens it again.
+    Todo(u64),
     /// A run in the Runs tab of the project at `root`.
     Run {
         root: PathBuf,
@@ -108,6 +110,8 @@ pub enum Kind {
     Branch,
     Memory,
     Rule,
+    /// One of the person's to-dos.
+    Todo,
     /// Cards made for this query: clipboard, ask an agent, answer, rule.
     Card,
 }
@@ -384,7 +388,7 @@ impl Item {
             Kind::Memory => Tab::Memory,
             Kind::Setting => Tab::Settings,
             Kind::View | Kind::Project | Kind::Branch => Tab::Views,
-            Kind::Rule | Kind::Card => Tab::All,
+            Kind::Rule | Kind::Todo | Kind::Card => Tab::All,
         }
     }
 }

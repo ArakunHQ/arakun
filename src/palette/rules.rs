@@ -625,6 +625,19 @@ pub fn parse_reminder(text: &str, clock: &Clock) -> Option<Draft> {
     })
 }
 
+/// "créame un recordatorio de comprar leche": a reminder with no time in it.
+/// What to remember, so it can be kept as a to-do instead of being lost.
+pub fn timeless_reminder(text: &str) -> Option<String> {
+    if !asks_reminder(text) {
+        return None;
+    }
+    // Any clock does: only whether a time is there matters.
+    if parse_reminder(text, &Clock::system(crate::memory::now())).is_some() {
+        return None;
+    }
+    Some(what_to_remember(text)).filter(|w| !w.is_empty())
+}
+
 /// The sentence without its asking words: what the person wants to remember.
 fn what_to_remember(text: &str) -> String {
     const ASKING: &[&str] = &[
@@ -1624,5 +1637,24 @@ mod tests {
         let mut notify = run(Some("/work/gone"));
         notify.steps = vec![Step::Notify { text: "hi".into() }];
         assert_eq!(workdir(&notify, here), Ok(None));
+    }
+
+    #[test]
+    fn a_reminder_with_no_time_is_kept_as_a_to_do() {
+        assert_eq!(
+            timeless_reminder("créame un recordatorio de comprar leche").as_deref(),
+            Some("comprar leche")
+        );
+        assert_eq!(
+            timeless_reminder("recuérdame llamar a Dani").as_deref(),
+            Some("llamar a Dani")
+        );
+        assert_eq!(timeless_reminder("recuérdame en 5 min llamar a Dani"), None);
+        assert_eq!(timeless_reminder("timer 10 min"), None);
+        assert_eq!(timeless_reminder("abre el PR 12"), None);
+        // Not whole reminder words: not to-dos either.
+        assert_eq!(timeless_reminder("open src/alarms.rs"), None);
+        assert_eq!(timeless_reminder("open src/timer.rs"), None);
+        assert_eq!(timeless_reminder("fix the timeranges bug"), None);
     }
 }

@@ -127,7 +127,8 @@ pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> 
         .h(px(TAB_H))
         .px(sp(8.))
         .gap(sp(6.))
-        .rounded(rad(RADIUS))
+        // Strips sit in a window card's top bar: parallel to its corner.
+        .rounded(nested(RADIUS_XL, (BAR_H - TAB_H) / 2.))
         .text_size(px(TEXT_MD))
         .cursor_pointer()
         .when(active, |d| {
@@ -321,6 +322,15 @@ pub fn set_space_scale(s: f32) {
 /// through here so one setting makes the whole app sharper or rounder.
 pub fn rad(r: f32) -> Pixels {
     px((r * radius_scale()).max(0.))
+}
+
+/// The radius for something set `inset` pixels inside a container rounded
+/// at `outer`, so both corners stay parallel (concentric) instead of the
+/// inner one looking square. Never below `RADIUS_SM`, so it still reads as
+/// rounded.
+pub fn nested(outer: f32, inset: f32) -> Pixels {
+    let scale = radius_scale();
+    px((outer * scale - inset).max(RADIUS_SM * scale).max(0.))
 }
 
 /// Padding or a gap, given at the default spacing: every one goes through
@@ -755,5 +765,14 @@ mod tests {
         for r in [RADIUS_SM, RADIUS, RADIUS_LG, RADIUS_XL, 2.5, 3.5] {
             assert_eq!(rad(r), px(r));
         }
+    }
+
+    #[test]
+    fn nested_corners_stay_parallel_to_the_outer_one() {
+        // At the default roundness (other tests never change it).
+        assert_eq!(nested(RADIUS_XL, 8.), px(8.));
+        assert_eq!(nested(RADIUS_XL, 5.), px(11.));
+        // Deep inside a small container it still reads as rounded.
+        assert_eq!(nested(RADIUS, 12.), px(RADIUS_SM));
     }
 }

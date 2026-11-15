@@ -159,6 +159,10 @@ fn instruction(task: &str) -> String {
     )
 }
 
+/// OpenCode config that denies every tool: `permissions` is today's list, where the last
+/// matching rule wins; `permission` is the older form, for older installs.
+const OPENCODE_DENY: &str = r#"{"permissions":[{"action":"*","resource":"*","effect":"deny"}],"permission":{"edit":"deny","bash":"deny","webfetch":"deny"}}"#;
+
 /// Asks the namer's agent for a branch name for `task`. Blocks; run it in the background.
 pub fn suggest(namer: &Namer, task: &str) -> Result<String> {
     let agent = namer.agent.ok_or_else(|| anyhow!("naming is off"))?;
@@ -167,6 +171,14 @@ pub fn suggest(namer: &Namer, task: &str) -> Result<String> {
     // An empty folder: no project instructions, memory or tools to load.
     let dir = std::env::temp_dir().join("arakun-namer");
     let _ = std::fs::create_dir_all(&dir);
+    if agent == AgentKind::OpenCode {
+        // `opencode run` may run shell commands and edit files by default, and the prompt can
+        // hold pasted text that asks for that. The rule goes both in the folder's project
+        // config and in the variable OpenCode merges over every config; no run without it.
+        std::fs::write(dir.join("opencode.json"), OPENCODE_DENY)
+            .map_err(|e| anyhow!("could not write OpenCode's deny-all config: {e}"))?;
+        cmd.env("OPENCODE_CONFIG_CONTENT", OPENCODE_DENY);
+    }
     cmd.args(args)
         .current_dir(&dir)
         .env("PATH", crate::agent::child_path_env())
@@ -365,6 +377,19 @@ mod tests {
         assert!(!long.ends_with('-'));
         let one_word = parse(&format!("fix/{}", "a".repeat(60))).unwrap();
         assert_eq!(one_word, format!("fix/{}", "a".repeat(MAX_LEN - 4)));
+    }
+
+    #[test]
+    fn opencode_config_denies_every_tool() {
+        let config: serde_json::Value = serde_json::from_str(OPENCODE_DENY).unwrap();
+        let rules = config["permissions"].as_array().unwrap();
+        assert_eq!(
+            rules.last().unwrap(),
+            &serde_json::json!({"action": "*", "resource": "*", "effect": "deny"})
+        );
+        for action in ["edit", "bash", "webfetch"] {
+            assert_eq!(config["permission"][action], "deny");
+        }
     }
 
     #[test]

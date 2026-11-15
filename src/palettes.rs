@@ -177,7 +177,30 @@ fn parse(bytes: &[u8]) -> Option<(Saved, usize)> {
         .map(Palette::clamped)
         .collect();
     let skipped = total - custom.len();
-    Some((Saved { current, custom }, skipped))
+    // A bad shape value falls back to its default; it doesn't cost the palettes.
+    let mut scale = |key: &str, default: f32| match obj.remove(key) {
+        Some(serde_json::Value::Number(n)) => n
+            .as_f64()
+            .map(|f| f as f32)
+            .filter(|f| f.is_finite() && *f > 0.)
+            .unwrap_or(default),
+        _ => default,
+    };
+    let (radius, space, window_gap) = (
+        scale("radius", one()),
+        scale("space", one()),
+        scale("window_gap", eight()),
+    );
+    Some((
+        Saved {
+            current,
+            custom,
+            radius,
+            space,
+            window_gap,
+        },
+        skipped,
+    ))
 }
 
 /// Moves a palettes file that couldn't be read in full to
@@ -348,5 +371,20 @@ mod tests {
         assert_eq!(load_from(&path), s);
         assert!(asides(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_shape_settings_load_with_the_palettes() {
+        let (saved, skipped) =
+            parse(br#"{"current":"","custom":[],"radius":1.5,"space":0.75,"window_gap":4}"#)
+                .unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            (saved.radius, saved.space, saved.window_gap),
+            (1.5, 0.75, 4.)
+        );
+        // Missing or bad values are the defaults.
+        let (saved, _) = parse(br#"{"radius":"big"}"#).unwrap();
+        assert_eq!((saved.radius, saved.space, saved.window_gap), (1., 1., 8.));
     }
 }

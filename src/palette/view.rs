@@ -302,7 +302,7 @@ impl Palette {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .w_full()
                     .child(kit::glow_tile("sparkles", Tint::Amber))
                     .child(kit::card_text(
@@ -323,7 +323,7 @@ impl Palette {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(crate::ui::sp(12.))
                         .w_full()
                         .child(kit::glow_tile("flash", Tint::Violet))
                         .child(kit::card_text(

@@ -55,6 +55,11 @@ window, and exposes the same workspace to the agents through a command line.
   screen that shows what the agents of every project are doing: a dot per busy session, a
   card when one finishes, fails or needs an answer. It runs as its own process
   (`arakun island-host`) and needs a compositor with the wlr-layer-shell protocol.
+- **Notification history.** Every notice Arakun shows (on the island or as a desktop
+  notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
+  grouped by day. Click one to open what it is about. The Inbox's badge counts the
+  unread ones; they count as read when you close it. Arakun keeps the last 300 in
+  `notices.json` next to its state. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
   prompts and answer the agent. Phones reach the computer over the local network (the
   default), over Tailscale, or through an end-to-end encrypted relay. The relay defaults
@@ -233,6 +238,7 @@ arakun logs 2 --until compiled    # wait until terminal 2 prints "compiled"
 arakun check                      # run the project check here
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
+arakun notices --unseen           # notifications you haven't read yet
 arakun ls                         # projects, environments and sessions
 arakun mem search <words>         # search what agents remember about this project
 arakun github draft o/r#12 --verdict approve --body-file - --agent Claude < review.md

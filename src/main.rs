@@ -48,6 +48,7 @@ mod mascot;
 mod memory;
 mod memory_view;
 mod model;
+mod notices;
 mod phone;
 mod phone_view;
 mod picker;

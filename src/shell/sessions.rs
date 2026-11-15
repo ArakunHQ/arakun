@@ -1303,7 +1303,8 @@ impl Shell {
             return;
         }
         // The island says more (model, last reply); the desktop only stands in for it.
-        if !self.island_alert(id, thread, kind, &title, cx) {
+        let alert = self.session_alert(id, thread, kind, &title, cx);
+        if !self.show_alert(alert, cx) {
             send_notification(&title, &body, kind == Notice::Error);
         }
     }

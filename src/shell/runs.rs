@@ -279,6 +279,7 @@ impl Shell {
                         &format!("Couldn't check out {branch}"),
                         &format!("{e}"),
                         Some(open),
+                        cx,
                     );
                 }
             });
@@ -488,6 +489,7 @@ impl Shell {
                     &format!("CI passes on {branch} · #{}", run.number),
                     "Droid's fix is green.",
                     open(),
+                    cx,
                 );
                 self.runs_view.update(cx, |v, cx| {
                     v.set_notice(format!("CI passes on {branch}. Fixed."), false, cx)
@@ -515,6 +517,7 @@ impl Shell {
                     &format!("CI still fails on {branch} · #{}", run.number),
                     &format!("Sent back to Droid (try {round} of {FIX_ROUNDS})."),
                     open(),
+                    cx,
                 );
             }
             State::Failed => {
@@ -524,6 +527,7 @@ impl Shell {
                     &format!("CI still fails on {branch} · #{}", run.number),
                     &format!("Droid tried {FIX_ROUNDS} times; it needs you now."),
                     open(),
+                    cx,
                 );
             }
             _ => return false,
@@ -661,6 +665,7 @@ impl Shell {
                 root: root.clone(),
                 run: Some(run.id),
             }),
+            cx,
         );
     }
 }

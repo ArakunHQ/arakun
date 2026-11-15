@@ -99,7 +99,7 @@ impl Shell {
                 } else {
                     AlertKind::Warning
                 };
-                self.notify(kind, title, body, Some(Open::Cloudflare));
+                self.notify(kind, title, body, Some(Open::Cloudflare), cx);
             }
             CloudflareEvent::OpenProject(root) => {
                 if let Some(pi) = self.projects.iter().position(|p| &p.path == root) {

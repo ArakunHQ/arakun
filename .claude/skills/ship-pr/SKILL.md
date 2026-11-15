@@ -30,13 +30,13 @@ one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 
 | Changed | Run |
 | --- | --- |
-| `src/`, `examples/`, `assets/`, `build.rs`, `Cargo.*`, `clippy.toml`, `.cargo/`, `rust-toolchain.toml`, `tools/rustfmt.sh`, any new top-level path | rustfmt, clippy, tests |
+| any path outside `relay/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `lefthook.yml`, `.coderabbit.yaml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
 | `phone/` | rustfmt, clippy, tests, relay, phone |
 | `relay/` | relay, phone |
 | `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |
 | `tools/install-cef.sh` | rustfmt, clippy, tests (CI also builds with the browser) |
 | `Cargo.toml`, `Cargo.lock`, `deny.toml` | also `cargo deny check` |
-| other files in `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, or `*.md` | nothing to build; proofread (only when no path matched a row above) |
+| `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, `LICENSE`, `NOTICE`, `.gitignore`, `deny.toml`, and `*.md` at the top level, apart from the paths named above | nothing to build; proofread (only when no path matched a row above) |
 
 ```sh
 tools/rustfmt.sh --check        # fix with tools/rustfmt.sh, never plain cargo fmt

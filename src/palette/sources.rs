@@ -257,9 +257,24 @@ impl MemoryHit {
 
 /// The best memories for `query` across the stores, project ones a little
 /// ahead on ties. An empty query gives the newest.
-pub fn memory_hits(stores: &[(Scope, Store)], query: &str, limit: usize) -> Vec<MemoryHit> {
+#[cfg(test)]
+fn memory_hits(stores: &[(Scope, Store)], query: &str, limit: usize) -> Vec<MemoryHit> {
+    let docs: Vec<_> = stores
+        .iter()
+        .map(|(_, s)| memory::index(&s.items))
+        .collect();
+    memory_hits_in(stores, &docs, query, limit)
+}
+
+/// `memory_hits` with each store's words read once by `memory::index`.
+pub fn memory_hits_in(
+    stores: &[(Scope, Store)],
+    docs: &[Vec<Vec<String>>],
+    query: &str,
+    limit: usize,
+) -> Vec<MemoryHit> {
     let mut out: Vec<MemoryHit> = Vec::new();
-    for (scope, store) in stores {
+    for ((scope, store), docs) in stores.iter().zip(docs) {
         if query.trim().is_empty() {
             out.extend(store.items.iter().map(|m| MemoryHit {
                 scope: *scope,
@@ -269,7 +284,7 @@ pub fn memory_hits(stores: &[(Scope, Store)], query: &str, limit: usize) -> Vec<
         } else {
             let lift = if *scope == Scope::Project { 1.05 } else { 1. };
             out.extend(
-                memory::search(&store.items, query)
+                memory::search_in(&store.items, docs, query)
                     .into_iter()
                     .map(|(s, m)| MemoryHit {
                         scope: *scope,

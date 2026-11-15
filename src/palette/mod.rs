@@ -233,6 +233,8 @@ pub struct Palette {
     symbols: Option<Arc<Vec<sources::Symbol>>>,
     indexing: bool,
     memory: Vec<(MemScope, crate::memory::Store)>,
+    /// The words of each memory store, read once: searching memory runs on every keystroke.
+    memory_docs: Vec<Vec<Vec<String>>>,
     line_counts: HashMap<String, usize>,
     snippets: HashMap<(PathBuf, Option<u32>), Option<Snippet>>,
     frecency: rank::Frecency,
@@ -285,6 +287,10 @@ impl Palette {
             .as_deref()
             .map(sources::memory_stores)
             .unwrap_or_default();
+        let memory_docs = memory
+            .iter()
+            .map(|(_, s)| crate::memory::index(&s.items))
+            .collect();
         let mut this = Self {
             asked_pull: None,
             input,
@@ -293,6 +299,7 @@ impl Palette {
             symbols: None,
             indexing: false,
             memory,
+            memory_docs,
             line_counts: HashMap::new(),
             snippets: HashMap::new(),
             frecency: rank::Frecency::load(),
@@ -1091,7 +1098,8 @@ impl Palette {
             cx.background_executor()
                 .timer(Duration::from_millis(800))
                 .await;
-            let rx = answer::start_rule(sentence.clone(), titles);
+            // Held here: when a new keystroke drops this task, the process stops.
+            let (rx, _job) = answer::start_rule(sentence.clone(), titles);
             let result = cx
                 .background_spawn(
                     async move { rx.recv().unwrap_or_else(|_| Err("stopped".into())) },
@@ -1116,7 +1124,7 @@ impl Palette {
         if q.is_empty() {
             return;
         }
-        let memories = sources::memory_hits(&self.memory, &q, 3);
+        let memories = sources::memory_hits_in(&self.memory, &self.memory_docs, &q, 3);
         let ctx = answer::Context {
             question: q.clone(),
             project: self.seed.project.clone(),
@@ -1137,9 +1145,11 @@ impl Palette {
                 .collect(),
             file: None,
         };
-        let (a, rx) = answer::start(ctx);
+        let (a, rx, job) = answer::start(ctx);
         self.answer = Some(a);
         self.answer_task = Some(cx.spawn(async move |this, cx| {
+            // Dropped with the task: a new question or a closed palette stops the process.
+            let _job = job;
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(40))
@@ -1221,11 +1231,9 @@ impl Palette {
         cands.extend(self.memory_items(&q));
         cands.extend(self.todo_items());
         // The memory a card already shows is not listed again under it.
-        if let Some(Card::Remember(m)) = self
-            .cards(&q, cx)
-            .into_iter()
-            .find(|c| matches!(c, Card::Remember(_)))
-        {
+        // Built once: each card may search memory, and that is the slow part of a keystroke.
+        let cards = self.cards(&q, cx);
+        if let Some(Card::Remember(m)) = cards.iter().find(|c| matches!(c, Card::Remember(_))) {
             let key = format!("memory:{}", m.id());
             cands.retain(|i| i.key != key);
         }
@@ -1364,7 +1372,7 @@ impl Palette {
         let mut entries: Vec<Entry> = Vec::new();
         let mut rows: Vec<Row> = Vec::new();
         // Cards first.
-        for card in self.cards(&q, cx) {
+        for card in cards {
             let item = card_item(&card);
             rows.push(Row::Entry(entries.len()));
             entries.push(Entry {
@@ -1545,7 +1553,7 @@ impl Palette {
         }
         if q.chars().count() >= 3
             && self.tab != Tab::Memory
-            && let Some(m) = sources::memory_hits(&self.memory, q, 1)
+            && let Some(m) = sources::memory_hits_in(&self.memory, &self.memory_docs, q, 1)
                 .into_iter()
                 .find(|m| m.score >= 2.5)
         {
@@ -1808,35 +1816,40 @@ impl Palette {
             return Vec::new();
         }
         let now = crate::memory::now();
-        sources::memory_hits(&self.memory, q, if q.is_empty() { 60 } else { 15 })
-            .into_iter()
-            .map(|m| {
-                let scope = match m.scope {
-                    MemScope::Project => "project",
-                    MemScope::Global => "global",
-                };
-                Item::new(
-                    format!("memory:{}", m.id()),
-                    Kind::Memory,
-                    m.memory.title.clone(),
-                    Target::Memory,
-                )
-                .icon("bot", Tint::Neutral)
-                .pill(m.memory.kind.clone(), Tint::Neutral)
-                .extra(format!("{} {}", m.memory.body, m.memory.files.join(" ")))
-                // BM25 found it: the title alone may not hold the words.
-                .boost(((m.score * 8.) as i32).min(40) - 20)
-                .preview(Preview::Memory {
-                    scope: scope.into(),
-                    id: m.id(),
-                    kind: m.memory.kind.clone(),
-                    body: m.memory.body.clone(),
-                    files: m.memory.files.clone(),
-                    age: crate::memory::ago(m.memory.updated, now),
-                    hits: m.memory.hits,
-                })
+        sources::memory_hits_in(
+            &self.memory,
+            &self.memory_docs,
+            q,
+            if q.is_empty() { 60 } else { 15 },
+        )
+        .into_iter()
+        .map(|m| {
+            let scope = match m.scope {
+                MemScope::Project => "project",
+                MemScope::Global => "global",
+            };
+            Item::new(
+                format!("memory:{}", m.id()),
+                Kind::Memory,
+                m.memory.title.clone(),
+                Target::Memory,
+            )
+            .icon("bot", Tint::Neutral)
+            .pill(m.memory.kind.clone(), Tint::Neutral)
+            .extra(format!("{} {}", m.memory.body, m.memory.files.join(" ")))
+            // BM25 found it: the title alone may not hold the words.
+            .boost(((m.score * 8.) as i32).min(40) - 20)
+            .preview(Preview::Memory {
+                scope: scope.into(),
+                id: m.id(),
+                kind: m.memory.kind.clone(),
+                body: m.memory.body.clone(),
+                files: m.memory.files.clone(),
+                age: crate::memory::ago(m.memory.updated, now),
+                hits: m.memory.hits,
             })
-            .collect()
+        })
+        .collect()
     }
 
     /// A file's numbered lines for the preview, read once.

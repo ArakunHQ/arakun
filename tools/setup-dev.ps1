@@ -14,7 +14,7 @@ For contributors and for coding agents. Linux and macOS: tools/setup-dev.sh.
 
 Always: Git, Visual Studio Build Tools 2022 with the C++ workload (MSVC and a Windows
 SDK), and Rust through rustup: stable-x86_64-pc-windows-msvc as the default, and the
-version in rust-toolchain.toml with clippy. Installs use winget; Build Tools asks for
+version in rust-toolchain.toml with clippy and rustfmt. Installs use winget; Build Tools asks for
 administrator rights. Running it again is safe.
 See docs/windows.md for what each part is for.
 #>
@@ -203,24 +203,37 @@ if (Has 'rustup') {
     Fail 'skipped; the build needs Rust'
 }
 
-# In the checkout, rustup uses the version in rust-toolchain.toml, with clippy. The
+# In the checkout, rustup uses the version and components in rust-toolchain.toml. The
 # check must not install it, so rustup's own install on first use is off for it.
 if (Has 'cargo') {
     Push-Location $Root
     $autoInstall = $env:RUSTUP_AUTO_INSTALL
     $env:RUSTUP_AUTO_INSTALL = '0'
-    try { $clippy = Quiet { cargo clippy --version } }
+    $missingComponents = @()
+    try {
+        foreach ($component in @('clippy', 'rustfmt')) {
+            $subcommand = if ($component -eq 'rustfmt') { 'fmt' } else { $component }
+            $version = Quiet { cargo $subcommand --version }
+            if ($LASTEXITCODE -ne 0) { $version = '' }
+            if ($version) {
+                Ok $version
+            } else {
+                $missingComponents += $component
+                if ($Check) {
+                    Lack "$component of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)"
+                }
+            }
+        }
+    }
     finally { $env:RUSTUP_AUTO_INSTALL = $autoInstall; Pop-Location }
-    if ($clippy) {
-        Ok $clippy
-    } elseif ($Check) {
-        Lack 'clippy of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)'
-    } elseif (Has 'rustup') {
-        Push-Location $Root
-        try { & rustup toolchain install --no-self-update } finally { Pop-Location }
-        if ($LASTEXITCODE -ne 0) { Fail 'rustup toolchain install failed' }
-    } else {
-        Fail 'no clippy; install Rust with rustup'
+    if ($missingComponents.Count -gt 0 -and -not $Check) {
+        if (Has 'rustup') {
+            Push-Location $Root
+            try { & rustup toolchain install --no-self-update } finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0) { Fail 'rustup toolchain install failed' }
+        } else {
+            Fail "missing Rust components; install clippy and rustfmt with your distribution's Rust"
+        }
     }
 }
 

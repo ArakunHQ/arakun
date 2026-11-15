@@ -12,7 +12,7 @@
 #   --build    build the tests once, so the first clippy or test run is quick
 #
 # Always: the system libraries GPUI needs (apt or pacman; on macOS the Xcode Command
-# Line Tools), and the Rust version in rust-toolchain.toml with clippy, through rustup.
+# Line Tools), and the Rust version in rust-toolchain.toml with clippy and rustfmt, through rustup.
 # It builds without the browser, as CI does; for CEF see "With the browser" in the
 # README. Running it again is safe.
 set -eu
@@ -155,8 +155,8 @@ case :$PATH: in *:"$cargo_bin":*) ;; *) [ -d "$cargo_bin" ] && PATH=$cargo_bin:$
 installed_rustup=0
 if command -v rustup >/dev/null; then
   # From /, so rust-toolchain.toml does not apply: this is the default toolchain.
-  ok "rustup ($(cd / && rustc --version 2>/dev/null || echo 'no default toolchain'))"
-  if ! (cd / && rustc --version) >/dev/null 2>&1; then
+  ok "rustup ($(cd / && RUSTUP_AUTO_INSTALL=0 rustc --version 2>/dev/null || echo 'no default toolchain'))"
+  if ! (cd / && RUSTUP_AUTO_INSTALL=0 rustc --version) >/dev/null 2>&1; then
     if [ $check = 1 ]; then lack "a default toolchain (rustup default stable)"
     else rustup default stable
     fi
@@ -176,17 +176,28 @@ else
   exit 1
 fi
 
-# In the checkout, rustup uses the version in rust-toolchain.toml, with clippy. The
+# In the checkout, rustup uses the version and components in rust-toolchain.toml. The
 # check must not install it, so rustup's own install on first use is off for it.
-if (cd "$here" && RUSTUP_AUTO_INSTALL=0 cargo clippy --version) >/dev/null 2>&1; then
-  ok "$(cd "$here" && cargo clippy --version)"
-elif [ $check = 1 ]; then
-  lack "clippy of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)"
-elif command -v rustup >/dev/null; then
-  (cd "$here" && rustup toolchain install --no-self-update)
-else
-  say "no clippy; install it with your distribution's Rust" >&2
-  exit 1
+rust_missing=0
+for component in clippy rustfmt; do
+  subcommand=$component
+  [ "$component" = rustfmt ] && subcommand=fmt
+  if version=$(cd "$here" && RUSTUP_AUTO_INSTALL=0 cargo "$subcommand" --version 2>/dev/null); then
+    ok "$version"
+  else
+    rust_missing=1
+    if [ $check = 1 ]; then
+      lack "$component of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)"
+    fi
+  fi
+done
+if [ $rust_missing = 1 ] && [ $check = 0 ]; then
+  if command -v rustup >/dev/null; then
+    (cd "$here" && rustup toolchain install --no-self-update)
+  else
+    say "missing Rust components; install clippy and rustfmt with your distribution's Rust" >&2
+    exit 1
+  fi
 fi
 
 if [ $installed_rustup = 1 ]; then

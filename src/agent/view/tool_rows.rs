@@ -165,8 +165,8 @@ impl ThreadView {
                         .group(group.clone())
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .py(px(4.))
+                        .gap(crate::ui::sp(6.))
+                        .py(crate::ui::sp(4.))
                         .cursor_pointer()
                         .child(
                             div()
@@ -194,7 +194,7 @@ impl ThreadView {
                     row = row.child(
                         div()
                             .min_w_0()
-                            .pb(px(8.))
+                            .pb(crate::ui::sp(8.))
                             .child(self.surface(ix, text, st, cx)),
                     );
                 }
@@ -218,7 +218,7 @@ impl ThreadView {
                 col.into_any_element()
             }
             Entry::Plan { entries } => div()
-                .py(px(4.))
+                .py(crate::ui::sp(4.))
                 .child(plan_card(entries))
                 .into_any_element(),
             Entry::Notice {
@@ -227,7 +227,7 @@ impl ThreadView {
                 places,
                 ..
             } => div()
-                .py(px(4.))
+                .py(crate::ui::sp(4.))
                 .text_size(px(crate::ui::TEXT_LG))
                 .text_color(if *error {
                     red().opacity(0.85)
@@ -321,8 +321,8 @@ impl ThreadView {
             .group(group.clone())
             .flex()
             .items_center()
-            .gap(px(6.))
-            .py(px(4.))
+            .gap(crate::ui::sp(6.))
+            .py(crate::ui::sp(4.))
             .min_w_0()
             .when(expandable, |d| d.cursor_pointer())
             .when_some(status_icon, |d, i| d.child(i))
@@ -340,10 +340,10 @@ impl ThreadView {
                     .id(("tool-file", ix))
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .min_w_0()
-                    .px(px(4.))
-                    .rounded(px(4.))
+                    .px(crate::ui::sp(4.))
+                    .rounded(crate::ui::rad(4.))
                     .when(label.file, |d| d.bg(theme::fill_hover()))
                     .when_some(file, |d, file| {
                         d.cursor_pointer()
@@ -374,7 +374,7 @@ impl ThreadView {
                     div()
                         .flex()
                         .flex_none()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .text_size(px(crate::ui::TEXT_XS))
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(tool.added > 0, |d| {
@@ -401,10 +401,10 @@ impl ThreadView {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .h(px(20.))
-                        .px(px(6.))
-                        .rounded(px(4.))
+                        .px(crate::ui::sp(6.))
+                        .rounded(crate::ui::rad(4.))
                         .text_size(px(crate::ui::TEXT_SM))
                         .text_color(theme::text_subtle())
                         .cursor_pointer()
@@ -438,9 +438,9 @@ pub(super) fn tool_details(tool: &ToolCall, cwd: &Path) -> AnyElement {
     let mut col = div()
         .flex()
         .flex_col()
-        .gap(px(6.))
-        .pt(px(2.))
-        .pb(px(6.))
+        .gap(crate::ui::sp(6.))
+        .pt(crate::ui::sp(2.))
+        .pb(crate::ui::sp(6.))
         .min_w_0();
     if tool.kind == "execute" {
         return col.child(terminal_card(tool)).into_any_element();
@@ -510,7 +510,7 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
         .flex()
         .flex_col()
         .min_w_0()
-        .rounded(px(crate::ui::RADIUS_LG))
+        .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_hover())
@@ -523,9 +523,9 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
                 div()
                     .flex()
                     .items_start()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .py(px(6.))
+                    .gap(crate::ui::sp(8.))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(6.))
                     .when(!shown.is_empty(), |d| {
                         d.border_b_1().border_color(theme::border_subtle())
                     })
@@ -542,8 +542,8 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
         .when(hidden > 0, |d| {
             d.child(
                 div()
-                    .px(px(10.))
-                    .pt(px(6.))
+                    .px(crate::ui::sp(10.))
+                    .pt(crate::ui::sp(6.))
                     .text_color(theme::text_faint())
                     .child(format!("… {hidden} earlier lines")),
             )
@@ -551,8 +551,8 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
         .when(!shown.is_empty(), |d| {
             d.child(
                 div()
-                    .px(px(10.))
-                    .py(px(6.))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(6.))
                     .text_color(theme::text_subtle())
                     .child(shown),
             )
@@ -560,8 +560,8 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
         .when(failed, |d| {
             d.child(
                 div()
-                    .px(px(10.))
-                    .py(px(4.))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(4.))
                     .border_t_1()
                     .border_color(theme::border_subtle())
                     .text_color(red().opacity(0.85))
@@ -632,7 +632,7 @@ pub(super) fn mono_block(text: &str, color: Hsla) -> AnyElement {
     }
     div()
         .min_w_0()
-        .px(px(10.))
+        .px(crate::ui::sp(10.))
         .font_family(theme::FONT_MONO)
         .text_size(px(crate::ui::TEXT_SM))
         .line_height(px(20.))

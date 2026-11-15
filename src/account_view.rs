@@ -101,7 +101,7 @@ pub fn pool_rows(id: &'static str, title: &str, pool: &Pool, now: u64) -> impl I
     div()
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(crate::ui::sp(8.))
         .child(
             div()
                 .text_size(px(ui::TEXT_XS))
@@ -119,7 +119,7 @@ pub fn pool_rows(id: &'static str, title: &str, pool: &Pool, now: u64) -> impl I
                         .id((id, i))
                         .flex()
                         .items_center()
-                        .gap(px(10.))
+                        .gap(crate::ui::sp(10.))
                         .text_size(px(ui::TEXT_SM))
                         .child(
                             div()
@@ -175,8 +175,8 @@ impl Render for AccountDialog {
             .flex_col()
             .min_h_0()
             .overflow_y_scroll()
-            .gap(px(16.))
-            .p(px(16.));
+            .gap(crate::ui::sp(16.))
+            .p(crate::ui::sp(16.));
 
         if connected {
             match account.limits() {
@@ -224,7 +224,7 @@ impl Render for AccountDialog {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::text_subtle())
                             .child(ui::spinner("acct-loading", 12., theme::mix(0.5)))
@@ -239,7 +239,7 @@ impl Render for AccountDialog {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .text_size(px(ui::TEXT_SM))
                         .line_height(px(18.))
                         .text_color(theme::text_subtle())
@@ -249,15 +249,15 @@ impl Render for AccountDialog {
                 .child(
                     div()
                         .flex()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(
                             div()
                                 .flex_1()
                                 .flex()
                                 .items_center()
                                 .h(px(ui::INPUT_H))
-                                .px(px(10.))
-                                .rounded(px(ui::RADIUS))
+                                .px(crate::ui::sp(10.))
+                                .rounded(crate::ui::rad(ui::RADIUS))
                                 .border_1()
                                 .border_color(theme::border_strong())
                                 .bg(theme::background())
@@ -287,9 +287,9 @@ impl Render for AccountDialog {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
-            .px(px(16.))
-            .py(px(10.))
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(10.))
             .border_t_1()
             .border_color(theme::border_subtle())
             .text_size(px(ui::TEXT_XS))
@@ -420,7 +420,7 @@ pub fn rail_card(
         .id("rail-usage")
         .group("rail-usage")
         .w_full()
-        .rounded(px(ui::RADIUS))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .cursor_pointer()
         .on_click(on_click)
         .on_mouse_down(gpui::MouseButton::Right, move |ev, window, cx| {
@@ -458,7 +458,7 @@ pub fn rail_card(
         .items_center()
         .justify_center()
         .size(px(18.))
-        .rounded(px(ui::RADIUS_SM))
+        .rounded(crate::ui::rad(ui::RADIUS_SM))
         .invisible()
         .group_hover("rail-usage", |s| s.visible())
         .hover(|s| s.bg(theme::fill_selected()))
@@ -471,7 +471,7 @@ pub fn rail_card(
     let header = div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(crate::ui::sp(8.))
         .h(px(22.))
         .text_size(px(ui::TEXT_SM))
         .font_weight(FontWeight::MEDIUM)
@@ -503,7 +503,7 @@ pub fn rail_card(
                 .id((agent.id(), i))
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .h(px(14.))
                 .text_size(px(ui::TEXT_XS))
                 .text_color(if dim {
@@ -518,7 +518,7 @@ pub fn rail_card(
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .children(lead(agent, i == 0))
                         .child(div().min_w_0().truncate().child(label)),
                 )
@@ -553,7 +553,7 @@ pub fn rail_card(
         div()
             .flex()
             .items_center()
-            .gap(px(5.))
+            .gap(crate::ui::sp(5.))
             .h(px(16.))
             .mt(px(3.))
             .text_size(px(ui::TEXT_XS))
@@ -565,7 +565,7 @@ pub fn rail_card(
     let note = |agent: AgentKind, text: String| {
         div()
             .flex()
-            .gap(px(4.))
+            .gap(crate::ui::sp(4.))
             .when(compact, |d| d.mt(px(3.)))
             .children(lead(agent, true).map(|d| d.h(px(14.))))
             .text_size(px(ui::TEXT_XS))
@@ -578,10 +578,10 @@ pub fn rail_card(
         .hover(|s| s.bg(theme::fill_hover()))
         .flex()
         .flex_col()
-        .gap(px(3.))
-        .px(px(8.))
-        .pt(px(4.))
-        .pb(px(6.))
+        .gap(crate::ui::sp(3.))
+        .px(crate::ui::sp(8.))
+        .pt(crate::ui::sp(4.))
+        .pb(crate::ui::sp(6.))
         .child(header);
     if show_claude {
         // The machine's own sign-in, then a borrowed seat under its own name:

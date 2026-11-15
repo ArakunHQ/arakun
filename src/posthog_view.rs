@@ -393,10 +393,10 @@ fn notice(icon_name: &str, tone: Tone, text: String) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .px(px(12.))
-        .py(px(8.))
-        .rounded(px(ui::RADIUS))
+        .gap(crate::ui::sp(8.))
+        .px(crate::ui::sp(12.))
+        .py(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .bg(tone.color().opacity(0.1))
         .child(icon(icon_name, 14.).text_color(tone.color()))
         .child(ui::text(Type::Body, theme::text_muted(), text))
@@ -405,11 +405,11 @@ fn notice(icon_name: &str, tone: Tone, text: String) -> AnyElement {
 
 /// A titled block of the overview.
 fn section(title: &str, meta: Option<String>) -> gpui::Div {
-    div().flex().flex_col().gap(px(8.)).child(
+    div().flex().flex_col().gap(crate::ui::sp(8.)).child(
         div()
             .flex()
             .items_baseline()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(ui::heading(title.to_string()))
             .when_some(meta, |d, m| {
                 d.child(ui::text(Type::Caption, theme::text_faint(), m))
@@ -418,7 +418,7 @@ fn section(title: &str, meta: Option<String>) -> gpui::Div {
 }
 
 fn quiet(text: impl Into<SharedString>) -> gpui::Div {
-    ui::text(Type::Body, theme::text_subtle(), text).py(px(8.))
+    ui::text(Type::Body, theme::text_subtle(), text).py(crate::ui::sp(8.))
 }
 
 impl PostHogView {
@@ -429,11 +429,11 @@ impl PostHogView {
                 .id("ph-switch")
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .px(px(6.))
+                .gap(crate::ui::sp(6.))
+                .px(crate::ui::sp(6.))
                 .ml(px(-6.))
                 .h(px(ui::BUTTON_H))
-                .rounded(px(ui::RADIUS))
+                .rounded(crate::ui::rad(ui::RADIUS))
                 .cursor_pointer()
                 .hover(|d| d.bg(theme::fill_hover()))
                 .child(ui::text(
@@ -515,16 +515,16 @@ impl PostHogView {
             .flex_none()
             .items_end()
             .justify_between()
-            .gap(px(16.))
-            .px(px(ui::PAGE_PAD))
-            .pt(px(ui::PAGE_PAD))
-            .pb(px(18.))
+            .gap(crate::ui::sp(16.))
+            .px(crate::ui::sp(ui::PAGE_PAD))
+            .pt(crate::ui::sp(ui::PAGE_PAD))
+            .pb(crate::ui::sp(18.))
             .child(ui::page_title("PostHog", Some(subtitle)))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .children(open)
                     .when(!self.sessions.is_empty(), |d| d.child(accounts))
                     .child(refresh),
@@ -639,7 +639,7 @@ impl PostHogView {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .max_w(px(640.))
             .child(ui::heading(format!("Which PostHog project is {name}?")))
             .child(ui::text(Type::Body, theme::text_muted(), why))
@@ -654,9 +654,9 @@ impl PostHogView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
-                    .p(px(4.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .gap(crate::ui::sp(1.))
+                    .p(crate::ui::sp(4.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(theme::border_subtle())
                     .when(empty, |d| d.hidden())
@@ -712,8 +712,8 @@ impl PostHogView {
             div()
                 .flex_1()
                 .min_w(px(170.))
-                .px(px(16.))
-                .py(px(14.))
+                .px(crate::ui::sp(16.))
+                .py(crate::ui::sp(14.))
                 .when(!last, |d| {
                     d.border_r_1().border_color(theme::border_subtle())
                 })
@@ -782,10 +782,10 @@ impl PostHogView {
                     .id(("ph-issue", i))
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(8.))
-                    .py(px(8.))
-                    .rounded(px(ui::RADIUS))
+                    .gap(crate::ui::sp(12.))
+                    .px(crate::ui::sp(8.))
+                    .py(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::fill_hover()))
                     .child(icon("alert-circle", 14.).text_color(theme::error()))
@@ -795,7 +795,7 @@ impl PostHogView {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(crate::ui::sp(2.))
                             .child(
                                 div()
                                     .truncate()
@@ -853,10 +853,10 @@ impl PostHogView {
                     .id(("ph-flag", i))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(8.))
-                    .py(px(6.))
-                    .rounded(px(ui::RADIUS))
+                    .gap(crate::ui::sp(10.))
+                    .px(crate::ui::sp(8.))
+                    .py(crate::ui::sp(6.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::fill_hover()))
                     .when(!f.active, |d| d.opacity(0.6))
@@ -938,7 +938,7 @@ impl PostHogView {
             .child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(crate::ui::sp(16.))
                     .child(ui::legend("Events", Tone::Info.color()))
                     .child(ui::legend("Visitors", Tone::Accent.color())),
             )
@@ -950,7 +950,7 @@ impl PostHogView {
         div()
             .flex()
             .flex_col()
-            .gap(px(28.))
+            .gap(crate::ui::sp(28.))
             .children(notes)
             .child(self.render_stats(o))
             .child(traffic)
@@ -959,7 +959,7 @@ impl PostHogView {
                     .flex()
                     .flex_wrap()
                     .items_start()
-                    .gap(px(40.))
+                    .gap(crate::ui::sp(40.))
                     .child(self.render_issues(o, cx))
                     .child(self.render_flags(o, cx)),
             )
@@ -971,7 +971,7 @@ impl PostHogView {
             return div()
                 .flex()
                 .justify_center()
-                .pt(px(24.))
+                .pt(crate::ui::sp(24.))
                 .child(self.render_connect(true, cx))
                 .into_any_element();
         }
@@ -984,7 +984,7 @@ impl PostHogView {
             (Some(_), None) => div()
                 .flex()
                 .justify_center()
-                .pt(px(48.))
+                .pt(crate::ui::sp(48.))
                 .child(self.render_state(cx))
                 .into_any_element(),
         }
@@ -1019,8 +1019,8 @@ impl Render for PostHogView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(ui::PAGE_PAD))
-                    .pb(px(32.))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .pb(crate::ui::sp(32.))
                     .child(div().w_full().max_w(px(1320.)).mx_auto().child(body)),
             )
             .when_some(menu, |d, at| {

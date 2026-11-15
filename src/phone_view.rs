@@ -193,9 +193,9 @@ impl PhoneView {
         let mut rows = div()
             .flex()
             .flex_col()
-            .p(px(CELL * 3.))
+            .p(crate::ui::sp(CELL * 3.))
             .bg(gpui::white())
-            .rounded(px(ui::RADIUS));
+            .rounded(crate::ui::rad(ui::RADIUS));
         for y in 0..width {
             let mut row = div().flex();
             for x in 0..width {
@@ -231,7 +231,7 @@ impl PhoneView {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(crate::ui::sp(10.))
             .child(Self::section_title("How phones reach this computer"))
             .child(
                 div().flex().child(
@@ -290,7 +290,7 @@ impl PhoneView {
                 .flex()
                 .items_center()
                 .flex_wrap()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::attention())
                 .child("A new key means a new address: every paired phone has to pair again.")
@@ -317,7 +317,7 @@ impl PhoneView {
                 .flex()
                 .items_center()
                 .flex_wrap()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_faint())
                 .child("The address comes from a key only this computer has; the relay cannot hand it to anyone else.")
@@ -332,21 +332,21 @@ impl PhoneView {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(crate::ui::sp(10.))
             .child(Self::section_title("This computer on the relay"))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .flex_wrap()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .font_family(theme::FONT_MONO)
                             .text_size(px(ui::TEXT_SM))
-                            .px(px(8.))
-                            .py(px(3.))
-                            .rounded(px(ui::RADIUS))
+                            .px(crate::ui::sp(8.))
+                            .py(crate::ui::sp(3.))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .bg(theme::fill_raised())
                             .text_color(theme::content())
                             .child(relay.url.clone()),
@@ -373,7 +373,7 @@ impl PhoneView {
             .flex()
             .items_center()
             .flex_wrap()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .text_size(px(ui::TEXT_SM));
         match address {
             Address::Ready(_) if reach == Reach::Relay => row
@@ -391,9 +391,9 @@ impl PhoneView {
                 .child(
                     div()
                         .font_family(theme::FONT_MONO)
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(ui::RADIUS))
+                        .px(crate::ui::sp(8.))
+                        .py(crate::ui::sp(3.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .bg(theme::fill_raised())
                         .text_color(theme::content())
                         .child(url.clone()),
@@ -440,14 +440,14 @@ impl PhoneView {
         };
         div()
             .flex()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .items_start()
             .child(Self::render_qr(&pairing.url))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .min_w_0()
                     .child(
                         div()
@@ -459,7 +459,7 @@ impl PhoneView {
                         div()
                             .flex()
                             .items_baseline()
-                            .gap(px(12.))
+                            .gap(crate::ui::sp(12.))
                             .children(code.map(|code| {
                                 div()
                                     .ty(Type::Display)
@@ -477,7 +477,7 @@ impl PhoneView {
                     .child(
                         div()
                             .flex()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(
                                 ui::button(
                                     "phone-copy",
@@ -521,10 +521,10 @@ impl PhoneView {
         div()
             .flex()
             .items_center()
-            .gap(px(12.))
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(ui::RADIUS))
+            .gap(crate::ui::sp(12.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .bg(theme::fill_raised())
             .border_1()
             .border_color(theme::border())
@@ -568,9 +568,9 @@ impl Render for PhoneView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .h(px(ui::TOOLBAR_H))
-            .px(px(12.))
+            .px(crate::ui::sp(12.))
             .border_b_1()
             .border_color(theme::stroke())
             .text_size(px(ui::TEXT_SM))
@@ -596,7 +596,7 @@ impl Render for PhoneView {
         let intro = div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .child(div().text_size(px(ui::TEXT_LG)).font_weight(FontWeight::SEMIBOLD).child("Arakun on your phone"))
             .child(
                 div().text_size(px(ui::TEXT_SM)).text_color(theme::text_muted()).child(
@@ -620,7 +620,7 @@ impl Render for PhoneView {
             PhoneState::Off { .. } => div()
                 .flex()
                 .flex_col()
-                .gap(px(20.))
+                .gap(crate::ui::sp(20.))
                 .child(intro)
                 .child(Self::render_reach(reach, cx))
                 .children(relay)
@@ -648,7 +648,7 @@ impl Render for PhoneView {
             } => {
                 let ready = matches!(address, Address::Ready(_));
                 let now = crate::model::unix_now();
-                let mut list = div().flex().flex_col().gap(px(6.));
+                let mut list = div().flex().flex_col().gap(crate::ui::sp(6.));
                 if devices.is_empty() {
                     list = list.child(
                         div().text_size(px(ui::TEXT_SM)).text_color(theme::text_faint()).child(
@@ -662,7 +662,7 @@ impl Render for PhoneView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(20.))
+                    .gap(crate::ui::sp(20.))
                     .child(intro)
                     .child(Self::render_reach(reach, cx))
                     .children(relay)
@@ -671,7 +671,7 @@ impl Render for PhoneView {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(Self::section_title("Paired phones"))
                             .child(list)
                             .child(match &pairing {
@@ -729,7 +729,7 @@ impl Render for PhoneView {
                             .w_full()
                             .max_w(px(720.))
                             .mx_auto()
-                            .p(px(ui::PAGE_PAD))
+                            .p(crate::ui::sp(ui::PAGE_PAD))
                             .child(body),
                     ),
             )

@@ -23,7 +23,7 @@ impl GitHubView {
             return div().into_any_element();
         };
         let key = crate::github::queue::key_of(&item);
-        let pad = |d: gpui::Div| d.px(px(18.)).py(px(14.));
+        let pad = |d: gpui::Div| d.px(crate::ui::sp(18.)).py(crate::ui::sp(14.));
         // Files of an older head never show beside this head's checks.
         let diff = self
             .diffs
@@ -35,7 +35,7 @@ impl GitHubView {
                 return ui::loading("gh-diff-loading", "Reading the diff…").into_any_element();
             }
             Some(DiffState::Failed(e)) => {
-                return pad(div().flex().flex_col().gap(px(8.)))
+                return pad(div().flex().flex_col().gap(crate::ui::sp(8.)))
                     .child(ui::text(Type::Body, theme::error().into(), e.clone()))
                     .child(
                         div().flex().child(
@@ -52,12 +52,12 @@ impl GitHubView {
             }
             Some(DiffState::Ready { files, cut }) => (files.clone(), *cut),
         };
-        let mut out = pad(div().flex().flex_col().gap(px(10.)));
+        let mut out = pad(div().flex().flex_col().gap(crate::ui::sp(10.)));
         out = out.child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(super::mono(
                     format!("{} files", files.len()),
                     theme::text_muted(),
@@ -100,9 +100,9 @@ impl GitHubView {
                 .id(("gh-file", fi))
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(12.))
-                .py(px(7.))
+                .gap(crate::ui::sp(8.))
+                .px(crate::ui::sp(12.))
+                .py(crate::ui::sp(7.))
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::fill_hover()))
                 .when(!folded, |d| {
@@ -144,20 +144,22 @@ impl GitHubView {
             let mut block = div()
                 .flex()
                 .flex_col()
-                .rounded(px(ui::RADIUS_LG))
+                .rounded(crate::ui::rad(ui::RADIUS_LG))
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::background())
                 .overflow_hidden()
                 .child(head);
             if !folded {
-                let mut body = div().flex().flex_col().py(px(4.));
+                let mut body = div().flex().flex_col().py(crate::ui::sp(4.));
                 if f.binary {
-                    body = body.child(div().px(px(12.)).py(px(6.)).child(ui::text(
-                        Type::Caption,
-                        theme::text_subtle(),
-                        "Binary file: nothing to show.",
-                    )));
+                    body = body.child(div().px(crate::ui::sp(12.)).py(crate::ui::sp(6.)).child(
+                        ui::text(
+                            Type::Caption,
+                            theme::text_subtle(),
+                            "Binary file: nothing to show.",
+                        ),
+                    ));
                 } else if f.hunks.is_empty() {
                     let what = if f.status == FileStatus::Renamed && counts.0 + counts.1 == 0 {
                         "Renamed without changes."
@@ -166,11 +168,12 @@ impl GitHubView {
                     } else {
                         "No changed lines."
                     };
-                    body = body.child(div().px(px(12.)).py(px(6.)).child(ui::text(
-                        Type::Caption,
-                        theme::text_subtle(),
-                        what,
-                    )));
+                    body = body.child(
+                        div()
+                            .px(crate::ui::sp(12.))
+                            .py(crate::ui::sp(6.))
+                            .child(ui::text(Type::Caption, theme::text_subtle(), what)),
+                    );
                 }
                 let cap = if self.unfolded_lines.contains(&fi) {
                     usize::MAX
@@ -181,8 +184,8 @@ impl GitHubView {
                 'hunks: for h in &f.hunks {
                     body = body.child(
                         div()
-                            .px(px(12.))
-                            .py(px(3.))
+                            .px(crate::ui::sp(12.))
+                            .py(crate::ui::sp(3.))
                             .bg(theme::fill_raised())
                             .truncate()
                             .child(super::mono(h.header.clone(), theme::text_subtle())),
@@ -199,8 +202,8 @@ impl GitHubView {
                     body = body.child(
                         div()
                             .id(("gh-more", fi))
-                            .px(px(12.))
-                            .py(px(6.))
+                            .px(crate::ui::sp(12.))
+                            .py(crate::ui::sp(6.))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::fill_hover()))
                             .child(ui::text(
@@ -232,7 +235,11 @@ impl GitHubView {
             )
             .into_any_element();
         }
-        let mut list = div().flex().flex_col().px(px(10.)).py(px(10.));
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .px(crate::ui::sp(10.))
+            .py(crate::ui::sp(10.));
         for (i, c) in sum.checks.iter().enumerate() {
             let (name, color) = match c.state {
                 CheckState::Passed => ("tick02", theme::success().into()),
@@ -247,10 +254,10 @@ impl GitHubView {
                         .id(("gh-check", i))
                         .flex()
                         .items_center()
-                        .gap(px(11.))
-                        .px(px(8.))
-                        .py(px(7.))
-                        .rounded(px(ui::RADIUS))
+                        .gap(crate::ui::sp(11.))
+                        .px(crate::ui::sp(8.))
+                        .py(crate::ui::sp(7.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .when(!url.is_empty(), |d| {
                             d.cursor_pointer().hover(|s| s.bg(theme::fill_hover()))
                         })
@@ -293,7 +300,11 @@ impl GitHubView {
             .iter()
             .map(|c| c.oid.clone())
             .collect();
-        let mut list = div().flex().flex_col().px(px(16.)).py(px(12.));
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(12.));
         for c in p.commits.iter().rev() {
             let fresh = new.contains(&c.oid);
             let who = c.author().to_string();
@@ -301,10 +312,10 @@ impl GitHubView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(8.))
+                    .gap(crate::ui::sp(12.))
+                    .px(crate::ui::sp(8.))
                     .h(px(44.))
-                    .rounded(px(ui::RADIUS))
+                    .rounded(crate::ui::rad(ui::RADIUS))
                     .hover(|s| s.bg(theme::fill_hover()))
                     .child(self.face(&who, 24., cx))
                     .child(

@@ -106,7 +106,7 @@ fn prop_row(p: Prop) -> gpui::Div {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .w(px(KEY_W))
                 .h(px(24.))
                 .text_color(theme::text_subtle())
@@ -120,7 +120,7 @@ fn prop_row(p: Prop) -> gpui::Div {
                 .min_w_0()
                 .min_h(px(24.))
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(p.value),
         )
 }
@@ -130,7 +130,7 @@ fn prop_cell(p: Prop) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(crate::ui::sp(4.))
         .flex_none()
         .w(px(if p.wide {
             2. * CELL_W + CELL_GAP
@@ -142,7 +142,7 @@ fn prop_cell(p: Prop) -> gpui::Div {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .ty(Type::Caption)
                 .text_color(theme::text_subtle())
                 .child(icon(p.icon, 12.).text_color(theme::text_faint()))
@@ -152,7 +152,7 @@ fn prop_cell(p: Prop) -> gpui::Div {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .min_w_0()
                 .min_h(px(22.))
                 .child(p.value),
@@ -205,7 +205,7 @@ impl GitHubView {
                     .flex_1()
                     .items_center()
                     .justify_center()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .child(ui::empty_state(
                         "alert-circle",
                         &format!("Couldn't read {}", item.label()),
@@ -327,9 +327,9 @@ impl GitHubView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(10.))
-            .px(px(16.))
-            .py(px(10.))
+            .gap(crate::ui::sp(10.))
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(10.))
             .border_b_1()
             .border_color(theme::border_subtle())
             .when(narrow, |d| {
@@ -349,7 +349,7 @@ impl GitHubView {
                     .flex_1()
                     .min_w_0()
                     .items_center()
-                    .gap(px(9.))
+                    .gap(crate::ui::sp(9.))
                     .ty(Type::Body)
                     .text_color(theme::text_muted())
                     .child(div().truncate().child(repo))
@@ -450,9 +450,9 @@ impl GitHubView {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(10.))
-                .px(px(16.))
-                .py(px(9.))
+                .gap(crate::ui::sp(10.))
+                .px(crate::ui::sp(16.))
+                .py(crate::ui::sp(9.))
                 .border_b_1()
                 .border_color(theme::border_subtle())
         };
@@ -597,8 +597,8 @@ impl GitHubView {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(18.))
+            .gap(crate::ui::sp(12.))
+            .p(crate::ui::sp(18.))
             .child(ui::icon_tile(kind.icon(), 44., theme::text_muted()))
             .child(super::mono(
                 format!(
@@ -621,7 +621,7 @@ impl GitHubView {
             .child(
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         ui::key_pill(
                             "gh-notice-open",
@@ -688,7 +688,7 @@ impl GitHubView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .min_w_0()
                     .text_color(theme::accent())
                     .child(dot(theme::accent()))
@@ -697,14 +697,14 @@ impl GitHubView {
             WaitingOn::Author => div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .min_w_0()
                 .child(self.face(&p.author.login, 20., cx))
                 .child(div().truncate().child(p.author.login.clone())),
             other => div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .min_w_0()
                 .text_color(theme::text())
                 .child(dot(match other {
@@ -728,7 +728,7 @@ impl GitHubView {
         let author_v = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .min_w_0()
             .child(self.face(&p.author.login, 20., cx))
             .child(div().truncate().child(p.author.login.clone()));
@@ -765,7 +765,7 @@ impl GitHubView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .min_w_0()
                 .child(ui::mini_squares(&colors, 9.))
                 .child(super::mono(
@@ -797,7 +797,7 @@ impl GitHubView {
                 .child(review_text.clone())
         } else if grid && reviewers.len() > 2 {
             // Many: faces with how each stands on a badge.
-            let mut row = div().flex().items_center().gap(px(6.));
+            let mut row = div().flex().items_center().gap(crate::ui::sp(6.));
             for (login, state) in reviewers.iter().take(6) {
                 let (name, c) = reviewer_look(*state);
                 row = row.child(
@@ -816,7 +816,11 @@ impl GitHubView {
             }
             row
         } else if grid {
-            let mut row = div().flex().items_center().gap(px(16.)).min_w_0();
+            let mut row = div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(16.))
+                .min_w_0();
             for (login, state) in &reviewers {
                 let (name, c) = reviewer_look(*state);
                 row = row.child(
@@ -824,7 +828,7 @@ impl GitHubView {
                         .id(gpui::SharedString::from(format!("gh-rev-{login}")))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .min_w_0()
                         .child(self.face(login, 20., cx))
                         .child(div().truncate().child(login.clone()))
@@ -834,14 +838,19 @@ impl GitHubView {
             }
             row
         } else {
-            let mut list = div().flex().flex_col().gap(px(6.)).w_full().py(px(2.));
+            let mut list = div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(6.))
+                .w_full()
+                .py(crate::ui::sp(2.));
             for (login, state) in &reviewers {
                 let (name, c) = reviewer_look(*state);
                 list = list.child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .min_w_0()
                         .child(self.face(login, 20., cx))
                         .child(div().flex_1().min_w_0().truncate().child(login.clone()))
@@ -850,7 +859,7 @@ impl GitHubView {
                                 .flex()
                                 .flex_none()
                                 .items_center()
-                                .gap(px(4.))
+                                .gap(crate::ui::sp(4.))
                                 .ty(Type::Caption)
                                 .text_color(c)
                                 .child(icon(name, 12.).text_color(c))
@@ -877,7 +886,7 @@ impl GitHubView {
         let changes_v = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(super::mono(
                 format!("+{}", p.additions),
                 theme::diff_add().into(),
@@ -894,7 +903,7 @@ impl GitHubView {
             Some(c) => div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .child(super::mono(c.short_oid().to_string(), theme::text()))
                 .child(super::mono(
                     format!("· {} ago", super::ago_iso(&c.committed_date)),
@@ -937,7 +946,7 @@ impl GitHubView {
                     div()
                         .flex()
                         .flex_wrap()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .children(p.labels.iter().map(label_chip)),
                 )
                 .wide(),
@@ -952,7 +961,7 @@ impl GitHubView {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .min_w_0();
         if i.assignees.is_empty() {
             assignees = assignees.text_color(theme::text_subtle()).child("Nobody");
@@ -962,7 +971,7 @@ impl GitHubView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(self.face(&a.login, 20., cx))
                     .child(a.login.clone()),
             );
@@ -980,7 +989,7 @@ impl GitHubView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .min_w_0()
                     .child(self.face(&i.author.login, 20., cx))
                     .child(div().truncate().child(i.author.login.clone())),
@@ -1009,7 +1018,7 @@ impl GitHubView {
                     div()
                         .flex()
                         .flex_wrap()
-                        .gap(px(4.))
+                        .gap(crate::ui::sp(4.))
                         .children(i.labels.iter().map(label_chip)),
                 )
                 .wide(),
@@ -1067,15 +1076,15 @@ impl GitHubView {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(agent)
                 .when(p.open(), |d| d.child(merge_btn));
         }
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .child(div().flex().flex_wrap().gap(px(8.)).child(agent))
+            .gap(crate::ui::sp(8.))
+            .child(div().flex().flex_wrap().gap(crate::ui::sp(8.)).child(agent))
             .when(p.open(), |d| d.child(div().flex().child(merge_btn)))
     }
 
@@ -1092,7 +1101,7 @@ impl GitHubView {
             .flex()
             .flex_col()
             .min_w_0()
-            .gap(px(4.))
+            .gap(crate::ui::sp(4.))
             .child(
                 div()
                     .truncate()
@@ -1125,9 +1134,9 @@ impl GitHubView {
         let mut list = div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .px(px(20.))
-            .py(px(16.))
+            .gap(crate::ui::sp(12.))
+            .px(crate::ui::sp(20.))
+            .py(crate::ui::sp(16.))
             .ty(Type::Body);
         for p in props {
             list = list.child(prop_row(p));
@@ -1143,10 +1152,10 @@ impl GitHubView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    .px(px(20.))
-                    .pt(px(20.))
-                    .pb(px(16.))
+                    .gap(crate::ui::sp(16.))
+                    .px(crate::ui::sp(20.))
+                    .pt(crate::ui::sp(20.))
+                    .pb(crate::ui::sp(16.))
                     .child(ui::icon_tile(icon_name, 40., color))
                     .child(self.title_block(details, true)),
             )
@@ -1161,9 +1170,9 @@ impl GitHubView {
                     d.child(
                         div()
                             .mt_auto()
-                            .px(px(20.))
-                            .pt(px(12.))
-                            .pb(px(20.))
+                            .px(crate::ui::sp(20.))
+                            .pt(crate::ui::sp(12.))
+                            .pb(crate::ui::sp(20.))
                             .child(actions),
                     )
                 },
@@ -1184,8 +1193,8 @@ impl GitHubView {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap_x(px(if folded { 20. } else { CELL_GAP }))
-            .gap_y(px(if folded { 8. } else { 14. }))
+            .gap_x(crate::ui::sp(if folded { 20. } else { CELL_GAP }))
+            .gap_y(crate::ui::sp(if folded { 8. } else { 14. }))
             .ty(Type::Body);
         for p in props {
             if !folded {
@@ -1196,7 +1205,7 @@ impl GitHubView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .min_w_0()
                         .when(!first, |d| {
                             d.child(
@@ -1215,7 +1224,7 @@ impl GitHubView {
         let grid = div()
             .flex()
             .items_start()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .child(grid.flex_1().min_w_0())
             .when(!tall, |d| {
                 let open = self.head_open;
@@ -1236,10 +1245,10 @@ impl GitHubView {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(14.))
-            .px(px(24.))
-            .pt(px(16.))
-            .pb(px(16.))
+            .gap(crate::ui::sp(14.))
+            .px(crate::ui::sp(24.))
+            .pt(crate::ui::sp(16.))
+            .pb(crate::ui::sp(16.))
             .border_b_1()
             .border_color(theme::border_subtle())
             .child(
@@ -1248,7 +1257,7 @@ impl GitHubView {
                     // A narrow card puts the actions under the title, not beside it.
                     .when(self.layout().item_w < 760., |d| d.flex_col())
                     .items_start()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .child(self.title_block(details, false).flex_1().w_full())
                     .when_some(
                         match details {
@@ -1274,9 +1283,9 @@ impl GitHubView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
-            .px(px(18.))
-            .py(px(12.))
+            .gap(crate::ui::sp(6.))
+            .px(crate::ui::sp(18.))
+            .py(crate::ui::sp(12.))
             .border_b_1()
             .border_color(theme::border_subtle());
         let mut new_since = 0;
@@ -1358,11 +1367,11 @@ impl GitHubView {
             .flex()
             .flex_1()
             .items_center()
-            .gap(px(12.))
-            .pl(px(10.))
-            .pr(px(14.))
+            .gap(crate::ui::sp(12.))
+            .pl(crate::ui::sp(10.))
+            .pr(crate::ui::sp(14.))
             .h(px(44.))
-            .rounded(px(ui::RADIUS_LG))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(theme::background())
@@ -1388,7 +1397,7 @@ impl GitHubView {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(14.))
+                        .gap(crate::ui::sp(14.))
                         .when(hints, |d| {
                             d.child(
                                 div()
@@ -1420,9 +1429,9 @@ impl GitHubView {
         div()
             .flex()
             .flex_none()
-            .px(px(16.))
-            .pt(px(12.))
-            .pb(px(16.))
+            .px(crate::ui::sp(16.))
+            .pt(crate::ui::sp(12.))
+            .pb(crate::ui::sp(16.))
             .border_t_1()
             .border_color(theme::border_subtle())
             .child(bar)

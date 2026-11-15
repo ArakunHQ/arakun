@@ -1,5 +1,6 @@
-//! The palette in use and the ones the user made, kept in `palettes.json`
-//! next to the state file. The colors themselves live in `theme`.
+//! The look the user chose, kept in `palettes.json` next to the state file:
+//! the palette in use and their own ones (the colors live in `theme`), and
+//! how round, roomy and spread out the app is (the scales live in `ui`).
 
 use std::path::PathBuf;
 
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::Palette;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Saved {
     /// Id of the palette in use; empty is the default.
     #[serde(default)]
@@ -15,6 +16,35 @@ pub struct Saved {
     /// The user's own palettes.
     #[serde(default)]
     pub custom: Vec<Palette>,
+    /// Corner roundness, 1 is the default.
+    #[serde(default = "one")]
+    pub radius: f32,
+    /// Padding and gaps, 1 is the default.
+    #[serde(default = "one")]
+    pub space: f32,
+    /// Pixels between the window's floating cards.
+    #[serde(default = "eight")]
+    pub window_gap: f32,
+}
+
+fn one() -> f32 {
+    1.
+}
+
+fn eight() -> f32 {
+    8.
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        Saved {
+            current: String::new(),
+            custom: Vec::new(),
+            radius: 1.,
+            space: 1.,
+            window_gap: 8.,
+        }
+    }
 }
 
 impl Saved {
@@ -180,9 +210,16 @@ fn store_at(path: &std::path::Path, saved: &Saved) -> bool {
     }
 }
 
-/// Puts the saved palette in use; called once at start.
+/// Puts the saved palette and scales in use; called once at start.
 pub fn apply_saved() {
-    crate::theme::set_palette(&load().active());
+    apply(&load());
+}
+
+pub fn apply(saved: &Saved) {
+    crate::theme::set_palette(&saved.active());
+    crate::ui::set_radius_scale(saved.radius);
+    crate::ui::set_space_scale(saved.space);
+    crate::ui::set_window_gap(saved.window_gap);
 }
 
 #[cfg(test)]
@@ -214,14 +251,17 @@ mod tests {
     fn a_missing_palette_falls_back_to_the_default() {
         let s = Saved {
             current: "gone".into(),
-            custom: vec![],
+            ..Saved::default()
         };
         assert_eq!(s.active().id, "night");
         let s = Saved {
             current: "forest".into(),
-            custom: vec![],
+            ..Saved::default()
         };
         assert_eq!(s.active().name, "Forest");
+        // A file from before the scales existed keeps the default look.
+        let old: Saved = serde_json::from_str(r#"{"current":"rose","custom":[]}"#).unwrap();
+        assert_eq!((old.radius, old.space, old.window_gap), (1., 1., 8.));
     }
 
     fn scratch(name: &str) -> PathBuf {

@@ -87,11 +87,9 @@ impl Shell {
     pub(super) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.env_menu_open = false;
-        // Every open pull request of the projects, not only the user's queue:
-        // `#86` must find a teammate's.
-        let repos = self.project_repos().into_iter().map(|(_, r)| r).collect();
-        self.github
-            .update(cx, |g, cx| g.refresh_repo_pulls(repos, cx));
+        self.refresh_repo_pulls(cx);
+        // A project may have come or changed its remote since the last read.
+        self.read_repo_slugs(cx);
         let seed = self.palette_seed(cx);
         let palette = cx.new(|cx| Palette::new(seed, window, cx));
         let sub = cx.subscribe_in(&palette, window, Self::on_palette_event);
@@ -107,16 +105,74 @@ impl Shell {
         cx.notify();
     }
 
+    /// Every open pull request of the projects, not only the user's queue:
+    /// `#86` must find a teammate's.
+    fn refresh_repo_pulls(&self, cx: &mut Context<Self>) {
+        let repos = self.project_repos().into_iter().map(|(_, r)| r).collect();
+        self.github
+            .update(cx, |g, cx| g.refresh_repo_pulls(repos, cx));
+    }
+
+    /// Reads each project's repository in the background into `repo_slugs`,
+    /// then shows its pull requests in the open palette.
+    fn read_repo_slugs(&mut self, cx: &mut Context<Self>) {
+        let mut dirs: Vec<PathBuf> = self.projects.iter().map(|p| p.path.clone()).collect();
+        if self.has_projects() {
+            dirs.push(self.env().path.clone());
+        }
+        dirs.sort();
+        dirs.dedup();
+        self.repo_slugs_read = Some(cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_spawn(async move {
+                    dirs.into_iter()
+                        .map(|d| {
+                            let slug = repo_slug(&d);
+                            (d, slug)
+                        })
+                        .collect::<std::collections::HashMap<_, _>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.repo_slugs == read {
+                    return;
+                }
+                this.repo_slugs = read;
+                this.refresh_repo_pulls(cx);
+                if let Some((Modal::Palette(p), _)) = &this.modal {
+                    let p = p.clone();
+                    let repo = this.visible_repo();
+                    let repos = this.project_repos();
+                    let items = this.palette_items(cx);
+                    p.update(cx, |p, cx| p.set_repos(repo, repos, items, cx));
+                }
+            });
+        }));
+    }
+
     /// (project name, `owner/name`) of every project that lives on GitHub.
+    /// Only reads `repo_slugs`: this runs on every GitHub update.
     pub(super) fn project_repos(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = self
             .projects
             .iter()
-            .filter_map(|p| repo_slug(&p.path).map(|r| (p.name.to_string(), r)))
+            .filter_map(|p| {
+                let slug = self.repo_slugs.get(&p.path).cloned().flatten()?;
+                Some((p.name.to_string(), slug))
+            })
             .collect();
         out.sort();
         out.dedup_by(|a, b| a.1 == b.1);
         out
+    }
+
+    /// `owner/name` of the visible environment, or else of its project.
+    fn visible_repo(&self) -> Option<String> {
+        if !self.has_projects() {
+            return None;
+        }
+        let slug = |p: &Path| self.repo_slugs.get(p).cloned().flatten();
+        slug(&self.env().path).or_else(|| slug(&self.project().path))
     }
 
     fn on_palette_event(
@@ -314,8 +370,8 @@ impl Shell {
         let items = self.palette_items(cx);
         let has = self.has_projects();
         let root = has.then(|| self.env().path.clone());
-        let repo = root.as_deref().and_then(repo_slug);
-        let repos = self.project_repos().into_iter().map(|(_, r)| r).collect();
+        let repo = self.visible_repo();
+        let repos = self.project_repos();
         let branches: Vec<String> = if has {
             self.branches_view
                 .read(cx)

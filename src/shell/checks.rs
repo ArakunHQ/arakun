@@ -452,9 +452,6 @@ fn suggest_check(dir: &Path) -> Option<String> {
     None
 }
 
-/// Runs `command` with the system shell (`sh`, `cmd` on Windows) in `dir`
-/// without a terminal, stdout and stderr together, stopping it (and whatever
-/// it started) after `timeout`.
 /// One check at a time across every session and project: several agents
 /// finishing a turn together each started a full build and test run, which
 /// took every core and filled the memory until the whole desktop crawled.
@@ -466,6 +463,9 @@ fn check_jobs() -> usize {
     std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(2))
 }
 
+/// Runs `command` with the system shell (`sh`, `cmd` on Windows) in `dir`
+/// without a terminal, stdout and stderr together, stopping it (and whatever
+/// it started) after `timeout`.
 fn run_check(dir: &Path, command: &str, timeout: Duration) -> std::io::Result<CheckRun> {
     // Waits for the one running; the timeout counts from when this one starts.
     let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());

@@ -1,0 +1,141 @@
+name: Reviewers
+
+# Requests reviewers once a pull request is ready for review. It replaces
+# CODEOWNERS, so the main ruleset no longer has to require a code owner's
+# approval: any approval from someone with write access counts.
+#
+# Each pull request goes to the person who can check it on their own machine:
+# Karlo for Linux and for changes that are not platform specific (Rik if Karlo
+# wrote it), Rik for macOS and Dani for Windows. A pull request that touches a
+# platform gets that platform's reviewer as well. A pull request from outside
+# the team goes to whichever of Karlo and Rik has fewer open review requests,
+# to spread the work. Nobody reviews their own pull request. Someone already requested, or who has already reviewed, is not
+# asked again, so a push doesn't notify everyone again.
+#
+# A platform counts as touched when a file only that platform uses changes, or
+# when a diff hunk mentions it (`cfg(windows)`, `target_os = "macos"`,
+# `runs-on: macos-15`...). An edit deep inside a long cfg block, whose cfg line
+# is not in the hunk, is missed; request the reviewer by hand then.
+#
+# pull_request_target is what lets this request reviewers on pull requests
+# from forks, and it is safe here only because the job never checks out or
+# runs code from the pull request: the reviewers are in this file, read from
+# the base branch, and the changed files come from the API. Keep it that way.
+#
+# GitHub doesn't run a pull_request_target workflow on the pull request that
+# adds it, so a change to this file is first seen on the next pull request.
+
+on:
+  pull_request_target:
+    # synchronize: a later push can touch another platform. edited: a new
+    # base branch changes the diff without a push (title edits are skipped).
+    types: [opened, reopened, ready_for_review, synchronize, edited]
+
+permissions: {}
+
+concurrency:
+  group: reviewers-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  request:
+    name: Request reviewers
+    if: >-
+      ${{ !github.event.pull_request.draft &&
+      (github.event.action != 'edited' || github.event.changes.base) }}
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Request reviewers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          TEAM: KarloAldrete rikvisser-dev daniektj
+          # Every pull request: from the team, the first of these who is not
+          # the author; from outside, the one with the fewest open requests.
+          DEFAULT_REVIEWERS: KarloAldrete rikvisser-dev
+          # Per platform: the reviewer, a whole-line regular expression over
+          # the changed paths, and one over the lines of the diff.
+          WINDOWS_REVIEWER: daniektj
+          WINDOWS_PATHS: docs/windows\.md|src/bin/arakun-helper\.manifest|.*\.ps1
+          WINDOWS_DIFF: (cfg|cfg_attr|cfg!)\(.*\bwindows\b|target_(os|family) *= *"windows"|runs-on:.*windows
+          MACOS_REVIEWER: rikvisser-dev
+          MACOS_PATHS: tools/macos-app\.sh
+          MACOS_DIFF: (cfg|cfg_attr|cfg!)\(.*\bunix\b|target_os *= *"macos"|target_family *= *"unix"|runs-on:.*macos
+          LINUX_REVIEWER: KarloAldrete
+          LINUX_PATHS: ""
+          LINUX_DIFF: (cfg|cfg_attr|cfg!)\(.*\bunix\b|target_os *= *"linux"|target_family *= *"unix"
+        run: |
+          set -euo pipefail
+          # Old paths too, so moving a platform's file away still counts.
+          paths=$(gh api "repos/$GH_REPO/pulls/$PR/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+          # GitHub leaves the patch out for very large files.
+          diff=$(gh api "repos/$GH_REPO/pulls/$PR/files" --paginate --jq '.[].patch // empty')
+
+          requested=$(gh api "repos/$GH_REPO/pulls/$PR/requested_reviewers" --jq '.users[].login')
+          reviewed=$(gh api "repos/$GH_REPO/pulls/$PR/reviews" --paginate --jq '.[].user.login')
+          asked="$requested"$'\n'"$reviewed"
+
+          want=()
+          if grep -qxF "$AUTHOR" <<<"${TEAM// /$'\n'}"; then
+            for user in $DEFAULT_REVIEWERS; do
+              if [ "$user" != "$AUTHOR" ]; then
+                want+=("$user")
+                break
+              fi
+            done
+          else
+            # Pick once: on a later push the load has changed, and picking
+            # again would ask a second person.
+            picked=""
+            for user in $DEFAULT_REVIEWERS; do
+              if grep -qxF "$user" <<<"$asked"; then
+                picked=$user
+              fi
+            done
+            if [ -z "$picked" ]; then
+              fewest=""
+              for user in $DEFAULT_REVIEWERS; do
+                load=$(gh api -X GET search/issues --jq .total_count \
+                  -f q="repo:$GH_REPO is:pr is:open review-requested:$user")
+                echo "$user has $load open review requests."
+                if [ -z "$fewest" ] || [ "$load" -lt "$fewest" ]; then
+                  fewest=$load
+                  picked=$user
+                fi
+              done
+              want+=("$picked")
+            fi
+          fi
+          for platform in WINDOWS MACOS LINUX; do
+            reviewer_var="${platform}_REVIEWER" paths_var="${platform}_PATHS" diff_var="${platform}_DIFF"
+            if { [ -n "${!paths_var}" ] && grep -qxE "${!paths_var}" <<<"$paths"; } ||
+              grep -qE "${!diff_var}" <<<"$diff"; then
+              echo "Touches ${platform,,}."
+              want+=("${!reviewer_var}")
+            fi
+          done
+
+          add=()
+          for user in "${want[@]}"; do
+            if [ "$user" = "$AUTHOR" ] ||
+              grep -qxF "$user" <<<"$asked"$'\n'"$(printf '%s\n' "${add[@]}")"; then
+              continue
+            fi
+            add+=("$user")
+          done
+
+          if [ ${#add[@]} -eq 0 ]; then
+            echo "Everyone who should review is already asked."
+            exit 0
+          fi
+          args=()
+          for user in "${add[@]}"; do
+            args+=(-f "reviewers[]=$user")
+          done
+          gh api -X POST "repos/$GH_REPO/pulls/$PR/requested_reviewers" "${args[@]}" --silent
+          echo "Requested: ${add[*]}"

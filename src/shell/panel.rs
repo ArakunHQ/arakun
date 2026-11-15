@@ -17,9 +17,9 @@ impl Shell {
             .items_center()
             .h(px(ui::BAR_H))
             // The switcher's highlight and the buttons sit as far from the sides as
-            // from the top; its title lines up with the content below.
-            .pl(ui::fixed(ui::ICON_INSET + 6.))
-            .pr(ui::fixed(ui::ICON_INSET))
+            // from the top.
+            .pl(ui::icon_inset())
+            .pr(ui::icon_inset())
             .gap(crate::ui::sp(4.))
             .border_b_1()
             .border_color(theme::stroke())
@@ -30,8 +30,7 @@ impl Shell {
                     .items_center()
                     .gap(crate::ui::sp(8.))
                     .h(px(ui::ICON_BUTTON))
-                    .ml(px(-6.))
-                    .px(ui::fixed(6.))
+                    .px(crate::ui::sp(6.))
                     .rounded(ui::nested(ui::RADIUS_XL, ui::ICON_INSET))
                     .min_w_0()
                     .text_size(px(ui::TEXT_LG))

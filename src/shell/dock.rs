@@ -387,8 +387,8 @@ impl Shell {
             .items_center()
             .h(px(DOCK_BAR_H))
             // Chips are as tall as the tabs, so the sides match the top.
-            .pl(ui::fixed(ui::BAR_INSET))
-            .pr(ui::fixed(ui::ICON_INSET))
+            .pl(ui::bar_inset())
+            .pr(ui::icon_inset())
             .gap(crate::ui::sp(6.))
             .text_size(px(ui::TEXT_XS))
             .text_color(theme::text_subtle())

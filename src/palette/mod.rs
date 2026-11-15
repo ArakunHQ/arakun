@@ -227,8 +227,12 @@ pub struct Palette {
     memory: Vec<(MemScope, crate::memory::Store)>,
     /// The words of each memory store, read once: searching memory runs on every keystroke.
     memory_docs: Vec<Vec<Vec<String>>>,
+    /// Read off the UI thread: typing must never wait on the disk. The render
+    /// path and `refilter` only look these up; a miss starts a read.
     line_counts: HashMap<String, usize>,
+    counting: HashSet<String>,
     snippets: HashMap<(PathBuf, Option<u32>), Option<Snippet>>,
+    reading: HashSet<(PathBuf, Option<u32>)>,
     frecency: rank::Frecency,
     pub pins: pins::Pins,
     clip: Option<clip::Clip>,
@@ -274,25 +278,18 @@ impl Palette {
         });
         window.focus(&input.focus_handle(cx), cx);
         let clip = seed.clipboard.as_deref().and_then(clip::classify);
-        let memory = seed
-            .root
-            .as_deref()
-            .map(sources::memory_stores)
-            .unwrap_or_default();
-        let memory_docs = memory
-            .iter()
-            .map(|(_, s)| crate::memory::index(&s.items))
-            .collect();
         let mut this = Self {
             input,
             seed,
             files: None,
             symbols: None,
             indexing: false,
-            memory,
-            memory_docs,
+            memory: Vec::new(),
+            memory_docs: Vec::new(),
             line_counts: HashMap::new(),
+            counting: HashSet::new(),
             snippets: HashMap::new(),
+            reading: HashSet::new(),
             frecency: rank::Frecency::load(),
             pins: pins::Pins::load(),
             clip,
@@ -319,6 +316,7 @@ impl Palette {
             _sub: sub,
         };
         this.load_files(cx);
+        this.load_memory(cx);
         this.refilter(cx);
         this.selected = this.default_selection();
         this
@@ -355,6 +353,32 @@ impl Palette {
                 if !this.nav {
                     this.selected = this.default_selection();
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Memory stores can be large: read and index them off the UI thread.
+    fn load_memory(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.seed.root.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let (memory, docs) = cx
+                .background_spawn(async move {
+                    let memory = sources::memory_stores(&root);
+                    let docs: Vec<_> = memory
+                        .iter()
+                        .map(|(_, s)| crate::memory::index(&s.items))
+                        .collect();
+                    (memory, docs)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.memory = memory;
+                this.memory_docs = docs;
+                this.refilter_keep(cx);
                 cx.notify();
             });
         })
@@ -589,20 +613,21 @@ impl Palette {
         if entry.item.target == Target::Nothing {
             return;
         }
-        self.record(&entry.item.key);
+        self.record(&entry.item.key, cx);
         cx.emit(PaletteEvent::Run {
             target: entry.item.target.clone(),
             keep: false,
         });
     }
 
-    fn record(&mut self, key: &str) {
+    fn record(&mut self, key: &str, cx: &mut Context<Self>) {
         if key.is_empty() || key.starts_with("card:") {
             return;
         }
         self.frecency
             .record(key, crate::memory::now(), self.seed.hour);
-        self.frecency.save();
+        let f = self.frecency.clone();
+        cx.background_spawn(async move { f.save() }).detach();
     }
 
     fn ask_merge(
@@ -767,7 +792,7 @@ impl Palette {
                     self.ask_merge(item, title, cx);
                 }
                 target => {
-                    self.record(key);
+                    self.record(key, cx);
                     cx.emit(PaletteEvent::Run {
                         keep: matches!(target, Target::Setting(_)),
                         target,
@@ -883,7 +908,7 @@ impl Palette {
 
     pub fn open_pinned(&mut self, n: usize, cx: &mut Context<Self>) {
         if let Some(item) = self.pinned_item(n) {
-            self.record(&item.key);
+            self.record(&item.key, cx);
             cx.emit(PaletteEvent::Run {
                 target: item.target,
                 keep: false,
@@ -965,7 +990,7 @@ impl Palette {
             }
             Bulk::Open | Bulk::Summarize => {
                 for i in &picked {
-                    self.record(&i.key);
+                    self.record(&i.key, cx);
                 }
                 cx.emit(PaletteEvent::Bulk {
                     op,
@@ -1356,14 +1381,13 @@ impl Palette {
         // A copied error: the file it points at and what Arakun remembers of it.
         if empty_home && let Some(clip::Clip::Error(e)) = &self.clip {
             let mut related = Vec::new();
-            if let (Some((path, line)), Some(root)) = (&e.location, &self.seed.root) {
-                let abs = root.join(path);
-                if abs.exists() {
-                    let mut item = file_item(&abs, path.clone(), Some(*line));
-                    item.sub = format!("line {line}").into();
-                    item.key = format!("related:{}", abs.display());
-                    related.push(item);
-                }
+            if let Some((path, line)) = &e.location
+                && let Some(abs) = self.known_file(path)
+            {
+                let mut item = file_item(&abs, path.clone(), Some(*line));
+                item.sub = format!("line {line}").into();
+                item.key = format!("related:{}", abs.display());
+                related.push(item);
             }
             for m in self.memory_items(&e.headline).into_iter().take(2) {
                 let mut m = m;
@@ -1413,20 +1437,64 @@ impl Palette {
                 });
             }
         }
-        // Line counts for the files on screen.
-        for e in entries
+        self.entries = entries;
+        self.count_lines(cx);
+        self.rows = rows;
+        if self.selected >= self.entries.len() {
+            self.selected = 0;
+        }
+        // Skip a leading clipboard card when there is a better first row? No: the
+        // card is the point of copying a link. Keep the first entry selected.
+    }
+
+    /// Line counts for the files on screen: known ones go on the rows now,
+    /// the rest are read in the background and added when they arrive.
+    fn count_lines(&mut self, cx: &mut Context<Self>) {
+        let mut missing = Vec::new();
+        for e in self
+            .entries
             .iter()
             .filter(|e| e.item.kind == Kind::File)
             .take(12)
         {
             if let Target::File { path, .. } = &e.item.target {
                 let key = path.display().to_string();
-                self.line_counts
-                    .entry(key)
-                    .or_insert_with(|| sources::snippet(path, None, 0).map_or(0, |(_, n)| n));
+                if !self.line_counts.contains_key(&key) && self.counting.insert(key.clone()) {
+                    missing.push((key, path.clone()));
+                }
             }
         }
-        for e in entries
+        self.label_lines();
+        if missing.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let counts: Vec<(String, usize)> = cx
+                .background_spawn(async move {
+                    missing
+                        .into_iter()
+                        .map(|(key, path)| {
+                            let n = sources::snippet(&path, None, 0).map_or(0, |(_, n)| n);
+                            (key, n)
+                        })
+                        .collect()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                for (key, n) in counts {
+                    this.counting.remove(&key);
+                    this.line_counts.insert(key, n);
+                }
+                this.label_lines();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn label_lines(&mut self) {
+        for e in self
+            .entries
             .iter_mut()
             .filter(|e| e.item.kind == Kind::File && e.item.meta.is_empty())
         {
@@ -1437,13 +1505,12 @@ impl Palette {
                 e.item.meta = lines_label(*n).into();
             }
         }
-        self.entries = entries;
-        self.rows = rows;
-        if self.selected >= self.entries.len() {
-            self.selected = 0;
-        }
-        // Skip a leading clipboard card when there is a better first row? No: the
-        // card is the point of copying a link. Keep the first entry selected.
+    }
+
+    /// A path from an error or an answer, if the project's file list has it.
+    /// The list is already in memory, so this asks the disk nothing.
+    fn known_file(&self, path: &str) -> Option<PathBuf> {
+        known_file(self.seed.root.as_deref()?, self.files.as_deref()?, path)
     }
 
     /// The cards for this query, in order.
@@ -1577,15 +1644,12 @@ impl Palette {
             .icon("sparkles", Tint::Amber)
             .sub(format!("{} · {branch}", self.seed.agent)),
         );
-        if let (Some((path, line)), Some(root)) =
-            (clip::location(&a.text.replace('`', " ")), &self.seed.root)
+        if let Some((path, line)) = clip::location(&a.text.replace('`', " "))
+            && let Some(abs) = self.known_file(&path)
         {
-            let abs = root.join(&path);
-            if abs.exists() {
-                let mut item = file_item(&abs, format!("Open {path} at line {line}"), Some(line));
-                item.key = format!("next:file:{}", abs.display());
-                out.push(item);
-            }
+            let mut item = file_item(&abs, format!("Open {path} at line {line}"), Some(line));
+            item.key = format!("next:file:{}", abs.display());
+            out.push(item);
         }
         if let Some(f) = failure
             && !self.seed.read_only
@@ -1767,19 +1831,36 @@ impl Palette {
         .collect()
     }
 
-    /// A file's numbered lines for the preview, read once.
+    /// A file's numbered lines for the preview, read once and off the UI
+    /// thread. None while the read runs; the preview draws again when it lands.
     pub fn snippet(
         &mut self,
         path: &Path,
         line: Option<u32>,
-    ) -> Option<(Vec<(u32, String)>, usize)> {
-        self.snippets
-            .entry((path.to_path_buf(), line))
-            .or_insert_with(|| {
-                let start = line.map(|l| l.saturating_sub(2).max(1));
-                sources::snippet(path, start, 9)
+        cx: &mut Context<Self>,
+    ) -> Option<Option<Snippet>> {
+        let key = (path.to_path_buf(), line);
+        if let Some(s) = self.snippets.get(&key) {
+            return Some(s.clone());
+        }
+        if self.reading.insert(key.clone()) {
+            cx.spawn(async move |this, cx| {
+                let k = key.clone();
+                let snip = cx
+                    .background_spawn(async move {
+                        let start = k.1.map(|l| l.saturating_sub(2).max(1));
+                        sources::snippet(&k.0, start, 9)
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.reading.remove(&key);
+                    this.snippets.insert(key, snip);
+                    cx.notify();
+                });
             })
-            .clone()
+            .detach();
+        }
+        None
     }
 }
 
@@ -1805,6 +1886,15 @@ fn file_name_hit(item: &Item, q: &str) -> Option<rank::Hit> {
             .map(|r| r.start + at..r.end + at)
             .collect(),
     })
+}
+
+/// `path` (relative, `./`-led or under `root`) if `files` lists it.
+fn known_file(root: &Path, files: &[String], path: &str) -> Option<PathBuf> {
+    let p = Path::new(path);
+    let rel = p.strip_prefix(root).unwrap_or(p);
+    let rel = rel.strip_prefix(".").unwrap_or(rel);
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    files.contains(&rel).then(|| root.join(&rel))
 }
 
 /// `1,204 lines`, `1 line`.
@@ -2020,6 +2110,17 @@ mod tests {
 
     fn item(key: &str, kind: Kind, section: &'static str) -> Item {
         Item::new(key, kind, key, Target::Nothing).section(section)
+    }
+
+    #[test]
+    fn known_files_come_from_the_list_not_the_disk() {
+        let root = Path::new("/nowhere/app");
+        let files = vec!["src/main.rs".to_string()];
+        let want = Some(root.join("src/main.rs"));
+        assert_eq!(known_file(root, &files, "src/main.rs"), want);
+        assert_eq!(known_file(root, &files, "./src/main.rs"), want);
+        assert_eq!(known_file(root, &files, "/nowhere/app/src/main.rs"), want);
+        assert_eq!(known_file(root, &files, "src/gone.rs"), None);
     }
 
     #[test]

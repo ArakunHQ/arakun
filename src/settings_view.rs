@@ -1236,20 +1236,24 @@ impl SettingsDialog {
             tint: 0.6,
             ..p.clone()
         };
-        let text_ok = theme::contrast(p.content(), p.background()) >= 7.;
-        let accent_ok = theme::contrast(p.accent(), p.background()) >= 4.5;
-        let readable: (&str, gpui::Hsla) = if text_ok && accent_ok {
-            ("Text and accent read well", theme::success().into())
-        } else if !accent_ok {
-            (
-                "The accent is hard to read on this background",
+        // Colors that wouldn't read are adjusted when drawn; say so, since
+        // the slider or swatch then shows something a little different.
+        let text_ok = p.readable_bg() >= p.bg;
+        let accent_ok = p.readable_accent() == p.accent;
+        let readable: (&str, gpui::Hsla) = match (text_ok, accent_ok) {
+            (true, true) => ("Text and accent read well", theme::success().into()),
+            (false, true) => (
+                "The background is drawn darker so text stays readable",
                 theme::attention().into(),
-            )
-        } else {
-            (
-                "Text is hard to read on this background",
+            ),
+            (true, false) => (
+                "The accent is drawn lighter so it stays readable",
                 theme::attention().into(),
-            )
+            ),
+            (false, false) => (
+                "Drawn with a darker background and a lighter accent so text stays readable",
+                theme::attention().into(),
+            ),
         };
         let copied = p.share_code();
         let id = p.id.clone();

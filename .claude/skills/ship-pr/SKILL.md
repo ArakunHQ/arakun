@@ -24,7 +24,9 @@ List the changed files with `git diff --name-status main...HEAD` and
 `git status --short` (for uncommitted ones). A rename counts at both its old and
 new path, as in CI: moving a file out of `src/` still needs the Rust checks. Run
 what CI would run for them. CI's "What changed" job in
-`.github/workflows/ci.yml` decides; in short, the first row that matches wins:
+`.github/workflows/ci.yml` decides. In short: find every row that any changed
+path matches, and run all the checks those rows name. A path can match more than
+one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 
 | Changed | Run |
 | --- | --- |
@@ -34,7 +36,7 @@ what CI would run for them. CI's "What changed" job in
 | `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |
 | `tools/install-cef.sh` | rustfmt, clippy, tests (CI also builds with the browser) |
 | `Cargo.toml`, `Cargo.lock`, `deny.toml` | also `cargo deny check` |
-| only other files in `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, or `*.md` | nothing to build; proofread |
+| other files in `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, or `*.md` | nothing to build; proofread (only when no path matched a row above) |
 
 ```sh
 tools/rustfmt.sh --check        # fix with tools/rustfmt.sh, never plain cargo fmt

@@ -441,11 +441,19 @@ const DOCK_MIN_H: f32 = 120.;
 const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
 const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
 const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
-/// Air around and between the window's floating cards.
-/// Room between the window's floating cards; set in Settings › Appearance.
+/// Air around and between the window's floating cards, set in Settings ›
+/// Appearance. The window's edges, the room above the dock and the resize
+/// handles between side cards all use this one value, so they stay equal.
+/// It is its own setting, so Spacing does not scale it.
 fn gap() -> f32 {
     crate::ui::window_gap()
 }
+
+/// `gap()` as a length, for the root's padding and the side handles.
+fn gap_px() -> gpui::Pixels {
+    px(gap())
+}
+
 /// The dock card's collapsed height: the status chips live in its header.
 const DOCK_BAR_H: f32 = 32.;
 /// The dock's terminal tabs: shorter than the main tab bar's, so they fit
@@ -1706,7 +1714,7 @@ impl Shell {
         div()
             .id(("side-handle", side as usize))
             .flex_none()
-            .w(px(gap()))
+            .w(gap_px())
             .h_full()
             .cursor_col_resize()
             .on_mouse_down(
@@ -2424,8 +2432,8 @@ impl Render for Shell {
             .flex_col()
             .size_full()
             .bg(theme::window_bg())
-            .p(crate::ui::sp(gap()))
-            .gap(crate::ui::sp(gap()))
+            .p(gap_px())
+            .gap(gap_px())
             .text_color(theme::content())
             .font_family(theme::FONT_SANS)
             .child(
@@ -2735,6 +2743,13 @@ mod tests {
             assert_eq!(ui::rad(r), px(r));
         }
         assert_eq!(ui::RADIUS, 8.);
+    }
+
+    /// The window's edges and the room between its cards are one value.
+    #[test]
+    fn window_gap_is_one_value() {
+        assert_eq!(gap_px(), px(8.));
+        assert_eq!(gap_px(), px(crate::ui::window_gap()));
     }
 
     #[test]

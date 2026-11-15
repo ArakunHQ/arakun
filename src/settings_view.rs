@@ -127,7 +127,7 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts"
             }
             Section::Appearance => {
-                "theme diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
+                "theme palette color colors accent tint custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
             }
             Section::Account => "plan usage api key credits factory",
             Section::Claude => {
@@ -240,7 +240,15 @@ pub struct SettingsDialog {
     /// What the last save or test did, and whether it failed.
     voice_note: Option<(SharedString, bool)>,
     voice_busy: bool,
-    _subs: [Subscription; 3],
+    /// The palette in use and the user's own.
+    palettes: crate::palettes::Saved,
+    /// Where a shared palette's line is pasted.
+    share_input: Entity<TextInput>,
+    /// What the last paste or copy did, and whether it failed.
+    palette_note: Option<(SharedString, bool)>,
+    /// Delete was clicked once on the palette in use.
+    confirm_delete: bool,
+    _subs: [Subscription; 4],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -284,6 +292,18 @@ impl SettingsDialog {
                     _ => {}
                 },
             );
+        let share_input =
+            cx.new(|cx| TextInput::new("Paste a palette: arakun:palette/v1:…", cx).mono());
+        let share_sub =
+            cx.subscribe_in(
+                &share_input,
+                window,
+                |this: &mut Self, _, ev, _, cx| match ev {
+                    InputEvent::Submit => this.import_palette(cx),
+                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
+                    _ => {}
+                },
+            );
         cx.spawn(async move |this, cx| {
             let plan = cx.background_spawn(async move { plan::refresh() }).await;
             let _ = this.update(cx, |this, cx| {
@@ -317,7 +337,11 @@ impl SettingsDialog {
             voice_input,
             voice_note: None,
             voice_busy: false,
-            _subs: [sub, key_sub, voice_sub],
+            palettes: crate::palettes::load(),
+            share_input,
+            palette_note: None,
+            confirm_delete: false,
+            _subs: [sub, key_sub, voice_sub, share_sub],
         }
     }
 
@@ -849,6 +873,419 @@ impl SettingsDialog {
             .into_any_element()
     }
 
+    /// Puts `id` in use across the app and remembers it.
+    fn use_palette(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.palettes.current = id.to_string();
+        self.confirm_delete = false;
+        self.apply_palette(cx);
+    }
+
+    fn apply_palette(&mut self, cx: &mut Context<Self>) {
+        crate::palettes::store(&self.palettes);
+        theme::set_palette(&self.palettes.active());
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    /// Changes the palette in use, which is one of the user's (the editor
+    /// shows only for those).
+    fn edit_palette(&mut self, change: impl FnOnce(&mut theme::Palette), cx: &mut Context<Self>) {
+        let mut p = self.palettes.active();
+        if !self.palettes.is_custom(&p.id) {
+            return;
+        }
+        change(&mut p);
+        self.palettes.update(p);
+        self.apply_palette(cx);
+    }
+
+    /// A copy of the palette in use that the user can change.
+    fn customize_palette(&mut self, cx: &mut Context<Self>) {
+        let from = self.palettes.active();
+        self.palettes.add(&from);
+        self.palette_note = None;
+        self.apply_palette(cx);
+    }
+
+    fn import_palette(&mut self, cx: &mut Context<Self>) {
+        let code = self.share_input.read(cx).text().to_string();
+        match theme::Palette::from_share_code(&code) {
+            Some(p) => {
+                self.palettes.add(&p);
+                self.share_input.update(cx, |i, cx| i.set_text("", cx));
+                self.palette_note = Some(("Added and in use.".into(), false));
+                self.apply_palette(cx);
+            }
+            None => {
+                self.palette_note = Some((
+                    "That isn't a palette line. It starts with arakun:palette/v1:".into(),
+                    true,
+                ));
+                cx.notify();
+            }
+        }
+    }
+
+    fn render_palettes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.palettes.active();
+        let all = self.palettes.all();
+        let card = |i: usize, p: &theme::Palette, cx: &mut Context<Self>| {
+            let on = p.id == active.id;
+            let id = p.id.clone();
+            let bar =
+                |w: f32, c: gpui::Hsla| div().h(px(4.)).w(gpui::relative(w)).rounded_full().bg(c);
+            let preview = div()
+                .flex()
+                .h(px(54.))
+                .rounded(px(ui::RADIUS))
+                .overflow_hidden()
+                .bg(p.background())
+                .child(
+                    div()
+                        .w(gpui::relative(0.34))
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .p(px(7.))
+                        .bg(p.surface(0.07))
+                        .child(bar(0.6, p.accent()))
+                        .child(bar(0.85, p.content().opacity(0.22)))
+                        .child(bar(0.7, p.content().opacity(0.22))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .p(px(8.))
+                        .child(bar(0.8, p.content().opacity(0.8)))
+                        .child(bar(0.55, p.content().opacity(0.25)))
+                        .child(
+                            div()
+                                .mt(px(2.))
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .p(px(5.))
+                                .rounded(px(ui::RADIUS_SM))
+                                .bg(p.surface(0.12))
+                                .child(div().size(px(7.)).rounded_full().bg(p.accent()))
+                                .child(bar(0.6, p.content().opacity(0.25))),
+                        ),
+                );
+            div()
+                .id(("palette", i))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .p(px(5.))
+                .rounded(px(ui::RADIUS_LG))
+                .border_1()
+                .border_color(if on {
+                    theme::accent().opacity(0.55)
+                } else {
+                    theme::stroke()
+                })
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::fill_hover()))
+                .child(preview)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(3.))
+                        .pb(px(1.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(ui::TEXT_SM))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if on {
+                                    theme::text()
+                                } else {
+                                    theme::text_muted()
+                                })
+                                .child(p.name.clone()),
+                        )
+                        .when(on, |d| {
+                            d.child(icon("tick02", 13.).text_color(theme::accent()))
+                        }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.use_palette(&id, cx)))
+        };
+        let mut grid = div().flex().flex_col().gap(px(8.));
+        let cards: Vec<_> = all
+            .iter()
+            .enumerate()
+            .map(|(i, p)| card(i, p, cx).into_any_element())
+            .collect();
+        let mut cards = cards.into_iter();
+        loop {
+            let row: Vec<_> = cards.by_ref().take(3).collect();
+            if row.is_empty() {
+                break;
+            }
+            let pad = 3 - row.len();
+            grid = grid.child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .children(row)
+                    .children((0..pad).map(|_| div().flex_1())),
+            );
+        }
+        let custom = self.palettes.is_custom(&active.id);
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(label_block(
+                "Palette",
+                "The colors of the whole app. Pick one, or customize it to make your own.",
+            ))
+            .when(!custom, |d| {
+                d.child(
+                    ui::button("palette-customize", "Customize", ButtonKind::Outline, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.customize_palette(cx))),
+                )
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .px(px(12.))
+            .py(px(12.))
+            .child(head)
+            .child(grid)
+            .when(custom, |d| d.child(self.render_palette_editor(&active, cx)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(field(self.share_input.clone(), 0.).flex_1())
+                    .child(
+                        ui::button("palette-import", "Add", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|this, _, _, cx| this.import_palette(cx))),
+                    ),
+            )
+            .when_some(self.palette_note.clone(), |d, (note, bad)| {
+                d.child(
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(if bad {
+                            theme::error().into()
+                        } else {
+                            theme::text_subtle()
+                        })
+                        .child(note),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_palette_editor(&self, p: &theme::Palette, cx: &mut Context<Self>) -> AnyElement {
+        const ACCENTS: [u32; 8] = [
+            theme::AMBER,
+            0xff7a59,
+            0xff8fab,
+            0xb394f5,
+            0x8b9dff,
+            0x86a6f2,
+            0x5fd4c4,
+            0x5fd38d,
+        ];
+        let this = cx.entity().downgrade();
+        let setter = move |f: fn(&mut theme::Palette, f32)| {
+            let this = this.clone();
+            move |t: f32, _: &mut Window, cx: &mut App| {
+                let _ = this.update(cx, |this, cx| this.edit_palette(|p| f(p, t), cx));
+            }
+        };
+        let line = |title: &'static str, value: String, control: AnyElement| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child(title)
+                        .child(
+                            div()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .child(value),
+                        ),
+                )
+                .child(control)
+        };
+        let dark = theme::Palette {
+            bg: 0.03,
+            ..p.clone()
+        };
+        let light = theme::Palette {
+            bg: 0.16,
+            ..p.clone()
+        };
+        let gray = theme::Palette {
+            tint: 0.,
+            ..p.clone()
+        };
+        let full = theme::Palette {
+            tint: 0.6,
+            ..p.clone()
+        };
+        let text_ok = theme::contrast(p.content(), p.background()) >= 7.;
+        let accent_ok = theme::contrast(p.accent(), p.background()) >= 4.5;
+        let readable: (&str, gpui::Hsla) = if text_ok && accent_ok {
+            ("Text and accent read well", theme::success().into())
+        } else if !accent_ok {
+            (
+                "The accent is hard to read on this background",
+                theme::attention().into(),
+            )
+        } else {
+            (
+                "Text is hard to read on this background",
+                theme::attention().into(),
+            )
+        };
+        let copied = p.share_code();
+        let id = p.id.clone();
+        let armed = self.confirm_delete;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .p(px(14.))
+            .rounded(px(ui::RADIUS_LG))
+            .bg(theme::fill_raised())
+            .border_1()
+            .border_color(theme::stroke())
+            .child(line(
+                "Tint",
+                format!("{}°", p.hue.round()),
+                ui::slider(
+                    "pal-hue",
+                    p.hue / 360.,
+                    ui::hue_track(0.6, 0.55),
+                    gpui::hsla(p.hue / 360., 0.6, 0.55, 1.),
+                    setter(|p, t| p.hue = t * 360.),
+                )
+                .into_any_element(),
+            ))
+            .child(line(
+                "Background",
+                format!("{:.1}%", p.bg * 100.),
+                ui::slider(
+                    "pal-bg",
+                    (p.bg - 0.03) / 0.13,
+                    ui::blend_track(dark.background(), light.background()),
+                    p.background(),
+                    setter(|p, t| p.bg = 0.03 + t * 0.13),
+                )
+                .into_any_element(),
+            ))
+            .child(line(
+                "Tint strength",
+                format!("{}%", (p.tint / 0.6 * 100.).round()),
+                ui::slider(
+                    "pal-tint",
+                    p.tint / 0.6,
+                    ui::blend_track(gray.surface(0.2), full.surface(0.2)),
+                    p.surface(0.2),
+                    setter(|p, t| p.tint = t * 0.6),
+                )
+                .into_any_element(),
+            ))
+            .child(line(
+                "Accent",
+                format!("#{:06x}", p.accent),
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .children(ACCENTS.into_iter().enumerate().map(|(i, c)| {
+                        ui::swatch(("pal-accent", i), gpui::rgb(c), p.accent == c).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.edit_palette(|p| p.accent = c, cx)
+                            }),
+                        )
+                    }))
+                    .into_any_element(),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(readable.1)
+                    .child(
+                        icon(
+                            if text_ok && accent_ok {
+                                "checkmark-circle01"
+                            } else {
+                                "alert-circle"
+                            },
+                            13.,
+                        )
+                        .text_color(readable.1),
+                    )
+                    .child(readable.0),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        ui::button("pal-copy", "Copy share line", ButtonKind::Outline, true)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                    copied.clone(),
+                                ));
+                                this.palette_note = Some((
+                                    "Copied. Anyone can paste it here to get this palette.".into(),
+                                    false,
+                                ));
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        ui::button(
+                            "pal-delete",
+                            if armed { "Delete it?" } else { "Delete" },
+                            ButtonKind::Danger,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.confirm_delete {
+                                this.palettes.remove(&id);
+                                this.confirm_delete = false;
+                                this.apply_palette(cx);
+                            } else {
+                                this.confirm_delete = true;
+                                cx.notify();
+                            }
+                        })),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = theme::diff_palette();
         let glass = theme::glass();
@@ -953,6 +1390,7 @@ impl SettingsDialog {
             .flex()
             .flex_col()
             .gap(px(12.))
+            .child(group(vec![self.render_palettes(cx)]))
             .child(group(vec![
                 div()
                     .flex()

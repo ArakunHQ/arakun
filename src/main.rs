@@ -50,6 +50,7 @@ mod memory_view;
 mod model;
 mod notices;
 mod palette;
+mod palettes;
 mod phone;
 mod phone_view;
 mod picker;

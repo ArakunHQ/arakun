@@ -90,6 +90,8 @@ pub struct Seed {
     pub branch: String,
     /// `owner/name` of the visible project on GitHub.
     pub repo: Option<String>,
+    /// `owner/name` of every project on GitHub, where `#86` is looked for.
+    pub repos: Vec<String>,
     pub branches: Vec<String>,
     /// (id, title) of every session, for "when X finishes".
     pub sessions: Vec<(String, String)>,
@@ -136,6 +138,11 @@ pub enum PaletteEvent {
     /// A confirmed merge from the palette.
     Merge(crate::github::pr::ItemRef),
     PinsChanged,
+    /// `#86` with no such pull request listed: look it up in these repositories.
+    FindPull {
+        number: u64,
+        repos: Vec<String>,
+    },
     Dismissed,
 }
 
@@ -219,6 +226,8 @@ pub struct Menu {
 }
 
 pub struct Palette {
+    /// The pull request number last looked up for `#86`, so it is asked once.
+    asked_pull: Option<u64>,
     input: Entity<TextInput>,
     seed: Seed,
     files: Option<Arc<Vec<String>>>,
@@ -279,6 +288,7 @@ impl Palette {
         window.focus(&input.focus_handle(cx), cx);
         let clip = seed.clipboard.as_deref().and_then(clip::classify);
         let mut this = Self {
+            asked_pull: None,
             input,
             seed,
             files: None,
@@ -1243,6 +1253,49 @@ impl Palette {
         if let Some(Card::Remember(m)) = cards.iter().find(|c| matches!(c, Card::Remember(_))) {
             let key = format!("memory:{}", m.id());
             cands.retain(|i| i.key != key);
+        }
+        // `#arakun 86` / `#app`: a first word that names a repository or a
+        // project narrows the pull requests to it; the rest is the search.
+        let mut q = q;
+        let mut narrowed: Option<String> = None;
+        if self.scope == Some(Scope::Pulls) && self.pages.is_empty() {
+            let mut words = q.split_whitespace();
+            if let Some(first) = words
+                .next()
+                .map(|w| w.trim_start_matches('#').to_ascii_lowercase())
+                && cands
+                    .iter()
+                    .any(|i| i.kind == Kind::Pull && i.tags.contains(&first))
+            {
+                let rest = words.collect::<Vec<_>>().join(" ");
+                cands.retain(|i| i.kind != Kind::Pull || i.tags.contains(&first));
+                narrowed = Some(first);
+                q = rest;
+            }
+        }
+        // `#86` names one pull request; look for it when it isn't listed.
+        if self.scope == Some(Scope::Pulls)
+            && let Ok(n) = q.trim().trim_start_matches('#').parse::<u64>()
+            && self.asked_pull != Some(n)
+            && !cands
+                .iter()
+                .any(|i| i.kind == Kind::Pull && i.meta.as_ref() == format!("#{n}"))
+        {
+            self.asked_pull = Some(n);
+            let mut repos: Vec<String> = cands
+                .iter()
+                .filter(|i| i.kind == Kind::Pull)
+                .filter_map(|i| i.tags.iter().find(|t| t.contains('/')).cloned())
+                .filter(|r| {
+                    narrowed.as_ref().is_none_or(|w| {
+                        r == w || r.ends_with(&format!("/{w}")) || r.starts_with(&format!("{w}/"))
+                    })
+                })
+                .collect();
+            repos.extend(self.seed.repos.iter().cloned());
+            repos.sort();
+            repos.dedup();
+            cx.emit(PaletteEvent::FindPull { number: n, repos });
         }
         // Filter by page, scope and the person's tab.
         cands.retain(|i| {

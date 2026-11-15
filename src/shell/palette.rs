@@ -87,11 +87,36 @@ impl Shell {
     pub(super) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.env_menu_open = false;
+        // Every open pull request of the projects, not only the user's queue:
+        // `#86` must find a teammate's.
+        let repos = self.project_repos().into_iter().map(|(_, r)| r).collect();
+        self.github
+            .update(cx, |g, cx| g.refresh_repo_pulls(repos, cx));
         let seed = self.palette_seed(cx);
         let palette = cx.new(|cx| Palette::new(seed, window, cx));
         let sub = cx.subscribe_in(&palette, window, Self::on_palette_event);
+        // What GitHub brings in while it is open shows up in it.
+        let weak = palette.downgrade();
+        self.palette_watch = Some(cx.observe(&self.github, move |this, _, cx| {
+            if let Some(p) = weak.upgrade() {
+                let items = this.palette_items(cx);
+                p.update(cx, |p, cx| p.set_items(items, cx));
+            }
+        }));
         self.modal = Some((Modal::Palette(palette), sub));
         cx.notify();
+    }
+
+    /// (project name, `owner/name`) of every project that lives on GitHub.
+    pub(super) fn project_repos(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .projects
+            .iter()
+            .filter_map(|p| repo_slug(&p.path).map(|r| (p.name.to_string(), r)))
+            .collect();
+        out.sort();
+        out.dedup_by(|a, b| a.1 == b.1);
+        out
     }
 
     fn on_palette_event(
@@ -102,6 +127,16 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         match ev {
+            PaletteEvent::FindPull { number, repos } => {
+                for repo in repos {
+                    let r = ItemRef {
+                        repo: repo.clone(),
+                        number: *number,
+                        kind: pr::ItemKind::Pull,
+                    };
+                    self.github.update(cx, |g, cx| g.fetch_item(r, cx));
+                }
+            }
             PaletteEvent::Run { target, keep } => {
                 if *keep {
                     self.run_palette_target(target.clone(), window, cx);
@@ -280,6 +315,7 @@ impl Shell {
         let has = self.has_projects();
         let root = has.then(|| self.env().path.clone());
         let repo = root.as_deref().and_then(repo_slug);
+        let repos = self.project_repos().into_iter().map(|(_, r)| r).collect();
         let branches: Vec<String> = if has {
             self.branches_view
                 .read(cx)
@@ -316,6 +352,7 @@ impl Shell {
             },
             root,
             repo,
+            repos,
             branches,
             sessions,
             read_only: crate::github::read_only(),
@@ -490,6 +527,13 @@ impl Shell {
     fn palette_github(&self, cx: &App, items: &mut Vec<Item>) {
         let gh = self.github.read(cx);
         let me = gh.me().unwrap_or("").to_string();
+        let projects: std::collections::HashMap<String, String> = self
+            .project_repos()
+            .into_iter()
+            .map(|(name, repo)| (repo.to_ascii_lowercase(), name))
+            .collect();
+        let project_of = |repo: &str| projects.get(&repo.to_ascii_lowercase()).map(String::as_str);
+        let mut listed: std::collections::HashSet<String> = Default::default();
         let mut people: std::collections::BTreeMap<String, (usize, usize, usize)> =
             Default::default();
         for (entry, placed) in &gh.queue().rows {
@@ -588,12 +632,14 @@ impl Shell {
                     diff: Vec::new(),
                 },
             };
+            listed.insert(crate::github::queue::key_of(&r));
             let mut item = Item::new(
                 format!("pull:{}", crate::github::queue::key_of(&r)),
                 Kind::Pull,
                 entry.title.clone(),
                 Target::Pull(r.clone()),
             )
+            .repo_tags(&r.repo, project_of(&r.repo))
             .meta(format!("#{}", r.number))
             .lead(if author.is_empty() {
                 Lead::Icon("git-pull-request", Tint::Green)
@@ -609,6 +655,89 @@ impl Shell {
             .preview(preview);
             if let Some(p) = pill {
                 item = item.pill(p, tint);
+            }
+            items.push(item);
+        }
+        // Everyone's open pull requests in the projects' repositories, and any
+        // asked for by number, after the user's own queue.
+        let mut others: Vec<(ItemRef, String, String, bool, String)> = gh
+            .repo_pulls()
+            .map(|(repo, p)| {
+                let r = ItemRef {
+                    repo: repo.to_string(),
+                    number: p.number,
+                    kind: pr::ItemKind::Pull,
+                };
+                (
+                    r,
+                    p.title.clone(),
+                    p.author.login.clone(),
+                    p.is_draft,
+                    "open".to_string(),
+                )
+            })
+            .collect();
+        for (r, d) in gh.all_details() {
+            if let crate::github::queue::Details::Pull(p) = d {
+                let state = if p.merged() {
+                    "merged"
+                } else if p.open() {
+                    "open"
+                } else {
+                    "closed"
+                };
+                others.push((
+                    r,
+                    p.title.clone(),
+                    p.author.login.clone(),
+                    p.is_draft,
+                    state.into(),
+                ));
+            }
+        }
+        for (r, title, author, draft, state) in others {
+            if !listed.insert(crate::github::queue::key_of(&r)) {
+                continue;
+            }
+            let short = r.repo.rsplit('/').next().unwrap_or(&r.repo).to_string();
+            let mut item = Item::new(
+                format!("pull:{}", crate::github::queue::key_of(&r)),
+                Kind::Pull,
+                title,
+                Target::Pull(r.clone()),
+            )
+            .repo_tags(&r.repo, project_of(&r.repo))
+            .meta(format!("#{}", r.number))
+            .sub(format!("{short} · {author}"))
+            .lead(if author.is_empty() {
+                Lead::Icon("git-pull-request", Tint::Green)
+            } else {
+                Lead::Avatar(author.clone(), gh.avatar(&author).map(Path::to_path_buf))
+            })
+            .section("Pull requests")
+            .extra(format!("{} #{} {} {}", r.repo, r.number, author, short))
+            .preview(Preview::Pull {
+                repo: r.repo.clone(),
+                number: r.number,
+                author: author.clone(),
+                avatar: gh.avatar(&author).map(Path::to_path_buf),
+                waiting: None,
+                checks: None,
+                merge: None,
+                changes: None,
+                opened: String::new(),
+                diff: Vec::new(),
+            });
+            item.dim = state != "open";
+            if draft {
+                item = item.pill("draft", Tint::Neutral);
+            } else if state != "open" {
+                let tint = if state == "merged" {
+                    Tint::Violet
+                } else {
+                    Tint::Neutral
+                };
+                item = item.pill(state, tint);
             }
             items.push(item);
         }

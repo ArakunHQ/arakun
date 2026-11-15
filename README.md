@@ -281,6 +281,9 @@ out first.
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for
   commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.
+  `#` lists every open pull request of your projects' repositories, not only yours;
+  `#86` finds that one even when it is closed or merged, and a first word that names a
+  repository or project narrows to it (`#arakun 86`, `#frameshi`).
   In it: `→` opens a row's actions or goes into it (a project, a person, Branches), `←`
   goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
   a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin

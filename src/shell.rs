@@ -268,6 +268,8 @@ pub struct Shell {
     _caret_focus: Subscription,
     _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
+    /// Refreshes the open palette when GitHub brings in more.
+    palette_watch: Option<Subscription>,
     menu: Option<ContextMenu>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
@@ -700,6 +702,7 @@ impl Shell {
             _caret_focus: caret_focus,
             _composer_blur: composer_blur,
             modal: None,
+            palette_watch: None,
             menu: None,
             poll: None,
             last_fetch: None,

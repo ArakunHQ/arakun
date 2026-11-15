@@ -713,8 +713,18 @@ pub fn menu_panel(id: impl Into<ElementId>, width: f32) -> gpui::Stateful<gpui::
         .bg(theme::dialog())
         .border_1()
         .border_color(theme::border())
-        .rounded(rad(RADIUS_XL))
+        .rounded(rad(MENU_RADIUS))
         .shadow_xl()
+}
+
+/// A menu's corner, and how far its items sit inside it (padding and
+/// border): items round to `nested(MENU_RADIUS, MENU_INSET)`.
+pub const MENU_RADIUS: f32 = RADIUS_LG;
+const MENU_INSET: f32 = 5.;
+
+/// The corner of a row inside a menu: parallel to the menu's.
+pub fn menu_row_radius() -> Pixels {
+    nested(MENU_RADIUS, MENU_INSET)
 }
 
 pub fn menu_item(
@@ -736,7 +746,7 @@ pub fn menu_item(
         .gap(sp(8.))
         .h(px(MENU_ROW_H))
         .px(sp(8.))
-        .rounded(rad(RADIUS))
+        .rounded(menu_row_radius())
         .text_size(px(TEXT_MD))
         .text_color(color)
         .when(enabled, |d| {

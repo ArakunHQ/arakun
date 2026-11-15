@@ -54,6 +54,9 @@ reviews:
     enabled: true
     # Agents open pull requests as drafts and mark them ready once checks pass.
     drafts: false
+    # Stacked pull requests target the branch below them, not main. Without
+    # this, CodeRabbit reviews only the bottom one of a stack.
+    base_branches: [".*"]
     auto_incremental_review: true
     auto_pause_after_reviewed_commits: 0
 

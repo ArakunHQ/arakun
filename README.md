@@ -76,6 +76,11 @@ window, and exposes the same workspace to the agents through a command line.
   cost from Claude Code's and Droid's own logs), Extensions (MCP servers, plugins, skills
   and permission rules of the agents), Automations (scheduled shell commands or agent
   prompts per project), and an Inbox.
+- **Color palettes.** Settings › Appearance has built-in palettes (Arakun Night,
+  Graphite, Midnight, Forest, Rosé). Customize one to change its tint, background and
+  accent; Arakun warns when text or the accent gets hard to read. A palette fits in one
+  line (`arakun:palette/v1:…`) that anyone can paste there to get it. The choice and your
+  palettes are kept in `palettes.json` next to the state.
 
 ## Platform status
 

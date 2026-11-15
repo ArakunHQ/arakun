@@ -2079,6 +2079,127 @@ pub fn palette_note(text: impl Into<SharedString>) -> gpui::Div {
         .child(text.into())
 }
 
+// ---------------------------------------------------------------------------
+// Slider
+
+/// A value from 0 to 1 picked on a track: click or drag. `track` fills the
+/// track (a gradient shows what the value means, as a hue rainbow does); the
+/// knob is filled with `knob`. `on_change` gets the new
+/// value while the pointer moves.
+pub fn slider(
+    id: impl Into<ElementId>,
+    value: f32,
+    track: impl IntoElement,
+    knob: Hsla,
+    on_change: impl Fn(f32, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    const H: f32 = 20.;
+    const KNOB: f32 = 18.;
+    let bounds = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::<gpui::Pixels>::default()));
+    let on_change = std::rc::Rc::new(on_change);
+    let at = |b: gpui::Bounds<gpui::Pixels>, x: gpui::Pixels| -> f32 {
+        let w = (b.size.width - px(KNOB)).as_f32().max(1.);
+        ((x - b.origin.x - px(KNOB / 2.)).as_f32() / w).clamp(0., 1.)
+    };
+    let seen = bounds.clone();
+    let (down_b, move_b) = (bounds.clone(), bounds.clone());
+    let (down_f, move_f) = (on_change.clone(), on_change);
+    div()
+        .id(id)
+        .relative()
+        .h(px(H))
+        .w_full()
+        .cursor_pointer()
+        .child(
+            gpui::canvas(move |b, _, _| seen.set(b), |_, _, _, _| {})
+                .absolute()
+                .size_full(),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(KNOB / 2. - 4.))
+                .right(px(KNOB / 2. - 4.))
+                .top(px((H - 8.) / 2.))
+                .h(px(8.))
+                .rounded_full()
+                .overflow_hidden()
+                .flex()
+                // A dark gradient on a dark panel needs an edge to read as a track.
+                .border_1()
+                .border_color(theme::border())
+                .child(track),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px((H - KNOB) / 2.))
+                // At 0 the knob's left edge meets the track's start, at 1 its
+                // right edge meets the end.
+                .left(relative(value.clamp(0., 1.)))
+                .ml(px(-KNOB * value.clamp(0., 1.)))
+                .size(px(KNOB))
+                .rounded_full()
+                .border_2()
+                .border_color(gpui::white())
+                .bg(knob)
+                .shadow_sm(),
+        )
+        .on_mouse_down(gpui::MouseButton::Left, move |ev, window, cx| {
+            cx.stop_propagation();
+            down_f(at(down_b.get(), ev.position.x), window, cx);
+        })
+        .on_mouse_move(move |ev, window, cx| {
+            if ev.pressed_button == Some(gpui::MouseButton::Left)
+                && move_b.get().contains(&ev.position)
+            {
+                move_f(at(move_b.get(), ev.position.x), window, cx);
+            }
+        })
+}
+
+/// A slider track that runs through every hue, for picking a tint.
+pub fn hue_track(saturation: f32, lightness: f32) -> gpui::Div {
+    div().size_full().flex().children((0..12).map(move |i| {
+        let at = |k: f32| gpui::hsla(k / 12., saturation, lightness, 1.);
+        div().flex_1().h_full().bg(gpui::linear_gradient(
+            90.,
+            gpui::linear_color_stop(at(i as f32), 0.),
+            gpui::linear_color_stop(at(i as f32 + 1.), 1.),
+        ))
+    }))
+}
+
+/// A slider track that blends from one color to another.
+pub fn blend_track(from: Hsla, to: Hsla) -> gpui::Div {
+    div().size_full().bg(gpui::linear_gradient(
+        90.,
+        gpui::linear_color_stop(from, 0.),
+        gpui::linear_color_stop(to, 1.),
+    ))
+}
+
+/// A round color to pick, ringed when it is the one chosen.
+pub fn swatch(
+    id: impl Into<ElementId>,
+    color: impl Into<gpui::Fill>,
+    chosen: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .size(px(26.))
+        .rounded_full()
+        .cursor_pointer()
+        .bg(color)
+        .border_2()
+        .border_color(if chosen {
+            theme::content()
+        } else {
+            theme::border()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

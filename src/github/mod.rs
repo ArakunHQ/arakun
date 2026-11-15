@@ -479,6 +479,39 @@ fn problem(stderr: &str) -> Problem {
     }
 }
 
+/// An open pull request of a repository, whoever it involves: what Ctrl+K
+/// lists under `#` besides the user's own queue.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoPull {
+    pub number: u64,
+    pub title: String,
+    #[serde(default)]
+    pub author: RepoPullAuthor,
+    #[serde(default)]
+    pub is_draft: bool,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub review_decision: String,
+    #[serde(default)]
+    pub head_ref_name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct RepoPullAuthor {
+    #[serde(default)]
+    pub login: String,
+}
+
+/// The JSON `gh pr list --json …` prints.
+pub fn parse_repo_pulls(json: &[u8]) -> Result<Vec<RepoPull>, Problem> {
+    serde_json::from_slice(json).map_err(|e| Problem::Other(format!("unexpected gh output: {e}")))
+}
+
+/// How long a repository's open pull requests are reused before reading them again.
+const REPO_PULLS_FRESH: Duration = Duration::from_secs(60);
+
 fn gh_out(args: &[&str]) -> Result<Vec<u8>, Problem> {
     // These calls name no repository, so gh runs away from any checkout: a
     // folder's remotes must not change which host it talks to.
@@ -652,6 +685,11 @@ pub struct GitHub {
     search_problem: Option<Problem>,
     /// Pull requests and issues read for the queue and the item view, by `queue::key_of`.
     details: HashMap<String, queue::Details>,
+    /// Every open pull request of the projects' repositories, by `owner/name`,
+    /// and when it was read.
+    repo_pulls: HashMap<String, (Instant, Vec<RepoPull>)>,
+    /// Repositories whose open pull requests are being read.
+    repo_pulls_busy: HashSet<String>,
     /// The entry's `updated_at` when its details were last asked for, so a
     /// date that never matches the details' own doesn't read it again and again.
     asked_at: HashMap<String, String>,
@@ -713,6 +751,8 @@ impl GitHub {
             searched: false,
             search_problem: None,
             details: HashMap::new(),
+            repo_pulls: HashMap::new(),
+            repo_pulls_busy: HashSet::new(),
             asked_at: HashMap::new(),
             fetching: HashSet::new(),
             detail_problems: HashMap::new(),
@@ -915,6 +955,78 @@ impl GitHub {
     /// How many things wait on the user: the rail badge.
     pub fn on_you(&self) -> usize {
         self.queue.on_you
+    }
+
+    /// Reads the open pull requests of `repos` (`owner/name`) that weren't
+    /// read in the last minute, in the background.
+    pub fn refresh_repo_pulls(&mut self, repos: Vec<String>, cx: &mut Context<Self>) {
+        if Self::disabled() {
+            return;
+        }
+        for repo in repos {
+            let fresh = self
+                .repo_pulls
+                .get(&repo)
+                .is_some_and(|(at, _)| at.elapsed() < REPO_PULLS_FRESH);
+            if fresh || !self.repo_pulls_busy.insert(repo.clone()) {
+                continue;
+            }
+            cx.spawn(async move |this, cx| {
+                let r = repo.clone();
+                let read = cx
+                    .background_spawn(async move {
+                        let json = gh_out(&[
+                            "pr",
+                            "list",
+                            "-R",
+                            &r,
+                            "--state",
+                            "open",
+                            "--limit",
+                            "100",
+                            "--json",
+                            "number,title,author,isDraft,updatedAt,reviewDecision,headRefName",
+                        ])?;
+                        parse_repo_pulls(&json)
+                    })
+                    .await;
+                let _ = this.update(cx, |g, cx| {
+                    g.repo_pulls_busy.remove(&repo);
+                    if let Ok(list) = read {
+                        g.repo_pulls.insert(repo, (Instant::now(), list));
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Every open pull request read for a repository, with its `owner/name`.
+    pub fn repo_pulls(&self) -> impl Iterator<Item = (&str, &RepoPull)> {
+        self.repo_pulls
+            .iter()
+            .flat_map(|(repo, (_, list))| list.iter().map(move |p| (repo.as_str(), p)))
+    }
+
+    /// Every pull request or issue read in full, with its reference: the
+    /// queue's and any asked for by number.
+    pub fn all_details(&self) -> impl Iterator<Item = (pr::ItemRef, &queue::Details)> {
+        self.details.iter().filter_map(|(key, d)| {
+            let (repo, n) = key.rsplit_once('#')?;
+            let kind = match d {
+                queue::Details::Pull(_) => pr::ItemKind::Pull,
+                queue::Details::Issue(_) => pr::ItemKind::Issue,
+            };
+            Some((
+                pr::ItemRef {
+                    repo: repo.to_string(),
+                    number: n.parse().ok()?,
+                    kind,
+                },
+                d,
+            ))
+        })
     }
 
     pub fn details(&self, item: &pr::ItemRef) -> Option<&queue::Details> {
@@ -1313,6 +1425,19 @@ impl GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repositorys_open_pull_requests_are_read() {
+        let json = br#"[{"number":86,"title":"fix(palette): answer through Claude Code","author":{"login":"KarloAldrete","is_bot":false},"isDraft":false,"updatedAt":"2026-11-15T03:00:00Z","reviewDecision":"REVIEW_REQUIRED","headRefName":"pr/palette-oauth"},{"number":61,"title":"ci: pin","author":{"login":"rikvisser-dev"}}]"#;
+        let list = parse_repo_pulls(json).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(
+            (list[0].number, list[0].author.login.as_str()),
+            (86, "KarloAldrete")
+        );
+        assert_eq!(list[1].review_decision, "");
+        assert!(parse_repo_pulls(b"not json").is_err());
+    }
 
     #[test]
     fn focus_keeps_owners_and_repositories() {

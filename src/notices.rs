@@ -2,7 +2,7 @@
 //! notification), kept so the ones that came while the user was away can be
 //! read later in the Inbox and with `arakun notices`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -195,16 +195,88 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> History {
-    std::fs::read(file())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    load_from(&file(), crate::model::unix_now())
+}
+
+/// Never loses what the file held: a file that can't be read in full is set
+/// aside as `notices.json.corrupt-<unix time>` before anything overwrites it,
+/// and the notices that still parse are kept.
+fn load_from(path: &Path, now: u64) -> History {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return History::default(),
+        Err(e) => {
+            eprintln!("arakun: could not read {}: {e}", path.display());
+            set_aside(path, now);
+            return History::default();
+        }
+    };
+    match parse(&bytes) {
+        Ok((history, 0)) => history,
+        Ok((history, bad)) => {
+            eprintln!(
+                "arakun: {} notices in {} could not be read; keeping the other {}",
+                bad,
+                path.display(),
+                history.notices.len()
+            );
+            if set_aside(path, now) {
+                store_to(path, &history);
+            }
+            history
+        }
+        Err(e) => {
+            eprintln!("arakun: {} is not valid: {e}", path.display());
+            set_aside(path, now);
+            History::default()
+        }
+    }
+}
+
+/// The history and how many notices in it could not be read. One bad entry
+/// (say, a kind from a newer Arakun) must not cost the rest.
+fn parse(bytes: &[u8]) -> serde_json::Result<(History, usize)> {
+    #[derive(Deserialize)]
+    struct Raw {
+        #[serde(default)]
+        notices: Vec<serde_json::Value>,
+    }
+    let raw: Raw = serde_json::from_slice(bytes)?;
+    let total = raw.notices.len();
+    let notices: Vec<Notice> = raw
+        .notices
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    let bad = total - notices.len();
+    Ok((History { notices }, bad))
+}
+
+/// Renames the file out of the way so the next save can't overwrite it.
+/// `false` when it is still there.
+fn set_aside(path: &Path, now: u64) -> bool {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".corrupt-{now}"));
+    let kept = PathBuf::from(name);
+    match std::fs::rename(path, &kept) {
+        Ok(()) => {
+            eprintln!("arakun: kept the old notices in {}", kept.display());
+            true
+        }
+        Err(e) => {
+            eprintln!("arakun: could not set {} aside: {e}", path.display());
+            false
+        }
+    }
 }
 
 pub fn store(history: &History) {
-    let path = file();
+    store_to(&file(), history);
+}
+
+fn store_to(path: &Path, history: &History) {
     if let Err(e) = crate::durable::write(
-        &path,
+        path,
         &serde_json::to_vec_pretty(history).unwrap_or_default(),
     ) {
         eprintln!("arakun: could not save {}: {e}", path.display());
@@ -362,5 +434,60 @@ mod tests {
                 .unwrap();
         assert_eq!(h.notices[0].kind, AlertKind::Failure);
         assert!(!h.notices[0].seen);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("arakun-notices-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_corrupt_file_is_set_aside_not_overwritten() {
+        let dir = scratch("corrupt");
+        let path = dir.join("notices.json");
+        let torn = br#"{"notices":[{"at":5,"kind":"failure","title":"CI"#;
+        std::fs::write(&path, torn).unwrap();
+        let h = load_from(&path, 42);
+        assert!(h.notices.is_empty());
+        // The next save starts a new file; the old bytes stay where they were put.
+        store_to(&path, &h);
+        assert_eq!(
+            std::fs::read(dir.join("notices.json.corrupt-42")).unwrap(),
+            torn
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_bad_notice_does_not_lose_the_others() {
+        let dir = scratch("bad-entry");
+        let path = dir.join("notices.json");
+        let text = r#"{"notices":[
+            {"at":1,"kind":"failure","title":"CI"},
+            {"at":2,"kind":"from-the-future","title":"?"},
+            {"at":3,"kind":"info","title":"Deploy"}
+        ]}"#;
+        std::fs::write(&path, text).unwrap();
+        let h = load_from(&path, 7);
+        let titles: Vec<&str> = h.notices.iter().map(|n| n.title.as_str()).collect();
+        assert_eq!(titles, ["CI", "Deploy"]);
+        // The good ones are saved again; the whole old file is kept beside them.
+        assert_eq!(load_from(&path, 8), h);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notices.json.corrupt-7")).unwrap(),
+            text
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_file_is_an_empty_history() {
+        let dir = scratch("missing");
+        assert_eq!(load_from(&dir.join("notices.json"), 1), History::default());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -71,7 +71,8 @@ it, and the bottom one targets `main`.
   Changes.
 - To fix a lower pull request, commit on its branch, then rebase the top branch on it:
   `git switch pr/top && git rebase --update-refs pr/refactor`. `--update-refs` moves the
-  branches in between. Push every branch above the changed one:
+  branches in between, but not one checked out in another worktree; switch that worktree
+  away first. Push every branch above the changed one:
   `git push --force-with-lease origin pr/feature pr/top`.
 - Merge from the bottom, always into `main`; never merge a pull request into the branch
   below it. Merging is a person's job, not yours.
@@ -81,7 +82,8 @@ it, and the bottom one targets `main`.
   `git fetch origin main "pull/<number>/head"`), not from your local branch. Run
   `git rebase --update-refs --onto origin/main <that commit>` on the top branch, push
   every remaining branch with `--force-with-lease`, and check the next pull request's
-  base is `main` (`gh pr edit --base main`).
+  base is `main` (`gh pr edit <next number> --base main`; without the number it edits the
+  top one).
 
 ## Before you commit
 

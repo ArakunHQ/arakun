@@ -265,7 +265,8 @@ and you can keep working without waiting for the first one to merge.
    order.
 3. To change a lower pull request, commit on its branch. Then rebase the top branch on
    the branch you changed. `--update-refs` (git 2.38 or newer) moves every branch in
-   between with it. Push every branch above the one you changed:
+   between with it, except a branch checked out in another worktree; switch that
+   worktree to another branch first. Push every branch above the one you changed:
 
    ```sh
    git switch pr/top
@@ -290,8 +291,9 @@ and you can keep working without waiting for the first one to merge.
    git push --force-with-lease origin pr/feature pr/top
    ```
 
-   Check that the next pull request now targets `main` (`gh pr edit --base main` if
-   not).
+   Check that the next pull request now targets `main`. If not, run
+   `gh pr edit <next number> --base main`; without the number, `gh` edits the pull
+   request of the branch you are on, which is the top one.
 
 ## License
 

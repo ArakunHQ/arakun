@@ -238,6 +238,8 @@ impl Phase {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
     Compact(Phase),
+    /// Agents at work: the raccoon and this many dots (a "+n" counts as one).
+    Busy(usize),
     /// With this many rows.
     List(usize),
     /// A voice call: its phase and live captions.
@@ -247,8 +249,12 @@ enum View {
 impl View {
     fn size(self) -> (f32, f32) {
         match self {
-            View::Compact(Phase::Sleeping | Phase::Idle) => (170., 30.),
-            View::Compact(Phase::Working) => (240., 32.),
+            // At rest only the raccoon shows, so the island stays clear of the
+            // window's tabs under it.
+            View::Compact(Phase::Sleeping | Phase::Idle) => (12. + SMALL_W + 12., 30.),
+            // Just wide enough for the raccoon and its dots.
+            View::Busy(n) => (12. + SMALL_W + 10. + n.max(1) as f32 * 11. + 10., 32.),
+            View::Compact(Phase::Working) => (150., 32.),
             View::Compact(_) => (330., 36.),
             View::List(n) => (480., HEAD_H + n as f32 * ROW_H + ROW_INSET),
             View::Call => (440., 104.),
@@ -1373,6 +1379,10 @@ impl Island {
             _ if self.card.is_none() && ((self.hovered && self.peek) || self.pinned) && n > 0 => {
                 View::List(n)
             }
+            Phase::Working => {
+                let (dots, more) = dots(&self.feed.rows);
+                View::Busy(dots.len() + usize::from(more > 0))
+            }
             p => View::Compact(p),
         }
     }
@@ -1443,7 +1453,8 @@ impl Island {
 
     fn compact(&self, phase: Phase, t: f32) -> gpui::AnyElement {
         let right = match phase {
-            Phase::Sleeping | Phase::Idle | Phase::Alert => div()
+            Phase::Sleeping | Phase::Idle => div().into_any_element(),
+            Phase::Alert => div()
                 .size(px(5.))
                 .rounded_full()
                 .bg(hsla(0., 0., 1., 0.22))
@@ -1922,6 +1933,7 @@ impl Island {
     fn content(&self, view: View, t: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         match view {
             View::Compact(p) => self.compact(p, t),
+            View::Busy(_) => self.compact(Phase::Working, t),
             View::List(_) => self.list(t, cx),
             View::Call => self.call_card(t),
         }
@@ -2476,7 +2488,7 @@ impl Render for Island {
         let animated = match self.view {
             View::Compact(Phase::Speaking | Phase::Listening) | View::Call => true,
             View::Compact(_) if self.recording.is_some() => true,
-            View::Compact(Phase::Working) | View::List(_) => pulsing,
+            View::Compact(Phase::Working) | View::Busy(_) | View::List(_) => pulsing,
             _ => false,
         };
         let card_moving = self

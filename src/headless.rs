@@ -175,7 +175,18 @@ pub const PENDING_TTL: u64 = 24 * 3600;
 // ---- storage ------------------------------------------------------------------
 
 pub fn root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_ROOT.with(|r| r.borrow().clone()) {
+        return dir;
+    }
     crate::state::data_dir().join("headless")
+}
+
+// Tests that make session folders put them here, never in the real data folder:
+// a running Arakun would list a leftover one as a session.
+#[cfg(test)]
+thread_local! {
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 fn valid(id: &str) -> bool {
@@ -288,11 +299,16 @@ pub fn discard(id: &str) {
             }
         }
     }
-    if let Err(e) = std::fs::remove_dir_all(dir(id)) {
-        eprintln!("arakun: could not remove {}: {e}", dir(id).display());
-    }
-    if let Ok(mut d) = DISCARDING.lock() {
-        d.retain(|x| x != id);
+    match std::fs::remove_dir_all(dir(id)) {
+        // The id stays hidden: a scan that read the folder just before the delete
+        // can report it after this returns, and a deleted id never comes back.
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("arakun: could not remove {}: {e}", dir(id).display());
+            if let Ok(mut d) = DISCARDING.lock() {
+                d.retain(|x| x != id);
+            }
+        }
     }
 }
 
@@ -355,6 +371,10 @@ pub fn alive(pid: Option<u32>) -> bool {
 #[cfg(target_os = "macos")]
 fn same_program(pid: u32) -> bool {
     use std::os::unix::ffi::OsStrExt as _;
+    // After a reboot a stale pid can be the app's own, which has the same name.
+    if pid == std::process::id() {
+        return false;
+    }
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     // SAFETY: the buffer is as long as the size passed with it.
     let n = unsafe {
@@ -1940,7 +1960,10 @@ mod tests {
 
     #[test]
     fn a_deleted_session_folder_stays_gone() {
-        let id = format!("h-test-discard-{}", std::process::id());
+        let tmp =
+            std::env::temp_dir().join(format!("arakun-headless-discard-{}", std::process::id()));
+        TEST_ROOT.with(|r| *r.borrow_mut() = Some(tmp.clone()));
+        let id = "h-test-discard-1".to_string();
         let m = Meta {
             id: id.clone(),
             agent: AgentKind::WorkersAi,
@@ -1970,10 +1993,13 @@ mod tests {
         begin_discard(&id);
         discard(&id);
         assert!(!dir(&id).exists());
-        assert!(!discarding(&id));
+        // Still hidden, so a scan from just before the delete can't bring it back.
+        assert!(discarding(&id));
         // A host still saving afterwards does not make it again.
         write_meta(&m);
         assert!(!dir(&id).exists());
+        TEST_ROOT.with(|r| *r.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

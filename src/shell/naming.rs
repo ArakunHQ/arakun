@@ -74,8 +74,12 @@ impl Shell {
         done: oneshot::Sender<Reply>,
         cx: &mut Context<Self>,
     ) {
-        let Some(env_path) = self.command_env(&req) else {
-            let _ = done.send(Reply::err("no project is open in arakun"));
+        // Not the environment on screen: renaming another one by mistake is worse than failing.
+        let Some(env_path) = self.env_for(&req.cwd) else {
+            let _ = done.send(Reply::err(format!(
+                "{} is not in an environment of a project open in arakun",
+                req.cwd.display()
+            )));
             return;
         };
         let Some(env) = self.find_env(&env_path) else {

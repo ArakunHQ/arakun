@@ -16,7 +16,9 @@ window, and exposes the same workspace to the agents through a command line.
   A new environment starts on a random branch name (`env/brave-otter`); after the first
   prompt, a small model names it after the task (`fix/terminal-tab-name`) and Arakun
   renames the branch. The folder keeps its name. Settings › General picks the agent CLI
-  and model that name branches (Claude Code with `haiku` by default), or turns it off.
+  and model that name branches (Claude Code with `haiku` by default), or turns it off;
+  it saves them in `~/.local/share/arakun/branch-namer.json`
+  (`%LOCALAPPDATA%\arakun\branch-namer.json` on Windows).
 - **Agent sessions.** Claude Code (through the ACP adapter
   `@agentclientprotocol/claude-agent-acp`), Factory's Droid, OpenCode, and Cloudflare
   Workers AI (a tool loop Arakun runs itself against the Workers AI API). Transcripts

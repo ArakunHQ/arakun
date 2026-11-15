@@ -295,13 +295,16 @@ fn clean(line: &str) -> Option<String> {
         .collect();
     let mut name = format!("{kind}/");
     for word in slug.split('-').filter(|w| !w.is_empty()) {
-        if name.len() + word.len() + 1 > MAX_LEN && !name.ends_with('/') {
+        let room = MAX_LEN - name.len();
+        if name.ends_with('/') {
+            // The slug is ASCII, so any byte is a char boundary.
+            name.push_str(&word[..word.len().min(room)]);
+        } else if word.len() < room {
+            name.push('-');
+            name.push_str(word);
+        } else {
             break;
         }
-        if !name.ends_with('/') {
-            name.push('-');
-        }
-        name.push_str(word);
     }
     (!name.ends_with('/')).then_some(name)
 }
@@ -360,6 +363,8 @@ mod tests {
             "{long}"
         );
         assert!(!long.ends_with('-'));
+        let one_word = parse(&format!("fix/{}", "a".repeat(60))).unwrap();
+        assert_eq!(one_word, format!("fix/{}", "a".repeat(MAX_LEN - 4)));
     }
 
     #[test]

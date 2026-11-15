@@ -234,11 +234,18 @@ pub fn rename_branch(dir: &Path, old: &str, new: &str, next_free: bool) -> Resul
     if old == new {
         return Ok(new.to_string());
     }
-    if git(dir)
+    // A push without --set-upstream leaves no upstream, only the remote-tracking ref.
+    let upstream = git(dir)
         .args(["config", "--get", &format!("branch.{old}.merge")])
         .output()
-        .is_ok_and(|o| o.status.success())
-    {
+        .is_ok_and(|o| o.status.success());
+    let tracked = stdout(git(dir).args([
+        "for-each-ref",
+        "--format=%(refname)",
+        &format!("refs/remotes/*/{old}"),
+    ]))
+    .is_ok_and(|refs| !refs.trim().is_empty());
+    if upstream || tracked {
         bail!("{old} was already pushed; rename it on the remote too, or keep the name");
     }
     if !branch_name_ok(dir, new) {
@@ -943,6 +950,33 @@ mod tests {
         // Someone renamed it already: leave it alone.
         assert!(super::rename_branch(&dir, "env/brave-otter", "fix/other", false).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rename_refuses_a_branch_pushed_without_upstream() {
+        let dir = repo();
+        let remote = dir.with_extension("remote");
+        let git = |args: &[&str]| {
+            super::unpinned(&mut Command::new("git"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(git(&["init", "-q", "--bare", remote.to_str().unwrap()]));
+        let d = dir.to_str().unwrap();
+        assert!(git(&[
+            "-C",
+            d,
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().unwrap()
+        ]));
+        assert!(git(&["-C", d, "push", "-q", "origin", "env/brave-otter"]));
+        assert!(super::rename_branch(&dir, "env/brave-otter", "fix/x", true).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(remote);
     }
 
     #[test]

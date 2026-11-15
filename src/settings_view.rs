@@ -121,11 +121,11 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone branch name environment worktree rename model haiku"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts branch name environment worktree rename model haiku"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts"
             }
             Section::Appearance => {
                 "theme diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
@@ -145,6 +145,8 @@ impl Section {
         }
     }
 }
+
+const NAMING_KEYWORDS: &str = "branch name environment worktree rename model haiku";
 
 /// The section the last dialog was left on.
 static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
@@ -516,7 +518,19 @@ impl SettingsDialog {
         if query.is_empty() {
             return true;
         }
-        let text = format!("{} {} {}", s.title(), s.description(), s.keywords()).to_lowercase();
+        // The branch naming rows of General, in every build.
+        let naming = if s == Section::General {
+            NAMING_KEYWORDS
+        } else {
+            ""
+        };
+        let text = format!(
+            "{} {} {} {naming}",
+            s.title(),
+            s.description(),
+            s.keywords()
+        )
+        .to_lowercase();
         let words = query.split_whitespace().all(|w| text.contains(w));
         words
             || (s == Section::Shortcuts

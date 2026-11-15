@@ -1,0 +1,11 @@
+# The Rust version CI and local builds use. rustup reads this file and installs
+# the version on the first `cargo` command here.
+#
+# Bump it on purpose, in its own pull request that also fixes the new warnings
+# and lints: clippy runs with -D warnings. The weekly Rust stable workflow
+# (.github/workflows/rust-stable.yml) opens an issue when the latest
+# stable needs that.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -90,9 +90,13 @@ jobs:
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
+      # The version in rust-toolchain.toml. The bare image has no rustup, so
+      # install it first, without a toolchain of its own.
+      - name: Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install --no-self-update
 
       - name: cargo build
         run: cargo build --release --locked --no-default-features --target x86_64-unknown-linux-gnu
@@ -148,9 +152,9 @@ jobs:
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
+      # The version in rust-toolchain.toml; the build target is the host's.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # gpui compiles its HLSL shaders with fxc.exe from the Windows SDK in
       # release builds; the runner image ships the SDK (GPUI_FXC_PATH overrides).
@@ -201,9 +205,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
+      # The version in rust-toolchain.toml; the build target is the host's.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       - name: cargo build
         run: cargo build --release --locked --no-default-features --target aarch64-apple-darwin

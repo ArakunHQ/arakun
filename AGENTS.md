@@ -70,6 +70,8 @@ cargo deny check
 
 If you add or update a dependency, commit `Cargo.lock` too. Its license must be on the
 allow-list in `deny.toml`; do not add a license to that list without asking.
+The Rust version is pinned in `rust-toolchain.toml`; bump it only in its own pull
+request that also fixes the new lints.
 `lefthook install` runs these checks as Git hooks; see "Git hooks" in CONTRIBUTING.md.
 
 ## Code

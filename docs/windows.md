@@ -22,7 +22,8 @@ irm https://arakun.dev/install.ps1 | iex
 
 ## Requirements
 
-- **Rust via rustup**, toolchain `stable-x86_64-pc-windows-msvc`.
+- **Rust via rustup**, with the `x86_64-pc-windows-msvc` host. rustup installs the version
+  in `rust-toolchain.toml` on the first `cargo` command in the checkout.
 - **Visual Studio Build Tools 2022** with the *Desktop development with C++* workload
   (the MSVC compiler and a Windows SDK). `--release` needs `fxc.exe` from the Windows
   SDK: gpui compiles its HLSL shaders with it. If it is not found automatically, point

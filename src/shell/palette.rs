@@ -208,11 +208,22 @@ impl Shell {
             PaletteEvent::Merge(item) => {
                 let item = item.clone();
                 let weak = palette.downgrade();
+                // Merge the head GitHub last showed for it, so a push since can't be
+                // merged unseen; with none read yet, nothing is merged.
+                let head = self.pull_head(&item, cx);
                 cx.spawn_in(window, async move |this, cx| {
                     let it = item.clone();
-                    let result = cx
-                        .background_spawn(async move { pr::merge(&it, pr::MergeMethod::Squash) })
-                        .await;
+                    let result = match head {
+                        Some(head) => {
+                            cx.background_spawn(async move {
+                                pr::merge(&it, pr::MergeMethod::Squash, &head)
+                            })
+                            .await
+                        }
+                        None => Err(crate::github::Problem::Other(
+                            "its latest commit isn't loaded yet; open it in the GitHub tab".into(),
+                        )),
+                    };
                     let (text, ok) = match result {
                         Ok(()) => (format!("Merged #{}", item.number), true),
                         Err(p) if pr::refused_read_only(&p) => (
@@ -1417,6 +1428,16 @@ impl Shell {
         }
     }
 
+    /// The head commit GitHub last showed for a pull request, if it was read.
+    fn pull_head(&self, item: &ItemRef, cx: &App) -> Option<String> {
+        match self.github.read(cx).details(item) {
+            Some(crate::github::queue::Details::Pull(p)) if !p.head_ref_oid.is_empty() => {
+                Some(p.head_ref_oid.clone())
+            }
+            _ => None,
+        }
+    }
+
     fn run_rule(
         &mut self,
         rule: palette::rules::Rule,
@@ -1439,6 +1460,11 @@ impl Shell {
             match step {
                 palette::rules::Step::Merge { method } => {
                     let Some(item) = pull.clone() else { continue };
+                    // The head whose checks just passed: a push after that is not merged.
+                    let Some(head) = self.pull_head(&item, cx) else {
+                        notes.push("not merged: its latest commit isn't loaded".into());
+                        continue;
+                    };
                     let method = match method.as_str() {
                         "merge" => pr::MergeMethod::Merge,
                         "rebase" => pr::MergeMethod::Rebase,
@@ -1452,7 +1478,7 @@ impl Shell {
                     cx.spawn(async move |this, cx| {
                         let it = item.clone();
                         let result = cx
-                            .background_spawn(async move { pr::merge(&it, method) })
+                            .background_spawn(async move { pr::merge(&it, method, &head) })
                             .await;
                         let _ = this.update(cx, |this, cx| {
                             let (kind, text) = match result {

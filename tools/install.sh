@@ -62,50 +62,15 @@ if [ "$(uname)" = Darwin ]; then
   cargo build $flags $features
 
   tmp="$app.tmp.$$"
-  rm -rf "$tmp"
   trap 'rm -rf "$tmp"' EXIT
-  mkdir -p "$tmp/Contents/MacOS" "$tmp/Contents/Resources"
-  cp "target/$profile/arakun" "$tmp/Contents/MacOS/arakun"
-  [ $debug = 0 ] && strip -S "$tmp/Contents/MacOS/arakun"
-
-  iconset=$(mktemp -d)/arakun.iconset
-  mkdir -p "$iconset"
-  for s in 16 32 128 256 512; do
-    sips -z $s $s assets/brand/arakun.png --out "$iconset/icon_${s}x$s.png" >/dev/null
-    sips -z $((s * 2)) $((s * 2)) assets/brand/arakun.png --out "$iconset/icon_${s}x$s@2x.png" >/dev/null
-  done
-  iconutil -c icns -o "$tmp/Contents/Resources/arakun.icns" "$iconset"
-  rm -rf "$(dirname "$iconset")"
-
-  version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-  cat > "$tmp/Contents/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>Arakun</string>
-  <key>CFBundleDisplayName</key><string>Arakun</string>
-  <key>CFBundleIdentifier</key><string>dev.arakun.Arakun</string>
-  <key>CFBundleExecutable</key><string>arakun</string>
-  <key>CFBundleIconFile</key><string>arakun</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>$version</string>
-  <key>CFBundleVersion</key><string>$version</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
-  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict>
-</plist>
-EOF
-
+  set --
+  [ $debug = 1 ] || set -- --strip
   if [ $browser = 1 ]; then
     framework=$(ls -d .cef-sdk/*/cef_macos_*/"Chromium Embedded Framework.framework" 2>/dev/null | tail -1)
     [ -n "$framework" ] || { echo "install: the build left no CEF framework in .cef-sdk" >&2; exit 1; }
-    mkdir -p "$tmp/Contents/Frameworks"
-    ditto "$framework" "$tmp/Contents/Frameworks/Chromium Embedded Framework.framework"
+    set -- "$@" --framework "$framework"
   fi
-  # Ad-hoc: enough to run on this Mac; a build for others needs a Developer ID and notarization.
-  codesign --force --deep --sign - "$tmp" 2>/dev/null
+  sh tools/macos-app.sh "$@" "target/$profile/arakun" "$tmp"
 
   rm -rf "$app"
   mkdir -p "$(dirname "$app")"

@@ -9,7 +9,8 @@ For contributors and for coding agents. Linux and macOS: tools/setup-dev.sh.
   -Relay    also Node 24+ and the npm packages of relay\
   -Browser  also CMake and Ninja, for the `browser` feature (CEF)
   -Hooks    turn on the Git hooks in lefthook.yml (lefthook install; installs lefthook
-            with winget if it is missing)
+            with winget if it is missing); lefthook runs them through sh, so commits
+            need Git for Windows' sh
   -Build    build the tests once, so the first clippy or test run is quick
 
 Always: Git, Visual Studio Build Tools 2022 with the C++ workload (MSVC and a Windows
@@ -261,6 +262,8 @@ if ($Hooks) {
             Ok 'core.hooksPath unset (it pointed at tools/hooks, which is gone)'
         }
     }
+    # --path-format=absolute needs Git 2.31+; with an older Git, -Check may report the
+    # hooks as off when they are on.
     $hookDir = Quiet { git -C $Root rev-parse --path-format=absolute --git-path hooks }
     $commitMsg = if ($hookDir) { Join-Path $hookDir 'commit-msg' } else { '' }
     if ($commitMsg -and (Test-Path $commitMsg) -and (Select-String -Quiet -Path $commitMsg -Pattern 'lefthook')) {

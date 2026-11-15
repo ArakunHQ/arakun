@@ -235,6 +235,8 @@ if [ $hooks = 1 ]; then
       ok "core.hooksPath unset (it pointed at tools/hooks, which is gone)"
     fi
   fi
+  # --path-format=absolute needs Git 2.31+; with an older Git, --check may report
+  # the hooks as off when they are on.
   hookdir=$(cd "$here" && git rev-parse --path-format=absolute --git-path hooks)
   if grep -qs lefthook "$hookdir/commit-msg"; then
     ok "lefthook hooks are on"
@@ -243,7 +245,8 @@ if [ $hooks = 1 ]; then
   elif [ $check = 1 ]; then
     lack "lefthook hooks (lefthook install)"
   else
-    (cd "$here" && lefthook install) && ok "lefthook hooks are on (undo: lefthook uninstall)"
+    (cd "$here" && lefthook install) || { say "lefthook install failed"; exit 1; }
+    ok "lefthook hooks are on (undo: lefthook uninstall)"
   fi
 fi
 

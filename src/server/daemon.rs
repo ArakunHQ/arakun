@@ -1538,6 +1538,9 @@ impl Daemon {
                     cx.background_executor()
                         .spawn(async {
                             agent::plan::refresh();
+                            // How Claude Code is signed in on this machine: a
+                            // key or an endpoint has no plan limits to show.
+                            agent::claude_auth::access();
                         })
                         .await;
                     let _ = this.update(cx, |this, cx| this.usage_changed(cx));
@@ -1583,7 +1586,15 @@ impl Daemon {
             error: account.error().map(|e| e.as_ref()),
             fetched_at: account.fetched_at(),
         };
-        wire::plan_usage(plan.as_ref(), &droid, crate::account::unix_now()).to_string()
+        // An API key or another endpoint in place of a plan, as last read in `Usage`.
+        let access = agent::claude_auth::latest().map(|a| a.label());
+        wire::plan_usage(
+            plan.as_ref(),
+            access.as_deref(),
+            &droid,
+            crate::account::unix_now(),
+        )
+        .to_string()
     }
 
     /// The plan limits may have moved (a fetch landed): devices hear if they did.

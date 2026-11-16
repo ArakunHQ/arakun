@@ -191,7 +191,7 @@ function report(results, since, until) {
       "",
     );
   } else {
-    lines.push("No job in this period reported usage. Add `uses: ./.github/actions/runner-usage` after `actions/checkout` in the jobs to size.", "");
+    lines.push("No job in this period reported usage. Add `uses: $/.github/actions/runner-usage` early in the jobs to size.", "");
   }
 
   if (unmeasured.length) {

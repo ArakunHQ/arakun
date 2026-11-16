@@ -1422,9 +1422,13 @@ fn unquote(line: &str, max: usize) -> (&str, usize) {
     (t, n)
 }
 
+/// Stands for a code span over lines while the rest of a paragraph is
+/// read: what is in it is text, and its line breaks must stay.
+const SPAN: char = '\u{E000}';
+
 /// A paragraph with its HTML as markdown, read as one text so a link or
 /// bold that runs over lines keeps its meaning. When a tag took a line
-/// break with it (a `<picture>` over lines), the lines no longer match
+/// break with it (a `<summary>` over lines), the lines no longer match
 /// those in, so each line is read on its own instead.
 fn html_paragraph(para: &[&str]) -> Vec<String> {
     // A line that held only tags is gone, not a blank line: a blank line
@@ -1448,13 +1452,20 @@ fn html_paragraph(para: &[&str]) -> Vec<String> {
             }
             joins
         });
-        let mut md = String::with_capacity(joined.len());
-        for (from, to) in ranges {
-            md.push_str(&html_inline(&joined[at..from], false, 0));
-            md.push_str(&joined[from..to]);
+        // Each span is set aside as a token while the rest is read in one
+        // go: a bold or a link around it stays open over it.
+        let token = |n: usize| format!("{SPAN}{n}{SPAN}");
+        let mut text = String::with_capacity(joined.len());
+        for (n, &(from, to)) in ranges.iter().enumerate() {
+            text.push_str(&joined[at..from]);
+            text.push_str(&token(n));
             at = to;
         }
-        md.push_str(&html_inline(&joined[at..], false, 0));
+        text.push_str(&joined[at..]);
+        let mut md = html_inline(&text, false, 0);
+        for (n, &(from, to)) in ranges.iter().enumerate() {
+            md = md.replacen(&token(n), &joined[from..to], 1);
+        }
         let pieces: Vec<&str> = md.split('\n').collect();
         if pieces.len() == para.len() {
             return para
@@ -1871,18 +1882,23 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
             ("picture", false) => match close_in("</picture>") {
                 Some(end) => {
                     let img = picture_img(&rest[..end]);
+                    // Its line breaks stay after it, so the lines of a
+                    // paragraph stay where they were.
+                    let breaks =
+                        "\n".repeat(tag.matches('\n').count() + rest[..end].matches('\n').count());
                     rest = &rest[end + "</picture>".len()..];
                     if let Some(image) = img.and_then(content_image) {
                         out.push_str(&image);
-                        continue;
+                    } else {
+                        // An icon: its words before a count ("Passed 4"),
+                        // else nothing.
+                        let alt = img.and_then(|a| tag_attr(a, "alt"));
+                        match alt.filter(|a| !a.trim().is_empty() && counts(rest)) {
+                            Some(alt) => out.push_str(alt.trim()),
+                            None => rest = after_icon(&out, rest),
+                        }
                     }
-                    // An icon: its words before a count ("Passed 4"), else
-                    // nothing.
-                    let alt = img.and_then(|a| tag_attr(a, "alt"));
-                    match alt.filter(|a| !a.trim().is_empty() && counts(rest)) {
-                        Some(alt) => out.push_str(alt.trim()),
-                        None => rest = after_icon(&out, rest),
-                    }
+                    out.push_str(&breaks);
                 }
                 // Over lines: its `<img>` is read on its own.
                 None => rest = after_icon(&out, rest),
@@ -2494,10 +2510,32 @@ mod tests {
             without_html("- a <a href=\"x\">two\n  lines</a>\n- b<hr>c"),
             "- a [two\n  lines](<x>)\n- b\n\n---\n\nc"
         );
-        // A picture over lines: each line is read on its own.
+        // A picture over lines keeps its lines, so a link over lines next
+        // to it keeps its destination.
         assert_eq!(
             without_html("<picture>\n<img src=\"l.png\" width=\"600\">\n</picture> <b>x</b>"),
             "![](<l.png>)\n**x**"
+        );
+        assert_eq!(
+            without_html(
+                "<a href=\"x\">first\nsecond</a>\n<picture>\n<img src=\"shot.png\">\n</picture>"
+            ),
+            "[first\nsecond](<x>)\n![](<shot.png>)"
+        );
+        assert_eq!(
+            without_html(
+                "<strong><picture>\n<img src=\"i.svg\" width=\"16\">\n</picture> Risk</strong>"
+            ),
+            "**Risk**"
+        );
+        // A bold around a code span over lines stays bold.
+        assert_eq!(
+            without_html("<strong>first `a\nb` last</strong>"),
+            "**first `a\nb` last**"
+        );
+        assert_eq!(
+            without_html("<a href=\"x\">see `a\n<b>b</b>`</a>"),
+            "[see `a\n<b>b</b>`](<x>)"
         );
     }
 

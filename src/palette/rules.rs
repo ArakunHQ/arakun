@@ -635,18 +635,28 @@ pub fn parse_reminder(text: &str, clock: &Clock) -> Option<Draft> {
     if !has_phrase(&w, REMIND_WORDS) {
         return None;
     }
-    let t = text.to_lowercase();
+    let low = super::rank::Lowered::new(text);
+    let t = low.text.as_str();
     let bare = has_phrase(&w, TIMER_WORDS);
-    let (at, span) = relative_time(&t, clock.now, bare).or_else(|| clock_time(&t, clock))?;
-    // The span's offsets are in `t`. They fit `text` only when no letter changed
-    // its length when lowered (equal total lengths can hide `İ` and `K` cancelling
-    // out); else cut the lower-case text instead.
-    let src = if super::rank::lower_keeps_offsets(text) {
-        text
-    } else {
-        &t
-    };
-    let what = what_to_remember(&format!("{} {}", &src[..span.0], &src[span.1..]));
+    let (at, mut cuts) = relative_time(t, clock.now, bare)
+        .map(|(at, span)| (at, vec![span]))
+        .or_else(|| clock_time(t, clock))?;
+    // The cuts are offsets in `t`, where some letters changed length (`İ`
+    // grows, the Kelvin sign shrinks). Map them back and cut the typed text,
+    // so the message keeps its case.
+    cuts.sort();
+    let mut kept = String::new();
+    let mut from = 0;
+    for (a, b) in cuts {
+        let r = low.back(a..b);
+        if r.start >= from {
+            kept.push_str(&text[from..r.start]);
+            kept.push(' ');
+            from = r.end;
+        }
+    }
+    kept.push_str(&text[from..]);
+    let what = what_to_remember(&kept);
     let text = if what.is_empty() {
         "Time's up".to_string()
     } else {
@@ -791,10 +801,28 @@ fn relative_time(t: &str, now: u64, bare: bool) -> Option<(u64, (usize, usize))>
     None
 }
 
-/// "a las 5pm", "at 17:30", "mañana a las 9", "tomorrow at 9am": the moment and its span.
-/// The day is counted in local dates and the time placed with `clock`, so a day that
-/// changes to or from summer time still rings at the hour said.
-fn clock_time(t: &str, clock: &Clock) -> Option<(u64, (usize, usize))> {
+/// Where "mañana" or "tomorrow" shows in `t` as a whole word meaning the next
+/// day, not the morning ("de la mañana"), with its length.
+fn tomorrow_words(t: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for word in ["mañana", "manana", "tomorrow"] {
+        for (j, _) in t.match_indices(word) {
+            if word_start(t, j)
+                && !word_start_after(t, j + word.len())
+                && !t[..j].ends_with("de la ")
+            {
+                out.push((j, word.len()));
+            }
+        }
+    }
+    out
+}
+
+/// "a las 5pm", "at 17:30", "mañana a las 9", "tomorrow at 9am": the moment and the
+/// spans of `t` that said it. The day is counted in local dates and the time placed
+/// with `clock`, so a day that changes to or from summer time still rings at the hour
+/// said.
+fn clock_time(t: &str, clock: &Clock) -> Option<(u64, Vec<(usize, usize)>)> {
     for head in ["a las ", "a la ", "at "] {
         for (i, _) in t.match_indices(head) {
             if !word_start(t, i) {
@@ -839,29 +867,43 @@ fn clock_time(t: &str, clock: &Clock) -> Option<(u64, (usize, usize))> {
             if h > 23 || m > 59 {
                 continue;
             }
-            let w = words(t);
-            let tomorrow = w.iter().enumerate().any(|(k, x)| {
-                matches!(x.as_str(), "mañana" | "manana" | "tomorrow")
-                    && !(k >= 2 && w[k - 1] == "la" && w[k - 2] == "de")
-            });
+            // "Tomorrow" sets the day only next to the time or to the asking
+            // words: in "remind me at 5pm to plan tomorrow" it is the message.
+            let mut start = i;
+            let mut end = i + head.len() + used;
+            let mut extra = None;
+            let mut tomorrow = false;
+            for (j, len) in tomorrow_words(t) {
+                if j + len <= start && t[j + len..start].trim().is_empty() {
+                    start = j;
+                    tomorrow = true;
+                } else if j >= end && t[end..j].trim().is_empty() {
+                    end = j + len;
+                    tomorrow = true;
+                } else {
+                    let pre = t[..j].trim_end();
+                    if REMIND_WORDS
+                        .iter()
+                        .any(|p| pre.ends_with(p) && word_start(pre, pre.len() - p.len()))
+                    {
+                        extra = Some((j, j + len));
+                        tomorrow = true;
+                    }
+                }
+            }
             let today = (clock.to_local)(clock.now)?;
             let on =
                 |days: i32| (clock.from_local)(today.year, today.month, today.day + days, h, m);
-            let mut start = i;
             let at = if tomorrow {
-                for word in ["mañana ", "manana ", "tomorrow "] {
-                    if let Some(j) = t[..i].rfind(word)
-                        && i - (j + word.len()) <= 1
-                    {
-                        start = j;
-                    }
-                }
                 on(1)?
             } else {
                 // A time already gone today means the next one.
                 on(0).filter(|at| *at > clock.now).or_else(|| on(1))?
             };
-            return Some((at, (start, i + head.len() + used)));
+            let mut spans = vec![(start, end)];
+            // Said twice ("recordatorio mañana a las 9") it is cut once.
+            spans.extend(extra.filter(|&(j, _)| j < start || j >= end));
+            return Some((at, spans));
         }
     }
     None
@@ -1413,6 +1455,37 @@ mod tests {
         assert_eq!(notice(&d), "llamar a José 🦀");
         let d = parse_reminder("İstanbul: remind me in 10 min", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: now + 600 });
+        // The message is cut from the typed text, so one `İ` keeps the case
+        // of the rest, paths included.
+        let d = parse_reminder("remind me in 5 min Review İstanbul/README.md", &c).unwrap();
+        assert_eq!(notice(&d), "Review İstanbul/README.md");
+        let d = parse_reminder("İİ reminder in 5 min é\u{212A}", &c).unwrap();
+        assert_eq!(notice(&d), "İİ é\u{212A}");
+        let d = parse_reminder("recuérdame mañana a las 9 de ver İzmir", &c).unwrap();
+        assert_eq!(notice(&d), "ver İzmir");
+    }
+
+    #[test]
+    fn tomorrow_counts_only_next_to_the_time() {
+        // Thursday 15 January 2026, 10:00 local.
+        let c = zone(local(2026, 1, 15, 10, 0));
+        let at = |text: &str| match parse_reminder(text, &c).unwrap().trigger {
+            Trigger::At { at } => at,
+            t => panic!("{t:?}"),
+        };
+        let today = local(2026, 1, 15, 17, 0);
+        let tomorrow = local(2026, 1, 16, 17, 0);
+        let d = parse_reminder("remind me at 5pm to plan tomorrow", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: today });
+        assert_eq!(notice(&d), "plan tomorrow");
+        assert_eq!(at("recuérdame a las 5pm preparar lo de mañana"), today);
+        assert_eq!(at("remind me tomorrow at 5pm to stretch"), tomorrow);
+        let d = parse_reminder("remind me at 5pm tomorrow to stretch", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: tomorrow });
+        assert_eq!(notice(&d), "stretch");
+        let d = parse_reminder("recuérdame mañana llamar a Dani a las 5pm", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: tomorrow });
+        assert_eq!(notice(&d), "llamar a Dani");
     }
 
     #[test]

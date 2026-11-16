@@ -295,9 +295,9 @@ impl Link {
     fn talk_direct(&mut self, ws: &mut Socket, unpair: &(String, String)) -> Ended {
         let mut pulse = Pulse::new(self.timing);
         loop {
-            if self.stop.load(Ordering::Relaxed) {
-                return Ended::Stopped;
-            }
+            // Read before the queue is: `unpair` is queued before the client
+            // is dropped, so a stop seen here has its unpair in the queue below.
+            let stopping = self.stop.load(Ordering::Relaxed);
             match ws.read() {
                 Ok(Message::Text(text)) => {
                     pulse.heard();
@@ -325,6 +325,9 @@ impl Link {
                         return Ended::Stopped;
                     }
                 }
+            }
+            if stopping {
+                return Ended::Stopped;
             }
             if let Err(ended) = pulse.beat(ws) {
                 return ended;
@@ -381,9 +384,8 @@ impl Link {
         // The server knows who this is: messages may go.
         let mut ready = false;
         loop {
-            if self.stop.load(Ordering::Relaxed) {
-                return Ended::Stopped;
-            }
+            // As in `talk_direct`: a stop is acted on after the queue is read.
+            let stopping = self.stop.load(Ordering::Relaxed);
             match ws.read() {
                 Ok(Message::Binary(bytes)) => {
                     pulse.heard();
@@ -522,6 +524,9 @@ impl Link {
                 if last {
                     return Ended::Stopped;
                 }
+            }
+            if stopping {
+                return Ended::Stopped;
             }
             if let Err(ended) = pulse.beat(ws) {
                 return ended;
@@ -976,6 +981,41 @@ mod tests {
         // For good: no status follows, and nothing dials again.
         std::thread::sleep(Duration::from_millis(300));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn forgetting_and_letting_go_at_once_still_unpairs() {
+        // "Forget" asks for the unpair and drops the client in one go. The
+        // link may be anywhere in its loop then; wherever, the server is told.
+        for round in 0..12u64 {
+            let access = Access::new(Vec::new(), String::new());
+            let (server, mut incoming) =
+                Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+            let invite = Invite {
+                origin: format!("http://127.0.0.1:{}", server.port()),
+                code: access.lock().unwrap().begin_pairing(),
+                secret: None,
+            };
+            let (tx, mut rx) = mpsc::unbounded();
+            let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
+            assert_eq!(status(&mut rx), Status::Connecting);
+            assert!(matches!(next(&mut rx), Event::Paired(_)));
+            assert_eq!(status(&mut rx), Status::Connected);
+            assert!(matches!(from_server(&mut incoming), Incoming::Paired));
+            assert!(matches!(
+                from_server(&mut incoming),
+                Incoming::Connected(..)
+            ));
+            // A different moment of the loop each round.
+            std::thread::sleep(Duration::from_millis(round * 7));
+            client.unpair();
+            drop(client);
+            assert!(
+                matches!(from_server(&mut incoming), Incoming::Unpaired),
+                "round {round}"
+            );
+            assert!(access.lock().unwrap().devices.is_empty(), "round {round}");
+        }
     }
 
     /// One HTTP request answered by hand: what `/_relay` says.

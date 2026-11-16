@@ -618,7 +618,7 @@ impl ServersView {
             .child(ui::text(
                 Type::Caption,
                 theme::text_faint(),
-                "Through the relay, everything between this app and the server is encrypted end to end. Agents there use that machine's logins and run in its folders.",
+                "Through the relay, everything between this app and the server is encrypted end to end. A link that starts with http:// is not encrypted: use one only on a network you trust. Agents there use that machine's logins and run in its folders.",
             ))
             .into_any_element()
     }

@@ -129,6 +129,8 @@ pub struct Daemon {
     /// The last thing each session notified about, so one turn says it once.
     notified: HashMap<String, Notice>,
     writer: Writer,
+    /// The saved transcript a device read last, for the pages after the first.
+    last_read: agent::saved::LastRead,
     code: Rc<Cell<i32>>,
     stopping: bool,
     /// The local socket, until the server stops.
@@ -713,6 +715,7 @@ impl Daemon {
             uploads: phone::Uploads::default(),
             notified: HashMap::new(),
             writer: parts.writer,
+            last_read: Default::default(),
             code: parts.code,
             stopping: false,
             listening: Some(parts.listening),
@@ -1027,10 +1030,7 @@ impl Daemon {
                 // failed leaves the older file to show, which is all there is.
                 let path = self.store.transcript_path(id);
                 self.writer.behind(&path);
-                let (all, cwd) = Thread::read_transcript(&path)
-                    .map(|t| (t.entries, t.meta.cwd))
-                    .unwrap_or_default();
-                f(&all, &cwd)
+                self.last_read.with(&path, f)
             }
         }
     }
@@ -1039,6 +1039,7 @@ impl Daemon {
         if self.stopping {
             return;
         }
+        self.last_read.trim();
         self.sync_inbox(cx);
         let due: Vec<String> = self
             .live

@@ -62,6 +62,8 @@ pub(super) struct PhoneLink {
     last_usage: String,
     /// Photos phones are sending, in pieces.
     uploads: phone::Uploads,
+    /// The saved transcript a device read last, for the pages after the first.
+    last_read: crate::agent::saved::LastRead,
     _listen: Task<()>,
     _tick: Task<()>,
 }
@@ -311,7 +313,12 @@ impl Shell {
             loop {
                 cx.background_executor().timer(INBOX_EVERY).await;
                 if this
-                    .update(cx, |this, cx| this.phone_sync_inbox(cx))
+                    .update(cx, |this, cx| {
+                        if let Some(link) = &this.phone {
+                            link.last_read.trim();
+                        }
+                        this.phone_sync_inbox(cx)
+                    })
                     .is_err()
                 {
                     break;
@@ -338,6 +345,7 @@ impl Shell {
             last_inbox: String::new(),
             last_usage: String::new(),
             uploads: phone::Uploads::default(),
+            last_read: Default::default(),
             _listen: listen,
             _tick: tick,
         });
@@ -980,10 +988,16 @@ impl Shell {
                 f(t.entries(), t.cwd())
             }
             None => {
-                let (all, cwd) = Thread::read_transcript(&state::transcript_path(id))
-                    .map(|t| (t.entries, t.meta.cwd))
-                    .unwrap_or_default();
-                f(&all, &cwd)
+                let path = state::transcript_path(id);
+                match &self.phone {
+                    Some(link) => link.last_read.with(&path, f),
+                    None => {
+                        let (all, cwd) = Thread::read_transcript(&path)
+                            .map(|t| (t.entries, t.meta.cwd))
+                            .unwrap_or_default();
+                        f(&all, &cwd)
+                    }
+                }
             }
         }
     }

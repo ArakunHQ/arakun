@@ -555,6 +555,13 @@ impl Shell {
         };
         match event {
             Event::Paired(saved) => {
+                // A pairing given up (cancelled, or another link pasted over
+                // it) may still finish on its way out. Its connection is gone,
+                // so it would sit in the list as a server nothing talks to,
+                // and take the pairing now under way for done.
+                if link.pairing.as_deref() != Some(id) || !link.conns.contains_key(id) {
+                    return;
+                }
                 link.pairing = None;
                 link.pairing_timeout = None;
                 // "The server is not at the relay" was about the wait that just ended.

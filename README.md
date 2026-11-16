@@ -396,7 +396,8 @@ The link is good for two minutes and pairs one device. There are two ways to use
   folder the server offers, send follow-ups, stop a turn and answer what the agent
   asks. The app keeps what pairing gave it in `servers.json` next to its state, which
   only your user can read. "Forget" on a server removes it there and has the server
-  forget the app.
+  forget the app. A server that cannot be reached at that moment keeps the app in its
+  list: remove it there with `arakun-server unpair <device>`.
 - **On a phone, or in any browser.** Open the link. It is the page the Phone tab pairs
   phones with: it lists the sessions, reads them live, and notifies you when one
   finishes or needs you.
@@ -425,8 +426,10 @@ arakun-server status
   serves it at the machine's tailnet name over HTTPS; that takes the machine's HTTPS
   port on the tailnet, as the app's Phone tab on Tailscale does, so only one of the two
   can use it on a machine. `--reach lan` listens on every
-  interface over plain HTTP (`--port`, 7474 unless told): use it only on a network you
-  trust. What `serve` is started with is kept for the next run.
+  interface over plain HTTP (`--port`, 7474 unless told): nothing is encrypted, and
+  whoever can watch that network can read what a device is let in with. Use it only on a
+  network you trust, and Tailscale or the relay across networks. What `serve` is started
+  with is kept for the next run.
 - **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
   `phone.json` (how it is reached, its relay identity, the paired devices),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents

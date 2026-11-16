@@ -260,7 +260,14 @@ impl CloudflareView {
             })
     }
 
-    pub(super) fn render_nav(&self, s: &Snapshot, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// `rail`: the window is narrow, so only the icons show, a dot for a count
+    /// that needs a look and the name in a tooltip.
+    pub(super) fn render_nav(
+        &self,
+        s: &Snapshot,
+        rail: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let issues = s.issues();
         let urgent = issues.iter().any(|i| i.high);
         let real = issues.iter().filter(|i| !i.bots).count();
@@ -281,11 +288,11 @@ impl CloudflareView {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(216.))
+            .w(px(if rail { super::RAIL_W } else { super::NAV_W }))
             .h_full()
             .overflow_y_scroll()
             .gap(crate::ui::sp(2.))
-            .px(crate::ui::sp(12.))
+            .px(crate::ui::sp(if rail { 8. } else { 12. }))
             .py(crate::ui::sp(16.))
             .border_r_1()
             .border_color(theme::border_subtle());
@@ -354,6 +361,43 @@ impl CloudflareView {
                 nav = nav.child(div().flex_none().h(px(10.)));
             }
             let on = self.page == page;
+            if rail {
+                nav = nav.child(
+                    div()
+                        .id(("cf-nav-row", i))
+                        .relative()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .h(px(32.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
+                        .cursor_pointer()
+                        .when(on, |d| d.bg(theme::fill_selected()))
+                        .when(!on, |d| d.hover(|d| d.bg(theme::fill_hover())))
+                        .child(icon(icon_name, 14.).text_color(if on {
+                            theme::text()
+                        } else {
+                            theme::text_subtle()
+                        }))
+                        .children(tone.map(|t| {
+                            div()
+                                .absolute()
+                                .top(px(6.))
+                                .right(px(8.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(t.color())
+                        }))
+                        .tooltip(ui::tip(page.label()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.page = page;
+                            this.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                            cx.notify();
+                        })),
+                );
+                continue;
+            }
             nav = nav.child(
                 div()
                     .id(("cf-nav-row", i))
@@ -439,11 +483,10 @@ impl CloudflareView {
         }
         let visitors = week.last().map_or(0, |d| d.visitors);
         let reqs: Vec<f64> = week.iter().map(|d| d.requests as f64).collect();
+        let width = self.layout().content;
 
-        let kpis = div()
-            .flex()
-            .gap(crate::ui::sp(12.))
-            .child(kpi(
+        let kpis: Vec<AnyElement> = vec![
+            kpi(
                 "Requests · 24h",
                 known(s.traffic, count(served)),
                 if served > 0 {
@@ -453,15 +496,17 @@ impl CloudflareView {
                 },
                 if bad > 0 { Tone::Warning } else { Tone::Info },
                 Some(reqs.clone()),
-            ))
-            .child(kpi(
+            )
+            .into_any_element(),
+            kpi(
                 "Visitors · today",
                 known(s.traffic, count(visitors)),
                 "unique, all domains".into(),
                 Tone::Info,
                 Some(week.iter().map(|d| d.visitors as f64).collect()),
-            ))
-            .child(kpi(
+            )
+            .into_any_element(),
+            kpi(
                 "Worker requests · 24h",
                 known(s.usage, count(worker_requests)),
                 format!(
@@ -475,8 +520,9 @@ impl CloudflareView {
                     Tone::Success
                 },
                 None,
-            ))
-            .child(kpi(
+            )
+            .into_any_element(),
+            kpi(
                 "Tunnels up",
                 if s.tunnels_read {
                     format!("{up}/{}", s.tunnels.len())
@@ -494,8 +540,9 @@ impl CloudflareView {
                     Tone::Success
                 },
                 None,
-            ))
-            .child(kpi(
+            )
+            .into_any_element(),
+            kpi(
                 "Security findings",
                 s.insights.len().to_string(),
                 if critical > 0 {
@@ -509,7 +556,10 @@ impl CloudflareView {
                     Tone::Success
                 },
                 None,
-            ));
+            )
+            .into_any_element(),
+        ];
+        let kpis = grid(kpis, kpi_cols(width));
 
         // A week of traffic, all domains.
         let labels: Vec<SharedString> = (0..days)
@@ -555,6 +605,7 @@ impl CloudflareView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap(crate::ui::sp(16.))
                     .child(ui::legend("Requests", Tone::Info.color()))
                     .child(ui::legend("From cache", Tone::Success.color()))
@@ -566,15 +617,38 @@ impl CloudflareView {
                 quiet("Traffic analytics didn't come back this time.").into_any_element()
             });
 
-        let side = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(360.))
-            .gap(crate::ui::sp(12.))
-            .child(self.security_card(s, cx))
-            .child(self.billing_card(s, now, cx))
-            .child(self.certs_card(s, now));
+        let cards = [
+            self.security_card(s, cx),
+            self.billing_card(s, now, cx),
+            self.certs_card(s, now),
+        ];
+        // Beside the chart when both fit, else under it, as many to a line as fit.
+        let middle = if width >= SIDE_W + 12. + TRAFFIC_MIN {
+            div()
+                .flex()
+                .gap(crate::ui::sp(12.))
+                .items_start()
+                .child(traffic)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .w(px(SIDE_W))
+                        .gap(crate::ui::sp(12.))
+                        .children(cards),
+                )
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(12.))
+                .child(traffic)
+                .child(grid(
+                    cards.into_iter().map(|c| c.into_any_element()).collect(),
+                    cols(width, 260., 3),
+                ))
+        };
 
         let mut groups: Vec<Group> = Vec::new();
         for (i, issue) in issues.iter().enumerate() {
@@ -651,16 +725,9 @@ impl CloudflareView {
             .flex_col()
             .gap(crate::ui::sp(20.))
             .child(kpis)
-            .child(
-                div()
-                    .flex()
-                    .gap(crate::ui::sp(12.))
-                    .items_start()
-                    .child(traffic)
-                    .child(side),
-            )
+            .child(middle)
             .child(attention)
-            .child(self.domains_strip(s, cx))
+            .child(self.domains_strip(s, width, cx))
     }
 
     fn render_group(&self, s: &Snapshot, g: Group, cx: &mut Context<Self>) -> AnyElement {
@@ -827,6 +894,7 @@ impl CloudflareView {
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w_0()
                         .gap(crate::ui::sp(2.))
                         .p(crate::ui::sp(8.))
                         .rounded(crate::ui::rad(ui::RADIUS))
@@ -847,6 +915,7 @@ impl CloudflareView {
                         )
                         .child(
                             div()
+                                .truncate()
                                 .ty(Type::Caption)
                                 .text_color(theme::text_subtle())
                                 .child(sev),
@@ -915,6 +984,8 @@ impl CloudflareView {
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .pb(crate::ui::sp(3.))
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
@@ -1055,7 +1126,7 @@ impl CloudflareView {
         card
     }
 
-    fn domains_strip(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
+    fn domains_strip(&self, s: &Snapshot, width: f32, cx: &mut Context<Self>) -> Div {
         let now = crate::model::unix_now();
         let mut cards: Vec<AnyElement> = Vec::new();
         for z in &s.zones {
@@ -1166,7 +1237,7 @@ impl CloudflareView {
                     .text_color(theme::text())
                     .child("Domains"),
             )
-            .child(grid(cards, 3))
+            .child(grid(cards, cols(width, 240., 3)))
     }
 
     // -----------------------------------------------------------------------
@@ -1441,7 +1512,7 @@ impl CloudflareView {
             .flex_col()
             .gap(crate::ui::sp(20.))
             .child(div().flex().items_end().child(head.flex_1()).child(open))
-            .child(grid(cards, 2))
+            .child(grid(cards, cols(self.layout().content, 320., 2)))
     }
 
     pub(super) fn render_email(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
@@ -1641,6 +1712,28 @@ fn subject_name(s: &Subject) -> String {
         | Subject::Registration(n)
         | Subject::Pages(n) => n.clone(),
         Subject::Cloudflared => "cloudflared".into(),
+    }
+}
+
+/// The side cards' width when they sit beside the traffic chart.
+const SIDE_W: f32 = 360.;
+/// The chart needs this much beside the side cards; under it they go below.
+const TRAFFIC_MIN: f32 = 420.;
+/// The narrowest a number card gets before the cards take another line.
+const KPI_MIN: f32 = 180.;
+
+/// How many cards at least `min` wide fit on a line of `width`, up to `max`.
+fn cols(width: f32, min: f32, max: usize) -> usize {
+    let gap = f32::from(crate::ui::sp(12.));
+    (((width + gap) / (min + gap)).floor() as usize).clamp(1, max)
+}
+
+/// The five numbers: all on one line, else three and two, else two to a line.
+fn kpi_cols(width: f32) -> usize {
+    match cols(width, KPI_MIN, 5) {
+        5 => 5,
+        3 | 4 => 3,
+        n => n,
     }
 }
 
@@ -2134,5 +2227,25 @@ impl CloudflareView {
                     .child(top("Countries", &t.countries, false))
                     .child(top("Browsers", &t.browsers, false)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cards_per_line_follow_the_width() {
+        // The 450-pixel page in a small window: one card to a line for the side
+        // cards, two for the numbers, and never none.
+        assert_eq!(cols(450., 260., 3), 1);
+        assert_eq!(kpi_cols(450.), 2);
+        assert_eq!(cols(0., 240., 3), 1);
+        // Room for three numbers or four goes three and two, not four and one.
+        assert_eq!(kpi_cols(600.), 3);
+        assert_eq!(kpi_cols(800.), 3);
+        // A wide page has all five on one line.
+        assert_eq!(kpi_cols(1000.), 5);
+        assert_eq!(cols(1264., 240., 3), 3);
     }
 }

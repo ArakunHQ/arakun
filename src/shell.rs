@@ -490,6 +490,7 @@ impl Shell {
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
         theme::set_grays(layout.grays);
+        crate::palettes::apply_saved();
         account_view::set_rail_shows(crate::agent::AgentKind::Claude, layout.rail_usage[0]);
         account_view::set_rail_shows(crate::agent::AgentKind::Droid, layout.rail_usage[1]);
         account_view::set_rail_shows(crate::agent::AgentKind::OpenCode, layout.rail_usage[2]);

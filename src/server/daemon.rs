@@ -1546,6 +1546,19 @@ impl Daemon {
                 };
                 self.transport.send(client, reply);
             }
+            ClientMsg::Transcript { session, from } => {
+                let Some(record) = self.store.session(&session) else {
+                    self.transport.send(client, gone());
+                    return;
+                };
+                let (agent, place) = (record.agent.id(), record.place.clone());
+                let frames = self.with_entries(&session, cx, |all, _| {
+                    wire::transcript_message(&session, agent, &place, all, from)
+                });
+                for frame in frames {
+                    self.transport.send(client, frame);
+                }
+            }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `usage_changed` once the reads land.
                 // Claude's are read here, off the main thread: there is no Usage

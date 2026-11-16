@@ -134,6 +134,7 @@ impl Shell {
             TabKind::Branches => self.branches_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::GitHub => self.github_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Phone => self.phone_view.update(cx, |v, cx| v.focus(window, cx)),
+            TabKind::Servers => self.servers_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Usage => self.usage_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Gallery => self.gallery_view.update(cx, |v, cx| v.focus(window, cx)),
             // The builder takes keys through the window; nothing in it needs focus first.

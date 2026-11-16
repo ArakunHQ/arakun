@@ -731,6 +731,22 @@ impl Shell {
                 };
                 self.phone_send(client, reply);
             }
+            ClientMsg::Transcript { session, from } => {
+                let Some(env_path) = self.env_of_session(&session) else {
+                    self.phone_send(client, wire::error("that session is gone"));
+                    return;
+                };
+                let agent = self
+                    .find_env(&env_path)
+                    .and_then(|e| e.sessions.iter().find(|s| *s.id == *session))
+                    .map_or("", |s| s.agent.key());
+                let frames = self.with_session_entries(&env_path, &session, cx, |all, cwd| {
+                    wire::transcript_message(&session, agent, cwd, all, from)
+                });
+                for frame in frames {
+                    self.phone_send(client, frame);
+                }
+            }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `phone_usage_changed` once the read lands.
                 self.account

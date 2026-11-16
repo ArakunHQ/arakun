@@ -139,6 +139,13 @@ pub enum ClientMsg {
         entry: usize,
         index: usize,
     },
+    /// The session's entries from `from` on, whole, as its transcript holds
+    /// them: what the app asks of a server, to show a session as its own.
+    Transcript {
+        session: String,
+        #[serde(default)]
+        from: usize,
+    },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
     /// Whether the page is on the phone's screen. A page in the background

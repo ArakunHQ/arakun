@@ -50,6 +50,7 @@ mod posthog;
 mod rail;
 mod rail_blocks;
 mod runs;
+mod servers;
 mod session_actions;
 mod sessions;
 mod sidebar_builder;
@@ -389,6 +390,11 @@ pub struct Shell {
     phone: Option<phone::PhoneLink>,
     phone_view: Entity<crate::phone_view::PhoneView>,
     _phone_view: Subscription,
+    /// The connections to the machines running `arakun server`, once the
+    /// Servers tab was opened.
+    servers: Option<servers::ServersLink>,
+    servers_view: Entity<crate::servers_view::ServersView>,
+    _servers_view: Subscription,
     usage_view: Entity<UsageView>,
     gallery_view: Entity<GalleryView>,
     iso_view: Entity<crate::iso_view::IsoView>,
@@ -677,6 +683,10 @@ impl Shell {
         let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
             this.on_phone_event(ev, window, cx)
         });
+        let servers_view = cx.new(crate::servers_view::ServersView::new);
+        let servers_sub = cx.subscribe_in(&servers_view, window, |this, _, ev, window, cx| {
+            this.on_servers_event(ev, window, cx)
+        });
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
@@ -806,6 +816,9 @@ impl Shell {
             phone: None,
             phone_view,
             _phone_view: phone_sub,
+            servers: None,
+            servers_view,
+            _servers_view: servers_sub,
             _usage_view: usage_sub,
             usage_view,
             gallery_view,
@@ -2148,6 +2161,7 @@ impl Shell {
                 self.extensions_view.clone().into_any_element()
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
+            Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
             Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
             Some(TabKind::SidebarBuilder) => self.render_sidebar_builder(window, cx),
             Some(TabKind::Isometric) => {

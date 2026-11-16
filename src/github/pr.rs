@@ -2407,14 +2407,23 @@ fn default_host(env: Option<String>, hosts_yml: Option<&str>) -> String {
 }
 
 /// The top-level keys of `hosts.yml`: one per host `gh` is signed in to.
-/// Read by hand, as `gh` writes it: `host:` at the start of a line.
+/// Read by hand, as `gh` writes it: `host:` at the start of a line, maybe
+/// with a comment after it.
 fn signed_in_hosts(yml: &str) -> Vec<String> {
     yml.lines()
         .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
+        .map(without_comment)
         .filter_map(|l| l.trim_end().strip_suffix(':'))
         .map(|k| k.trim().trim_matches(['"', '\'']).to_string())
         .filter(|k| !k.is_empty())
         .collect()
+}
+
+/// A YAML line without its comment: `#` after a space or a tab.
+fn without_comment(l: &str) -> &str {
+    l.char_indices()
+        .find(|&(i, c)| c == '#' && l[..i].ends_with([' ', '\t']))
+        .map_or(l, |(i, _)| &l[..i])
 }
 
 /// The arguments after `arakun github draft`. The pull request may also be
@@ -4093,6 +4102,12 @@ mod tests {
         assert_eq!(default_host(None, Some(both)), "github.com");
         assert_eq!(default_host(None, Some("")), "github.com");
         assert_eq!(default_host(None, None), "github.com");
+        let noted = "# gh's sign-ins\nghe.corp: # work\n    user: me # me\n";
+        assert_eq!(default_host(None, Some(noted)), "ghe.corp");
+        assert_eq!(
+            signed_in_hosts("github.com:\t# home\nghe.corp:\n"),
+            ["github.com", "ghe.corp"]
+        );
     }
 
     #[test]

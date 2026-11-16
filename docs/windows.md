@@ -105,6 +105,7 @@ build with the browser.
 | Branch naming agent and model (Settings › General) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
+| Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |

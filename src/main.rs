@@ -63,6 +63,8 @@ mod prompts;
 mod runs_view;
 mod schedule;
 mod server;
+mod servers;
+mod servers_view;
 mod settings_view;
 mod sheet;
 mod shell;

@@ -8,6 +8,9 @@
 //! - `entries`: entries from `from` on changed; `count` is the new total.
 //! - `state`: a watched session's status, permission or usage changed.
 //! - `usage`: both agents' plan limits, on request and when they change.
+//! - `transcript`: a session's entries whole, on request: for the app, which
+//!   shows a server's session as its own.
+//! - `part`: a piece of a message too big for one frame.
 //! - `error`.
 
 use std::path::{Path, PathBuf};
@@ -776,6 +779,108 @@ pub fn settings(list: Vec<(Setting, (String, Vec<SettingOption>))>) -> Value {
     Value::Array(list.collect())
 }
 
+/// The most text one message carries. The relay passes frames of 256 KiB at
+/// most, and sealing adds to what goes in one.
+pub const FRAME_TEXT: usize = 180 * 1024;
+/// What a `part` carries of the message it is a piece of, before base64.
+const PART_BYTES: usize = 120 * 1024;
+/// About how much one `transcript` answer holds; the rest comes when asked for.
+const TRANSCRIPT_BYTES: usize = 96 * 1024;
+/// The most pieces, and bytes, one message may come in: a peer that says more
+/// is not believed.
+const MAX_PARTS: usize = 4096;
+const MAX_WHOLE: usize = 256 * 1024 * 1024;
+
+/// `transcript`: a session's entries from `from` on, whole, as its transcript
+/// file holds them. A phone gets them cut down (`entries`); the app, looking at
+/// a server, shows the session as one of its own and needs all of each. The
+/// answer stops near [`TRANSCRIPT_BYTES`] (`to` says where): the asker comes
+/// back for the rest. What goes out is this message, in `part`s when one entry
+/// alone is too much for a frame.
+pub fn transcript_message(
+    id: &str,
+    agent: &str,
+    cwd: &Path,
+    all: &[Entry],
+    from: usize,
+) -> Vec<String> {
+    let from = from.min(all.len());
+    let mut entries: Vec<Value> = Vec::new();
+    let mut size = 0;
+    for e in &all[from..] {
+        let v = serde_json::to_value(e).unwrap_or(Value::Null);
+        let len = v.to_string().len();
+        if !entries.is_empty() && size + len > TRANSCRIPT_BYTES {
+            break;
+        }
+        size += len;
+        entries.push(v);
+    }
+    let msg = json!({
+        "type": "transcript", "id": id, "agent": agent, "cwd": cwd,
+        "from": from, "to": from + entries.len(), "count": all.len(), "entries": entries,
+    });
+    parts(msg.to_string())
+}
+
+/// `msg` as the messages to send for it: itself when it fits a frame, else
+/// `part`s in order, each a piece of its bytes.
+pub fn parts(msg: String) -> Vec<String> {
+    use base64::Engine as _;
+    if msg.len() <= FRAME_TEXT {
+        return vec![msg];
+    }
+    let pieces: Vec<&[u8]> = msg.as_bytes().chunks(PART_BYTES).collect();
+    let of = pieces.len();
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(piece);
+            json!({ "type": "part", "i": i, "of": of, "data": data }).to_string()
+        })
+        .collect()
+}
+
+/// Puts the `part`s of a message back together on the side that receives them.
+/// The pieces of one message come one after another, with nothing between.
+#[derive(Default)]
+pub struct Parts {
+    pieces: Vec<u8>,
+    next: usize,
+}
+
+impl Parts {
+    /// A message as it came: itself, unless it is a `part`; then nothing until
+    /// the last piece, which gives the whole message.
+    pub fn take(&mut self, msg: Value) -> Option<Value> {
+        use base64::Engine as _;
+        if msg["type"] != "part" {
+            *self = Parts::default();
+            return Some(msg);
+        }
+        let (i, of) = (msg["i"].as_u64()? as usize, msg["of"].as_u64()? as usize);
+        let piece = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(msg["data"].as_str()?)
+            .ok()?;
+        if i == 0 {
+            *self = Parts::default();
+        }
+        // Out of order, or more than anyone sends: start over.
+        if i != self.next || of > MAX_PARTS || self.pieces.len() + piece.len() > MAX_WHOLE {
+            *self = Parts::default();
+            return None;
+        }
+        self.pieces.extend_from_slice(&piece);
+        self.next += 1;
+        if self.next < of {
+            return None;
+        }
+        let whole = std::mem::take(self).pieces;
+        serde_json::from_slice(&whole).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,5 +1212,80 @@ mod tests {
         assert_eq!(entries(&all, 1, &s).len(), 2);
         assert_eq!(entries(&all, 1, &s)[0]["text"], "b");
         assert!(entries(&all, 7, &s).is_empty());
+    }
+
+    fn said(text: &str) -> Entry {
+        Entry::Agent { text: text.into() }
+    }
+
+    #[test]
+    fn a_transcript_answer_stops_near_its_size_and_says_where() {
+        let all: Vec<Entry> = (0..5).map(|_| said(&"x".repeat(40 * 1024))).collect();
+        let frames = transcript_message("s1", "claude", Path::new("/w/app"), &all, 1);
+        assert_eq!(frames.len(), 1);
+        let msg: Value = serde_json::from_str(&frames[0]).unwrap();
+        assert_eq!(msg["type"], "transcript");
+        assert_eq!(
+            (msg["agent"].as_str(), msg["cwd"].as_str()),
+            (Some("claude"), Some("/w/app"))
+        );
+        // Two of 40 KiB fit; the third comes when asked for, from `to`.
+        assert_eq!(
+            (
+                msg["from"].as_u64(),
+                msg["to"].as_u64(),
+                msg["count"].as_u64()
+            ),
+            (Some(1), Some(3), Some(5))
+        );
+        // Whole entries, as the transcript file holds them.
+        let back: Vec<Entry> = serde_json::from_value(msg["entries"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&all[1..3]).unwrap()
+        );
+
+        // Asked from past the end: nothing, and the count to go by.
+        let past = transcript_message("s1", "claude", Path::new("/w/app"), &all, 9);
+        let msg: Value = serde_json::from_str(&past[0]).unwrap();
+        assert_eq!(
+            (
+                msg["from"].as_u64(),
+                msg["to"].as_u64(),
+                msg["count"].as_u64()
+            ),
+            (Some(5), Some(5), Some(5))
+        );
+        assert_eq!(msg["entries"], json!([]));
+    }
+
+    #[test]
+    fn a_message_too_big_for_a_frame_goes_in_parts_and_comes_back_whole() {
+        // Two bytes a letter, so pieces cut letters in half.
+        let big = said(&"é".repeat(200 * 1024));
+        let frames = transcript_message("s1", "claude", Path::new("/w"), &[big], 0);
+        assert!(frames.len() > 1);
+        assert!(frames.iter().all(|f| f.len() <= FRAME_TEXT));
+        let mut parts = Parts::default();
+        let mut whole = None;
+        for (i, frame) in frames.iter().enumerate() {
+            whole = parts.take(serde_json::from_str(frame).unwrap());
+            assert_eq!(whole.is_some(), i + 1 == frames.len());
+        }
+        let whole = whole.unwrap();
+        assert_eq!(whole["type"], "transcript");
+        let text = whole["entries"][0]["text"].as_str().unwrap();
+        assert_eq!(text.chars().count(), 200 * 1024);
+
+        // A message that is no part passes as it is.
+        let small = json!({ "type": "inbox", "sessions": [] });
+        assert_eq!(parts.take(small.clone()), Some(small));
+        // A piece that is not the next one drops what came before it.
+        let first: Value = serde_json::from_str(&frames[0]).unwrap();
+        let third: Value = serde_json::from_str(&frames[2]).unwrap();
+        assert_eq!(parts.take(first), None);
+        assert_eq!(parts.take(third), None);
+        let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+        assert_eq!(parts.take(last), None);
     }
 }

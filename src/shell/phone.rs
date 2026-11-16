@@ -62,6 +62,8 @@ pub(super) struct PhoneLink {
     last_usage: String,
     /// Photos phones are sending, in pieces.
     uploads: phone::Uploads,
+    /// The saved transcript a device read last, for the pages after the first.
+    last_read: crate::agent::saved::LastRead,
     _listen: Task<()>,
     _tick: Task<()>,
 }
@@ -311,7 +313,12 @@ impl Shell {
             loop {
                 cx.background_executor().timer(INBOX_EVERY).await;
                 if this
-                    .update(cx, |this, cx| this.phone_sync_inbox(cx))
+                    .update(cx, |this, cx| {
+                        if let Some(link) = &this.phone {
+                            link.last_read.trim();
+                        }
+                        this.phone_sync_inbox(cx)
+                    })
                     .is_err()
                 {
                     break;
@@ -338,6 +345,7 @@ impl Shell {
             last_inbox: String::new(),
             last_usage: String::new(),
             uploads: phone::Uploads::default(),
+            last_read: Default::default(),
             _listen: listen,
             _tick: tick,
         });
@@ -731,6 +739,22 @@ impl Shell {
                 };
                 self.phone_send(client, reply);
             }
+            ClientMsg::Transcript { session, from } => {
+                let Some(env_path) = self.env_of_session(&session) else {
+                    self.phone_send(client, wire::error("that session is gone"));
+                    return;
+                };
+                let agent = self
+                    .find_env(&env_path)
+                    .and_then(|e| e.sessions.iter().find(|s| *s.id == *session))
+                    .map_or("", |s| s.agent.key());
+                let frames = self.with_session_entries(&env_path, &session, cx, |all, cwd| {
+                    wire::transcript_message(&session, agent, cwd, all, from)
+                });
+                for frame in frames {
+                    self.phone_send(client, frame);
+                }
+            }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `phone_usage_changed` once the read lands.
                 self.account
@@ -964,10 +988,16 @@ impl Shell {
                 f(t.entries(), t.cwd())
             }
             None => {
-                let (all, cwd) = Thread::read_transcript(&state::transcript_path(id))
-                    .map(|t| (t.entries, t.meta.cwd))
-                    .unwrap_or_default();
-                f(&all, &cwd)
+                let path = state::transcript_path(id);
+                match &self.phone {
+                    Some(link) => link.last_read.with(&path, f),
+                    None => {
+                        let (all, cwd) = Thread::read_transcript(&path)
+                            .map(|t| (t.entries, t.meta.cwd))
+                            .unwrap_or_default();
+                        f(&all, &cwd)
+                    }
+                }
             }
         }
     }

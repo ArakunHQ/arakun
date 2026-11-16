@@ -23,6 +23,10 @@ impl Shell {
         } else {
             // The queue doesn't need a project: it shows in the welcome's place.
             self.github_alone = true;
+            // The Servers tab was in that place: nobody is looking at it now.
+            if std::mem::take(&mut self.servers_alone) {
+                self.servers_tab_closed(cx);
+            }
         }
         self.github.update(cx, |g, cx| g.opened(cx));
         self.github_view.update(cx, |v, cx| v.focus(window, cx));

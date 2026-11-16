@@ -31,6 +31,7 @@ pub enum View {
     #[cfg(feature = "coderlabs")]
     Canvas,
     Phone,
+    Servers,
     Automations,
     /// What the team hub holds (`team_view`).
     #[cfg(feature = "team")]
@@ -58,6 +59,7 @@ impl View {
         #[cfg(feature = "coderlabs")]
         View::Canvas,
         View::Phone,
+        View::Servers,
         View::Automations,
         #[cfg(feature = "team")]
         View::Team,
@@ -83,6 +85,7 @@ impl View {
             #[cfg(feature = "coderlabs")]
             View::Canvas => "Canvas",
             View::Phone => "Phone",
+            View::Servers => "Servers",
             View::Automations => "Automations",
             #[cfg(feature = "team")]
             View::Team => "Team",
@@ -109,6 +112,7 @@ impl View {
             #[cfg(feature = "coderlabs")]
             View::Canvas => "artboard",
             View::Phone => "signal-full02",
+            View::Servers => "computer",
             View::Automations => "flash",
             #[cfg(feature = "team")]
             View::Team => "ungroup-items",
@@ -137,6 +141,7 @@ impl View {
             #[cfg(feature = "coderlabs")]
             View::Canvas => "Design frames, drawn natively",
             View::Phone => "Arakun on your phone",
+            View::Servers => "Sessions on your other machines",
             View::Automations => "Scheduled agent runs",
             #[cfg(feature = "team")]
             View::Team => "What the team finds, kept to read",
@@ -569,6 +574,7 @@ impl Preset {
             View::Site,
             View::Isometric,
             View::Phone,
+            View::Servers,
             View::Automations,
             #[cfg(feature = "team")]
             View::Team,

@@ -50,6 +50,7 @@ mod posthog;
 mod rail;
 mod rail_blocks;
 mod runs;
+mod servers;
 mod session_actions;
 mod sessions;
 mod sidebar_builder;
@@ -389,6 +390,11 @@ pub struct Shell {
     phone: Option<phone::PhoneLink>,
     phone_view: Entity<crate::phone_view::PhoneView>,
     _phone_view: Subscription,
+    /// The connections to the machines running `arakun server`, once the
+    /// Servers tab was opened.
+    servers: Option<servers::ServersLink>,
+    servers_view: Entity<crate::servers_view::ServersView>,
+    _servers_view: Subscription,
     usage_view: Entity<UsageView>,
     gallery_view: Entity<GalleryView>,
     iso_view: Entity<crate::iso_view::IsoView>,
@@ -440,6 +446,8 @@ pub struct Shell {
     /// The GitHub tab shown with no project added: the queue reads GitHub,
     /// not a project, so it doesn't need one. It takes the welcome's place.
     github_alone: bool,
+    /// The Servers tab shows in the welcome's place: no project was added.
+    servers_alone: bool,
     /// `History::arrived` when the Inbox last drew: what it showed.
     inbox_shown: Cell<u64>,
     /// "Clear" was clicked once; the second click empties the history.
@@ -677,6 +685,10 @@ impl Shell {
         let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
             this.on_phone_event(ev, window, cx)
         });
+        let servers_view = cx.new(crate::servers_view::ServersView::new);
+        let servers_sub = cx.subscribe_in(&servers_view, window, |this, _, ev, window, cx| {
+            this.on_servers_event(ev, window, cx)
+        });
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
@@ -806,6 +818,9 @@ impl Shell {
             phone: None,
             phone_view,
             _phone_view: phone_sub,
+            servers: None,
+            servers_view,
+            _servers_view: servers_sub,
             _usage_view: usage_sub,
             usage_view,
             gallery_view,
@@ -837,6 +852,7 @@ impl Shell {
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
             github_alone: false,
+            servers_alone: false,
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
@@ -1183,6 +1199,8 @@ impl Shell {
         self.active_project = self
             .active_project
             .min(self.projects.len().saturating_sub(1));
+        // Its Servers tab went with it; a no-op while one is left elsewhere.
+        self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
         self.save(cx);
         self.sync_poll(window, cx);
@@ -1530,6 +1548,7 @@ impl Shell {
                             .active_env
                             .min(project.environments.len().saturating_sub(1));
                     }
+                    this.servers_tab_closed(cx);
                     this.save(cx);
                     this.refresh_project(pi, cx);
                     this.ensure_terminal(window, cx);
@@ -1964,8 +1983,10 @@ impl Shell {
         }
         let env = self.env_mut();
         let mut closed_session = None;
+        let mut closed_servers = false;
         if index < env.tabs.len() {
             let tab = env.tabs.remove(index);
+            closed_servers = matches!(tab.kind, TabKind::Servers);
             if let Some(b) = &tab.browser {
                 b.view.update(cx, |v, cx| v.close(cx));
             }
@@ -1982,6 +2003,9 @@ impl Shell {
         if let Some(id) = closed_session {
             let path = self.env().path.clone();
             self.retire_if_hidden(&path, &id, cx);
+        }
+        if closed_servers {
+            self.servers_tab_closed(cx);
         }
         self.note_active_tab();
         self.ensure_active_live(window, cx);
@@ -2148,6 +2172,7 @@ impl Shell {
                 self.extensions_view.clone().into_any_element()
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
+            Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
             Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
             Some(TabKind::SidebarBuilder) => self.render_sidebar_builder(window, cx),
             Some(TabKind::Isometric) => {
@@ -2203,8 +2228,14 @@ impl Render for Shell {
         let has_projects = self.has_projects();
         if has_projects {
             // With a project the GitHub tab is a tab again; without one later,
-            // the welcome comes back first.
+            // the welcome comes back first. The Servers tab too.
             self.github_alone = false;
+            // The Servers tab in the welcome's place goes with the welcome, and
+            // the server is told nobody is looking. After this frame: telling
+            // it updates the view, which cannot happen while this one draws.
+            if std::mem::take(&mut self.servers_alone) {
+                cx.defer_in(window, |this, _, cx| this.servers_tab_closed(cx));
+            }
         }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
         if has_projects {
@@ -2246,6 +2277,8 @@ impl Render for Shell {
                         .when_some(self.render_image_drop_zone(cx), |d, zone| d.child(zone)),
                 )
                 .into_any_element()
+        } else if self.servers_alone {
+            self.render_servers_alone(window, cx).into_any_element()
         } else if self.github_alone {
             self.render_github_alone(window, cx).into_any_element()
         } else {

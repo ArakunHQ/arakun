@@ -101,9 +101,10 @@ Windows and other options: see [Install](#install).
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.
   Paired devices reach it the way phones reach the app, with the same page, pairing
-  and notifications; agents ask for permission as they do in the app, and you answer
-  from wherever you are. `arakun-server` is the same server as a program of its own
-  that needs no display library. See [Server](#server).
+  and notifications, and the app follows them in its Servers tab; agents ask for
+  permission as they do in the app, and you answer from wherever you are.
+  `arakun-server` is the same server as a program of its own that needs no display
+  library. See [Server](#server).
 
 ### GitHub
 
@@ -388,10 +389,18 @@ arakun-server serve          # runs until Ctrl+C, a signal or `arakun-server qui
 arakun-server pair           # in another terminal: a link and its QR code
 ```
 
-Open the link on a phone or in any browser within two minutes. It pairs that one
-device, which then sees the server's sessions, starts new ones, reads them live,
-answers the agents and gets a notification when one finishes or needs you. It is the
-page the Phone tab pairs phones with. The app does not connect to a server yet.
+The link is good for two minutes and pairs one device. There are two ways to use it:
+
+- **In the app.** Open the Servers tab and paste the link. The server and its sessions
+  show there. A session opens as the app draws its own, live; you can start one in any
+  folder the server offers, send follow-ups, stop a turn and answer what the agent
+  asks. The app keeps what pairing gave it in `servers.json` next to its state, which
+  only your user can read. "Forget" on a server removes it there and has the server
+  forget the app. A server that cannot be reached at that moment keeps the app in its
+  list: remove it there with `arakun-server unpair <device>`.
+- **On a phone, or in any browser.** Open the link. It is the page the Phone tab pairs
+  phones with: it lists the sessions, reads them live, and notifies you when one
+  finishes or needs you.
 
 ```sh
 arakun-server add ~/code/app      # a folder sessions can start in; the page lists them
@@ -417,8 +426,10 @@ arakun-server status
   serves it at the machine's tailnet name over HTTPS; that takes the machine's HTTPS
   port on the tailnet, as the app's Phone tab on Tailscale does, so only one of the two
   can use it on a machine. `--reach lan` listens on every
-  interface over plain HTTP (`--port`, 7474 unless told): use it only on a network you
-  trust. What `serve` is started with is kept for the next run.
+  interface over plain HTTP (`--port`, 7474 unless told): nothing is encrypted, and
+  whoever can watch that network can read what a device is let in with. Use it only on a
+  network you trust, and Tailscale or the relay across networks. What `serve` is started
+  with is kept for the next run.
 - **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
   `phone.json` (how it is reached, its relay identity, the paired devices),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents

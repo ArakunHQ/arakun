@@ -71,6 +71,7 @@ pub(super) fn view_id(view: View) -> &'static str {
         #[cfg(feature = "coderlabs")]
         View::Canvas => "nav-canvas",
         View::Phone => "nav-phone",
+        View::Servers => "nav-servers",
         View::Automations => "nav-automations",
         #[cfg(feature = "team")]
         View::Team => "nav-team",
@@ -239,6 +240,7 @@ impl Shell {
             #[cfg(feature = "coderlabs")]
             View::Canvas => self.open_canvas_tab(None, window, cx),
             View::Phone => self.open_phone_tab(window, cx),
+            View::Servers => self.open_servers_tab(window, cx),
             View::Automations => {
                 if !self.has_projects() {
                     self.open_picker(window, cx);

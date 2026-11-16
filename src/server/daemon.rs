@@ -135,25 +135,44 @@ pub struct Daemon {
 
 /// Transcripts are written on a thread of their own, in the order they were
 /// handed over: a save never holds up the agents, and an older one never
-/// lands over a newer one.
+/// lands over a newer one. A save that fails (a full disk) is kept and tried
+/// again with the next job, so the newest state of a session is never dropped
+/// while the file still holds an older one.
 struct Writer {
     tx: Option<std::sync::mpsc::Sender<Job>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 enum Job {
-    // Boxed: a transcript is far bigger than a flush, and most jobs wait in a queue.
+    // Boxed: a transcript is far bigger than the rest, and most jobs wait in a queue.
     Save(PathBuf, Box<Transcript>),
-    /// Answered once every save handed over before it is on disk.
-    Flush(std::sync::mpsc::Sender<()>),
+    /// The session is gone: nothing kept for this file is written any more.
+    Forget(PathBuf),
+    /// Answered once every save handed over before it was tried, with the
+    /// files that could not be written.
+    Flush(std::sync::mpsc::Sender<Vec<PathBuf>>),
 }
 
-fn write_transcript(path: &Path, transcript: &Transcript) {
-    let saved = serde_json::to_vec(transcript)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| crate::durable::write_private(path, &bytes));
-    if let Err(e) = saved {
-        eprintln!("arakun server: could not save {}: {e}", path.display());
+type Snapshot = (PathBuf, Box<Transcript>);
+
+fn write_transcript(path: &Path, transcript: &Transcript) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(transcript).map_err(std::io::Error::other)?;
+    crate::durable::write_private(path, &bytes)
+}
+
+/// Writes `waiting`; what fails goes to `unsaved`. A file already in `known`
+/// failed before, and said so then.
+fn write_all(waiting: &mut Vec<Snapshot>, unsaved: &mut Vec<Snapshot>, known: &[PathBuf]) {
+    for (path, transcript) in waiting.drain(..) {
+        if let Err(e) = write_transcript(&path, &transcript) {
+            if !known.contains(&path) {
+                eprintln!(
+                    "arakun server: could not save {}: {e}; it is kept and tried again",
+                    path.display()
+                );
+            }
+            unsaved.push((path, transcript));
+        }
     }
 }
 
@@ -163,27 +182,32 @@ impl Writer {
         let thread = std::thread::Builder::new()
             .name("arakun-server-save".into())
             .spawn(move || {
+                // Snapshots whose write failed, for the next round.
+                let mut unsaved: Vec<Snapshot> = Vec::new();
                 while let Ok(first) = rx.recv() {
-                    // Of the saves waiting, only the newest of each file is
-                    // worth writing; a flush wants all before it written first.
-                    let mut waiting: Vec<(PathBuf, Box<Transcript>)> = Vec::new();
+                    // What failed last time goes first: anything newer for the
+                    // same file replaces it below. Of the saves waiting, only
+                    // the newest of each file is worth writing.
+                    let mut waiting = std::mem::take(&mut unsaved);
+                    let known: Vec<PathBuf> = waiting.iter().map(|(p, _)| p.clone()).collect();
                     for job in std::iter::once(first).chain(rx.try_iter()) {
                         match job {
                             Job::Save(path, transcript) => {
                                 waiting.retain(|(p, _)| *p != path);
+                                unsaved.retain(|(p, _)| *p != path);
                                 waiting.push((path, transcript));
                             }
+                            Job::Forget(path) => {
+                                waiting.retain(|(p, _)| *p != path);
+                                unsaved.retain(|(p, _)| *p != path);
+                            }
                             Job::Flush(done) => {
-                                for (path, transcript) in waiting.drain(..) {
-                                    write_transcript(&path, &transcript);
-                                }
-                                let _ = done.send(());
+                                write_all(&mut waiting, &mut unsaved, &known);
+                                let _ = done.send(unsaved.iter().map(|(p, _)| p.clone()).collect());
                             }
                         }
                     }
-                    for (path, transcript) in waiting {
-                        write_transcript(&path, &transcript);
-                    }
+                    write_all(&mut waiting, &mut unsaved, &known);
                 }
             })
             .ok();
@@ -199,15 +223,23 @@ impl Writer {
         }
     }
 
-    /// Waits until every save handed over so far is on disk. Whatever reads a
-    /// transcript file, or removes one, comes here first: a save still on its
-    /// way would otherwise be missed, or come back after the file was deleted.
-    fn flush(&self) {
+    /// Drops what is kept for a file whose session was removed.
+    fn forget(&self, path: PathBuf) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(Job::Forget(path));
+        }
+    }
+
+    /// Waits until every save handed over so far was tried, and returns the
+    /// files that could not be written: for those the disk still holds an
+    /// older transcript than the session's last. Whatever reads a transcript
+    /// file, or removes one, comes here first: a save still on its way would
+    /// otherwise be missed, or come back after the file was deleted.
+    fn flush(&self) -> Vec<PathBuf> {
         let (done, wait) = std::sync::mpsc::channel();
-        if let Some(tx) = &self.tx
-            && tx.send(Job::Flush(done)).is_ok()
-        {
-            let _ = wait.recv();
+        match &self.tx {
+            Some(tx) if tx.send(Job::Flush(done)).is_ok() => wait.recv().unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 
@@ -718,14 +750,25 @@ impl Daemon {
     }
 
     /// The session's thread, its agent started again if it had been let go.
-    fn ensure_live(&mut self, id: &str, cx: &mut Context<Self>) -> Option<Entity<Thread>> {
+    fn ensure_live(&mut self, id: &str, cx: &mut Context<Self>) -> Result<Entity<Thread>, String> {
         if let Some(live) = self.live.get(id) {
-            return Some(live.thread.clone());
+            return Ok(live.thread.clone());
         }
-        let record = self.store.session(id)?.clone();
-        // The save its agent was let go with may still be on its way.
-        self.writer.flush();
+        let record = self
+            .store
+            .session(id)
+            .ok_or("that session is gone")?
+            .clone();
         let transcript = self.store.transcript_path(id);
+        // The save its agent was let go with may still be on its way. If it
+        // could not be written, the file is older than the session: starting
+        // from it would lose what came after, and then save over the proof.
+        if self.writer.flush().contains(&transcript) {
+            return Err(format!(
+                "the last turn of {id} could not be saved to {} (is the disk full?); nothing is sent to it until it can",
+                transcript.display()
+            ));
+        }
         let thread = transcript
             .exists()
             .then(|| Thread::restore(&transcript, cx))
@@ -735,7 +778,7 @@ impl Daemon {
             })
             .unwrap_or_else(|| Thread::start(record.agent, record.place, record.meta, cx));
         self.attach(id, thread.clone(), cx);
-        Some(thread)
+        Ok(thread)
     }
 
     fn thread(&self, id: &str) -> Option<Entity<Thread>> {
@@ -1291,8 +1334,8 @@ impl Daemon {
                     return;
                 }
                 let list = match self.ensure_live(&session, cx) {
-                    Some(thread) => session_settings(thread.read(cx)),
-                    None => Vec::new(),
+                    Ok(thread) => session_settings(thread.read(cx)),
+                    Err(_) => Vec::new(),
                 };
                 let reply =
                     json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
@@ -1415,12 +1458,7 @@ impl Daemon {
         text: String,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        if self.store.session(id).is_none() {
-            return Err("that session is gone".into());
-        }
-        let thread = self
-            .ensure_live(id, cx)
-            .ok_or("could not start the session's agent")?;
+        let thread = self.ensure_live(id, cx)?;
         thread.update(cx, |t, cx| t.send(text, cx));
         if let Some(s) = self.store.session_mut(id) {
             s.updated = unix_now();
@@ -1932,7 +1970,9 @@ impl Daemon {
         }
         self.watching.retain(|_, watched| watched != id);
         self.notified.remove(id);
-        // A save still on its way would bring the file back after it is deleted.
+        // A save still on its way, or one kept because it failed, would bring
+        // the file back after it is deleted.
+        self.writer.forget(self.store.transcript_path(id));
         self.writer.flush();
         self.store.remove_session(id);
         self.save_store();
@@ -2168,13 +2208,14 @@ mod tests {
         writer.save(b.clone(), transcript("other"));
         writer.save(a.clone(), transcript("second"));
         // A read comes after a flush, and finds every save made before it.
-        writer.flush();
+        assert!(writer.flush().is_empty());
         assert_eq!(last(&a), "second");
         assert_eq!(last(&b), "other");
         // A removal too: nothing is left to write the file again.
         writer.save(a.clone(), transcript("third"));
+        writer.forget(a.clone());
         writer.flush();
-        std::fs::remove_file(&a).unwrap();
+        let _ = std::fs::remove_file(&a);
         writer.save(b.clone(), transcript("last"));
         // Everything handed over is on disk once this returns.
         writer.finish();
@@ -2182,8 +2223,38 @@ mod tests {
         assert_eq!(last(&b), "last");
         // Stopped: a late save or flush is dropped, not a panic or a wait.
         writer.save(a.clone(), transcript("late"));
-        writer.flush();
+        assert!(writer.flush().is_empty());
         assert!(!a.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_that_fails_is_kept_until_it_can_be_written() {
+        let dir = std::env::temp_dir().join(format!("arakun-server-full-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file where the folder should be: nothing can be written under it.
+        let blocked = dir.join("sessions");
+        std::fs::write(&blocked, b"in the way").unwrap();
+        let (a, b) = (blocked.join("a.json"), blocked.join("b.json"));
+        let last = |path: &Path| last_message(&Thread::read_transcript(path).unwrap().entries);
+        let mut writer = Writer::start();
+        writer.save(a.clone(), transcript("one"));
+        writer.save(b.clone(), transcript("gone"));
+        // The flush says which files are behind, so nothing restarts from them.
+        let mut behind = writer.flush();
+        behind.sort();
+        assert_eq!(behind, [a.clone(), b.clone()]);
+        // A newer save takes the kept one's place; a removed session's is dropped.
+        writer.save(a.clone(), transcript("two"));
+        writer.forget(b.clone());
+        assert_eq!(writer.flush(), std::slice::from_ref(&a));
+        // The way is clear again: what was kept is written, the newest of it.
+        std::fs::remove_file(&blocked).unwrap();
+        assert!(writer.flush().is_empty());
+        assert_eq!(last(&a), "two");
+        assert!(!b.exists());
+        writer.finish();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

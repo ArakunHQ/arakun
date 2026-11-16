@@ -634,7 +634,8 @@ async fn sleep_or_wake(sleep: impl Future, wake: &mut mpsc::UnboundedReceiver<()
 }
 
 /// Puts back as unread the threads in `marked` whose mark didn't reach
-/// GitHub. One a read brought back meanwhile (with new activity) isn't doubled.
+/// GitHub. One a read brought back meanwhile (with new activity) isn't doubled,
+/// and one marked again at a newer version stays read: that mark is the current one.
 fn restore_unread(
     unread: &mut Vec<Notification>,
     all: &mut [Notification],
@@ -642,6 +643,9 @@ fn restore_unread(
     marked: Vec<Notification>,
 ) {
     for n in marked {
+        if read_marks.get(&n.id).is_some_and(|at| *at != n.updated_at) {
+            continue;
+        }
         if read_marks.get(&n.id) == Some(&n.updated_at) {
             read_marks.remove(&n.id);
         }
@@ -1780,8 +1784,19 @@ mod tests {
         let newer = note("2", "Issue", "mention", None, "o/r", "2025-01-04T00:00:00Z");
         let mut unread = vec![newer.clone(), a.clone()];
         let mut marks = HashMap::new();
-        restore_unread(&mut unread, &mut [], &mut marks, vec![b]);
-        assert_eq!(unread, vec![newer, a]);
+        restore_unread(&mut unread, &mut [], &mut marks, vec![b.clone()]);
+        assert_eq!(unread, vec![newer.clone(), a.clone()]);
+
+        // The newer version was marked read too, and that mark held: the
+        // older mark failing doesn't bring the thread back.
+        let mut unread = vec![a.clone()];
+        let mut all = [a.clone(), newer.clone()];
+        all[1].unread = false;
+        let mut marks = HashMap::from([(newer.id.clone(), newer.updated_at.clone())]);
+        restore_unread(&mut unread, &mut all, &mut marks, vec![b]);
+        assert_eq!(unread, vec![a]);
+        assert!(!all[1].unread);
+        assert_eq!(marks.get(&newer.id), Some(&newer.updated_at));
     }
 
     #[test]

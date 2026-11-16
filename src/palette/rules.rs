@@ -870,16 +870,29 @@ fn clock_time(t: &str, clock: &Clock) -> Option<(u64, (usize, usize))> {
 fn word_after(text: &str, heads: &[&str]) -> Option<String> {
     for h in heads {
         for end in ends_of(text, h) {
-            let w: String = text[end..]
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | '_' | '.'))
-                .collect();
+            let raw = text[end..].split_whitespace().next().unwrap_or("");
+            let Some(w) = branch_token(raw) else {
+                continue;
+            };
             if w.contains('-') || w.contains('/') || w == "main" || w == "master" {
                 return Some(w);
             }
         }
     }
     None
+}
+
+/// A typed word as a branch name, without the punctuation of the sentence
+/// around it. A word with other characters is no branch at all: a prefix
+/// of it ("release" of "release+hotfix") would watch the wrong one.
+fn branch_token(raw: &str) -> Option<String> {
+    let w = raw
+        .trim_start_matches(['(', '[', '"', '\'', '«', '“'])
+        .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'', '»', '”']);
+    (!w.is_empty()
+        && w.chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | '_' | '.' | '+')))
+    .then(|| w.to_string())
 }
 
 /// A branch named without `-` or `/` ("CI fails on develop"), read only
@@ -913,13 +926,7 @@ fn plain_branch(text: &str) -> Option<String> {
     ];
     let words: Vec<String> = text
         .split_whitespace()
-        .map(|w| {
-            w.chars()
-                .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | '_' | '.'))
-                .collect::<String>()
-                .trim_end_matches('.')
-                .to_string()
-        })
+        .map(|w| branch_token(w).unwrap_or_default())
         .collect();
     let lower = |w: &str| w.to_lowercase();
     let start = words.iter().position(|w| CI.contains(&lower(w).as_str()))?;
@@ -2027,6 +2034,14 @@ mod tests {
             branch("avísame si falla el CI en la rama release"),
             "release"
         );
+        // Not a prefix of the name: the whole of it.
+        assert_eq!(
+            branch("tell me when CI fails on release+hotfix"),
+            "release+hotfix"
+        );
+        assert_eq!(branch("tell me when CI fails on (develop)."), "develop");
+        // A word a branch can't be is none, not a piece of it.
+        assert_eq!(branch("tell me when CI fails on feat/x*y"), "main");
         // "on Slack" comes before the CI: it isn't a branch.
         assert_eq!(branch("notify me on Slack when CI fails"), "main");
         assert_eq!(

@@ -37,7 +37,7 @@ pub enum Type {
     Label,
     /// Hints and meta under a value.
     Caption,
-    /// SMALL CAPS above a group; the caller upper-cases the text.
+    /// An eyebrow above a group, in mono; the caller upper-cases the text.
     Overline,
     /// Code, paths, ids.
     Mono,
@@ -141,7 +141,7 @@ pub fn set_type_scale(t: TypeScale) {
     TYPE_SCALE.store(ix as u8, Ordering::Relaxed);
 }
 
-/// `.ty(Type::Body)` on any element: size, line height and weight at once.
+/// `.ty(Type::Body)` on any element: size, line height, weight and face at once.
 pub trait Typography: Styled + Sized {
     fn ty(self, t: Type) -> Self {
         let (size, line, weight) = t.metrics();
@@ -149,10 +149,16 @@ pub trait Typography: Styled + Sized {
             .text_size(px(size))
             .line_height(px(line))
             .font_weight(weight);
-        if t == Type::Mono {
-            s.font_family(theme::FONT_MONO)
-        } else {
-            s
+        match t {
+            // The brand sets eyebrows in mono, like code: what a machine reads.
+            Type::Mono | Type::Overline => s.font_family(theme::FONT_MONO),
+            // A page's big number changes in place; tabular figures keep its
+            // digits from shifting as it does.
+            Type::Display => s.font_features(gpui::FontFeatures(std::sync::Arc::new(vec![(
+                "tnum".into(),
+                1,
+            )]))),
+            _ => s,
         }
     }
 }

@@ -15,10 +15,12 @@ reviews:
 
   # Requests changes on blocking findings. Approves only pull requests it rates
   # minimal risk, once those findings are resolved. Merging still takes a
-  # person with write access. No security-risk limit: that assessment needs a
-  # higher CodeRabbit plan, and a missing one would withhold every approval.
-  # The Reviewers workflow dismisses an approval of a pull request from
-  # outside the team, because overrides can only match members of a team.
+  # person with write access. CodeRabbit also rates security risk, but no
+  # limit is set on it: the merge-risk limit already covers the sensitive paths.
+  # Team members are trusted not to resolve blocking threads in the GitHub UI
+  # just to get an approval; nothing here can stop that. The Reviewers
+  # workflow dismisses an approval of a pull request from outside the team,
+  # because overrides can only match members of a team.
   auto_approvals:
     enabled: true
     max_merge_risk: minimal

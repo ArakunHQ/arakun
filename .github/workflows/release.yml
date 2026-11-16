@@ -239,10 +239,12 @@ jobs:
           codesign --verify --deep --strict "$app"
           "$app/Contents/MacOS/arakun" --version
 
-      # Ad-hoc signed; the notarize job turns it into the published macos-arm64.
+      # Ad-hoc signed. Where the notarize job runs, it replaces this artifact
+      # with the notarized archive under the same name, so a run never offers
+      # the ad-hoc app next to the signed one.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: macos-arm64-adhoc
+          name: macos-arm64
           path: dist/*.tar.gz
           if-no-files-found: error
 
@@ -268,7 +270,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: macos-arm64-adhoc
+          name: macos-arm64
           path: adhoc
 
       - name: Import the signing certificate
@@ -383,11 +385,13 @@ jobs:
           grep -q 'source=Notarized Developer ID' spctl.txt
           "$app/Contents/MacOS/arakun" --version
 
+      # Replaces the build job's ad-hoc artifact of the same name.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-arm64
           path: dist/*.tar.gz
           if-no-files-found: error
+          overwrite: true
 
   release:
     name: Publish GitHub Release
@@ -402,17 +406,12 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # By name: macos-arm64-adhoc holds an archive with the same file name as
-      # the notarized one, and must not be published.
+      # macos-arm64 is the notarized archive: this job needs macos-notarize,
+      # which replaced the build job's ad-hoc artifact.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: "*-x86_64"
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: macos-arm64
-          path: dist
 
       - name: SHA256SUMS
         working-directory: dist

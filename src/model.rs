@@ -110,6 +110,8 @@ pub enum TabKind {
     Notes,
     /// The phone page: on/off, link and QR code (`phone_view`).
     Phone,
+    /// The machines running `arakun server` and their sessions (`servers_view`).
+    Servers,
     /// The CoderSpace tasks assigned to the signed-in person.
     #[cfg(feature = "coderlabs")]
     Tasks,

@@ -12,6 +12,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
 };
 
+use crate::agent::claude_auth;
 use crate::agent::plan::{self, PlanUsage};
 use crate::env_name;
 use crate::input::{InputEvent, TextInput};
@@ -223,6 +224,8 @@ const TEST_KEY: &str = "settings-test";
 const PALETTE_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 const LIST_W: f32 = 232.;
+/// Under Claude Code's API key or endpoint, which needs no claude.ai sign-in.
+const ACCESS_HINT: &str = "Claude Code runs on this, from ~/.claude/settings.json or the environment. Sign in only to see claude.ai plan limits.";
 const BODY_H: f32 = 420.;
 const ROW_H: f32 = 44.;
 
@@ -233,6 +236,8 @@ pub struct SettingsDialog {
     coderspace: Option<String>,
     /// The claude.ai plan usage, when Claude Code is signed in.
     claude: Option<PlanUsage>,
+    /// The API key or endpoint Claude Code runs on instead of a plan, if any.
+    claude_access: Option<claude_auth::Access>,
     /// The providers OpenCode has credentials for.
     opencode: Vec<String>,
     input: Entity<TextInput>,
@@ -261,6 +266,11 @@ pub struct SettingsDialog {
     palette_save: Option<Task<()>>,
     /// A palette edit is shown but not saved yet.
     palette_dirty: bool,
+    /// The save being written off the UI thread, if one is.
+    palette_writing: Option<Task<()>>,
+    /// The settings pane's scroll, so a slider that moves the layout can stay
+    /// under the pointer.
+    pane_scroll: gpui::ScrollHandle,
     /// Who names the branch of a new environment after its first prompt.
     namer: env_name::Namer,
     namer_input: Entity<TextInput>,
@@ -364,9 +374,12 @@ impl SettingsDialog {
                 },
             );
         cx.spawn(async move |this, cx| {
-            let plan = cx.background_spawn(async move { plan::refresh() }).await;
+            let (plan, access) = cx
+                .background_spawn(async move { (plan::refresh(), claude_auth::access()) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.claude = plan;
+                this.claude_access = access;
                 cx.notify();
             });
         })
@@ -387,6 +400,7 @@ impl SettingsDialog {
             #[cfg(feature = "coderlabs")]
             coderspace,
             claude: None,
+            claude_access: None,
             opencode: crate::agent::opencode_providers(),
             input,
             section,
@@ -406,6 +420,8 @@ impl SettingsDialog {
             show_import: false,
             palette_save: None,
             palette_dirty: false,
+            palette_writing: None,
+            pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
                 sub,
                 key_sub,
@@ -657,7 +673,10 @@ impl SettingsDialog {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join(" · "),
-                None => "Not signed in".into(),
+                None => match &self.claude_access {
+                    Some(a) => a.label(),
+                    None => "Not signed in".into(),
+                },
             },
             Section::Droid => "Skills and MCP servers".into(),
             Section::OpenCode if self.opencode.is_empty() => "No providers signed in".into(),
@@ -858,18 +877,20 @@ impl SettingsDialog {
             ]),
             Section::Claude => {
                 let signed_in = self.claude.is_some();
+                let access = self.claude_access.as_ref();
                 let mut rows = vec![row(
-                    match &self.claude {
-                        Some(p) => {
+                    match (&self.claude, access) {
+                        (Some(p), _) => {
                             let label = p.plan_label();
                             if label.is_empty() { "Signed in".to_string() } else { format!("Signed in · {label}") }
                         }
-                        None => "Not signed in".to_string(),
+                        (None, Some(a)) => a.label(),
+                        (None, None) => "Not signed in".to_string(),
                     },
-                    if signed_in {
-                        "The same sign-in Claude Code uses; Arakun reads it from ~/.claude."
-                    } else {
-                        "Runs claude /login in a terminal; approve the sign-in in the browser."
+                    match (signed_in, access) {
+                        (true, _) => "The same sign-in Claude Code uses; Arakun reads it from ~/.claude.",
+                        (false, Some(_)) => ACCESS_HINT,
+                        (false, None) => "Runs claude /login in a terminal; approve the sign-in in the browser.",
                     },
                     if signed_in {
                         ui::button("set-claude-out", "Sign out", ButtonKind::Danger, true)
@@ -882,6 +903,16 @@ impl SettingsDialog {
                     },
                 )
                 .into_any_element()];
+                if let (true, Some(a)) = (signed_in, access) {
+                    rows.push(
+                        row(
+                            a.label(),
+                            "Claude Code runs on this instead of the plan, from ~/.claude/settings.json or the environment.",
+                            div().into_any_element(),
+                        )
+                        .into_any_element(),
+                    );
+                }
                 if let Some(p) = &self.claude {
                     let windows = p.windows_summary();
                     rows.push(
@@ -1002,6 +1033,7 @@ impl SettingsDialog {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
+            .track_scroll(&self.pane_scroll)
             .p(crate::ui::sp(16.))
             .gap(crate::ui::sp(16.))
             .border_l_1()
@@ -1020,9 +1052,8 @@ impl SettingsDialog {
 
     fn apply_palette(&mut self, cx: &mut Context<Self>) {
         self.palette_save = None;
-        // Still dirty if the save failed, so closing Settings or quitting
-        // tries it again.
-        self.palette_dirty = !crate::palettes::store(&self.palettes);
+        self.palette_dirty = true;
+        self.write_palette(cx);
         self.show_palette(cx);
     }
 
@@ -1058,15 +1089,44 @@ impl SettingsDialog {
         self.palette_dirty = true;
         self.palette_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PALETTE_SAVE_DELAY).await;
-            let _ = this.update(cx, |this, _| this.flush_palette());
+            let _ = this.update(cx, |this, cx| this.write_palette(cx));
         }));
     }
 
-    /// Saves a palette edit that is still waiting, if there is one. A failed
-    /// save keeps it waiting, so closing Settings or quitting tries again.
+    /// Saves the palettes off the UI thread: each save is a synced write,
+    /// which can take long enough to stall typing and drawing. One save at a
+    /// time; an edit made while it writes is saved when it is done. A failed
+    /// save stays dirty, so closing Settings or quitting tries again.
+    fn write_palette(&mut self, cx: &mut Context<Self>) {
+        if !self.palette_dirty || self.palette_writing.is_some() {
+            return;
+        }
+        self.palette_dirty = false;
+        let (saved, version) = (self.palettes.clone(), crate::palettes::next_version());
+        self.palette_writing = Some(cx.spawn(async move |this, cx| {
+            let ok = cx
+                .background_executor()
+                .spawn(async move { crate::palettes::store_version(&saved, version) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.palette_writing = None;
+                if !ok {
+                    this.palette_dirty = true;
+                } else if this.palette_dirty {
+                    this.write_palette(cx);
+                }
+            });
+        }));
+    }
+
+    /// Saves a palette edit that is still waiting, if there is one, right
+    /// away: Settings is closing or the app is quitting, and a save left to
+    /// a task would be dropped with it.
     fn flush_palette(&mut self) {
-        if self.palette_dirty {
-            self.palette_dirty = !crate::palettes::store(&self.palettes);
+        // A save still writing may not finish once its task is dropped.
+        if self.palette_dirty || self.palette_writing.take().is_some() {
+            let version = crate::palettes::next_version();
+            self.palette_dirty = !crate::palettes::store_version(&self.palettes, version);
         }
     }
 
@@ -1570,11 +1630,12 @@ impl SettingsDialog {
                     |s, v| s.radius = v,
                     cx,
                 ),
-                ui::slider(
+                ui::pinned_slider(
                     "shape-radius-slider",
                     s.radius / 2.,
                     track(),
                     theme::active(),
+                    &self.pane_scroll,
                     setter(|s, t| s.radius = (t * 2. * 20.).round() / 20.),
                 ),
             ),
@@ -1589,11 +1650,12 @@ impl SettingsDialog {
                     |s, v| s.space = v,
                     cx,
                 ),
-                ui::slider(
+                ui::pinned_slider(
                     "shape-space-slider",
                     s.space - 0.6,
                     track(),
                     theme::active(),
+                    &self.pane_scroll,
                     setter(|s, t| s.space = ((0.6 + t) * 20.).round() / 20.),
                 ),
             ),
@@ -1608,11 +1670,12 @@ impl SettingsDialog {
                     |s, v| s.window_gap = v,
                     cx,
                 ),
-                ui::slider(
+                ui::pinned_slider(
                     "shape-gap-slider",
                     s.window_gap / 20.,
                     track(),
                     theme::active(),
+                    &self.pane_scroll,
                     setter(|s, t| s.window_gap = (t * 20.).round()),
                 ),
             ),
@@ -1757,6 +1820,23 @@ impl SettingsDialog {
                     cx.notify();
                 }))
                 .into_any_element(),
+                {
+                    let mut seg = ui::segmented();
+                    for (i, m) in crate::theme::Mode::ALL.into_iter().enumerate() {
+                        seg = seg.child(
+                            ui::segment(("set-mode", i), None, m.label(), crate::theme::mode() == m)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_shape(|s| s.light = m == crate::theme::Mode::Light, cx);
+                                })),
+                        );
+                    }
+                    row(
+                        "Mode",
+                        "Dark draws the palette on black; Light on white with dark text.",
+                        seg.into_any_element(),
+                    )
+                    .into_any_element()
+                },
                 {
                     let mut seg = ui::segmented();
                     for (i, g) in crate::theme::Grays::ALL.into_iter().enumerate() {

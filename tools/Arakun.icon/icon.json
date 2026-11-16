@@ -1,0 +1,32 @@
+{
+  "fill": {
+    "solid": "srgb:0.08235,0.08235,0.08235,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "name": "eyes",
+          "image-name": "eyes.svg",
+          "fill": {
+            "solid": "srgb:1.00000,0.70980,0.27843,1.00000"
+          }
+        },
+        {
+          "name": "raccoon",
+          "image-name": "raccoon.svg",
+          "fill": {
+            "solid": "srgb:0.94510,0.93725,0.90980,1.00000"
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

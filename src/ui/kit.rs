@@ -1024,7 +1024,7 @@ pub fn avatar(login: &str, size: f32) -> gpui::Div {
         .bg(color)
         .ty(Type::Caption)
         .font_weight(FontWeight::BOLD)
-        .text_color(theme::background())
+        .text_color(theme::on_accent())
         .child(initial.to_string())
 }
 
@@ -1682,9 +1682,12 @@ pub fn card_text(title: impl IntoElement, sub: Option<AnyElement>) -> gpui::Div 
         })
 }
 
-/// The preview pane at the right of the list.
-pub fn preview_pane() -> gpui::Div {
+/// The preview pane at the right of the list. It scrolls: a pull request
+/// with its people, checks and diff lines is taller than the palette. Give
+/// each item its own `id`, so a new one starts at the top.
+pub fn preview_pane(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
     div()
+        .id(id)
         .flex()
         .flex_col()
         .flex_none()
@@ -1700,7 +1703,7 @@ pub fn preview_pane() -> gpui::Div {
             gpui::linear_color_stop(theme::mix(0.016), 0.),
             gpui::linear_color_stop(theme::mix(0.), 1.),
         ))
-        .overflow_hidden()
+        .overflow_y_scroll()
 }
 
 /// The small line over a preview's title: `ArakunHQ/arakun · #61`.
@@ -2096,34 +2099,87 @@ pub fn palette_note(text: impl Into<SharedString>) -> gpui::Div {
 // ---------------------------------------------------------------------------
 // Slider
 
+/// A drag on a slider: which slider, and where its track was when the button
+/// went down.
+type SliderDrag = (ElementId, gpui::Bounds<gpui::Pixels>);
+
 thread_local! {
     /// The slider the left button went down on. gpui sends a move with the
     /// button held to whatever slider is under the pointer, so without this a
     /// drag that starts on one slider would change the next one it crosses.
-    static SLIDER_DRAG: std::cell::RefCell<Option<ElementId>> = const { std::cell::RefCell::new(None) };
+    static SLIDER_DRAG: std::cell::RefCell<Option<SliderDrag>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Whether a move with the left button `held` may change slider `id`: only
-/// the one the drag started on. A move without the button means the release
-/// happened where no slider saw it, so the drag is over.
-fn slider_drags(id: &ElementId, held: bool) -> bool {
+/// The track a move with the left button `held` drags on, if slider `id` owns
+/// the drag. A move without the button means the release happened where no
+/// slider saw it, so the drag is over.
+fn slider_drags(id: &ElementId, held: bool) -> Option<gpui::Bounds<gpui::Pixels>> {
     SLIDER_DRAG.with_borrow_mut(|d| {
         if !held {
             *d = None;
         }
-        d.as_ref() == Some(id)
+        d.as_ref().filter(|(at, _)| at == id).map(|(_, b)| *b)
     })
+}
+
+/// The track slider `id` is being dragged on, without ending the drag.
+fn slider_drag_start(id: &ElementId) -> Option<gpui::Bounds<gpui::Pixels>> {
+    SLIDER_DRAG.with_borrow(|d| d.as_ref().filter(|(at, _)| at == id).map(|(_, b)| *b))
+}
+
+/// The scroll offset that brings a slider drawn at `now` back to `start`, the
+/// place its drag began, as far as `max` (the furthest the pane scrolls) allows.
+/// `None` when it is already there or the pane can't move.
+fn pin_offset(
+    start: gpui::Pixels,
+    now: gpui::Pixels,
+    offset: gpui::Pixels,
+    max: gpui::Pixels,
+) -> Option<gpui::Pixels> {
+    let y = (offset - (now - start)).clamp(-max.max(px(0.)), px(0.));
+    ((y - offset).abs() >= px(0.5)).then_some(y)
 }
 
 /// A value from 0 to 1 picked on a track: click or drag. `track` fills the
 /// track (a gradient shows what the value means, as a hue rainbow does); the
 /// knob is filled with `knob`. `on_change` gets the new
 /// value while the pointer moves.
+///
+/// A drag keeps going wherever the pointer goes until the button is up, and
+/// reads the pointer against the track as it was when the drag began. A
+/// slider such as Spacing moves its own track as it changes: with the live
+/// track the drag stopped when the slider slid out from under the pointer,
+/// and the value chased the moving track.
 pub fn slider(
     id: impl Into<ElementId>,
     value: f32,
     track: impl IntoElement,
     knob: Hsla,
+    on_change: impl Fn(f32, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    slider_with(id, value, track, knob, None, on_change)
+}
+
+/// A [`slider`] in the pane `scroll` scrolls, for a value that changes the
+/// layout above it. While it is dragged the pane scrolls by as much as the
+/// slider moved, so it stays under the pointer.
+pub fn pinned_slider(
+    id: impl Into<ElementId>,
+    value: f32,
+    track: impl IntoElement,
+    knob: Hsla,
+    scroll: &gpui::ScrollHandle,
+    on_change: impl Fn(f32, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    slider_with(id, value, track, knob, Some(scroll.clone()), on_change)
+}
+
+fn slider_with(
+    id: impl Into<ElementId>,
+    value: f32,
+    track: impl IntoElement,
+    knob: Hsla,
+    pin: Option<gpui::ScrollHandle>,
     on_change: impl Fn(f32, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
     const H: f32 = 20.;
@@ -2135,10 +2191,10 @@ pub fn slider(
         ((x - b.origin.x - px(KNOB / 2.)).as_f32() / w).clamp(0., 1.)
     };
     let seen = bounds.clone();
-    let (down_b, move_b) = (bounds.clone(), bounds.clone());
+    let down_b = bounds;
     let (down_f, move_f) = (on_change.clone(), on_change);
     let id = id.into();
-    let (down_id, move_id) = (id.clone(), id.clone());
+    let (down_id, move_id, pin_id) = (id.clone(), id.clone(), id.clone());
     div()
         .id(id)
         .relative()
@@ -2146,9 +2202,38 @@ pub fn slider(
         .w_full()
         .cursor_pointer()
         .child(
-            gpui::canvas(move |b, _, _| seen.set(b), |_, _, _, _| {})
-                .absolute()
-                .size_full(),
+            gpui::canvas(
+                move |b, window, _| {
+                    seen.set(b);
+                    if let Some(scroll) = &pin
+                        && let Some(start) = slider_drag_start(&pin_id)
+                    {
+                        let (offset, max) = (scroll.offset(), scroll.max_offset());
+                        if let Some(y) = pin_offset(start.origin.y, b.origin.y, offset.y, max.y) {
+                            scroll.set_offset(gpui::point(offset.x, y));
+                            // The pane already took its offset for this frame, and
+                            // `refresh` does nothing while drawing: draw once more
+                            // after it, or the slider stays off when the pointer stops.
+                            window.on_next_frame(|window, _| window.refresh());
+                        }
+                    }
+                },
+                // A window-wide listener, not `on_mouse_move`: that one only
+                // hears moves while the pointer is over the slider.
+                move |_, _, window, _| {
+                    window.on_mouse_event(move |ev: &gpui::MouseMoveEvent, phase, window, cx| {
+                        if phase != gpui::DispatchPhase::Capture {
+                            return;
+                        }
+                        let held = ev.pressed_button == Some(gpui::MouseButton::Left);
+                        if let Some(b) = slider_drags(&move_id, held) {
+                            move_f(at(b, ev.position.x), window, cx);
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_full(),
         )
         .child(
             div()
@@ -2182,14 +2267,9 @@ pub fn slider(
         )
         .on_mouse_down(gpui::MouseButton::Left, move |ev, window, cx| {
             cx.stop_propagation();
-            SLIDER_DRAG.set(Some(down_id.clone()));
-            down_f(at(down_b.get(), ev.position.x), window, cx);
-        })
-        .on_mouse_move(move |ev, window, cx| {
-            let held = ev.pressed_button == Some(gpui::MouseButton::Left);
-            if slider_drags(&move_id, held) && move_b.get().contains(&ev.position) {
-                move_f(at(move_b.get(), ev.position.x), window, cx);
-            }
+            let b = down_b.get();
+            SLIDER_DRAG.set(Some((down_id.clone(), b)));
+            down_f(at(b, ev.position.x), window, cx);
         })
         .on_mouse_up(gpui::MouseButton::Left, |_, _, _| SLIDER_DRAG.set(None))
         .on_mouse_up_out(gpui::MouseButton::Left, |_, _, _| SLIDER_DRAG.set(None))
@@ -2244,15 +2324,40 @@ mod tests {
     #[test]
     fn a_drag_changes_only_the_slider_it_started_on() {
         let (tint, bg): (ElementId, ElementId) = ("tint".into(), "bg".into());
-        SLIDER_DRAG.set(Some(tint.clone()));
-        assert!(slider_drags(&tint, true));
+        let track = gpui::Bounds::new(gpui::point(px(10.), px(40.)), gpui::size(px(200.), px(20.)));
+        SLIDER_DRAG.set(Some((tint.clone(), track)));
+        // The track it began on, even if the slider has moved since.
+        assert_eq!(slider_drags(&tint, true), Some(track));
         // Crossing another slider with the button still held.
-        assert!(!slider_drags(&bg, true));
+        assert_eq!(slider_drags(&bg, true), None);
         // Released where no slider saw it: the next move ends the drag.
-        assert!(!slider_drags(&bg, false));
-        assert!(!slider_drags(&tint, true));
+        assert_eq!(slider_drags(&bg, false), None);
+        assert_eq!(slider_drags(&tint, true), None);
         // Pressing the button off any slider starts no drag.
-        assert!(!slider_drags(&bg, true));
+        assert_eq!(slider_drags(&bg, true), None);
+    }
+
+    #[test]
+    fn a_pinned_slider_scrolls_back_under_the_pointer() {
+        // Spacing grew the rows above: the slider is 40 px lower, so the pane
+        // scrolls 40 px further down.
+        assert_eq!(
+            pin_offset(px(500.), px(540.), px(-100.), px(300.)),
+            Some(px(-140.))
+        );
+        // It moved up: scroll back up.
+        assert_eq!(
+            pin_offset(px(500.), px(480.), px(-100.), px(300.)),
+            Some(px(-80.))
+        );
+        // Only as far as the pane goes.
+        assert_eq!(
+            pin_offset(px(500.), px(540.), px(-290.), px(300.)),
+            Some(px(-300.))
+        );
+        assert_eq!(pin_offset(px(500.), px(480.), px(0.), px(300.)), None);
+        // Already in place.
+        assert_eq!(pin_offset(px(500.), px(500.), px(-100.), px(300.)), None);
     }
 
     #[test]

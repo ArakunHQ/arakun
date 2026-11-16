@@ -403,9 +403,26 @@ impl Palette {
                                 .text_color(theme::text_subtle())
                                 .child(e)
                                 .into_any_element(),
+                            // Claude finished without a word: say so, or the
+                            // spinner below would turn forever.
+                            None if done && text.is_empty() => kit::answer_text()
+                                .text_color(theme::text_subtle())
+                                .child("Claude gave no answer.")
+                                .into_any_element(),
+                            // Faint text alone read as an empty input box, so the
+                            // wait gets the app's spinner and a label that breathes.
                             None if text.is_empty() => kit::answer_text()
-                                .text_color(theme::text_faint())
-                                .child("Reading…")
+                                .flex()
+                                .items_center()
+                                .gap(crate::ui::sp(8.))
+                                .child(kit::spinner("answer-wait", 13., theme::accent()))
+                                .child(div().child("Asking Claude…").with_animation(
+                                    "answer-wait-label",
+                                    Animation::new(Duration::from_millis(1400))
+                                        .repeat()
+                                        .with_easing(gpui::pulsating_between(0.45, 1.)),
+                                    |d, t| d.opacity(t),
+                                ))
                                 .into_any_element(),
                             None => kit::answer_text()
                                 .child(answer_runs(&text))
@@ -718,7 +735,10 @@ impl Palette {
                 return f
                     .child(kit::footer_hint(&["Tab"], "keep chatting"))
                     .child(kit::footer_hint(&["↵"], "run"))
-                    .child(kit::footer_hint(&["Ctrl", "C"], "copy answer"))
+                    .when(
+                        self.answer.as_ref().is_some_and(|a| !a.text.is_empty()),
+                        |d| d.child(kit::footer_hint(&["Ctrl", "C"], "copy answer")),
+                    )
                     .when_some(
                         self.answer.as_ref().filter(|a| a.done && a.tokens.1 > 0),
                         |d, a| {

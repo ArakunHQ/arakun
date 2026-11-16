@@ -80,13 +80,13 @@ impl Palette {
         let id = key
             .bytes()
             .fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
-        kit::preview_pane()
+        kit::preview_pane(ElementId::NamedInteger("palette-preview-pane".into(), id))
             .child(
                 div()
                     .flex()
                     .flex_col()
+                    .flex_none()
                     .gap(crate::ui::sp(16.))
-                    .min_h_0()
                     .children(body)
                     .with_animation(
                         ElementId::NamedInteger("palette-preview".into(), id),
@@ -164,7 +164,7 @@ impl Palette {
                     stats.push((c.clone(), "cost".into(), None));
                 }
                 stats.truncate(3);
-                if *added > 0 || cost.is_some() {
+                if *added > 0 || *removed > 0 || cost.is_some() {
                     out.push(kit::stat_grid(&stats).into_any_element());
                 }
                 out

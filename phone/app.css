@@ -1,36 +1,37 @@
-/* Arakun's phone page: graphite, cards a step lighter, white for the one main
-   action on a screen and amber only for what waits on you. The light set of
-   the same roles is under [data-theme="light"]. */
+/* Arakun's phone page, in the brand's black and white: cards a step off the
+   ground, white (black in light) for the one main action on a screen and
+   amber only for what waits on you. The light set of the same roles is under
+   [data-theme="light"]. */
 :root {
-  --bg: #0f0f11;
-  --card: #1a1a1d;
-  --group: #151517;
-  --raised: #222225;
-  --bubble-me: #2d2d32;
-  --bubble-agent: #1a1a1d;
-  --text: #f3f3f0;
-  --muted: #c9c9cc;
-  --subtle: #8d8d93;
-  --faint: #6e6e74;
+  --bg: #0b0b0b;
+  --card: #161616;
+  --group: #111111;
+  --raised: #1f1f1f;
+  --bubble-me: #2b2b2b;
+  --bubble-agent: #161616;
+  --text: #f2f2f2;
+  --muted: #c4c4c4;
+  --subtle: #a3a3a3;
+  --faint: #737373;
   --border: rgba(255, 255, 255, 0.06);
   --border-strong: rgba(255, 255, 255, 0.1);
   --fill: rgba(255, 255, 255, 0.04);
   --fill-hover: rgba(255, 255, 255, 0.08);
-  --primary: #f3f3f0;
-  --on-primary: #111;
+  --primary: #f2f2f2;
+  --on-primary: #0b0b0b;
   --accent: #ffb547;
   --accent-soft: rgba(255, 181, 71, 0.12);
-  --success: #3dcb83;
-  --success-soft: rgba(61, 203, 131, 0.14);
-  --error: #ff6f66;
-  --error-soft: rgba(255, 111, 102, 0.14);
+  --success: #3fb950;
+  --success-soft: rgba(63, 185, 80, 0.14);
+  --error: #f85149;
+  --error-soft: rgba(248, 81, 73, 0.14);
   --attention: #ffb547;
-  --link: #8fb0ff;
-  --add: #3dcb83;
-  --del: #ff6f66;
+  --link: #86a6f2;
+  --add: #3fb950;
+  --del: #f85149;
   --claude: #e8875f;
   --claude-soft: #2a1d17;
-  --rail: #3a3a40;
+  --rail: #2b2b2b;
   --mono: ui-monospace, "Geist Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, system-ui, "Geist", Segoe UI, Roboto, sans-serif;
   --r: 8px;
@@ -52,33 +53,33 @@
   --float: max(calc(var(--sab) - 16px), 12px);
 }
 :root[data-theme="light"] {
-  --bg: #f4f4f2;
-  --card: #fff;
-  --group: #ececE9;
+  --bg: #ffffff;
+  --card: #f7f7f7;
+  --group: #f2f2f2;
   --raised: #fff;
   --bubble-me: #fff;
-  --bubble-agent: #e9e9e6;
-  --text: #141414;
-  --muted: #3a3a37;
-  --subtle: #6b6b66;
-  --faint: #8a8a85;
+  --bubble-agent: #f2f2f2;
+  --text: #0b0b0b;
+  --muted: #3a3a3a;
+  --subtle: #595959;
+  --faint: #757575;
   --border: rgba(0, 0, 0, 0.06);
   --border-strong: rgba(0, 0, 0, 0.1);
   --fill: rgba(0, 0, 0, 0.04);
   --fill-hover: rgba(0, 0, 0, 0.07);
-  --primary: #141414;
+  --primary: #0b0b0b;
   --on-primary: #fff;
-  --accent: #c47a00;
+  --accent: #995c00;
   --accent-soft: #fff1db;
-  --success: #15925a;
-  --success-soft: #e3f4ea;
-  --error: #d0453b;
+  --success: #1a7f37;
+  --success-soft: #e6f4ea;
+  --error: #cf222e;
   --error-soft: #fbe4e1;
-  --attention: #c47a00;
-  --add: #15925a;
-  --del: #d0453b;
+  --attention: #9a6700;
+  --add: #1a7f37;
+  --del: #cf222e;
   --claude-soft: #fbe7dd;
-  --rail: #d2d2cd;
+  --rail: #dcdcdc;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }

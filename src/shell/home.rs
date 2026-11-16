@@ -126,8 +126,46 @@ impl Shell {
                 this.github_alone = false;
                 cx.notify();
             }));
+        self.render_alone(
+            "github-alone",
+            back,
+            self.github_view.clone().into_any_element(),
+            window,
+        )
+    }
+
+    /// The Servers tab with no project added: following servers needs none.
+    pub(super) fn render_servers_alone(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let back = icon_button("servers-alone-back", "arrow-left01", 14.)
+            .tooltip(ui::tip("Back to the welcome screen"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.servers_alone = false;
+                // Nobody is looking any more, as when its tab closes.
+                this.servers_tab_closed(cx);
+                cx.notify();
+            }));
+        self.render_alone(
+            "servers-alone",
+            back,
+            self.servers_view.clone().into_any_element(),
+            window,
+        )
+    }
+
+    /// A view in the welcome's place: the window's bar with `back`, over it.
+    fn render_alone(
+        &self,
+        id: &'static str,
+        back: gpui::Stateful<gpui::Div>,
+        view: AnyElement,
+        window: &Window,
+    ) -> gpui::Stateful<gpui::Div> {
         div()
-            .id("github-alone")
+            .id(id)
             .map(crate::ui::stop_window_move)
             .flex()
             .flex_col()
@@ -140,13 +178,7 @@ impl Shell {
                 // Clear of the traffic lights when no rail is left of it.
                 ui::traffic_lights_inset(window) - px(self.titlebar_x()),
             ))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.github_view.clone()),
-            )
+            .child(div().flex().flex_1().min_h_0().child(view))
     }
 }
 

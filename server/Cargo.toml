@@ -1,0 +1,74 @@
+# `arakun-server`: the server part of Arakun (src/server.rs) as a program of
+# its own, for a machine with no display. It is built from the app's own source
+# files (see src/main.rs here), but against GPUI without Wayland and X11, so the
+# binary needs none of the desktop libraries the app links.
+#
+#   cargo build --release --locked -p arakun-server
+#
+# Build it on its own, as above: built together with the app, Cargo gives both
+# the same GPUI, with the display code in it.
+[package]
+name = "arakun-server"
+# The app's version: the two are released together.
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "arakun-server"
+path = "src/main.rs"
+# Its modules are the app's files, and their tests run with the app's.
+test = false
+
+# Each of these is the line the app's Cargo.toml has for it, so both resolve to
+# the same crate in Cargo.lock. Change them together.
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "526c95d474b2bf800e95aab30222fa0341f08e19" }
+# No `wayland`, no `x11`, no `font-kit`: what is left is GPUI's headless platform.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "526c95d474b2bf800e95aab30222fa0341f08e19" }
+rust-embed = "8"
+anyhow = "1"
+imagesize = "0.15"
+ureq = "3"
+unicode-segmentation = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
+aes-gcm = "0.11"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+lyon_tessellation = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+dunce = "1"
+base64 = "0.23"
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+qrcode = { version = "0.14.1", default-features = false }
+getrandom = "0.4"
+sha2 = "0.11"
+ring = "0.17"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# As in the app: without it the build needs the full Xcode to compile Metal shaders.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "526c95d474b2bf800e95aab30222fa0341f08e19", features = ["runtime_shaders"] }
+
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.2"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_Security_Cryptography",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+] }
+
+# The app's files name the app's features in their `cfg`s. This package has none
+# of them, and says so, or every such line would warn.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("browser", "coderlabs", "team"))'] }

@@ -50,6 +50,7 @@ mod posthog;
 mod rail;
 mod rail_blocks;
 mod runs;
+mod servers;
 mod session_actions;
 mod sessions;
 mod sidebar_builder;
@@ -296,12 +297,11 @@ pub struct Shell {
     file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
     file_index_loading: bool,
     /// The ASCII face over the start and welcome screens (redraws the shell
-    /// while its intro fades the screen in), the small raccoon atop the rail,
-    /// and the one asleep in an empty session list.
+    /// while its intro fades the screen in) and the small raccoon atop the
+    /// rail, which steps aside while a raccoon shows in the main view.
     home_face: Entity<crate::ascii_face::AsciiFace>,
     _home_face: Subscription,
     rail_mascot: Entity<crate::mascot::Mascot>,
-    panel_mascot: Entity<crate::mascot::Mascot>,
     explorer_scroll: UniformListScrollHandle,
     focus: FocusHandle,
     composer_focus: FocusHandle,
@@ -389,6 +389,11 @@ pub struct Shell {
     phone: Option<phone::PhoneLink>,
     phone_view: Entity<crate::phone_view::PhoneView>,
     _phone_view: Subscription,
+    /// The connections to the machines running `arakun server`, once the
+    /// Servers tab was opened.
+    servers: Option<servers::ServersLink>,
+    servers_view: Entity<crate::servers_view::ServersView>,
+    _servers_view: Subscription,
     usage_view: Entity<UsageView>,
     gallery_view: Entity<GalleryView>,
     iso_view: Entity<crate::iso_view::IsoView>,
@@ -440,6 +445,8 @@ pub struct Shell {
     /// The GitHub tab shown with no project added: the queue reads GitHub,
     /// not a project, so it doesn't need one. It takes the welcome's place.
     github_alone: bool,
+    /// The Servers tab shows in the welcome's place: no project was added.
+    servers_alone: bool,
     /// `History::arrived` when the Inbox last drew: what it showed.
     inbox_shown: Cell<u64>,
     /// "Clear" was clicked once; the second click empties the history.
@@ -677,6 +684,10 @@ impl Shell {
         let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
             this.on_phone_event(ev, window, cx)
         });
+        let servers_view = cx.new(crate::servers_view::ServersView::new);
+        let servers_sub = cx.subscribe_in(&servers_view, window, |this, _, ev, window, cx| {
+            this.on_servers_event(ev, window, cx)
+        });
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
@@ -733,11 +744,6 @@ impl Shell {
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
-            panel_mascot: cx.new(|cx| {
-                let mut m = crate::mascot::Mascot::new(56., cx);
-                m.set_mood(crate::mascot::Mood::Sleeping);
-                m
-            }),
             explorer_scroll: UniformListScrollHandle::new(),
             focus,
             composer_focus,
@@ -806,6 +812,9 @@ impl Shell {
             phone: None,
             phone_view,
             _phone_view: phone_sub,
+            servers: None,
+            servers_view,
+            _servers_view: servers_sub,
             _usage_view: usage_sub,
             usage_view,
             gallery_view,
@@ -837,6 +846,7 @@ impl Shell {
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
             github_alone: false,
+            servers_alone: false,
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
@@ -1183,6 +1193,8 @@ impl Shell {
         self.active_project = self
             .active_project
             .min(self.projects.len().saturating_sub(1));
+        // Its Servers tab went with it; a no-op while one is left elsewhere.
+        self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
         self.save(cx);
         self.sync_poll(window, cx);
@@ -1530,6 +1542,7 @@ impl Shell {
                             .active_env
                             .min(project.environments.len().saturating_sub(1));
                     }
+                    this.servers_tab_closed(cx);
                     this.save(cx);
                     this.refresh_project(pi, cx);
                     this.ensure_terminal(window, cx);
@@ -1573,6 +1586,11 @@ impl Shell {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A second dialog would read the palettes before the open one's
+        // pending save lands, then save over that edit.
+        if matches!(self.modal, Some((Modal::Settings(_), _))) {
+            return;
+        }
         self.menu = None;
         self.env_menu_open = false;
         let arcade = self.arcade;
@@ -1959,8 +1977,10 @@ impl Shell {
         }
         let env = self.env_mut();
         let mut closed_session = None;
+        let mut closed_servers = false;
         if index < env.tabs.len() {
             let tab = env.tabs.remove(index);
+            closed_servers = matches!(tab.kind, TabKind::Servers);
             if let Some(b) = &tab.browser {
                 b.view.update(cx, |v, cx| v.close(cx));
             }
@@ -1977,6 +1997,9 @@ impl Shell {
         if let Some(id) = closed_session {
             let path = self.env().path.clone();
             self.retire_if_hidden(&path, &id, cx);
+        }
+        if closed_servers {
+            self.servers_tab_closed(cx);
         }
         self.note_active_tab();
         self.ensure_active_live(window, cx);
@@ -2012,6 +2035,36 @@ impl Focusable for Shell {
 }
 
 impl Shell {
+    /// Whether a pane in view already shows a raccoon: the start screen's
+    /// ASCII face in the focused pane, or the raccoon on the composer of a
+    /// live session. Same conditions as `render_pane_body`, so a session that
+    /// is still connecting leaves the rail's raccoon in place.
+    fn main_shows_raccoon(&self) -> bool {
+        let env = self.env();
+        let home = matches!(
+            env.tabs.get(env.active_tab).map(|t| &t.kind),
+            None | Some(TabKind::NewSession)
+        );
+        home || self.composer_chat().is_some()
+    }
+
+    /// Whether the rail shows its raccoon. It steps aside while the main view
+    /// shows one, so only one raccoon is in view, but comes back when a session
+    /// out of view needs input: its mood is the only cue across sessions.
+    fn rail_shows_raccoon(&self, inbox: &[InboxItem]) -> bool {
+        if !self.main_shows_raccoon() {
+            return true;
+        }
+        let env = self.env();
+        let in_view = match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+            Some(TabKind::Session { id, .. }) => Some(id),
+            _ => None,
+        };
+        inbox
+            .iter()
+            .any(|i| i.status == Status::NeedsInput && Some(&i.id) != in_view)
+    }
+
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let env = self.env();
         match env.split_other() {
@@ -2143,6 +2196,7 @@ impl Shell {
                 self.extensions_view.clone().into_any_element()
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
+            Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
             Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
             Some(TabKind::SidebarBuilder) => self.render_sidebar_builder(window, cx),
             Some(TabKind::Isometric) => {
@@ -2198,8 +2252,14 @@ impl Render for Shell {
         let has_projects = self.has_projects();
         if has_projects {
             // With a project the GitHub tab is a tab again; without one later,
-            // the welcome comes back first.
+            // the welcome comes back first. The Servers tab too.
             self.github_alone = false;
+            // The Servers tab in the welcome's place goes with the welcome, and
+            // the server is told nobody is looking. After this frame: telling
+            // it updates the view, which cannot happen while this one draws.
+            if std::mem::take(&mut self.servers_alone) {
+                cx.defer_in(window, |this, _, cx| this.servers_tab_closed(cx));
+            }
         }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
         if has_projects {
@@ -2242,6 +2302,8 @@ impl Render for Shell {
                         .when_some(self.render_image_drop_zone(cx), |d, zone| d.child(zone)),
                 )
                 .into_any_element()
+        } else if self.servers_alone {
+            self.render_servers_alone(window, cx).into_any_element()
         } else if self.github_alone {
             self.render_github_alone(window, cx).into_any_element()
         } else {

@@ -194,6 +194,9 @@ impl Shell {
                 TabKind::Phone => icon("signal-full02", 14.)
                     .text_color(theme::content())
                     .into_any_element(),
+                TabKind::Servers => icon("computer", 14.)
+                    .text_color(theme::content())
+                    .into_any_element(),
                 TabKind::Usage => icon("dashboard-square01", 14.)
                     .text_color(theme::content())
                     .into_any_element(),

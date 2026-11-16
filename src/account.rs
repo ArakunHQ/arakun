@@ -501,7 +501,7 @@ fn droid_renew() -> bool {
 }
 
 fn droid_decrypt(raw: &str, key_b64: &str) -> Option<String> {
-    use aes_gcm::aead::{Aead as _, KeyInit as _, consts::U16, generic_array::GenericArray};
+    use aes_gcm::aead::{Aead as _, KeyInit as _, consts::U16};
     use base64::Engine as _;
     // droid encrypts with a 16-byte IV, not GCM's usual 12.
     type Aes256Gcm16 = aes_gcm::AesGcm<aes_gcm::aes::Aes256, U16>;
@@ -511,14 +511,15 @@ fn droid_decrypt(raw: &str, key_b64: &str) -> Option<String> {
     let nonce = b64.decode(parts.next()?).ok()?;
     let tag = b64.decode(parts.next()?).ok()?;
     let mut data = b64.decode(parts.next()?).ok()?;
-    if nonce.len() != 16 || tag.len() != 16 {
+    let nonce: [u8; 16] = nonce.try_into().ok()?;
+    if tag.len() != 16 {
         return None;
     }
     // Rust's aes-gcm wants the tag appended to the ciphertext.
     data.extend_from_slice(&tag);
     let cipher = Aes256Gcm16::new_from_slice(&key).ok()?;
     let plain = cipher
-        .decrypt(GenericArray::from_slice(&nonce), data.as_ref())
+        .decrypt(&aes_gcm::Nonce::<U16>::from(nonce), data.as_ref())
         .ok()?;
     String::from_utf8(plain).ok()
 }
@@ -674,13 +675,13 @@ mod tests {
         use aes_gcm::aead::{Aead as _, KeyInit as _};
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
-        use aes_gcm::aead::{consts::U16, generic_array::GenericArray};
+        use aes_gcm::aead::consts::U16;
         let key = [7u8; 32];
         let nonce = [3u8; 16];
         let cipher = aes_gcm::AesGcm::<aes_gcm::aes::Aes256, U16>::new_from_slice(&key).unwrap();
         let sealed = cipher
             .encrypt(
-                GenericArray::from_slice(&nonce),
+                &aes_gcm::Nonce::<U16>::from(nonce),
                 br#"{"access_token":"a.b.c"}"#.as_ref(),
             )
             .unwrap();

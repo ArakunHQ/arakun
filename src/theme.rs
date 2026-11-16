@@ -1,8 +1,9 @@
 //! Arakun's colors. Every surface comes from one [`Palette`] (a tint, how
 //! dark the background is, and an accent) plus alpha mixes of the content
-//! color. The default is Calma, a near-neutral dark gray with an amber
+//! color. The default is Arakun Black (neutral, no tint) with an amber
 //! accent; users pick another palette or make their own in Settings ›
-//! Appearance.
+//! Appearance. [`Mode::Light`] draws the same palette on a white
+//! background with dark content, so every gray role flips with it.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
@@ -55,18 +56,56 @@ impl DiffPalette {
         (rgb(add.0), rgb(del.0))
     }
 
-    /// Text, line bar and line background alpha for (added, removed).
+    /// Text, line bar and line background alpha for (added, removed). Light
+    /// mode takes GitHub's light colors, since the dark ones are too pale to
+    /// read on white.
     fn colors(self) -> ((u32, u32), (u32, u32), f32) {
-        match self {
-            DiffPalette::Default => ((0x6ee7b7, 0x10b981), (0xfda4af, 0xf43f5e), 0.15),
-            DiffPalette::Colorblind => ((0x7cc4ff, 0x3b82f6), (0xffb26b, 0xf97316), 0.16),
-            DiffPalette::HighContrast => ((0x8dffc8, 0x22e58f), (0xffa3b1, 0xff4d6a), 0.26),
+        match (self, is_light()) {
+            (DiffPalette::Default, false) => ((0x6ee7b7, 0x10b981), (0xfda4af, 0xf43f5e), 0.15),
+            (DiffPalette::Colorblind, false) => ((0x7cc4ff, 0x3b82f6), (0xffb26b, 0xf97316), 0.16),
+            (DiffPalette::HighContrast, false) => {
+                ((0x8dffc8, 0x22e58f), (0xffa3b1, 0xff4d6a), 0.26)
+            }
+            (DiffPalette::Default, true) => ((0x1a7f37, 0x2da44e), (0xcf222e, 0xcf222e), 0.12),
+            (DiffPalette::Colorblind, true) => ((0x0969da, 0x218bff), (0xbc4c00, 0xfb8f44), 0.12),
+            (DiffPalette::HighContrast, true) => ((0x055d20, 0x1a7f37), (0xa40e26, 0xcf222e), 0.2),
         }
     }
 }
 
 static DIFF_PALETTE: AtomicU8 = AtomicU8::new(0);
 static GLASS: AtomicBool = AtomicBool::new(false);
+static LIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Dark or light: the same palette, on a dark or a white background.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Dark,
+    Light,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 2] = [Mode::Dark, Mode::Light];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Dark => "Dark",
+            Mode::Light => "Light",
+        }
+    }
+}
+
+pub fn mode() -> Mode {
+    if is_light() { Mode::Light } else { Mode::Dark }
+}
+
+pub fn is_light() -> bool {
+    LIGHT.load(Ordering::Relaxed)
+}
+
+pub fn set_mode(m: Mode) {
+    LIGHT.store(m == Mode::Light, Ordering::Relaxed);
+}
 
 pub fn diff_palette() -> DiffPalette {
     DiffPalette::ALL[DIFF_PALETTE.load(Ordering::Relaxed) as usize % 3]
@@ -100,13 +139,32 @@ const BASE_L: f32 = 0.085;
 /// Dialogs sit this much lighter than the background.
 const DIALOG_LIFT: f32 = 0.035;
 const CONTENT_L: f32 = 0.92;
+/// Light mode: the window's lightness, and the content drawn on it. Raised
+/// surfaces (dialogs) go up to white, wells and terminals go a little gray.
+const LIGHT_BG_L: f32 = 1.;
+const LIGHT_CONTENT_L: f32 = 0.07;
+/// What light mode's accent keeps against the background: WCAG's 3:1 for
+/// icons and outlines, since it is drawn as a mark more often than as text.
+const MIN_LIGHT_ACCENT: f32 = 3.;
+/// Gray text is content at an alpha; over white the same alphas read paler
+/// than over black, so light mode draws the text roles this much stronger.
+const LIGHT_TEXT_LIFT: f32 = 1.2;
+
+/// A text role's alpha as drawn in the current mode.
+fn text_alpha(alpha: f32) -> f32 {
+    if is_light() {
+        (alpha * LIGHT_TEXT_LIFT).min(1.)
+    } else {
+        alpha
+    }
+}
 /// The content color carries a little of the tint, never more than this.
 const CONTENT_S_MAX: f32 = 0.22;
 
 /// What a palette is made of. Everything else is derived from these four.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Palette {
-    /// Stable id: `calma` for a built-in, `custom-…` for the user's.
+    /// Stable id: `black` for a built-in, `custom-…` for the user's.
     pub id: String,
     pub name: String,
     /// Hue of the tint, in degrees.
@@ -119,7 +177,7 @@ pub struct Palette {
     pub accent: u32,
 }
 
-/// How dark the default palette's ground is.
+/// How dark Calma's ground is.
 const CALMA_BG: f32 = 0.06;
 
 /// The accent the brand started with, `#ffb547`.
@@ -140,6 +198,7 @@ impl Palette {
     /// The palettes Arakun ships, the default first.
     pub fn built_in() -> Vec<Palette> {
         vec![
+            Palette::new("black", "Arakun Black", 0., 0., 0.043, AMBER),
             Palette::new("calma", "Calma", 240., 0.06, CALMA_BG, AMBER),
             Palette::new("night", "Arakun Night", 226., 0.28, 0.085, AMBER),
             Palette::new("graphite", "Graphite", 230., 0.06, 0.075, AMBER),
@@ -149,15 +208,27 @@ impl Palette {
         ]
     }
 
-    /// The default: a near-neutral gray, so the only color on screen is
-    /// the one that means something.
-    pub fn calma() -> Palette {
+    /// The default: neutral black with the amber accent.
+    pub fn black() -> Palette {
         Palette::built_in().remove(0)
     }
 
     #[cfg(test)]
+    fn built_in_by_id(id: &str) -> Palette {
+        Palette::built_in()
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("a built-in palette")
+    }
+
+    #[cfg(test)]
     pub fn night() -> Palette {
-        Palette::built_in().remove(1)
+        Palette::built_in_by_id("night")
+    }
+
+    #[cfg(test)]
+    pub fn calma() -> Palette {
+        Palette::built_in_by_id("calma")
     }
 
     /// Kept inside what the rest of the theme was tuned for, so a typed or
@@ -283,6 +354,36 @@ impl Palette {
         at(hi)
     }
 
+    /// Light mode's background for this palette: white.
+    pub fn light_background(&self) -> Hsla {
+        light_tinted(self.hue, self.tint, BASE_L)
+    }
+
+    /// The accent as light mode draws it: the one asked for, made darker
+    /// (same hue) until it stands out from the white background. Text
+    /// on it is drawn dark ([`on_accent`]), so the fill stays bright.
+    pub fn readable_light_accent(&self) -> u32 {
+        let back = self.light_background();
+        let asked = self.accent & 0xff_ffff;
+        let reads = |c: u32| contrast(back, rgb(c)) >= MIN_LIGHT_ACCENT * MARGIN;
+        if reads(asked) {
+            return asked;
+        }
+        let base = Hsla::from(rgb(asked));
+        let at = |l: f32| to_hex(hsla(base.h, base.s, l, 1.));
+        // Black always stands out on a white background.
+        let (mut lo, mut hi) = (0., base.l);
+        for _ in 0..16 {
+            let mid = (lo + hi) / 2.;
+            if reads(at(mid)) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        at(lo)
+    }
+
     /// One line that carries the palette, to share it:
     /// `arakun:palette/v1:265,32,7.5,ff7a59,Sunset`.
     pub fn share_code(&self) -> String {
@@ -336,6 +437,18 @@ fn tinted(hue: f32, tint: f32, bg: f32, l: f32) -> Hsla {
     hsla(hue / 360., tint, (l + bg - BASE_L).clamp(0., 1.), 1.)
 }
 
+/// Light mode's surface at lightness `l` (given as for the dark default):
+/// the same offsets from white, so raised surfaces stay white and wells and
+/// terminals sit a little gray.
+fn light_tinted(hue: f32, tint: f32, l: f32) -> Hsla {
+    hsla(
+        hue / 360.,
+        tint,
+        (LIGHT_BG_L + l - BASE_L).clamp(0., 1.),
+        1.,
+    )
+}
+
 /// `top` drawn over an opaque `under`, as the screen shows it.
 fn over(top: Hsla, under: Hsla) -> Rgba {
     let (t, u): (Rgba, Rgba) = (top.into(), under.into());
@@ -374,13 +487,14 @@ pub fn contrast(a: impl Into<Rgba>, b: impl Into<Rgba>) -> f32 {
 
 // The palette in use, as plain numbers so every color call stays a few
 // loads. Background and accent are stored already made readable.
-static HUE_X100: AtomicU32 = AtomicU32::new(24_000);
-static TINT_X1000: AtomicU32 = AtomicU32::new(60);
+static HUE_X100: AtomicU32 = AtomicU32::new(22_600);
+static TINT_X1000: AtomicU32 = AtomicU32::new(280);
 // These two are f32 bits, stored exact so the colors drawn are the ones
 // checked.
-static BG: AtomicU32 = AtomicU32::new(CALMA_BG.to_bits());
+static BG: AtomicU32 = AtomicU32::new(BASE_L.to_bits());
 static CONTENT_LIGHT: AtomicU32 = AtomicU32::new(CONTENT_L.to_bits());
 static ACCENT: AtomicU32 = AtomicU32::new(AMBER);
+static ACCENT_LIGHT: AtomicU32 = AtomicU32::new(AMBER);
 
 pub fn set_palette(p: &Palette) {
     let p = p.clone().clamped();
@@ -389,11 +503,19 @@ pub fn set_palette(p: &Palette) {
     BG.store(p.readable_bg().to_bits(), Ordering::Relaxed);
     CONTENT_LIGHT.store(p.readable_content_l().to_bits(), Ordering::Relaxed);
     ACCENT.store(p.readable_accent(), Ordering::Relaxed);
+    ACCENT_LIGHT.store(p.readable_light_accent(), Ordering::Relaxed);
 }
 
 /// The palette in use, without making it readable again: [`set_palette`]
 /// already did, and these run on every color call.
 fn current_surface(l: f32) -> Hsla {
+    if is_light() {
+        return light_tinted(
+            HUE_X100.load(Ordering::Relaxed) as f32 / 100.,
+            TINT_X1000.load(Ordering::Relaxed) as f32 / 1000.,
+            l,
+        );
+    }
     tinted(
         HUE_X100.load(Ordering::Relaxed) as f32 / 100.,
         TINT_X1000.load(Ordering::Relaxed) as f32 / 1000.,
@@ -406,7 +528,11 @@ fn current_content() -> Hsla {
     hsla(
         hue(),
         (TINT_X1000.load(Ordering::Relaxed) as f32 / 1000. * 0.8).min(CONTENT_S_MAX),
-        f32::from_bits(CONTENT_LIGHT.load(Ordering::Relaxed)),
+        if is_light() {
+            LIGHT_CONTENT_L
+        } else {
+            f32::from_bits(CONTENT_LIGHT.load(Ordering::Relaxed))
+        },
         1.,
     )
 }
@@ -422,7 +548,7 @@ pub fn surface(l: f32) -> Hsla {
     current_surface(l)
 }
 
-/// `#10121c` in the default palette.
+/// `#0b0b0b` in the default palette; white in light mode.
 pub fn background() -> Hsla {
     current_surface(BASE_L)
 }
@@ -568,15 +694,15 @@ pub fn text() -> Hsla {
 }
 /// Body text that is not the point of the row: names, descriptions.
 pub fn text_muted() -> Hsla {
-    mix(ramp().text_muted)
+    mix(text_alpha(ramp().text_muted))
 }
 /// Labels, units, hints, column headers.
 pub fn text_subtle() -> Hsla {
-    mix(ramp().text_subtle)
+    mix(text_alpha(ramp().text_subtle))
 }
 /// Placeholders, disabled text, axis ticks.
 pub fn text_faint() -> Hsla {
-    mix(ramp().text_faint)
+    mix(text_alpha(ramp().text_faint))
 }
 /// Rules between rows and inside cards.
 pub fn border_subtle() -> Hsla {
@@ -637,30 +763,74 @@ const RAISED_LIFT: f32 = 0.06;
 /// How much lighter than the ground sunk wells are: darker than the sheet
 /// they sit in.
 const SUNK_LIFT: f32 = 0.012;
+/// On white nothing can be lighter than the sheet, so light mode steps raised
+/// things and wells down to a light gray instead, as far as the other wells.
+const LIGHT_RAISED_DROP: f32 = 0.025;
+const LIGHT_SUNK_DROP: f32 = 0.04;
+
+/// The lightness, as for the dark default, of a surface `lift` above the
+/// ground in dark mode, or `light_drop` below the white sheet in light mode.
+fn layer_l(light: bool, lift: f32, light_drop: f32) -> f32 {
+    if light {
+        BASE_L - light_drop
+    } else {
+        BASE_L + lift
+    }
+}
 
 /// Where you work: the center of the window.
 pub fn sheet() -> Hsla {
-    current_surface(BASE_L + SHEET_LIFT).opacity(if glass() { 0.9 } else { 1. })
+    current_surface(layer_l(is_light(), SHEET_LIFT, 0.)).opacity(if glass() { 0.9 } else { 1. })
 }
 
 /// Something on the sheet that asks for you: the composer, a question.
 pub fn raised() -> Hsla {
-    current_surface(BASE_L + RAISED_LIFT)
+    current_surface(layer_l(is_light(), RAISED_LIFT, LIGHT_RAISED_DROP))
 }
 
 /// Code, diffs and terminal output inside a sheet.
 pub fn sunk() -> Hsla {
-    current_surface(BASE_L + SUNK_LIFT)
+    current_surface(layer_l(is_light(), SUNK_LIFT, LIGHT_SUNK_DROP))
 }
 
 /// Lemon yellow, apart from the amber accent. Always shown with an icon.
 pub fn warn() -> Rgba {
-    rgb(0xfde047)
+    // Lemon vanishes on white; light mode takes a dark olive of the same hue.
+    rgb(if is_light() { 0x7a6700 } else { 0xfde047 })
 }
 
 /// The palette's accent; `#ffb547` in the default one.
 pub fn accent() -> Hsla {
-    rgb(ACCENT.load(Ordering::Relaxed)).into()
+    let a = if is_light() { &ACCENT_LIGHT } else { &ACCENT };
+    rgb(a.load(Ordering::Relaxed)).into()
+}
+
+/// The logo's own colors, the same in every palette and mode: the raccoon's
+/// paper fur and the ink of its tile, mask and nose.
+pub fn brand_paper() -> Hsla {
+    rgb(0xf1efe8).into()
+}
+pub fn brand_ink() -> Hsla {
+    rgb(0x151515).into()
+}
+/// The fur where paper would vanish, on white: the paper toward ink, dark
+/// enough to read (3.6:1) and still the light part of the face.
+pub fn brand_fur_on_light() -> Hsla {
+    rgb(0x8a867d).into()
+}
+/// The raccoon's fur in this mode: paper on dark, `brand_fur_on_light` on white.
+pub fn brand_fur() -> Hsla {
+    if is_light() {
+        brand_fur_on_light()
+    } else {
+        brand_paper()
+    }
+}
+
+/// Text and icons drawn on an accent fill: the background in dark mode, the
+/// dark content in light mode, where the background would be white on amber.
+pub fn on_accent() -> Hsla {
+    if is_light() { content() } else { background() }
 }
 
 /// Something waiting on the user: a question from an agent, a review that's
@@ -717,30 +887,40 @@ pub const ERROR: u32 = 0xf85149;
 pub const ATTENTION: u32 = 0xd29922;
 pub const LINK: u32 = 0x86a6f2;
 
+// GitHub's light-mode states, for the same reason on a white background.
+const SUCCESS_LIGHT: u32 = 0x1a7f37;
+const ERROR_LIGHT: u32 = 0xcf222e;
+const ATTENTION_LIGHT: u32 = 0x9a6700;
+const LINK_LIGHT: u32 = 0x3b5fc0;
+
+fn by_mode(dark: u32, light: u32) -> Rgba {
+    rgb(if is_light() { light } else { dark })
+}
+
 pub fn success() -> Rgba {
-    rgb(SUCCESS)
+    by_mode(SUCCESS, SUCCESS_LIGHT)
 }
 pub fn error() -> Rgba {
-    rgb(ERROR)
+    by_mode(ERROR, ERROR_LIGHT)
 }
 pub fn attention() -> Rgba {
-    rgb(ATTENTION)
+    by_mode(ATTENTION, ATTENTION_LIGHT)
 }
 pub fn link() -> Rgba {
-    rgb(LINK)
+    by_mode(LINK, LINK_LIGHT)
 }
 
 pub fn pr_open() -> Rgba {
     success()
 }
 pub fn pr_merged() -> Rgba {
-    rgb(0xa371f7)
+    by_mode(0xa371f7, 0x8250df)
 }
 pub fn pr_closed() -> Rgba {
     error()
 }
 pub fn pr_draft() -> Rgba {
-    rgb(0x9198a1)
+    by_mode(0x9198a1, 0x59636e)
 }
 
 /// Hues for things told apart only by color (chart series, project logos,
@@ -806,6 +986,57 @@ mod tests {
     }
 
     #[test]
+    fn the_default_is_neutral_black_with_amber() {
+        let p = Palette::black();
+        assert_eq!(Palette::built_in()[0], p);
+        assert!(
+            near(p.background(), 0x0b0b0b),
+            "background {:06x}",
+            hex(p.background())
+        );
+        assert!(p.background().s < 0.01, "black carries no tint");
+        assert!(near(p.accent(), 0xffb547), "accent {:06x}", hex(p.accent()));
+    }
+
+    #[test]
+    fn light_mode_reads_for_every_built_in_palette() {
+        for p in Palette::built_in() {
+            let bg = p.light_background();
+            let text = hsla(
+                p.hue / 360.,
+                (p.tint * 0.8).min(CONTENT_S_MAX),
+                LIGHT_CONTENT_L,
+                1.,
+            );
+            assert!(contrast(text, bg) > 12., "{} text", p.name);
+            for g in Grays::ALL {
+                let r = g.ramp();
+                let on = |alpha: f32| {
+                    let lifted = (alpha * LIGHT_TEXT_LIFT).min(1.);
+                    contrast(over(text.opacity(lifted), bg), bg)
+                };
+                assert!(on(r.text_muted) >= 7., "{} {g:?} muted", p.name);
+                assert!(on(r.text_subtle) >= 4.5, "{} {g:?} subtle", p.name);
+                assert!(on(r.text_faint) >= 2.5, "{} {g:?} faint", p.name);
+            }
+            let accent = rgb(p.readable_light_accent());
+            assert!(
+                contrast(accent, bg) >= MIN_LIGHT_ACCENT,
+                "{} accent",
+                p.name
+            );
+            // Dark text on the accent fill.
+            assert!(contrast(text, accent) >= 4.5, "{} on accent", p.name);
+            let hue = Hsla::from(accent).h * 360.;
+            assert!(
+                (hue - Hsla::from(rgb(p.accent)).h * 360.).abs() < 1.,
+                "{} keeps its hue",
+                p.name
+            );
+        }
+    }
+
+    #[test]
     fn calma_is_a_quiet_ground_with_a_lighter_sheet() {
         let p = Palette::calma();
         assert!(
@@ -820,6 +1051,24 @@ mod tests {
         );
         assert!(ground.l < sunk.l && sunk.l < sheet.l && sheet.l < raised.l);
         assert!(near(p.accent(), AMBER), "accent {:06x}", hex(p.accent()));
+    }
+
+    #[test]
+    fn on_white_raised_things_and_wells_still_stand_off_the_sheet() {
+        for p in Palette::built_in() {
+            let at = |lift, drop| light_tinted(p.hue, p.tint, layer_l(true, lift, drop));
+            let sheet = at(SHEET_LIFT, 0.);
+            let (raised, sunk) = (
+                at(RAISED_LIFT, LIGHT_RAISED_DROP),
+                at(SUNK_LIFT, LIGHT_SUNK_DROP),
+            );
+            assert_eq!(sheet, p.light_background(), "{} sheet is the white", p.name);
+            assert!(
+                sunk.l < raised.l && raised.l < sheet.l,
+                "{} raised and sunk read on white",
+                p.name
+            );
+        }
     }
 
     #[test]

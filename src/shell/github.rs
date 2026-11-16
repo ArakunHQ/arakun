@@ -23,6 +23,10 @@ impl Shell {
         } else {
             // The queue doesn't need a project: it shows in the welcome's place.
             self.github_alone = true;
+            // The Servers tab was in that place: nobody is looking at it now.
+            if std::mem::take(&mut self.servers_alone) {
+                self.servers_tab_closed(cx);
+            }
         }
         self.github.update(cx, |g, cx| g.opened(cx));
         self.github_view.update(cx, |v, cx| v.focus(window, cx));
@@ -121,8 +125,10 @@ impl Shell {
         }
     }
 
-    /// "Ver" on a GitHub notice: the notification's page, marked read. The
-    /// inbox instead when the notice was about several, or its thread is gone.
+    /// "Ver" on a GitHub notice: its pull request or issue in the GitHub tab,
+    /// marked read. What the tab doesn't show (a CI run, a release) opens its
+    /// page. The inbox instead when the notice was about several, or its
+    /// thread is gone.
     pub(super) fn open_github_notice(
         &mut self,
         thread: Option<String>,
@@ -135,7 +141,13 @@ impl Shell {
             return;
         };
         self.github.update(cx, |g, cx| g.mark_read(&n.id, cx));
-        self.open_url(n.web_url(), window, cx);
+        match crate::github::pr::ItemRef::from_notification(&n) {
+            Some(item) => {
+                self.open_github_tab(window, cx);
+                self.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+            }
+            None => self.open_url(n.web_url(), window, cx),
+        }
     }
 }
 

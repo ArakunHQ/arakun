@@ -1,5 +1,6 @@
-//! The dark ANSI terminal palette plus the standard xterm 256-color cube,
-//! resolved once into `Hsla`.
+//! The ANSI terminal palettes (one for dark mode, one for light) plus the
+//! standard xterm 256-color cube, resolved once into `Hsla`. The default
+//! foreground, background and cursor follow the theme live.
 
 use std::sync::LazyLock;
 
@@ -27,6 +28,34 @@ const ANSI: [u32; 16] = [
     0x67e8f9, // bright cyan
     0xf8fafc, // bright white
 ];
+
+/// GitHub's light terminal colors: the dark set's pastels vanish on white.
+const ANSI_LIGHT: [u32; 16] = [
+    0x24292f, // black
+    0xcf222e, // red
+    0x116329, // green
+    0x4d2d00, // yellow
+    0x0969da, // blue
+    0x8250df, // magenta
+    0x1b7c83, // cyan
+    0x6e7781, // white
+    0x57606a, // bright black
+    0xa40e26, // bright red
+    0x1a7f37, // bright green
+    0x633c01, // bright yellow
+    0x218bff, // bright blue
+    0xa475f9, // bright magenta
+    0x3192aa, // bright cyan
+    0x8c959f, // bright white
+];
+
+fn ansi() -> &'static [u32; 16] {
+    if theme::is_light() {
+        &ANSI_LIGHT
+    } else {
+        &ANSI
+    }
+}
 
 /// Alacritty's factor for SGR 2 (faint) on colors that have no explicit dim variant.
 const DIM_FACTOR: f32 = 0.66;
@@ -61,7 +90,7 @@ fn dim(c: Rgb) -> Rgb {
 /// overridden it with OSC 4/10/11/12.
 pub fn default_rgb(index: usize) -> Rgb {
     match index {
-        0..16 => rgb_of(ANSI[index]),
+        0..16 => rgb_of(ansi()[index]),
         16..232 => {
             let i = index - 16;
             let level = |v: usize| if v == 0 { 0 } else { (v * 40 + 55) as u8 };
@@ -81,7 +110,7 @@ pub fn default_rgb(index: usize) -> Rgb {
         i if i == NamedColor::Background as usize => hsla_to_rgb(theme::background()),
         i if i == NamedColor::Cursor as usize => hsla_to_rgb(theme::active()),
         i if (NamedColor::DimBlack as usize..=NamedColor::DimWhite as usize).contains(&i) => {
-            dim(rgb_of(ANSI[i - NamedColor::DimBlack as usize]))
+            dim(rgb_of(ansi()[i - NamedColor::DimBlack as usize]))
         }
         i if i == NamedColor::DimForeground as usize => dim(hsla_to_rgb(theme::content())),
         _ => hsla_to_rgb(theme::content()),
@@ -98,11 +127,21 @@ pub fn to_hsla(c: Rgb) -> Hsla {
     .into()
 }
 
-static PALETTE: LazyLock<Vec<Hsla>> = LazyLock::new(|| {
-    (0..alacritty_terminal::term::color::COUNT)
-        .map(|i| to_hsla(default_rgb(i)))
+/// The 256 indexed colors per mode; the named ones after them (foreground,
+/// background, cursor, dims) are read from the theme on each use, so a
+/// palette or mode change shows in open terminals.
+fn indexed(light: bool) -> Vec<Hsla> {
+    let table = if light { &ANSI_LIGHT } else { &ANSI };
+    (0..256)
+        .map(|i| match i {
+            0..16 => to_hsla(rgb_of(table[i])),
+            _ => to_hsla(default_rgb(i)),
+        })
         .collect()
-});
+}
+
+static DARK: LazyLock<Vec<Hsla>> = LazyLock::new(|| indexed(false));
+static LIGHT: LazyLock<Vec<Hsla>> = LazyLock::new(|| indexed(true));
 
 /// Resolves colors for one frame. `overrides` is false in the common case where no
 /// program has touched the palette, which keeps lookups to a single array index.
@@ -123,7 +162,11 @@ impl<'a> Resolver<'a> {
         {
             return to_hsla(rgb);
         }
-        PALETTE[index]
+        match index {
+            0..256 if theme::is_light() => LIGHT[index],
+            0..256 => DARK[index],
+            _ => to_hsla(default_rgb(index)),
+        }
     }
 
     pub fn resolve(&self, color: Color) -> Hsla {

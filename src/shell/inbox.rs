@@ -113,7 +113,7 @@ impl Shell {
                     .pb(crate::ui::sp(2.)),
             );
             for i in indices {
-                list = list.child(notice_row(i, &history.notices[i], now, cx));
+                list = list.child(notice_row(&history.notices[i], now, cx));
             }
         }
         ui::menu_panel("inbox-menu", WIDTH)
@@ -260,10 +260,10 @@ fn header_action(id: &'static str, label: &str, danger: bool) -> gpui::Stateful<
 }
 
 /// One past notice: what the island showed, and the same "Ver" on click.
-fn notice_row(i: usize, n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl IntoElement {
+fn notice_row(n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl IntoElement {
     let unseen = !n.seen;
     let opens = !n.key.is_empty();
-    let (at, key) = (n.at, n.key.clone());
+    let (id, key) = (n.id, n.key.clone());
     let title = div()
         .ty(Type::Body)
         .when(unseen, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
@@ -276,7 +276,7 @@ fn notice_row(i: usize, n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl I
         .child(n.title.clone());
     let age = crate::github::pulse::span(now.saturating_sub(n.at));
     div()
-        .id(("inbox-notice", i))
+        .id(("inbox-notice", n.id as usize))
         .flex()
         .items_center()
         .gap(crate::ui::sp(10.))
@@ -316,15 +316,8 @@ fn notice_row(i: usize, n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl I
         .on_click(cx.listener(move |this, _, window, cx| {
             {
                 let mut history = this.notices.borrow_mut();
-                // The list may have moved since it was drawn: find it by time and key.
-                let index = match history.notices.get(i) {
-                    Some(n) if n.at == at && n.key == key => Some(i),
-                    _ => history
-                        .notices
-                        .iter()
-                        .position(|n| n.at == at && n.key == key),
-                };
-                if index.is_some_and(|i| history.mark_seen(i)) {
+                // By id, not position: the list may have moved since it was drawn.
+                if history.mark_seen(id) {
                     crate::notices::store(&mut history);
                 }
             }

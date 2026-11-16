@@ -113,8 +113,13 @@ function analyze(group) {
   if (!sampled.length) return result;
 
   const cpus = quantile(sampled.map((j) => j.usage.cpus), 0.5);
-  const memTotal = quantile(sampled.map((j) => j.usage.mem_total), 0.5);
-  const memPeak = Math.max(...sampled.map((j) => j.usage.mem_peak));
+  // The run that used the largest share of its own runner's memory. A label
+  // sometimes lands on a bigger host, and some tools (CodeQL) size their heap
+  // to what they find, so one run's peak against another's total means nothing.
+  const memShare = (j) => j.usage.mem_peak / j.usage.mem_total;
+  const memRun = sampled.reduce((a, j) => (memShare(j) > memShare(a) ? j : a));
+  const memTotal = memRun.usage.mem_total;
+  const memPeak = memRun.usage.mem_peak;
   const sampledSeconds = sampled.reduce((s, j) => s + j.usage.seconds, 0);
   const jobSeconds = sampled.reduce((s, j) => s + j.duration, 0);
   const hist = Array(10).fill(0);
@@ -185,13 +190,13 @@ function report(results, since, until) {
       "",
       "<details><summary>How these are estimated</summary>",
       "",
-      "Each job samples CPU and memory every 2 s (`.github/actions/runner-usage`). Half size: a stretch that kept a share u of the CPUs busy takes max(1, 2u) times as long on half of them, and memory halves too. Double size is a best case: only time at 90%+ CPU gets faster, at most twice. Cost is CPUs x minutes, which is how Depot's per-minute price scales. A high I/O wait means more CPUs will not help much. The thresholds are at the top of `.github/scripts/runner-sizing.mjs`.",
+      "Each job samples CPU and memory every 2 s (`.github/actions/runner-usage`). Memory peak: the run that used the largest share of its runner's memory. Half size: a stretch that kept a share u of the CPUs busy takes max(1, 2u) times as long on half of them, and memory halves too. Double size is a best case: only time at 90%+ CPU gets faster, at most twice. Cost is CPUs x minutes, which is how Depot's per-minute price scales. A high I/O wait means more CPUs will not help much. The thresholds are at the top of `.github/scripts/runner-sizing.mjs`.",
       "",
       "</details>",
       "",
     );
   } else {
-    lines.push("No job in this period reported usage. Add `uses: ./.github/actions/runner-usage` after `actions/checkout` in the jobs to size.", "");
+    lines.push("No job in this period reported usage. Add `uses: $/.github/actions/runner-usage` early in the jobs to size.", "");
   }
 
   if (unmeasured.length) {

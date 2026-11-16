@@ -57,16 +57,36 @@ cargo build --no-default-features
 yourself (open the PNG) before you call the change done. Check light and dark
 if the change touches color.
 
+For product screenshots of the start screen in dark and light (the brand book,
+the README, the site), `tools/product-shots.sh` starts a fresh, isolated Arakun
+per mode and captures its window. It also runs on macOS, where `arakun dev`
+can't, and it never types or clicks, so nothing lands in another app.
+
 For the "before" shot, build `main` in another worktree, or take it before your
-first edit.
+first edit, and save it as `before.png` the same way.
 
 ## Hand it over
 
 - Keep screenshots outside the repository (`${TMPDIR:-/tmp}`), not in
   `docs/screenshots/`, which holds the README's images.
 - The pull request needs before and after screenshots (a short GIF for an
-  interaction). GitHub has no API to upload images, so give the user the paths
-  and say they need to be dragged into the pull request.
+  interaction). GitHub has no API to upload images, so `tools/pr-assets.sh`
+  pushes them to the public [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets)
+  repository and prints the Markdown to paste under Changes. Name each file; never pass a glob,
+  which could publish an old capture:
+
+  ```sh
+  tools/pr-assets.sh "${TMPDIR:-/tmp}/before.png" "${TMPDIR:-/tmp}/after.png"
+  ```
+
+  Each run gets a new folder (the script's header says how it is named), so a
+  retake never replaces images a pull request already shows.
+
+  Anything there is public at once: use made-up data, and look at every file
+  you upload for a real account, token, email or home-directory path (the status
+  bar shows the project's path; the test Arakun can show your GitHub
+  notifications). Without push access the script says so: give the user the
+  paths and say they need to be dragged into the pull request.
 - Changed a shortcut, a setting or a command? Update the README, and
   `docs/windows.md` if Windows differs.
 - Code for one platform goes behind `cfg(...)`. Say in the pull request which

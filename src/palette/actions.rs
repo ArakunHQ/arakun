@@ -80,7 +80,11 @@ pub fn for_item(item: &Item, pinned: bool, read_only: bool) -> Vec<Action> {
                 'a',
                 Do::Go(Target::Ask {
                     prompt: format!(
-                        "Review pull request {} ({}) and tell me what to change.",
+                        "Review {} {} ({}) and tell me what to change.",
+                        match r.kind {
+                            crate::github::pr::ItemKind::Pull => "pull request",
+                            crate::github::pr::ItemKind::Issue => "issue",
+                        },
                         r.label(),
                         item.title
                     ),
@@ -226,6 +230,36 @@ mod tests {
         assert!(r.iter().any(|a| a.label == "Merge… (read-only)"));
         assert_eq!(w[0].label, "Open in GitHub tab");
         assert_eq!(w.last().unwrap().what, Do::Pin);
+    }
+
+    fn review_prompt(item: &Item) -> String {
+        let acts = for_item(item, false, false);
+        let ask = acts.iter().find(|a| a.label == "Ask an agent to review");
+        match ask.map(|a| &a.what) {
+            Some(Do::Go(Target::Ask { prompt, .. })) => prompt.clone(),
+            _ => panic!("no review action"),
+        }
+    }
+
+    #[test]
+    fn review_prompt_names_the_item_kind() {
+        assert!(review_prompt(&pull()).starts_with("Review pull request o/r#64 "));
+        let issue = Item::new(
+            "issue:o/r#9",
+            Kind::Pull,
+            "crash on start",
+            Target::Pull(ItemRef {
+                repo: "o/r".into(),
+                number: 9,
+                kind: ItemKind::Issue,
+            }),
+        );
+        assert!(review_prompt(&issue).starts_with("Review issue o/r#9 "));
+        assert!(
+            !for_item(&issue, false, false)
+                .iter()
+                .any(|a| a.label.starts_with("Merge"))
+        );
     }
 
     #[test]

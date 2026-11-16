@@ -134,6 +134,7 @@ impl Shell {
             TabKind::Branches => self.branches_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::GitHub => self.github_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Phone => self.phone_view.update(cx, |v, cx| v.focus(window, cx)),
+            TabKind::Servers => self.servers_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Usage => self.usage_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Gallery => self.gallery_view.update(cx, |v, cx| v.focus(window, cx)),
             // The builder takes keys through the window; nothing in it needs focus first.
@@ -422,6 +423,8 @@ impl Shell {
         for id in sessions {
             self.retire_if_hidden(&path, &id, cx);
         }
+        // A no-op while a Servers tab is left anywhere.
+        self.servers_tab_closed(cx);
         self.note_active_tab();
         self.ensure_active_live(window, cx);
         self.save(cx);

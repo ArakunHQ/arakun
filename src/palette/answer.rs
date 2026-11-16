@@ -1,8 +1,8 @@
 //! Quick answers in the palette: a question goes to a small fast model with
 //! what Arakun already knows about it (matching memory, the failed run on the
 //! branch), and the answer streams in under the query. It goes through Claude
-//! Code, signed in with the user's Claude account (OAuth), so it counts
-//! against their plan and needs no API key. It runs on a thread of its own;
+//! Code the way the user set it up: their claude.ai plan, an API key or another
+//! endpoint such as a proxy (`agent::claude_auth`). It runs on a thread of its own;
 //! the palette polls a channel, so typing never waits.
 
 use std::process::Child;
@@ -401,7 +401,7 @@ fn too_slow(limit: Duration) -> String {
 
 /// Starts Claude Code for one request built as a Messages body (its system
 /// prompt, its user message and its model), with no tools, settings, MCP
-/// servers or saved session: just the model, on the user's Claude account.
+/// servers or saved session: just the model, on the user's Claude account or key.
 fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::Child, String> {
     let bin = crate::agent::claude_code_binary().ok_or_else(no_key)?;
     let mut cmd = crate::platform::command(&bin);
@@ -428,14 +428,14 @@ fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::
     if let Some(schema) = schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
+    crate::agent::claude_auth::one_shot(&mut cmd)
+        .map_err(|e| format!("could not hand Claude Code its key helper ({e})"))?;
+    // After the user's settings, so a cap of their own doesn't lift this one.
     if let Some(max) = request["max_tokens"].as_u64() {
         cmd.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max.to_string());
     }
-    // With a key in the environment Claude Code would bill it instead of the plan.
-    cmd.env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
-        // Away from any project, so no CLAUDE.md is read into a quick answer.
-        .current_dir(std::env::temp_dir())
+    // Away from any project, so no CLAUDE.md is read into a quick answer.
+    cmd.current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -498,7 +498,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
 
 /// What to do when Claude Code isn't there to answer.
 pub fn no_key() -> String {
-    "Quick answers go through Claude Code: install it or sign in with `claude /login`.".to_string()
+    "Quick answers go through Claude Code: install it, then sign in with `claude /login` or set up an API key.".to_string()
 }
 
 fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
@@ -529,11 +529,13 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
         }
     }
     // Its output closed: it has ended or is about to. The status is read
-    // before `proc` goes, which would kill it if it hadn't.
+    // before `proc` goes, which kills and reaps it if it hadn't. The wait is
+    // bounded: a process that closed its output but ignores SIGTERM would
+    // hold this thread forever.
     let code = if finished {
         None
     } else {
-        proc.child.wait().ok().map(|s| s.code())
+        status_within(&mut proc.child, EXIT_GRACE).map(|s| s.code())
     };
     drop(proc);
     if job.timed_out() {
@@ -541,6 +543,23 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
     } else if !finished {
         // Without its result line the answer is cut short, not done.
         let _ = tx.send(Event::Failed(cut_short(code.flatten())));
+    }
+}
+
+/// How long a process that closed its output gets to exit on its own.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// The child's exit status if it exits within `limit`, else None.
+fn status_within(child: &mut Child, limit: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => return None,
+        }
     }
 }
 
@@ -708,6 +727,39 @@ mod tests {
         let pid = late.id();
         assert!(watch.started(late, ANSWER_LIMIT).is_none());
         assert!(!exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_closes_its_output_and_ignores_sigterm_is_killed() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; exec >&-; sleep 30"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (job, watch) = job();
+        let mut proc = watch.started(child, ANSWER_LIMIT).unwrap();
+        let pid = proc.child.id();
+        let t = Instant::now();
+        use std::io::Read as _;
+        let _ = proc
+            .child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut Vec::new());
+        // Cancelling sends only SIGTERM, which it ignores.
+        drop(job);
+        assert_eq!(
+            status_within(&mut proc.child, Duration::from_millis(200)),
+            None
+        );
+        drop(proc);
+        assert!(t.elapsed() < Duration::from_secs(10));
+        assert!(!exists(pid), "killed and reaped");
+        // One that exits in time gives its status.
+        let mut done = std::process::Command::new("true").spawn().unwrap();
+        assert!(status_within(&mut done, Duration::from_secs(5)).is_some_and(|s| s.success()));
     }
 
     #[cfg(unix)]

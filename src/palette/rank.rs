@@ -43,22 +43,79 @@ fn substring(hay: &str, needle: &str) -> Option<Hit> {
     if needle.is_empty() {
         return word(hay, needle);
     }
-    if lower_keeps_offsets(hay) {
-        return exact(hay, &hay.to_lowercase(), &needle.to_lowercase());
+    let needle_l = needle.to_lowercase();
+    if let Some(h) = exact(hay, &needle_l) {
+        return Some(h);
     }
-    // Lowercasing moved byte offsets: the general path handles that.
+    if lower_keeps_offsets(hay) {
+        return None;
+    }
+    // `İ` lowers to `i` and a dot, so "ist" is not in "i̇stanbul": compare
+    // letter by letter, in one piece.
     word(hay, needle).filter(|h| h.ranges.len() == 1)
 }
 
-/// The best place `needle_l` sits in `lower` (`hay` lowercased, with
-/// `lower_keeps_offsets(hay)`, so its offsets are offsets in `hay` too).
-fn exact(hay: &str, lower: &str, needle_l: &str) -> Option<Hit> {
+/// `s` lower-cased, with a way back from byte ranges of the lower text to
+/// ranges of `s`, since some letters change length when lowered.
+pub struct Lowered<'a> {
+    orig: &'a str,
+    pub text: String,
+    /// Where in `orig` the letter that made each byte of `text` starts.
+    from: Vec<usize>,
+}
+
+impl<'a> Lowered<'a> {
+    pub fn new(orig: &'a str) -> Self {
+        let mut text = String::with_capacity(orig.len());
+        let mut from = Vec::with_capacity(orig.len());
+        for (at, c) in orig.char_indices() {
+            for l in c.to_lowercase() {
+                text.push(l);
+                from.extend(std::iter::repeat_n(at, l.len_utf8()));
+            }
+        }
+        Lowered { orig, text, from }
+    }
+
+    /// The range of `orig` that `r` (in `text`) came from. A range that
+    /// starts or ends inside one letter's lower case takes the whole letter.
+    pub fn back(&self, r: Range<usize>) -> Range<usize> {
+        let start = self.from.get(r.start).copied().unwrap_or(self.orig.len());
+        let end = match r.end.checked_sub(1).and_then(|e| self.from.get(e)) {
+            Some(&at) if r.end > r.start => {
+                at + self.orig[at..].chars().next().map_or(0, char::len_utf8)
+            }
+            _ => start,
+        };
+        start..end
+    }
+}
+
+/// The best place `needle_l` (lower case) sits in `hay`, in one piece, with
+/// the range in `hay`'s own offsets.
+fn exact(hay: &str, needle_l: &str) -> Option<Hit> {
+    if lower_keeps_offsets(hay) {
+        return best_in(hay, &hay.to_lowercase(), needle_l, |r| r);
+    }
+    let low = Lowered::new(hay);
+    best_in(hay, &low.text, needle_l, |r| low.back(r))
+}
+
+/// The best match of `needle_l` in `lower`, `hay` lowercased, with `back`
+/// turning a range of `lower` into one of `hay`.
+fn best_in(
+    hay: &str,
+    lower: &str,
+    needle_l: &str,
+    back: impl Fn(Range<usize>) -> Range<usize>,
+) -> Option<Hit> {
     let mut best: Option<Hit> = None;
     for (at, _) in lower.match_indices(needle_l) {
-        // A letter that lowers to several can still put a match inside one.
-        if !hay.is_char_boundary(at) || !hay.is_char_boundary(at + needle_l.len()) {
+        let r = back(at..at + needle_l.len());
+        if r.is_empty() || !hay.is_char_boundary(r.start) || !hay.is_char_boundary(r.end) {
             continue;
         }
+        let at = r.start;
         let prev = hay[..at].chars().next_back();
         let c = hay[at..].chars().next().unwrap_or(' ');
         let mut score = 100 + 4 * needle_l.chars().count() as i32;
@@ -71,7 +128,7 @@ fn exact(hay: &str, lower: &str, needle_l: &str) -> Option<Hit> {
         if best.as_ref().is_none_or(|b| score > b.score) {
             best = Some(Hit {
                 score,
-                ranges: std::iter::once(at..at + needle_l.len()).collect(),
+                ranges: vec![r],
             });
         }
     }
@@ -86,11 +143,9 @@ fn word(hay: &str, needle: &str) -> Option<Hit> {
         });
     }
     let needle_l = needle.to_lowercase();
-    // Lowercasing can change byte lengths (rare outside ASCII): only use the
-    // substring path when it did not.
-    if lower_keeps_offsets(hay)
-        && let Some(h) = exact(hay, &hay.to_lowercase(), &needle_l)
-    {
+    // In one piece first, also when lowering moved offsets: the three-letter
+    // rule below is for letters spread out, not for "go" in "Kİİ go".
+    if let Some(h) = exact(hay, &needle_l) {
         return Some(h);
     }
     // Letters in order, for three letters or more. Each one prefers the start of a word.
@@ -314,6 +369,32 @@ mod tests {
         }
         let h = fuzzy("🦀 crab ÉTÉ", "été").unwrap();
         assert_eq!(&"🦀 crab ÉTÉ"[h.ranges[0].clone()], "ÉTÉ");
+    }
+
+    #[test]
+    fn short_words_match_in_one_piece_when_lowering_moves_offsets() {
+        let title = "K\u{130}\u{130} go";
+        assert!(!lower_keeps_offsets(title));
+        for h in [fuzzy(title, "go"), score_row(title, "", "go")] {
+            let h = h.unwrap();
+            assert_eq!(h.ranges, vec![6..8]);
+            assert_eq!(&title[6..8], "go");
+        }
+        let h = score_row("Fix \u{130}stanbul", "", "\u{130}st").unwrap();
+        assert_eq!(h.ranges, vec![4..8]);
+    }
+
+    #[test]
+    fn lowered_maps_ranges_back() {
+        let s = "\u{130}x\u{212A}y";
+        let low = Lowered::new(s);
+        assert_eq!(low.text, "i\u{307}xky");
+        // "x" sits after the three bytes of "i̇", which came from two.
+        assert_eq!(low.back(3..4), 2..3);
+        // Half of "i̇" still takes the whole "İ".
+        assert_eq!(low.back(0..1), 0..2);
+        assert_eq!(low.back(4..6), 3..7);
+        assert_eq!(low.back(6..6), 7..7);
     }
 
     #[test]

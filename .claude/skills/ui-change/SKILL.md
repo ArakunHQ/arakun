@@ -72,14 +72,20 @@ first edit, and save it as `before.png` the same way.
   Copy each file by name, never with a glob: an old capture left in
   `${TMPDIR:-/tmp}` would be published with it.
 
+  `mkdir` without `-p` fails when the folder exists, and the `&&` chain then
+  stops before a `cp` can overwrite an earlier upload. Add one `cp` per file, a GIF
+  too.
+
   ```sh
-  folder="$(git branch --show-current | tr / -)-$(git rev-parse --short=12 HEAD)"
-  dir=$(mktemp -d) && gh repo clone ArakunHQ/pr-assets "$dir" -- -q
-  mkdir "$dir/$folder"   # fails instead of overwriting an earlier upload
-  cp "${TMPDIR:-/tmp}/before.png" "$dir/$folder/before-<what>.png"
-  cp "${TMPDIR:-/tmp}/after.png" "$dir/$folder/after-<what>.png"   # one cp per file, a GIF too
-  git -C "$dir" add "$folder" && git -C "$dir" commit -m "docs: add $folder screenshots"
-  git -C "$dir" push origin main
+  folder="$(git branch --show-current | tr / -)-$(git rev-parse --short=12 HEAD)" &&
+    dir=$(mktemp -d) &&
+    gh repo clone ArakunHQ/pr-assets "$dir" -- -q &&
+    mkdir "$dir/$folder" &&
+    cp "${TMPDIR:-/tmp}/before.png" "$dir/$folder/before-<what>.png" &&
+    cp "${TMPDIR:-/tmp}/after.png" "$dir/$folder/after-<what>.png" &&
+    git -C "$dir" add "$folder" &&
+    git -C "$dir" commit -m "docs: add $folder screenshots" &&
+    git -C "$dir" push origin main
   ```
 
   Embed each one by its raw URL:

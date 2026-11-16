@@ -127,7 +127,7 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
         .bg(theme::accent())
         .text_size(px(size * 0.45))
         .font_weight(FontWeight::BOLD)
-        .text_color(theme::background())
+        .text_color(theme::on_accent())
         .child(letter)
 }
 

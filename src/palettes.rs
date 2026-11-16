@@ -1,6 +1,7 @@
 //! The look the user chose, kept in `palettes.json` next to the state file:
-//! the palette in use and their own ones (the colors live in `theme`), and
-//! how round, roomy and spread out the app is (the scales live in `ui`).
+//! the palette in use and their own ones (the colors live in `theme`), dark
+//! or light, and how round, roomy and spread out the app is (the scales live
+//! in `ui`).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -27,6 +28,9 @@ pub struct Saved {
     /// Pixels between the window's floating cards.
     #[serde(default = "eight")]
     pub window_gap: f32,
+    /// Light mode: the palette on a near-white background. Off is dark.
+    #[serde(default)]
+    pub light: bool,
     /// The file could not be read in full nor moved aside, so saving would
     /// write over what it still holds. Saves are refused for this session.
     #[serde(skip)]
@@ -49,6 +53,7 @@ impl Default for Saved {
             radius: 1.,
             space: 1.,
             window_gap: 8.,
+            light: false,
             read_only: false,
         }
     }
@@ -68,7 +73,7 @@ impl Saved {
 
     /// The palette in use; the default when the saved one is gone.
     pub fn active(&self) -> Palette {
-        self.find(&self.current).unwrap_or_else(Palette::night)
+        self.find(&self.current).unwrap_or_else(Palette::black)
     }
 
     pub fn is_custom(&self, id: &str) -> bool {
@@ -189,6 +194,8 @@ fn parse(bytes: &[u8]) -> Option<(Saved, usize)> {
         Some(serde_json::Value::String(s)) => s,
         _ => String::new(),
     };
+    // Anything but `true` is dark, the default.
+    let light = matches!(obj.remove("light"), Some(serde_json::Value::Bool(true)));
     let entries = match obj.remove("custom") {
         Some(serde_json::Value::Array(a)) => a,
         Some(serde_json::Value::Null) | None => Vec::new(),
@@ -224,6 +231,7 @@ fn parse(bytes: &[u8]) -> Option<(Saved, usize)> {
             radius,
             space,
             window_gap,
+            light,
             read_only: false,
         },
         skipped,
@@ -309,6 +317,11 @@ pub fn apply_saved() {
 }
 
 pub fn apply(saved: &Saved) {
+    crate::theme::set_mode(if saved.light {
+        crate::theme::Mode::Light
+    } else {
+        crate::theme::Mode::Dark
+    });
     crate::theme::set_palette(&saved.active());
     crate::ui::set_radius_scale(saved.radius);
     crate::ui::set_space_scale(saved.space);
@@ -322,7 +335,7 @@ mod tests {
     #[test]
     fn the_users_palettes_get_their_own_ids_and_names() {
         let mut s = Saved::default();
-        assert_eq!(s.active().id, "night");
+        assert_eq!(s.active().id, "black");
         let night = Palette::night();
         let a = s.add(&night);
         assert_eq!((a.as_str(), s.current.as_str()), ("custom-1", "custom-1"));
@@ -335,7 +348,7 @@ mod tests {
         s.update(edited);
         assert_eq!(s.find("custom-1").unwrap().hue, 10.);
         s.remove("custom-2");
-        assert_eq!(s.active().id, "night");
+        assert_eq!(s.active().id, "black");
         s.remove("custom-1");
         assert!(s.add(&night) == "custom-1", "a freed id is used again");
     }
@@ -346,7 +359,7 @@ mod tests {
             current: "gone".into(),
             ..Saved::default()
         };
-        assert_eq!(s.active().id, "night");
+        assert_eq!(s.active().id, "black");
         let s = Saved {
             current: "forest".into(),
             ..Saved::default()
@@ -355,6 +368,9 @@ mod tests {
         // A file from before the scales existed keeps the default look.
         let old: Saved = serde_json::from_str(r#"{"current":"rose","custom":[]}"#).unwrap();
         assert_eq!((old.radius, old.space, old.window_gap), (1., 1., 8.));
+        assert!(!old.light, "and stays dark");
+        let (lit, _) = parse(br#"{"current":"night","light":true}"#).unwrap();
+        assert!(lit.light, "light mode survives a reload");
     }
 
     #[test]

@@ -205,7 +205,7 @@ pub fn button(
         .font_weight(gpui::FontWeight::MEDIUM)
         .when(primary, |d| {
             d.bg(theme::accent())
-                .text_color(theme::background())
+                .text_color(theme::on_accent())
                 .hover(|s| s.opacity(0.9))
         })
         .when(!primary, |d| {

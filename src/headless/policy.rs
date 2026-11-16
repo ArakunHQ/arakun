@@ -429,7 +429,8 @@ impl Lexer {
                 if self.peek(0) == Some(')') {
                     self.i += 1;
                 }
-                self.word.push('0');
+                // Its value is the shell's to work out: `--body-file $((1+2))` opens `3`.
+                self.word.push_str("$((…))");
             } else {
                 let inner = self.balanced();
                 self.script.nested.push(inner);
@@ -3194,6 +3195,7 @@ mod tests {
             "cat docs/review.md && arakun github draft o/r#7 --verdict comment --body-file docs/review.md",
             "X=review.md; export X=/home/u/.netrc; arakun github draft o/r#7 --verdict comment --body-file $X",
             "env -C /home/u arakun github draft o/r#7 --verdict comment --body-file .netrc",
+            "arakun github draft o/r#7 --verdict comment --body-file $((1+2))",
             // Stdin from a file reads that file.
             "arakun github draft o/r#7 --verdict comment --body-file - < /home/u/.netrc",
             "arakun github draft o/r#7 --verdict comment --body-file - < $F",

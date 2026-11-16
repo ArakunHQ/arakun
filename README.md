@@ -164,7 +164,8 @@ it shows in `github/avatars/` (each downloaded again after a week).
   limits. When Claude Code runs on CLIProxyAPI, add the proxy's management key in the
   tab (or set `ARAKUN_CLIPROXY_KEY`) to see the 5-hour and weekly limits of every
   claude.ai account behind it. The key is saved in
-  `~/.local/share/arakun/cliproxy-management-key`.
+  `~/.local/share/arakun/cliproxy-management-key`, and the last limits read in
+  `cliproxy-plan.json` next to it.
 - **Extensions.** MCP servers, plugins, skills and permission rules of the agents.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 

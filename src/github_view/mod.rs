@@ -1380,22 +1380,13 @@ fn without_html(text: &str) -> String {
             if code {
                 return Some(line);
             }
-            let t = line.trim();
-            let lower = t.to_ascii_lowercase();
-            if matches!(
-                lower.as_str(),
-                "<details>" | "</details>" | "<details open>" | "<br>" | "<br/>" | "<p>" | "</p>"
-            ) {
-                return None;
+            if !line.contains('<') {
+                return Some(line);
             }
-            if let Some(inner) = lower
-                .strip_prefix("<summary>")
-                .and_then(|s| s.strip_suffix("</summary>"))
-            {
-                let inner = &t[9..9 + inner.len()];
-                return Some(format!("**{}**", inner.trim()));
-            }
-            Some(line)
+            // A line that held only tags is gone, not a blank line: a blank
+            // line would end a list or a table around it.
+            let md = html_line(&line);
+            (!md.trim().is_empty()).then_some(md)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1439,25 +1430,7 @@ fn strip_comments(line: &str, in_comment: &mut bool) -> String {
             rest = &rest[4..];
             *in_comment = true;
         } else if rest.starts_with('`') {
-            let ticks = rest.len() - rest.trim_start_matches('`').len();
-            let run = &rest[..ticks];
-            // The span ends at the next run of exactly as many backticks.
-            let after = &rest[ticks..];
-            let mut from = 0;
-            let close = loop {
-                match after[from..].find(run) {
-                    Some(i) => {
-                        let i = from + i;
-                        let len = after[i..].len() - after[i..].trim_start_matches('`').len();
-                        if len == ticks {
-                            break Some(i);
-                        }
-                        from = i + len;
-                    }
-                    None => break None,
-                }
-            };
-            let end = close.map_or(ticks, |i| ticks + i + ticks);
+            let end = code_span_len(rest);
             out.push_str(&rest[..end]);
             rest = &rest[end..];
         } else {
@@ -1465,6 +1438,246 @@ fn strip_comments(line: &str, in_comment: &mut bool) -> String {
             rest = &rest[1..];
         }
     }
+}
+
+/// How much of `rest`, which starts with backticks, is a code span: up to
+/// the next run of exactly as many backticks, or only the run when none
+/// closes it (then the backticks are text).
+fn code_span_len(rest: &str) -> usize {
+    let ticks = rest.len() - rest.trim_start_matches('`').len();
+    let run = &rest[..ticks];
+    let after = &rest[ticks..];
+    let mut from = 0;
+    loop {
+        match after[from..].find(run) {
+            Some(i) => {
+                let i = from + i;
+                let len = after[i..].len() - after[i..].trim_start_matches('`').len();
+                if len == ticks {
+                    return ticks + i + ticks;
+                }
+                from = i + len;
+            }
+            None => return ticks,
+        }
+    }
+}
+
+/// Tags GitHub renders that only shape or decorate (CodeRabbit writes its
+/// reviews in them): they go, and what they hold stays.
+const LAYOUT_TAGS: &[&str] = &[
+    "abbr",
+    "blockquote",
+    "br",
+    "dd",
+    "details",
+    "div",
+    "dl",
+    "dt",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "ins",
+    "li",
+    "ol",
+    "p",
+    "picture",
+    "source",
+    "span",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+];
+
+/// A known HTML tag at the start of `rest`: its lowercase name, whether it
+/// closes, its attributes and its length. Anything else (`Vec<T>`, an
+/// autolink `<https://…>`) is not one.
+fn html_tag(rest: &str) -> Option<(String, bool, &str, usize)> {
+    let body = rest.strip_prefix('<')?;
+    let (closing, body) = match body.strip_prefix('/') {
+        Some(b) => (true, b),
+        None => (false, body),
+    };
+    let name_len = body
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(body.len());
+    let name = body[..name_len].to_ascii_lowercase();
+    let known = LAYOUT_TAGS.contains(&name.as_str())
+        || matches!(
+            name.as_str(),
+            "a" | "b" | "strong" | "em" | "i" | "code" | "kbd" | "del" | "s" | "img" | "summary"
+        );
+    let after = &body[name_len..];
+    if !known || !(after.starts_with(['>', ' ', '/', '\t'])) {
+        return None;
+    }
+    let end = after.find('>')?;
+    let len = 1 + usize::from(closing) + name_len + end + 1;
+    Some((name, closing, after[..end].trim_end_matches('/'), len))
+}
+
+/// The value of `attr` in a tag's attributes (`href="…"`).
+fn tag_attr<'a>(attrs: &'a str, attr: &str) -> Option<&'a str> {
+    let at = attrs.find(&format!("{attr}=\""))? + attr.len() + 2;
+    let len = attrs[at..].find('"')?;
+    Some(&attrs[at..at + len])
+}
+
+/// One line of a body with its HTML as markdown: bold, emphasis, code and
+/// links keep their meaning, pictures (CodeRabbit's icons) go, and layout
+/// tags go with what they hold left in place. A summary is bold; inside it
+/// only its text counts. Code spans stay as they are.
+fn html_line(line: &str) -> String {
+    let md = html_inline(line, false);
+    // A tag taken from the start leaves no indent the line didn't have:
+    // indented text reads as code.
+    if line.starts_with(char::is_whitespace) {
+        md
+    } else {
+        md.trim_start().to_string()
+    }
+}
+
+fn html_inline(line: &str, plain: bool) -> String {
+    let mut out = String::with_capacity(line.len());
+    // Where each open bold, emphasis or strike starts in `out`, by its marker.
+    let mut open: Vec<(&'static str, usize)> = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find(['<', '`']) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if rest.starts_with('`') {
+            let end = code_span_len(rest);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
+        let Some((name, closing, attrs, len)) = html_tag(rest) else {
+            out.push('<');
+            rest = &rest[1..];
+            continue;
+        };
+        rest = &rest[len..];
+        match (name.as_str(), closing) {
+            ("summary", false) => {
+                let end = rest
+                    .to_ascii_lowercase()
+                    .find("</summary>")
+                    .unwrap_or(rest.len());
+                let text = html_inline(&rest[..end], true);
+                let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !text.is_empty() {
+                    out.push_str(&format!("**{text}**"));
+                }
+                rest = &rest[(end + "</summary>".len()).min(rest.len())..];
+            }
+            ("picture", false) => {
+                // An icon: what is inside never reads as text.
+                let end = rest.to_ascii_lowercase().find("</picture>");
+                let inside = end.map_or(rest, |e| &rest[..e]);
+                rest = end.map_or("", |e| &rest[e + "</picture>".len()..]);
+                // Its words before a count ("Passed 4"), else nothing.
+                match tag_attr(inside, "alt").filter(|a| !a.trim().is_empty() && counts(rest)) {
+                    Some(alt) => out.push_str(alt.trim()),
+                    None => rest = after_icon(&out, rest),
+                }
+            }
+            ("img", _) => {
+                match tag_attr(attrs, "alt").filter(|a| !a.trim().is_empty() && counts(rest)) {
+                    Some(alt) => out.push_str(alt.trim()),
+                    None => rest = after_icon(&out, rest),
+                }
+            }
+            ("source", _) => rest = after_icon(&out, rest),
+            ("a", false) => {
+                let end = rest.to_ascii_lowercase().find("</a>").unwrap_or(rest.len());
+                let text = html_inline(&rest[..end], plain);
+                let text = text.trim();
+                match tag_attr(attrs, "href") {
+                    Some(href) if !text.is_empty() && !plain => {
+                        out.push_str(&format!("[{text}]({href})"))
+                    }
+                    _ => out.push_str(text),
+                }
+                rest = &rest[(end + "</a>".len()).min(rest.len())..];
+            }
+            ("br", _) => out.push(' '),
+            _ if plain => {}
+            (tag @ ("b" | "strong" | "em" | "i" | "del" | "s"), closing) => {
+                let marker = match tag {
+                    "b" | "strong" => "**",
+                    "em" | "i" => "*",
+                    _ => "~~",
+                };
+                if !closing {
+                    open.push((marker, out.len()));
+                } else if let Some(at) = open.iter().rposition(|(m, _)| *m == marker) {
+                    let (_, from) = open.remove(at);
+                    close_marker(&mut out, marker, from);
+                }
+            }
+            ("code" | "kbd", _) => out.push('`'),
+            ("hr", _) => out.push_str("\n---\n"),
+            // A layout tag between words keeps them apart.
+            _ => {
+                if !out.is_empty() && !out.ends_with(' ') {
+                    out.push(' ');
+                }
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether the text after an icon is a number, past spaces and tags: the
+/// icon says what it counts.
+fn counts(mut rest: &str) -> bool {
+    loop {
+        rest = rest.trim_start();
+        match html_tag(rest) {
+            Some((.., len)) => rest = &rest[len..],
+            None => return rest.starts_with(|c: char| c.is_ascii_digit()),
+        }
+    }
+}
+
+/// What follows an icon that was taken out: without the space that kept it
+/// from the text, when nothing or a marker comes before (`**<icon> Info**`
+/// would leave `** Info**`, which is not bold).
+fn after_icon<'a>(out: &str, rest: &'a str) -> &'a str {
+    if out.is_empty() || out.ends_with(['*', '~', '_', ' ', '(', '[']) {
+        rest.trim_start()
+    } else {
+        rest
+    }
+}
+
+/// Wraps what `out` holds from `from` in `marker`, with the spaces at its
+/// ends moved outside: `** Moderate**` is not bold in markdown, and an
+/// icon taken out of a bold text leaves just that space. Nothing is
+/// wrapped when nothing is left.
+fn close_marker(out: &mut String, marker: &str, from: usize) {
+    let inner = out.split_off(from);
+    let text = inner.trim();
+    if text.is_empty() {
+        out.push_str(&inner);
+        return;
+    }
+    let lead = &inner[..inner.len() - inner.trim_start().len()];
+    let trail = &inner[inner.trim_end().len()..];
+    out.push_str(&format!("{lead}{marker}{text}{marker}{trail}"));
 }
 
 /// Whether J/K (↓/↑) open the item they move to. The narrow layout shows
@@ -1790,6 +2003,45 @@ mod tests {
         assert_eq!(without_html("plain"), "plain");
         assert_eq!(without_html("a <!-- never closed"), "a ");
         assert_eq!(without_html("a <!-- two\nlines -->b\nc"), "a b\nc");
+    }
+
+    #[test]
+    fn coderabbits_html_reads_as_markdown() {
+        // A review summary as CodeRabbit writes it (shortened).
+        let body = concat!(
+            "<details>\n",
+            "<summary><strong>Merge Risk:</strong> <strong><picture><img src=\"https://x/risk.svg\" alt=\"\"></picture> Moderate</strong> · up to <code>8b9cb</code></summary>\n",
+            "<dl>\n<dd>\n<br>\n\n",
+            "<strong><sup><picture><img src=\"https://x/failed.svg\" alt=\"Failed\"></picture></sup> Failed checks: 1 warning</strong>\n\n",
+            "<h6>\n**<picture><img src=\"https://x/info.svg\"></picture> Review info**\n</h6>\n",
+            "<a href=\"https://app.coderabbit.ai/x\"><picture><source srcset=\"d.svg\"><img src=\"l.svg\" alt=\"Explain Change →\"></picture></a>\n",
+            "See <a href=\"https://docs.coderabbit.ai\">the docs</a> and <b>this</b>.\n",
+            "<summary><strong>Pre-merge checks: <sup><picture><img alt=\"Passed\"></picture></sup> 4 · <sup><picture><img alt=\"Failed\"></picture></sup> 1</strong></summary>\n",
+            "</dd>\n</dl>\n</details>",
+        );
+        assert_eq!(
+            without_html(body),
+            concat!(
+                "**Merge Risk: Moderate · up to 8b9cb**\n\n",
+                "**Failed checks: 1 warning**\n\n",
+                "**Review info**\n",
+                "See [the docs](https://docs.coderabbit.ai) and **this**.\n",
+                // An icon that counts keeps its words.
+                "**Pre-merge checks: Passed 4 · Failed 1**",
+            )
+        );
+        // Not tags: generics, autolinks, comparisons, and code spans stay.
+        for kept in [
+            "Vec<String> and Option<T>",
+            "<https://example.com>",
+            "a < b and c > d",
+            "Use `<details>` here",
+        ] {
+            assert_eq!(without_html(kept), kept);
+        }
+        // A fenced block keeps its HTML.
+        let fenced = "```html\n<dd><b>x</b></dd>\n```";
+        assert_eq!(without_html(fenced), fenced);
     }
 
     #[test]

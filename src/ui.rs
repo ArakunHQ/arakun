@@ -140,6 +140,32 @@ pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> 
         })
 }
 
+/// How far a tab (or a chip as tall as one) sits from the edges of a bar:
+/// the same on the sides as above and below, so it is framed evenly.
+pub const BAR_INSET: f32 = (BAR_H - TAB_H) / 2.;
+/// The same for an icon button at the end of a bar.
+pub const ICON_INSET: f32 = (BAR_H - ICON_BUTTON) / 2.;
+/// The same for the dock's header, where chips, tabs and icon buttons are
+/// all `DOCK_TAB_H` tall, so one inset frames them all.
+pub const DOCK_INSET: f32 = (DOCK_BAR_H - DOCK_TAB_H) / 2.;
+
+/// `BAR_INSET` as padding. It does not follow the Spacing setting: the bar
+/// and the tab have fixed heights, so a scaled side would no longer match
+/// the top. The design lint allows only these unscaled paddings.
+pub fn bar_inset() -> Pixels {
+    px(BAR_INSET)
+}
+
+/// `ICON_INSET` as padding, unscaled for the same reason as `bar_inset`.
+pub fn icon_inset() -> Pixels {
+    px(ICON_INSET)
+}
+
+/// `DOCK_INSET` as padding, unscaled for the same reason as `bar_inset`.
+pub fn dock_inset() -> Pixels {
+    px(DOCK_INSET)
+}
+
 /// Where a tab's 20 px close button sits, centered on the tab.
 pub const TAB_CLOSE_TOP: f32 = (TAB_H - 20.) / 2.;
 /// What a tab keeps clear at its end for that button and its offset. Fixed,
@@ -293,6 +319,12 @@ pub fn window_gap() -> f32 {
     WINDOW_GAP.load(std::sync::atomic::Ordering::Relaxed) as f32
 }
 
+/// The window gap as a length: the space at the window's edges and between its
+/// cards. It is its own setting, so Spacing does not scale it.
+pub fn window_gap_px() -> Pixels {
+    px(window_gap())
+}
+
 pub fn set_window_gap(g: f32) {
     WINDOW_GAP.store(
         g.clamp(0., 20.).round() as u32,
@@ -373,6 +405,12 @@ pub const BAR_H: f32 = 40.;
 pub const TOOLBAR_H: f32 = 36.;
 /// A tab in the main area's tab strip.
 pub const TAB_H: f32 = 30.;
+/// The dock card's header, which is also its collapsed height: the status
+/// chips live in it.
+pub const DOCK_BAR_H: f32 = 32.;
+/// The dock's terminal tabs and status chips: shorter than the main tab
+/// bar's, so they fit its header.
+pub const DOCK_TAB_H: f32 = 24.;
 
 /// Room around a full-page view (Tasks, Runs, Memory…).
 pub const PAGE_PAD: f32 = 24.;

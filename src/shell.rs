@@ -457,17 +457,13 @@ const SIDE_HANDLE_MIN_W: f32 = 6.;
 
 /// `gap()` as a length, for the root's padding and the side handles.
 fn gap_px() -> gpui::Pixels {
-    px(gap())
+    crate::ui::window_gap_px()
 }
 
-/// The dock card's collapsed height: the status chips live in its header.
-const DOCK_BAR_H: f32 = 32.;
-/// The dock's terminal tabs: shorter than the main tab bar's, so they fit
-/// its header, and all one width.
-const DOCK_TAB_H: f32 = 24.;
+/// The dock's terminal tabs are all one width.
 const DOCK_TAB_W: f32 = 224.;
 /// Where a dock tab's 20 px close button sits, centered on the tab.
-const DOCK_TAB_CLOSE_TOP: f32 = (DOCK_TAB_H - 20.) / 2.;
+const DOCK_TAB_CLOSE_TOP: f32 = (ui::DOCK_TAB_H - 20.) / 2.;
 
 /// Which side card its gap handle is resizing.
 #[derive(Clone, Copy, PartialEq)]
@@ -2449,8 +2445,8 @@ impl Render for Shell {
             .flex_col()
             .size_full()
             .bg(theme::window_bg())
-            .p(gap_px())
-            .gap(gap_px())
+            .p(crate::ui::window_gap_px())
+            .gap(crate::ui::window_gap_px())
             .text_color(theme::content())
             .font_family(theme::FONT_SANS)
             .child(
@@ -2747,11 +2743,14 @@ mod tests {
     /// default scales it must look exactly as it did.
     #[test]
     fn dock_keeps_its_default_sizes() {
-        assert_eq!(DOCK_BAR_H, 32.);
+        assert_eq!(ui::DOCK_BAR_H, 32.);
         assert_eq!(
-            (DOCK_TAB_W, DOCK_TAB_H, DOCK_TAB_CLOSE_TOP),
+            (DOCK_TAB_W, ui::DOCK_TAB_H, DOCK_TAB_CLOSE_TOP),
             (224., 24., 2.)
         );
+        // Chips and icon buttons as tall as the tabs, framed evenly.
+        assert_eq!(ui::ICON_BUTTON, ui::DOCK_TAB_H);
+        assert_eq!(ui::DOCK_INSET, 4.);
         // Tab padding, gap and corner; chip padding and corner; body padding.
         for n in [8., 28., 6., 2., 12., 10.] {
             assert_eq!(ui::sp(n), px(n));

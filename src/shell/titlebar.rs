@@ -15,8 +15,9 @@ impl Shell {
             .min_w_0()
             .items_center()
             .h_full()
-            .pl(crate::ui::sp(6.).max(ui::traffic_lights_inset(window) - px(self.titlebar_x())))
-            .pr(crate::ui::sp(10.))
+            // The first tab sits as far from the card's side as from its top.
+            .pl(ui::bar_inset().max(ui::traffic_lights_inset(window) - px(self.titlebar_x())))
+            .pr(ui::icon_inset())
             .gap(crate::ui::sp(2.))
             // Presses that land in the gaps around a tab stay here: aiming at a
             // tab and missing by a pixel must not slide the window away.

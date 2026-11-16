@@ -384,6 +384,17 @@ fn credentials() -> Option<Oauth> {
     })
 }
 
+/// Whether Claude Code has a claude.ai sign-in or a long-lived token. On macOS
+/// the sign-in sits in the keychain, so the account in ~/.claude.json counts too.
+pub fn has_sign_in() -> bool {
+    credentials().is_some()
+        || oauth_token().is_some()
+        || std::fs::read_to_string(crate::platform::home().join(".claude.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .is_some_and(|j| j["oauthAccount"].is_object())
+}
+
 /// The `CLAUDE_CODE_OAUTH_TOKEN` Claude Code will run on instead of the
 /// claude.ai sign-in: from `env` in ~/.claude/settings.json (it wins, Claude
 /// Code applies it over its own environment) or from ours.

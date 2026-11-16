@@ -1,8 +1,8 @@
 //! Quick answers in the palette: a question goes to a small fast model with
 //! what Arakun already knows about it (matching memory, the failed run on the
 //! branch), and the answer streams in under the query. It goes through Claude
-//! Code, signed in with the user's Claude account (OAuth), so it counts
-//! against their plan and needs no API key. It runs on a thread of its own;
+//! Code the way the user set it up: their claude.ai plan, an API key or another
+//! endpoint such as a proxy (`agent::claude_auth`). It runs on a thread of its own;
 //! the palette polls a channel, so typing never waits.
 
 use std::process::Child;
@@ -401,7 +401,7 @@ fn too_slow(limit: Duration) -> String {
 
 /// Starts Claude Code for one request built as a Messages body (its system
 /// prompt, its user message and its model), with no tools, settings, MCP
-/// servers or saved session: just the model, on the user's Claude account.
+/// servers or saved session: just the model, on the user's Claude account or key.
 fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::Child, String> {
     let bin = crate::agent::claude_code_binary().ok_or_else(no_key)?;
     let mut cmd = crate::platform::command(&bin);
@@ -428,14 +428,14 @@ fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::
     if let Some(schema) = schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
+    crate::agent::claude_auth::one_shot(&mut cmd)
+        .map_err(|e| format!("could not hand Claude Code its key helper ({e})"))?;
+    // After the user's settings, so a cap of their own doesn't lift this one.
     if let Some(max) = request["max_tokens"].as_u64() {
         cmd.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max.to_string());
     }
-    // With a key in the environment Claude Code would bill it instead of the plan.
-    cmd.env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
-        // Away from any project, so no CLAUDE.md is read into a quick answer.
-        .current_dir(std::env::temp_dir())
+    // Away from any project, so no CLAUDE.md is read into a quick answer.
+    cmd.current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -498,7 +498,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
 
 /// What to do when Claude Code isn't there to answer.
 pub fn no_key() -> String {
-    "Quick answers go through Claude Code: install it or sign in with `claude /login`.".to_string()
+    "Quick answers go through Claude Code: install it, then sign in with `claude /login` or set up an API key.".to_string()
 }
 
 fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {

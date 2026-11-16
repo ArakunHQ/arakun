@@ -12,6 +12,7 @@ pub(crate) mod anthropic;
 pub mod attach;
 pub mod catalog;
 pub mod chart;
+pub mod claude_auth;
 pub mod claude_ext;
 pub mod diff;
 pub mod extensions;

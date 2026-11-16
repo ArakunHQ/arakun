@@ -111,6 +111,17 @@ fn bind<A: gpui::Action>(keys: &str, action: A, context: &str) -> KeyBinding {
     KeyBinding::new(&keys, action, Some(&context))
 }
 
+/// Whether enough of `rect` shows on a connected display to grab its title bar.
+fn on_a_display(rect: Bounds<gpui::Pixels>, cx: &App) -> bool {
+    let min = size(px(100.), px(40.));
+    rect.size.width >= min.width
+        && rect.size.height >= min.height
+        && cx.displays().iter().any(|d| {
+            let shown = d.bounds().intersect(&rect);
+            shown.size.width >= min.width && shown.size.height >= min.height
+        })
+}
+
 fn main() {
     browser::handle_subprocess();
     if control::run_cli() {
@@ -223,13 +234,25 @@ fn main() {
             .detach();
             let bounds = match dev::size() {
                 // The test arakun fills its virtual screen, so screenshot pixels are window points.
-                Some((w, h)) => Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))),
-                None => Bounds::centered(None, size(px(1280.), px(800.)), cx),
+                Some((w, h)) => {
+                    WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))))
+                }
+                // Where it was last time, unless that screen is gone.
+                None => state::saved_window()
+                    .filter(|w| on_a_display(w.rect(), cx))
+                    .map(state::WindowState::to_bounds)
+                    .unwrap_or_else(|| {
+                        WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            size(px(1280.), px(800.)),
+                            cx,
+                        ))
+                    }),
             };
             let shell = cx
                 .open_window(
                     WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        window_bounds: Some(bounds),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Arakun".into()),
                             appears_transparent: true,

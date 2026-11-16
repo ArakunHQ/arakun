@@ -59,6 +59,70 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// Where the window was when the app last saved, so it opens there again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowState>,
+}
+
+/// The window's place and size in screen points, as `gpui::WindowBounds`.
+/// For a maximized or full screen window, the bounds are where it goes back to.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct WindowState {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maximized: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fullscreen: bool,
+}
+
+impl WindowState {
+    pub fn from_bounds(bounds: gpui::WindowBounds) -> Self {
+        let (b, maximized, fullscreen) = match bounds {
+            gpui::WindowBounds::Windowed(b) => (b, false, false),
+            gpui::WindowBounds::Maximized(b) => (b, true, false),
+            gpui::WindowBounds::Fullscreen(b) => (b, false, true),
+        };
+        WindowState {
+            x: b.origin.x.into(),
+            y: b.origin.y.into(),
+            w: b.size.width.into(),
+            h: b.size.height.into(),
+            maximized,
+            fullscreen,
+        }
+    }
+
+    pub fn to_bounds(self) -> gpui::WindowBounds {
+        let b = self.rect();
+        if self.fullscreen {
+            gpui::WindowBounds::Fullscreen(b)
+        } else if self.maximized {
+            gpui::WindowBounds::Maximized(b)
+        } else {
+            gpui::WindowBounds::Windowed(b)
+        }
+    }
+
+    pub fn rect(self) -> gpui::Bounds<gpui::Pixels> {
+        gpui::Bounds::new(
+            gpui::point(gpui::px(self.x), gpui::px(self.y)),
+            gpui::size(gpui::px(self.w), gpui::px(self.h)),
+        )
+    }
+}
+
+/// The saved window, read without the rest of the state, which the shell
+/// loads later. Only the `window` field is kept.
+pub fn saved_window() -> Option<WindowState> {
+    #[derive(Deserialize)]
+    struct Only {
+        window: Option<WindowState>,
+    }
+    let bytes = std::fs::read(file()).ok()?;
+    serde_json::from_slice::<Only>(&bytes).ok()?.window
 }
 
 fn ui_zoom() -> u32 {
@@ -110,6 +174,7 @@ pub struct Layout {
     /// Whether the rail's usage card shows Claude, Droid and OpenCode.
     pub rail_usage: [bool; 3],
     pub ui_zoom: u32,
+    pub window: Option<WindowState>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -451,6 +516,7 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().key().to_string(),
         island_off: !crate::island::enabled(),
+        window: layout.window,
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
 }
@@ -616,6 +682,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         } else {
             state.ui_zoom
         },
+        window: state.window,
     };
     // State from before `last_agent` was kept: the agent of the latest session.
     let latest = projects
@@ -727,6 +794,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
@@ -755,6 +823,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Comfortable,
             rail_usage: [true, false, true],
             ui_zoom: 100,
+            window: None,
         };
         let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert_eq!(layout.rail_usage, [true, false, true]);
@@ -790,6 +859,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(&[project], 0, layout);
         let state: State = serde_json::from_slice(&bytes).unwrap();
@@ -822,6 +892,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (mut projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
@@ -858,6 +929,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
@@ -917,6 +989,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
@@ -928,5 +1001,30 @@ mod tests {
         assert_eq!(split.dir, SplitDir::Down);
         assert!(split.focus_first);
         assert!((split.ratio - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_window_comes_back_where_it_was() {
+        let rect = gpui::Bounds::new(
+            gpui::point(gpui::px(40.), gpui::px(60.)),
+            gpui::size(gpui::px(1000.), gpui::px(700.)),
+        );
+        for bounds in [
+            gpui::WindowBounds::Windowed(rect),
+            gpui::WindowBounds::Maximized(rect),
+            gpui::WindowBounds::Fullscreen(rect),
+        ] {
+            let saved = WindowState::from_bounds(bounds);
+            let json = serde_json::to_string(&saved).unwrap();
+            let back: WindowState = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.to_bounds(), bounds);
+        }
+        let plain = serde_json::to_string(&WindowState::from_bounds(gpui::WindowBounds::Windowed(
+            rect,
+        )))
+        .unwrap();
+        assert!(!plain.contains("maximized") && !plain.contains("fullscreen"));
+        let old: State = serde_json::from_str("{}").unwrap();
+        assert!(old.window.is_none(), "older state files open centred");
     }
 }

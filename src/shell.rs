@@ -306,6 +306,9 @@ pub struct Shell {
     focus: FocusHandle,
     composer_focus: FocusHandle,
     _activation: Subscription,
+    /// Where the window is, saved with the state so it reopens there.
+    window_state: Option<state::WindowState>,
+    _bounds: Subscription,
     _quit: [Subscription; 2],
     /// `arakun restart` asked to quit: save for the next arakun and launch it.
     restarting: bool,
@@ -748,6 +751,10 @@ impl Shell {
             focus,
             composer_focus,
             _activation: activation,
+            window_state: layout.window,
+            _bounds: cx.observe_window_bounds(window, |this, window, _| {
+                this.window_state = Some(state::WindowState::from_bounds(window.window_bounds()));
+            }),
             shown_browsers: Vec::new(),
             _control: None,
             _scheduler: None,
@@ -947,6 +954,7 @@ impl Shell {
                 account_view::rail_shows(crate::agent::AgentKind::OpenCode),
             ],
             ui_zoom: crate::ui_zoom::pct(),
+            window: self.window_state,
         };
         state::snapshot(&self.projects, self.active_project, layout)
     }

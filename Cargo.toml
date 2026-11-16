@@ -114,6 +114,13 @@ coderlabs = []
 [profile.release]
 debug = 1
 
+# Leaves debug info in the object files instead of copying it into each binary. The
+# examples include large parts of src/, so a change relinks several binaries: on Linux
+# this cut an incremental `cargo test` build from about 55 s to 7 s. macOS does this by
+# default. Cargo leaves it out on targets without it (Windows MSVC).
+[profile.dev]
+split-debuginfo = "unpacked"
+
 [profile.dev.package."*"]
 opt-level = 2
 

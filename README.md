@@ -414,7 +414,9 @@ arakun-server status
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
   so it works behind a firewall, and everything between the device and the server is
   end to end encrypted; `--relay <url>` names a relay of your own. `--reach tailscale`
-  serves it at the machine's tailnet name over HTTPS. `--reach lan` listens on every
+  serves it at the machine's tailnet name over HTTPS; that takes the machine's HTTPS
+  port on the tailnet, as the app's Phone tab on Tailscale does, so only one of the two
+  can use it on a machine. `--reach lan` listens on every
   interface over plain HTTP (`--port`, 7474 unless told): use it only on a network you
   trust. What `serve` is started with is kept for the next run.
 - **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
@@ -423,9 +425,9 @@ arakun-server status
   work) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.
-- **The local socket.** The commands above reach the server over
-  `$XDG_RUNTIME_DIR/arakun/server.sock` (`server.sock` in its folder without that
-  variable), which only your user can open.
+- **The local socket.** The commands above reach the server over `server.sock` in
+  that folder, which only your user can open. It is also what keeps a second server
+  off the same folder.
 - **A turn that is running when the server stops** is cut off. Its session is still
   there after a restart, and the next message picks it up.
 

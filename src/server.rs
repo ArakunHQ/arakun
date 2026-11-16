@@ -66,16 +66,12 @@ pub fn dir() -> PathBuf {
         .unwrap_or_else(|| crate::state::data_dir().join("server"))
 }
 
-/// The socket the commands reach the server through.
+/// The socket the commands reach the server through: always in its folder.
+/// The socket is also what keeps a second server off that folder, so it must
+/// not move with the environment. In `XDG_RUNTIME_DIR` a server started by
+/// systemd and a shell after `su -` would look in different places, and the
+/// shell would start another server on the same sessions and relay identity.
 pub fn socket_path() -> PathBuf {
-    // A server with a folder of its own gets its own socket in it.
-    if std::env::var_os("ARAKUN_SERVER_DIR").is_some() {
-        return dir().join("server.sock");
-    }
-    #[cfg(not(windows))]
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(runtime).join("arakun").join("server.sock");
-    }
     dir().join("server.sock")
 }
 
@@ -636,9 +632,9 @@ mod tests {
     }
 
     #[test]
-    fn a_server_with_its_own_folder_has_its_own_socket() {
-        // Only what does not read the environment: other tests run beside this one.
+    fn the_socket_is_in_the_servers_folder_wherever_it_is_asked_from() {
         assert!(dir().ends_with("server") || std::env::var_os("ARAKUN_SERVER_DIR").is_some());
-        assert_eq!(socket_path().file_name().unwrap(), "server.sock");
+        // Whatever the runtime folder of the shell that asks: one folder, one socket.
+        assert_eq!(socket_path(), dir().join("server.sock"));
     }
 }

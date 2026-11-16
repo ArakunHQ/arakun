@@ -98,6 +98,10 @@ impl Global for Keep {}
 
 pub struct Daemon {
     store: Store,
+    /// How the server is reached and who is paired, as last saved. Kept here
+    /// and never read back: a file gone bad under a running server must not
+    /// become the defaults at the next save.
+    settings: phone::Settings,
     live: HashMap<String, Live>,
     reach: Reach,
     transport: Transport,
@@ -141,14 +145,18 @@ pub struct Daemon {
 struct Writer {
     tx: Option<std::sync::mpsc::Sender<Job>>,
     thread: Option<std::thread::JoinHandle<()>>,
-    /// Files with a save handed over that no flush has seen written yet.
-    /// Only they need waiting for before a read.
-    pending: std::cell::RefCell<HashSet<PathBuf>>,
+    /// The files still owed a write, each with the number of its newest save.
+    /// The worker takes a file out when that save is on disk, so a read only
+    /// waits while its own file is queued or failed.
+    owed: Owed,
+    saves: Cell<u64>,
 }
+
+type Owed = Arc<std::sync::Mutex<HashMap<PathBuf, u64>>>;
 
 enum Job {
     // Boxed: a transcript is far bigger than the rest, and most jobs wait in a queue.
-    Save(PathBuf, Box<Transcript>),
+    Save(PathBuf, u64, Box<Transcript>),
     /// The session is gone: nothing kept for this file is written any more.
     Forget(PathBuf),
     /// Answered once every save handed over before it was tried, with the
@@ -156,25 +164,40 @@ enum Job {
     Flush(std::sync::mpsc::Sender<Vec<PathBuf>>),
 }
 
-type Snapshot = (PathBuf, Box<Transcript>);
+/// A transcript to write, and which save of its file it is.
+type Snapshot = (PathBuf, u64, Box<Transcript>);
 
 fn write_transcript(path: &Path, transcript: &Transcript) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(transcript).map_err(std::io::Error::other)?;
     crate::durable::write_private(path, &bytes)
 }
 
-/// Writes `waiting`; what fails goes to `unsaved`. A file already in `known`
-/// failed before, and said so then.
-fn write_all(waiting: &mut Vec<Snapshot>, unsaved: &mut Vec<Snapshot>, known: &[PathBuf]) {
-    for (path, transcript) in waiting.drain(..) {
-        if let Err(e) = write_transcript(&path, &transcript) {
-            if !known.contains(&path) {
-                eprintln!(
-                    "arakun server: could not save {}: {e}; it is kept and tried again",
-                    path.display()
-                );
+/// Writes `waiting`. What is written is no longer owed, unless a newer save
+/// of the file was handed over meanwhile; what fails goes to `unsaved`. A
+/// file already in `known` failed before, and said so then.
+fn write_all(
+    waiting: &mut Vec<Snapshot>,
+    unsaved: &mut Vec<Snapshot>,
+    known: &[PathBuf],
+    owed: &Owed,
+) {
+    for (path, number, transcript) in waiting.drain(..) {
+        match write_transcript(&path, &transcript) {
+            Ok(()) => {
+                let mut owed = owed.lock().unwrap();
+                if owed.get(&path) == Some(&number) {
+                    owed.remove(&path);
+                }
             }
-            unsaved.push((path, transcript));
+            Err(e) => {
+                if !known.contains(&path) {
+                    eprintln!(
+                        "arakun server: could not save {}: {e}; it is kept and tried again",
+                        path.display()
+                    );
+                }
+                unsaved.push((path, number, transcript));
+            }
         }
     }
 }
@@ -184,9 +207,12 @@ impl Writer {
     /// save transcripts would lose every session it let go of.
     fn start() -> std::io::Result<Writer> {
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let owed = Owed::default();
+        let theirs = owed.clone();
         let thread = std::thread::Builder::new()
             .name("arakun-server-save".into())
             .spawn(move || {
+                let owed = theirs;
                 // Snapshots whose write failed, for the next round.
                 let mut unsaved: Vec<Snapshot> = Vec::new();
                 while let Ok(first) = rx.recv() {
@@ -194,58 +220,62 @@ impl Writer {
                     // same file replaces it below. Of the saves waiting, only
                     // the newest of each file is worth writing.
                     let mut waiting = std::mem::take(&mut unsaved);
-                    let known: Vec<PathBuf> = waiting.iter().map(|(p, _)| p.clone()).collect();
+                    let known: Vec<PathBuf> = waiting.iter().map(|s| s.0.clone()).collect();
                     for job in std::iter::once(first).chain(rx.try_iter()) {
                         match job {
-                            Job::Save(path, transcript) => {
-                                waiting.retain(|(p, _)| *p != path);
-                                unsaved.retain(|(p, _)| *p != path);
-                                waiting.push((path, transcript));
+                            Job::Save(path, number, transcript) => {
+                                waiting.retain(|s| s.0 != path);
+                                unsaved.retain(|s| s.0 != path);
+                                waiting.push((path, number, transcript));
                             }
                             Job::Forget(path) => {
-                                waiting.retain(|(p, _)| *p != path);
-                                unsaved.retain(|(p, _)| *p != path);
+                                waiting.retain(|s| s.0 != path);
+                                unsaved.retain(|s| s.0 != path);
                             }
                             Job::Flush(done) => {
-                                write_all(&mut waiting, &mut unsaved, &known);
-                                let _ = done.send(unsaved.iter().map(|(p, _)| p.clone()).collect());
+                                write_all(&mut waiting, &mut unsaved, &known, &owed);
+                                let _ = done.send(unsaved.iter().map(|s| s.0.clone()).collect());
                             }
                         }
                     }
-                    write_all(&mut waiting, &mut unsaved, &known);
+                    write_all(&mut waiting, &mut unsaved, &known, &owed);
                 }
             })?;
         Ok(Writer {
             tx: Some(tx),
             thread: Some(thread),
-            pending: Default::default(),
+            owed,
+            saves: Cell::new(0),
         })
     }
 
     fn save(&self, path: PathBuf, transcript: Transcript) {
         if let Some(tx) = &self.tx {
-            self.pending.borrow_mut().insert(path.clone());
-            let _ = tx.send(Job::Save(path, Box::new(transcript)));
+            let number = self.saves.get() + 1;
+            self.saves.set(number);
+            self.owed.lock().unwrap().insert(path.clone(), number);
+            let _ = tx.send(Job::Save(path, number, Box::new(transcript)));
         }
     }
 
     /// Drops what is kept for a file whose session was removed, and waits
-    /// for a write of it that had already begun: the file can be deleted after.
+    /// for a write of it that may have begun: the file can be deleted after.
     fn forget(&self, path: PathBuf) {
         let Some(tx) = &self.tx else { return };
-        let was_pending = self.pending.borrow_mut().remove(&path);
+        let was_owed = self.owed.lock().unwrap().remove(&path).is_some();
         let _ = tx.send(Job::Forget(path));
-        if was_pending {
+        if was_owed {
             self.flush();
         }
     }
 
     /// Whether the disk holds an older transcript at `path` than the
-    /// session's last: its save failed and is being kept. Waits for a save of
-    /// this file that is still on its way, and for nothing else: a read of
-    /// one session does not wait on the writes of the others.
+    /// session's last: its save failed and is being kept. A file whose save
+    /// is on disk is not owed, and the answer comes at once. Only a save of
+    /// this very file that is still queued is waited for; it is written in
+    /// its turn, after the ones handed over before it.
     fn behind(&self, path: &Path) -> bool {
-        if !self.pending.borrow().contains(path) {
+        if !self.owed.lock().unwrap().contains_key(path) {
             return false;
         }
         self.flush().iter().any(|p| p == path)
@@ -253,18 +283,13 @@ impl Writer {
 
     /// Waits until every save handed over so far was tried, and returns the
     /// files that could not be written: for those the disk still holds an
-    /// older transcript than the session's last. Whatever reads a transcript
-    /// file, or removes one, comes here first: a save still on its way would
-    /// otherwise be missed, or come back after the file was deleted.
+    /// older transcript than the session's last.
     fn flush(&self) -> Vec<PathBuf> {
         let (done, wait) = std::sync::mpsc::channel();
-        let unsaved: Vec<PathBuf> = match &self.tx {
+        match &self.tx {
             Some(tx) if tx.send(Job::Flush(done)).is_ok() => wait.recv().unwrap_or_default(),
             _ => Vec::new(),
-        };
-        // All else that was handed over is written; these are still owed.
-        *self.pending.borrow_mut() = unsaved.iter().cloned().collect();
-        unsaved
+        }
     }
 
     /// Writes what is waiting and stops.
@@ -291,10 +316,17 @@ pub fn run(opts: Options) -> i32 {
             return 1;
         }
     };
-    let settings_path = dir.join("phone.json");
-    let first_run = !settings_path.exists();
-    phone::use_settings_file(settings_path);
-    let mut settings = phone::Settings::load();
+    phone::use_settings_file(dir.join("phone.json"));
+    // No file is a first run. A file that cannot be read is not: starting on
+    // the defaults would listen on the plain network and forget the devices.
+    let (mut settings, first_run) = match phone::Settings::read() {
+        Ok(Some(settings)) => (settings, false),
+        Ok(None) => (phone::Settings::default(), true),
+        Err(e) => {
+            eprintln!("arakun server: {e}");
+            return 1;
+        }
+    };
     // A server is rarely on the same network as the devices that reach it, and
     // the relay is the one way in that is encrypted without anything to set up.
     if first_run {
@@ -379,6 +411,7 @@ pub fn run(opts: Options) -> i32 {
             Daemon::new(
                 Parts {
                     store,
+                    settings,
                     reach,
                     transport,
                     access,
@@ -562,6 +595,7 @@ fn save_upload(dir: &Path, bytes: &[u8], ext: &str) -> std::io::Result<PathBuf> 
 /// port that is taken or a second server stops the command with a message.
 struct Parts {
     store: Store,
+    settings: phone::Settings,
     reach: Reach,
     transport: Transport,
     access: phone::Shared,
@@ -634,6 +668,7 @@ impl Daemon {
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
         Daemon {
             store: parts.store,
+            settings: parts.settings,
             live: HashMap::new(),
             reach: parts.reach,
             transport: parts.transport,
@@ -1025,10 +1060,9 @@ impl Daemon {
     }
 
     /// Writes the devices as the transport now knows them (paired, seen, unpaired).
-    fn save_devices(&self) {
-        let mut settings = phone::Settings::load();
-        settings.devices = self.access.lock().unwrap().devices.clone();
-        settings.save();
+    fn save_devices(&mut self) {
+        self.settings.devices = self.access.lock().unwrap().devices.clone();
+        self.settings.save();
         self.transport.sync_tickets(&self.access);
     }
 
@@ -1355,9 +1389,12 @@ impl Daemon {
                 if text.is_empty() {
                     return;
                 }
-                // The place remembers them, as it does on the desktop.
+                // The place remembers them, as it does on the desktop: the
+                // model and the reasoning, and no other setting. A device that
+                // could keep a permission mode for a folder would turn the
+                // asking off there for every session after it.
                 for (key, value) in &settings {
-                    if let Some(s) = Setting::from_key(key) {
+                    if let Some(s) = device_setting(key) {
                         place.pick(agent, s, value);
                     }
                 }
@@ -1399,7 +1436,11 @@ impl Daemon {
                 key,
                 value,
             } => {
-                let Some(s) = Setting::from_key(&key) else {
+                let Some(s) = device_setting(&key) else {
+                    self.transport.send(
+                        client,
+                        wire::error("that setting is not one a device changes"),
+                    );
                     return;
                 };
                 let Some(thread) = self.thread(&session) else {
@@ -2083,6 +2124,11 @@ fn answer_question(
     Ok(())
 }
 
+/// The setting `key` names, when it is one a device may pick.
+fn device_setting(key: &str) -> Option<Setting> {
+    Setting::from_key(key).filter(|s| DEVICE_SETTINGS.contains(s))
+}
+
 /// A running session's settings a device can change, with their choices.
 fn session_settings(t: &Thread) -> Vec<(Setting, (String, Vec<SettingOption>))> {
     DEVICE_SETTINGS
@@ -2177,6 +2223,17 @@ mod tests {
     }
 
     #[test]
+    fn a_device_picks_the_model_and_the_reasoning_and_nothing_else() {
+        assert_eq!(device_setting("modelId"), Some(Setting::Model));
+        assert_eq!(device_setting("reasoningEffort"), Some(Setting::Effort));
+        // These decide what an agent may do without asking.
+        assert_eq!(device_setting("interactionMode"), None);
+        assert_eq!(device_setting("autonomyLevel"), None);
+        assert_eq!(device_setting("fastMode"), None);
+        assert_eq!(device_setting("nonsense"), None);
+    }
+
+    #[test]
     fn a_title_is_the_prompts_first_line() {
         assert_eq!(
             summary("\n  fix the build  \nand the tests"),
@@ -2263,6 +2320,9 @@ mod tests {
         assert!(writer.flush().is_empty());
         assert_eq!(last(&a), "second");
         assert_eq!(last(&b), "other");
+        // Written files are owed nothing: asking about them waits on no one.
+        assert!(writer.owed.lock().unwrap().is_empty());
+        assert!(!writer.behind(&a));
         // A removal too: nothing is left to write the file again.
         writer.save(a.clone(), transcript("third"));
         writer.forget(a.clone());

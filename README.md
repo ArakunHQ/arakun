@@ -482,6 +482,11 @@ Tried on Linux and macOS.
 
 ## Keyboard shortcuts
 
+On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
+`Ctrl+Tab` and ``Ctrl+` ``, and the menu bar lists them. `Cmd+[` / `Cmd+]` go back and
+forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
+`Cmd+Q` hide, minimize and quit.
+
 - `Ctrl+T` new session, `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs; `Alt+Up` / `Alt+Down` switch environments

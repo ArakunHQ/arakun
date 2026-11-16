@@ -41,14 +41,16 @@ const SCALED: &[(&str, &str)] = &[
 
 /// What the argument of a `SCALED` call may start with. Only this list, so a
 /// wrapper around a raw size (a variable, `ui::fixed(px(6.))`) fails too.
-/// `bar_inset` and `icon_inset` take no number: they are the two insets that
-/// must match a fixed bar height, and nothing else can pass through them.
+/// `bar_inset`, `icon_inset` and `dock_inset` take no number: they are the
+/// insets that must match a fixed bar height, and nothing else can pass
+/// through them.
 const SCALED_ARGS: &[&str] = &[
     "ui::sp(",
     "ui::rad(",
     "ui::nested(",
     "ui::bar_inset()",
     "ui::icon_inset()",
+    "ui::dock_inset()",
     // Built from `nested`, so it follows the Corners setting.
     "ui::menu_row_radius()",
     // Its own setting (Window gap), which Spacing leaves alone on purpose.

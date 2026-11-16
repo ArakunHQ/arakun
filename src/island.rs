@@ -381,6 +381,18 @@ fn busy(rows: &[Row]) -> View {
     View::Busy(dots.len(), label)
 }
 
+/// Whether `view`'s content, drawn from `rows` now, still has the size the
+/// view was made for. The dots and the list read the live feed, so a view kept
+/// from before the feed changed would draw the new dots or rows in the old
+/// room and spill out of it.
+fn drawn_as(view: View, rows: &[Row]) -> bool {
+    match view {
+        View::Busy(..) => busy(rows) == view,
+        View::List(n) => rows.len().min(MAX_ROWS) == n,
+        _ => true,
+    }
+}
+
 /// The working state's dots, at most `MAX_DOTS`, and how many more there are.
 pub fn dots(rows: &[Row]) -> (Vec<Status>, usize) {
     let active: Vec<Status> = rows
@@ -1508,7 +1520,7 @@ impl Island {
     fn prev_alpha(&self) -> Option<(View, f32)> {
         let (v, at) = self.prev?;
         let a = 1. - at.elapsed().as_secs_f32() / 0.12;
-        (a > 0.).then_some((v, a))
+        (a > 0. && drawn_as(v, &self.feed.rows)).then_some((v, a))
     }
 
     /// The pointer came or went. Leaving waits `LEAVE_GRACE` first: a screenshot
@@ -2775,6 +2787,28 @@ mod tests {
         }
         let w = REC_BARS as f32 * BAR_W + (REC_BARS - 1) as f32 * BAR_GAP;
         fits(View::Recording, w, BARS_H);
+    }
+
+    /// One agent becoming seven: the old view's layer would draw six dots
+    /// and a "+1" in the room of one, so it doesn't fade out at all.
+    #[test]
+    fn an_old_view_fades_out_only_while_its_content_still_fits() {
+        let working = |n: usize| -> Vec<Row> {
+            (0..n)
+                .map(|i| row(&i.to_string(), Status::Working, 0))
+                .collect()
+        };
+        let one = busy(&working(1));
+        let seven = working(7);
+        assert_eq!(one, View::Busy(1, 0));
+        assert!(drawn_as(one, &working(1)));
+        assert!(!drawn_as(one, &seven));
+        assert!(drawn_as(busy(&seven), &seven));
+        assert!(drawn_as(View::List(3), &working(3)));
+        assert!(!drawn_as(View::List(3), &seven));
+        // Views whose content doesn't come from the rows always fit.
+        assert!(drawn_as(View::Recording, &seven));
+        assert!(drawn_as(View::Compact(Phase::Idle), &seven));
     }
 
     #[test]

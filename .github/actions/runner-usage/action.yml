@@ -4,9 +4,9 @@ description: >-
   the summary as a notice annotation titled "Runner usage". The weekly
   runner-sizing workflow reads these annotations back to tell whether each job's
   runner is the right size.
-# Put it right after actions/checkout (a local action needs the checkout); the
-# summary covers everything from this step to the end of the job. Works on Linux
-# (also inside a container job) and Windows.
+# Use it as `$/.github/actions/runner-usage`, which needs no checkout, early in
+# the job: the summary covers everything from this step to the end of the job.
+# Works on Linux (also inside a container job) and Windows.
 runs:
   using: node24
   main: start.mjs

@@ -7,7 +7,7 @@
 
 "area: app":
   - changed-files:
-      - any-glob-to-any-file: ["src/**", "examples/**", "assets/**", "build.rs", "Cargo.toml"]
+      - any-glob-to-any-file: ["src/**", "examples/**", "server/**", "assets/**", "build.rs", "Cargo.toml"]
 "area: browser":
   - changed-files:
       - any-glob-to-any-file: ["src/browser/**", "src/bin/arakun-helper*", "tools/install-cef.sh"]

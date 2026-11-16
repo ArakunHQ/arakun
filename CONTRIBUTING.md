@@ -86,8 +86,9 @@ off, and do not add code behind them.
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, and
-cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes. Run the ones that match what you
-changed before you push:
+cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and
+zizmor runs only when `.github/` changes. Run the ones that match what you changed
+before you push:
 
 ```sh
 # the app (with CEF set up, you can leave out --no-default-features)
@@ -95,15 +96,28 @@ tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
 
+# server/ changed, or a file src/server.rs builds on (see the list in server/src/main.rs)
+cargo clippy --locked -p arakun-server -- -D warnings
+
 # Cargo.toml, Cargo.lock or deny.toml changed (cargo install --locked cargo-deny)
 cargo deny check
 
 # relay/ or phone/ changed
 (cd relay && npm ci && npx tsc --noEmit && npx vitest run)
 (cd phone && node --test "test/*.test.mjs")
+
+# .github/ changed (brew install zizmor, or pipx install zizmor)
+zizmor .github
 ```
 
 Some notes:
+
+- `arakun-server` (in `server/`) is the app's server built for a machine with no
+  display: a package of its own that includes the app's source files, against GPUI
+  without Wayland and X11. Its tests are the app's (`src/server/`), so `cargo test`
+  covers them. CI also builds it alone and fails if the binary needs a desktop library
+  (`tools/check-server-libs.sh`). A dependency it needs is listed in both `Cargo.toml`
+  files, with the same version.
 
 - The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
   it; it runs `cargo fmt`, which on its own stops at the private modules this
@@ -117,6 +131,12 @@ Some notes:
 - `cargo deny check` reads [`deny.toml`](deny.toml). It fails on a crate with a
   RustSec advisory, a license that is not allowed, or a git source that is not listed.
   It also runs on `main` every day, because new advisories appear without any change.
+- `zizmor .github` checks the workflows for security problems. Pin every action to a
+  full commit SHA with its version as a comment (`uses: owner/action@<sha> # v1.2.3`);
+  Dependabot updates both. Give `actions/checkout` `persist-credentials: false` unless
+  the job pushes, and a job only the `permissions:` it uses. If a finding is safe
+  where it is, add `# zizmor: ignore[<rule>]` to the line it points at and say why.
+  Set `GH_TOKEN` to also run the audits that look up the actions online.
 - Warnings fail clippy. Fix what causes them. Use `#[allow(...)]` only with a comment
   that says why the lint is wrong in that place.
 - Tests marked `#[ignore]` read this machine's own state (Claude Code, the Cloudflare
@@ -202,6 +222,11 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   tools/layout-audit.sh
   ```
 - **Add a screenshot** to the pull request, before and after if something changed.
+  Drag it into the description. With write access to
+  [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets), `tools/pr-assets.sh
+  <file>...` uploads it there instead and prints the Markdown to paste; agents do
+  this, since GitHub has no API to upload images. That repository is public: no
+  real accounts, tokens, email addresses or home-directory paths in the picture.
 
 ## Pull requests
 
@@ -239,9 +264,19 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
   while CI runs. Once the checks pass, mark it ready with `gh pr ready` or the button on
   GitHub. That starts CodeRabbit's review. When it finishes, people are asked to review
-  unless CodeRabbit approved. A pull request from outside the team always needs a
+  unless CodeRabbit approved and every review thread is resolved. A pull request from
+  outside the team always needs a
   maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
   status waits for a person.
+- **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
+  won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
+  approves only once its blocking comments are resolved. Don't resolve its comments
+  yourself: if you do, a workflow dismisses its approval and asks a person. It does
+  the same when CodeRabbit approves with comments still open: the reviewer resolves
+  them and approves. `@coderabbitai resolve` and
+  `@coderabbitai approve` don't work on your own pull request. Its review rules are in
+  [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
+  instructions there too.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

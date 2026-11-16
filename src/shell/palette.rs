@@ -1078,6 +1078,7 @@ impl Shell {
                 View::Memory => Tint::Amber,
                 View::Cloudflare => Tint::Amber,
                 View::Phone => Tint::Teal,
+                View::Servers => Tint::Teal,
                 _ => Tint::Blue,
             };
             items.push(

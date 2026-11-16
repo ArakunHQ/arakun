@@ -439,7 +439,14 @@ impl GitHubView {
     }
 
     /// A body in its card, folded to its first lines when long.
-    fn body_card(&self, key: &str, text: &str, cols: usize, cx: &mut Context<Self>) -> gpui::Div {
+    fn body_card(
+        &self,
+        ix: usize,
+        key: &str,
+        text: &str,
+        cols: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let long = folds(text, cols);
         let open = self.expanded.contains(key);
         let id = gpui::SharedString::from(key.to_string());
@@ -492,10 +499,8 @@ impl GitHubView {
                                 .text_color(theme::link()),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if !this.expanded.remove(&k) {
-                                this.expanded.insert(k.clone());
-                            }
-                            cx.notify();
+                            let open = !this.expanded.contains(&k);
+                            this.set_expanded(ix, &k, open, cx);
                         })),
                 )
             })
@@ -504,6 +509,7 @@ impl GitHubView {
     /// A bot's comment: one line until opened.
     fn bot_line(
         &self,
+        ix: usize,
         key: &str,
         who: &str,
         at: u64,
@@ -546,11 +552,21 @@ impl GitHubView {
                 )
             })
             .child(icon("arrow-down01", 12.).text_color(theme::text_subtle()))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.expanded.insert(k.clone());
-                cx.notify();
-            }))
+            .on_click(cx.listener(move |this, _, _, cx| this.set_expanded(ix, &k, true, cx)))
             .into_any_element()
+    }
+
+    /// Opens or folds a body in timeline row `ix`. The list keeps each row's
+    /// last height, so the row is measured again: folding a long body while
+    /// scrolled into it would otherwise leave the list scrolled past its end.
+    fn set_expanded(&mut self, ix: usize, key: &str, open: bool, cx: &mut Context<Self>) {
+        if open {
+            self.expanded.insert(key.to_string());
+        } else {
+            self.expanded.remove(key);
+        }
+        self.timeline_list.remeasure_items(ix..ix + 1);
+        cx.notify();
     }
 
     /// About how many characters a line of the timeline holds now.
@@ -652,7 +668,7 @@ impl GitHubView {
         let last_event = t.rows[ix + 1..]
             .iter()
             .all(|r| matches!(r, Row::Thread { .. }));
-        let (lead, body) = self.timeline_row(&t, row, cx);
+        let (lead, body) = self.timeline_row(&t, ix, row, cx);
         div()
             .px(crate::ui::sp(24.))
             .when(ix == 0, |d| d.pt(crate::ui::sp(20.)))
@@ -664,6 +680,7 @@ impl GitHubView {
     fn timeline_row(
         &self,
         t: &Timeline,
+        ix: usize,
         row: &Row,
         cx: &mut Context<Self>,
     ) -> (AnyElement, AnyElement) {
@@ -705,7 +722,7 @@ impl GitHubView {
                             .child(ui::text(Type::Body, theme::text_faint(), "No description."))
                             .into_any_element()
                     } else {
-                        self.body_card("gh-ev-open", &t.body, cols, cx)
+                        self.body_card(ix, "gh-ev-open", &t.body, cols, cx)
                             .into_any_element()
                     })
                     .into_any_element(),
@@ -803,7 +820,7 @@ impl GitHubView {
                 EventKind::Comment { .. }
                     if pr::is_bot(&e.author) && !self.expanded.contains(&key) =>
                 {
-                    let line = self.bot_line(&key, &e.author, e.at, &e.body, cx);
+                    let line = self.bot_line(ix, &key, &e.author, e.at, &e.body, cx);
                     rows.push((lead, line));
                 }
                 EventKind::Comment { .. } => {
@@ -813,7 +830,7 @@ impl GitHubView {
                             .flex()
                             .flex_col()
                             .child(header(&you(&e.author), "commented", e.at, Vec::new()))
-                            .child(self.body_card(&key, &e.body, cols, cx))
+                            .child(self.body_card(ix, &key, &e.body, cols, cx))
                             .into_any_element(),
                     ));
                 }
@@ -832,7 +849,7 @@ impl GitHubView {
                         verdict_pill(state).into_iter().collect(),
                     ));
                     if !e.body.trim().is_empty() {
-                        body = body.child(self.body_card(&key, &e.body, cols, cx));
+                        body = body.child(self.body_card(ix, &key, &e.body, cols, cx));
                     }
                     rows.push((lead, body.into_any_element()));
                 }

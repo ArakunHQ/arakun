@@ -11,14 +11,10 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-#[cfg(test)]
-use ring::signature;
-use ring::{aead, agreement, hkdf, rand};
+use ring::{aead, agreement, hkdf, rand, signature};
 use serde_json::{Value, json};
 
-use super::identity::Identity;
-#[cfg(test)]
-use super::identity::label_of;
+use super::identity::{Identity, label_of};
 use super::relay::DATA;
 
 /// The protocol the hello speaks; a phone that knows only an older one is told so.
@@ -152,8 +148,8 @@ impl Handshake {
         ))
     }
 
-    /// The hello a phone opens with, from this handshake. The Rust phone is for tests.
-    #[cfg(test)]
+    /// The hello a phone opens with, from this handshake. The app is the phone
+    /// when it looks at an `arakun server` (`crate::servers`).
     pub fn hello(&self) -> Vec<u8> {
         json!({ "v": VERSION, "e": B64.encode(&self.public), "nonce": B64.encode(self.nonce) })
             .to_string()
@@ -162,7 +158,6 @@ impl Handshake {
 
     /// The phone's side: checks the computer's hello is from the key `label`
     /// names and signs this very exchange, then derives the same session.
-    #[cfg(test)]
     pub fn finish(self, reply: &[u8], label: &str, channel: u32) -> Result<Session, E2eError> {
         let v: Value = serde_json::from_slice(reply).map_err(|_| E2eError::BadHello("not json"))?;
         if v["v"].as_u64() != Some(VERSION) {

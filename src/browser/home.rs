@@ -398,7 +398,7 @@ fn address(field: Entity<TextField>, focused: bool, layout: Layout, open: Open) 
                 .bg(theme::accent())
                 .text_size(px(ui::TEXT_LG))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::background())
+                .text_color(theme::on_accent())
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.9))
                 .on_click(move |_, window, cx| {

@@ -53,6 +53,7 @@ mod notices;
 mod palette;
 mod palettes;
 mod phone;
+mod phone_page;
 mod phone_view;
 mod picker;
 mod platform;
@@ -61,6 +62,9 @@ mod posthog_view;
 mod prompts;
 mod runs_view;
 mod schedule;
+mod server;
+mod servers;
+mod servers_view;
 mod settings_view;
 mod sheet;
 mod shell;
@@ -121,7 +125,7 @@ fn main() {
         .run(move |cx: &mut App| {
             assets::load_fonts(cx);
             #[cfg(target_os = "macos")]
-            if let Some(icon) = assets::Assets::get("brand/arakun.png") {
+            if let Some(icon) = assets::Assets::get("brand/arakun-macos.png") {
                 platform::set_dock_icon(&icon.data);
             }
             cx.bind_keys([

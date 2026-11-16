@@ -104,10 +104,13 @@ build with the browser.
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
 | Branch naming agent and model (Settings › General) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
+| `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
+| Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
+| CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
@@ -129,21 +132,36 @@ Manager (Windows Credentials, Generic Credentials).
   that separates them from the bar; on Linux and macOS they are 28 px squares with
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
-- **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies) is
-  written owner-only (mode 0600, and 0700 for a folder it creates). Windows has no such
-  modes, so there it gets the default access rules of `%LOCALAPPDATA%\arakun\`.
+- **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies),
+  `cliproxy-management-key` and `cliproxy-plan.json` are written owner-only (mode 0600,
+  and 0700 for a folder it creates). Windows has no such modes, so there they get the
+  default access rules of `%LOCALAPPDATA%\arakun\`.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
-  `SYSTEM` and the Administrators can read it. To check who can read the folder, or to
-  keep it to your account and `SYSTEM` only, run in PowerShell:
+  `SYSTEM` and the Administrators can read it. To check who can read the folder and the
+  files in it, or to take away the access it inherits and give full access to your
+  account and `SYSTEM`, run in PowerShell:
 
   ```powershell
-  icacls "$env:LOCALAPPDATA\arakun"
+  icacls "$env:LOCALAPPDATA\arakun" /T
   icacls "$env:LOCALAPPDATA\arakun" /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
   ```
 
-  The second command also drops the Administrators' access, which some backup tools
-  need.
+  The second command does not make the folder private by itself. `/inheritance:r`
+  removes only inherited entries, and `/grant:r` changes only the accounts it names, so
+  an entry set directly on the folder or a file for any other account (Administrators
+  included) stays. Run the first command again: if it lists an account you don't want,
+  remove what it grants with `icacls "<path>" /remove:g "<account>"`, on the folder and
+  on each subfolder (such as `github\drafts`) and file that lists it. `/remove:g` keeps
+  a `(DENY)` entry; a plain `/remove` would drop it too, and the account could then read
+  through a group it is in. A subfolder or file that shows no `(I)` entry for your
+  account does not inherit from the folder, so the second command gave you nothing
+  there: before you take a group such as `Users` off it, give your account access, or
+  you lose it too. On a subfolder use
+  `icacls "<path>" /grant "${env:USERNAME}:(OI)(CI)F"`, so the files in it inherit it;
+  on a file, `icacls "<path>" /grant "${env:USERNAME}:F"`. When only inherited
+  entries gave it, the second command also drops the Administrators' access, which some
+  backup tools need.
 - **Command line (`arakun browse`, `arakun run`, ...):** the same as on Linux. Arakun's
   terminals and agents have `%LOCALAPPDATA%\arakun\bin` on their `PATH`, with a hard link
   to `arakun.exe` (or a copy if the disk does not support hard links). The socket is

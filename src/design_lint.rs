@@ -518,8 +518,13 @@ fn the_layout_audit_catches_what_it_should() {
         assert!(text.contains(kind), "missing {kind}:\n{text}");
     }
 
-    // Nothing to check must not read as nothing wrong.
-    for empty in ["empty.json", "blank.json"] {
+    // A border can't cut a child that lies beside its box, not under it.
+    let (code, text) = run("disjoint.json");
+    assert_eq!(code, 0, "{text}");
+
+    // Nothing to check must not read as nothing wrong. A drawn box of no
+    // size draws nothing either.
+    for empty in ["empty.json", "blank.json", "zero.json"] {
         let (code, text) = run(empty);
         assert_eq!(code, 2, "{empty}: {text}");
         assert!(text.contains("no drawn boxes"), "{text}");

@@ -48,8 +48,9 @@ done < <(git ls-files '*.rs' | xargs grep -H -E '^(pub(\([a-z]+\))? )?mod [a-z0-
 while :; do
   status=0
   # Not --all: that also formats path dependencies, such as a local GPUI checkout
-  # that [patch] points at.
-  out=$(cargo fmt "$@" 2>&1) || status=$?
+  # that [patch] points at. Both packages are named: plain `cargo fmt` leaves
+  # out arakun-server (server/), which is no dependency of the app.
+  out=$(cargo fmt -p arakun -p arakun-server "$@" 2>&1) || status=$?
   missing=$(printf '%s\n' "$out" | sed -n 's/.*failed to resolve mod `[^`]*`: \(.*\) does not exist.*/\1/p' | head -n 1)
   if [[ -z $missing ]]; then
     [[ -z $out ]] || printf '%s\n' "$out"

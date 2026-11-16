@@ -4,16 +4,18 @@
 //! sessions, open the dashboard, connect Cloudflare's MCP server to that agent
 //! and share a local server through a Quick Tunnel only some emails can open.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, FontWeight,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    Window, div, px, relative,
+    AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, EventEmitter, FocusHandle,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
+    ScrollHandle, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, Window, canvas, div, px, relative,
 };
 
 use crate::cloudflare::{
@@ -27,6 +29,40 @@ use crate::ui::{self, ButtonKind, icon, icon_button};
 
 /// Opening the tab reloads data older than this; the GraphQL API has a tight budget.
 mod overview;
+
+/// Under this width the side navigation shows only its icons.
+const RAIL_UNDER: f32 = 760.;
+const NAV_W: f32 = 216.;
+const RAIL_W: f32 = 58.;
+/// The pages never get wider than this.
+const PAGE_MAX: f32 = 1320.;
+
+/// How the tab lays itself out at a width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Layout {
+    /// The navigation shows icons only.
+    rail: bool,
+    /// The page's padding at the sides.
+    pad: f32,
+    /// The width the page's content gets.
+    content: f32,
+}
+
+/// The page's padding at the sides, before the Spacing setting scales it.
+fn page_pad(rail: bool) -> f32 {
+    if rail { 16. } else { 28. }
+}
+
+fn layout(w: f32) -> Layout {
+    let rail = w < RAIL_UNDER;
+    let nav = if rail { RAIL_W } else { NAV_W };
+    let pad = f32::from(crate::ui::sp(page_pad(rail)));
+    Layout {
+        rail,
+        pad,
+        content: ((w - nav).min(PAGE_MAX) - 2. * pad).max(0.),
+    }
+}
 
 /// Days of traffic the Overview charts (what `cloudflare` reads).
 const DAYS: u64 = 7;
@@ -131,6 +167,8 @@ pub struct CloudflareView {
     homes: std::collections::HashMap<String, PathBuf>,
     traffic: std::collections::HashMap<String, Result<cloudflare::ZoneTraffic, String>>,
     chart: Entity<ui::AreaChart>,
+    /// The width this view got last frame; it decides the layout of this one.
+    width: Rc<Cell<f32>>,
     mcp: Mcp,
     /// Until when (unix seconds) to keep asking the agent about the MCP sign-in.
     mcp_watch: u64,
@@ -235,6 +273,8 @@ impl CloudflareView {
             homes: Default::default(),
             traffic: Default::default(),
             chart: cx.new(|_| overview::chart()),
+            // Wide until measured, as most windows are.
+            width: Rc::new(Cell::new(1200.)),
             mcp: if cloudflare::mcp_server(Agent::Claude).is_some() {
                 Mcp::Added
             } else {
@@ -506,6 +546,10 @@ impl CloudflareView {
     fn open_button(&self, id: String, path: String, cx: &mut Context<Self>) -> Stateful<Div> {
         icon_button(SharedString::from(id), "link-square02", 13.)
             .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
+    }
+
+    fn layout(&self) -> Layout {
+        layout(self.width.get())
     }
 
     fn render_body(&self, s: &Snapshot, cx: &mut Context<Self>) -> AnyElement {
@@ -2574,6 +2618,22 @@ fn share_bar(classes: &[u64; 5], total: u64) -> Div {
 
 impl Render for CloudflareView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The width this view got last frame decides the layout of this one.
+        let (cell, id) = (self.width.clone(), cx.entity_id());
+        let measure = canvas(
+            |_, _, _| {},
+            move |bounds: Bounds<Pixels>, _, _: &mut Window, cx: &mut App| {
+                let now = bounds.size.width.as_f32();
+                if (now - cell.get()).abs() > 0.5 {
+                    cell.set(now);
+                    // A notify while the window paints marks no new frame, so
+                    // send it once this one is drawn.
+                    cx.defer(move |cx| cx.notify(id));
+                }
+            },
+        )
+        .absolute()
+        .size_full();
         let now = crate::model::unix_now();
         let header = self.render_header(now, cx);
         let problems = self
@@ -2639,12 +2699,13 @@ impl Render for CloudflareView {
                     })),
                 )
         });
+        let lay = self.layout();
         let content = match self.snap.clone() {
             Some(s) => div()
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.render_nav(&s, cx))
+                .child(self.render_nav(&s, lay.rail, cx))
                 .child(
                     div()
                         .id("cloudflare-body")
@@ -2660,9 +2721,9 @@ impl Render for CloudflareView {
                                 .flex_col()
                                 .gap(crate::ui::sp(16.))
                                 .w_full()
-                                .max_w(px(1320.))
+                                .max_w(px(PAGE_MAX))
                                 .mx_auto()
-                                .px(crate::ui::sp(28.))
+                                .px(crate::ui::sp(page_pad(lay.rail)))
                                 .py(crate::ui::sp(24.))
                                 .children(access)
                                 .children(waiting)
@@ -2691,6 +2752,7 @@ impl Render for CloudflareView {
         };
         div()
             .track_focus(&self.focus)
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -2699,6 +2761,7 @@ impl Render for CloudflareView {
             .text_color(theme::content())
             .child(header)
             .child(content)
+            .child(measure)
     }
 }
 
@@ -2736,6 +2799,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_layout_follows_the_width() {
+        // A small window: the navigation folds to icons and the page keeps its width.
+        let l = layout(530.);
+        assert!(l.rail);
+        assert_eq!(l.content, 530. - RAIL_W - 2. * l.pad);
+        // A wide one: the full navigation, the page capped.
+        let l = layout(2400.);
+        assert!(!l.rail);
+        assert_eq!(l.content, PAGE_MAX - 2. * l.pad);
+        assert_eq!(layout(0.).content, 0.);
+    }
 
     #[test]
     fn shares() {

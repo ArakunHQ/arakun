@@ -8,6 +8,9 @@
 //! - `entries`: entries from `from` on changed; `count` is the new total.
 //! - `state`: a watched session's status, permission or usage changed.
 //! - `usage`: both agents' plan limits, on request and when they change.
+//! - `transcript`: a session's entries whole, on request: for the app, which
+//!   shows a server's session as its own.
+//! - `part`: a piece of a message too big for one frame.
 //! - `error`.
 
 use std::path::{Path, PathBuf};
@@ -17,8 +20,8 @@ use serde_json::{Value, json};
 use crate::account::{self, Limits, UsageMode};
 use crate::agent::plan::PlanUsage;
 use crate::agent::{
-    AskUserRequest, Entry, PermissionRequest, ToolContent, ToolStatus, Usage, attach, diff,
-    fmt_cost,
+    AskUserRequest, Entry, PermissionRequest, Setting, SettingOption, Thread, ToolContent,
+    ToolStatus, Usage, attach, diff, fmt_cost,
 };
 use crate::model::Status;
 
@@ -453,15 +456,29 @@ pub struct DroidPlan<'a> {
 /// Both agents' plan limits as the desktop's Usage tab shows them: a card per
 /// agent with a row per window that is running (`label`, `percent`, `detail`),
 /// the windows not running folded into `idle`, and a `note` under it all.
-pub fn plan_usage(plan: Option<&PlanUsage>, droid: &DroidPlan, now: u64) -> Value {
-    json!({ "type": "usage", "agents": [claude_card(plan, now), droid_card(droid, now)] })
+///
+/// `access` names the API key or endpoint Claude Code runs on without a plan.
+pub fn plan_usage(
+    plan: Option<&PlanUsage>,
+    access: Option<&str>,
+    droid: &DroidPlan,
+    now: u64,
+) -> Value {
+    json!({ "type": "usage", "agents": [claude_card(plan, access, now), droid_card(droid, now)] })
 }
 
 fn limit_row(label: &str, percent: f32, detail: Option<String>) -> Value {
     json!({ "label": label, "percent": percent.clamp(0., 100.).ceil() as u64, "detail": detail })
 }
 
-fn claude_card(plan: Option<&PlanUsage>, now: u64) -> Value {
+fn claude_card(plan: Option<&PlanUsage>, access: Option<&str>, now: u64) -> Value {
+    if let (None, Some(access)) = (plan, access) {
+        return json!({
+            "agent": "claude", "name": "Claude Code", "signed_in": true, "plan": access,
+            "rows": [], "idle": [], "tone": "normal",
+            "note": "Claude Code runs on an API key or another endpoint, which has no plan limits.",
+        });
+    }
     let Some(plan) = plan else {
         return json!({
             "agent": "claude", "name": "Claude Code", "signed_in": false,
@@ -628,6 +645,239 @@ fn diff_counts(old: Option<&str>, new: &str) -> (usize, usize) {
                 (0, old_lines - new_lines)
             }
         }
+    }
+}
+
+// ---- whole messages --------------------------------------------------------
+// Built here so the app and `arakun server` send the very same ones.
+
+/// `entries`: a watched session's entries from `from` on, and how many it has now.
+pub fn entries_message(id: &str, all: &[Entry], from: usize, scope: &Scope) -> String {
+    json!({
+        "type": "entries", "id": id, "from": from.min(all.len()), "count": all.len(),
+        "entries": entries(all, from, scope),
+    })
+    .to_string()
+}
+
+/// `state`: what changed around a watched session's entries.
+pub fn state_message(id: &str, t: &Thread, status: Status) -> String {
+    json!({
+        "type": "state", "id": id, "status": self::status(status),
+        "permission": t.pending_permission().map(permission),
+        "question": t.pending_question().map(question),
+        "usage": usage(t.usage()),
+        "elapsed_ms": t.turn_elapsed().map(|d| d.as_millis() as u64),
+        "title": t.title(),
+        "changes": change_totals(t.entries()),
+    })
+    .to_string()
+}
+
+/// What the list a session is in says about it, for a `session` message.
+pub struct SessionHead<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    /// The agent's name, as shown.
+    pub agent: &'a str,
+    pub status: Status,
+    pub place: &'a str,
+}
+
+fn session_head(head: &SessionHead, all: &[Entry], scope: &Scope) -> Value {
+    let from = all.len().saturating_sub(TAIL);
+    json!({
+        "type": "session", "id": head.id, "title": head.title, "agent": head.agent,
+        "status": status(head.status), "place": head.place,
+        "permission": null, "question": null, "usage": null, "elapsed_ms": null,
+        "count": all.len(), "from": from, "entries": entries(all, from, scope),
+        "changes": change_totals(all),
+    })
+}
+
+/// `session`: a session that is running, as a phone opens it. `status` is the
+/// thread's own, which is fresher than the list's.
+pub fn session_live(head: &SessionHead, t: &Thread, status: Status, scope: &Scope) -> String {
+    let mut msg = session_head(head, t.entries(), scope);
+    msg["permission"] = t.pending_permission().map_or(Value::Null, permission);
+    msg["question"] = t.pending_question().map_or(Value::Null, question);
+    msg["usage"] = usage(t.usage());
+    msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
+    msg["status"] = json!(self::status(status));
+    if !t.title().is_empty() {
+        msg["title"] = json!(t.title());
+    }
+    msg.to_string()
+}
+
+/// `session`: one that is not running, from its transcript's entries.
+pub fn session_saved(head: &SessionHead, all: &[Entry], scope: &Scope) -> String {
+    session_head(head, all, scope).to_string()
+}
+
+/// What a waiting session asks, for its line in the inbox.
+pub fn asks(t: &Thread) -> Option<Value> {
+    t.pending_permission()
+        .map(|p| json!({ "kind": "permission", "text": p.title }))
+        .or_else(|| {
+            let q = t.pending_question()?;
+            Some(json!({ "kind": "question", "text": q.questions.first()?.question }))
+        })
+}
+
+/// A session's line in the inbox.
+pub struct InboxSession<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    /// The agent's name, as shown.
+    pub agent: &'a str,
+    pub status: Status,
+    pub updated: u64,
+    pub added: u32,
+    pub removed: u32,
+    pub project: &'a str,
+    pub env: &'a str,
+    pub pr: Option<&'a str>,
+    pub asks: Option<Value>,
+}
+
+pub fn inbox_session(s: InboxSession) -> Value {
+    json!({
+        "id": s.id, "title": s.title, "agent": s.agent, "status": status(s.status),
+        "updated": s.updated, "added": s.added, "removed": s.removed,
+        "project": s.project, "env": s.env, "pr": s.pr, "asks": s.asks,
+    })
+}
+
+/// Where a phone can start a session, with the agent that place picks (its key).
+pub fn inbox_place(
+    path: &Path,
+    project: &str,
+    env: &str,
+    branch: Option<&str>,
+    agent: &str,
+) -> Value {
+    json!({ "path": path, "project": project, "env": env, "branch": branch, "agent": agent })
+}
+
+/// `inbox`: every session, newest first, and the places.
+pub fn inbox(host: &str, mut sessions: Vec<Value>, places: Vec<Value>) -> String {
+    sessions.sort_by_key(|s| std::cmp::Reverse(s["updated"].as_u64().unwrap_or(0)));
+    json!({ "type": "inbox", "host": host, "sessions": sessions, "places": places }).to_string()
+}
+
+/// Settings with their value and choices, as the phone shows them.
+pub fn settings(list: Vec<(Setting, (String, Vec<SettingOption>))>) -> Value {
+    let list = list.into_iter().map(|(s, (current, options))| {
+        json!({
+            "key": s.key(),
+            "label": s.label(),
+            "current": current,
+            "options": options.iter().map(|o| json!({ "id": o.id, "name": o.name, "detail": o.detail, "disabled": o.disabled })).collect::<Vec<_>>(),
+        })
+    });
+    Value::Array(list.collect())
+}
+
+/// The most text one message carries. The relay passes frames of 256 KiB at
+/// most, and sealing adds to what goes in one.
+pub const FRAME_TEXT: usize = 180 * 1024;
+/// What a `part` carries of the message it is a piece of, before base64.
+const PART_BYTES: usize = 120 * 1024;
+/// About how much one `transcript` answer holds; the rest comes when asked for.
+const TRANSCRIPT_BYTES: usize = 96 * 1024;
+/// The most pieces, and bytes, one message may come in: a peer that says more
+/// is not believed.
+const MAX_PARTS: usize = 4096;
+const MAX_WHOLE: usize = 256 * 1024 * 1024;
+
+/// `transcript`: a session's entries from `from` on, whole, as its transcript
+/// file holds them. A phone gets them cut down (`entries`); the app, looking at
+/// a server, shows the session as one of its own and needs all of each. The
+/// answer stops near [`TRANSCRIPT_BYTES`] (`to` says where): the asker comes
+/// back for the rest. What goes out is this message, in `part`s when one entry
+/// alone is too much for a frame.
+pub fn transcript_message(
+    id: &str,
+    agent: &str,
+    cwd: &Path,
+    all: &[Entry],
+    from: usize,
+) -> Vec<String> {
+    let from = from.min(all.len());
+    let mut entries: Vec<Value> = Vec::new();
+    let mut size = 0;
+    for e in &all[from..] {
+        let v = serde_json::to_value(e).unwrap_or(Value::Null);
+        let len = v.to_string().len();
+        if !entries.is_empty() && size + len > TRANSCRIPT_BYTES {
+            break;
+        }
+        size += len;
+        entries.push(v);
+    }
+    let msg = json!({
+        "type": "transcript", "id": id, "agent": agent, "cwd": cwd,
+        "from": from, "to": from + entries.len(), "count": all.len(), "entries": entries,
+    });
+    parts(msg.to_string())
+}
+
+/// `msg` as the messages to send for it: itself when it fits a frame, else
+/// `part`s in order, each a piece of its bytes.
+pub fn parts(msg: String) -> Vec<String> {
+    use base64::Engine as _;
+    if msg.len() <= FRAME_TEXT {
+        return vec![msg];
+    }
+    let pieces: Vec<&[u8]> = msg.as_bytes().chunks(PART_BYTES).collect();
+    let of = pieces.len();
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(piece);
+            json!({ "type": "part", "i": i, "of": of, "data": data }).to_string()
+        })
+        .collect()
+}
+
+/// Puts the `part`s of a message back together on the side that receives them.
+/// The pieces of one message come one after another, with nothing between.
+#[derive(Default)]
+pub struct Parts {
+    pieces: Vec<u8>,
+    next: usize,
+}
+
+impl Parts {
+    /// A message as it came: itself, unless it is a `part`; then nothing until
+    /// the last piece, which gives the whole message.
+    pub fn take(&mut self, msg: Value) -> Option<Value> {
+        use base64::Engine as _;
+        if msg["type"] != "part" {
+            *self = Parts::default();
+            return Some(msg);
+        }
+        let (i, of) = (msg["i"].as_u64()? as usize, msg["of"].as_u64()? as usize);
+        let piece = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(msg["data"].as_str()?)
+            .ok()?;
+        if i == 0 {
+            *self = Parts::default();
+        }
+        // Out of order, or more than anyone sends: start over.
+        if i != self.next || of > MAX_PARTS || self.pieces.len() + piece.len() > MAX_WHOLE {
+            *self = Parts::default();
+            return None;
+        }
+        self.pieces.extend_from_slice(&piece);
+        self.next += 1;
+        if self.next < of {
+            return None;
+        }
+        let whole = std::mem::take(self).pieces;
+        serde_json::from_slice(&whole).ok()
     }
 }
 
@@ -898,7 +1148,7 @@ mod tests {
             error: None,
             fetched_at: Some(now - 10),
         };
-        let v = plan_usage(Some(&plan), &droid, now);
+        let v = plan_usage(Some(&plan), None, &droid, now);
         assert_eq!(v["type"], "usage");
         let claude = &v["agents"][0];
         assert_eq!(claude["signed_in"], true);
@@ -928,16 +1178,19 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(d["idle"], json!(["Core · Month"]));
 
-        let out = plan_usage(
-            None,
-            &DroidPlan {
-                connected: false,
-                limits: None,
-                error: None,
-                fetched_at: None,
-            },
-            now,
+        let signed_out = DroidPlan {
+            connected: false,
+            limits: None,
+            error: None,
+            fetched_at: None,
+        };
+        let proxy = plan_usage(None, Some("Endpoint · localhost:8317"), &signed_out, now);
+        assert_eq!(
+            proxy["agents"][0]["signed_in"], true,
+            "a key or endpoint runs Claude Code without a sign-in"
         );
+        assert_eq!(proxy["agents"][0]["plan"], "Endpoint · localhost:8317");
+        let out = plan_usage(None, None, &signed_out, now);
         assert_eq!(out["agents"][0]["signed_in"], false);
         assert_eq!(out["agents"][1]["signed_in"], false);
         assert!(
@@ -959,5 +1212,80 @@ mod tests {
         assert_eq!(entries(&all, 1, &s).len(), 2);
         assert_eq!(entries(&all, 1, &s)[0]["text"], "b");
         assert!(entries(&all, 7, &s).is_empty());
+    }
+
+    fn said(text: &str) -> Entry {
+        Entry::Agent { text: text.into() }
+    }
+
+    #[test]
+    fn a_transcript_answer_stops_near_its_size_and_says_where() {
+        let all: Vec<Entry> = (0..5).map(|_| said(&"x".repeat(40 * 1024))).collect();
+        let frames = transcript_message("s1", "claude", Path::new("/w/app"), &all, 1);
+        assert_eq!(frames.len(), 1);
+        let msg: Value = serde_json::from_str(&frames[0]).unwrap();
+        assert_eq!(msg["type"], "transcript");
+        assert_eq!(
+            (msg["agent"].as_str(), msg["cwd"].as_str()),
+            (Some("claude"), Some("/w/app"))
+        );
+        // Two of 40 KiB fit; the third comes when asked for, from `to`.
+        assert_eq!(
+            (
+                msg["from"].as_u64(),
+                msg["to"].as_u64(),
+                msg["count"].as_u64()
+            ),
+            (Some(1), Some(3), Some(5))
+        );
+        // Whole entries, as the transcript file holds them.
+        let back: Vec<Entry> = serde_json::from_value(msg["entries"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&all[1..3]).unwrap()
+        );
+
+        // Asked from past the end: nothing, and the count to go by.
+        let past = transcript_message("s1", "claude", Path::new("/w/app"), &all, 9);
+        let msg: Value = serde_json::from_str(&past[0]).unwrap();
+        assert_eq!(
+            (
+                msg["from"].as_u64(),
+                msg["to"].as_u64(),
+                msg["count"].as_u64()
+            ),
+            (Some(5), Some(5), Some(5))
+        );
+        assert_eq!(msg["entries"], json!([]));
+    }
+
+    #[test]
+    fn a_message_too_big_for_a_frame_goes_in_parts_and_comes_back_whole() {
+        // Two bytes a letter, so pieces cut letters in half.
+        let big = said(&"é".repeat(200 * 1024));
+        let frames = transcript_message("s1", "claude", Path::new("/w"), &[big], 0);
+        assert!(frames.len() > 1);
+        assert!(frames.iter().all(|f| f.len() <= FRAME_TEXT));
+        let mut parts = Parts::default();
+        let mut whole = None;
+        for (i, frame) in frames.iter().enumerate() {
+            whole = parts.take(serde_json::from_str(frame).unwrap());
+            assert_eq!(whole.is_some(), i + 1 == frames.len());
+        }
+        let whole = whole.unwrap();
+        assert_eq!(whole["type"], "transcript");
+        let text = whole["entries"][0]["text"].as_str().unwrap();
+        assert_eq!(text.chars().count(), 200 * 1024);
+
+        // A message that is no part passes as it is.
+        let small = json!({ "type": "inbox", "sessions": [] });
+        assert_eq!(parts.take(small.clone()), Some(small));
+        // A piece that is not the next one drops what came before it.
+        let first: Value = serde_json::from_str(&frames[0]).unwrap();
+        let third: Value = serde_json::from_str(&frames[2]).unwrap();
+        assert_eq!(parts.take(first), None);
+        assert_eq!(parts.take(third), None);
+        let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+        assert_eq!(parts.take(last), None);
     }
 }

@@ -128,12 +128,7 @@ jobs:
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
 
-      # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
-      - name: GPUI system libraries
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
-          version: 1
+      - uses: ./.github/actions/gpui-libs
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain
@@ -173,12 +168,7 @@ jobs:
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
 
-      # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
-      - name: GPUI system libraries
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
-          version: 1
+      - uses: ./.github/actions/gpui-libs
 
       # 330 MB that never changes for a given version.
       - name: Cache the CEF archive
@@ -225,12 +215,7 @@ jobs:
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
 
-      # Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror.
-      - name: GPUI system libraries
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
-          version: 1
+      - uses: ./.github/actions/gpui-libs
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain

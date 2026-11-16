@@ -35,11 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: GPUI system libraries
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
-          version: 1
+      - uses: ./.github/actions/gpui-libs
 
       # `+stable` below overrides rust-toolchain.toml. No build cache: a new
       # compiler version would miss it anyway.

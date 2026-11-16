@@ -58,7 +58,8 @@ impl Shell {
             .pr(ui::icon_inset())
             .gap(crate::ui::sp(2.))
             .when(
-                !self.sidebar.has(&crate::sidebar::Piece::Mascot) && !self.main_shows_raccoon(),
+                !self.sidebar.has(&crate::sidebar::Piece::Mascot)
+                    && self.rail_shows_raccoon(&inbox),
                 |d| d.child(self.rail_mascot.clone()),
             )
             .child(

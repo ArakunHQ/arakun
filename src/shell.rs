@@ -2036,17 +2036,33 @@ impl Focusable for Shell {
 
 impl Shell {
     /// Whether a pane in view already shows a raccoon: the start screen's
-    /// ASCII face or a session's raccoon on its composer. The rail's then
-    /// steps aside, so only one raccoon is in view at a time.
-    pub(super) fn main_shows_raccoon(&self) -> bool {
+    /// ASCII face in the focused pane, or the raccoon on the composer of a
+    /// live session. Same conditions as `render_pane_body`, so a session that
+    /// is still connecting leaves the rail's raccoon in place.
+    fn main_shows_raccoon(&self) -> bool {
         let env = self.env();
-        let has = |i: usize| {
-            matches!(
-                env.tabs.get(i).map(|t| &t.kind),
-                None | Some(TabKind::NewSession) | Some(TabKind::Session { .. })
-            )
+        let home = matches!(
+            env.tabs.get(env.active_tab).map(|t| &t.kind),
+            None | Some(TabKind::NewSession)
+        );
+        home || self.composer_chat().is_some()
+    }
+
+    /// Whether the rail shows its raccoon. It steps aside while the main view
+    /// shows one, so only one raccoon is in view, but comes back when a session
+    /// out of view needs input: its mood is the only cue across sessions.
+    fn rail_shows_raccoon(&self, inbox: &[InboxItem]) -> bool {
+        if !self.main_shows_raccoon() {
+            return true;
+        }
+        let env = self.env();
+        let in_view = match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+            Some(TabKind::Session { id, .. }) => Some(id),
+            _ => None,
         };
-        has(env.active_tab) || env.split_other().is_some_and(has)
+        inbox
+            .iter()
+            .any(|i| i.status == Status::NeedsInput && Some(&i.id) != in_view)
     }
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

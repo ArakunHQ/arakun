@@ -160,7 +160,11 @@ it shows in `github/avatars/` (each downloaded again after a week).
 
 - **Service tabs.** A PostHog tab (personal API keys; matches projects by their `phc_`
   keys) and a Cloudflare tab (uses the `cf` CLI's sign-in).
-- **Usage.** Token use and cost from Claude Code's and Droid's own logs.
+- **Usage.** Token use and cost from Claude Code's and Droid's own logs, and each plan's
+  limits. When Claude Code runs on CLIProxyAPI, add the proxy's management key in the
+  tab (or set `ARAKUN_CLIPROXY_KEY`) to see the 5-hour and weekly limits of every
+  claude.ai account behind it. The key is saved in
+  `~/.local/share/arakun/cliproxy-management-key`.
 - **Extensions.** MCP servers, plugins, skills and permission rules of the agents.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 

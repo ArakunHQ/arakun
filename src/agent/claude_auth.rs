@@ -99,6 +99,31 @@ pub fn access() -> Option<Access> {
 
 static LATEST: std::sync::Mutex<Option<Access>> = std::sync::Mutex::new(None);
 
+/// The `ANTHROPIC_BASE_URL` Claude Code runs on, when it is another endpoint
+/// and no cloud provider wins over it. Reads files; keep it off the UI thread.
+pub fn endpoint_url() -> Option<String> {
+    let settings = user_settings();
+    let process = |k: &str| std::env::var(k).ok();
+    matches!(access_from(&settings, process), Some(Access::Endpoint(_)))
+        .then(|| setting(&settings, BASE_URL, process))
+        .flatten()
+}
+
+/// One variable as Claude Code sees it: the settings' `env` over the process.
+fn setting(
+    settings: &UserSettings,
+    key: &str,
+    process: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    settings
+        .env
+        .get(key)
+        .cloned()
+        .or_else(|| process(key))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// The last [`access`] any view read, for surfaces that only render (the phone).
 pub fn latest() -> Option<Access> {
     LATEST.lock().ok()?.clone()
@@ -109,15 +134,7 @@ fn access_from(
     settings: &UserSettings,
     process: impl Fn(&str) -> Option<String>,
 ) -> Option<Access> {
-    let get = |k: &str| {
-        settings
-            .env
-            .get(k)
-            .cloned()
-            .or_else(|| process(k))
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    };
+    let get = |k: &str| setting(settings, k, &process);
     let on = |k: &str| get(k).is_some_and(|v| !matches!(v.as_str(), "0" | "false"));
     for (flag, name) in [
         ("CLAUDE_CODE_USE_BEDROCK", "Amazon Bedrock"),

@@ -16,7 +16,8 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+/// Also read through CLIProxyAPI (`cliproxy`), with each account's own token.
+pub(crate) const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 /// A long-lived token can't read [`ENDPOINT`]; a one-token message can, from
 /// the `anthropic-ratelimit-unified-*` headers of its answer.
 const MESSAGES: &str = "https://api.anthropic.com/v1/messages";
@@ -548,7 +549,7 @@ pub(crate) fn http(url: &str, post: Option<&str>, headers: &[(&str, String)]) ->
 
 /// curl with `extra` (write-out variables) printed after the body: the
 /// output and the HTTP status, whatever it is.
-fn http_with(
+pub(crate) fn http_with(
     url: &str,
     post: Option<&str>,
     headers: &[(&str, String)],
@@ -607,9 +608,13 @@ fn http_headers(url: &str, post: Option<&str>, headers: &[(&str, String)]) -> Re
     ))
 }
 
+fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
+    parse_usage(json, &oauth.subscription, &oauth.tier)
+}
+
 /// The endpoint's JSON into our shape. `limits[]` is the canonical list; the
 /// five_hour/seven_day fields cover accounts the list does not serve.
-fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
+pub(crate) fn parse_usage(json: &Value, subscription: &str, tier: &str) -> PlanUsage {
     let mut windows = Vec::new();
     if let Some(limits) = json["limits"].as_array().filter(|l| !l.is_empty()) {
         for l in limits {
@@ -661,8 +666,8 @@ fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
     let spend = spend(json);
     PlanUsage {
         at: now(),
-        subscription: oauth.subscription.clone(),
-        tier: oauth.tier.clone(),
+        subscription: subscription.to_string(),
+        tier: tier.to_string(),
         windows,
         spend,
         borrowed: false,

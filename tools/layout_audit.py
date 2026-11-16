@@ -58,7 +58,8 @@ def load(buf,name):
         if p!=-1 and state[p]==1:
             return None,f"{name}: box {p} is its own ancestor; the dump is not from GPUI_LAYOUT_AUDIT"
         for q in path: state[q]=2
-    if not any(r['bg'] or sum(1 for x in r['border'] if x>0)>=3 for r in d):
+    # A drawn box of no size paints nothing, and the checks below skip it.
+    if not any((r['bg'] or sum(1 for x in r['border'] if x>0)>=3) and r['b'][2]>0 and r['b'][3]>0 for r in d):
         return None,f"{name} has no drawn boxes; the screen was empty or the dump is not from GPUI_LAYOUT_AUDIT"
     return d,None
 

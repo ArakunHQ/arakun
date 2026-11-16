@@ -453,15 +453,29 @@ pub struct DroidPlan<'a> {
 /// Both agents' plan limits as the desktop's Usage tab shows them: a card per
 /// agent with a row per window that is running (`label`, `percent`, `detail`),
 /// the windows not running folded into `idle`, and a `note` under it all.
-pub fn plan_usage(plan: Option<&PlanUsage>, droid: &DroidPlan, now: u64) -> Value {
-    json!({ "type": "usage", "agents": [claude_card(plan, now), droid_card(droid, now)] })
+///
+/// `access` names the API key or endpoint Claude Code runs on without a plan.
+pub fn plan_usage(
+    plan: Option<&PlanUsage>,
+    access: Option<&str>,
+    droid: &DroidPlan,
+    now: u64,
+) -> Value {
+    json!({ "type": "usage", "agents": [claude_card(plan, access, now), droid_card(droid, now)] })
 }
 
 fn limit_row(label: &str, percent: f32, detail: Option<String>) -> Value {
     json!({ "label": label, "percent": percent.clamp(0., 100.).ceil() as u64, "detail": detail })
 }
 
-fn claude_card(plan: Option<&PlanUsage>, now: u64) -> Value {
+fn claude_card(plan: Option<&PlanUsage>, access: Option<&str>, now: u64) -> Value {
+    if let (None, Some(access)) = (plan, access) {
+        return json!({
+            "agent": "claude", "name": "Claude Code", "signed_in": true, "plan": access,
+            "rows": [], "idle": [], "tone": "normal",
+            "note": "Claude Code runs on an API key or another endpoint, which has no plan limits.",
+        });
+    }
     let Some(plan) = plan else {
         return json!({
             "agent": "claude", "name": "Claude Code", "signed_in": false,
@@ -898,7 +912,7 @@ mod tests {
             error: None,
             fetched_at: Some(now - 10),
         };
-        let v = plan_usage(Some(&plan), &droid, now);
+        let v = plan_usage(Some(&plan), None, &droid, now);
         assert_eq!(v["type"], "usage");
         let claude = &v["agents"][0];
         assert_eq!(claude["signed_in"], true);
@@ -928,16 +942,19 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(d["idle"], json!(["Core · Month"]));
 
-        let out = plan_usage(
-            None,
-            &DroidPlan {
-                connected: false,
-                limits: None,
-                error: None,
-                fetched_at: None,
-            },
-            now,
+        let signed_out = DroidPlan {
+            connected: false,
+            limits: None,
+            error: None,
+            fetched_at: None,
+        };
+        let proxy = plan_usage(None, Some("Endpoint · localhost:8317"), &signed_out, now);
+        assert_eq!(
+            proxy["agents"][0]["signed_in"], true,
+            "a key or endpoint runs Claude Code without a sign-in"
         );
+        assert_eq!(proxy["agents"][0]["plan"], "Endpoint · localhost:8317");
+        let out = plan_usage(None, None, &signed_out, now);
         assert_eq!(out["agents"][0]["signed_in"], false);
         assert_eq!(out["agents"][1]["signed_in"], false);
         assert!(

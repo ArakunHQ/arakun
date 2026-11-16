@@ -215,6 +215,9 @@ fn instruction(task: &str) -> String {
 pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
     let (program, args) = command(agent, model.trim())?;
     let mut cmd = crate::platform::command(program);
+    if agent == AgentKind::Claude {
+        crate::agent::claude_auth::one_shot(&mut cmd);
+    }
     // An empty folder: no project instructions, memory or tools to load.
     let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the namer: {e}"))?;
     cmd.args(args)

@@ -917,7 +917,14 @@ impl Shell {
             error: account.error().map(|e| e.as_ref()),
             fetched_at: account.fetched_at(),
         };
-        wire::plan_usage(plan.as_ref(), &droid, crate::account::unix_now()).to_string()
+        let access = crate::agent::claude_auth::latest().map(|a| a.label());
+        wire::plan_usage(
+            plan.as_ref(),
+            access.as_deref(),
+            &droid,
+            crate::account::unix_now(),
+        )
+        .to_string()
     }
 
     /// The plan limits may have moved (a fetch landed): phones hear if they did.

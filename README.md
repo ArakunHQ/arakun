@@ -164,8 +164,9 @@ Developer ID and notarized by Apple. Move it to `Applications` and open it.
 
 Arakun does not bundle the agents. Install the ones you want to use:
 
-- Claude Code: Node.js with `npm` (Arakun installs the ACP adapter) and a signed-in
-  `claude`.
+- Claude Code: Node.js with `npm` (Arakun installs the ACP adapter) and a `claude`
+  that is signed in or set up with an API key or another endpoint (`ANTHROPIC_BASE_URL`,
+  such as a gateway or CLIProxyAPI) in `~/.claude/settings.json` or the environment.
 - Droid: Factory's `droid` CLI.
 - OpenCode: the `opencode` CLI, signed in with `opencode auth login`.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
@@ -299,7 +300,7 @@ out first.
   a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
   (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
   agent. A question offers a short answer from Claude Haiku through Claude Code, on
-  your Claude account (no API key): `Enter` on the offer asks, and nothing is sent
+  your Claude account or the key or endpoint Claude Code is set up with: `Enter` on the offer asks, and nothing is sent
   before. A sentence such as "merge #64 when the checks pass and tell me" becomes an
   automation once you confirm it; one Arakun cannot read itself offers to have Claude
   read it, again only on `Enter`.

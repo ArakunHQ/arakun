@@ -19,6 +19,7 @@ use gpui::{
 
 use crate::account::{Account, UsageMode};
 use crate::account_view;
+use crate::agent::claude_auth;
 use crate::agent::opencode_plan;
 use crate::agent::plan::{self, PlanUsage};
 use crate::agent::{AgentKind, fmt_cost};
@@ -249,6 +250,8 @@ pub enum UsageEvent {
 pub struct UsageView {
     /// The claude.ai plan's windows, when Claude Code is signed in.
     plan: Option<PlanUsage>,
+    /// The API key or endpoint Claude Code runs on instead of a plan, if any.
+    access: Option<claude_auth::Access>,
     /// Another seat's windows (a borrowed `claude setup-token`), when this
     /// machine has one; shown beside the sign-in's.
     #[cfg(feature = "coderlabs")]
@@ -292,8 +295,14 @@ impl UsageView {
         });
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
-                let (seats, go) = cx
-                    .background_spawn(async move { (plan::seats(), opencode_plan::refresh()) })
+                let (seats, go, access) = cx
+                    .background_spawn(async move {
+                        (
+                            plan::seats(),
+                            opencode_plan::refresh(),
+                            claude_auth::access(),
+                        )
+                    })
                     .await;
                 let plan = seats.active().cloned();
                 #[cfg(feature = "coderlabs")]
@@ -304,6 +313,10 @@ impl UsageView {
                         let changed = v.borrowed != borrowed;
                         #[cfg(not(feature = "coderlabs"))]
                         let changed = false;
+                        if v.access != access {
+                            v.access = access;
+                            cx.notify();
+                        }
                         if changed || v.plan != plan || v.go != go {
                             v.plan = plan;
                             #[cfg(feature = "coderlabs")]
@@ -324,6 +337,7 @@ impl UsageView {
         });
         Self {
             plan: None,
+            access: None,
             #[cfg(feature = "coderlabs")]
             borrowed: None,
             go: None,
@@ -414,11 +428,11 @@ impl UsageView {
     /// Claude's limits: one line per active window, the idle ones folded into
     /// a single line, or the sign-in prompt.
     fn claude_limits(&self, cx: &mut Context<Self>) -> AnyElement {
-        let label = self
-            .plan
-            .as_ref()
-            .map(|p| p.plan_label())
-            .unwrap_or_default();
+        let label = match (&self.plan, &self.access) {
+            (Some(p), _) => p.plan_label(),
+            (None, Some(a)) => a.label(),
+            (None, None) => String::new(),
+        };
         let at = now();
         let body = match &self.plan {
             Some(plan) => {
@@ -453,6 +467,13 @@ impl UsageView {
                 }
                 rows.children(idle_line(&idle))
             }
+            None if self.access.is_some() => connect_hint(
+                "usage-claude-sign-in",
+                "Claude Code runs on an API key or another endpoint, which has no claude.ai plan limits. Sign in to see a plan's 5-hour and weekly limits.",
+                "Sign in",
+                UsageEvent::ClaudeSignIn,
+                cx,
+            ),
             None => connect_hint(
                 "usage-claude-sign-in",
                 "Sign in with your claude.ai account to see your 5-hour and weekly limits.",

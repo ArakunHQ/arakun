@@ -848,6 +848,8 @@ impl Shell {
                         eprintln!("arakun: could not save state: {e}");
                     }
                     this.save_transcripts(cx);
+                    // Notices are saved off the UI thread: let the last one land.
+                    crate::notices::flush();
                     crate::control::cleanup();
                     if this.restarting
                         && let Err(e) = crate::platform::relaunch()

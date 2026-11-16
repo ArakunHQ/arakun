@@ -1641,7 +1641,7 @@ fn simple(
                     Some("search" | "get" | "list" | "context")
                 ) => {}
             Some("github") if args.get(1) == Some(&"draft") => {
-                github_draft(&args, cmd.reads.last(), cwd.as_deref(), cx, out, &line)
+                github_draft(&args, &cmd.reads, cwd.as_deref(), cx, out, &line)
             }
             Some("agent")
                 if matches!(
@@ -2282,7 +2282,7 @@ fn paths_in(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>,
 /// (a key, a token) asks, symlinks followed, also when it comes in on `<`.
 fn github_draft(
     args: &[&str],
-    stdin: Option<&String>,
+    reads: &[String],
     cwd: Option<&Path>,
     cx: &Ctx,
     out: &mut Vec<Finding>,
@@ -2321,21 +2321,38 @@ fn github_draft(
             ));
         }
     };
-    // `--body-file - < f` reads f all the same, so judge it as that file.
-    let body = match (body.as_str(), stdin) {
-        ("-", None) => return,
-        ("-", Some(f)) if f.contains(['*', '?', '[', '{', '$']) => return ask(out, f),
-        ("-", Some(f)) => f.clone(),
-        _ => body,
+    // `--body-file - < f` reads f all the same, so judge it as that file. Which
+    // `<` feeds stdin turns on descriptors (`< f 3< ok.md`, `0<&3`): judge them all.
+    let files: Vec<&str> = if body == "-" {
+        reads.iter().map(String::as_str).collect()
+    } else {
+        vec![body.as_str()]
     };
+    if files.is_empty() {
+        return;
+    }
+    for f in files {
+        if !own_file(f, cwd, cx) {
+            return ask(out, f);
+        }
+    }
+    DRAFT_FILE.set(true);
+}
+
+/// A file in the workspace that stays there once symlinks are followed.
+fn own_file(f: &str, cwd: Option<&Path>, cx: &Ctx) -> bool {
+    // The shell expands these into files we can't see from here.
+    if f.contains(['*', '?', '[', '{', '$']) {
+        return false;
+    }
     // `..` is resolved after symlinks when the file is opened, but lexically
     // here, so `link/../x` could pass for a workspace file. Don't guess.
-    let climbs = Path::new(&body)
+    let climbs = Path::new(f)
         .components()
         .any(|c| c == std::path::Component::ParentDir);
-    let inside = !climbs
-        && place(&body, cwd, cx) == Place::Inside
-        && expand(&body, cwd, cx).is_some_and(|p| {
+    !climbs
+        && place(f, cwd, cx) == Place::Inside
+        && expand(f, cwd, cx).is_some_and(|p| {
             match crate::platform::canonicalize(&p) {
                 Ok(real) => real.starts_with(&cx.workspace),
                 // A link that leads nowhere can't be shown to stay inside.
@@ -2347,12 +2364,7 @@ fn github_draft(
                 // Not written yet: the agent writes it in the workspace first.
                 Err(_) => true,
             }
-        });
-    if inside {
-        DRAFT_FILE.set(true);
-    } else {
-        ask(out, &body);
-    }
+        })
 }
 
 fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line: &str) {
@@ -3155,6 +3167,9 @@ mod tests {
             // Stdin from a file reads that file.
             "arakun github draft o/r#7 --verdict comment --body-file - < /home/u/.netrc",
             "arakun github draft o/r#7 --verdict comment --body-file - < $F",
+            // Which `<` is stdin depends on descriptors: all of them count.
+            "arakun github draft o/r#7 --verdict comment --body-file - < /home/u/.netrc 3< review.md",
+            "arakun github draft o/r#7 --verdict comment --body-file - 3< /home/u/.netrc < review.md 0<&3",
         ] {
             all(cmd, [X, X, X]);
         }

@@ -534,6 +534,10 @@ impl UsageView {
     /// Saves the typed management key and reads the proxy's accounts with it.
     fn save_proxy_key(&mut self, cx: &mut Context<Self>) {
         let key = self.proxy_key.read(cx).text().trim().to_string();
+        // The proxy on screen when the key was typed is the one it is for.
+        let Some(base) = self.proxy.as_ref().map(|p| p.base.clone()) else {
+            return;
+        };
         if key.is_empty() || self.proxy_saving {
             return;
         }
@@ -542,7 +546,7 @@ impl UsageView {
         cx.spawn(async move |this, cx| {
             let got = cx
                 .background_spawn(async move {
-                    cliproxy::save_key(&key).map(|()| cliproxy::refresh(true))
+                    cliproxy::save_key(&key, &base).map(|()| cliproxy::refresh(true))
                 })
                 .await;
             let _ = this.update(cx, |v, cx| {

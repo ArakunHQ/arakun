@@ -91,12 +91,12 @@ fn current_base() -> Option<String> {
     management_base(&super::claude_auth::endpoint_url()?)
 }
 
-/// Saves the management key for the proxy Claude Code runs on now, where only
-/// this user can read it.
-pub fn save_key(key: &str) -> Result<()> {
-    let base = current_base().ok_or_else(|| anyhow!("Claude Code no longer runs on a proxy"))?;
+/// Saves the management key for `base`, the proxy the tab showed when the key
+/// was typed (not whatever Claude Code runs on by the time this runs), where
+/// only this user can read it.
+pub fn save_key(key: &str, base: &str) -> Result<()> {
     let saved = SavedKey {
-        base,
+        base: base.to_string(),
         key: key.trim().to_string(),
     };
     crate::durable::write_private(&key_path(), &serde_json::to_vec(&saved)?)?;
@@ -106,21 +106,21 @@ pub fn save_key(key: &str) -> Result<()> {
 /// Whether the key may travel to `base`: over https, or plain http to this
 /// machine. Anything else would send it in the clear.
 fn safe_to_send(base: &str) -> bool {
-    let Some((scheme, rest)) = base.split_once("://") else {
-        return false;
-    };
+    base.starts_with("https://") || (base.starts_with("http://") && loopback(base))
+}
+
+/// Whether `base` is on this machine: "localhost", "127.0.0.1:8317", "[::1]".
+fn loopback(base: &str) -> bool {
+    let rest = base.split_once("://").map_or(base, |(_, r)| r);
     let host = rest.split('/').next().unwrap_or_default();
-    // "[::1]:8317", "127.0.0.1:8317", "localhost".
     let host = match host.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or_default(),
         None => host.rsplit_once(':').map_or(host, |(h, _)| h),
     };
-    scheme == "https"
-        || (scheme == "http"
-            && (host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())))
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// At most `n` characters of `s`, cut on a character boundary.
@@ -234,10 +234,17 @@ impl From<anyhow::Error> for Failure {
 
 /// The proxy's Claude accounts and each one's windows.
 fn read(base: &str, key: &str) -> Result<Vec<Account>, Failure> {
-    let files = management(base, key, "/auth-files", None)?;
+    read_with(|path, body| management(base, key, path, body))
+}
+
+/// [`read`] with the management calls passed in: `call(path, body)`.
+fn read_with(
+    mut call: impl FnMut(&str, Option<&str>) -> Result<Value, Failure>,
+) -> Result<Vec<Account>, Failure> {
+    let files = call("/auth-files", None)?;
     let mut accounts = Vec::new();
     for (index, name) in claude_accounts(&files) {
-        let call = serde_json::json!({
+        let body = serde_json::json!({
             "auth_index": index,
             "method": "GET",
             "url": plan::ENDPOINT,
@@ -247,12 +254,12 @@ fn read(base: &str, key: &str) -> Result<Vec<Account>, Failure> {
             },
         })
         .to_string();
-        let got = management(base, key, "/api-call", Some(&call))
-            .map_err(|f| match f {
-                Failure::Refused(m) => anyhow!(m),
-                Failure::Other(e) => e,
-            })
-            .and_then(|answer| account_usage(&answer));
+        let got = match call("/api-call", Some(&body)) {
+            Ok(answer) => account_usage(&answer),
+            // The key stopped working: stop, rather than send it once per account.
+            Err(refused @ Failure::Refused(_)) => return Err(refused),
+            Err(Failure::Other(e)) => Err(e),
+        };
         let (usage, error) = match got {
             Ok(u) => (Some(u), None),
             Err(e) => (None, Some(format!("{e:#}"))),
@@ -270,7 +277,9 @@ fn management(base: &str, key: &str, path: &str, body: Option<&str>) -> Result<V
     if body.is_some() {
         headers.push(("Content-Type", "application/json".into()));
     }
-    let (out, status) = plan::http_with(&format!("{base}{path}"), body, &headers, "")?;
+    let url = format!("{base}{path}");
+    // A proxy in the environment would see the key in the clear on its way here.
+    let (out, status) = plan::http_status(&url, body, &headers, loopback(base))?;
     let json: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
     let msg = json["error"].as_str().unwrap_or_default();
     match status {
@@ -498,6 +507,32 @@ mod tests {
             let (p, read) = decide(base.into(), Some("k"), None, 1_000, true, never);
             assert!(!read && p.error.is_some(), "{base}");
         }
+    }
+
+    #[test]
+    fn a_key_refused_midway_is_not_sent_to_the_other_accounts() {
+        let mut calls = Vec::new();
+        let got = read_with(|path, _| {
+            calls.push(path.to_string());
+            match path {
+                "/auth-files" => Ok(json!({"files": [
+                    {"auth_index": "a", "provider": "claude", "email": "a@example.com"},
+                    {"auth_index": "b", "provider": "claude", "email": "b@example.com"},
+                ]})),
+                _ => Err(Failure::Refused("refused".into())),
+            }
+        });
+        assert!(matches!(got, Err(Failure::Refused(_))));
+        assert_eq!(calls, ["/auth-files", "/api-call"]);
+    }
+
+    #[test]
+    fn only_this_machine_skips_the_environments_proxy() {
+        assert!(loopback(LOCAL));
+        assert!(loopback("http://localhost:8317/v0/management"));
+        assert!(loopback("http://[::1]:8317/v0/management"));
+        assert!(!loopback("https://proxy.example.com/v0/management"));
+        assert!(!loopback("http://127.0.0.1.example.com/v0/management"));
     }
 
     #[test]

@@ -549,12 +549,35 @@ pub(crate) fn http(url: &str, post: Option<&str>, headers: &[(&str, String)]) ->
 
 /// curl with `extra` (write-out variables) printed after the body: the
 /// output and the HTTP status, whatever it is.
-pub(crate) fn http_with(
+fn http_with(
     url: &str,
     post: Option<&str>,
     headers: &[(&str, String)],
     extra: &str,
 ) -> Result<(String, u32)> {
+    curl(&curl_config(url, post, headers, extra, false))
+}
+
+/// The body and the HTTP status, whatever it is. `direct` goes past any
+/// proxy in the environment (`http_proxy`): for a server on this machine,
+/// whose headers no proxy should see.
+pub(crate) fn http_status(
+    url: &str,
+    post: Option<&str>,
+    headers: &[(&str, String)],
+    direct: bool,
+) -> Result<(String, u32)> {
+    curl(&curl_config(url, post, headers, "", direct))
+}
+
+/// curl's config: the flags and headers it reads from stdin.
+fn curl_config(
+    url: &str,
+    post: Option<&str>,
+    headers: &[(&str, String)],
+    extra: &str,
+    direct: bool,
+) -> String {
     let mut config = format!(
         "url = \"{url}\"\nsilent\nshow-error\nmax-time = 20\nwrite-out = \"{}\\n%{{http_code}}\"\n",
         extra.replace('"', "\\\"")
@@ -573,6 +596,14 @@ pub(crate) fn http_with(
             body.replace('\\', "\\\\").replace('"', "\\\"")
         ));
     }
+    if direct {
+        config.push_str("noproxy = \"*\"\n");
+    }
+    config
+}
+
+/// Runs curl with `config` on stdin, so tokens never sit in the process list.
+fn curl(config: &str) -> Result<(String, u32)> {
     let mut child = crate::platform::command("curl")
         .args(["--config", "-"])
         .stdin(std::process::Stdio::piped())
@@ -879,6 +910,15 @@ mod tests {
         let back: Seats = serde_json::from_str(&json).unwrap();
         assert_eq!(back, seats);
         assert_eq!(back.borrowed.as_ref().unwrap().windows[0].percent, 100);
+    }
+
+    #[test]
+    fn a_direct_call_skips_the_environments_proxy() {
+        let headers = [("Authorization", "Bearer k".to_string())];
+        let direct = curl_config("http://127.0.0.1:8317/x", None, &headers, "", true);
+        assert!(direct.contains("noproxy = \"*\"\n"));
+        let normal = curl_config(ENDPOINT, None, &headers, "", false);
+        assert!(!normal.contains("noproxy"));
     }
 
     #[test]

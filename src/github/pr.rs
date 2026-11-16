@@ -133,12 +133,18 @@ impl ItemRef {
         format!("{}#{}", self.repo, self.number)
     }
 
+    /// Its web address on the host `gh` talks to, which is where `-R
+    /// owner/name` finds it: with `GH_HOST` set, not github.com.
     pub fn url(&self) -> String {
+        self.url_on(&gh_host())
+    }
+
+    fn url_on(&self, host: &str) -> String {
         let page = match self.kind {
             ItemKind::Pull => "pull",
             ItemKind::Issue => "issues",
         };
-        format!("https://github.com/{}/{page}/{}", self.repo, self.number)
+        format!("https://{host}/{}/{page}/{}", self.repo, self.number)
     }
 
     /// The `gh` subcommand family: `gh pr …` or `gh issue …`.
@@ -2365,7 +2371,7 @@ pub struct DraftArgs {
 pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--head <sha>] [--agent <name>]";
 
 /// The host `gh` reads `-R owner/name` on: `GH_HOST` when set, else GitHub.
-fn gh_host() -> String {
+pub fn gh_host() -> String {
     std::env::var("GH_HOST")
         .ok()
         .map(|h| h.trim().to_string())
@@ -2660,17 +2666,22 @@ mod tests {
 
         let it = item(ItemKind::Pull);
         assert_eq!(
-            (it.label().as_str(), it.url().as_str()),
+            (it.label().as_str(), it.url_on("github.com").as_str()),
             (
                 "ArakunHQ/arakun#41",
                 "https://github.com/ArakunHQ/arakun/pull/41"
             )
         );
         assert_eq!(
-            item(ItemKind::Issue).url(),
+            item(ItemKind::Issue).url_on("github.com"),
             "https://github.com/ArakunHQ/arakun/issues/41"
         );
-        assert_eq!(ItemRef::from_url(&it.url()), Some(it));
+        // With GH_HOST on GitHub Enterprise, the address names that host.
+        assert_eq!(
+            it.url_on("ghe.corp"),
+            "https://ghe.corp/ArakunHQ/arakun/pull/41"
+        );
+        assert_eq!(ItemRef::from_url(&it.url_on("github.com")), Some(it));
     }
 
     #[test]

@@ -2112,6 +2112,20 @@ pub fn file_item(path: &Path, rel: String, line: Option<u32>) -> Item {
     })
 }
 
+/// What a copied GitHub link opens. A pull request or issue opens in the
+/// GitHub view only when the link is on the host `gh` talks to: `gh` reads
+/// `owner/name#n` there, and with `GH_HOST` set to another host that is a
+/// different item. Any other link opens in the browser.
+fn clip_target(url: &str, link: &clip::GitHubLink, host: &str) -> Target {
+    match link {
+        clip::GitHubLink::Pull { .. } | clip::GitHubLink::Issue { .. } => {
+            crate::github::pr::ItemRef::from_url_on(url, host)
+                .map_or_else(|| Target::Url(url.to_string()), Target::Pull)
+        }
+        _ => Target::Url(url.to_string()),
+    }
+}
+
 fn card_item(card: &Card) -> Item {
     let key = match card {
         Card::Clip(_) => "card:clip",
@@ -2125,19 +2139,9 @@ fn card_item(card: &Card) -> Item {
         Card::Confirm(..) => "card:confirm",
     };
     let target = match card {
-        Card::Clip(clip::Clip::GitHub { url, link }) => match link {
-            clip::GitHubLink::Pull { repo, number } => Target::Pull(crate::github::pr::ItemRef {
-                repo: repo.clone(),
-                number: *number,
-                kind: crate::github::pr::ItemKind::Pull,
-            }),
-            clip::GitHubLink::Issue { repo, number } => Target::Pull(crate::github::pr::ItemRef {
-                repo: repo.clone(),
-                number: *number,
-                kind: crate::github::pr::ItemKind::Issue,
-            }),
-            _ => Target::Url(url.clone()),
-        },
+        Card::Clip(clip::Clip::GitHub { url, link }) => {
+            clip_target(url, link, &crate::github::pr::gh_host())
+        }
         Card::Clip(clip::Clip::Error(e)) => Target::FixError(e.clone()),
         Card::Remember(_) => Target::Memory,
         _ => Target::Nothing,
@@ -2318,6 +2322,26 @@ fn lookup_repos(items: &[Item], repos: &[(String, String)], narrowed: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copied_github_link_opens_in_the_view_only_on_the_gh_host() {
+        let url = "https://github.com/o/r/pull/7";
+        let link = clip::github_link(url).unwrap();
+        assert!(matches!(
+            clip_target(url, &link, "github.com"),
+            Target::Pull(r) if r.repo == "o/r" && r.number == 7
+        ));
+        // `gh` talks to an Enterprise host: o/r#7 there is another item.
+        assert!(matches!(
+            clip_target(url, &link, "ghe.corp"),
+            Target::Url(u) if u == url
+        ));
+        let issue = "https://github.com/o/r/issues/3";
+        assert!(matches!(
+            clip_target(issue, &clip::github_link(issue).unwrap(), "github.com"),
+            Target::Pull(r) if r.kind == crate::github::pr::ItemKind::Issue
+        ));
+    }
 
     fn pull(repo: &str, project: Option<&str>, n: u64) -> Item {
         Item::new(

@@ -1685,6 +1685,12 @@ fn find_close(rest: &str, close: &str, spans: bool) -> Option<usize> {
     while at + close.len() <= bytes.len() {
         if spans && bytes[at] == b'`' {
             at += code_span_len(&rest[at..]);
+        } else if let Some(len) = (spans && bytes[at] == b'<')
+            .then(|| html_code_len(&rest[at..]))
+            .flatten()
+        {
+            // Its backticks are text, so they can't start a code span.
+            at += len;
         } else if bytes[at..at + close.len()].eq_ignore_ascii_case(close.as_bytes()) {
             return Some(at);
         } else {
@@ -1692,6 +1698,19 @@ fn find_close(rest: &str, close: &str, spans: bool) -> Option<usize> {
         }
     }
     None
+}
+
+/// How long the whole `<code>` or `<kbd>` element at the start of `rest`
+/// is, with its closing tag. `None` if it isn't one or doesn't close.
+fn html_code_len(rest: &str) -> Option<usize> {
+    let (name, closing, _, len) = html_tag(rest)?;
+    let close = match (name.as_str(), closing) {
+        ("code", false) => "</code>",
+        ("kbd", false) => "</kbd>",
+        _ => return None,
+    };
+    let end = find_close(&rest[len..], close, false)?;
+    Some(len + end + close.len())
 }
 
 /// An `<img>` someone put in the text (a screenshot) as a markdown image.
@@ -2505,6 +2524,11 @@ mod tests {
         );
         // In `<code>` a backtick is text.
         assert_eq!(without_html("<code>`</code> `b`"), "`` ` `` `b`");
+        // Nor does it start a code span that hides the closing tag.
+        assert_eq!(
+            without_html("<a href=\"x\"><code>`</code></a> <code>`</code>"),
+            "[`` ` ``](<x>) `` ` ``"
+        );
     }
 
     #[test]

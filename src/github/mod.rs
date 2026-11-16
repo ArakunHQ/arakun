@@ -20,19 +20,12 @@ pub mod queue;
 
 /// How many notifications one read asks for.
 const PER_PAGE: usize = 50;
-/// The least time between two reads Arakun starts on its own (polls, the
-/// window coming back, the tab opening, a list it shows): GitHub's API is
-/// for clients, and reading it often looks like scraping. Only a Refresh the
-/// user asks for reads sooner.
-const MIN_GAP: Duration = Duration::from_secs(150);
-const POLL_ACTIVE: Duration = MIN_GAP;
+/// The least time between two inbox reads Arakun starts on its own, while
+/// the window is active. GitHub's `X-Poll-Interval` can ask for more, never less.
+const POLL_ACTIVE: Duration = Duration::from_secs(60);
 const POLL_IDLE: Duration = Duration::from_secs(300);
-/// Data older than this is read again when the window comes back.
-const STALE: Duration = MIN_GAP;
 /// How many pull requests or issues are read at once for the queue.
 const DETAILS_AT_ONCE: usize = 3;
-/// How long a failed read of an item waits before a poll may try it again.
-const DETAILS_RETRY: Duration = MIN_GAP;
 /// The pulse changes slowly and its query is heavy: read it this often.
 const PULSE_EVERY: Duration = Duration::from_secs(300);
 /// How far back a mention still counts.
@@ -537,7 +530,7 @@ pub fn parse_repo_pulls(json: &[u8]) -> Result<Vec<RepoPull>, Problem> {
 }
 
 /// How long a repository's open pull requests are reused before reading them again.
-const REPO_PULLS_FRESH: Duration = MIN_GAP;
+const REPO_PULLS_FRESH: Duration = Duration::from_secs(60);
 
 fn gh_out(args: &[&str]) -> Result<Vec<u8>, Problem> {
     // These calls name no repository, so gh runs away from any checkout: a
@@ -559,14 +552,65 @@ fn gh_out(args: &[&str]) -> Result<Vec<u8>, Problem> {
 }
 
 /// The newest notifications: the unread ones, or with `all` the read ones too.
-pub fn list(all: bool) -> Result<Vec<Notification>, Problem> {
+/// Also how long GitHub asks clients to wait before the next read, when it says.
+pub fn list(all: bool) -> Result<(Vec<Notification>, Option<Duration>), Problem> {
     let mut path = format!("notifications?per_page={PER_PAGE}");
     if all {
         path.push_str("&all=true");
     }
-    let out = gh_out(&["api", &path])?;
-    serde_json::from_slice(&out)
-        .map_err(|e| Problem::Other(format!("unexpected answer from gh: {e}")))
+    let out = gh_out(&["api", "--include", &path])?;
+    let (interval, body) = split_response(&out);
+    let list = serde_json::from_slice(body)
+        .map_err(|e| Problem::Other(format!("unexpected answer from gh: {e}")))?;
+    Ok((list, interval))
+}
+
+/// Splits what `gh api --include` prints into the `X-Poll-Interval` header
+/// and the body. Output without headers is all body.
+fn split_response(out: &[u8]) -> (Option<Duration>, &[u8]) {
+    if !out.starts_with(b"HTTP/") {
+        return (None, out);
+    }
+    // gh ends each header line with CRLF; take a bare LF too.
+    let blank = out
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| (i, 4))
+        .or_else(|| out.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2)));
+    let Some((at, len)) = blank else {
+        return (None, out);
+    };
+    let interval = String::from_utf8_lossy(&out[..at])
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if !name.trim().eq_ignore_ascii_case("x-poll-interval") {
+                return None;
+            }
+            value.trim().parse().ok().map(Duration::from_secs)
+        });
+    (interval, &out[at + len..])
+}
+
+/// How long to wait between automatic inbox reads: what GitHub asks for, but
+/// never less than `POLL_ACTIVE`, or `POLL_IDLE` when the window is inactive.
+fn poll_gap(asked: Option<Duration>, window_active: bool) -> Duration {
+    let floor = if window_active {
+        POLL_ACTIVE
+    } else {
+        POLL_IDLE
+    };
+    asked.map_or(floor, |a| a.max(floor))
+}
+
+/// How long the poll sleeps: until `gap` has passed since the last read
+/// started, or a whole `gap` when it has already (a read is running, or none
+/// is allowed), so the loop never spins.
+fn poll_wait(since_start: Option<Duration>, gap: Duration) -> Duration {
+    match since_start {
+        Some(e) if e < gap => gap - e,
+        _ => gap,
+    }
 }
 
 pub fn mark_thread_read(id: &str) -> Result<(), Problem> {
@@ -675,9 +719,11 @@ fn details_settled<'a>(entries: &[queue::Entry], read: impl Fn(&str) -> DetailRe
 }
 
 /// Whether to read an item's details: not yet asked at this date, or the last
-/// read failed a while ago.
-fn ask_details(asked: bool, failed_ago: Option<Duration>) -> bool {
-    !asked || failed_ago.is_some_and(|d| d >= DETAILS_RETRY)
+/// read failed. Once per inbox read at most (`tried_since_poll`): a failure
+/// isn't retried in a loop while offline, and new activity on an item waits
+/// for the next poll like the inbox does.
+fn ask_details(asked: bool, failed: bool, tried_since_poll: bool) -> bool {
+    !tried_since_poll && (!asked || failed)
 }
 
 // ---------------------------------------------------------------------------
@@ -729,14 +775,15 @@ pub struct GitHub {
     show_all: bool,
     loaded: bool,
     busy: bool,
-    /// A read was asked for while one was going; another follows it.
+    /// The user asked for a read while one was going; another follows it.
     again: bool,
     problem: Option<Problem>,
     /// Why the last "mark read" didn't reach GitHub.
     mark_problem: Option<Problem>,
-    last_fetch: Option<Instant>,
     /// When the last read started: the gap between reads counts from here.
     last_start: Option<Instant>,
+    /// How long GitHub asked to wait between reads (`X-Poll-Interval`).
+    poll_interval: Option<Duration>,
     seen: Option<Seen>,
     /// Threads marked read here (id → `updated_at`): a read that started before
     /// GitHub knew would bring them back.
@@ -751,9 +798,11 @@ pub struct GitHub {
     search_problem: Option<Problem>,
     /// Pull requests and issues read for the queue and the item view, by `queue::key_of`.
     details: HashMap<String, queue::Details>,
-    /// Every open pull request of the projects' repositories, by `owner/name`,
-    /// and when it was read.
-    repo_pulls: HashMap<String, (Instant, Vec<RepoPull>)>,
+    /// Every open pull request of the projects' repositories, by `owner/name`.
+    repo_pulls: HashMap<String, Vec<RepoPull>>,
+    /// When each repository's open pull requests were last asked for, read or
+    /// not: a repository that always fails isn't read on every palette open.
+    repo_pulls_started: HashMap<String, Instant>,
     /// Repositories whose open pull requests are being read.
     repo_pulls_busy: HashSet<String>,
     /// The entry's `updated_at` when its details were last asked for, so a
@@ -761,8 +810,8 @@ pub struct GitHub {
     asked_at: HashMap<String, String>,
     fetching: HashSet<String>,
     detail_problems: HashMap<String, Problem>,
-    /// When an item's last read failed, so a later poll tries it again.
-    failed_at: HashMap<String, Instant>,
+    /// When an item's last read started: it is read once per inbox read at most.
+    tried_at: HashMap<String, Instant>,
     queue: queue::Queue,
     activity: Option<Vec<pulse::Activity>>,
     /// Why the last pulse read failed; cleared by one that works.
@@ -794,13 +843,17 @@ impl GitHub {
             loop {
                 let polled = this.update(cx, |this, cx| {
                     if this.polls() {
-                        this.refresh_if_stale(MIN_GAP, cx);
+                        this.refresh_if_stale(cx);
                     }
                 });
                 if polled.is_err() {
                     break;
                 }
-                let Ok(wait) = this.read_with(cx, |this, _| this.poll_interval()) else {
+                // Sleeps until the next read is due, counted from the last
+                // one, so a Refresh in between doesn't make a tick miss.
+                let Ok(wait) = this.read_with(cx, |this, _| {
+                    poll_wait(this.last_start.map(|t| t.elapsed()), this.poll_gap())
+                }) else {
                     break;
                 };
                 cx.background_executor().timer(wait).await;
@@ -816,8 +869,8 @@ impl GitHub {
             again: false,
             problem: None,
             mark_problem: None,
-            last_fetch: None,
             last_start: None,
+            poll_interval: None,
             seen: None,
             read_marks: HashMap::new(),
             settings: load(),
@@ -828,11 +881,12 @@ impl GitHub {
             search_problem: None,
             details: HashMap::new(),
             repo_pulls: HashMap::new(),
+            repo_pulls_started: HashMap::new(),
             repo_pulls_busy: HashSet::new(),
             asked_at: HashMap::new(),
             fetching: HashSet::new(),
             detail_problems: HashMap::new(),
-            failed_at: HashMap::new(),
+            tried_at: HashMap::new(),
             queue: queue::Queue::default(),
             activity: None,
             pulse_problem: None,
@@ -856,15 +910,11 @@ impl GitHub {
             self.settings.opened = true;
             store(&self.settings);
         }
-        self.refresh_if_stale(MIN_GAP, cx);
+        self.refresh_if_stale(cx);
     }
 
-    fn poll_interval(&self) -> Duration {
-        if self.window_active {
-            POLL_ACTIVE
-        } else {
-            POLL_IDLE
-        }
+    fn poll_gap(&self) -> Duration {
+        poll_gap(self.poll_interval, self.window_active)
     }
 
     /// `ARAKUN_GITHUB=off`: nothing is read (tests, screenshots of a dev build).
@@ -937,17 +987,20 @@ impl GitHub {
         let was = self.window_active;
         self.window_active = active;
         if active && !was && self.polls() {
-            self.refresh_if_stale(STALE, cx);
+            self.refresh_if_stale(cx);
             // Views read what may have changed on disk meanwhile (a review draft).
             cx.notify();
         }
     }
 
-    /// Reads again when the last read is older than `max_age`, and never
-    /// sooner than `MIN_GAP` after it.
-    pub fn refresh_if_stale(&mut self, max_age: Duration, cx: &mut Context<Self>) {
-        let max_age = max_age.max(MIN_GAP);
-        if self.last_start.is_none_or(|t| t.elapsed() >= max_age) {
+    /// A read Arakun starts on its own: only when the last one started at
+    /// least the poll gap ago (GitHub's `X-Poll-Interval`), and not while one
+    /// runs, since that one is fresh.
+    fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
+        // Counted with the active gap: coming back to the window may read
+        // sooner than the idle poll would.
+        let gap = poll_gap(self.poll_interval, true);
+        if !self.busy && self.last_start.is_none_or(|t| t.elapsed() >= gap) {
             self.refresh(cx);
         }
     }
@@ -975,7 +1028,7 @@ impl GitHub {
                         let me = s.spawn(|| pr::me().ok());
                         let unread = list(false);
                         let all = (want_all && unread.is_ok())
-                            .then(|| list(true).ok())
+                            .then(|| list(true).ok().map(|(all, _)| all))
                             .flatten();
                         let found = searches.join().unwrap_or_else(|_| {
                             (
@@ -990,7 +1043,6 @@ impl GitHub {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
-                this.last_fetch = Some(Instant::now());
                 if me.is_some() {
                     this.me = me;
                 }
@@ -999,8 +1051,11 @@ impl GitHub {
                 this.searched = true;
                 this.search_problem = search_problem;
                 match unread {
-                    Ok(raw) => {
+                    Ok((raw, interval)) => {
                         this.problem = None;
+                        if interval.is_some() {
+                            this.poll_interval = interval;
+                        }
                         this.loaded = true;
                         let fresh = this.take_unread(raw);
                         if let Some(all) = all.filter(|_| this.show_all) {
@@ -1019,8 +1074,9 @@ impl GitHub {
                 this.refresh_pulse(false, cx);
                 this.fetch_avatars(cx);
                 cx.notify();
+                // Only a person sets it: they asked, so it reads at once.
                 if std::mem::take(&mut this.again) {
-                    this.refresh_if_stale(MIN_GAP, cx);
+                    this.refresh(cx);
                 }
             });
         })
@@ -1053,19 +1109,20 @@ impl GitHub {
     }
 
     /// Reads the open pull requests of `repos` (`owner/name`) that weren't
-    /// read in the last minute, in the background.
+    /// asked for in the last minute, in the background.
     pub fn refresh_repo_pulls(&mut self, repos: Vec<String>, cx: &mut Context<Self>) {
         if Self::disabled() {
             return;
         }
         for repo in repos {
             let fresh = self
-                .repo_pulls
+                .repo_pulls_started
                 .get(&repo)
-                .is_some_and(|(at, _)| at.elapsed() < REPO_PULLS_FRESH);
+                .is_some_and(|at| at.elapsed() < REPO_PULLS_FRESH);
             if fresh || !self.repo_pulls_busy.insert(repo.clone()) {
                 continue;
             }
+            self.repo_pulls_started.insert(repo.clone(), Instant::now());
             cx.spawn(async move |this, cx| {
                 let r = repo.clone();
                 let read = cx
@@ -1088,7 +1145,7 @@ impl GitHub {
                 let _ = this.update(cx, |g, cx| {
                     g.repo_pulls_busy.remove(&repo);
                     if let Ok(list) = read {
-                        g.repo_pulls.insert(repo, (Instant::now(), list));
+                        g.repo_pulls.insert(repo, list);
                         cx.notify();
                     }
                 });
@@ -1101,7 +1158,7 @@ impl GitHub {
     pub fn repo_pulls(&self) -> impl Iterator<Item = (&str, &RepoPull)> {
         self.repo_pulls
             .iter()
-            .flat_map(|(repo, (_, list))| list.iter().map(move |p| (repo.as_str(), p)))
+            .flat_map(|(repo, list)| list.iter().map(move |p| (repo.as_str(), p)))
     }
 
     /// Every pull request or issue read in full, with its reference: the
@@ -1369,8 +1426,13 @@ impl GitHub {
             let Some(item) = e.item.clone() else { continue };
             let key = queue::key_of(&item);
             let asked = self.asked_at.get(&key) == Some(&e.updated_at);
-            let failed_ago = self.failed_at.get(&key).map(Instant::elapsed);
-            if self.fetching.contains(&key) || !ask_details(asked, failed_ago) {
+            let failed = self.detail_problems.contains_key(&key);
+            // Read since this inbox read started; before any, every read counts.
+            let tried_since_poll = self
+                .tried_at
+                .get(&key)
+                .is_some_and(|&t| self.last_start.is_none_or(|s| t >= s));
+            if self.fetching.contains(&key) || !ask_details(asked, failed, tried_since_poll) {
                 continue;
             }
             if self
@@ -1394,6 +1456,7 @@ impl GitHub {
         if !self.fetching.insert(key.clone()) {
             return;
         }
+        self.tried_at.insert(key.clone(), Instant::now());
         cx.notify();
         cx.spawn(async move |this, cx| {
             let read = cx
@@ -1413,13 +1476,11 @@ impl GitHub {
                 match read {
                     Ok(d) => {
                         this.detail_problems.remove(&key);
-                        this.failed_at.remove(&key);
                         this.details.insert(key, d);
                     }
                     Err(p) => {
                         // Not retried here, which would loop while the
-                        // network is down; a later poll asks again.
-                        this.failed_at.insert(key.clone(), Instant::now());
+                        // network is down; the next poll asks again.
                         this.detail_problems.insert(key, p);
                     }
                 }
@@ -1510,7 +1571,8 @@ impl GitHub {
         self.mark_all_read(vec![id.to_string()], cx);
     }
 
-    /// Marks each of `ids` read, then reads the inbox again.
+    /// Marks each of `ids` read here and on GitHub. The inbox is read again
+    /// only if the poll gap allows; the marks already show.
     pub fn mark_all_read(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
         let ids = self.mark_locally(&ids);
         if ids.is_empty() {
@@ -1532,7 +1594,7 @@ impl GitHub {
                     this.read_marks.remove(id);
                 }
                 this.mark_problem = failed.into_iter().next().map(|(_, p)| p);
-                this.refresh_if_stale(MIN_GAP, cx);
+                this.refresh_if_stale(cx);
                 cx.notify();
             });
         })
@@ -1545,27 +1607,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_failed_detail_read_is_tried_again_later() {
-        assert!(ask_details(false, None));
-        assert!(!ask_details(true, None));
-        // Not at once, which would loop while offline; on a later poll.
-        assert!(!ask_details(true, Some(Duration::from_secs(1))));
-        assert!(ask_details(true, Some(DETAILS_RETRY)));
+    fn an_item_is_read_at_most_once_per_poll() {
+        assert!(ask_details(false, false, false));
+        assert!(!ask_details(true, false, false));
+        // A failure isn't retried at once, which would loop while offline,
+        // but on the next poll, whatever time the failure took.
+        assert!(!ask_details(true, true, true));
+        assert!(ask_details(true, true, false));
+        // New activity on an item read this poll waits for the next one.
+        assert!(!ask_details(false, false, true));
     }
 
     #[test]
-    fn nothing_reads_github_on_its_own_more_often_than_every_150_s() {
-        assert!(MIN_GAP >= Duration::from_secs(150));
-        for gap in [
-            POLL_ACTIVE,
-            POLL_IDLE,
-            STALE,
-            DETAILS_RETRY,
-            REPO_PULLS_FRESH,
-            PULSE_EVERY,
-        ] {
-            assert!(gap >= MIN_GAP, "{gap:?}");
-        }
+    fn the_poll_obeys_github_s_poll_interval() {
+        let s = Duration::from_secs;
+        assert_eq!(poll_gap(None, true), POLL_ACTIVE);
+        assert_eq!(poll_gap(None, false), POLL_IDLE);
+        assert_eq!(poll_gap(Some(s(120)), true), s(120));
+        // Never more often than before, whatever GitHub says.
+        assert_eq!(poll_gap(Some(s(10)), true), POLL_ACTIVE);
+        assert_eq!(poll_gap(Some(s(120)), false), POLL_IDLE);
+    }
+
+    #[test]
+    fn the_poll_sleeps_until_the_next_read_is_due() {
+        let s = Duration::from_secs;
+        // A Refresh at 100 s moves the next read to 160 s, not 200 s.
+        assert_eq!(poll_wait(Some(s(0)), s(60)), s(60));
+        assert_eq!(poll_wait(Some(s(20)), s(60)), s(40));
+        // Due, or a read still running: a whole gap, never a spin.
+        assert_eq!(poll_wait(Some(s(60)), s(60)), s(60));
+        assert_eq!(poll_wait(Some(s(90)), s(60)), s(60));
+        assert_eq!(poll_wait(None, s(60)), s(60));
+    }
+
+    #[test]
+    fn reads_github_s_poll_interval_from_the_headers() {
+        let out =
+            b"HTTP/2.0 200 OK\r\nContent-Type: application/json\r\nX-Poll-Interval: 60\r\n\r\n[]";
+        assert_eq!(
+            split_response(out),
+            (Some(Duration::from_secs(60)), &b"[]"[..])
+        );
+        let out = b"HTTP/1.1 200 OK\nx-poll-interval: 90\n\n[1]";
+        assert_eq!(
+            split_response(out),
+            (Some(Duration::from_secs(90)), &b"[1]"[..])
+        );
+        let out = b"HTTP/2.0 200 OK\r\nEtag: x\r\n\r\n[]";
+        assert_eq!(split_response(out), (None, &b"[]"[..]));
+        // Without headers, all of it is the body.
+        assert_eq!(split_response(b"[]"), (None, &b"[]"[..]));
     }
 
     #[test]
@@ -1947,7 +2039,8 @@ mod tests {
     #[ignore]
     fn reads_the_real_inbox() {
         for all in [false, true] {
-            let list = list(all).unwrap_or_else(|p| panic!("{}", p.text()));
+            let (list, interval) = list(all).unwrap_or_else(|p| panic!("{}", p.text()));
+            println!("X-Poll-Interval: {interval:?}");
             for n in &list {
                 assert!(
                     !n.id.is_empty() && !n.repository.full_name.is_empty(),

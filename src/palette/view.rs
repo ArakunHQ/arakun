@@ -403,6 +403,12 @@ impl Palette {
                                 .text_color(theme::text_subtle())
                                 .child(e)
                                 .into_any_element(),
+                            // Claude finished without a word: say so, or the
+                            // spinner below would turn forever.
+                            None if done && text.is_empty() => kit::answer_text()
+                                .text_color(theme::text_subtle())
+                                .child("Claude gave no answer.")
+                                .into_any_element(),
                             // Faint text alone read as an empty input box, so the
                             // wait gets the app's spinner and a label that breathes.
                             None if text.is_empty() => kit::answer_text()

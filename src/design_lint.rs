@@ -331,10 +331,13 @@ fn problems(line: &str) -> Vec<String> {
     }
     // The brand stops at SemiBold (600); nothing heavier is bundled.
     for weight in ["BOLD", "EXTRA_BOLD", "BLACK"] {
-        if line.contains(&format!("FontWeight::{weight})"))
-            || line.contains(&format!("FontWeight::{weight},"))
-        {
-            found.push(format!("FontWeight::{weight}: use SEMIBOLD or lighter"));
+        let name = format!("FontWeight::{weight}");
+        // The whole name only: `BOLD` must not match `BOLDER` or the like.
+        let whole = line.match_indices(&name).any(|(i, _)| {
+            !line[i + name.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        });
+        if whole {
+            found.push(format!("{name}: use SEMIBOLD or lighter"));
         }
     }
     found
@@ -391,6 +394,8 @@ fn the_lint_catches_what_it_should() {
     assert!(problems(".font_family(theme::FONT_MONO)").is_empty());
     assert_eq!(problems(".font_weight(FontWeight::BOLD)").len(), 1);
     assert_eq!(problems("weight: gpui::FontWeight::EXTRA_BOLD,").len(), 1);
+    assert_eq!(problems("let w = FontWeight::BLACK;").len(), 1);
+    assert_eq!(problems("FontWeight::BOLD }").len(), 1);
     assert!(problems(".font_weight(FontWeight::SEMIBOLD)").is_empty());
     assert!(problems(".bg(theme::mix(0.8))").is_empty());
     assert!(problems(".text_size(px(ui::TEXT_SM))").is_empty());

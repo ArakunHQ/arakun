@@ -324,17 +324,19 @@ fn problems(line: &str) -> Vec<String> {
     for v in numbers_after(line, ".text_size(px(") {
         found.push(format!("text size {v}: use ui::TEXT_* or .ty(Type::…)"));
     }
+    // Code only, so a comment can't trip these and a raw string can't hide.
+    let code = &code_only(line);
     // The brand has two faces, so any other name is off-brand and these two
     // are spelled once, in theme.
-    if line.contains(".font_family(\"") {
+    if code.contains(".font_family(\"") {
         found.push("font by name: use theme::FONT_SANS / FONT_MONO".into());
     }
     // The brand stops at SemiBold (600); nothing heavier is bundled.
     for weight in ["BOLD", "EXTRA_BOLD", "BLACK"] {
         let name = format!("FontWeight::{weight}");
         // The whole name only: `BOLD` must not match `BOLDER` or the like.
-        let whole = line.match_indices(&name).any(|(i, _)| {
-            !line[i + name.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        let whole = code.match_indices(&name).any(|(i, _)| {
+            !code[i + name.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
         });
         if whole {
             found.push(format!("{name}: use SEMIBOLD or lighter"));
@@ -396,6 +398,12 @@ fn the_lint_catches_what_it_should() {
     assert_eq!(problems("weight: gpui::FontWeight::EXTRA_BOLD,").len(), 1);
     assert_eq!(problems("let w = FontWeight::BLACK;").len(), 1);
     assert_eq!(problems("FontWeight::BOLD }").len(), 1);
+    // A weight alone on its line, as in a call split over lines.
+    assert_eq!(problems("                FontWeight::BOLD").len(), 1);
+    // Comments don't count; a raw string still does.
+    assert!(problems(".flex() // not .font_family(\"Caveat\")").is_empty());
+    assert!(problems(".flex() /* FontWeight::BOLD */").is_empty());
+    assert_eq!(problems(".font_family(r\"Caveat\")").len(), 1);
     assert!(problems(".font_weight(FontWeight::SEMIBOLD)").is_empty());
     assert!(problems(".bg(theme::mix(0.8))").is_empty());
     assert!(problems(".text_size(px(ui::TEXT_SM))").is_empty());

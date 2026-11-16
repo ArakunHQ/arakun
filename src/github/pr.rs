@@ -2085,6 +2085,37 @@ fn delete_draft_in(dir: &Path, item: &ItemRef) -> std::io::Result<()> {
     }
 }
 
+/// Removes the draft only if it is still `posted`. The file is taken first, so
+/// checking and removing are one step: a draft saved meanwhile lands on the
+/// name, not on the file taken, and one taken by mistake goes back.
+fn delete_draft_if_in(dir: &Path, posted: &Draft) -> std::io::Result<()> {
+    use std::io::ErrorKind;
+    let path = draft_file(dir, &posted.repo, posted.number);
+    let mut taken = std::ffi::OsString::from(".");
+    taken.push(path.file_name().unwrap_or_default());
+    taken.push(format!(".{}.posted", std::process::id()));
+    let taken = dir.join(taken);
+    match std::fs::rename(&path, &taken) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(()) => {}
+    }
+    let held = std::fs::read(&taken)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Draft>(&b).ok());
+    if held.as_ref() != Some(posted) {
+        // Back where it was, unless a newer draft took the name meanwhile.
+        match std::fs::hard_link(&taken, &path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            // No hard links here (FAT, some network drives): move it back.
+            Err(_) if !path.exists() => return std::fs::rename(&taken, &path),
+            Err(e) => return Err(e),
+        }
+    }
+    std::fs::remove_file(&taken)
+}
+
 /// Keeps the draft, in place of any earlier one for the same pull request.
 pub fn save_draft(draft: &Draft) -> std::io::Result<()> {
     save_draft_in(&drafts_dir(), draft)
@@ -2097,6 +2128,11 @@ pub fn load_draft(item: &ItemRef) -> Option<Draft> {
 /// Removes the draft; fine when there is none.
 pub fn delete_draft(item: &ItemRef) -> std::io::Result<()> {
     delete_draft_in(&drafts_dir(), item)
+}
+
+/// Removes the draft once posted, unless a new one replaced it meanwhile.
+pub fn delete_draft_if(posted: &Draft) -> std::io::Result<()> {
+    delete_draft_if_in(&drafts_dir(), posted)
 }
 
 /// Whether the pull request got new commits after the draft was written, so
@@ -3822,13 +3858,22 @@ mod tests {
             ..draft.clone()
         };
         save_draft_in(&dir, &again).unwrap();
-        assert_eq!(load_draft_in(&dir, &pr), Some(again));
+        assert_eq!(load_draft_in(&dir, &pr), Some(again.clone()));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 
         // The stored form names the verdict the way the command line does.
         let text = std::fs::read_to_string(draft_file(&dir, "ArakunHQ/arakun", 41)).unwrap();
         assert!(text.contains("\"verdict\": \"approve\""), "{text}");
         assert!(draft_file(&dir, "ArakunHQ/arakun", 41).ends_with("arakunhq_arakun#41.json"));
+
+        // Once posted, only the draft that was posted goes.
+        delete_draft_if_in(&dir, &draft).unwrap();
+        assert_eq!(load_draft_in(&dir, &pr), Some(again.clone()));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        delete_draft_if_in(&dir, &again).unwrap();
+        assert_eq!(load_draft_in(&dir, &pr), None);
+        delete_draft_if_in(&dir, &again).unwrap();
+        save_draft_in(&dir, &again).unwrap();
 
         delete_draft_in(&dir, &pr).unwrap();
         assert_eq!(load_draft_in(&dir, &pr), None);

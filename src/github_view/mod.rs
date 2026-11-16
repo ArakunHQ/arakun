@@ -937,9 +937,7 @@ impl GitHubView {
                 this.confirm = None;
                 // An agent (or an edit) may have saved a new draft while this
                 // one was sent: that one wasn't posted, so it stays.
-                if pr::load_draft(&draft.item()).as_ref() == Some(&draft) {
-                    let _ = pr::delete_draft(&draft.item());
-                }
+                let _ = pr::delete_draft_if(&draft);
                 if this.draft.as_ref() == Some(&draft) {
                     this.draft = None;
                 }
@@ -1054,14 +1052,46 @@ impl GitHubView {
         text: &str,
         st: MdStyle,
     ) -> gpui::AnyElement {
+        self.markdown_with(id, text, st, true)
+    }
+
+    /// A draft as it will be posted: its HTML, comments too, stays as text,
+    /// so nothing in it is hidden from the one who posts it.
+    fn markdown_as_written(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        text: &str,
+        st: MdStyle,
+    ) -> gpui::AnyElement {
+        self.markdown_with(id, text, st, false)
+    }
+
+    fn markdown_with(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        text: &str,
+        st: MdStyle,
+        tidy: bool,
+    ) -> gpui::AnyElement {
         let mut md = self.md.borrow_mut();
         // Bodies of items looked at long ago: parsing again is cheap next to keeping them all.
         if md.len() > 400 {
             md.clear();
         }
+        let key = if tidy {
+            text.to_string()
+        } else {
+            format!("\0{text}")
+        };
         let blocks = md
-            .entry(text.to_string())
-            .or_insert_with(|| Rc::new(markdown::parse(&without_html(text))))
+            .entry(key)
+            .or_insert_with(|| {
+                Rc::new(markdown::parse(&if tidy {
+                    without_html(text)
+                } else {
+                    text.to_string()
+                }))
+            })
             .clone();
         markdown::render(
             id,

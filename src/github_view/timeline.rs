@@ -742,7 +742,7 @@ impl GitHubView {
                     .child(self.body_input.clone())
                     .into_any_element()
             } else {
-                self.markdown("gh-draft-body", &draft.body, body_style())
+                self.markdown_as_written("gh-draft-body", &draft.body, body_style())
             };
             let accent = theme::accent();
             rows.push((

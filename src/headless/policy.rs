@@ -275,6 +275,8 @@ struct Simple {
     words: Vec<String>,
     /// Targets of `>`, `>>`, `&>`…
     writes: Vec<String>,
+    /// Sources of `<`.
+    reads: Vec<String>,
     heredoc: Option<String>,
 }
 
@@ -288,6 +290,8 @@ struct Script {
 enum Redirect {
     Write,
     Read,
+    /// `<<<`: the word itself is the input.
+    Here,
 }
 
 struct Lexer {
@@ -330,7 +334,8 @@ impl Lexer {
         self.in_word = false;
         match self.redirect.take() {
             Some(Redirect::Write) => self.cur.writes.push(word),
-            Some(Redirect::Read) => {}
+            Some(Redirect::Read) => self.cur.reads.push(word),
+            Some(Redirect::Here) => {}
             None => self.cur.words.push(word),
         }
     }
@@ -515,7 +520,7 @@ impl Lexer {
                         self.i += 1;
                         if self.peek(0) == Some('<') {
                             self.i += 1;
-                            self.redirect = Some(Redirect::Read);
+                            self.redirect = Some(Redirect::Here);
                             continue;
                         }
                         let strip = self.peek(0) == Some('-');
@@ -1216,7 +1221,12 @@ fn script(src: &str, cwd: &mut Option<PathBuf>, cx: &Ctx, out: &mut Vec<Finding>
             simple(cmd, cwd, cx, out, depth, &piped);
         } else {
             let mut cmd = cmd.clone();
-            for w in cmd.words.iter_mut().chain(cmd.writes.iter_mut()) {
+            for w in cmd
+                .words
+                .iter_mut()
+                .chain(cmd.writes.iter_mut())
+                .chain(cmd.reads.iter_mut())
+            {
                 *w = substitute(w, &vars);
             }
             simple(&cmd, cwd, cx, out, depth, &piped);
@@ -1571,7 +1581,7 @@ fn simple(
                     Some("search" | "get" | "list" | "context")
                 ) => {}
             Some("github") if args.get(1) == Some(&"draft") => {
-                github_draft(&args, cwd.as_deref(), cx, out, &line)
+                github_draft(&args, cmd.reads.last(), cwd.as_deref(), cx, out, &line)
             }
             Some("agent")
                 if matches!(
@@ -2209,8 +2219,15 @@ fn paths_in(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>,
 /// `arakun github draft` only writes a local draft, and posting it takes the
 /// user. But what the draft quotes reaches GitHub once posted, so its text must
 /// be the agent's own: stdin (`-`) or a file in the workspace. Any other file
-/// (a key, a token) asks, symlinks followed.
-fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line: &str) {
+/// (a key, a token) asks, symlinks followed, also when it comes in on `<`.
+fn github_draft(
+    args: &[&str],
+    stdin: Option<&String>,
+    cwd: Option<&Path>,
+    cx: &Ctx,
+    out: &mut Vec<Finding>,
+    line: &str,
+) {
     let ask = |out: &mut Vec<Finding>, body: &str| {
         out.push(always(
             "pone en un borrador de GitHub un archivo fuera del espacio de trabajo",
@@ -2244,9 +2261,13 @@ fn github_draft(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Findi
             ));
         }
     };
-    if body == "-" {
-        return;
-    }
+    // `--body-file - < f` reads f all the same, so judge it as that file.
+    let body = match (body.as_str(), stdin) {
+        ("-", None) => return,
+        ("-", Some(f)) if f.contains(['*', '?', '[', '{', '$']) => return ask(out, f),
+        ("-", Some(f)) => f.clone(),
+        _ => body,
+    };
     // `..` is resolved after symlinks when the file is opened, but lexically
     // here, so `link/../x` could pass for a workspace file. Don't guess.
     let climbs = Path::new(&body)
@@ -3071,6 +3092,9 @@ mod tests {
             "cat docs/review.md && arakun github draft o/r#7 --verdict comment --body-file docs/review.md",
             "X=review.md; export X=/home/u/.netrc; arakun github draft o/r#7 --verdict comment --body-file $X",
             "env -C /home/u arakun github draft o/r#7 --verdict comment --body-file .netrc",
+            // Stdin from a file reads that file.
+            "arakun github draft o/r#7 --verdict comment --body-file - < /home/u/.netrc",
+            "arakun github draft o/r#7 --verdict comment --body-file - < $F",
         ] {
             all(cmd, [X, X, X]);
         }
@@ -3080,6 +3104,14 @@ mod tests {
         );
         all(
             "echo LGTM | arakun github draft o/r#7 --verdict approve --body-file -",
+            [A, A, A],
+        );
+        all(
+            "arakun github draft o/r#7 --verdict approve --body-file - --agent Claude < docs/review.md",
+            [A, A, A],
+        );
+        all(
+            "arakun github draft o/r#7 --verdict approve --body-file - <<< LGTM",
             [A, A, A],
         );
         all(

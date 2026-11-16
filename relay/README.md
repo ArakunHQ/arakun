@@ -124,7 +124,10 @@ A single Worker serves every computer:
 1. DNS: a proxied `*` record (CNAME, or AAAA `100::`).
 2. Worker route `*.<domain>/*`, excluding `www.<domain>/*` and `<domain>/*` so the
    landing page stays where it is.
-3. `npx wrangler deploy` under the normal name (`arakun-relay`).
+3. `npx wrangler deploy` under the normal name (`arakun-relay`). For `arakun.dev` itself
+   this is `[env.production]` in `wrangler.toml`, which `.github/workflows/relay-deploy.yml`
+   deploys when a change to `relay/` or `phone/` lands on `main` (or by hand from the
+   Actions tab). The deploy's message names the commit.
 4. A zone rate-limiting rule (one rule is free) on `/ws` and `/pc` per IP, so nobody can
    open labels or connections without limit.
 

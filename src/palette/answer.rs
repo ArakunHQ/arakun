@@ -403,7 +403,6 @@ fn too_slow(limit: Duration) -> String {
 /// prompt, its user message and its model), with no tools, settings, MCP
 /// servers or saved session: just the model, on the user's Claude account.
 fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::Child, String> {
-    use std::io::Write as _;
     let bin = crate::agent::claude_code_binary().ok_or_else(no_key)?;
     let mut cmd = crate::platform::command(&bin);
     cmd.args([
@@ -447,10 +446,32 @@ fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::
         .as_str()
         .unwrap_or_default()
         .to_string();
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prompt.as_bytes());
-    }
+    feed(&mut child, prompt)?;
     Ok(child)
+}
+
+/// Writes `input` to the child's stdin on its own thread and closes it after,
+/// which is the child's end of input. Written here, a prompt larger than the
+/// pipe holds would block until the child reads it, before the caller has
+/// recorded the child for its time limit and for a stop. A write that fails
+/// ends the thread when the child exits or is stopped.
+fn feed(child: &mut Child, input: String) -> Result<(), String> {
+    use std::io::Write as _;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Ok(());
+    };
+    let fed = std::thread::Builder::new()
+        .name("palette-prompt".into())
+        .spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
+    if let Err(e) = fed {
+        // Without its prompt it would wait on stdin with no limit set yet.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("could not start Claude Code ({e})"));
+    }
+    Ok(())
 }
 
 /// One line of Claude Code's `stream-json` output as an answer event.
@@ -690,5 +711,27 @@ mod tests {
         assert!(watch.timed_out());
         assert!(!exists(pid));
         assert!(too_slow(RULE_LIMIT).contains("30 s"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_large_prompt_does_not_hold_up_the_start() {
+        // `sleep` never reads stdin: a write of more than a pipe holds would
+        // block here, before the process could be given its limit.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let t = Instant::now();
+        feed(&mut child, "x".repeat(4 << 20)).unwrap();
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert!(child.stdin.is_none());
+        let (_job, watch) = job();
+        let proc = watch.started(child, ANSWER_LIMIT).unwrap();
+        let pid = proc.child.id();
+        // Stopping it ends the writer too, with a broken pipe.
+        drop(proc);
+        assert!(!exists(pid));
     }
 }

@@ -352,6 +352,10 @@ impl UsageView {
                 if this
                     .update(cx, |v, cx| {
                         if v.proxy != proxy {
+                            // A key typed for the old proxy must not be saved for the new one.
+                            if proxy_switched(v.proxy.as_ref(), proxy.as_ref()) {
+                                v.proxy_key.update(cx, |i, cx| i.set_text("", cx));
+                            }
                             v.proxy = proxy;
                             cx.notify();
                         }
@@ -1809,9 +1813,33 @@ impl UsageView {
     }
 }
 
+/// Whether the proxy on screen is now another one (or gone): a key typed in
+/// the field belonged to the old one.
+fn proxy_switched(old: Option<&cliproxy::Proxy>, new: Option<&cliproxy::Proxy>) -> bool {
+    old.is_some_and(|o| new.is_none_or(|n| n.base != o.base))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_key_is_dropped_when_the_proxy_changes() {
+        let at = |base: &str| {
+            let mut p = cliproxy::Proxy::default();
+            p.base = base.into();
+            p
+        };
+        let a = at("http://127.0.0.1:8317/v0/management");
+        let b = at("https://gw.example.com/v0/management");
+        assert!(proxy_switched(Some(&a), Some(&b)));
+        assert!(proxy_switched(Some(&a), None));
+        // A first read, or a new read of the same proxy, keeps what was typed.
+        assert!(!proxy_switched(None, Some(&a)));
+        let mut a2 = a.clone();
+        a2.at = 99;
+        assert!(!proxy_switched(Some(&a), Some(&a2)));
+    }
 
     fn record(at: u64, agent: AgentKind, cwd: &str, model: &str, input: u64) -> Record {
         Record {

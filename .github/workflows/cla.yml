@@ -7,7 +7,8 @@ name: CLA
 #
 # When it runs:
 # - pull_request_target: a pull request was opened or got new commits, which
-#   may have new authors.
+#   may have new authors. After a push or a close, the old head commit may
+#   still be the head of another open pull request, so it is checked again.
 # - issue_comment: someone signed or asked for a "recheck".
 # - workflow_dispatch: by hand, for one pull request or, with no number, for
 #   every open one.
@@ -21,7 +22,7 @@ on:
   # Safe as the comment above says; zizmor can't see that no job checks out
   # the pull request.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, closed]
   issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
   workflow_dispatch:
@@ -32,12 +33,9 @@ on:
 
 permissions: {}
 
-# One run per pull request at a time, so a quick push and a signature don't
-# set the status out of order. Signatures from different pull requests can
-# still land at once; the script retries when the file changed under it.
-concurrency:
-  group: cla-${{ github.event.pull_request.number || github.event.issue.number || 'dispatch' }}
-  cancel-in-progress: false
+# No concurrency group: GitHub cancels a pending run when a newer one joins
+# the group, which would drop a signature. Runs overlap instead; the script
+# checks again whenever the signatures changed while it was checking.
 
 jobs:
   cla:

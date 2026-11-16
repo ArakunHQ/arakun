@@ -7,8 +7,9 @@
 // GitHub user id, which stays the same when they rename their account.
 //
 // The result is a commit status on the head commit, not the job's own check,
-// because a run from a comment can't put a check on the pull request. A
-// comment on the pull request says who still has to sign and how.
+// because a run from a comment can't put a check on the pull request. A status
+// belongs to the commit, so it covers every open pull request with that head.
+// A comment on each pull request says who still has to sign and how.
 //
 // This runs with a write token on pull requests from forks. It reads the pull
 // request only through the API and never runs its code. Keep it that way.
@@ -71,8 +72,8 @@ export function unsigned(users, signatures) {
   return [...users].filter(([id]) => !signed.has(id)).map(([id, login]) => ({ id, login }));
 }
 
-export function commentBody({ missing, unknown, claUrl }) {
-  if (missing.length === 0 && unknown.length === 0) {
+export function commentBody({ missing, unknown, truncated = false, claUrl }) {
+  if (missing.length === 0 && unknown.length === 0 && !truncated) {
     return `${MARKER}\nEveryone in this pull request has signed the [CLA](${claUrl}). Thank you!\n`;
   }
   const lines = [
@@ -99,6 +100,12 @@ export function commentBody({ missing, unknown, claUrl }) {
       ...unknown.map((u) => `- ${u.sha.slice(0, 7)} (${u.name.replace(/[`@<>[\]]/g, "")})`),
       "",
       "Add the email to your GitHub account, or rewrite the commits with an email that is on it.",
+      "",
+    );
+  }
+  if (truncated) {
+    lines.push(
+      "This pull request has more than 250 commits, and GitHub lists only the first 250, so the authors of the rest can't be checked. Squash it into fewer commits, or ask a maintainer to check them by hand.",
       "",
     );
   }
@@ -130,6 +137,8 @@ async function gh(method, path, body) {
         ...(body ? { "content-type": "application/json" } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      // The signature file is read again to spot changes; never from a cache.
+      cache: "no-store",
     });
     if (res.ok) return res.status === 204 ? null : res.json();
     if (attempt < 3 && (res.status >= 500 || res.status === 429)) {
@@ -190,45 +199,76 @@ async function addSignature(user, comment, prNumber, repoId) {
   }
 }
 
-async function check(number, signatures, claUrl) {
-  const pr = await gh("GET", `/repos/${REPO}/pulls/${number}`);
-  if (pr.state !== "open") {
-    console.log(`#${number}: closed, skipped.`);
-    return;
-  }
-  // This endpoint lists at most 250 commits. A pull request that big is
-  // reviewed by hand anyway.
-  const commits = await paged(`/repos/${REPO}/pulls/${number}/commits`);
-  const { users, unknown } = signers(pr, commits);
-  const missing = unsigned(users, signatures);
+/** The commits GitHub lists for a pull request, and whether that is all of them. */
+async function review(pr) {
+  // GitHub lists at most 250 commits here. The rest can't be checked, so the
+  // check fails rather than pass on the commits it saw.
+  const commits = await paged(`/repos/${REPO}/pulls/${pr.number}/commits`);
+  return { pr, ...signers(pr, commits), truncated: commits.length < pr.commits };
+}
 
-  let state = "success";
-  let description = "Everyone has signed the CLA.";
+/**
+ * The status for a commit that is the head of every pull request in `results`.
+ * A status belongs to the commit, not the pull request, so it passes only if
+ * it passes for each of them.
+ */
+export function verdict(results) {
+  const missing = [...new Set(results.flatMap((r) => r.missing.map((m) => m.login)))];
   if (missing.length > 0) {
-    state = "failure";
-    description = `Still to sign the CLA: ${missing.map((m) => m.login).join(", ")}`;
-  } else if (unknown.length > 0) {
-    state = "failure";
-    description = "Some commit authors have no GitHub account; see the comment.";
+    const description = `Still to sign the CLA: ${missing.join(", ")}`;
+    return { state: "failure", description: description.length > 140 ? `${description.slice(0, 137)}...` : description };
   }
-  if (description.length > 140) description = `${description.slice(0, 137)}...`;
-  await gh("POST", `/repos/${REPO}/statuses/${pr.head.sha}`, {
-    state,
-    context: CONTEXT,
-    description,
-    target_url: process.env.RUN_URL || undefined,
-  });
-  console.log(`#${number} ${pr.head.sha}: ${state}, ${description}`);
+  if (results.some((r) => r.unknown.length > 0)) {
+    return { state: "failure", description: "Some commit authors have no GitHub account; see the comment." };
+  }
+  if (results.some((r) => r.truncated)) {
+    return { state: "failure", description: "Over 250 commits: GitHub doesn't list them all, so check the authors by hand." };
+  }
+  return { state: "success", description: "Everyone has signed the CLA." };
+}
 
+async function updateComment(result, claUrl) {
+  const { number } = result.pr;
   // Only comment on a pull request that needs it, and once there is a comment,
   // keep it current, so it says "signed" after the last signature.
   const comments = await paged(`/repos/${REPO}/issues/${number}/comments`);
   const ours = comments.find((c) => c.user.login === "github-actions[bot]" && c.body.startsWith(MARKER));
-  const body = commentBody({ missing, unknown, claUrl });
+  const body = commentBody({ ...result, claUrl });
   if (ours) {
     if (ours.body !== body) await gh("PATCH", `/repos/${REPO}/issues/comments/${ours.id}`, { body });
-  } else if (state !== "success") {
+  } else if (verdict([result]).state !== "success") {
     await gh("POST", `/repos/${REPO}/issues/${number}/comments`, { body });
+  }
+}
+
+/** Sets the status of `sha` from the open pull requests that have it as their head. */
+async function check(sha, open, claUrl) {
+  const prs = open.filter((p) => p.head.sha === sha);
+  if (prs.length === 0) {
+    console.log(`${sha}: the head of no open pull request, skipped.`);
+    return;
+  }
+  const reviews = await Promise.all(prs.map(review));
+  // Runs don't wait for each other, so another run may record a signature
+  // while this one checks. After posting, look at the file again: if it
+  // changed, check again, so the last status posted saw the newest file.
+  let before = await readSignatures();
+  for (let attempt = 1; ; attempt++) {
+    const results = reviews.map((r) => ({ ...r, missing: unsigned(r.users, before.data) }));
+    const { state, description } = verdict(results);
+    await gh("POST", `/repos/${REPO}/statuses/${sha}`, {
+      state,
+      context: CONTEXT,
+      description,
+      target_url: process.env.RUN_URL || undefined,
+    });
+    console.log(`${sha} (${prs.map((p) => `#${p.number}`).join(", ")}): ${state}, ${description}`);
+    for (const result of results) await updateComment(result, claUrl);
+
+    const after = await readSignatures();
+    if (after.sha === before.sha) return;
+    if (attempt === 5) throw new Error(`${sha}: the signatures kept changing; run the check again.`);
+    before = after;
   }
 }
 
@@ -239,47 +279,50 @@ async function main() {
   const server = process.env.GITHUB_SERVER_URL || "https://github.com";
   const repo = event.repository ?? (await gh("GET", `/repos/${REPO}`));
   const claUrl = `${server}/${REPO}/blob/${repo.default_branch}/CLA.md`;
+  const open = await paged(`/repos/${REPO}/pulls?state=open`);
+  const all = () => open.map((p) => p.head.sha);
 
-  let numbers;
+  // The commits whose status may change.
+  let shas;
   if (name === "pull_request_target") {
-    numbers = [event.pull_request.number];
+    // After a push or a close, the old head may still be the head of another
+    // open pull request, whose status no longer has to include this one.
+    shas = [event.pull_request.head.sha, event.before];
   } else if (name === "issue_comment") {
     if (!event.issue.pull_request) return;
     const { comment } = event;
-    numbers = [event.issue.number];
+    const pr = await gh("GET", `/repos/${REPO}/pulls/${event.issue.number}`);
+    shas = [pr.head.sha];
     if (signs(comment.body)) {
       // Only someone this pull request needs can sign here, so a comment
       // can't sign for someone else.
-      const pr = await gh("GET", `/repos/${REPO}/pulls/${event.issue.number}`);
-      const commits = await paged(`/repos/${REPO}/pulls/${event.issue.number}/commits`);
-      if (signers(pr, commits).users.has(comment.user.id)) {
-        if (await addSignature(comment.user, comment, event.issue.number, repo.id)) {
+      if ((await review(pr)).users.has(comment.user.id)) {
+        if (await addSignature(comment.user, comment, pr.number, repo.id)) {
           console.log(`@${comment.user.login} signed the CLA.`);
           // Their other open pull requests were waiting for this too.
-          numbers = (await paged(`/repos/${REPO}/pulls?state=open`)).map((p) => p.number);
+          shas = all();
         }
       } else {
-        console.log(`@${comment.user.login} doesn't need to sign for #${event.issue.number}; ignored.`);
+        console.log(`@${comment.user.login} doesn't need to sign for #${pr.number}; ignored.`);
       }
     } else if (!rechecks(comment.body)) {
       return;
     }
   } else if (name === "workflow_dispatch") {
-    const pr = (process.env.PR ?? "").trim();
-    if (pr && !/^[0-9]+$/.test(pr)) throw new Error(`Not a pull request number: ${pr}`);
-    numbers = pr ? [Number(pr)] : (await paged(`/repos/${REPO}/pulls?state=open`)).map((p) => p.number);
+    const number = (process.env.PR ?? "").trim();
+    if (number && !/^[0-9]+$/.test(number)) throw new Error(`Not a pull request number: ${number}`);
+    shas = number ? [(await gh("GET", `/repos/${REPO}/pulls/${number}`)).head.sha] : all();
   } else {
     throw new Error(`Unexpected event: ${name}`);
   }
 
-  const { data: signatures } = await readSignatures();
   let failed = false;
-  for (const number of numbers) {
+  for (const sha of new Set(shas.filter((s) => /^[0-9a-f]{40}$/.test(s ?? "") && !/^0+$/.test(s)))) {
     try {
-      await check(number, signatures, claUrl);
+      await check(sha, open, claUrl);
     } catch (e) {
       // One broken pull request must not leave the others unchecked.
-      console.log(`::error::#${number}: ${e.message}`);
+      console.log(`::error::${sha}: ${e.message}`);
       failed = true;
     }
   }

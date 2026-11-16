@@ -767,6 +767,41 @@ pub fn shortcut_label(text: &str) -> String {
     out
 }
 
+/// Key caps given the Windows and Linux way (`["Ctrl", "⇧", "N"]`), as this
+/// platform shows them: on macOS the symbols in Apple's order (`["⇧", "⌘", "N"]`),
+/// with Ctrl kept for the same keys as `keystroke`.
+pub fn keycaps(keys: &[&str]) -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        mac_keycaps(keys)
+    } else {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+}
+
+fn mac_keycaps(keys: &[&str]) -> Vec<String> {
+    let keep_ctrl = keys
+        .last()
+        .is_some_and(|k| matches!(*k, "Tab" | "`" | "PgUp" | "PgDn"));
+    let mut mods = [false; 4];
+    let mut rest = Vec::new();
+    for k in keys {
+        match *k {
+            "Ctrl" if keep_ctrl => mods[0] = true,
+            "Alt" | "⌥" => mods[1] = true,
+            "Shift" | "⇧" => mods[2] = true,
+            "Ctrl" | "Cmd" | "⌘" => mods[3] = true,
+            k => rest.push(k.to_string()),
+        }
+    }
+    ["⌃", "⌥", "⇧", "⌘"]
+        .iter()
+        .zip(mods)
+        .filter(|(_, on)| *on)
+        .map(|(sym, _)| sym.to_string())
+        .chain(rest)
+        .collect()
+}
+
 /// Whether the platform's command key is the only modifier held besides
 /// Shift: Cmd on macOS, Ctrl elsewhere.
 pub fn command_key(m: &gpui::Modifiers) -> bool {
@@ -1369,6 +1404,17 @@ mod tests {
         assert_eq!(shortcut_label("Alt+↑ / Alt+↓"), "⌥↑ / ⌥↓");
         assert_eq!(shortcut_label("Ctrl+1 … Ctrl+9"), "⌘1 … ⌘9");
         assert_eq!(shortcut_label("Settings"), "Settings");
+    }
+
+    #[test]
+    fn mac_keycaps_use_apple_symbols_and_order() {
+        assert_eq!(mac_keycaps(&["Ctrl", "↵"]), ["⌘", "↵"]);
+        assert_eq!(mac_keycaps(&["Ctrl", "⇧", "N"]), ["⇧", "⌘", "N"]);
+        assert_eq!(mac_keycaps(&["Ctrl", "Alt", "1"]), ["⌥", "⌘", "1"]);
+        assert_eq!(mac_keycaps(&["Ctrl", "Tab"]), ["⌃", "Tab"]);
+        assert_eq!(mac_keycaps(&["Shift", "Tab"]), ["⇧", "Tab"]);
+        assert_eq!(mac_keycaps(&["↑", "↓"]), ["↑", "↓"]);
+        assert_eq!(mac_keycaps(&["Esc"]), ["Esc"]);
     }
 
     #[test]

@@ -1422,10 +1422,6 @@ fn unquote(line: &str, max: usize) -> (&str, usize) {
     (t, n)
 }
 
-/// Stands for a code span over lines while the rest of a paragraph is
-/// read: what is in it is text, and its line breaks must stay.
-const SPAN: char = '\u{E000}';
-
 /// A paragraph with its HTML as markdown, read as one text so a link or
 /// bold that runs over lines keeps its meaning. When a tag took a line
 /// break with it (a `<summary>` over lines), the lines no longer match
@@ -1433,45 +1429,22 @@ const SPAN: char = '\u{E000}';
 fn html_paragraph(para: &[&str]) -> Vec<String> {
     // A line that held only tags is gone, not a blank line: a blank line
     // would end a list or a table around it.
-    let keep = |md: String| (!md.trim().is_empty()).then_some(md);
+    // So is one left with only the `>` of its block quotes.
+    let keep = |line: &str, md: String| {
+        let bare = |s: &str| s.trim_matches([' ', '\t', '>']).is_empty();
+        (!md.trim().is_empty() && !(bare(&md) && !bare(line))).then_some(md)
+    };
     let spans = multiline_spans(para);
     if para.len() > 1 && para.iter().any(|l| l.contains('<')) {
-        let joined = para.join("\n");
-        let mut at = 0;
-        let mut start = 0;
-        let mut ranges = Vec::new();
-        for (line, keep) in para.iter().zip(&spans) {
-            ranges.extend(keep.iter().map(|&(a, b)| (start + a, start + b)));
-            start += line.len() + 1;
-        }
-        // Spans over lines come back one piece per line: join them again.
-        ranges.dedup_by(|b, a| {
-            let joins = a.1 + 1 == b.0;
-            if joins {
-                a.1 = b.1;
-            }
-            joins
-        });
-        // Each span is set aside as a token while the rest is read in one
-        // go: a bold or a link around it stays open over it.
-        let token = |n: usize| format!("{SPAN}{n}{SPAN}");
-        let mut text = String::with_capacity(joined.len());
-        for (n, &(from, to)) in ranges.iter().enumerate() {
-            text.push_str(&joined[at..from]);
-            text.push_str(&token(n));
-            at = to;
-        }
-        text.push_str(&joined[at..]);
-        let mut md = html_inline(&text, false, 0);
-        for (n, &(from, to)) in ranges.iter().enumerate() {
-            md = md.replacen(&token(n), &joined[from..to], 1);
-        }
+        // Read in one go, a bold or a link around a code span over lines
+        // stays open over it; html_inline keeps code spans as they are.
+        let md = html_inline(&para.join("\n"), false, 0);
         let pieces: Vec<&str> = md.split('\n').collect();
         if pieces.len() == para.len() {
             return para
                 .iter()
                 .zip(pieces)
-                .filter_map(|(line, md)| keep(line_end(line, md)))
+                .filter_map(|(line, md)| keep(line, line_end(line, md)))
                 .collect();
         }
     }
@@ -1479,7 +1452,7 @@ fn html_paragraph(para: &[&str]) -> Vec<String> {
         .zip(spans)
         .filter_map(|(line, spans)| {
             if line.contains('<') {
-                keep(html_line(line, &spans))
+                keep(line, html_line(line, &spans))
             } else {
                 Some(line.to_string())
             }
@@ -1763,6 +1736,19 @@ fn picture_img(mut rest: &str) -> Option<&str> {
     None
 }
 
+/// The line breaks in `html`, each with the indent and `>` markers of the
+/// line it starts: a picture over lines in a block quote or a list leaves
+/// its lines in it.
+fn picture_breaks(html: &str) -> String {
+    html.split('\n')
+        .skip(1)
+        .map(|line| {
+            let text = line.trim_start_matches([' ', '\t', '>']);
+            format!("\n{}", &line[..line.len() - text.len()])
+        })
+        .collect()
+}
+
 /// HTML's escapes for code, which a markdown code span would show as typed.
 fn decode_entities(text: &str) -> String {
     text.replace("&lt;", "<")
@@ -1883,9 +1869,8 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
                 Some(end) => {
                     let img = picture_img(&rest[..end]);
                     // Its line breaks stay after it, so the lines of a
-                    // paragraph stay where they were.
-                    let breaks =
-                        "\n".repeat(tag.matches('\n').count() + rest[..end].matches('\n').count());
+                    // paragraph stay where they were, and in their quote.
+                    let breaks = format!("{}{}", picture_breaks(tag), picture_breaks(&rest[..end]));
                     rest = &rest[end + "</picture>".len()..];
                     if let Some(image) = img.and_then(content_image) {
                         out.push_str(&image);
@@ -2528,6 +2513,17 @@ mod tests {
             ),
             "**Risk**"
         );
+        // In a block quote or a list, the lines stay in it.
+        assert_eq!(
+            without_html("> <picture>\n> <img src=\"s.png\">\n> </picture> # caption"),
+            "> ![](<s.png>)\n>  # caption"
+        );
+        assert_eq!(
+            without_html("- a <b>x</b>\n  <picture>\n  <img src=\"s.png\">\n  </picture> # c"),
+            "- a **x**\n  ![](<s.png>)\n   # c"
+        );
+        // HTML code with a code span over lines in it stays one span.
+        assert_eq!(without_html("<code>x `a\nb` y</code>"), "``x `a\nb` y``");
         // A bold around a code span over lines stays bold.
         assert_eq!(
             without_html("<strong>first `a\nb` last</strong>"),

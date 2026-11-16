@@ -1,0 +1,35 @@
+name: GPUI system libraries
+description: >-
+  Installs the system libraries GPUI builds and links against on an Ubuntu
+  runner, from a cache when it can.
+# Cached: the same install took 13 s or 87 s depending on Ubuntu's mirror. The cache
+# keeps only the packages its first runner lacked, so a runner whose image lacks one
+# of the others (libxcb1-dev on Depot, 2026-11-16) would fail to link. The second step
+# installs what is still missing. It asks pkg-config, not dpkg: the cache unpacks files
+# without telling dpkg. Keep the package lists the same.
+runs:
+  using: composite
+  steps:
+    - uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+      with:
+        packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
+        version: 1
+
+    - name: Libraries the cache left out
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        missing=
+        command -v pkg-config >/dev/null || missing=" pkg-config"
+        # PACKAGE:PKG-CONFIG MODULE it provides.
+        for entry in libxkbcommon-dev:xkbcommon libxkbcommon-x11-dev:xkbcommon-x11 \
+          libwayland-dev:wayland-client libx11-xcb-dev:x11-xcb libxcb1-dev:xcb \
+          libfontconfig1-dev:fontconfig libfreetype-dev:freetype2 libvulkan-dev:vulkan \
+          libssl-dev:openssl; do
+          pkg-config --exists "${entry#*:}" || missing="$missing ${entry%%:*}"
+        done
+        [ -z "$missing" ] && exit 0
+        echo "Not in the apt cache:$missing"
+        sudo apt-get update -q
+        sudo apt-get install -y -q --no-install-recommends $missing

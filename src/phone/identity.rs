@@ -121,7 +121,11 @@ mod tests {
         let public = unhex(v["public_key_hex"].as_str().unwrap());
         assert_eq!(public.len(), 65);
         assert_eq!(
-            format!("{:x}", sha2::Sha256::digest(&public)),
+            // sha2 0.11's digest is a hybrid-array, which doesn't format as hex.
+            sha2::Sha256::digest(&public)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
             v["sha256_hex"].as_str().unwrap()
         );
         assert_eq!(label_of(&public), v["label"].as_str().unwrap());

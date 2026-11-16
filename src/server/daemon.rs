@@ -509,6 +509,13 @@ fn tailscale_address(port: u16) -> Address {
     }
 }
 
+/// Whether a file is there. `Path::exists` says "no" when it could not find
+/// out (a folder this user may not look in, a disk that went away), and a
+/// transcript taken for missing gets a new session saved over it.
+fn there(path: &Path) -> std::io::Result<bool> {
+    path.try_exists()
+}
+
 /// What a session is doing. A prompt still waiting for the agent to connect
 /// already counts as work: nobody is looking at a window here to see that it
 /// is on its way, and an agent that reads as idle is let go.
@@ -840,7 +847,12 @@ impl Daemon {
         // A transcript that is there and cannot be read is an error too. A new
         // session in its place would lose the agent's own session to resume,
         // and its saves would end up over the file that could not be read.
-        let thread = if transcript.exists() {
+        let thread = if there(&transcript).map_err(|e| {
+            format!(
+                "the transcript of {id} could not be looked for ({e}); nothing is sent to it until {} can be read",
+                transcript.display()
+            )
+        })? {
             Thread::restore(&transcript, cx).map_err(|e| {
                 format!(
                     "the transcript of {id} could not be read ({e:#}); {} is left as it is",
@@ -2220,6 +2232,23 @@ mod tests {
             relay_address(relay::Status::Rejected("Blocked.".into()), "x"),
             Address::Problem("Blocked.".into())
         );
+    }
+
+    // On Windows a path through a file reads as "not found".
+    #[cfg(unix)]
+    #[test]
+    fn a_transcript_that_cannot_be_looked_for_is_not_a_missing_one() {
+        let dir = std::env::temp_dir().join(format!("arakun-there-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sessions");
+        std::fs::write(&file, b"not a folder").unwrap();
+        assert!(matches!(there(&file), Ok(true)));
+        assert!(matches!(there(&dir.join("none.json")), Ok(false)));
+        // The folder is not one: nothing can be said about what is in it.
+        let inside = file.join("s1-0.json");
+        assert!(!inside.exists());
+        assert!(there(&inside).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

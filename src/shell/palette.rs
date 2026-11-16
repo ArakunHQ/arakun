@@ -305,24 +305,23 @@ impl Shell {
                 self.check_rules(window, cx);
                 self.refresh_automations(cx);
             }
-            PaletteEvent::Merge(item) => {
+            PaletteEvent::Merge { item, head } => {
                 let item = item.clone();
+                // The head the confirmation showed, not the one GitHub shows now:
+                // a push since the person said yes is not merged unseen.
+                let head = head.clone();
                 let weak = palette.downgrade();
-                // Merge the head GitHub last showed for it, so a push since can't be
-                // merged unseen; with none read yet, nothing is merged.
-                let head = self.pull_head(&item, cx);
                 cx.spawn_in(window, async move |this, cx| {
                     let it = item.clone();
-                    let result = match head {
-                        Some(head) => {
-                            cx.background_spawn(async move {
-                                pr::merge(&it, pr::MergeMethod::Squash, &head)
-                            })
-                            .await
-                        }
-                        None => Err(crate::github::Problem::Other(
+                    let result = if head.is_empty() {
+                        Err(crate::github::Problem::Other(
                             "its latest commit isn't loaded yet; open it in the GitHub tab".into(),
-                        )),
+                        ))
+                    } else {
+                        cx.background_spawn(async move {
+                            pr::merge(&it, pr::MergeMethod::Squash, &head)
+                        })
+                        .await
                     };
                     let (text, ok) = match result {
                         Ok(()) => (format!("Merged #{}", item.number), true),
@@ -421,6 +420,17 @@ impl Shell {
             branches,
             sessions,
             read_only: crate::github::read_only(),
+            heads: self
+                .github
+                .read(cx)
+                .all_details()
+                .filter_map(|(r, d)| match d {
+                    crate::github::queue::Details::Pull(p) if !p.head_ref_oid.is_empty() => {
+                        Some((r, p.head_ref_oid.clone()))
+                    }
+                    _ => None,
+                })
+                .collect(),
             agent: if has {
                 self.env().agent.label().to_string()
             } else {

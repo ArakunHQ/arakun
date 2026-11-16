@@ -668,8 +668,8 @@ impl Palette {
                 kit::preview_title(text.clone()).into_any_element(),
                 kit::preview_text("Kept in your to-dos. Type “to-do” or “pendiente” here to see them.").into_any_element(),
             ],
-            Card::Confirm(item, title) => vec![
-                kit::preview_eyebrow("git-merge", format!("{} · #{}", item.repo, item.number)).into_any_element(),
+            Card::Confirm(item, title, head) => vec![
+                kit::preview_eyebrow("git-merge", format!("{} · #{} · {}", item.repo, item.number, super::short_head(head))).into_any_element(),
                 kit::preview_title(title.clone()).into_any_element(),
                 kit::preview_text("Merging writes to GitHub. The Merge button checks it can be merged first and says why when it can't.")
                     .into_any_element(),

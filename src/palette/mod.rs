@@ -98,6 +98,9 @@ pub struct Seed {
     /// (id, title) of every session, for "when X finishes".
     pub sessions: Vec<(String, String)>,
     pub read_only: bool,
+    /// The head commit GitHub last showed for each pull request read in full.
+    /// A merge from here is pinned to the one the confirmation shows.
+    pub heads: HashMap<crate::github::pr::ItemRef, String>,
     /// The agent new sessions start with, as it reads: "Opus 5.5".
     pub agent: String,
     /// The latest failed run per branch.
@@ -137,8 +140,12 @@ pub enum PaletteEvent {
     },
     /// A confirmed automation.
     AddRule(rules::Draft),
-    /// A confirmed merge from the palette.
-    Merge(crate::github::pr::ItemRef),
+    /// A confirmed merge from the palette, of the head commit the
+    /// confirmation showed: a push since then is not merged unseen.
+    Merge {
+        item: crate::github::pr::ItemRef,
+        head: String,
+    },
     PinsChanged,
     /// `#86` with no such pull request listed: look it up in these repositories.
     FindPull {
@@ -199,7 +206,23 @@ pub enum Card {
     Rule(rules::Draft),
     /// "to-do: …": Enter adds it.
     Todo(String),
-    Confirm(crate::github::pr::ItemRef, String),
+    /// A merge to confirm: the pull request, its title and the head commit
+    /// that Enter merges.
+    Confirm(crate::github::pr::ItemRef, String, String),
+}
+
+/// The head commit a merge from the palette is pinned to: the one read when
+/// it opened. None when it wasn't read, so nothing is merged.
+fn head_to_merge(
+    heads: &HashMap<crate::github::pr::ItemRef, String>,
+    item: &crate::github::pr::ItemRef,
+) -> Option<String> {
+    heads.get(item).filter(|h| !h.is_empty()).cloned()
+}
+
+/// A commit as the confirmation names it: its first seven characters.
+fn short_head(head: &str) -> &str {
+    head.get(..7).unwrap_or(head)
 }
 
 /// A row as shown: its item, what matched, and the card it is if it is one.
@@ -270,7 +293,7 @@ pub struct Palette {
     /// The sentence the model is reading as a rule, while it reads.
     reading_rule: Option<String>,
     /// A merge waiting for Enter.
-    confirm: Option<(crate::github::pr::ItemRef, String)>,
+    confirm: Option<(crate::github::pr::ItemRef, String, String)>,
     /// A line under the list after something ran: "Copied", "Read-only…".
     note: Option<(String, bool)>,
     scroll: ScrollHandle,
@@ -617,8 +640,11 @@ impl Palette {
                 self.show_note("Added to your to-dos", true, cx);
                 return;
             }
-            Some(Card::Confirm(item, _)) => {
-                cx.emit(PaletteEvent::Merge(item.clone()));
+            Some(Card::Confirm(item, _, head)) => {
+                cx.emit(PaletteEvent::Merge {
+                    item: item.clone(),
+                    head: head.clone(),
+                });
                 self.confirm = None;
                 self.refilter(cx);
                 return;
@@ -695,7 +721,20 @@ impl Palette {
             );
             return;
         }
-        self.confirm = Some((item, title));
+        // The head is read now, so the confirmation can show what Enter
+        // merges. Unread, nothing is offered to merge.
+        let Some(head) = head_to_merge(&self.seed.heads, &item) else {
+            self.show_note(
+                format!(
+                    "Did not merge #{}: its latest commit isn't loaded yet; open it in the GitHub tab.",
+                    item.number
+                ),
+                false,
+                cx,
+            );
+            return;
+        };
+        self.confirm = Some((item, title, head));
         self.menu = None;
         self.refilter(cx);
         self.selected = 0;
@@ -1593,8 +1632,8 @@ impl Palette {
     /// The cards for this query, in order.
     fn cards(&self, q: &str, cx: &App) -> Vec<Card> {
         let mut out = Vec::new();
-        if let Some((item, title)) = &self.confirm {
-            out.push(Card::Confirm(item.clone(), title.clone()));
+        if let Some((item, title, head)) = &self.confirm {
+            out.push(Card::Confirm(item.clone(), title.clone(), head.clone()));
             return out;
         }
         if !self.pages.is_empty() {
@@ -2405,5 +2444,27 @@ mod tests {
     fn store_paths_follow_the_state_file() {
         // Without ARAKUN_STATE the data dir holds them; the name is kept either way.
         assert!(store_path("pins.json").ends_with("pins.json"));
+    }
+
+    #[test]
+    fn a_merge_is_pinned_to_the_head_read_when_the_palette_opened() {
+        use crate::github::pr::{ItemKind, ItemRef};
+        let pull = |number| ItemRef {
+            repo: "o/r".into(),
+            number,
+            kind: ItemKind::Pull,
+        };
+        let mut heads = HashMap::new();
+        heads.insert(pull(1), "0123456789abcdef".to_string());
+        heads.insert(pull(2), String::new());
+        assert_eq!(
+            head_to_merge(&heads, &pull(1)).as_deref(),
+            Some("0123456789abcdef")
+        );
+        // Unread or empty: nothing to merge.
+        assert_eq!(head_to_merge(&heads, &pull(2)), None);
+        assert_eq!(head_to_merge(&heads, &pull(3)), None);
+        assert_eq!(short_head("0123456789abcdef"), "0123456");
+        assert_eq!(short_head("abc"), "abc");
     }
 }

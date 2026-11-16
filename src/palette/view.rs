@@ -517,7 +517,7 @@ impl Palette {
                     .when(selected, |d| d.child(enter()))
                     .into_any_element(),
             ),
-            Card::Confirm(item, title) => (
+            Card::Confirm(item, title, head) => (
                 Tint::Amber,
                 div()
                     .flex()
@@ -530,7 +530,8 @@ impl Palette {
                         Some(
                             div()
                                 .child(format!(
-                                    "Squash and merge on GitHub ({}). Enter merges, Esc cancels.",
+                                    "Squash and merge {} on GitHub ({}). Enter merges, Esc cancels.",
+                                    super::short_head(head),
                                     item.repo
                                 ))
                                 .into_any_element(),

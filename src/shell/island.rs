@@ -261,13 +261,31 @@ impl Shell {
     /// notification. `open`: what the card's "Ver" shows; without it the card
     /// has no buttons and leaves by itself.
     pub(super) fn notify(&self, kind: AlertKind, title: &str, body: &str, open: Option<Open>) {
+        self.notify_from(kind, title, body, open, None, "");
+    }
+
+    /// A notice with a picture (a file on disk) and the logo of the service it
+    /// comes from (`github`), either of them optional.
+    pub(super) fn notify_from(
+        &self,
+        kind: AlertKind,
+        title: &str,
+        body: &str,
+        open: Option<Open>,
+        image: Option<&std::path::Path>,
+        brand: &str,
+    ) {
         let alert = isl::Alert {
             key: open.map(|o| o.key()).unwrap_or_default(),
             kind,
             title: title.to_string().into(),
             subtitle: brief(body).into(),
             req: SharedString::default(),
-            image: SharedString::default(),
+            image: image
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+                .into(),
+            brand: brand.to_string().into(),
         };
         let shown = self
             .island
@@ -393,6 +411,7 @@ impl Shell {
             subtitle: line.unwrap_or_else(|| one_line(title)).into(),
             req: SharedString::default(),
             image: SharedString::default(),
+            brand: SharedString::default(),
         };
         send_alert(&link.tx, &link.up, alert)
     }
@@ -684,6 +703,7 @@ mod tests {
             subtitle: "5-hour window is filling up".into(),
             req: SharedString::default(),
             image: SharedString::default(),
+            brand: SharedString::default(),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let up = AtomicBool::new(false);

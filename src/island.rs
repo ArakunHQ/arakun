@@ -424,6 +424,10 @@ pub struct Alert {
     /// A picture for a notice's badge (a sender's avatar): a file, empty for none.
     #[serde(default)]
     pub image: SharedString,
+    /// The service a notice comes from (`github`): its logo marks the picture's
+    /// corner, or takes the badge's place when there is no picture.
+    #[serde(default)]
+    pub brand: SharedString,
 }
 
 impl Alert {
@@ -632,7 +636,7 @@ impl CardLayout {
 
     /// The badge's or picture's side, on a notice.
     fn face(alert: &Alert) -> f32 {
-        if alert.image.is_empty() {
+        if alert.image.is_empty() && alert.brand.is_empty() {
             BADGE
         } else {
             AVATAR
@@ -1527,6 +1531,8 @@ impl Island {
                 .into_any_element()
         } else if !a.image.is_empty() {
             avatar(a).into_any_element()
+        } else if !a.brand.is_empty() {
+            brand_face(&a.brand).into_any_element()
         } else {
             badge(a.kind).into_any_element()
         };
@@ -2083,6 +2089,63 @@ fn avatar(alert: &Alert) -> impl IntoElement {
                 .with_priority(1),
             )
         })
+        .when(!tinted && !alert.brand.is_empty(), |d| {
+            d.child(gpui::deferred(brand_mark(&alert.brand)).with_priority(1))
+        })
+}
+
+/// The service's logo file under `icons/`, for a notice's `brand`.
+fn brand_icon(brand: &str) -> Option<&'static str> {
+    match brand {
+        "github" => Some("icons/github.svg"),
+        _ => None,
+    }
+}
+
+/// A notice from a service with no picture of who sent it: the service's
+/// logo, white on black like the island, so it reads at a glance.
+fn brand_face(brand: &str) -> impl IntoElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(AVATAR))
+        .rounded_full()
+        .bg(gpui::white())
+        .when_some(brand_icon(brand), |d, path| {
+            d.child(
+                gpui::svg()
+                    .path(path)
+                    .size(px(20.))
+                    .text_color(gpui::black()),
+            )
+        })
+}
+
+/// The service's logo on a picture's corner, so a GitHub notice and a
+/// teammate's message don't look alike.
+fn brand_mark(brand: &str) -> impl IntoElement {
+    div()
+        .absolute()
+        .right(px(-5.))
+        .bottom(px(-5.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(17.))
+        .rounded_full()
+        .bg(gpui::white())
+        .border_2()
+        .border_color(gpui::black())
+        .when_some(brand_icon(brand), |d, path| {
+            d.child(
+                gpui::svg()
+                    .path(path)
+                    .size(px(10.))
+                    .text_color(gpui::black()),
+            )
+        })
 }
 
 /// A notice's badge: a check for a success, "!" for a warning or a failure, "i" otherwise.
@@ -2438,6 +2501,7 @@ mod tests {
             subtitle: "s".into(),
             req: SharedString::default(),
             image: SharedString::default(),
+            brand: SharedString::default(),
         }
     }
 

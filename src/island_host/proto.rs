@@ -129,6 +129,7 @@ pub fn from_args(args: &[String]) -> Option<ToIsland> {
                     .into(),
                 req: SharedString::default(),
                 image: SharedString::default(),
+                brand: SharedString::default(),
             },
         }),
         ["ver"] => button(Button::Ver),
@@ -258,6 +259,7 @@ mod tests {
                 subtitle: "app · deploy — fix".into(),
                 req: SharedString::default(),
                 image: SharedString::default(),
+                brand: SharedString::default(),
             },
         };
         assert_eq!(decode::<ToIsland>(&encode(&notice)).unwrap(), notice);

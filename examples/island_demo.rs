@@ -101,6 +101,7 @@ mod demo {
             subtitle: subtitle.to_string().into(),
             req: Default::default(),
             image: Default::default(),
+            brand: Default::default(),
         };
         [
             alert(

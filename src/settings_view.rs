@@ -957,10 +957,15 @@ impl SettingsDialog {
         }
         change(&mut p);
         self.palettes.update(p);
+        self.save_palette_later(cx);
+    }
+
+    /// Shows a change now and saves it once changes settle: a slider drag or
+    /// typing a name changes the palette many times a second, and each save
+    /// is a synced write.
+    fn save_palette_later(&mut self, cx: &mut Context<Self>) {
         self.show_palette(cx);
         self.palette_dirty = true;
-        // A slider drag or typing a name changes the palette many times a
-        // second, and each save is a synced write; save once it settles.
         self.palette_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PALETTE_SAVE_DELAY).await;
             let _ = this.update(cx, |this, _| this.flush_palette());
@@ -1401,7 +1406,7 @@ impl SettingsDialog {
         cx: &mut Context<Self>,
     ) {
         change(&mut self.palettes);
-        self.apply_palette(cx);
+        self.save_palette_later(cx);
     }
 
     fn render_shape(&self, cx: &mut Context<Self>) -> AnyElement {

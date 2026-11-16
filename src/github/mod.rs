@@ -292,6 +292,14 @@ pub fn watched(repo: &Repository, watch: &[String]) -> bool {
     })
 }
 
+/// The ids of `list` inside the focus; threads hidden by it stay unread.
+fn unread_ids_in_focus(list: &[Notification], focus: &[String]) -> Vec<String> {
+    list.iter()
+        .filter(|n| in_focus(&n.repository.full_name, focus))
+        .map(|n| n.id.clone())
+        .collect()
+}
+
 /// Whether `repo` (`owner/name`) is inside the focus: an entry `owner` covers
 /// everything of that owner, `owner/repo` that repository alone. An empty
 /// focus covers everything.
@@ -853,9 +861,9 @@ impl GitHub {
         std::env::var("ARAKUN_GITHUB").is_ok_and(|v| v == "off")
     }
 
-    /// The unread notifications, or with `all` the read ones too; newest first.
-    pub fn list(&self, all: bool) -> &[Notification] {
-        if all { &self.all } else { &self.unread }
+    /// The unread threads inside the focus: what "Mark all read" marks.
+    pub fn unread_in_focus(&self) -> Vec<String> {
+        unread_ids_in_focus(&self.unread, &self.settings.focus)
     }
 
     pub fn find(&self, id: &str) -> Option<&Notification> {
@@ -1665,6 +1673,16 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn mark_all_read_keeps_to_the_focus() {
+        let list = [
+            note("1", "PullRequest", "mention", None, "ArakunHQ/arakun", AT),
+            note("2", "PullRequest", "mention", None, "other/repo", AT),
+        ];
+        assert_eq!(unread_ids_in_focus(&list, &[]), ["1", "2"]);
+        assert_eq!(unread_ids_in_focus(&list, &["arakunhq".to_string()]), ["1"]);
     }
 
     #[test]

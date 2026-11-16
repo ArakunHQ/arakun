@@ -751,9 +751,12 @@ impl GitHubView {
             let result = cx.background_spawn(async move { job(&it) }).await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
+                // Another item may be picked now: its confirmation stays, and
+                // the result says which item it is about.
+                let here = this.item().as_ref() == Some(&item);
                 match result {
                     Ok(()) => {
-                        this.note = Some(Note::ok(done));
+                        this.note = Some(Note::ok(about(here, &item, done)));
                         if let Some(id) = &thread {
                             this.github.update(cx, |g, cx| g.mark_read(id, cx));
                         }
@@ -764,15 +767,21 @@ impl GitHubView {
                         after(this, cx);
                     }
                     Err(p) if pr::refused_read_only(&p) => {
-                        this.confirm = None;
+                        if here {
+                            this.confirm = None;
+                        }
                         this.note = Some(Note {
                             ok: false,
                             quiet: true,
-                            text: "Read-only in the test Arakun: nothing was sent.".into(),
+                            text: about(
+                                here,
+                                &item,
+                                "Read-only in the test Arakun: nothing was sent.".into(),
+                            ),
                         });
                     }
                     Err(p) => {
-                        this.note = Some(Note::failed(p.text()));
+                        this.note = Some(Note::failed(about(here, &item, p.text())));
                         // It may have failed because the pull request moved
                         // (a push before a merge): show what it is now.
                         this.github
@@ -945,7 +954,13 @@ impl GitHubView {
             Some(Details::Pull(p)) => p.base_ref_name.clone(),
             _ => String::new(),
         };
-        let clear = |this: &mut Self, _: &mut Context<Self>| this.confirm = None;
+        // The confirmation goes only if its item is still the one picked.
+        let on = self.item();
+        let clear = move |this: &mut Self, _: &mut Context<Self>| {
+            if this.item() == on {
+                this.confirm = None;
+            }
+        };
         match c {
             Confirm::Approve => {
                 let head = self.confirm_head.clone();
@@ -1032,12 +1047,15 @@ impl GitHubView {
             Verdict::Comment => "Review posted.",
         };
         let posted = draft.clone();
+        let on = self.item();
         self.write(
             "post-draft",
             done.into(),
             move |i| pr::post_draft(i, &posted, verdict),
             move |this, _| {
-                this.confirm = None;
+                if this.item() == on {
+                    this.confirm = None;
+                }
                 // An agent (or an edit) may have saved a new draft while this
                 // one was sent: that one wasn't posted, so it stays.
                 let _ = pr::delete_draft_if(&draft);
@@ -1066,7 +1084,10 @@ impl GitHubView {
         if let Some(d) = &mut self.draft {
             d.body = body;
             if let Err(e) = pr::save_draft(d) {
+                // Stay in the editor: the next read would replace the text.
                 self.note = Some(Note::failed(format!("Could not save the draft: {e}")));
+                cx.notify();
+                return;
             }
         }
         self.editing_draft = false;
@@ -1212,18 +1233,44 @@ impl GitHubView {
 
 /// GitHub bodies with the HTML the markdown renderer would show as text:
 /// comments dropped, `<details>` opened, a `<summary>` as a bold line.
+/// Code blocks and code spans are left alone: `<!--` there is text to show.
 fn without_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("<!--") {
-        out.push_str(&rest[..start]);
-        rest = rest[start..]
-            .find("-->")
-            .map_or("", |end| &rest[start + end + 3..]);
+    // Each line out, and whether it is inside a fenced code block.
+    let mut lines: Vec<(String, bool)> = Vec::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut in_comment = false;
+    for line in text.lines() {
+        if let Some((ch, len)) = fence {
+            let t = line.trim_start();
+            if t.len() - t.trim_start_matches(ch).len() >= len
+                && t.trim_start_matches(ch).trim().is_empty()
+            {
+                fence = None;
+            }
+            lines.push((line.to_string(), true));
+            continue;
+        }
+        if !in_comment && let Some(open) = fence_open(line) {
+            fence = Some(open);
+            lines.push((line.to_string(), true));
+            continue;
+        }
+        // A comment that started on an earlier line joins what follows it
+        // to that line, as if the comment had never been there.
+        let joins = in_comment;
+        let kept = strip_comments(line, &mut in_comment);
+        match lines.last_mut() {
+            Some((last, false)) if joins => last.push_str(&kept),
+            _ if joins && kept.is_empty() => {}
+            _ => lines.push((kept, false)),
+        }
     }
-    out.push_str(rest);
-    out.lines()
-        .filter_map(|line| {
+    lines
+        .into_iter()
+        .filter_map(|(line, code)| {
+            if code {
+                return Some(line);
+            }
             let t = line.trim();
             let lower = t.to_ascii_lowercase();
             if matches!(
@@ -1239,10 +1286,85 @@ fn without_html(text: &str) -> String {
                 let inner = &t[9..9 + inner.len()];
                 return Some(format!("**{}**", inner.trim()));
             }
-            Some(line.to_string())
+            Some(line)
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The fence character and length if `line` opens a fenced code block.
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    let t = line.trim_start();
+    if line.len() - t.len() > 3 {
+        return None;
+    }
+    let ch = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let len = t.len() - t.trim_start_matches(ch).len();
+    // A backtick fence's info string can't hold a backtick.
+    (len >= 3 && !(ch == '`' && t[len..].contains('`'))).then_some((ch, len))
+}
+
+/// One line without its HTML comments, keeping code spans as they are.
+/// `in_comment` carries a comment that is still open over to the next line.
+fn strip_comments(line: &str, in_comment: &mut bool) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    loop {
+        if *in_comment {
+            match rest.find("-->") {
+                Some(end) => {
+                    rest = &rest[end + 3..];
+                    *in_comment = false;
+                }
+                None => return out,
+            }
+        }
+        let next = rest.find(['<', '`']);
+        let Some(at) = next else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if rest.starts_with("<!--") {
+            rest = &rest[4..];
+            *in_comment = true;
+        } else if rest.starts_with('`') {
+            let ticks = rest.len() - rest.trim_start_matches('`').len();
+            let run = &rest[..ticks];
+            // The span ends at the next run of exactly as many backticks.
+            let after = &rest[ticks..];
+            let mut from = 0;
+            let close = loop {
+                match after[from..].find(run) {
+                    Some(i) => {
+                        let i = from + i;
+                        let len = after[i..].len() - after[i..].trim_start_matches('`').len();
+                        if len == ticks {
+                            break Some(i);
+                        }
+                        from = i + len;
+                    }
+                    None => break None,
+                }
+            };
+            let end = close.map_or(ticks, |i| ticks + i + ticks);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+        } else {
+            out.push('<');
+            rest = &rest[1..];
+        }
+    }
+}
+
+/// The result of a write, naming its item when another one is picked now.
+fn about(here: bool, item: &ItemRef, text: String) -> String {
+    if here {
+        text
+    } else {
+        format!("{}: {text}", item.label())
+    }
 }
 
 /// The style of bodies in the timeline: reading text, a little smaller than a reply.
@@ -1542,6 +1664,36 @@ mod tests {
         );
         assert_eq!(without_html("plain"), "plain");
         assert_eq!(without_html("a <!-- never closed"), "a ");
+        assert_eq!(without_html("a <!-- two\nlines -->b\nc"), "a b\nc");
+    }
+
+    #[test]
+    fn html_comments_in_code_stay() {
+        let fenced = "```html\n<!-- kept -->\n<details>\n```\nafter <!-- gone -->";
+        assert_eq!(
+            without_html(fenced),
+            "```html\n<!-- kept -->\n<details>\n```\nafter "
+        );
+        let tilde = "~~~~\n<!-- kept\n~~~\n~~~~\nx";
+        assert_eq!(without_html(tilde), tilde);
+        assert_eq!(
+            without_html("Write `<!-- x -->` <!-- gone -->here"),
+            "Write `<!-- x -->` here"
+        );
+        assert_eq!(without_html("``a ` <!-- b``<!-- c -->d"), "``a ` <!-- b``d");
+        // A lone backtick is text, and a comment after it still goes.
+        assert_eq!(without_html("it` <!-- c -->x"), "it` x");
+    }
+
+    #[test]
+    fn a_result_for_another_item_names_it() {
+        let item = ItemRef {
+            repo: "o/r".into(),
+            number: 7,
+            kind: ItemKind::Pull,
+        };
+        assert_eq!(about(true, &item, "Approved.".into()), "Approved.");
+        assert_eq!(about(false, &item, "Approved.".into()), "o/r#7: Approved.");
     }
 
     #[test]

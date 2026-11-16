@@ -567,7 +567,8 @@ impl GitHubView {
     /// The header menu: refresh, mark all read, and the watch list.
     pub(super) fn render_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let g: &GitHub = self.github.read(cx);
-        let to_mark: Vec<String> = g.list(false).iter().map(|n| n.id.clone()).collect();
+        // Only what the focus shows: hidden threads would be marked unseen.
+        let to_mark = g.unread_in_focus();
         let can_mark = !to_mark.is_empty();
         // The same threads, not just as many: one that left and one that
         // arrived would keep the count.

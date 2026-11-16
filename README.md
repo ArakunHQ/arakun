@@ -57,7 +57,8 @@ window, and exposes the same workspace to the agents through a command line.
   requests, mentions and assignments raise an alert; so does anything new in the
   organizations and repositories on your watch list. Click the line under "Review
   queue" to show only some organizations or repositories; the rest doesn't show, count
-  or alert. Arakun reads GitHub in the background only after you open the tab once,
+  or alert. "Mark all read" marks only what that choice shows. Arakun reads GitHub in
+  the background only after you open the tab once,
   and stops while `gh` is missing or signed out. It keeps the watch list, that choice
   and whether you opened the tab in `github.json` next to its state, the days your queue reached zero in
   `github-streak.json`, drafts in `github/drafts/` beside them, and the profile

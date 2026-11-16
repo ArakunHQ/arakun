@@ -42,12 +42,14 @@ jobs:
     # Not "cla-assistant": a check with the required name that passes whenever
     # the job runs would satisfy the ruleset without anyone signing.
     name: CLA signatures
-    # Comments only matter on pull requests. contains() ignores case.
+    # Comments only matter on pull requests. contains() ignores case but not
+    # spacing, so it looks for one word of the sentence; the script matches
+    # the whole sentence with any spacing.
     if: >-
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request &&
         (contains(github.event.comment.body, 'recheck') ||
-         contains(github.event.comment.body, 'hereby sign the CLA')))
+         contains(github.event.comment.body, 'hereby')))
     runs-on: ubuntu-latest
     permissions:
       # Commits to the cla-signatures branch.

@@ -286,7 +286,7 @@ pub struct UsageView {
     projects: Vec<(PathBuf, String)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
-    _poll: [Task<()>; 2],
+    _poll: [Task<()>; 3],
 }
 
 impl EventEmitter<UsageEvent> for UsageView {}
@@ -303,13 +303,12 @@ impl UsageView {
         });
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
-                let (seats, go, access, proxy) = cx
+                let (seats, go, access) = cx
                     .background_spawn(async move {
                         (
                             plan::seats(),
                             opencode_plan::refresh(),
                             claude_auth::access(),
-                            cliproxy::refresh(false),
                         )
                     })
                     .await;
@@ -324,10 +323,6 @@ impl UsageView {
                         let changed = false;
                         // The phone's Claude card names the key or endpoint too.
                         let changed = changed || v.access != access;
-                        if v.proxy != proxy {
-                            v.proxy = proxy;
-                            cx.notify();
-                        }
                         if changed || v.plan != plan || v.go != go {
                             v.access = access;
                             v.plan = plan;
@@ -337,6 +332,27 @@ impl UsageView {
                             }
                             v.go = go;
                             cx.emit(UsageEvent::PlanUpdated);
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(PLAN_POLL).await;
+            }
+        });
+        // Its own task: one read per account can take a while, and the
+        // other plans should not wait for it.
+        let proxy_poll = cx.spawn(async move |this, cx| {
+            loop {
+                let proxy = cx
+                    .background_spawn(async move { cliproxy::refresh(false) })
+                    .await;
+                if this
+                    .update(cx, |v, cx| {
+                        if v.proxy != proxy {
+                            v.proxy = proxy;
                             cx.notify();
                         }
                     })
@@ -377,7 +393,7 @@ impl UsageView {
             projects: Vec::new(),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
-            _poll: [poll, plan_poll],
+            _poll: [poll, plan_poll, proxy_poll],
         }
     }
 
@@ -1712,6 +1728,9 @@ impl UsageView {
             });
 
         let priced = total.tokens.saturating_sub(total.unpriced);
+        // With a proxy key and no sign-in, the proxy's accounts are Claude's
+        // limits; without a key, Claude's block still offers the sign-in.
+        let claude_shown = self.plan.is_some() || self.proxy.as_ref().is_none_or(|p| !p.has_key);
         let side = div()
             .w(px(320.))
             .flex_none()
@@ -1724,12 +1743,9 @@ impl UsageView {
                     .flex_col()
                     .gap(crate::ui::sp(16.))
                     .child(ui::heading("Plan limits"))
-                    // On the proxy without a sign-in, its accounts are Claude's limits.
-                    .when(self.plan.is_some() || self.proxy.is_none(), |d| {
-                        d.child(self.claude_limits(cx))
-                    })
+                    .when(claude_shown, |d| d.child(self.claude_limits(cx)))
                     .when_some(self.proxy_limits(cx), |d, p| {
-                        d.when(self.plan.is_some(), |d| {
+                        d.when(claude_shown, |d| {
                             d.child(div().h(px(1.)).bg(theme::fill_hover()))
                         })
                         .child(p)

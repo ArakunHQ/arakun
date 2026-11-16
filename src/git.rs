@@ -18,14 +18,15 @@ pub(crate) fn git(dir: &Path) -> Command {
         .env("LC_ALL", "C");
     // A status scan of a big repository shouldn't compete with the window for the CPU.
     crate::platform::lower_priority(&mut cmd);
+    // `dir` picks the repository, not a GIT_DIR inherited from whatever started arakun.
+    unpinned(&mut cmd);
     cmd
 }
 
-/// For tests that build a throwaway repository. In a linked worktree, git gives
-/// hooks GIT_DIR (and GIT_INDEX_FILE) pointing at the real repository; a test run
-/// from a hook inherits them, and its `git init` and `git commit` would land on
-/// the branch being pushed instead of in its temporary folder.
-#[cfg(test)]
+/// Clears the variables that pin git to one repository. In a linked worktree, git
+/// gives hooks GIT_DIR (and GIT_INDEX_FILE) pointing at the real repository; a
+/// test run from a hook inherits them, and its `git init` and `git commit` would
+/// land on the branch being pushed instead of in its temporary folder.
 pub(crate) fn unpinned(cmd: &mut Command) -> &mut Command {
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
         cmd.env_remove(var);
@@ -75,6 +76,12 @@ pub fn top_level(dir: &Path) -> Result<PathBuf> {
 pub fn init(dir: &Path) -> Result<()> {
     run(git(dir).args(["init", "-q"]))?;
     Ok(())
+}
+
+/// The branch checked out in `dir`; None on a detached HEAD.
+pub fn current_branch(dir: &Path) -> Option<String> {
+    let out = stdout(git(dir).args(["symbolic-ref", "--short", "-q", "HEAD"])).ok()?;
+    Some(out.trim().to_string()).filter(|b| !b.is_empty())
 }
 
 /// Branch checked out in a repository, read straight from `.git/HEAD` (no process),
@@ -162,20 +169,29 @@ pub fn branches(repo: &Path) -> Result<Branches> {
 
 /// Creates a worktree at `path`. A branch that already exists locally is checked out;
 /// otherwise a new branch is made from `base` (a ref, or the current HEAD when None).
-pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> Result<()> {
+/// `only_new` fails instead of checking out a branch that exists: one made for a random
+/// name gets renamed later, and an existing branch with that name is someone's work.
+pub fn add_worktree(
+    repo: &Path,
+    path: &Path,
+    branch: &str,
+    base: Option<&str>,
+    only_new: bool,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
-    let exists = git(repo)
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .status()
-        .is_ok_and(|s| s.success());
+    let exists = !only_new
+        && git(repo)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .status()
+            .is_ok_and(|s| s.success());
     let mut cmd = git(repo);
     cmd.args(["worktree", "add"]);
     if exists {
@@ -204,6 +220,69 @@ pub fn branch_name_ok(repo: &Path, name: &str) -> bool {
         .args(["check-ref-format", "--branch", name])
         .output()
         .is_ok_and(|o| o.status.success())
+}
+
+/// Renames the branch checked out in `dir` from `old` to `new`. Refuses when the
+/// branch is no longer `old` or was pushed (it has an upstream): the remote would
+/// keep the old name. When `new` is taken, `next_free` tries `new-2`, `new-3`…;
+/// otherwise it fails. Returns the name the branch got.
+pub fn rename_branch(dir: &Path, old: &str, new: &str, next_free: bool) -> Result<String> {
+    let current =
+        stdout(git(dir).args(["symbolic-ref", "--short", "-q", "HEAD"])).unwrap_or_default();
+    let current = current.trim();
+    if current != old {
+        bail!(
+            "the branch is {} now, not {old}",
+            if current.is_empty() {
+                "detached"
+            } else {
+                current
+            }
+        );
+    }
+    if old == new {
+        return Ok(new.to_string());
+    }
+    // A push without --set-upstream leaves no upstream, only the remote-tracking ref.
+    let upstream = git(dir)
+        .args(["config", "--get", &format!("branch.{old}.merge")])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let tracked = stdout(git(dir).args([
+        "for-each-ref",
+        "--format=%(refname)",
+        &format!("refs/remotes/*/{old}"),
+    ]))
+    .is_ok_and(|refs| !refs.trim().is_empty());
+    if upstream || tracked {
+        bail!("{old} was already pushed; rename it on the remote too, or keep the name");
+    }
+    if !branch_name_ok(dir, new) {
+        bail!("\"{new}\" is not a valid branch name");
+    }
+    let exists = |name: &str| {
+        git(dir)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{name}"),
+            ])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let name = if !exists(new) {
+        new.to_string()
+    } else if next_free {
+        (2..10)
+            .map(|n| format!("{new}-{n}"))
+            .find(|n| !exists(n))
+            .ok_or_else(|| anyhow!("branches {new} to {new}-9 already exist"))?
+    } else {
+        bail!("a branch named {new} already exists");
+    };
+    run(git(dir).args(["branch", "-m", old, &name]))?;
+    Ok(name)
 }
 
 /// Commits a push would send, or None when the branch has no remote or no upstream
@@ -831,6 +910,146 @@ pub(crate) const NICE_OF_SHELL: &str =
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
+    /// A repository on `env/brave-otter` with one commit, and a `taken` branch.
+    fn repo() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "arakun-rename-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [
+            &["init", "-q", "-b", "env/brave-otter"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                // A contributor's commit.gpgsign would need a key the tests don't have.
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+            &["branch", "taken"],
+        ] {
+            let ok = super::unpinned(&mut Command::new("git"))
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success());
+        }
+        dir
+    }
+
+    #[test]
+    fn renames_the_branch_once() {
+        let dir = repo();
+        assert_eq!(
+            super::rename_branch(&dir, "env/brave-otter", "fix/tab-name", false).unwrap(),
+            "fix/tab-name"
+        );
+        // Someone renamed it already: leave it alone.
+        assert!(super::rename_branch(&dir, "env/brave-otter", "fix/other", false).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rename_refuses_a_branch_pushed_without_upstream() {
+        let dir = repo();
+        let remote = dir.with_extension("remote");
+        let git = |args: &[&str]| {
+            super::unpinned(&mut Command::new("git"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(git(&["init", "-q", "--bare", remote.to_str().unwrap()]));
+        let d = dir.to_str().unwrap();
+        assert!(git(&[
+            "-C",
+            d,
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().unwrap()
+        ]));
+        assert!(git(&["-C", d, "push", "-q", "origin", "env/brave-otter"]));
+        assert!(super::rename_branch(&dir, "env/brave-otter", "fix/x", true).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(remote);
+    }
+
+    #[test]
+    fn only_new_never_checks_out_an_existing_branch() {
+        let dir = repo();
+        let tree = dir.with_extension("tree");
+        assert!(super::add_worktree(&dir, &tree, "taken", None, true).is_err());
+        assert!(!tree.join(".git").exists());
+        super::add_worktree(&dir, &tree, "taken", None, false).unwrap();
+        assert_eq!(super::current_branch(&tree).as_deref(), Some("taken"));
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(tree);
+    }
+
+    #[test]
+    fn reads_the_current_branch() {
+        let dir = repo();
+        assert_eq!(
+            super::current_branch(&dir).as_deref(),
+            Some("env/brave-otter")
+        );
+        let ok = super::unpinned(&mut Command::new("git"))
+            .arg("-C")
+            .arg(&dir)
+            .args(["checkout", "-q", "--detach"])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert_eq!(super::current_branch(&dir), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rename_picks_a_free_name_or_fails() {
+        let dir = repo();
+        assert!(super::rename_branch(&dir, "env/brave-otter", "taken", false).is_err());
+        assert_eq!(
+            super::rename_branch(&dir, "env/brave-otter", "taken", true).unwrap(),
+            "taken-2"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rename_refuses_a_pushed_branch() {
+        let dir = repo();
+        let ok = super::unpinned(&mut Command::new("git"))
+            .arg("-C")
+            .arg(&dir)
+            .args([
+                "config",
+                "branch.env/brave-otter.merge",
+                "refs/heads/env/brave-otter",
+            ])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert!(super::rename_branch(&dir, "env/brave-otter", "fix/x", true).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn git_runs_at_lower_priority() {

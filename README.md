@@ -13,6 +13,14 @@ window, and exposes the same workspace to the agents through a command line.
   checkout plus git worktrees). Every environment has its own tabs, sessions, terminals
   and draft prompt. The Workspace panel shows Sessions, an Explorer and the uncommitted
   Changes; the Branches tab draws every live branch against the default one.
+  A new environment starts on a random branch name (`env/brave-otter`); after the first
+  prompt, a small model names it after the task (`fix/terminal-tab-name`) and Arakun
+  renames the branch. The folder keeps its name. By default the agent the prompt went to
+  names it, when that is Claude Code (with `haiku`) or Droid, so the prompt goes nowhere
+  else; other agents leave the name alone. Settings › General can pick Claude Code or
+  Droid for every environment, or turn naming off; it saves that in
+  `~/.local/share/arakun/branch-namer.json` (`%LOCALAPPDATA%\arakun\branch-namer.json`
+  on Windows).
 - **Agent sessions.** Claude Code (through the ACP adapter
   `@agentclientprotocol/claude-agent-acp`), Factory's Droid, OpenCode, and Cloudflare
   Workers AI (a tool loop Arakun runs itself against the Workers AI API). Transcripts
@@ -20,7 +28,9 @@ window, and exposes the same workspace to the agents through a command line.
   diffs show what each turn changed, including changes made by shell commands.
 - **Project check.** A per-project command (`cargo test`, `npm test`...) runs after each
   turn that edits files; on failure the tail of the output goes back to the agent, up to
-  three times in a row. Arakun also notices when an agent loops (the same failing command
+  three times in a row. Checks run one at a time across all sessions, at low priority and
+  with half the cores for builds (`CARGO_BUILD_JOBS`), so several agents finishing
+  together don't stall the computer. Arakun also notices when an agent loops (the same failing command
   or the same edit over and over) and offers to stop and rethink.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
@@ -123,10 +133,8 @@ check it against `SHA256SUMS`, and install it for your user:
 | Windows | `%LOCALAPPDATA%\Programs\Arakun`, added to your user `PATH`, and a Start menu shortcut | delete that folder and the shortcut, and remove it from `PATH` |
 
 To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0`,
-or set `ARAKUN_VERSION=v0.1.0` (on Windows, `$env:ARAKUN_VERSION = "v0.1.0"`). The
-macOS app is signed ad-hoc, not notarized: installed this way it opens normally, but
-macOS blocks a copy downloaded with a web browser. There is no build for Intel Macs or
-Linux on ARM yet; build from source there.
+or set `ARAKUN_VERSION=v0.1.0` (on Windows, `$env:ARAKUN_VERSION = "v0.1.0"`). There is
+no build for Intel Macs or Linux on ARM yet; build from source there.
 
 ### Manual download
 
@@ -150,9 +158,8 @@ freetype).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
 
-**macOS:** `arakun-<version>-macos-arm64.tar.gz` holds `Arakun.app`. Download it with
-`curl`, not a web browser, or macOS refuses to open it (then
-`xattr -dr com.apple.quarantine Arakun.app` lets it open).
+**macOS:** `arakun-<version>-macos-arm64.tar.gz` holds `Arakun.app`, signed with a
+Developer ID and notarized by Apple. Move it to `Applications` and open it.
 
 Arakun does not bundle the agents. Install the ones you want to use:
 
@@ -169,7 +176,8 @@ Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bw
 
 ## Build from source
 
-You need a recent stable Rust toolchain ([rustup](https://rustup.rs)).
+You need [rustup](https://rustup.rs). The first `cargo` command in the checkout
+installs the Rust version named in `rust-toolchain.toml`, the one CI uses.
 
 `tools/setup-dev.sh` (Linux and macOS) or `tools\setup-dev.ps1` (Windows) installs
 everything below for you; see [CONTRIBUTING.md](CONTRIBUTING.md#setting-up). To do it by
@@ -249,6 +257,7 @@ arakun open -s src/main.rs:42     # open a file in the side pane at line 42
 arakun run --port 5173 npm run dev   # new terminal; wait until the port answers
 arakun logs 2 --until compiled    # wait until terminal 2 prints "compiled"
 arakun check                      # run the project check here
+arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun notices --unseen           # notifications you haven't read yet

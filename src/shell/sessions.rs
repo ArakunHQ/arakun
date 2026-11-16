@@ -452,6 +452,11 @@ impl Shell {
     ) {
         if let Some(id) = self.active_session_id() {
             let path = self.env().path.clone();
+            let agent = self
+                .find_env(&path)
+                .and_then(|e| e.sessions.iter().find(|s| s.id == id))
+                .map_or(self.env().agent, |s| s.agent);
+            self.name_after_first_prompt(&path, &text, agent.kind(), cx);
             if text.trim() == "/stage" {
                 self.stage_session(&path, &id, window, cx, |this, staged, path, id, _, cx| {
                     let text = match staged {
@@ -479,6 +484,11 @@ impl Shell {
                 });
                 return;
             }
+            // This session started on the branch's old name.
+            let text = match self.rename_notes.remove(&path) {
+                Some(note) => format!("{text}\n\n{note}"),
+                None => text,
+            };
             if crate::headless::shown(&id) && !self.adopt_headless(&path, &id, &text, window, cx) {
                 return;
             }
@@ -629,6 +639,8 @@ impl Shell {
             }
         }
         let env_path = env_path.to_path_buf();
+        // Every way a session starts (the composer, automations, `arakun agent new`) passes here.
+        self.name_after_first_prompt(&env_path, &text, agent.kind(), cx);
         let thread = Thread::start(agent.kind(), env_path.clone(), None, cx);
         self.apply_env_settings(&env_path, agent, extra, &thread, cx);
         thread.update(cx, |t, cx| t.send(text, cx));
@@ -1446,9 +1458,19 @@ impl Shell {
                     .join(format!("{}.md", earlier.id)),
             );
         }
+        // A headless session lives in its own folder, which the app scans every
+        // second; it has to go too or the session comes back.
+        let headless = crate::headless::shown(id).then(|| id.to_string());
+        if headless.is_some() {
+            crate::headless::begin_discard(id);
+            crate::headless::set_shown(id, false);
+        }
         cx.background_spawn(async move {
             for path in paths {
                 let _ = std::fs::remove_file(path);
+            }
+            if let Some(id) = headless {
+                crate::headless::discard(&id);
             }
         })
         .detach();

@@ -408,6 +408,13 @@ pub struct Environment {
     pub name: SharedString,
     pub branch: SharedString,
     pub is_checkout: bool,
+    /// The random name the "New environment" dialog gave the branch. The first
+    /// prompt sent here renames it to one that says what the work is, as long as
+    /// the branch still has this name: a name picked by hand is the user's.
+    pub placeholder: Option<String>,
+    /// Shown by its branch, not its folder: arakun named or renamed the branch, so
+    /// the folder no longer says what the environment is.
+    pub follow_branch: bool,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     /// Tab ids visited, newest last (the active tab on top), for Back.
@@ -470,6 +477,8 @@ impl Environment {
             explorer: Explorer::new(path.clone()),
             path,
             is_checkout,
+            placeholder: None,
+            follow_branch: false,
             tabs: vec![Tab::new("New session", TabKind::NewSession)],
             active_tab: 0,
             tab_back: Vec::new(),
@@ -498,9 +507,20 @@ impl Environment {
         env
     }
 
+    /// The branch still has the dialog's random name, so the first prompt may rename it.
+    pub fn awaits_name(&self) -> bool {
+        self.placeholder.as_deref() == Some(self.branch.as_ref())
+    }
+
+    /// Shows the environment by its branch from now on, and relabels it.
+    pub fn follow_branch(&mut self) {
+        self.follow_branch = true;
+        self.name = self.branch.clone();
+    }
+
     pub fn set_branch(&mut self, branch: Option<String>) {
         let branch: SharedString = branch.unwrap_or_else(|| "detached HEAD".into()).into();
-        self.name = if self.is_checkout {
+        self.name = if self.is_checkout || self.follow_branch {
             branch.clone()
         } else {
             dir_name(&self.path).into()
@@ -758,6 +778,20 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), 8, "every old color gets its own new one");
+    }
+
+    #[test]
+    fn a_name_picked_by_hand_is_not_renamed() {
+        let mut env = Environment::new(
+            "/tmp/arakun-placeholder-test".into(),
+            Some("env/brave-otter".into()),
+            false,
+        );
+        env.placeholder = Some("env/brave-otter".into());
+        assert!(env.awaits_name());
+        // `git branch -m` in a terminal, to a name that also looks random, then a refresh.
+        env.set_branch(Some("env/bright-fox".into()));
+        assert!(!env.awaits_name());
     }
 
     fn env_with(kinds: Vec<TabKind>) -> Environment {

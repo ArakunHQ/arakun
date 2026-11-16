@@ -110,11 +110,7 @@ fn is_executable(path: &Path) -> bool {
 pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
-            let bin = which("claude").or_else(|| {
-                bundled_claude_candidates()?
-                    .into_iter()
-                    .find(|p| is_executable(p))
-            })?;
+            let bin = claude_cli()?;
             Some(vec![bin.display().to_string(), "/login".into()])
         }
         AgentKind::Droid => {
@@ -138,11 +134,7 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
-            let bin = which("claude").or_else(|| {
-                bundled_claude_candidates()?
-                    .into_iter()
-                    .find(|p| is_executable(p))
-            })?;
+            let bin = claude_cli()?;
             Some(vec![bin.display().to_string(), "/logout".into()])
         }
         AgentKind::Droid | AgentKind::WorkersAi => None,
@@ -155,6 +147,15 @@ pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
             ])
         }
     }
+}
+
+/// The user's `claude`, else the binary bundled with the adapter's SDK; both share `~/.claude`.
+pub fn claude_cli() -> Option<PathBuf> {
+    which("claude").or_else(|| {
+        bundled_claude_candidates()?
+            .into_iter()
+            .find(|p| is_executable(p))
+    })
 }
 
 /// Where the adapter's SDK keeps the Claude Code binary for this platform: one
@@ -306,6 +307,8 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          loaded in a real browser on Cloudflare (Browser Run), so sites that block curl still answer; \
          `arakun crawl [--limit N] [--depth N] <url>` reads a whole site the same way. Prefer them to curl \
          for reading the web; at most one fetch every 10 s.\n\
+         - `arakun rename <branch>` renames this environment's branch, before it is pushed, when the \
+         work turns out to be something its name doesn't say.\n\
          - `arakun notify <message>` sends the user a desktop notification.\n\
          - `arakun lab` shows the harness lab dashboard (Arakun Lab evals and experiments).\n\
          - `arakun agent new [--model <provider/model>] [--effort <level>] <prompt>` starts a background agent in this \

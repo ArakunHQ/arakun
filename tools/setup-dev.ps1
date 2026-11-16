@@ -8,13 +8,15 @@ For contributors and for coding agents. Linux and macOS: tools/setup-dev.sh.
   -Check    only report what is missing; exit 1 if anything is
   -Relay    also Node 24+ and the npm packages of relay\
   -Browser  also CMake and Ninja, for the `browser` feature (CEF)
-  -Hooks    check commit messages locally (git config core.hooksPath tools/hooks);
-            the hook is a sh script, so commits need Git for Windows' sh
+  -Hooks    turn on the Git hooks in lefthook.yml (lefthook install; installs lefthook
+            with winget if it is missing); lefthook runs them through sh, so commits
+            need Git for Windows' sh
   -Build    build the tests once, so the first clippy or test run is quick
 
 Always: Git, Visual Studio Build Tools 2022 with the C++ workload (MSVC and a Windows
-SDK), and Rust (stable-x86_64-pc-windows-msvc) with clippy through rustup. Installs use
-winget; Build Tools asks for administrator rights. Running it again is safe.
+SDK), and Rust through rustup: stable-x86_64-pc-windows-msvc as the default, and the
+version in rust-toolchain.toml with clippy and rustfmt. Installs use winget; Build Tools asks for
+administrator rights. Running it again is safe.
 See docs/windows.md for what each part is for.
 #>
 [CmdletBinding()]
@@ -171,13 +173,15 @@ if ($Browser) {
 Say 'Rust'
 $installedRustup = $false
 if (Has 'rustup') {
-    $active = Quiet { rustup show active-toolchain }
+    # The default, not the active toolchain: in the checkout that is the one in
+    # rust-toolchain.toml, and asking for it would install it, even with -Check.
+    $active = Quiet { rustup default }
     if (-not $active) {
         if ($Check) { Lack 'a default toolchain (rustup default stable-msvc)' }
         else { & rustup default stable-msvc; if ($LASTEXITCODE -ne 0) { Fail 'rustup default failed' } }
     } elseif ($active -notlike '*msvc*') {
         # The gnu toolchain builds too, but docs/windows.md and the CEF download expect MSVC.
-        Say "the active toolchain is $active; Arakun is built with MSVC (rustup default stable-msvc)"
+        Say "the default toolchain is $active; Arakun is built with MSVC (rustup default stable-msvc)"
     } else {
         Ok "rustup ($active)"
     }
@@ -200,17 +204,37 @@ if (Has 'rustup') {
     Fail 'skipped; the build needs Rust'
 }
 
+# In the checkout, rustup uses the version and components in rust-toolchain.toml. The
+# check must not install it, so rustup's own install on first use is off for it.
 if (Has 'cargo') {
-    $clippy = Quiet { cargo clippy --version }
-    if ($clippy) {
-        Ok $clippy
-    } elseif ($Check) {
-        Lack 'clippy (rustup component add clippy)'
-    } elseif (Has 'rustup') {
-        & rustup component add clippy
-        if ($LASTEXITCODE -ne 0) { Fail 'rustup component add clippy failed' }
-    } else {
-        Fail 'no clippy; install Rust with rustup'
+    Push-Location $Root
+    $autoInstall = $env:RUSTUP_AUTO_INSTALL
+    $env:RUSTUP_AUTO_INSTALL = '0'
+    $missingComponents = @()
+    try {
+        foreach ($component in @('clippy', 'rustfmt')) {
+            $subcommand = if ($component -eq 'rustfmt') { 'fmt' } else { $component }
+            $version = Quiet { cargo $subcommand --version }
+            if ($LASTEXITCODE -ne 0) { $version = '' }
+            if ($version) {
+                Ok $version
+            } else {
+                $missingComponents += $component
+                if ($Check) {
+                    Lack "$component of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)"
+                }
+            }
+        }
+    }
+    finally { $env:RUSTUP_AUTO_INSTALL = $autoInstall; Pop-Location }
+    if ($missingComponents.Count -gt 0 -and -not $Check) {
+        if (Has 'rustup') {
+            Push-Location $Root
+            try { & rustup toolchain install --no-self-update } finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0) { Fail 'rustup toolchain install failed' }
+        } else {
+            Fail "missing Rust components; install clippy and rustfmt with your distribution's Rust"
+        }
     }
 }
 
@@ -218,13 +242,15 @@ if (Has 'cargo') {
 if ($Relay) {
     Say 'relay (Node 24+)'
     $major = 0
-    if (Has 'node') { $major = [int](& node -p 'process.versions.node.split(".")[0]') }
+    # No double quotes inside the argument: Windows PowerShell 5.1 drops them when it
+    # starts a native program, and node would read split(.).
+    if (Has 'node') { $major = [int](& node -p "process.versions.node.split('.')[0]") }
     if ($major -lt 24) {
         if ($Check) {
             Lack 'Node 24 or newer (winget install OpenJS.NodeJS.LTS)'
         } elseif (Ask 'install Node.js LTS with winget?') {
             Install-Winget 'OpenJS.NodeJS.LTS'
-            $major = [int](& node -p 'process.versions.node.split(".")[0]')
+            $major = [int](& node -p "process.versions.node.split('.')[0]")
             if ($major -lt 24) { Fail "winget installed Node $major; the relay needs 24 or newer" }
         } else {
             Fail 'skipped; the relay needs Node 24 or newer'
@@ -245,17 +271,44 @@ if ($Relay) {
     }
 }
 
-# --- git hook ---
+# --- git hooks ---
 if ($Hooks) {
-    Say 'commit-msg hook'
+    Say 'git hooks (lefthook)'
+    # An older -Hooks pointed git at tools/hooks, which is gone: git then runs no hooks,
+    # lefthook's included.
     $current = Quiet { git -C $Root config core.hooksPath }
     if ($current -eq 'tools/hooks') {
-        Ok 'core.hooksPath is tools/hooks'
+        if ($Check) {
+            Lack 'core.hooksPath is tools/hooks, which is gone (git config --unset core.hooksPath)'
+        } else {
+            & git -C $Root config --unset core.hooksPath
+            Ok 'core.hooksPath unset (it pointed at tools/hooks, which is gone)'
+        }
+    }
+    # --path-format=absolute needs Git 2.31+; with an older Git, -Check may report the
+    # hooks as off when they are on.
+    $hookDir = Quiet { git -C $Root rev-parse --path-format=absolute --git-path hooks }
+    # On only when every hook lefthook.yml sets is lefthook's and lefthook itself is
+    # there to run them.
+    $on = [bool]$hookDir -and (Has 'lefthook')
+    foreach ($h in 'pre-commit', 'pre-push', 'commit-msg') {
+        $file = if ($hookDir) { Join-Path $hookDir $h } else { '' }
+        if (-not ($file -and (Test-Path $file) -and (Select-String -Quiet -Path $file -Pattern 'lefthook'))) { $on = $false }
+    }
+    if ($on) {
+        Ok 'lefthook hooks are on'
     } elseif ($Check) {
-        Lack 'core.hooksPath (git config core.hooksPath tools/hooks)'
+        if (Has 'lefthook') { Lack 'lefthook hooks (lefthook install)' }
+        else { Lack 'lefthook (winget install evilmartians.lefthook)' }
     } else {
-        & git -C $Root config core.hooksPath tools/hooks
-        Ok 'core.hooksPath set to tools/hooks (undo: git config --unset core.hooksPath)'
+        if (-not (Has 'lefthook')) {
+            if (Ask 'install lefthook with winget?') { Install-Winget 'evilmartians.lefthook' }
+            else { Fail 'skipped; -Hooks needs lefthook' }
+        }
+        Push-Location $Root
+        try { & lefthook install } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { Fail "lefthook install failed (exit $LASTEXITCODE)" }
+        Ok 'lefthook hooks are on (undo: lefthook uninstall)'
     }
 }
 

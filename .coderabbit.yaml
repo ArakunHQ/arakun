@@ -1,0 +1,178 @@
+# CodeRabbit review settings. Schema: https://coderabbit.ai/integrations/schema.v2.json
+# The rules it reviews against come from AGENTS.md and CONTRIBUTING.md; keep
+# the path instructions below in step with them.
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+tone_instructions: >-
+  Write plain, short sentences, as the repository's docs do. Say what breaks and
+  why, then the fix. No praise, no filler, no emoji.
+
+reviews:
+  profile: chill
+
+  # Requests changes on blocking findings. Approves only pull requests it rates
+  # minimal risk, once those findings are resolved. Merging still takes a
+  # person with write access. No security-risk limit: that assessment needs a
+  # higher CodeRabbit plan, and a missing one would withhold every approval.
+  # The Reviewers workflow dismisses an approval of a pull request from
+  # outside the team, because overrides can only match members of a team.
+  auto_approvals:
+    enabled: true
+    max_merge_risk: minimal
+  merge_risk_instructions: >-
+    Minimal risk: changes only to docs or Markdown, comments, tests, iso/*.rhai
+    scenes or screenshots, or a typo or label in UI text, with no change in
+    behavior. Low risk: a small UI or layout change in one view that uses the
+    design system tokens. Moderate or higher: any change to src/phone (end-to-end
+    encryption and its wire format), relay/ or phone/, .github/workflows,
+    Cargo.toml, Cargo.lock or deny.toml, tools/setup-dev.* or tools/install*
+    (they run on users' machines, often with sudo), src/platform.rs, git
+    operations in src/git.rs, how agents and shells are launched, and any format
+    stored on disk or a CLI flag that other tools rely on. A change for one
+    platform that the other platforms build without testing also raises the risk.
+
+  # The summary goes at the end of the description, under the template.
+  high_level_summary: true
+  high_level_summary_in_walkthrough: false
+  high_level_summary_instructions: >-
+    At most five bullets, each under 20 words, in plain short sentences. Say what a
+    user or contributor will notice, not which functions changed. Do not repeat the
+    Problem or Changes sections of the description.
+
+  sequence_diagrams: true
+  changed_files_summary: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  # actions/labeler sets the area labels; the Reviewers workflow requests
+  # the reviewers.
+  suggested_labels: false
+  suggested_reviewers: false
+  poem: false
+  in_progress_fortune: false
+
+  auto_review:
+    enabled: true
+    # Agents open pull requests as drafts and mark them ready once checks pass.
+    drafts: false
+    # Stacked pull requests target the branch below them, not main. Without
+    # this, CodeRabbit reviews only the bottom one of a stack.
+    base_branches: [".*"]
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+
+  pre_merge_checks:
+    # CI's conventional-commits job already checks the title.
+    title:
+      mode: "off"
+    description:
+      mode: warning
+    issue_assessment:
+      mode: warning
+    custom_checks:
+      - name: Docs follow user-facing changes
+        mode: warning
+        instructions: >-
+          Fail if the pull request adds, removes or renames a CLI command or
+          subcommand, a command-line flag, a keyboard shortcut or a storage path (a
+          file or directory the app reads or writes under the user's home, config or
+          data directories), and README.md does not change to match. If the change
+          is Windows-specific or behaves differently on Windows, docs/windows.md must
+          change too. Pass otherwise.
+      - name: No private feature code
+        mode: warning
+        instructions: >-
+          Fail if the diff adds or changes code behind `cfg(feature = "team")` or
+          `cfg(feature = "coderlabs")`, or adds files under src/team*,
+          src/team_view* or src/shell/team.rs. Pass otherwise.
+
+  path_filters:
+    - "!Cargo.lock"
+    - "!relay/package-lock.json"
+    - "!assets/**"
+    - "!docs/screenshots/**"
+    - "!phone/*.png"
+    - "!phone/test/vectors/**"
+
+  path_instructions:
+    - path: "**/*.rs"
+      instructions: |
+        - CI runs rustfmt, `clippy -D warnings` and the tests. Do not repeat what they catch; look for logic errors, panics (unwrap, indexing, slicing on char boundaries), blocking work on the UI thread, races and leaked tasks or processes.
+        - Code for one platform must sit behind `cfg(...)`, and the other platforms must still build. Flag a Unix-only or Windows-only API used without a cfg.
+        - `#[allow(...)]` needs a comment that says why the lint is wrong there.
+        - Tests belong in a `#[cfg(test)] mod tests` at the bottom of the file they test. A bug fix should add a test when the logic runs without a window.
+        - Comments say why, not what, in plain short sentences. A new module starts with a `//!` comment saying what it is for.
+        - Tests marked `#[ignore]` read this machine's state. A new test that reads the real home directory, sign-ins or network must be `#[ignore]`.
+    - path: "src/**/*.rs"
+      instructions: |
+        UI code (views, dialogs, the sidebar, anything that builds GPUI elements) must use the design system: colors, grays, text sizes and fonts from `theme` and `ui` (`theme::text_muted()`, `theme::border()`, `ui::TEXT_SM`, `theme::FONT_MONO`, `ui::RADIUS`). Flag hand-written values where the system has a name. `src/design_lint.rs` catches colors, text sizes and fonts, but not corner radii or spacing.
+    - path: "src/ui/**"
+      instructions: |
+        This is the design system itself. A change here affects every view. Check that a new token or component is used consistently and shows up in the gallery (`src/gallery_view.rs`).
+    - path: "src/phone/**"
+      instructions: |
+        This is the phone's end-to-end encryption and wire format. The phone (`phone/*.js`) and its test vectors (`phone/test/vectors`) must change with any change to the format, keys or framing here. Review crypto carefully: nonce reuse, key handling, constant-time comparison, and anything that logs secrets.
+    - path: "phone/**"
+      instructions: |
+        The phone web app talks to the Rust side in `src/phone` through the relay. A change to the encryption or message format must match `src/phone` and the test vectors. Never log keys, tokens or message contents.
+    - path: "relay/**"
+      instructions: |
+        The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound.
+    - path: "src/platform.rs"
+      instructions: |
+        Windows-specific behavior lives here. Changes need a check on a real Windows machine; say so if the pull request does not mention one. Check that docs/windows.md still matches.
+    - path: "Cargo.toml"
+      instructions: |
+        - Each new dependency needs a comment above it that says what uses it, like the other entries.
+        - Prefer pure Rust crates and crates GPUI already pulls in.
+        - GPL, LGPL and AGPL crates cannot be used (Arakun is also sold under commercial licenses). MPL-2.0 is allowed one crate at a time. Flag any change to the license allow-list in deny.toml.
+        - Do not add or change the private `team` or `coderlabs` features.
+    - path: "deny.toml"
+      instructions: |
+        Adding a license to the allow-list needs a maintainer's agreement in an issue first. Flag any new license or advisory exception and ask for the reason.
+    - path: ".github/workflows/**"
+      instructions: |
+        Check permissions are as narrow as the job needs, a new third-party action is pinned to a release tag or commit SHA rather than a branch (`dtolnay/rust-toolchain@stable` is fine), untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge.
+    - path: "tools/**"
+      instructions: |
+        The setup and install scripts run on contributors' and users' machines, often with sudo. Check quoting, `set -eu` (or `$ErrorActionPreference = 'Stop'` in PowerShell), idempotence (safe to run again) and that a .sh change has a matching .ps1 change where one exists.
+    - path: "iso/**/*.rhai"
+      instructions: |
+        Isometric scene scripts in the line-iso style: thin ink outlines, three-tone faces, one accent color. See the arakun-iso skill in .claude/skills.
+    - path: "**/*.md"
+      instructions: |
+        Docs use plain, short sentences. Check that commands, flags, paths and shortcuts named in the text match the code. Do not comment on line length.
+
+  tools:
+    # CI runs clippy with the real feature set; CodeRabbit's run would duplicate it.
+    clippy:
+      enabled: false
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    gitleaks:
+      enabled: true
+    markdownlint:
+      enabled: true
+    github-checks:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+      - ".github/pull_request_template.md"
+
+issue_enrichment:
+  auto_enrich:
+    enabled: true

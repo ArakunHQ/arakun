@@ -1,0 +1,41 @@
+# Weekly update pull requests, one per ecosystem, so the actions, the relay's
+# packages and the crates don't fall behind unnoticed.
+#
+# Titles carry a Conventional Commits prefix because conventional-commits.yml
+# fails any pull request title without one, Dependabot's included.
+version: 2
+updates:
+  # Only .github/workflows: the composite action in .github/actions uses no
+  # other actions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    commit-message: { prefix: ci }
+    groups:
+      actions: { patterns: ["*"] }
+
+  - package-ecosystem: npm
+    directory: /relay
+    schedule: { interval: weekly }
+    commit-message: { prefix: build(relay) }
+    groups:
+      relay: { patterns: ["*"] }
+
+  # Major versions come as pull requests of their own, as they often need code
+  # changes.
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+    commit-message: { prefix: build }
+    groups:
+      crates:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # gpui and wgpu-hal come from pinned git revisions of forks ([patch] in
+      # Cargo.toml), and cef has to match the CEF distribution
+      # (tools/install-cef.sh). These move by hand.
+      - dependency-name: "gpui*"
+      - dependency-name: "wgpu*"
+      - dependency-name: "naga"
+      - dependency-name: "cef*"

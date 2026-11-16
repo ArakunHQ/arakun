@@ -15,7 +15,14 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// gets its own temp file, so two saves of the same file can't interleave.
 /// Creates the parent directory.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    replace(path, bytes, false)
+    write_in(path, bytes, true, false)
+}
+
+/// `write` into a directory that must already be there: when it is gone,
+/// this fails instead of making it again.
+#[allow(dead_code)] // The examples include this file and don't use it.
+pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_in(path, bytes, false, false)
 }
 
 /// `write` for a file other users of the machine must not read (agent
@@ -24,22 +31,24 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// 0700. Elsewhere it is `write`.
 #[allow(dead_code)] // the examples that include this file keep nothing private
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    replace(path, bytes, true)
+    write_in(path, bytes, true, true)
 }
 
-fn replace(path: &Path, bytes: &[u8], private: bool) -> io::Result<()> {
+fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Result<()> {
     let dir = path
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    if private {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
+    if make_dir {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(dir)?;
     }
-    builder.create(dir)?;
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::other(format!("{} has no file name", path.display())))?;

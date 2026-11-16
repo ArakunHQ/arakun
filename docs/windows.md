@@ -22,7 +22,8 @@ irm https://arakun.dev/install.ps1 | iex
 
 ## Requirements
 
-- **Rust via rustup**, toolchain `stable-x86_64-pc-windows-msvc`.
+- **Rust via rustup**, with the `x86_64-pc-windows-msvc` host. rustup installs the version
+  in `rust-toolchain.toml` on the first `cargo` command in the checkout.
 - **Visual Studio Build Tools 2022** with the *Desktop development with C++* workload
   (the MSVC compiler and a Windows SDK). `--release` needs `fxc.exe` from the Windows
   SDK: gpui compiles its HLSL shaders with it. If it is not found automatically, point
@@ -93,6 +94,7 @@ build with the browser.
 | State, sessions, transcripts | `%LOCALAPPDATA%\arakun\` |
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
+| Branch naming agent and model (Settings › General) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
@@ -121,6 +123,11 @@ Manager (Windows Credentials, Generic Credentials).
   agent's whole process tree, like the process group on Linux. Arakun looks for `droid`,
   `claude` and `npm` on the `PATH`, in `~\.local\bin`, `~\bin` and `%APPDATA%\npm`, with
   the extensions in `%PATHEXT%`.
+- **Branch naming:** each naming run works in a new folder in the temporary folder
+  (`%TMP%`, else `%TEMP%`). On Linux and macOS Arakun makes that folder owner-only (mode
+  0700). On Windows it only keeps the access rules of the temporary folder: by default
+  that is in your profile and private to you, but a `TMP` or `TEMP` set to a shared
+  folder may let other users open it.
 - **Notifications:** Windows toasts through PowerShell; they appear under the name
   "Windows PowerShell".
 - **Opening external files and links:** with the Windows default program.
@@ -147,8 +154,9 @@ Manager (Windows Credentials, Generic Credentials).
   name.
 - **Primary selection** (select to copy, middle click to paste) does not exist on Windows;
   in the terminal use `Ctrl+Shift+C`/`Ctrl+Shift+V`.
-- **No Windows CI.** The release workflow builds `arakun.exe` on Windows, but no tests run
-  there automatically.
+- **No tests run on Windows in CI.** Every pull request that changes Rust code runs
+  Clippy on Windows, so it must compile there, but the tests run only on Linux and macOS.
+  Only the release workflow makes a release build, which also compiles the shaders.
 
 ## If something fails
 

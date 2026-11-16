@@ -11,8 +11,9 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
 - **Suggest a feature** with the feature request form. Say what gets in the way today,
   not only the fix you have in mind.
 - **Try Arakun on Windows or macOS.** Linux is the only platform used every day, and
-  no tests run on Windows in CI (see [docs/windows.md](docs/windows.md)). Reports of
-  what works there are useful too, not only of what breaks.
+  CI only compiles the Windows build, without running its tests (see
+  [docs/windows.md](docs/windows.md)). Reports of what works there are useful too, not
+  only of what breaks.
 - **Send a pull request.** For anything bigger than a small fix, open an issue first so
   we can agree on the approach before you spend time on it.
 
@@ -36,7 +37,7 @@ without chasing every past contributor. Unsigned pull requests can't be merged.
 
 A script installs what you need to build Arakun and run the checks CI runs: the
 system libraries, Rust with clippy, and with the flags below Node for the relay and the
-`commit-msg` hook. It asks before it installs anything, and you can run it again
+[Git hooks](#git-hooks). It asks before it installs anything, and you can run it again
 safely.
 
 ```sh
@@ -49,6 +50,8 @@ tools/setup-dev.sh --check             # only report what is missing
 powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Hooks
 ```
 
+`--hooks` (`-Hooks`) runs `lefthook install`; on Windows it installs lefthook with winget
+first, and elsewhere it says how to install it if it is missing.
 `--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
 tesseract for `arakun dev`, `--build` (`-Build`) builds the tests once, and `--yes`
 (`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,
@@ -105,6 +108,10 @@ Some notes:
 - The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
   it; it runs `cargo fmt`, which on its own stops at the private modules this
   repository does not have. Format-on-save in your editor is fine.
+- The Rust version is pinned in `rust-toolchain.toml`, so a new stable release does not
+  bring new lints or formatting into your pull request. Bump it in its own pull request
+  that also fixes what the new version changes. A weekly workflow opens an issue when
+  clippy fails on the latest stable.
 - `--locked` fails if `Cargo.lock` would change. If you add or update a dependency,
   commit the new `Cargo.lock` in the same pull request.
 - `cargo deny check` reads [`deny.toml`](deny.toml). It fails on a crate with a
@@ -228,9 +235,18 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
 
   Commits inside the pull request are not checked, because they do not reach `main`. To
   check them as you write them, turn on the [Git hooks](#git-hooks).
+- **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
+  GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
+  while CI runs. Once the checks pass, mark it ready with `gh pr ready` or the button on
+  GitHub. That starts CodeRabbit's review. When it finishes, people are asked to review
+  unless CodeRabbit approved. A pull request from outside the team always needs a
+  maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
+  status waits for a person.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.
+- **Stack pull requests** when one step needs another that is not merged yet. See
+  [Stacked pull requests](#stacked-pull-requests).
 - **Coding agents are welcome.** Arakun is a tool for working with them, after all. You
   are still responsible for the change: read the diff, run the checks, and make sure you
   can explain it. [AGENTS.md](AGENTS.md) gives agents the rules from this guide
@@ -241,6 +257,64 @@ You don't need to set labels. A workflow gives pull requests area labels
 their title prefix (`CI:`, `Relay:`) or the issue form's Area field. The release
 notes are grouped by these labels. The labels themselves live in
 `.github/labels.yml`.
+
+### Stacked pull requests
+
+A stack is a chain of pull requests where each one builds on the one below it. The
+bottom one targets `main`. Each one above targets the branch below it, so its diff
+shows only its own step.
+
+**Stack** when a change splits into steps that each make sense on their own, and a later
+step needs an earlier one. For example, a refactor and then the feature that uses it, or
+a new `ui` component and then the views that use it. Each step is reviewed on its own,
+and you can keep working without waiting for the first one to merge.
+
+**Don't stack:**
+
+- Changes that don't depend on each other. Branch each one from `main`, so each can
+  merge without the others.
+- On a pull request whose approach is still being discussed. If that changes, you must
+  rewrite everything above it.
+- More than about four deep. Get the bottom ones merged first.
+
+**How:**
+
+1. Name each branch `pr/<topic>` and branch it from the one below:
+   `git switch -c pr/feature pr/refactor`.
+2. Open it as a draft against the branch below: `gh pr create --draft --base pr/refactor`.
+   Write `Stacked on #<number>.` at the end of Changes, so reviewers read the stack in
+   order.
+3. To change a lower pull request, commit on its branch. Then rebase the top branch on
+   the branch you changed. `--update-refs` (git 2.38 or newer) moves every branch in
+   between with it, except a branch checked out in another worktree; switch that
+   worktree to another branch first. Push every branch above the one you changed:
+
+   ```sh
+   git switch pr/top
+   git rebase --update-refs pr/refactor
+   git push --force-with-lease origin pr/feature pr/top
+   ```
+
+4. Merge from the bottom, always into `main`. Don't merge a pull request into the branch
+   below it: its title then never becomes a commit on `main`, and the release notes
+   lose it.
+5. When the bottom one merges, GitHub deletes its branch and moves the next pull request
+   to `main`. Pull requests are squashed, so the branches above still hold the merged
+   pull request's commits. Drop them by rebasing the top branch onto `main`, from the
+   merged pull request's last commit. Take that commit from GitHub, not from your local
+   branch, which can be behind it. Then push every remaining branch:
+
+   ```sh
+   old=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+   git fetch origin main "pull/<number>/head"
+   git switch pr/top
+   git rebase --update-refs --onto origin/main "$old"
+   git push --force-with-lease origin pr/feature pr/top
+   ```
+
+   Check that the next pull request now targets `main`. If not, run
+   `gh pr edit <next number> --base main`; without the number, `gh` edits the pull
+   request of the branch you are on, which is the top one.
 
 ## License
 

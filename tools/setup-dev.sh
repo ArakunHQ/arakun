@@ -8,12 +8,13 @@
 #   --check    only report what is missing; exit 1 if anything is
 #   --relay    also Node 24+ and the npm packages of relay/
 #   --display  also Xvfb and tesseract, for `arakun dev` (Linux only)
-#   --hooks    check commit messages locally (git config core.hooksPath tools/hooks)
+#   --hooks    turn on the Git hooks in lefthook.yml (lefthook install)
 #   --build    build the tests once, so the first clippy or test run is quick
 #
 # Always: the system libraries GPUI needs (apt or pacman; on macOS the Xcode Command
-# Line Tools), and Rust with clippy through rustup. It builds without the browser, as
-# CI does; for CEF see "With the browser" in the README. Running it again is safe.
+# Line Tools), and the Rust version in rust-toolchain.toml with clippy and rustfmt, through rustup.
+# It builds without the browser, as CI does; for CEF see "With the browser" in the
+# README. Running it again is safe.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -153,8 +154,9 @@ cargo_bin=${CARGO_HOME:-$HOME/.cargo}/bin
 case :$PATH: in *:"$cargo_bin":*) ;; *) [ -d "$cargo_bin" ] && PATH=$cargo_bin:$PATH ;; esac
 installed_rustup=0
 if command -v rustup >/dev/null; then
-  ok "rustup ($(rustc --version 2>/dev/null || echo 'no default toolchain'))"
-  if ! rustc --version >/dev/null 2>&1; then
+  # From /, so rust-toolchain.toml does not apply: this is the default toolchain.
+  ok "rustup ($(cd / && RUSTUP_AUTO_INSTALL=0 rustc --version 2>/dev/null || echo 'no default toolchain'))"
+  if ! (cd / && RUSTUP_AUTO_INSTALL=0 rustc --version) >/dev/null 2>&1; then
     if [ $check = 1 ]; then lack "a default toolchain (rustup default stable)"
     else rustup default stable
     fi
@@ -174,15 +176,28 @@ else
   exit 1
 fi
 
-if cargo clippy --version >/dev/null 2>&1; then
-  ok "$(cargo clippy --version)"
-elif [ $check = 1 ]; then
-  lack "clippy (rustup component add clippy)"
-elif command -v rustup >/dev/null; then
-  rustup component add clippy
-else
-  say "no clippy; install it with your distribution's Rust" >&2
-  exit 1
+# In the checkout, rustup uses the version and components in rust-toolchain.toml. The
+# check must not install it, so rustup's own install on first use is off for it.
+rust_missing=0
+for component in clippy rustfmt; do
+  subcommand=$component
+  [ "$component" = rustfmt ] && subcommand=fmt
+  if version=$(cd "$here" && RUSTUP_AUTO_INSTALL=0 cargo "$subcommand" --version 2>/dev/null); then
+    ok "$version"
+  else
+    rust_missing=1
+    if [ $check = 1 ]; then
+      lack "$component of the Rust version in rust-toolchain.toml (rustup toolchain install, in the checkout)"
+    fi
+  fi
+done
+if [ $rust_missing = 1 ] && [ $check = 0 ]; then
+  if command -v rustup >/dev/null; then
+    (cd "$here" && rustup toolchain install --no-self-update)
+  else
+    say "missing Rust components; install clippy and rustfmt with your distribution's Rust" >&2
+    exit 1
+  fi
 fi
 
 if [ $installed_rustup = 1 ]; then
@@ -222,16 +237,39 @@ if [ $display = 1 ]; then
   fi
 fi
 
-# --- git hook ---
+# --- git hooks ---
 if [ $hooks = 1 ]; then
-  say "commit-msg hook"
+  say "git hooks (lefthook)"
+  # An older --hooks pointed git at tools/hooks, which is gone: git then runs no hooks,
+  # lefthook's included.
   if [ "$(git -C "$here" config core.hooksPath || true)" = tools/hooks ]; then
-    ok "core.hooksPath is tools/hooks"
+    if [ $check = 1 ]; then
+      lack "core.hooksPath is tools/hooks, which is gone (git config --unset core.hooksPath)"
+    else
+      git -C "$here" config --unset core.hooksPath
+      ok "core.hooksPath unset (it pointed at tools/hooks, which is gone)"
+    fi
+  fi
+  # --path-format=absolute needs Git 2.31+; with an older Git, --check may report
+  # the hooks as off when they are on.
+  hookdir=$(cd "$here" && git rev-parse --path-format=absolute --git-path hooks)
+  # On only when every hook lefthook.yml sets is lefthook's and lefthook itself
+  # is there to run them.
+  on=1
+  for h in pre-commit pre-push commit-msg; do
+    # Git skips a hook that isn't executable.
+    { [ -x "$hookdir/$h" ] && grep -qs lefthook "$hookdir/$h"; } || on=0
+  done
+  command -v lefthook >/dev/null || on=0
+  if [ $on = 1 ]; then
+    ok "lefthook hooks are on"
+  elif ! command -v lefthook >/dev/null; then
+    lack "lefthook (https://lefthook.dev/installation/, e.g. brew install lefthook), then run tools/setup-dev.sh --hooks again"
   elif [ $check = 1 ]; then
-    lack "core.hooksPath (git config core.hooksPath tools/hooks)"
+    lack "lefthook hooks (lefthook install)"
   else
-    git -C "$here" config core.hooksPath tools/hooks
-    ok "core.hooksPath set to tools/hooks (undo: git config --unset core.hooksPath)"
+    (cd "$here" && lefthook install) || { say "lefthook install failed"; exit 1; }
+    ok "lefthook hooks are on (undo: lefthook uninstall)"
   fi
 fi
 

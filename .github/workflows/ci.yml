@@ -10,8 +10,13 @@ on:
 
 # github.workflow is the caller's name when release.yml calls this file, so
 # that run and a pull request's own CI run don't cancel each other.
+# A pull request's runs share a group, so a new push cancels the old run. Other
+# runs (pushes to main, schedules) get a group per commit: they never cancel or
+# replace each other, so every commit on main keeps its own result. GitHub
+# keeps only one pending run per group, so turning off cancel-in-progress alone
+# would still drop runs when several commits land at once.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 # The jobs only check out and build; none of them writes to the repository.
@@ -29,7 +34,7 @@ env:
 
 jobs:
   # Decides which of the jobs below a change needs, so a docs-only or relay-only
-  # change does not pay for two Rust builds on 8-CPU runners. The jobs are still
+  # change does not pay for the Rust builds. The jobs are still
   # required checks: a job skipped by its `if` counts as passed, while a
   # workflow-level `paths` filter would leave the checks pending forever.
   changes:
@@ -107,15 +112,18 @@ jobs:
 
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
+  #
+  # The three Linux Rust jobs run on 4 CPUs. With a warm cache, 8 CPUs were only
+  # 21-29% busy, and halving them cost 3-8% more time (runner sizing, #98).
   clippy:
     name: Clippy (no warnings)
     needs: changes
     # Runs unless `changes` said no: if it failed, its outputs are empty and
     # the job runs, because a skipped required check would count as passed.
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: depot-ubuntu-24.04-4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
@@ -127,9 +135,9 @@ jobs:
           packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
           version: 1
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # Takes seconds and builds nothing. The script stands in for the private
       # modules that rustfmt would otherwise stop at.
@@ -153,14 +161,14 @@ jobs:
     name: Clippy (Linux, browser)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: depot-ubuntu-24.04-4
     env:
       # The version the `cef` crate in Cargo.lock is built for. The minimal archive has
       # all that tools/install-cef.sh takes. The SHA-1 is the one cef-builds publishes.
       CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_linux64_minimal.tar.bz2
       CEF_SHA1: 09235427222e026a4f34399742df27c5d98a4f8a
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
@@ -174,7 +182,7 @@ jobs:
 
       # 330 MB that never changes for a given version.
       - name: Cache the CEF archive
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/cef-archive
           key: ${{ env.CEF_ARCHIVE }}
@@ -192,9 +200,9 @@ jobs:
           tar -xjf "$archive" -C "$RUNNER_TEMP/cef-dist" --strip-components=1
           tools/install-cef.sh "$RUNNER_TEMP/cef-dist" "$RUNNER_TEMP/cef"
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
@@ -210,9 +218,9 @@ jobs:
     name: Tests (Linux, no browser)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: depot-ubuntu-24.04-4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
@@ -224,7 +232,9 @@ jobs:
           packages: libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
           version: 1
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
@@ -235,6 +245,38 @@ jobs:
 
       - name: cargo test
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
+
+  # The cfg(windows) code and the Windows-only crates (windows, windows-sys,
+  # uds_windows) compile nowhere else, so without this job a Windows break
+  # first showed up while building a release. Same runner as release.yml's
+  # Windows build. Clippy only, no tests: it compiles the tests too, and running
+  # them on Windows is a separate step.
+  clippy-windows:
+    name: Clippy (Windows)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    runs-on: depot-windows-2025-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: ./.github/actions/runner-usage
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # bash (Git for Windows), so "$CI_CARGO_CONFIG" expands as on the other jobs.
+      - name: cargo clippy
+        shell: bash
+        run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
 
   # macOS builds other code (cfg(target_os = "macos"), no /proc, BSD tools), so
   # Linux passing says little about it. No runner-usage step: it supports only
@@ -249,9 +291,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -271,7 +313,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -292,12 +336,12 @@ jobs:
       run:
         working-directory: relay
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # CPU and memory use for the weekly runner-sizing report.
       - uses: ./.github/actions/runner-usage
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm

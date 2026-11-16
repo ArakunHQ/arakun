@@ -25,6 +25,7 @@ mod dev;
 mod dialogs;
 mod draft;
 mod durable;
+mod env_name;
 mod explorer;
 mod extensions_view;
 mod fetch;

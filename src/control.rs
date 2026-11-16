@@ -239,6 +239,8 @@ Usage:
                              does after agent turns that edit files
   arakun check --set <command…>
                              make it the project's check command
+  arakun rename <branch>       rename this environment's branch (not yet
+                             pushed); its folder stays where it is
   arakun notify <message…>     send a desktop notification
   arakun notices [--unseen]    the notifications Arakun has shown, newest first
   arakun ls                    list projects, environments and their sessions
@@ -522,6 +524,10 @@ fn cli(args: Vec<String>) -> Cli {
         "island" => match island_args(&rest) {
             Some(args) => return Cli::Exit(crate::island_host::cli(&args)),
             None => return usage(ISLAND_USAGE),
+        },
+        "rename" => match rest.as_slice() {
+            [name] if !name.starts_with('-') => request("rename", vec![name.clone()]),
+            _ => return usage("arakun rename <branch>"),
         },
         "notify" if !rest.is_empty() => request("notify", vec![rest.join(" ")]),
         "notify" => return usage("arakun notify <message…>"),

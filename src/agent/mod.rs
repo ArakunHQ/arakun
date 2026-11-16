@@ -42,8 +42,8 @@ pub use kind::AgentKind;
 pub use launch::claude_code_binary;
 #[allow(unused_imports)]
 pub use launch::{
-    droid_bin, login_command, logout_command, opencode_all_models, opencode_go_login_command,
-    opencode_models, opencode_providers, which,
+    child_path_env, claude_cli, droid_bin, login_command, logout_command, opencode_all_models,
+    opencode_go_login_command, opencode_models, opencode_providers, which,
 };
 #[allow(unused_imports)]
 pub use markdown::{copy_with_feedback, was_copied};

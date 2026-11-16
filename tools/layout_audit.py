@@ -112,7 +112,9 @@ for _f in FILES:
             if vis(d[p]) and (not rounded or max(d[p]['r'])>0): return p
             p=d[p]['parent']
         return None
-    # a pill parent clips its stripes; circles and pills inside need no corner match
+    # a pill parent clips its stripes, so its corners need no match; its
+    # insets still do (a chip in a pill-shaped bar sits as far from the side
+    # as from the top)
     def pill(P): return max(P['r'])>=min(P['b'][2],P['b'][3])/2-0.5
     def add(at,kind,msg):
         out.setdefault((at,kind),msg)
@@ -146,11 +148,15 @@ for _f in FILES:
             corner(c,d[p])
         # A bar can be square: insets are measured in the nearest drawn box.
         p=anc(i,False)
-        if p is not None and not pill(d[p]):
+        if p is not None:
             inset(c,d[p])
-    # clip: child as tall as a bordered parent
+    # clip: a drawn child as tall as the bordered box around it. A wrapper
+    # that draws nothing has no edge to cut: look through it, both ways.
+    def drawn(r): return r['bg'] or any(x>0 for x in r['border'])
     for i,c in enumerate(d):
+        if not drawn(c): continue
         p=c['parent']
+        while p!=-1 and not drawn(d[p]): p=d[p]['parent']
         if p==-1: continue
         P=d[p]; bt,_,bb,_=P['border']
         if bt+bb<=0: continue

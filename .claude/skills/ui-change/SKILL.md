@@ -57,6 +57,11 @@ cargo build --no-default-features
 yourself (open the PNG) before you call the change done. Check light and dark
 if the change touches color.
 
+For product screenshots of the start screen in dark and light (the brand book,
+the README, the site), `tools/product-shots.sh` starts a fresh, isolated Arakun
+per mode and captures its window. It also runs on macOS, where `arakun dev`
+can't, and it never types or clicks, so nothing lands in another app.
+
 For the "before" shot, build `main` in another worktree, or take it before your
 first edit, and save it as `before.png` the same way.
 

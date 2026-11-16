@@ -17,6 +17,9 @@
 # real path, account or host name gets in. Look at every file before you
 # publish it anyway.
 #
+# On Linux it stops any `arakun dev` already running and replaces that test
+# Arakun's palettes.json.
+#
 # Writes <out>/<mode>.png (default out: ${TMPDIR:-/tmp}/arakun-product-shots).
 # Needs: macOS with swiftc (Xcode command line tools), or Linux with what
 # `arakun dev` needs (tools/setup-dev.sh --yes --display).
@@ -40,7 +43,7 @@ while [ $# -gt 0 ]; do
     --project) project=$2; shift 2 ;;
     --wait) settle=$2; shift 2 ;;
     --no-build) build=0; shift ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "product-shots: unknown argument $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -56,11 +59,14 @@ bin="$root_dir/target/debug/arakun"
 [ -x "$bin" ] || { echo "product-shots: no $bin; build it or drop --no-build" >&2; exit 1; }
 
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/arakun-shots.XXXXXX")
-# A test Arakun still running when the script stops, on an error too.
+# A test Arakun still running when the script stops, on an error too: a pid
+# on macOS, `arakun dev` on Linux.
 running=""
+dev_running=0
 demo=""
 cleanup() {
   [ -n "$running" ] && kill "$running" 2>/dev/null
+  [ "$dev_running" = 1 ] && "$bin" dev stop >/dev/null 2>&1
   [ -n "$demo" ] && rm -rf "$demo"
   rm -rf "$scratch"
 }
@@ -168,6 +174,7 @@ shoot_linux() {
   devroot=$(dirname "$("$bin" dev socket)")
   mkdir -p "$devroot"
   palettes "$mode" > "$devroot/palettes.json"
+  dev_running=1
   if command -v zsh >/dev/null; then
     neutral_shell "$scratch/zdot"
     SHELL=$(command -v zsh) ZDOTDIR="$scratch/zdot" "$bin" dev start "$project" --size "$size"
@@ -178,6 +185,7 @@ shoot_linux() {
   sleep "$settle"
   "$bin" dev shot "$out/$mode.png"
   "$bin" dev stop >/dev/null
+  dev_running=0
   echo "$out/$mode.png"
 }
 

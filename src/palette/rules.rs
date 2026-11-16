@@ -831,10 +831,9 @@ fn clock_time(t: &str, clock: &Clock) -> Option<(u64, (usize, usize))> {
 }
 
 fn word_after(text: &str, heads: &[&str]) -> Option<String> {
-    let lower = text.to_lowercase();
     for h in heads {
-        for (i, _) in lower.match_indices(h) {
-            let w: String = text[i + h.len()..]
+        for end in ends_of(text, h) {
+            let w: String = text[end..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | '_' | '.'))
                 .collect();
@@ -846,6 +845,30 @@ fn word_after(text: &str, heads: &[&str]) -> Option<String> {
     None
 }
 
+/// The byte offsets in `text` just past each place `head` (lower case) shows,
+/// ignoring case. Offsets found in `text.to_lowercase()` can't be used on
+/// `text`: lower case changes some letters' length ("İ" grows a byte), and
+/// slicing there could cut a letter in half and panic.
+fn ends_of<'a>(text: &'a str, head: &'a str) -> impl Iterator<Item = usize> + 'a {
+    text.char_indices().filter_map(move |(i, _)| {
+        let mut want = head;
+        let mut used = 0;
+        for c in text[i..].chars() {
+            if want.is_empty() {
+                break;
+            }
+            let mut buf = [0; 4];
+            let mut lower = c.to_lowercase();
+            // A letter whose lower case is more than one letter is compared
+            // letter by letter.
+            let rest = lower.try_fold(want, |w, l| w.strip_prefix(&*l.encode_utf8(&mut buf)))?;
+            want = rest;
+            used += c.len_utf8();
+        }
+        want.is_empty().then_some(i + used)
+    })
+}
+
 fn between(text: &str, quote: char) -> Option<String> {
     let start = text.find(quote)? + quote.len_utf8();
     let len = text[start..].find(quote)?;
@@ -854,10 +877,9 @@ fn between(text: &str, quote: char) -> Option<String> {
 }
 
 fn after_any(text: &str, heads: &[&str]) -> Option<String> {
-    let lower = text.to_lowercase();
     heads.iter().find_map(|h| {
-        let i = lower.find(h)?;
-        let rest = text.get(i + h.len()..)?.trim();
+        let end = ends_of(text, h).next()?;
+        let rest = text[end..].trim();
         (!rest.is_empty()).then(|| rest.to_string())
     })
 }
@@ -1656,5 +1678,27 @@ mod tests {
         assert_eq!(timeless_reminder("open src/alarms.rs"), None);
         assert_eq!(timeless_reminder("open src/timer.rs"), None);
         assert_eq!(timeless_reminder("fix the timeranges bug"), None);
+    }
+
+    #[test]
+    fn letters_that_grow_in_lower_case_dont_break_the_branch() {
+        // "İ" is two bytes and its lower case three: offsets from the lower
+        // case text once cut "é" in half here and panicked.
+        let d = parse("İ when CI fails on é-main", None, &[]).unwrap();
+        assert_eq!(
+            d.trigger,
+            Trigger::CiFailed {
+                branch: "é-main".into()
+            }
+        );
+        assert_eq!(
+            word_after("İİ CI ON feat/x", &["on "]).as_deref(),
+            Some("feat/x")
+        );
+        assert_eq!(
+            after_any("İ: Ask An Agent To fix it", &["ask an agent to "]).as_deref(),
+            Some("fix it")
+        );
+        assert_eq!(after_any("İ", &["ask an agent to "]), None);
     }
 }

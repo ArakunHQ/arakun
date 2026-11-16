@@ -178,18 +178,19 @@ fn parse(bytes: &[u8]) -> Option<(Saved, usize)> {
         .collect();
     let skipped = total - custom.len();
     // A bad shape value falls back to its default; it doesn't cost the palettes.
-    let mut scale = |key: &str, default: f32| match obj.remove(key) {
+    // Square corners and no window gap are choices (0); no spacing is not.
+    let mut scale = |key: &str, default: f32, zero_ok: bool| match obj.remove(key) {
         Some(serde_json::Value::Number(n)) => n
             .as_f64()
             .map(|f| f as f32)
-            .filter(|f| f.is_finite() && *f > 0.)
+            .filter(|f| f.is_finite() && (*f > 0. || zero_ok && *f == 0.))
             .unwrap_or(default),
         _ => default,
     };
     let (radius, space, window_gap) = (
-        scale("radius", one()),
-        scale("space", one()),
-        scale("window_gap", eight()),
+        scale("radius", one(), true),
+        scale("space", one(), false),
+        scale("window_gap", eight(), true),
     );
     Some((
         Saved {
@@ -386,5 +387,17 @@ mod tests {
         // Missing or bad values are the defaults.
         let (saved, _) = parse(br#"{"radius":"big"}"#).unwrap();
         assert_eq!((saved.radius, saved.space, saved.window_gap), (1., 1., 8.));
+        // Square corners and no gap survive a save; no spacing at all doesn't.
+        let zero = Saved {
+            radius: 0.,
+            window_gap: 0.,
+            ..Saved::default()
+        };
+        let (back, _) = parse(&serde_json::to_vec(&zero).unwrap()).unwrap();
+        assert_eq!(back, zero);
+        let (saved, _) = parse(br#"{"radius":0,"space":0,"window_gap":0}"#).unwrap();
+        assert_eq!((saved.radius, saved.space, saved.window_gap), (0., 1., 0.));
+        let (saved, _) = parse(br#"{"radius":-1,"window_gap":-2}"#).unwrap();
+        assert_eq!((saved.radius, saved.window_gap), (1., 8.));
     }
 }

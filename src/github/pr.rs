@@ -1846,6 +1846,45 @@ fn approve_cmd(item: &ItemRef, body: &str, head: &str) -> Result<Cmd, Problem> {
     Ok(Cmd { args, stdin })
 }
 
+/// A review tied to one commit, through the REST API (`gh pr review` can't
+/// name a commit): what was read is what gets approved, even if a push lands
+/// while the review is sent.
+fn review_at_cmd(item: &ItemRef, verdict: Verdict, body: &str, sha: &str) -> Result<Cmd, Problem> {
+    pulls_only(item)?;
+    if !valid_repo(&item.repo) {
+        return Err(invalid("Not a repository name."));
+    }
+    if !(7..=64).contains(&sha.len()) || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(invalid("Not a commit."));
+    }
+    let event = match verdict {
+        Verdict::Approve => "APPROVE",
+        Verdict::RequestChanges => "REQUEST_CHANGES",
+        Verdict::Comment => "COMMENT",
+    };
+    let stdin = if verdict == Verdict::Approve && body.trim().is_empty() {
+        None
+    } else {
+        with_body(body)?
+    };
+    let path = format!("repos/{}/pulls/{}/reviews", item.repo, item.number);
+    let mut args = strings(&[
+        "api",
+        "-X",
+        "POST",
+        &path,
+        "-f",
+        &format!("event={event}"),
+        "-f",
+        &format!("commit_id={sha}"),
+    ]);
+    if stdin.is_some() {
+        // `-F body=@-` takes the field from stdin, and as text whatever it looks like.
+        args.extend(strings(&["-F", "body=@-"]));
+    }
+    Ok(Cmd { args, stdin })
+}
+
 #[allow(dead_code)] // Not offered in the view yet.
 fn reply_cmd(item: &ItemRef, comment_id: u64, body: &str) -> Result<Cmd, Problem> {
     pulls_only(item)?;
@@ -2013,6 +2052,11 @@ pub fn comment(item: &ItemRef, body: &str) -> Result<String, Problem> {
 /// `head`, the commit that was read; the other verdicts ignore it.
 pub fn review(item: &ItemRef, verdict: Verdict, body: &str, head: &str) -> Result<(), Problem> {
     act(review_cmd(item, verdict, body, head)).map(|_| ())
+}
+
+/// Sends a review of commit `sha`. An approval may have an empty body.
+pub fn review_at(item: &ItemRef, verdict: Verdict, body: &str, sha: &str) -> Result<(), Problem> {
+    act(review_at_cmd(item, verdict, body, sha)).map(|_| ())
 }
 
 /// Answers a thread on the diff (`Thread::id`); returns the answer's address.
@@ -3873,6 +3917,31 @@ mod tests {
         assert!(review_cmd(&pr, Verdict::Approve, "LGTM", "").is_err());
         assert!(review_cmd(&pr, Verdict::Approve, "LGTM", &SHA[..7]).is_err());
         assert!(review_cmd(&pr, Verdict::Approve, "LGTM", "-f event=COMMENT").is_err());
+
+        let sha = "40a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3";
+        let cmd = review_at_cmd(&pr, Verdict::RequestChanges, body, sha).unwrap();
+        assert_eq!(
+            cmd.args.join(" "),
+            format!(
+                "api -X POST repos/ArakunHQ/arakun/pulls/41/reviews -f event=REQUEST_CHANGES -f commit_id={sha} -F body=@-"
+            )
+        );
+        assert_eq!(cmd.stdin.as_deref(), Some(body));
+        let bare = review_at_cmd(&pr, Verdict::Approve, "", sha).unwrap();
+        assert_eq!(
+            (bare.args.join(" "), bare.stdin),
+            (
+                format!(
+                    "api -X POST repos/ArakunHQ/arakun/pulls/41/reviews -f event=APPROVE -f commit_id={sha}"
+                ),
+                None
+            )
+        );
+        // Only a commit goes into the field, and only a pull request is reviewed.
+        assert!(review_at_cmd(&pr, Verdict::Approve, "", "main; rm").is_err());
+        assert!(review_at_cmd(&pr, Verdict::Approve, "", "").is_err());
+        assert!(review_at_cmd(&issue, Verdict::Approve, "", sha).is_err());
+        assert!(review_at_cmd(&pr, Verdict::RequestChanges, " ", sha).is_err());
 
         let cmd = reply_cmd(&pr, 101, body).unwrap();
         assert_eq!(

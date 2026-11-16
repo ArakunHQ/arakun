@@ -7,6 +7,7 @@
 
 mod diff;
 mod item;
+mod pilot;
 mod pulse;
 mod queue;
 mod timeline;
@@ -24,6 +25,7 @@ use gpui::{
 };
 
 use crate::agent::markdown::{self, Block, MdStyle};
+use crate::github::pilot::Pilot;
 use crate::github::pr::{self, Draft, FileDiff, ItemKind, ItemRef, MergeMethod, Verdict};
 use crate::github::queue::{Details, Entry, Group};
 use crate::github::{GitHub, Problem};
@@ -339,6 +341,16 @@ pub struct GitHubView {
     card_pane: Entity<Pane>,
     body_pane: Entity<Pane>,
     focus: FocusHandle,
+    pilot: Entity<Pilot>,
+    /// Cards whose points are open, by item id.
+    pilot_open: HashSet<String>,
+    /// The card picked, or shown from the island.
+    pilot_focus: Option<String>,
+    /// The confirm strip came from this card.
+    pilot_act: Option<pilot::PilotAct>,
+    /// Why a card's action didn't go, by item id.
+    pilot_notes: HashMap<String, String>,
+    _pilot_sub: Subscription,
     _subs: Vec<Subscription>,
 }
 
@@ -387,7 +399,7 @@ impl EventEmitter<GitHubViewEvent> for GitHubView {}
 const NEWLINE: &str = "⏎";
 
 impl GitHubView {
-    pub fn new(github: Entity<GitHub>, cx: &mut Context<Self>) -> Self {
+    pub fn new(github: Entity<GitHub>, pilot: Entity<Pilot>, cx: &mut Context<Self>) -> Self {
         let watch_input = cx.new(|cx| TextInput::new("organization or owner/repo", cx));
         let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
@@ -436,6 +448,16 @@ impl GitHubView {
             cx,
         );
         let body_pane = Pane::new(&me, |this, cx| this.render_body(cx), cx);
+        let pilot_sub = cx.observe(&pilot, |this, pilot, cx| {
+            let (people, shown) = {
+                let p = pilot.read(cx);
+                (p.people(), p.shown_ids())
+            };
+            this.pilot_open.retain(|id| shown.contains(id));
+            this.pilot_notes.retain(|id, _| shown.contains(id));
+            this.github.update(cx, |g, cx| g.want_people(people, cx));
+            cx.notify();
+        });
         let mut this = Self {
             github,
             picked: None,
@@ -481,6 +503,12 @@ impl GitHubView {
             queue_pane,
             card_pane,
             body_pane,
+            pilot,
+            pilot_open: HashSet::new(),
+            pilot_focus: None,
+            pilot_act: None,
+            pilot_notes: HashMap::new(),
+            _pilot_sub: pilot_sub,
             _subs: subs,
         };
         this.resubscribe_body(cx);
@@ -608,6 +636,7 @@ impl GitHubView {
         if !same {
             self.tab = Tab::Timeline;
             self.confirm = None;
+            self.pilot_act = None;
             self.editing_draft = false;
             self.note = None;
             self.folded.clear();
@@ -1093,6 +1122,8 @@ impl GitHubView {
         self.confirm_draft = self.draft.clone();
         self.editing_draft = false;
         self.note = None;
+        // A card sets its own after this.
+        self.pilot_act = None;
         let placeholder = match c {
             Confirm::RequestChanges => "What should change (required)",
             _ => "Say why (optional)",
@@ -1154,7 +1185,12 @@ impl GitHubView {
     }
 
     fn run_confirm(&mut self, c: Confirm, cx: &mut Context<Self>) {
-        let body = self.body_input.read(cx).text().to_string();
+        // A card's review comes in with its line breaks as ⏎.
+        let body = self.body_input.read(cx).text().replace(NEWLINE, "\n");
+        if let Some(act) = self.pilot_for(c) {
+            self.run_pilot_confirm(c, act, body, cx);
+            return;
+        }
         let base = match self
             .item()
             .and_then(|i| self.github.read(cx).details(&i).cloned())

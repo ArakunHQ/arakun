@@ -501,6 +501,7 @@ impl GitHubView {
                     (q, verb, false)
                 }
             };
+            let (question, verb) = self.pilot_question(c).unwrap_or((question, verb));
             let busy = self.busy.is_some();
             return Some(
                 strip()

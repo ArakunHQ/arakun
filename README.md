@@ -157,6 +157,13 @@ terminal-only. The status line and keybindings from your settings don't apply in
   does anything new in the organizations and repositories on your watch list. Click the
   line under "Review queue" to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
+- **Pull request agent.** With a pull request agent on a server of your own
+  (arakun-pilot), its cards show at the top of the queue under "Tu agente":
+  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set;
+  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/items` every
+  minute. Approve and request changes go through the same second click, with your own
+  `gh`; an approval only goes to the commit the agent read. What you saw and dealt with
+  is kept in `pilot.json` next to the state.
 
 <details>
 <summary>When the GitHub tab reads GitHub, and what it stores</summary>

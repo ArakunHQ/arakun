@@ -239,7 +239,8 @@ arakun mem search <words>         # search what agents remember about this proje
 arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md
                                   # save a review draft for the GitHub tab; sends nothing.
                                   # --body-file takes a file or - (stdin); an agent's file
-                                  # outside its workspace asks the user first. --head is
+                                  # asks the user first if it is outside its workspace or
+                                  # the command shares its line with others. --head is
                                   # the commit the agent read; an approval needs it
 arakun agent run <prompt>         # start a headless agent
 arakun --version                  # print the version (needs no running Arakun)

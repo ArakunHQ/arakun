@@ -65,7 +65,7 @@ impl Shell {
             self.clear_armed = false;
             let mut history = self.notices.borrow_mut();
             if history.mark_all_seen() {
-                crate::notices::store(&history);
+                crate::notices::store(&mut history);
             }
         }
         self.inbox_open = open;
@@ -146,7 +146,7 @@ impl Shell {
                         |this, _, _, cx| {
                             let mut history = this.notices.borrow_mut();
                             if history.mark_all_seen() {
-                                crate::notices::store(&history);
+                                crate::notices::store(&mut history);
                             }
                             drop(history);
                             cx.notify();
@@ -167,7 +167,7 @@ impl Shell {
                                 this.clear_armed = false;
                                 let mut history = this.notices.borrow_mut();
                                 history.notices.clear();
-                                crate::notices::store(&history);
+                                crate::notices::store(&mut history);
                             } else {
                                 this.clear_armed = true;
                             }
@@ -323,7 +323,7 @@ fn notice_row(i: usize, n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl I
                         .position(|n| n.at == at && n.key == key),
                 };
                 if index.is_some_and(|i| history.mark_seen(i)) {
-                    crate::notices::store(&history);
+                    crate::notices::store(&mut history);
                 }
             }
             if !key.is_empty() {

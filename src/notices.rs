@@ -67,6 +67,10 @@ fn preview(text: &str) -> String {
 pub struct History {
     #[serde(default)]
     pub notices: Vec<Notice>,
+    /// The file on disk could not be read in full nor set aside, so a save
+    /// would write over notices it still holds. Saves wait until it is moved.
+    #[serde(skip)]
+    unsaved_file: bool,
 }
 
 impl History {
@@ -218,13 +222,15 @@ fn load_from(path: &Path, now: u64) -> History {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return History::default(),
         Err(e) => {
             eprintln!("arakun: could not read {}: {e}", path.display());
-            set_aside(path, now);
-            return History::default();
+            return History {
+                unsaved_file: !set_aside(path, now),
+                ..History::default()
+            };
         }
     };
     match parse(&bytes) {
         Ok((history, 0)) => history,
-        Ok((history, bad)) => {
+        Ok((mut history, bad)) => {
             eprintln!(
                 "arakun: {} notices in {} could not be read; keeping the other {}",
                 bad,
@@ -232,14 +238,18 @@ fn load_from(path: &Path, now: u64) -> History {
                 history.notices.len()
             );
             if set_aside(path, now) {
-                store_to(path, &history);
+                store_to(path, &mut history, now);
+            } else {
+                history.unsaved_file = true;
             }
             history
         }
         Err(e) => {
             eprintln!("arakun: {} is not valid: {e}", path.display());
-            set_aside(path, now);
-            History::default()
+            History {
+                unsaved_file: !set_aside(path, now),
+                ..History::default()
+            }
         }
     }
 }
@@ -260,15 +270,40 @@ fn parse(bytes: &[u8]) -> serde_json::Result<(History, usize)> {
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect();
     let bad = total - notices.len();
-    Ok((History { notices }, bad))
+    Ok((
+        History {
+            notices,
+            ..History::default()
+        },
+        bad,
+    ))
 }
+
+/// How many `.corrupt-<time>-<n>` names `set_aside` tries in one second.
+const ASIDE_NAMES: usize = 100;
 
 /// Renames the file out of the way so the next save can't overwrite it.
 /// `false` when it is still there.
 fn set_aside(path: &Path, now: u64) -> bool {
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(".corrupt-{now}"));
-    let kept = PathBuf::from(name);
+    // A rename replaces a file already at the new name: take a free one, so
+    // a file set aside earlier in the same second is not lost either.
+    let kept = (0..ASIDE_NAMES)
+        .map(|n| {
+            let mut name = path.as_os_str().to_owned();
+            name.push(format!(".corrupt-{now}"));
+            if n > 0 {
+                name.push(format!("-{n}"));
+            }
+            PathBuf::from(name)
+        })
+        .find(|p| std::fs::symlink_metadata(p).is_err());
+    let Some(kept) = kept else {
+        eprintln!(
+            "arakun: could not set {} aside: no free name",
+            path.display()
+        );
+        return false;
+    };
     match std::fs::rename(path, &kept) {
         Ok(()) => {
             eprintln!("arakun: kept the old notices in {}", kept.display());
@@ -281,12 +316,26 @@ fn set_aside(path: &Path, now: u64) -> bool {
     }
 }
 
-pub fn store(history: &History) {
-    store_to(&file(), history);
+pub fn store(history: &mut History) {
+    store_to(&file(), history, crate::model::unix_now());
 }
 
 /// Private: subtitles hold the start of agent replies.
-fn store_to(path: &Path, history: &History) {
+fn store_to(path: &Path, history: &mut History, now: u64) {
+    if history.unsaved_file {
+        // The file that could not be read is still there: move it first.
+        history.unsaved_file = match std::fs::symlink_metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            _ => !set_aside(path, now),
+        };
+        if history.unsaved_file {
+            eprintln!(
+                "arakun: not saving {}: it holds notices that could not be read",
+                path.display()
+            );
+            return;
+        }
+    }
     if let Err(e) = crate::durable::write_private(
         path,
         &serde_json::to_vec_pretty(history).unwrap_or_default(),
@@ -462,10 +511,10 @@ mod tests {
         let path = dir.join("notices.json");
         let torn = br#"{"notices":[{"at":5,"kind":"failure","title":"CI"#;
         std::fs::write(&path, torn).unwrap();
-        let h = load_from(&path, 42);
+        let mut h = load_from(&path, 42);
         assert!(h.notices.is_empty());
         // The next save starts a new file; the old bytes stay where they were put.
-        store_to(&path, &h);
+        store_to(&path, &mut h, 43);
         assert_eq!(
             std::fs::read(dir.join("notices.json.corrupt-42")).unwrap(),
             torn
@@ -496,6 +545,46 @@ mod tests {
     }
 
     #[test]
+    fn setting_aside_keeps_an_earlier_copy() {
+        let dir = scratch("aside-twice");
+        let path = dir.join("notices.json");
+        std::fs::write(dir.join("notices.json.corrupt-42"), "first").unwrap();
+        std::fs::write(&path, "second").unwrap();
+        assert!(load_from(&path, 42).notices.is_empty());
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        assert_eq!(read("notices.json.corrupt-42"), "first");
+        assert_eq!(read("notices.json.corrupt-42-1"), "second");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_that_could_not_be_set_aside_is_not_overwritten() {
+        let dir = scratch("stuck");
+        let path = dir.join("notices.json");
+        let torn = r#"{"notices":[{"at":5,"kind":"failure","title":"CI"#;
+        std::fs::write(&path, torn).unwrap();
+        // Every name it could be moved to is taken.
+        let aside = |n: usize| match n {
+            0 => dir.join("notices.json.corrupt-42"),
+            n => dir.join(format!("notices.json.corrupt-42-{n}")),
+        };
+        for n in 0..ASIDE_NAMES {
+            std::fs::write(aside(n), "older").unwrap();
+        }
+        let mut h = load_from(&path, 42);
+        assert!(h.notices.is_empty());
+        h.push(notice(50, "Deploy"));
+        store_to(&path, &mut h, 42);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), torn);
+        // Once a name is free, the next save moves it and then writes.
+        std::fs::remove_file(aside(7)).unwrap();
+        store_to(&path, &mut h, 42);
+        assert_eq!(std::fs::read_to_string(aside(7)).unwrap(), torn);
+        assert_eq!(load_from(&path, 60).notices, h.notices);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_missing_file_is_an_empty_history() {
         let dir = scratch("missing");
         assert_eq!(load_from(&dir.join("notices.json"), 1), History::default());
@@ -511,7 +600,7 @@ mod tests {
         let path = dir.join("notices.json");
         let mut h = History::default();
         h.push(notice(1, "Claude terminó"));
-        store_to(&path, &h);
+        store_to(&path, &mut h, 1);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         let _ = std::fs::remove_dir_all(dir);

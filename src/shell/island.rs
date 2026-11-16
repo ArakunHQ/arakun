@@ -328,7 +328,7 @@ impl Shell {
         let notice = crate::notices::Notice::from_alert(alert, model::unix_now());
         let mut history = self.notices.borrow_mut();
         if history.push(notice) {
-            crate::notices::store(&history);
+            crate::notices::store(&mut history);
             cx.notify();
         }
     }

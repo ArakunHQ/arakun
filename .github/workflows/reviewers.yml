@@ -162,11 +162,14 @@ jobs:
           # The pull request, the message, then the approvals to dismiss
           # (by default every one there is now).
           dismiss_approvals() {
-            local pr=$1 message=$2 id
+            local pr=$1 message=$2 id listed
             shift 2
             local ids=("$@")
             if [ ${#ids[@]} -eq 0 ]; then
-              mapfile -t ids < <(coderabbit_approvals "$pr")
+              # An assignment, not `mapfile < <(...)`: a failed lookup must
+              # fail the step, not look like no approvals.
+              listed=$(coderabbit_approvals "$pr")
+              [ -z "$listed" ] || mapfile -t ids <<<"$listed"
             fi
             for id in "${ids[@]}"; do
               gh api -X PUT "repos/$GH_REPO/pulls/$pr/reviews/$id/dismissals" --silent \
@@ -218,9 +221,11 @@ jobs:
             # can still count. Taken before the threads are read, so only
             # these are dismissed: an approval that comes later starts a run
             # of its own, which judges it.
-            local approvals=()
+            local approvals=() listed
             if in_team "$author"; then
-              mapfile -t approvals < <(coderabbit_approvals "$pr")
+              # A failed lookup fails the step (see dismiss_approvals).
+              listed=$(coderabbit_approvals "$pr")
+              [ -z "$listed" ] || mapfile -t approvals <<<"$listed"
             fi
             if [ ${#approvals[@]} -gt 0 ]; then
               local threads open self

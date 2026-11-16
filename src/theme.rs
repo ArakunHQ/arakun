@@ -753,6 +753,11 @@ pub fn brand_paper() -> Hsla {
 pub fn brand_ink() -> Hsla {
     rgb(0x151515).into()
 }
+/// The fur where paper would vanish, on white: the paper toward ink, dark
+/// enough to read (3.6:1) and still the light part of the face.
+pub fn brand_fur_on_light() -> Hsla {
+    rgb(0x8a867d).into()
+}
 
 /// Text and icons drawn on an accent fill: the background in dark mode, the
 /// dark content in light mode, where the background would be white on amber.

@@ -530,8 +530,9 @@ enum Mark {
 struct Frame {
     /// The head, with the ear insides, the mask and the nose as holes.
     body: Vec<Seg>,
-    /// How many of `body`'s segments are the head's outline alone: painted
-    /// dark underneath, so the holes never show what is behind the raccoon.
+    /// How many of `body`'s segments are the head's outline alone; the
+    /// holes after it are painted in ink underneath, so they never show
+    /// what is behind the raccoon.
     outline: usize,
     marks: Vec<Mark>,
     /// Paint is cut below this line (a shy raccoon behind the prompter).
@@ -1724,30 +1725,10 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, fur: Hsla, window: &mut Window) 
                 window.paint_path(path, color);
             }
         };
-        // The dark of the ear insides, the mask and the nose: the head's
-        // outline in the brand's ink, so the face is the same in light mode.
-        fill(&frame.body[..frame.outline], theme::brand_ink(), window);
-        // On a white page the paper fur would vanish: a thin ink rim keeps
-        // the head's shape, the way the brand puts the raccoon on ink.
-        if theme::is_light() {
-            let opts = StrokeOptions::default()
-                .with_line_width(5. * k)
-                .with_line_join(LineJoin::Round);
-            let mut b = PathBuilder::fill().with_style(PathStyle::Stroke(opts));
-            for seg in &frame.body[..frame.outline] {
-                match *seg {
-                    Seg::M(p) => b.move_to(pt(p)),
-                    Seg::L(p) => b.line_to(pt(p)),
-                    Seg::C(c) => {
-                        b.cubic_bezier_to(pt([c[4], c[5]]), pt([c[0], c[1]]), pt([c[2], c[3]]))
-                    }
-                    Seg::Z => b.close(),
-                }
-            }
-            if let Ok(path) = b.build() {
-                window.paint_path(path, theme::brand_ink());
-            }
-        }
+        // The dark of the ear insides, the mask and the nose: those holes
+        // alone in the brand's ink, so nothing shows behind the head, on
+        // black or on white.
+        fill(&frame.body[frame.outline..], theme::brand_ink(), window);
         // The head in one even-odd path: the ear insides, the mask and the
         // nose are holes over that dark.
         fill(&frame.body, fur, window);

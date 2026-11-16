@@ -205,7 +205,12 @@ impl Shell {
     }
 
     /// "Ver" or a row: the window in front, at the session or what the notice is about.
-    fn open_from_island(&mut self, key: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_from_island(
+        &mut self,
+        key: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.activate_window();
         match Open::parse(&key) {
             Some(Open::Session(id)) => {
@@ -260,8 +265,15 @@ impl Shell {
     /// task…): a card on the island when it is there, else a desktop
     /// notification. `open`: what the card's "Ver" shows; without it the card
     /// has no buttons and leaves by itself.
-    pub(super) fn notify(&self, kind: AlertKind, title: &str, body: &str, open: Option<Open>) {
-        self.notify_from(kind, title, body, open, None, "");
+    pub(super) fn notify(
+        &self,
+        kind: AlertKind,
+        title: &str,
+        body: &str,
+        open: Option<Open>,
+        cx: &mut Context<Self>,
+    ) {
+        self.notify_from(kind, title, body, open, None, "", cx);
     }
 
     /// A notice with a picture (a file on disk) and the logo of the service it
@@ -274,6 +286,7 @@ impl Shell {
         open: Option<Open>,
         image: Option<&std::path::Path>,
         brand: &str,
+        cx: &mut Context<Self>,
     ) {
         let alert = isl::Alert {
             key: open.map(|o| o.key()).unwrap_or_default(),
@@ -287,11 +300,7 @@ impl Shell {
                 .into(),
             brand: brand.to_string().into(),
         };
-        let shown = self
-            .island
-            .as_ref()
-            .is_some_and(|link| send_alert(&link.tx, &link.up, alert));
-        if !shown {
+        if !self.show_alert(alert, cx) {
             super::sessions::send_notification(title, body, kind == AlertKind::Failure);
         }
     }
@@ -303,6 +312,25 @@ impl Shell {
         self.island
             .as_ref()
             .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
+    }
+
+    /// Keeps `alert` in the history, then shows it on the island when it is
+    /// connected; `false` and the caller tells it some other way. Every notice
+    /// the shell shows goes through here, so the Inbox misses none.
+    pub(super) fn show_alert(&self, alert: isl::Alert, cx: &mut Context<Self>) -> bool {
+        self.record(&alert, cx);
+        self.island
+            .as_ref()
+            .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
+    }
+
+    fn record(&self, alert: &isl::Alert, cx: &mut Context<Self>) {
+        let notice = crate::notices::Notice::from_alert(alert, model::unix_now());
+        let mut history = self.notices.borrow_mut();
+        if history.push(notice) {
+            crate::notices::store(&mut history);
+            cx.notify();
+        }
     }
 
     /// Hands the island what every session is up to, when that changed.
@@ -375,17 +403,14 @@ impl Shell {
     }
 
     /// The card for a turn that ended, a question, or a failure.
-    pub(super) fn island_alert(
-        &mut self,
+    pub(super) fn session_alert(
+        &self,
         id: &SharedString,
         thread: &Entity<Thread>,
         notice: Notice,
         title: &str,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(link) = &self.island else {
-            return false;
-        };
+        cx: &App,
+    ) -> isl::Alert {
         let t = thread.read(cx);
         let model = model_label(t, None);
         let (kind, head, line) = match notice {
@@ -404,7 +429,7 @@ impl Shell {
                 error_line(t, brief),
             ),
         };
-        let alert = isl::Alert {
+        isl::Alert {
             key: id.clone(),
             kind,
             title: head.into(),
@@ -412,8 +437,7 @@ impl Shell {
             req: SharedString::default(),
             image: SharedString::default(),
             brand: SharedString::default(),
-        };
-        send_alert(&link.tx, &link.up, alert)
+        }
     }
 }
 

@@ -238,6 +238,7 @@ Usage:
   arakun check --set <command…>
                              make it the project's check command
   arakun notify <message…>     send a desktop notification
+  arakun notices [--unseen]    the notifications Arakun has shown, newest first
   arakun ls                    list projects, environments and their sessions
   arakun island [state]        show the Dynamic Island in a state, to try it:
                              sleeping, idle, working, speaking, listening;
@@ -371,6 +372,9 @@ fn cli(args: Vec<String>) -> Cli {
     }
     if first == "github" {
         return Cli::Exit(crate::github::cli(&args[1..]));
+    }
+    if first == "notices" {
+        return Cli::Exit(crate::notices::cli(&args[1..]));
     }
     if first == "iso" {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));

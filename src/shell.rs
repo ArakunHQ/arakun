@@ -34,6 +34,7 @@ mod git_actions;
 mod github;
 mod headless;
 mod home;
+mod inbox;
 mod island;
 mod limits;
 mod menus;
@@ -183,7 +184,7 @@ enum MenuTarget {
     AgentMenu,
     /// Which providers the rail's usage card shows.
     RailUsage,
-    /// Sessions across all projects that want attention.
+    /// Sessions across all projects that want attention, and past notices.
     Inbox,
     /// A session of the visible environment, by index, from its row or tab.
     Session(usize),
@@ -413,6 +414,14 @@ pub struct Shell {
     island: Option<island::IslandLink>,
     #[cfg(feature = "team")]
     team: Option<team::TeamLink>,
+    /// Every notice shown, for the Inbox. A cell: notices go out from `&self`.
+    notices: RefCell<crate::notices::History>,
+    /// The Inbox was open at the last frame: when it closes, what it showed counts as seen.
+    inbox_open: bool,
+    /// `History::arrived` when the Inbox last drew: what it showed.
+    inbox_shown: Cell<u64>,
+    /// "Clear" was clicked once; the second click empties the history.
+    clear_armed: bool,
 }
 
 struct InboxItem {
@@ -778,6 +787,10 @@ impl Shell {
             island: None,
             #[cfg(feature = "team")]
             team: None,
+            notices: RefCell::new(crate::notices::load()),
+            inbox_open: false,
+            inbox_shown: Cell::new(0),
+            clear_armed: false,
             restarting: false,
             _runs: runs_subs,
             _quit: [
@@ -1964,120 +1977,6 @@ impl Shell {
         self.open_session(id, window, cx);
     }
 
-    /// Sessions that are running, waiting for an answer, or failed, newest first.
-    fn inbox_items(&self) -> Vec<InboxItem> {
-        let mut items = Vec::new();
-        for (pi, p) in self.projects.iter().enumerate() {
-            for (ei, e) in p.environments.iter().enumerate() {
-                for sess in &e.sessions {
-                    if sess.status != Status::Idle {
-                        items.push(InboxItem {
-                            project: pi,
-                            env: ei,
-                            id: sess.id.clone(),
-                            status: sess.status,
-                            title: sess.title.clone(),
-                            place: format!("{}/{}", p.name, e.name).into(),
-                            updated: sess.updated,
-                        });
-                    }
-                }
-            }
-        }
-        // Waiting first, then errors, then running.
-        let rank = |s: Status| match s {
-            Status::NeedsInput => 0,
-            Status::Error => 1,
-            _ => 2,
-        };
-        items.sort_by(|a, b| {
-            rank(a.status)
-                .cmp(&rank(b.status))
-                .then(b.updated.cmp(&a.updated))
-        });
-        items
-    }
-
-    fn render_inbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = self.inbox_items();
-        let mut panel = ui::menu_panel("inbox-menu", 300.)
-            .max_h(px(420.))
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .px(px(8.))
-                    .pt(px(4.))
-                    .pb(px(2.))
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(theme::text_subtle())
-                    .child("Inbox"),
-            );
-        if items.is_empty() {
-            panel = panel.child(
-                div()
-                    .px(px(8.))
-                    .py(px(12.))
-                    .text_size(px(ui::TEXT_SM))
-                    .text_color(theme::text_subtle())
-                    .child("Nothing needs you. Sessions that wait for an answer, fail or are running show up here."),
-            );
-        }
-        for (i, item) in items.into_iter().enumerate() {
-            let label = match item.status {
-                Status::NeedsInput => "Needs you",
-                Status::Error => "Failed",
-                _ => "Running",
-            };
-            let (pi, ei, id) = (item.project, item.env, item.id.clone());
-            panel = panel.child(
-                div()
-                    .id(("inbox-item", i))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .px(px(8.))
-                    .py(px(6.))
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::selection_hover()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(status_dot(item.status))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(ui::TEXT_MD))
-                                    .child(item.title),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(ui::TEXT_XS))
-                                    .text_color(theme::text_subtle())
-                                    .child(label),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .pl(px(14.))
-                            .text_size(px(ui::TEXT_XS))
-                            .text_color(theme::text_faint())
-                            .child(format!("{} · {}", item.place, model::age(item.updated))),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.menu = None;
-                        this.open_session_at(pi, ei, id.clone(), window, cx);
-                    })),
-            );
-        }
-        panel
-    }
-
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((Modal::Attach(picker), _)) = self.modal.take() {
             picker.update(cx, |picker, cx| picker.release(cx));
@@ -2443,6 +2342,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_inbox_seen();
         // When what had the keyboard leaves the screen (the composer when a page opens
         // over it), keys reach no element and every shortcut stops until a click.
         if !self.refocus_queued && self.has_projects() && !self.focus.contains_focused(window, cx) {

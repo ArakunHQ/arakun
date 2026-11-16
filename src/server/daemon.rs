@@ -1587,13 +1587,16 @@ impl Daemon {
     ) -> Result<(), String> {
         let thread = self.ensure_live(id, cx)?;
         thread.update(cx, |t, cx| {
-            t.send(text, cx);
             // Follow-ups that waited when the server stopped come back held,
             // for someone to let go in the app's window. Here a new prompt is
             // that someone: held, they would keep this one from ever running.
+            // Let go before the prompt is sent, so they run first whether the
+            // agent is still connecting or already idle; sent first, an idle
+            // agent would start on the new prompt.
             if t.queue_paused() {
                 t.resume_queue(cx);
             }
+            t.send(text, cx);
         });
         if let Some(s) = self.store.session_mut(id) {
             s.updated = unix_now();

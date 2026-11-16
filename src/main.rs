@@ -121,7 +121,7 @@ fn main() {
         .run(move |cx: &mut App| {
             assets::load_fonts(cx);
             #[cfg(target_os = "macos")]
-            if let Some(icon) = assets::Assets::get("brand/arakun.png") {
+            if let Some(icon) = assets::Assets::get("brand/arakun-macos.png") {
                 platform::set_dock_icon(&icon.data);
             }
             cx.bind_keys([

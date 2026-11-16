@@ -33,7 +33,7 @@ imagesize = "0.15"
 ureq = "3"
 unicode-segmentation = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 lyon_tessellation = "1.0"
 serde = { version = "1", features = ["derive"] }

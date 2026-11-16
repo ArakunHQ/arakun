@@ -9,14 +9,20 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
+use crate::env_name;
 use crate::git;
 use crate::input::{InputEvent, TextInput};
-use crate::model::{pretty_path, worktree_path};
+use crate::model::{pretty_path, workspaces_root, worktree_path};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
 pub enum DialogEvent {
-    Created(PathBuf),
+    /// `auto_name`: the branch kept the random name the dialog filled in.
+    Created {
+        path: PathBuf,
+        branch: String,
+        auto_name: bool,
+    },
     Deleted(PathBuf),
     /// A project command (setup script, check) was saved; None clears it.
     Command(Option<String>),
@@ -31,7 +37,15 @@ pub struct CreateEnvDialog {
     /// Project setup script, shown so the user knows it will run.
     setup: Option<String>,
     input: Entity<TextInput>,
+    /// The random name filled in; a branch created with it gets renamed after
+    /// the first prompt.
+    suggested: String,
+    /// Who renames a branch that keeps `suggested`; None when naming is off.
+    namer: Option<crate::agent::AgentKind>,
     branches: git::Branches,
+    /// The local branches are read. Until then a random name could match one, which
+    /// would be checked out and later renamed.
+    branches_loaded: bool,
     /// None = current HEAD.
     base: Option<String>,
     base_open: bool,
@@ -50,7 +64,14 @@ impl CreateEnvDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| TextInput::new("feature/my-task", cx).mono());
+        let suggested = env_name::random(|n| folder_taken(&project, n));
+        // Selected, so typing a name of your own replaces it.
+        let input = cx.new(|cx| {
+            let mut i = TextInput::new("feature/my-task", cx).mono();
+            i.set_text(suggested.clone(), cx);
+            i.select_all_text(cx);
+            i
+        });
         let sub = cx.subscribe_in(&input, window, |this: &mut Self, _, ev, _, cx| match ev {
             InputEvent::Submit => this.submit(cx),
             InputEvent::Cancel => {
@@ -62,7 +83,10 @@ impl CreateEnvDialog {
                 }
             }
             InputEvent::Changed => {
-                this.error = None;
+                // A new suggestion arrives with the error that explains it; typing clears it.
+                if this.name(cx) != this.suggested {
+                    this.error = None;
+                }
                 cx.notify();
             }
             _ => {}
@@ -75,6 +99,20 @@ impl CreateEnvDialog {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.branches = branches;
+                this.branches_loaded = true;
+                let untouched = this.name(cx) == this.suggested;
+                if untouched && this.branches.local.contains(&this.suggested) {
+                    let project = this.project.clone();
+                    let local = &this.branches.local;
+                    this.suggested = env_name::random(|n| {
+                        local.iter().any(|b| b == n) || folder_taken(&project, n)
+                    });
+                    let name = this.suggested.clone();
+                    this.input.update(cx, |i, cx| {
+                        i.set_text(name, cx);
+                        i.select_all_text(cx);
+                    });
+                }
                 cx.notify();
             });
         })
@@ -84,7 +122,17 @@ impl CreateEnvDialog {
             project,
             setup,
             input,
+            suggested,
+            namer: {
+                // A new environment's sessions start on the agent picked last.
+                let namer = env_name::namer();
+                namer
+                    .pick(crate::model::default_agent().kind())
+                    .map(|(agent, _)| agent)
+                    .filter(|a| namer.choice.agent().is_some() || env_name::installed(*a))
+            },
             branches: git::Branches::default(),
+            branches_loaded: false,
             base: None,
             base_open: false,
             busy: false,
@@ -99,7 +147,7 @@ impl CreateEnvDialog {
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         let name = self.name(cx);
-        if self.busy || name.is_empty() {
+        if self.busy || name.is_empty() || !self.branches_loaded {
             return;
         }
         if name.contains(char::is_whitespace) || !git::branch_name_ok(&self.repo, &name) {
@@ -113,17 +161,41 @@ impl CreateEnvDialog {
         let repo = self.repo.clone();
         let path = worktree_path(&self.project, &name);
         let base = self.base.clone();
+        // An existing branch is the user's, whatever it is called.
+        let auto_name = name == self.suggested && !self.branches.local.contains(&name);
         cx.spawn(async move |this, cx| {
             let target = path.clone();
+            let branch = name.clone();
+            // The branch list can be stale or empty (a failed read): git decides.
             let result = cx
                 .background_spawn(async move {
-                    git::add_worktree(&repo, &target, &name, base.as_deref())
+                    git::add_worktree(&repo, &target, &name, base.as_deref(), auto_name)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {
-                    Ok(()) => cx.emit(DialogEvent::Created(path)),
+                    Ok(()) => cx.emit(DialogEvent::Created {
+                        path,
+                        branch,
+                        auto_name,
+                    }),
+                    Err(e) if auto_name => {
+                        // Someone made a branch with the random name since: offer another.
+                        let project = this.project.clone();
+                        let local = &this.branches.local;
+                        let taken = branch.clone();
+                        this.suggested = env_name::random(|n| {
+                            n == taken || local.iter().any(|b| b == n) || folder_taken(&project, n)
+                        });
+                        let next = this.suggested.clone();
+                        this.input.update(cx, |i, cx| {
+                            i.set_text(next, cx);
+                            i.select_all_text(cx);
+                        });
+                        this.error = Some(format!("{e}. Here is another name.").into());
+                        cx.notify();
+                    }
                     Err(e) => {
                         this.error = Some(e.to_string().into());
                         cx.notify();
@@ -151,6 +223,15 @@ impl Focusable for CreateEnvDialog {
     }
 }
 
+/// A random name is taken when its worktree folder exists: the new one would get a
+/// `-2` folder that no longer matches it.
+fn folder_taken(project: &str, name: &str) -> bool {
+    workspaces_root()
+        .join(project)
+        .join(name.replace('/', "-"))
+        .exists()
+}
+
 fn field_label(text: &str) -> impl IntoElement {
     div()
         .text_size(px(ui::TEXT_SM))
@@ -166,8 +247,11 @@ impl Render for CreateEnvDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.name(cx);
         let existing = self.branches.local.contains(&name);
+        let namer = (name == self.suggested && !existing)
+            .then_some(self.namer)
+            .flatten();
         let target = (!name.is_empty()).then(|| worktree_path(&self.project, &name));
-        let ready = !name.is_empty() && !self.busy;
+        let ready = !name.is_empty() && !self.busy && self.branches_loaded;
 
         let base_picker = div()
             .relative()
@@ -278,6 +362,17 @@ impl Render for CreateEnvDialog {
                                         .text_size(px(ui::TEXT_XS))
                                         .text_color(theme::text_subtle())
                                         .child("This branch already exists; it will be checked out."),
+                                )
+                            })
+                            .when_some(namer, |d, agent| {
+                                d.child(
+                                    div()
+                                        .text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::text_subtle())
+                                        .child(format!(
+                                            "A placeholder: after your first prompt, {} names the branch after the task.",
+                                            agent.label()
+                                        )),
                                 )
                             }),
                     )

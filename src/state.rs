@@ -148,6 +148,12 @@ pub struct EnvState {
     pub branch: Option<String>,
     #[serde(default)]
     pub is_main: bool,
+    /// The random name the first prompt replaces, while the branch still has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// The rail shows the branch, not the folder.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub follow_branch: bool,
     #[serde(default)]
     pub agent: Option<String>,
     /// Native Droid settings picked on the New session tab, as (key, value).
@@ -185,6 +191,10 @@ pub struct EnvState {
 
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize, Deserialize)]
@@ -344,6 +354,8 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                         path: e.path.clone(),
                         branch: Some(e.branch.to_string()),
                         is_main: e.is_checkout,
+                        placeholder: e.placeholder.clone(),
+                        follow_branch: e.follow_branch,
                         agent: Some(e.agent.key().into()),
                         settings: e
                             .draft_settings
@@ -454,7 +466,10 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                 .envs
                 .into_iter()
                 .map(|e| {
-                    let mut env = Environment::new(e.path, e.branch, e.is_main);
+                    let mut env = Environment::new(e.path, None, e.is_main);
+                    env.placeholder = e.placeholder;
+                    env.follow_branch = e.follow_branch;
+                    env.set_branch(e.branch);
                     if let Some(agent) = e.agent {
                         env.agent = Agent::from_key(&agent);
                     }
@@ -779,6 +794,42 @@ mod tests {
         let bytes = snapshot(&[project], 0, layout);
         let state: State = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(state.projects[0].coderspace.as_deref(), Some("rp7"));
+    }
+
+    #[test]
+    fn placeholder_survives_a_restart_but_not_a_rename() {
+        let mut project = new_project(Path::new("/tmp/arakun-placeholder-test"));
+        let mut env = Environment::new(
+            "/tmp/arakun-placeholder-test-2".into(),
+            Some("env/brave-otter".into()),
+            false,
+        );
+        env.placeholder = Some("env/brave-otter".into());
+        project.environments.push(env);
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true],
+            ui_zoom: 100,
+        };
+        let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
+        let (mut projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let env = &mut projects[0].environments[1];
+        assert!(env.awaits_name());
+        // Renamed by hand while arakun was closed: the refresh after the restart reads it.
+        env.set_branch(Some("env/bright-fox".into()));
+        assert!(!env.awaits_name());
     }
 
     #[test]

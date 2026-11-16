@@ -36,6 +36,7 @@ mod home;
 mod island;
 mod limits;
 mod menus;
+mod naming;
 mod notes;
 pub(crate) mod pages;
 mod panel;
@@ -224,6 +225,12 @@ enum MenuKey {
 
 pub struct Shell {
     projects: Vec<Project>,
+    /// The latest `refresh_project` of each project root. An older one that ends
+    /// later would put back what it read before, such as a branch renamed since.
+    refresh_gen: std::collections::HashMap<std::path::PathBuf, u64>,
+    /// A line for the next prompt to an environment's sessions after arakun renamed
+    /// its branch: they started on the old name.
+    rename_notes: std::collections::HashMap<std::path::PathBuf, String>,
     active_project: usize,
     panel_tab: PanelTab,
     dock_open: bool,
@@ -624,6 +631,8 @@ impl Shell {
         });
         let mut this = Self {
             projects,
+            refresh_gen: Default::default(),
+            rename_notes: Default::default(),
             active_project,
             panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,
@@ -859,11 +868,17 @@ impl Shell {
         let Some(root) = self.projects.get(pi).map(|p| p.path.clone()) else {
             return;
         };
+        let gen_ = self.refresh_gen.entry(root.clone()).or_default();
+        *gen_ += 1;
+        let gen_ = *gen_;
         cx.spawn(async move |this, cx| {
             let r = root.clone();
             let trees = cx.background_spawn(async move { git::worktrees(&r) }).await;
             let paths = this
                 .update(cx, |this, cx| {
+                    if this.refresh_gen.get(&root) != Some(&gen_) {
+                        return None;
+                    }
                     let pi = this.projects.iter().position(|p| p.path == root)?;
                     if let Ok(trees) = trees {
                         this.projects[pi].sync_worktrees(trees);
@@ -1109,10 +1124,14 @@ impl Shell {
             &dialog,
             window,
             move |this, _, ev: &DialogEvent, window, cx| match ev {
-                DialogEvent::Created(path) => {
-                    let path = path.clone();
+                DialogEvent::Created {
+                    path,
+                    branch,
+                    auto_name,
+                } => {
+                    let (path, branch, auto_name) = (path.clone(), branch.clone(), *auto_name);
                     this.close_modal(window, cx);
-                    this.environment_created(pi, path, window, cx);
+                    this.environment_created(pi, path, branch, auto_name, window, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
@@ -1126,6 +1145,8 @@ impl Shell {
         &mut self,
         pi: usize,
         path: std::path::PathBuf,
+        branch: String,
+        auto_name: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1135,9 +1156,15 @@ impl Shell {
         if project.env_index(&path).is_none() {
             project
                 .environments
-                .push(Environment::new(path.clone(), None, false));
+                .push(Environment::new(path.clone(), Some(branch.clone()), false));
         }
         let ei = project.env_index(&path).unwrap_or(0);
+        if auto_name {
+            // The folder keeps the random name; the label follows the branch once renamed.
+            let env = &mut project.environments[ei];
+            env.placeholder = Some(branch);
+            env.follow_branch();
+        }
         self.select_env(pi, ei, window, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.

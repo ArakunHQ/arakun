@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use crate::agent::plan::{self, PlanUsage};
+use crate::env_name;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{self, DiffPalette};
 use crate::ui::{self, ButtonKind, icon};
@@ -145,6 +146,8 @@ impl Section {
     }
 }
 
+const NAMING_KEYWORDS: &str = "branch name environment worktree rename model haiku";
+
 /// The section the last dialog was left on.
 static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
 
@@ -240,7 +243,10 @@ pub struct SettingsDialog {
     /// What the last save or test did, and whether it failed.
     voice_note: Option<(SharedString, bool)>,
     voice_busy: bool,
-    _subs: [Subscription; 3],
+    /// Who names the branch of a new environment after its first prompt.
+    namer: env_name::Namer,
+    namer_input: Entity<TextInput>,
+    _subs: [Subscription; 4],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -284,6 +290,28 @@ impl SettingsDialog {
                     _ => {}
                 },
             );
+        let namer = env_name::namer();
+        let namer_input = cx.new(|cx| {
+            let mut i = TextInput::new("CLI default", cx).mono();
+            i.set_text(namer.model.clone(), cx);
+            i
+        });
+        let namer_sub =
+            cx.subscribe_in(
+                &namer_input,
+                window,
+                |this: &mut Self, _, ev, _, cx| match ev {
+                    InputEvent::Changed => {
+                        let model = this.namer_input.read(cx).text().trim().to_string();
+                        if model != this.namer.model {
+                            this.namer.model = model;
+                            env_name::set_namer(&this.namer);
+                        }
+                    }
+                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
+                    _ => {}
+                },
+            );
         cx.spawn(async move |this, cx| {
             let plan = cx.background_spawn(async move { plan::refresh() }).await;
             let _ = this.update(cx, |this, cx| {
@@ -317,7 +345,9 @@ impl SettingsDialog {
             voice_input,
             voice_note: None,
             voice_busy: false,
-            _subs: [sub, key_sub, voice_sub],
+            namer,
+            namer_input,
+            _subs: [sub, key_sub, voice_sub, namer_sub],
         }
     }
 
@@ -378,6 +408,21 @@ impl SettingsDialog {
             });
         })
         .detach();
+    }
+
+    /// Picks the agent that names branches; a new agent starts on its small model.
+    fn set_namer_choice(&mut self, choice: env_name::Choice, cx: &mut Context<Self>) {
+        if choice == self.namer.choice {
+            return;
+        }
+        self.namer.choice = choice;
+        if let Some(agent) = choice.agent() {
+            self.namer.model = env_name::default_model(agent).to_string();
+            let model = self.namer.model.clone();
+            self.namer_input.update(cx, |i, cx| i.set_text(model, cx));
+        }
+        env_name::set_namer(&self.namer);
+        cx.notify();
     }
 
     fn set_tone(&mut self, tone: Tone, cx: &mut Context<Self>) {
@@ -473,7 +518,19 @@ impl SettingsDialog {
         if query.is_empty() {
             return true;
         }
-        let text = format!("{} {} {}", s.title(), s.description(), s.keywords()).to_lowercase();
+        // The branch naming rows of General, in every build.
+        let naming = if s == Section::General {
+            NAMING_KEYWORDS
+        } else {
+            ""
+        };
+        let text = format!(
+            "{} {} {} {naming}",
+            s.title(),
+            s.description(),
+            s.keywords()
+        )
+        .to_lowercase();
         let words = query.split_whitespace().all(|w| text.contains(w));
         words
             || (s == Section::Shortcuts
@@ -632,6 +689,38 @@ impl SettingsDialog {
                     )
                     .into_any_element()
                 },
+                {
+                    let current = self.namer.choice;
+                    let mut chips = div().flex().flex_none().items_center().gap(px(6.));
+                    for (i, choice) in env_name::Choice::ALL.into_iter().enumerate() {
+                        chips = chips.child(
+                            ui::chip(("set-namer", i), choice.label(), choice == current)
+                                .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
+                        );
+                    }
+                    row(
+                        "Name new branches",
+                        "The New environment dialog fills in a random branch name. After the first prompt, an agent names the branch after the task and Arakun renames it; the folder keeps its name. Session's agent: the agent the prompt went to, if it is Claude Code or Droid, so the prompt goes nowhere else. Claude Code names with no tools; Droid runs read-only (it can read files, not change them).",
+                        chips.into_any_element(),
+                    )
+                    .into_any_element()
+                },
+                row(
+                    "Naming model",
+                    match self.namer.choice {
+                        env_name::Choice::Claude => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default.",
+                        env_name::Choice::Droid => "A small, fast model, as the CLI names it. Empty uses the CLI's default.",
+                        env_name::Choice::Session => "Following the session: haiku for Claude Code, the CLI's default for Droid.",
+                        env_name::Choice::Off => "Naming is off: new branches keep their random name.",
+                    },
+                    // Only an agent picked here takes a model of its own.
+                    if self.namer.choice.agent().is_some() {
+                        field(self.namer_input.clone(), 180.).into_any_element()
+                    } else {
+                        div().into_any_element()
+                    },
+                )
+                .into_any_element(),
                 row(
                     "Raccoon animation",
                     "Arakun's raccoon follows the cursor and acts out what agents do. Off, it holds still.",

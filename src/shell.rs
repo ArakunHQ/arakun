@@ -418,6 +418,8 @@ pub struct Shell {
     notices: RefCell<crate::notices::History>,
     /// The Inbox was open at the last frame: when it closes, what it showed counts as seen.
     inbox_open: bool,
+    /// `History::arrived` when the Inbox last drew: what it showed.
+    inbox_shown: Cell<u64>,
     /// "Clear" was clicked once; the second click empties the history.
     clear_armed: bool,
 }
@@ -787,6 +789,7 @@ impl Shell {
             team: None,
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
+            inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
             _runs: runs_subs,

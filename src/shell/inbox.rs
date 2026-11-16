@@ -52,7 +52,8 @@ impl Shell {
     }
 
     /// Called every frame: once the Inbox closes, what it showed counts as
-    /// read. Not on open, so the unread dots stay while the user looks.
+    /// read. Not on open, so the unread dots stay while the user looks. Not
+    /// a notice that came after its last frame either: it was never shown.
     pub(super) fn sync_inbox_seen(&mut self) {
         let open = matches!(
             self.menu,
@@ -64,7 +65,7 @@ impl Shell {
         if self.inbox_open && !open {
             self.clear_armed = false;
             let mut history = self.notices.borrow_mut();
-            if history.mark_all_seen() {
+            if history.mark_seen_until(self.inbox_shown.get()) {
                 crate::notices::store(&mut history);
             }
         }
@@ -74,6 +75,7 @@ impl Shell {
     pub(super) fn render_inbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self.inbox_items();
         let history = self.notices.borrow();
+        self.inbox_shown.set(history.arrived());
         let unseen = history.unseen();
         let mut list = div()
             .id("inbox-scroll")

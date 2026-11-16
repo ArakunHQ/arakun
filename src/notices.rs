@@ -71,6 +71,10 @@ pub struct History {
     /// would write over notices it still holds. Saves wait until it is moved.
     #[serde(skip)]
     unsaved_file: bool,
+    /// How many notices `push` kept since this history was loaded. The Inbox
+    /// notes it when it draws, to tell what it showed from what came after.
+    #[serde(skip)]
+    arrived: u64,
 }
 
 impl History {
@@ -87,6 +91,7 @@ impl History {
             return false;
         }
         self.notices.push(n);
+        self.arrived += 1;
         let over = self.notices.len().saturating_sub(CAP);
         self.notices.drain(..over);
         true
@@ -109,8 +114,22 @@ impl History {
 
     /// `false` when nothing changed.
     pub fn mark_all_seen(&mut self) -> bool {
+        self.mark_seen_until(self.arrived)
+    }
+
+    /// What to pass to `mark_seen_until` for the notices held now.
+    pub fn arrived(&self) -> u64 {
+        self.arrived
+    }
+
+    /// Marks the notices that had arrived when `arrived()` returned `until`,
+    /// not the ones that came after. `false` when nothing changed.
+    pub fn mark_seen_until(&mut self, until: u64) -> bool {
+        // New notices go at the end, so the last `newer` came after `until`.
+        let newer = self.arrived.saturating_sub(until);
+        let shown = self.notices.len().saturating_sub(newer as usize);
         let mut changed = false;
-        for n in self.notices.iter_mut().filter(|n| !n.seen) {
+        for n in self.notices[..shown].iter_mut().filter(|n| !n.seen) {
             n.seen = true;
             changed = true;
         }
@@ -454,6 +473,27 @@ mod tests {
         assert!(h.mark_all_seen());
         assert!(!h.mark_all_seen());
         assert_eq!(h.unseen(), 0);
+    }
+
+    #[test]
+    fn only_what_was_shown_is_marked_seen() {
+        let mut h = History::default();
+        for i in 0..CAP as u64 {
+            h.push(notice(i, "old"));
+        }
+        let shown = h.arrived();
+        // Two come after the Inbox last drew, and push the oldest out.
+        h.push(notice(1000, "new"));
+        h.push(notice(1001, "new"));
+        assert!(h.mark_seen_until(shown));
+        assert_eq!(h.unseen(), 2);
+        assert!(h.notices[CAP - 2..].iter().all(|n| !n.seen));
+        assert!(!h.mark_seen_until(shown));
+        // One that came before the Inbox ever drew was never shown.
+        let mut h = History::default();
+        let shown = h.arrived();
+        h.push(notice(1, "new"));
+        assert!(!h.mark_seen_until(shown));
     }
 
     #[test]

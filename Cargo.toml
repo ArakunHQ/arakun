@@ -33,7 +33,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # image attachments sent to ACP agents (src/agent/attach.rs)
 base64 = "0.23"
 # droid's login at ~/.factory is AES-256-GCM (src/account.rs)
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 # file and diff tab colors (src/highlight.rs); fancy-regex keeps it pure Rust
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 # round line joins for the mascot's eyes (src/mascot.rs); gpui only re-exports StrokeOptions

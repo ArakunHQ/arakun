@@ -343,6 +343,11 @@ fn the_layout_audit_catches_what_it_should() {
     let (code, text) = run("malformed.json");
     assert_eq!(code, 2, "{text}");
     assert!(text.contains("not a layout box"), "{text}");
+
+    // Parents that loop would never reach the root.
+    let (code, text) = run("cycle.json");
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("is its own ancestor"), "{text}");
 }
 
 /// GPUI rewrites the dump in place every frame, so the audit has to refuse a

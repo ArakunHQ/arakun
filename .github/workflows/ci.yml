@@ -113,15 +113,17 @@ jobs:
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
   #
-  # The three Linux Rust jobs run on 4 CPUs. With a warm cache, 8 CPUs were only
-  # 21-29% busy, and halving them cost 3-8% more time (runner sizing, #98).
+  # Runner sizes follow the weekly runner sizing report (#98, #132). With a warm
+  # cache the two Linux Clippy jobs kept 4 CPUs 34-40% busy, and 2 CPUs cost an
+  # estimated 8-12% more time; they still finish well before the Windows and
+  # macOS jobs. The tests keep 4 CPUs: on 2 they would take about 18% longer.
   clippy:
     name: Clippy (no warnings)
     needs: changes
     # Runs unless `changes` said no: if it failed, its outputs are empty and
     # the job runs, because a skipped required check would count as passed.
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -156,7 +158,7 @@ jobs:
     name: Clippy (Linux, browser)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-24.04
     env:
       # The version the `cef` crate in Cargo.lock is built for. The minimal archive has
       # all that tools/install-cef.sh takes. The SHA-1 is the one cef-builds publishes.
@@ -233,14 +235,15 @@ jobs:
 
   # The cfg(windows) code and the Windows-only crates (windows, windows-sys,
   # uds_windows) compile nowhere else, so without this job a Windows break
-  # first showed up while building a release. Same runner as release.yml's
-  # Windows build. Clippy only, no tests: it compiles the tests too, and running
-  # them on Windows is a separate step.
+  # first showed up while building a release. Clippy only, no tests: it compiles
+  # the tests too, and running them on Windows is a separate step. 4 CPUs, not
+  # the release build's 8: with a warm cache 8 were 22% busy, and 4 cost about
+  # 2% more time (runner sizing, #132).
   clippy-windows:
     name: Clippy (Windows)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-windows-2025-8
+    runs-on: depot-windows-2025-4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

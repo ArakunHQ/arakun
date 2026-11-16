@@ -28,12 +28,28 @@ that parses whole, and copies exactly the bytes it checked.
 """
 import json,os,sys,time,collections
 
+def bad_box(r,n):
+    """What is missing or wrong in one box of an n-box dump, if anything."""
+    if not isinstance(r,dict): return "not an object"
+    num=lambda x: isinstance(x,(int,float)) and not isinstance(x,bool)
+    for k in ('b','r','border'):
+        v=r.get(k)
+        if not (isinstance(v,list) and len(v)==4 and all(map(num,v))): return f"{k} is not 4 numbers"
+    p=r.get('parent')
+    if not (isinstance(p,int) and not isinstance(p,bool) and -1<=p<n): return "parent is not -1 or a box"
+    if not isinstance(r.get('bg'),bool): return "bg is not true or false"
+    if not isinstance(r.get('at'),str): return "at is not a source line"
+    return None
+
 def load(buf,name):
     """The dump's boxes, or why it can't be checked."""
     try: d=json.loads(buf)
     except ValueError as e: return None,f"{name} is not whole JSON ({e}); GPUI may have been writing it"
     if not isinstance(d,list): return None,f"{name} is not a list of boxes"
-    if not any(isinstance(r,dict) and (r.get('bg') or sum(1 for x in r.get('border',[]) if x>0)>=3) for r in d):
+    for i,r in enumerate(d):
+        why=bad_box(r,len(d))
+        if why: return None,f"{name}: box {i} is not a layout box ({why})"
+    if not any(r['bg'] or sum(1 for x in r['border'] if x>0)>=3 for r in d):
         return None,f"{name} has no drawn boxes; the screen was empty or the dump is not from GPUI_LAYOUT_AUDIT"
     return d,None
 
@@ -97,7 +113,6 @@ for _f in FILES:
         P=d[p]; px_,py,pw,ph=P['b']; R=P['r']
         # a pill parent clips its stripes; circles and pills inside need no corner match
         if max(R)>=min(pw,ph)/2-0.5: continue
-        round_child=max(c['r'])>=min(w,h)/2-0.5
         # corners: tl,tr,br,bl distances
         ins=[(x-px_,y-py),((px_+pw)-(x+w),y-py),((px_+pw)-(x+w),(py+ph)-(y+h)),(x-px_,(py+ph)-(y+h))]
         for k in range(4):
@@ -110,9 +125,10 @@ for _f in FILES:
             if abs(cr-exp)>2:
                 add(c['at'],'radius',f"corner r={cr:g}, {dd:g}px inside a r={Rk:g} corner ({P['at']}): want ≈{exp:g}")
                 break
-        # inset: chip-like child near the left edge of a bar, vertically centered
+        # inset: chip-like child near the left edge of a bar, vertically
+        # centered; round icon buttons and pills too (only corners skip them)
         top=y-py; bot=(py+ph)-(y+h); left=x-px_
-        if not round_child and ph<=64 and abs(top-bot)<=1.5 and 0<=left<20 and top>0 and abs(left-top)>2:
+        if ph<=64 and abs(top-bot)<=1.5 and 0<=left<20 and top>0 and abs(left-top)>2:
             add(c['at'],'inset',f"{left:g}px from the side but {top:g}px from top/bottom of {P['at']}")
     # clip: child as tall as a bordered parent
     for i,c in enumerate(d):
@@ -121,7 +137,7 @@ for _f in FILES:
         P=d[p]; bt,_,bb,_=P['border']
         if bt+bb<=0: continue
         x,y,w,h=c['b']; px_,py,pw,ph=P['b']
-        if h>=ph-0.5 and h>8 and (y+h)>(py+ph-bb+0.5):
+        if h>=ph-0.5 and h>8 and ((y+h)>(py+ph-bb+0.5) or y<(py+bt-0.5)):
             add(c['at'],'clip',f"h={h:g} fills a {ph:g}px parent with a border ({P['at']}): its edge is cut")
 for (at,kind),msg in out.items(): print(f"{at} [{kind}] {msg}")
 print(f"{len(out)} problems",file=sys.stderr)

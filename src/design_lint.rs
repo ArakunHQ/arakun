@@ -264,6 +264,12 @@ fn the_lint_catches_what_it_should() {
     assert!(unscaled(".pl(ui::sp(14.).max(inset))", "").is_empty());
     assert!(unscaled(".rounded(ui::nested(ui::RADIUS_XL, 5.))", "").is_empty());
     assert!(unscaled(".pl(", "    crate::ui::sp(6.))").is_empty());
+    // A comment or a blank line between the call and its argument.
+    let commented = ["        // Why six.", "        ui::sp(6.))"];
+    assert!(unscaled(".pl(", next_code(&commented)).is_empty());
+    assert!(unscaled(".pl(", next_code(&["", "        ui::sp(6.))"])).is_empty());
+    assert!(unscaled(".pl( // why", next_code(&commented)).is_empty());
+    assert_eq!(unscaled(".pl(", next_code(&["", "    px(6.))"])).len(), 1);
     assert!(unscaled("..pr(\"OPEN\")", "").is_empty());
     assert!(unscaled("let p = self.p(x, y);", "").is_empty());
 }
@@ -313,7 +319,11 @@ fn the_layout_audit_catches_what_it_should() {
     for kind in [
         "src/card.rs:20 [radius]",
         "src/bar.rs:9 [inset]",
+        // A round icon button is exempt from corner matching, not from insets.
+        "src/pill.rs:9 [inset]",
         "src/field.rs:7 [clip]",
+        // A border on top only cuts a full-height child too.
+        "src/rule.rs:8 [clip]",
     ] {
         assert!(text.contains(kind), "missing {kind}:\n{text}");
     }
@@ -326,6 +336,11 @@ fn the_layout_audit_catches_what_it_should() {
     }
     let (code, _) = layout_audit(&[]).unwrap();
     assert_eq!(code, 2);
+
+    // A box without its fields is no layout dump, even if it says it is drawn.
+    let (code, text) = run("malformed.json");
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("not a layout box"), "{text}");
 }
 
 /// GPUI rewrites the dump in place every frame, so the audit has to refuse a
@@ -392,6 +407,16 @@ fn the_layout_audit_refuses_a_partial_or_stale_dump() {
     let (code, text) = snap(&[]);
     assert_eq!(code, 0, "{text}");
     assert_eq!(std::fs::read(&copy).unwrap(), good);
+
+    // A frame that parses but isn't a layout dump is not copied.
+    touch(&frame, br#"[{"bg": true}]"#, 0);
+    let (code, text) = snap(&[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("not a layout box"), "{text}");
+
+    touch(&frame, &good, 0);
+    let (code, text) = snap(&[]);
+    assert_eq!(code, 0, "{text}");
 
     // A step that changed nothing on screen.
     let (code, text) = snap(&["--differs-from".as_ref(), copy.as_os_str()]);

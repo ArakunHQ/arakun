@@ -3,6 +3,9 @@
 #
 # Titles carry a Conventional Commits prefix because conventional-commits.yml
 # fails any pull request title without one, Dependabot's included.
+#
+# Each update waits a week after its release: a hijacked release is usually
+# found and pulled within days, before it reaches a pull request here.
 version: 2
 updates:
   # Only .github/workflows: the composite action in .github/actions uses no
@@ -10,6 +13,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: ci }
     groups:
       actions: { patterns: ["*"] }
@@ -17,6 +21,7 @@ updates:
   - package-ecosystem: npm
     directory: /relay
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: build(relay) }
     groups:
       relay: { patterns: ["*"] }
@@ -26,6 +31,7 @@ updates:
   - package-ecosystem: cargo
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: build }
     groups:
       crates:

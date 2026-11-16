@@ -86,8 +86,9 @@ off, and do not add code behind them.
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, and
-cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes. Run the ones that match what you
-changed before you push:
+cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and
+zizmor runs only when `.github/` changes. Run the ones that match what you changed
+before you push:
 
 ```sh
 # the app (with CEF set up, you can leave out --no-default-features)
@@ -101,6 +102,9 @@ cargo deny check
 # relay/ or phone/ changed
 (cd relay && npm ci && npx tsc --noEmit && npx vitest run)
 (cd phone && node --test "test/*.test.mjs")
+
+# .github/ changed (brew install zizmor, or pipx install zizmor)
+zizmor .github
 ```
 
 Some notes:
@@ -117,6 +121,12 @@ Some notes:
 - `cargo deny check` reads [`deny.toml`](deny.toml). It fails on a crate with a
   RustSec advisory, a license that is not allowed, or a git source that is not listed.
   It also runs on `main` every day, because new advisories appear without any change.
+- `zizmor .github` checks the workflows for security problems. Pin every action to a
+  full commit SHA with its version as a comment (`uses: owner/action@<sha> # v1.2.3`);
+  Dependabot updates both. Give `actions/checkout` `persist-credentials: false` unless
+  the job pushes, and a job only the `permissions:` it uses. If a finding is safe
+  where it is, add `# zizmor: ignore[<rule>]` to the line it points at and say why.
+  Set `GH_TOKEN` to also run the audits that look up the actions online.
 - Warnings fail clippy. Fix what causes them. Use `#[allow(...)]` only with a comment
   that says why the lint is wrong in that place.
 - Tests marked `#[ignore]` read this machine's own state (Claude Code, the Cloudflare

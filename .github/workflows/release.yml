@@ -54,7 +54,7 @@ env:
 jobs:
   ci:
     name: CI
-    uses: ./.github/workflows/ci.yml
+    uses: $/.github/workflows/ci.yml
     # A called workflow gets at most what its caller job allows; the "What
     # changed" job in ci.yml lists a pull request's files.
     permissions:
@@ -87,9 +87,11 @@ jobs:
             libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
       # The version in rust-toolchain.toml. The bare image has no rustup, so
       # install it first, without a toolchain of its own.
@@ -149,9 +151,11 @@ jobs:
     runs-on: depot-windows-2025-8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
       # The version in rust-toolchain.toml; the build target is the host's.
       - name: Rust toolchain
@@ -205,6 +209,8 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The version in rust-toolchain.toml; the build target is the host's.
       - name: Rust toolchain
@@ -430,7 +436,10 @@ jobs:
         with:
           subject-checksums: dist/SHA256SUMS
 
-      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+      # zizmor would have `gh release create` here. Moving over changes how a
+      # re-run treats a release that already exists, which only a real tag can
+      # test, so that is its own change.
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4 # zizmor: ignore[superfluous-actions]
         with:
           name: Arakun ${{ github.ref_name }}
           generate_release_notes: true

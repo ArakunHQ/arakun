@@ -25,9 +25,10 @@ name: Human approval
 # way. A change to this file takes effect once it is on main.
 
 on:
-  pull_request_target:
+  # Safe as the comment above says; zizmor can't see that no job checks out.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize, closed]
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [Review submitted]
     types: [completed]
   workflow_dispatch:

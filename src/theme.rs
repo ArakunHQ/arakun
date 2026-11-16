@@ -860,17 +860,12 @@ pub const CATEGORY: [u32; 8] = [
     0xd9c27e, // sand
 ];
 
-/// What WebKitGTK resolves `system-ui` to here (GTK 4 default).
-#[cfg(target_os = "linux")]
-pub const FONT_SANS: &str = "Adwaita Sans";
-#[cfg(target_os = "linux")]
-pub const FONT_MONO: &str = "JetBrainsMono NFM";
-/// Elsewhere neither Linux font is installed, and the fallback is proportional:
-/// terminal cells (sized from 'm') spread its letters apart, and the no-break
-/// spaces that make room for a file chip's icon get too narrow. Geist ships in assets/fonts.
-#[cfg(not(target_os = "linux"))]
+/// The brand's two faces, on every platform: Geist for what people read, Geist
+/// Mono for what a machine reads (code, terminals, paths). Both ship in
+/// assets/fonts, since few systems have them. The brand uses Geist at 400, 500
+/// and 600 and Geist Mono at 400 and 500, so only those weights are bundled; a
+/// heavier weight resolves to the nearest one.
 pub const FONT_SANS: &str = "Geist";
-#[cfg(not(target_os = "linux"))]
 pub const FONT_MONO: &str = "Geist Mono";
 
 #[cfg(test)]

@@ -1019,7 +1019,7 @@ pub fn avatar(login: &str, size: f32) -> gpui::Div {
         .rounded_full()
         .bg(color)
         .ty(Type::Caption)
-        .font_weight(FontWeight::BOLD)
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::on_accent())
         .child(initial.to_string())
 }

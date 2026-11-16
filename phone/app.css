@@ -2,6 +2,15 @@
    ground, white (black in light) for the one main action on a screen and
    amber only for what waits on you. The light set of the same roles is under
    [data-theme="light"]. */
+/* The brand's type: Geist for what people read, Geist Mono for what a machine
+   reads. Served with the page, since phones rarely have them installed. Only
+   the weights the brand uses (400, 500, 600; mono stops at 500). */
+@font-face { font-family: "Geist"; font-weight: 400; font-display: swap; src: url("fonts/Geist-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 500; font-display: swap; src: url("fonts/Geist-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 600; font-display: swap; src: url("fonts/Geist-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 400; font-display: swap; src: url("fonts/GeistMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 500; font-display: swap; src: url("fonts/GeistMono-Medium.woff2") format("woff2"); }
+
 :root {
   --bg: #0b0b0b;
   --card: #161616;
@@ -32,8 +41,8 @@
   --claude: #e8875f;
   --claude-soft: #2a1d17;
   --rail: #2b2b2b;
-  --mono: ui-monospace, "Geist Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, system-ui, "Geist", Segoe UI, Roboto, sans-serif;
+  --mono: "Geist Mono", ui-monospace, monospace;
+  --sans: "Geist", system-ui, sans-serif;
   --r: 8px;
   --r-lg: 14px;
   --r-xl: 20px;
@@ -90,6 +99,7 @@ body {
   font: 15px/1.45 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
+b, strong { font-weight: 600; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 a { color: var(--link); }
 #app { height: 100%; display: flex; flex-direction: column; }
@@ -163,7 +173,7 @@ a { color: var(--link); }
 .pair form { display: flex; gap: 8px; margin-top: 12px; }
 .pair input {
   width: 150px; height: 44px; border-radius: var(--r-lg); text-align: center;
-  font: 600 22px/1 var(--mono); letter-spacing: 0.25em; color: var(--text);
+  font: 500 22px/1 var(--mono); letter-spacing: 0.25em; color: var(--text);
   background: var(--card); border: 1px solid var(--border-strong); outline: none;
 }
 .pair input:focus { border-color: rgba(255, 181, 71, 0.5); }
@@ -280,7 +290,7 @@ a { color: var(--link); }
 .tab svg { width: 22px; height: 22px; }
 .tab .tbadge {
   position: absolute; top: 0; left: calc(50% + 4px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
-  background: var(--accent); color: #1a1200; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+  background: var(--accent); color: #1a1200; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
 }
 .tab.on { color: var(--text); font-weight: 600; }
 .tplus { width: 68px; height: 40px; border-radius: 999px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; flex: none; }
@@ -389,7 +399,7 @@ button.prow:active { background: var(--fill-hover); }
 .dlines { min-width: 100%; width: max-content; padding: 4px 0; font: 11.5px/18px var(--mono); }
 .dl { display: flex; white-space: pre; }
 .dl .ln { flex: none; width: 36px; padding-right: 6px; text-align: right; color: var(--faint); user-select: none; }
-.dl .mk { flex: none; width: 14px; text-align: center; font-weight: 700; user-select: none; }
+.dl .mk { flex: none; width: 14px; text-align: center; font-weight: 500; user-select: none; }
 .dl .tx { padding-right: 12px; color: var(--muted); }
 .dl.a { background: rgba(110, 231, 183, 0.1); box-shadow: inset 2px 0 0 var(--add); }
 .dl.a .mk, .dl.a .tx { color: var(--add); }
@@ -519,7 +529,7 @@ button.prow:active { background: var(--fill-hover); }
 .tool .ttitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .ttitle code { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
 .tool[open] .ttitle { white-space: normal; }
-.tool .st { width: 14px; height: 14px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 800; }
+.tool .st { width: 14px; height: 14px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 600; }
 .tool.completed .st, .tool.thought .st { display: none; }
 .tool.failed > summary { color: var(--error); }
 .tool.failed .st { background: var(--error-soft); color: var(--error); }
@@ -580,7 +590,7 @@ button.prow:active { background: var(--fill-hover); }
 }
 .perm .always .warn {
   width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid; place-items: center;
-  font-size: 12px; font-weight: 700; color: var(--bg); background: var(--attention);
+  font-size: 12px; font-weight: 600; color: var(--bg); background: var(--attention);
 }
 .perm .always .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .perm .always .t { font-size: 14px; font-weight: 500; }
@@ -773,7 +783,7 @@ textarea.nfield { resize: none; min-height: 140px; }
 .qopt small { font-size: 12px; color: var(--subtle); }
 .qopt.on { font-weight: 600; }
 .qopt small { margin-left: auto; }
-.qopt.on::after { content: "✓"; color: var(--success); font-weight: 700; margin-left: 10px; }
+.qopt.on::after { content: "✓"; color: var(--success); font-weight: 600; margin-left: 10px; }
 .qopt { align-items: center; }
 .qopt:disabled { opacity: 0.4; }
 #qtext { width: 100%; min-height: 72px; max-height: 30vh; resize: none; background: none; border: 0; outline: none; color: var(--text); font: 17px/1.4 var(--sans); padding: 4px 0; }
@@ -803,7 +813,7 @@ textarea.nfield { resize: none; min-height: 140px; }
 
 /* The project tiles the + opens first. */
 .ppmark { display: grid; place-items: center; overflow: hidden; border-radius: 11px; flex: none; }
-.ppmark img, .ppmark span { width: 100%; height: 100%; display: grid; place-items: center; font-weight: 700; font-size: 15px; }
+.ppmark img, .ppmark span { width: 100%; height: 100%; display: grid; place-items: center; font-weight: 600; font-size: 15px; }
 #projpick {
   position: fixed; inset: 0; z-index: 40; background: var(--bg); height: var(--vvh, 100%); overflow-y: auto;
   padding: var(--top) var(--gr) calc(var(--bot) + 16px) var(--gl); animation: ppin 0.18s ease-out;

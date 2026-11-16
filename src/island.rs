@@ -48,7 +48,7 @@ const PAD_R: f32 = 16.;
 const DOT: f32 = 7.;
 const DOT_GAP: f32 = 6.;
 const MORE_SIZE: f32 = 11.;
-/// A monospace glyph's advance, in ems (Geist Mono and JetBrains Mono both).
+/// A Geist Mono glyph's advance, in ems.
 const MONO_ADVANCE: f32 = 0.6;
 /// Audio bars: each bar's width, the gap between them, their box's height,
 /// and how many the recording wave has.

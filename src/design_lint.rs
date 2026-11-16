@@ -324,14 +324,17 @@ fn problems(line: &str) -> Vec<String> {
     for v in numbers_after(line, ".text_size(px(") {
         found.push(format!("text size {v}: use ui::TEXT_* or .ty(Type::…)"));
     }
-    for font in [
-        "\"Geist\"",
-        "\"Geist Mono\"",
-        "\"Adwaita Sans\"",
-        "\"JetBrainsMono",
-    ] {
-        if line.contains(".font_family(") && line.contains(font) {
-            found.push(format!("font {font}: use theme::FONT_SANS / FONT_MONO"));
+    // The brand has two faces, so any other name is off-brand and these two
+    // are spelled once, in theme.
+    if line.contains(".font_family(\"") {
+        found.push("font by name: use theme::FONT_SANS / FONT_MONO".into());
+    }
+    // The brand stops at SemiBold (600); nothing heavier is bundled.
+    for weight in ["BOLD", "EXTRA_BOLD", "BLACK"] {
+        if line.contains(&format!("FontWeight::{weight})"))
+            || line.contains(&format!("FontWeight::{weight},"))
+        {
+            found.push(format!("FontWeight::{weight}: use SEMIBOLD or lighter"));
         }
     }
     found
@@ -384,6 +387,11 @@ fn the_lint_catches_what_it_should() {
     assert_eq!(problems(".bg(theme::mix(0.04))").len(), 1);
     assert_eq!(problems(".text_size(px(12.))").len(), 1);
     assert_eq!(problems(".font_family(\"Geist\")").len(), 1);
+    assert_eq!(problems(".font_family(\"Caveat\")").len(), 1);
+    assert!(problems(".font_family(theme::FONT_MONO)").is_empty());
+    assert_eq!(problems(".font_weight(FontWeight::BOLD)").len(), 1);
+    assert_eq!(problems("weight: gpui::FontWeight::EXTRA_BOLD,").len(), 1);
+    assert!(problems(".font_weight(FontWeight::SEMIBOLD)").is_empty());
     assert!(problems(".bg(theme::mix(0.8))").is_empty());
     assert!(problems(".text_size(px(ui::TEXT_SM))").is_empty());
     assert_eq!(problems(".text_size(px(18.))").len(), 1);

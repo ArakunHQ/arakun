@@ -269,8 +269,9 @@ fn fonts() -> [Font; 4] {
         weight: FontWeight::NORMAL,
         style: FontStyle::Normal,
     };
+    // Geist Mono stops at Medium in the brand, so bold text is drawn in Medium.
     let bold = Font {
-        weight: FontWeight::BOLD,
+        weight: FontWeight::MEDIUM,
         ..base.clone()
     };
     let italic = Font {

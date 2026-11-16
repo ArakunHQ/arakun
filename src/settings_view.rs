@@ -666,7 +666,10 @@ impl SettingsDialog {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join(" · "),
-                None => "Not signed in".into(),
+                None => match &self.claude_access {
+                    Some(a) => a.label(),
+                    None => "Not signed in".into(),
+                },
             },
             Section::Droid => "Skills and MCP servers".into(),
             Section::OpenCode if self.opencode.is_empty() => "No providers signed in".into(),

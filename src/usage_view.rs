@@ -313,11 +313,10 @@ impl UsageView {
                         let changed = v.borrowed != borrowed;
                         #[cfg(not(feature = "coderlabs"))]
                         let changed = false;
-                        if v.access != access {
-                            v.access = access;
-                            cx.notify();
-                        }
+                        // The phone's Claude card names the key or endpoint too.
+                        let changed = changed || v.access != access;
                         if changed || v.plan != plan || v.go != go {
+                            v.access = access;
                             v.plan = plan;
                             #[cfg(feature = "coderlabs")]
                             {

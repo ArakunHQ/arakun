@@ -23,6 +23,7 @@ impl Shell {
         } else {
             // The queue doesn't need a project: it shows in the welcome's place.
             self.github_alone = true;
+            self.servers_alone = false;
         }
         self.github.update(cx, |g, cx| g.opened(cx));
         self.github_view.update(cx, |v, cx| v.focus(window, cx));

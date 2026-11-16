@@ -4,6 +4,8 @@
 //! server offers, sends follow-ups and answers what the agents ask. The shell
 //! keeps the connections and tells this view what there is (`shell::servers`).
 
+use std::collections::HashMap;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, FontWeight,
@@ -20,6 +22,8 @@ use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 pub enum ServersEvent {
     /// Pair with the server this link is for.
     Pair(String),
+    /// Give up the pairing under way.
+    CancelPairing,
     /// Forget a server; it is told to forget this app too.
     Forget(String),
     /// Show one of a server's sessions.
@@ -154,6 +158,9 @@ pub struct ServersView {
     link: Entity<TextInput>,
     /// The follow-up to the open session.
     prompt: Entity<TextInput>,
+    /// Follow-ups typed and not sent, by server and session. The field shows
+    /// the open session's only: text typed for one must not go to another.
+    drafts: HashMap<(String, String), String>,
     /// The first prompt of a new session.
     first: Entity<TextInput>,
     /// A typed answer to the agent's question.
@@ -206,6 +213,7 @@ impl ServersView {
             pane: Pane::Add,
             link,
             prompt,
+            drafts: HashMap::new(),
             first,
             answer,
             place: None,
@@ -248,6 +256,18 @@ impl ServersView {
         if self.answers.0 != asked {
             self.answers = (asked.to_string(), Vec::new());
         }
+        // Another session on show: what was typed stays with the one it was for.
+        let key =
+            |open: &Option<Open>| open.as_ref().map(|o| (o.server.clone(), o.session.clone()));
+        let (was, now) = (key(&self.state.open), key(&state.open));
+        if was != now {
+            let typed = self.prompt.read(cx).text().to_string();
+            if let Some(was) = was.filter(|_| !typed.trim().is_empty()) {
+                self.drafts.insert(was, typed);
+            }
+            let draft = now.and_then(|k| self.drafts.remove(&k)).unwrap_or_default();
+            self.prompt.update(cx, |i, cx| i.set_text(draft, cx));
+        }
         self.state = state;
         cx.notify();
     }
@@ -269,9 +289,20 @@ impl ServersView {
         }
     }
 
+    /// The open session's server can be told something right now. Without a
+    /// connection nothing typed or picked is taken: it would be dropped on
+    /// the way, and the field would look as if it had been sent.
+    fn open_connected(&self) -> bool {
+        self.state
+            .open
+            .as_ref()
+            .and_then(|o| self.server(&o.server))
+            .is_some_and(|s| s.reach == Reach::Connected)
+    }
+
     fn send(&mut self, cx: &mut Context<Self>) {
         let text = self.prompt.read(cx).text().trim().to_string();
-        if text.is_empty() || self.state.open.is_none() {
+        if text.is_empty() || !self.open_connected() {
             return;
         }
         self.prompt.update(cx, |i, cx| i.set_text("", cx));
@@ -317,6 +348,9 @@ impl ServersView {
         else {
             return;
         };
+        if !self.open_connected() {
+            return;
+        }
         self.answers.1.push(answer);
         if self.answers.1.len() >= questions.len() {
             cx.emit(ServersEvent::Answer(std::mem::take(&mut self.answers.1)));
@@ -326,7 +360,7 @@ impl ServersView {
 
     fn answer_typed(&mut self, cx: &mut Context<Self>) {
         let text = self.answer.read(cx).text().trim().to_string();
-        if !text.is_empty() {
+        if !text.is_empty() && self.open_connected() {
             self.answer.update(cx, |i, cx| i.set_text("", cx));
             self.give_answer(text, cx);
         }
@@ -560,7 +594,22 @@ impl ServersView {
                                     !pairing,
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
-                            ),
+                            )
+                            // Through the relay a pairing can wait on the
+                            // server for as long as the link lasts.
+                            .when(pairing, |d| {
+                                d.child(
+                                    ui::button(
+                                        "servers-pair-cancel",
+                                        "Cancel",
+                                        ButtonKind::Ghost,
+                                        true,
+                                    )
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(ServersEvent::CancelPairing)
+                                    })),
+                                )
+                            }),
                     ),
             )
             .children(self.state.error.clone().map(|e| {
@@ -674,6 +723,7 @@ impl ServersView {
 
     /// What the agent waits on the user for, with the ways to answer it.
     fn render_asks(&self, open: &Open, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let connected = self.open_connected();
         let band = || {
             div()
                 .flex()
@@ -697,11 +747,13 @@ impl ServersView {
                     } else {
                         ButtonKind::Ghost
                     },
-                    true,
+                    connected,
                 )
-                .on_click(
-                    cx.listener(move |_, _, _, cx| cx.emit(ServersEvent::Permission(id.clone()))),
-                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.open_connected() {
+                        cx.emit(ServersEvent::Permission(id.clone()))
+                    }
+                }))
             });
             return Some(
                 band()
@@ -730,7 +782,7 @@ impl ServersView {
                 ("servers-option", i),
                 option.clone(),
                 ButtonKind::Outline,
-                true,
+                connected,
             )
             .on_click(cx.listener(move |this, _, _, cx| this.give_answer(answer.clone(), cx)))
         });
@@ -753,13 +805,16 @@ impl ServersView {
                         .gap(ui::sp(8.))
                         .child(ui::field().flex_1().child(self.answer.clone()))
                         .child(
-                            ui::button("servers-answer", "Answer", ButtonKind::Outline, true)
+                            ui::button("servers-answer", "Answer", ButtonKind::Outline, connected)
                                 .on_click(cx.listener(|this, _, _, cx| this.answer_typed(cx))),
                         )
                         .child(
-                            ui::button("servers-skip", "Skip", ButtonKind::Ghost, true).on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(ServersEvent::SkipQuestion)),
-                            ),
+                            ui::button("servers-skip", "Skip", ButtonKind::Ghost, connected)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.open_connected() {
+                                        cx.emit(ServersEvent::SkipQuestion)
+                                    }
+                                })),
                         ),
                 )
                 .into_any_element(),
@@ -806,8 +861,13 @@ impl ServersView {
             .child(ui::status_dot(word, tone))
             .when(open.status == Status::Working, |d| {
                 d.child(
-                    ui::button("servers-stop", "Stop", ButtonKind::Outline, connected)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ServersEvent::Stop))),
+                    ui::button("servers-stop", "Stop", ButtonKind::Outline, connected).on_click(
+                        cx.listener(|this, _, _, cx| {
+                            if this.open_connected() {
+                                cx.emit(ServersEvent::Stop)
+                            }
+                        }),
+                    ),
                 )
             });
         let body = if open.loading {
@@ -825,24 +885,37 @@ impl ServersView {
             .child(
                 div()
                     .flex()
+                    .flex_col()
                     .flex_none()
-                    .items_center()
-                    .gap(ui::sp(8.))
+                    .gap(ui::sp(6.))
                     .px(ui::sp(12.))
                     .py(ui::sp(10.))
                     .border_t_1()
                     .border_color(theme::border_subtle())
-                    .child(ui::field().flex_1().child(self.prompt.clone()))
                     .child(
-                        ui::button_with(
-                            "servers-send",
-                            Some("arrow-up01"),
-                            "Send",
-                            ButtonKind::Primary,
-                            connected,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
-                    ),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(ui::sp(8.))
+                            .child(ui::field().flex_1().child(self.prompt.clone()))
+                            .child(
+                                ui::button_with(
+                                    "servers-send",
+                                    Some("arrow-up01"),
+                                    "Send",
+                                    ButtonKind::Primary,
+                                    connected,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
+                            ),
+                    )
+                    .when(!connected, |d| {
+                        d.child(ui::text(
+                            Type::Caption,
+                            theme::text_faint(),
+                            "The server is not connected. What you type stays here until it is back.",
+                        ))
+                    }),
             )
             .into_any_element()
     }

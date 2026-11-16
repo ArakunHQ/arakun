@@ -423,6 +423,8 @@ impl Shell {
         for id in sessions {
             self.retire_if_hidden(&path, &id, cx);
         }
+        // A no-op while a Servers tab is left anywhere.
+        self.servers_tab_closed(cx);
         self.note_active_tab();
         self.ensure_active_live(window, cx);
         self.save(cx);

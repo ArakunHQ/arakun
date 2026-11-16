@@ -64,10 +64,19 @@ struct Showing {
     questions: Option<(String, Vec<Question>)>,
     /// A `transcript` was asked for and has not come back.
     asking: bool,
+    /// The index the one that is out asked from.
+    asked: usize,
     /// Entries changed from this index on while one was out: asked for next.
     again: Option<usize>,
+    /// The whole session being read again, from its start, into here: on
+    /// opening it and after each reconnect. It takes the place of `entries`
+    /// only once all of it is here, so the view never falls back to a first
+    /// page and fills up again.
+    refill: Option<Vec<Entry>>,
     /// Everything the server had when the session was opened is here.
     loaded: bool,
+    /// The server's entries could not be read: nothing more is asked for.
+    broken: bool,
 }
 
 pub(super) struct ServersLink {
@@ -78,6 +87,8 @@ pub(super) struct ServersLink {
     showing: Option<Showing>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
+    /// Gives a pairing up when its link has run out.
+    pairing_timeout: Option<Task<()>>,
     error: Option<String>,
     _listen: Task<()>,
 }
@@ -161,23 +172,64 @@ fn thread_status(status: Status) -> ThreadStatus {
     }
 }
 
-/// Puts a `transcript` answer into the entries so far. `from..to` of `count`
-/// came; the index to ask for next, when the answer left some out or did not
-/// join on to what is here.
-fn merge(
-    entries: &mut Vec<Entry>,
+/// A link is good for two minutes; a pairing still under way a little after
+/// that will not finish.
+const PAIRING_WAIT: std::time::Duration = std::time::Duration::from_secs(150);
+
+/// A `transcript` answer: entries `from..to` of the session's `count`.
+struct Page {
     from: usize,
     to: usize,
     count: usize,
-    new: Vec<Entry>,
-) -> Option<usize> {
-    if from > entries.len() {
-        // A gap: what is missing comes first.
-        return Some(entries.len());
+    entries: Vec<Entry>,
+}
+
+/// Reads a `transcript` answer. An entry this app does not know (a server one
+/// version ahead with a new kind) fails the whole page: half a transcript
+/// with holes in it would be shown as if it were the session.
+fn page_of(msg: &Value) -> Result<Page, String> {
+    let number = |key: &str| msg[key].as_u64().unwrap_or(0) as usize;
+    let entries = serde_json::from_value(msg["entries"].clone()).map_err(|e| e.to_string())?;
+    Ok(Page {
+        from: number("from"),
+        to: number("to"),
+        count: number("count"),
+        entries,
+    })
+}
+
+/// What to do after a page was put in.
+#[derive(Debug, PartialEq)]
+enum Next {
+    /// All of it is here.
+    Done,
+    /// More is out: ask from this index.
+    Ask(usize),
+    /// The server answered with nothing new where more was due. Asking again
+    /// would get the same answer, forever and as fast as the network goes.
+    Stuck,
+}
+
+/// Puts a page into the entries so far. `asked` is the index it was asked from.
+fn merge(entries: &mut Vec<Entry>, page: Page, asked: usize) -> Next {
+    if page.from > entries.len() {
+        // A gap: what is missing comes first, unless that was just asked for.
+        return if asked == entries.len() {
+            Next::Stuck
+        } else {
+            Next::Ask(entries.len())
+        };
     }
-    entries.truncate(from);
-    entries.extend(new);
-    (to < count && entries.len() < count).then_some(entries.len())
+    let brought = !page.entries.is_empty();
+    entries.truncate(page.from);
+    entries.extend(page.entries);
+    if page.to >= page.count || entries.len() >= page.count {
+        Next::Done
+    } else if brought {
+        Next::Ask(entries.len())
+    } else {
+        Next::Stuck
+    }
 }
 
 impl Shell {
@@ -185,14 +237,16 @@ impl Shell {
     /// the first time.
     pub(super) fn open_servers_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
-        if !self.has_projects() {
-            self.open_picker(window, cx);
-            return;
+        if self.has_projects() {
+            self.show_view_tab("Servers", TabKind::Servers, |k| {
+                matches!(k, TabKind::Servers)
+            });
+            self.note_active_tab();
+        } else {
+            // Following servers needs no project here: the tab shows in the
+            // welcome's place, as the GitHub tab does.
+            self.servers_alone = true;
         }
-        self.show_view_tab("Servers", TabKind::Servers, |k| {
-            matches!(k, TabKind::Servers)
-        });
-        self.note_active_tab();
         self.servers_connect(window, cx);
         self.sync_servers_view(cx);
         self.servers_view.update(cx, |v, cx| v.focus(window, cx));
@@ -232,6 +286,7 @@ impl Shell {
             events,
             showing: None,
             pairing: None,
+            pairing_timeout: None,
             error: None,
             _listen: listen,
         });
@@ -321,10 +376,20 @@ impl Shell {
                         link.conns.remove(&before);
                     }
                     link.conns.insert(id.clone(), Conn::new(client));
-                    link.pairing = Some(id);
+                    link.pairing = Some(id.clone());
+                    link.pairing_timeout = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(PAIRING_WAIT).await;
+                        let _ = this.update(cx, |this, cx| this.servers_pairing_ran_out(&id, cx));
+                    }));
                 }
                 Err(e) => link.error = Some(e),
             },
+            ServersEvent::CancelPairing => {
+                if let Some(id) = link.pairing.take() {
+                    link.conns.remove(&id);
+                }
+                link.pairing_timeout = None;
+            }
             ServersEvent::Forget(id) => {
                 if let Some(conn) = link.conns.remove(id) {
                     conn.client.unpair();
@@ -365,6 +430,46 @@ impl Shell {
         self.sync_servers_view(cx);
     }
 
+    /// The link of a pairing still under way has run out: it is given up.
+    fn servers_pairing_ran_out(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        if link.pairing.as_deref() != Some(id) {
+            return;
+        }
+        link.pairing = None;
+        link.conns.remove(id);
+        link.error = Some("Pairing took too long; ask the server for a new link.".into());
+        self.sync_servers_view(cx);
+    }
+
+    /// The last Servers tab was closed: the server is told nobody is looking
+    /// at the session any more, so it can let that session's agent go.
+    pub(super) fn servers_tab_closed(&mut self, cx: &mut Context<Self>) {
+        let still_open = self.servers_alone
+            || self
+                .projects
+                .iter()
+                .flat_map(|p| &p.environments)
+                .flat_map(|e| &e.tabs)
+                .any(|t| matches!(t.kind, TabKind::Servers));
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        if still_open {
+            return;
+        }
+        if let Some(showing) = link.showing.take()
+            && let Some(conn) = link.conns.get(&showing.server)
+        {
+            conn.client.send(&json!({ "type": "close" }));
+        }
+        // What went wrong was about what was on show.
+        link.error = None;
+        self.sync_servers_view(cx);
+    }
+
     /// Puts a server's session on show and asks the server for it.
     fn servers_show(
         &mut self,
@@ -386,6 +491,12 @@ impl Shell {
         let Some(conn) = link.conns.get(server) else {
             return;
         };
+        // Nothing would answer: say so instead of waiting on it.
+        if conn.reach != Reach::Connected {
+            link.error =
+                Some("That server is not connected; its sessions cannot be read right now.".into());
+            return;
+        }
         let row = conn.sessions.iter().find(|s| s.id == session);
         let (title, agent_name, status) = row
             .map_or((String::new(), String::new(), Status::Idle), |r| {
@@ -417,8 +528,11 @@ impl Shell {
             permission: None,
             questions: None,
             asking: true,
+            asked: 0,
             again: None,
+            refill: Some(Vec::new()),
             loaded: false,
+            broken: false,
         };
         conn.client
             .send(&json!({ "type": "open", "session": session }));
@@ -442,6 +556,9 @@ impl Shell {
         match event {
             Event::Paired(saved) => {
                 link.pairing = None;
+                link.pairing_timeout = None;
+                // "The server is not at the relay" was about the wait that just ended.
+                link.error = None;
                 link.saved.push(saved);
                 servers::save(&link.saved);
             }
@@ -451,12 +568,20 @@ impl Shell {
                     LinkStatus::Connecting => Reach::Connecting,
                     LinkStatus::Connected => Reach::Connected,
                     LinkStatus::ServerAway => {
+                        // Mid-pairing this is why nothing happens: say it. The
+                        // pairing goes on if the server is back before the link runs out.
+                        if pairing {
+                            link.error = Some(
+                                "The server is not at the relay right now. Pairing goes on if it comes back while the link lasts.".into(),
+                            );
+                        }
                         Reach::Away("The server is not at the relay right now.".into())
                     }
                     LinkStatus::Waiting { why, .. } => Reach::Away(why),
                     // A link that did not work leaves nothing to keep.
                     LinkStatus::Refused(why) if pairing => {
                         link.pairing = None;
+                        link.pairing_timeout = None;
                         link.conns.remove(id);
                         link.error = Some(why);
                         self.sync_servers_view(cx);
@@ -468,10 +593,12 @@ impl Shell {
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the open session is asked for again,
-                    // whole, since what changed meanwhile was not heard.
+                    // whole, since what changed meanwhile was not heard. It is
+                    // read to the side and swapped in when complete.
                     if back && let Some(showing) = link.showing.as_mut().filter(|s| s.server == id)
                     {
-                        (showing.asking, showing.again) = (true, None);
+                        (showing.asking, showing.asked, showing.again) = (true, 0, None);
+                        (showing.refill, showing.broken) = (Some(Vec::new()), false);
                         conn.client
                             .send(&json!({ "type": "open", "session": showing.session }));
                         conn.client.send(
@@ -550,14 +677,14 @@ impl Shell {
             // Entries changed, cut down for a phone: the whole ones are asked for.
             "entries" => {
                 let Some(showing) = showing else { return };
-                if msg["older"] == true {
+                if msg["older"] == true || showing.broken {
                     return;
                 }
                 let from = msg["from"].as_u64().unwrap_or(0) as usize;
                 if showing.asking {
                     showing.again = Some(showing.again.map_or(from, |a| a.min(from)));
                 } else {
-                    showing.asking = true;
+                    (showing.asking, showing.asked) = (true, from);
                     conn.client.send(
                         &json!({ "type": "transcript", "session": showing.session, "from": from }),
                     );
@@ -565,34 +692,60 @@ impl Shell {
             }
             "transcript" => {
                 let Some(showing) = showing else { return };
-                let number = |key: &str| msg[key].as_u64().unwrap_or(0) as usize;
-                let new: Vec<Entry> =
-                    serde_json::from_value(msg["entries"].clone()).unwrap_or_default();
+                if showing.broken {
+                    return;
+                }
                 if let Some(agent) = AgentKind::parse(msg["agent"].as_str().unwrap_or("")) {
                     showing.agent = agent;
                 }
                 showing.cwd = PathBuf::from(text(msg, "cwd"));
-                let more = merge(
-                    &mut showing.entries,
-                    number("from"),
-                    number("to"),
-                    number("count"),
-                    new,
-                );
-                // What is still out, then what changed while this one was.
-                let next = more.or_else(|| showing.again.take());
-                match next {
-                    Some(from) => conn.client.send(
-                        &json!({ "type": "transcript", "session": showing.session, "from": from }),
-                    ),
+                let asked = showing.asked;
+                let next = page_of(msg).map(|page| match showing.refill.as_mut() {
+                    Some(refill) => merge(refill, page, asked),
+                    None => merge(&mut showing.entries, page, asked),
+                });
+                let ask = match next {
+                    Ok(Next::Ask(from)) => Some(from),
+                    Ok(Next::Done) => {
+                        // Read whole: now it takes the place of what was shown.
+                        if let Some(whole) = showing.refill.take() {
+                            showing.entries = whole;
+                        }
+                        showing.loaded = true;
+                        // What changed while this one was out.
+                        showing.again.take()
+                    }
+                    // Asking again would bring the same answer. What is here
+                    // stays on show, and the user is told why it stops there.
+                    failed => {
+                        (showing.broken, showing.asking, showing.again) = (true, false, None);
+                        (showing.refill, showing.loaded) = (None, true);
+                        link.error = Some(match failed {
+                            // The reason without serde's list of every kind it knows.
+                            Err(e) => format!(
+                                "A newer server? This session holds something this app cannot read ({}). Update this app to follow it.",
+                                e.split(", expected").next().unwrap_or(&e)
+                            ),
+                            _ => "The server stopped sending this session part way; open it again to retry.".into(),
+                        });
+                        None
+                    }
+                };
+                match ask {
+                    Some(from) => {
+                        showing.asked = from;
+                        conn.client.send(
+                            &json!({ "type": "transcript", "session": showing.session, "from": from }),
+                        );
+                    }
                     None => showing.asking = false,
                 }
-                if more.is_none() {
-                    showing.loaded = true;
+                // A refill shows once it is whole; what is on screen stays until then.
+                if showing.refill.is_none() {
+                    let (thread, status) = (showing.thread.clone(), thread_status(showing.status));
+                    let transcript = transcript_of(showing);
+                    thread.update(cx, |t, cx| t.show_transcript(transcript, status, cx));
                 }
-                let (thread, status) = (showing.thread.clone(), thread_status(showing.status));
-                let transcript = transcript_of(showing);
-                thread.update(cx, |t, cx| t.show_transcript(transcript, status, cx));
             }
             "error" => link.error = Some(text(msg, "message")),
             _ => {}
@@ -642,31 +795,70 @@ mod tests {
             .collect()
     }
 
+    fn page(from: usize, to: usize, count: usize, new: &[&str]) -> Page {
+        Page {
+            from,
+            to,
+            count,
+            entries: new.iter().map(|t| said(t)).collect(),
+        }
+    }
+
     #[test]
     fn a_transcript_arrives_in_answers_and_follows_what_changes() {
         let mut entries = Vec::new();
         // The first answer held two of five: the rest is asked for from there.
         assert_eq!(
-            merge(&mut entries, 0, 2, 5, vec![said("a"), said("b")]),
-            Some(2)
+            merge(&mut entries, page(0, 2, 5, &["a", "b"]), 0),
+            Next::Ask(2)
         );
         assert_eq!(
-            merge(&mut entries, 2, 5, 5, vec![said("c"), said("d"), said("e")]),
-            None
+            merge(&mut entries, page(2, 5, 5, &["c", "d", "e"]), 2),
+            Next::Done
         );
         assert_eq!(texts(&entries), ["a", "b", "c", "d", "e"]);
         // The last entry grew and one came after it: the tail is replaced.
         assert_eq!(
-            merge(&mut entries, 4, 6, 6, vec![said("e!"), said("f")]),
-            None
+            merge(&mut entries, page(4, 6, 6, &["e!", "f"]), 4),
+            Next::Done
         );
         assert_eq!(texts(&entries), ["a", "b", "c", "d", "e!", "f"]);
         // An answer that starts past what is here joins nothing: the gap first.
-        assert_eq!(merge(&mut entries, 9, 10, 10, vec![said("j")]), Some(6));
+        assert_eq!(
+            merge(&mut entries, page(9, 10, 10, &["j"]), 9),
+            Next::Ask(6)
+        );
         assert_eq!(entries.len(), 6);
         // The session was rewound on the server: fewer entries than before.
-        assert_eq!(merge(&mut entries, 1, 2, 2, vec![said("b2")]), None);
+        assert_eq!(merge(&mut entries, page(1, 2, 2, &["b2"]), 1), Next::Done);
         assert_eq!(texts(&entries), ["a", "b2"]);
+    }
+
+    #[test]
+    fn an_answer_that_brings_nothing_is_not_asked_for_again() {
+        let mut entries = vec![said("a"), said("b")];
+        // More is due, and the page is empty: the same question would get it again.
+        assert_eq!(merge(&mut entries, page(2, 2, 5, &[]), 2), Next::Stuck);
+        // The gap was asked for, and the answer still starts past it.
+        assert_eq!(merge(&mut entries, page(4, 5, 5, &["e"]), 2), Next::Stuck);
+        assert_eq!(texts(&entries), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_page_with_an_entry_this_app_does_not_know_fails_whole() {
+        let good = json!({
+            "type": "transcript", "id": "s1", "from": 3, "to": 5, "count": 9,
+            "entries": [{ "type": "agent", "text": "a" }, { "type": "agent", "text": "b" }],
+        });
+        let read = page_of(&good).unwrap();
+        assert_eq!((read.from, read.to, read.count), (3, 5, 9));
+        assert_eq!(texts(&read.entries), ["a", "b"]);
+        // A server one version ahead: never an empty page, which asks again forever.
+        let newer = json!({
+            "type": "transcript", "id": "s1", "from": 0, "to": 2, "count": 2,
+            "entries": [{ "type": "agent", "text": "a" }, { "type": "hologram", "shape": "cube" }],
+        });
+        assert!(page_of(&newer).err().unwrap().contains("hologram"));
     }
 
     #[test]

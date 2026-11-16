@@ -217,6 +217,7 @@ fn draw(
             let focal = Point::from_xy(hi[0] * 0.62, hi[1] * 0.62);
             if let Some(shader) = RadialGradient::new(
                 focal,
+                0.,
                 Point::from_xy(0., 0.),
                 1.,
                 stops,
@@ -275,6 +276,7 @@ fn draw(
             ];
             if let Some(shader) = RadialGradient::new(
                 Point::from_xy(0., 0.),
+                0.,
                 Point::from_xy(0., 0.),
                 1.,
                 stops,

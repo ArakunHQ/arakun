@@ -8,7 +8,7 @@
 //! `acp_probe`, `thread_demo`), so unused-item lints would only be noise here.
 #![allow(dead_code)]
 
-mod anthropic;
+pub(crate) mod anthropic;
 pub mod attach;
 pub mod catalog;
 pub mod chart;
@@ -37,6 +37,9 @@ mod web;
 pub mod workers_ai;
 
 pub use kind::AgentKind;
+// The palette uses it; the examples that include this module leave the palette out.
+#[allow(unused_imports)]
+pub use launch::claude_code_binary;
 #[allow(unused_imports)]
 pub use launch::{
     droid_bin, login_command, logout_command, opencode_all_models, opencode_go_login_command,

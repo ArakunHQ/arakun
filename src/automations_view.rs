@@ -26,6 +26,8 @@ pub enum AutomationsEvent {
     SetEnabled(usize, bool),
     /// Show the session the last run of this agent automation started.
     OpenSession(usize),
+    /// Stop a rule made in the palette from waiting.
+    CancelRule(u64),
     Dismissed,
 }
 
@@ -87,6 +89,8 @@ const TEMPLATES: &[Template] = &[
 pub struct AutomationsDialog {
     project: SharedString,
     items: Vec<Automation>,
+    /// Rules made from a sentence in the palette: they wait for something to happen.
+    rules: Vec<crate::palette::rules::Rule>,
     /// Environments it can run in, the main checkout first.
     envs: Vec<(PathBuf, SharedString)>,
     /// `None` shows the list; `Some(None)` a new automation, `Some(Some(i))` editing one.
@@ -137,6 +141,7 @@ impl AutomationsDialog {
         let mut this = Self {
             project,
             items,
+            rules: Vec::new(),
             envs,
             editing: None,
             name,
@@ -161,6 +166,101 @@ impl AutomationsDialog {
     pub fn set_items(&mut self, items: Vec<Automation>, cx: &mut Context<Self>) {
         self.items = items;
         cx.notify();
+    }
+
+    /// The palette's rules: waiting ones first, then the last finished.
+    pub fn set_rules(
+        &mut self,
+        mut rules: Vec<crate::palette::rules::Rule>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::palette::rules::State;
+        rules.sort_by_key(|r| (r.state != State::Waiting, std::cmp::Reverse(r.created)));
+        rules.truncate(8);
+        self.rules = rules;
+        cx.notify();
+    }
+
+    fn render_rule(
+        &self,
+        r: &crate::palette::rules::Rule,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::palette::rules::State;
+        let id = r.id;
+        let waiting = r.state == State::Waiting;
+        let steps: Vec<String> = r.steps.iter().map(|s| s.describe()).collect();
+        let mut facts = vec![format!(
+            "When {} · {}",
+            r.trigger.describe(),
+            steps.join(", then ")
+        )];
+        match &r.state {
+            State::Waiting => {
+                if !r.note.is_empty() {
+                    facts.push(r.note.clone());
+                }
+                facts.push(format!("expires {}", schedule::when(r.expires, now)));
+            }
+            State::Done => facts.push("done".into()),
+            State::Expired => facts.push("expired".into()),
+            State::Cancelled => facts.push("cancelled".into()),
+            State::Failed(why) => facts.push(format!("failed: {why}")),
+        }
+        div()
+            .id(("auto-rule", id as usize))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(10.))
+            .py(px(8.))
+            .rounded(px(ui::RADIUS))
+            .hover(|s| s.bg(theme::hover()))
+            .when(!waiting, |d| d.opacity(0.55))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(18.))
+                    .flex()
+                    .justify_center()
+                    .child(icon(r.trigger.icon(), 16.).text_color(theme::text_subtle())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_MD))
+                            .truncate()
+                            .child(r.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .truncate()
+                            .child(facts.join(" · ")),
+                    ),
+            )
+            .when(waiting, |d| {
+                d.child(
+                    ui::button(
+                        ("auto-cancel", id as usize),
+                        "Cancel",
+                        ButtonKind::Ghost,
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::CancelRule(id))),
+                    ),
+                )
+            })
+            .into_any_element()
     }
 
     fn edit(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
@@ -423,7 +523,32 @@ impl AutomationsDialog {
             .p(px(8.))
             .min_h_0()
             .overflow_y_scroll();
-        if self.items.is_empty() {
+        if !self.rules.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(10.))
+                    .pt(px(4.))
+                    .pb(px(2.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child("Waiting for something · made in the palette"),
+            );
+            for r in &self.rules {
+                list = list.child(self.render_rule(r, now, cx));
+            }
+            if !self.items.is_empty() {
+                list = list.child(
+                    div()
+                        .px(px(10.))
+                        .pt(px(10.))
+                        .pb(px(2.))
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child("Saved"),
+                );
+            }
+        }
+        if self.items.is_empty() && self.rules.is_empty() {
             list = list.child(
                 ui::empty_state(
                     "flash",

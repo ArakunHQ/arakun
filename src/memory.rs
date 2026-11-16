@@ -345,40 +345,60 @@ fn doc_tokens(m: &Memory) -> Vec<String> {
 /// BM25 over title (counted twice), text, topic, files and kind. A query word
 /// of 4+ letters also matches words that start with it, at half weight.
 pub fn search<'a>(items: &'a [Memory], query: &str) -> Vec<(f32, &'a Memory)> {
+    search_in(items, &index(items), query)
+}
+
+/// The words of each memory, for `search_in`: worth keeping when the same
+/// memories are searched on every keystroke.
+pub fn index(items: &[Memory]) -> Vec<Vec<String>> {
+    items.iter().map(doc_tokens).collect()
+}
+
+/// `search` with the words of `items` already read by `index`.
+pub fn search_in<'a>(
+    items: &'a [Memory],
+    docs: &[Vec<String>],
+    query: &str,
+) -> Vec<(f32, &'a Memory)> {
     let q = tokens(query);
-    if q.is_empty() {
+    if q.is_empty() || docs.len() != items.len() {
         return Vec::new();
     }
-    let docs: Vec<Vec<String>> = items.iter().map(doc_tokens).collect();
     let n = docs.len() as f32;
     let avg = (docs.iter().map(Vec::len).sum::<usize>() as f32 / n.max(1.)).max(1.);
     let (k1, b) = (1.2, 0.75);
+    // How a document word counts for a query term: whole, or as a prefix of a long term.
+    let weight = |term: &str, w: &str| {
+        if w == term {
+            1.
+        } else if term.chars().count() >= 4 && w.starts_with(term) {
+            0.5
+        } else {
+            0.
+        }
+    };
+    // The idf of each term, counted once over all documents rather than once per match.
+    let idf: Vec<f32> = q
+        .iter()
+        .map(|term| {
+            let df = docs
+                .iter()
+                .filter(|d| d.iter().any(|w| weight(term, w) > 0.))
+                .count() as f32;
+            (1. + (n - df + 0.5) / (df + 0.5)).ln()
+        })
+        .collect();
     let mut scored: Vec<(f32, &Memory)> = items
         .iter()
-        .zip(&docs)
+        .zip(docs)
         .filter_map(|(m, d)| {
             let len = d.len() as f32;
             let mut score = 0.;
-            for term in &q {
-                let prefix = term.chars().count() >= 4;
-                let weight = |w: &String| {
-                    if w == term {
-                        1.
-                    } else if prefix && w.starts_with(term.as_str()) {
-                        0.5
-                    } else {
-                        0.
-                    }
-                };
-                let tf: f32 = d.iter().map(weight).sum();
+            for (term, idf) in q.iter().zip(&idf) {
+                let tf: f32 = d.iter().map(|w| weight(term, w)).sum();
                 if tf == 0. {
                     continue;
                 }
-                let df = docs
-                    .iter()
-                    .filter(|d| d.iter().any(|w| weight(w) > 0.))
-                    .count() as f32;
-                let idf = (1. + (n - df + 0.5) / (df + 0.5)).ln();
                 score += idf * tf * (k1 + 1.) / (tf + k1 * (1. - b + b * len / avg));
             }
             (score > 0.).then_some((score, m))

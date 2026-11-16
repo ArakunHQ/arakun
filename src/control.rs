@@ -221,6 +221,8 @@ Usage:
   arakun <dir> | add [dir]     add a project (or switch to it) and show it
   arakun browse [-s] <url>     open a browser tab (a path opens as file://)
   arakun open [-s] <file[:N]>  open a file tab, at line N
+  arakun palette               bring the window up with Ctrl+K open (bind it
+                             to a global key, such as Super+K)
   arakun run [--ready <text>] [--port <n>] [--timeout <secs>] <command…>
                              run a command in a new terminal of the dock; with
                              --ready, --port or both, wait until its output
@@ -451,6 +453,8 @@ fn cli(args: Vec<String>) -> Cli {
             [target] => request("browse", vec![browse_target(&cwd, target)]),
             _ => return usage("arakun browse [-s] <url>"),
         },
+        "palette" if rest.is_empty() => request("palette", Vec::new()),
+        "palette" => return usage("arakun palette"),
         "open" => match rest.as_slice() {
             [file] => match resolve_file(&cwd, file) {
                 Ok((path, line)) => request(

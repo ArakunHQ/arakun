@@ -1109,6 +1109,976 @@ pub fn avatar_stack(
         }))
 }
 
+// ---------------------------------------------------------------------------
+// Command palette (Ctrl+K). One focus at a time: the selected row has a
+// lighter gradient, a 3 px accent bar at the left edge and a white title; no
+// borders on rows, tabs or keys; key caps only on the selected row and in the
+// footer. The accent is kept for what needs the person; matches are white and
+// underlined. Sizes are the palette's own (17 px query, 13.5 px rows).
+
+pub const PALETTE_W: f32 = 1000.;
+pub const PALETTE_PREVIEW_W: f32 = 360.;
+pub const PALETTE_BODY_H: f32 = 458.;
+pub const PALETTE_ROW_H: f32 = 38.;
+/// Room the list keeps on its left, where the selection bar sits.
+pub const PALETTE_LIST_PAD: f32 = 8.;
+pub const PALETTE_QUERY_TEXT: f32 = 17.;
+const P_ROW: f32 = 13.5;
+const P_SMALL: f32 = 12.5;
+const P_META: f32 = 11.5;
+const P_KEY: f32 = 10.5;
+
+/// The few colors a palette icon is tinted in, by what kind of thing it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tint {
+    Green,
+    Blue,
+    Amber,
+    Violet,
+    Teal,
+    Red,
+    Neutral,
+}
+
+impl Tint {
+    pub fn color(self) -> Hsla {
+        match self {
+            Tint::Green => theme::success().into(),
+            Tint::Blue => theme::link().into(),
+            Tint::Amber => theme::accent(),
+            Tint::Violet => gpui::rgb(theme::CATEGORY[3]).into(),
+            Tint::Teal => gpui::rgb(theme::CATEGORY[5]).into(),
+            Tint::Red => theme::error().into(),
+            Tint::Neutral => theme::text_subtle(),
+        }
+    }
+}
+
+/// The palette's panel: wide, rounded 16, a step lighter than dialogs' edge.
+pub fn palette_panel(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .occlude()
+        .relative()
+        .flex()
+        .flex_col()
+        .w(px(PALETTE_W))
+        .max_w_full()
+        .max_h_full()
+        .rounded(px(super::RADIUS_XL))
+        .border_1()
+        .border_color(theme::border_subtle())
+        .bg(theme::dialog())
+        .shadow_2xl()
+        .overflow_hidden()
+}
+
+/// The query line: icon, what leads the text (scope, chips, crumbs), the input.
+pub fn palette_query() -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(12.))
+        .pt(px(19.))
+        .pb(px(15.))
+        .px(px(22.))
+        .text_size(px(PALETTE_QUERY_TEXT))
+        .line_height(px(24.))
+        .text_color(theme::text())
+}
+
+/// The scope a prefix set (`>`, `/`, `:`, `@`, `#`), in the accent.
+pub fn palette_scope_glyph(glyph: &'static str) -> gpui::Div {
+    div()
+        .flex_none()
+        .text_color(theme::accent())
+        .font_weight(FontWeight::MEDIUM)
+        .child(glyph)
+}
+
+/// A word that became a chip before the query: `@Opus 5.5`, a branch.
+pub fn token_chip(icon_name: &str, label: impl Into<SharedString>, tint: Tint) -> gpui::Div {
+    let c = tint.color();
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(26.))
+        .px(px(9.))
+        .rounded(px(7.))
+        .bg(c.opacity(0.11))
+        .border_1()
+        .border_color(c.opacity(0.2))
+        .text_size(px(P_ROW))
+        .text_color(c)
+        .child(icon(icon_name, 13.).text_color(c))
+        .child(label.into())
+}
+
+/// A step of a drill-down path in the query line: `app / Branches`.
+pub fn crumb(icon_name: Option<&str>, label: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(26.))
+        .px(px(9.))
+        .rounded(px(7.))
+        .bg(theme::fill_hover())
+        .text_size(px(P_ROW))
+        .text_color(theme::text_muted())
+        .when_some(icon_name, |d, n| {
+            d.child(icon(n, 13.).text_color(theme::text_subtle()))
+        })
+        .child(label.into())
+}
+
+pub fn crumb_separator() -> gpui::Div {
+    div().flex_none().text_color(theme::text_faint()).child("/")
+}
+
+/// The row of filter tabs under the query.
+pub fn palette_tabs() -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .px(px(16.))
+        .pb(px(12.))
+        .border_b_1()
+        .border_color(theme::border_subtle())
+}
+
+/// One filter tab: borderless, filled when on, with its count after it.
+pub fn palette_tab(
+    id: impl Into<ElementId>,
+    icon_name: Option<&str>,
+    label: impl Into<SharedString>,
+    count: Option<usize>,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let color = if on {
+        theme::text()
+    } else {
+        theme::text_subtle()
+    };
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(28.))
+        .px(px(11.))
+        .rounded(px(RADIUS))
+        .text_size(px(P_SMALL))
+        .text_color(color)
+        .cursor_pointer()
+        .when(on, |d| d.bg(theme::fill_hover()))
+        .when(!on, |d| d.hover(|s| s.text_color(theme::text_muted())))
+        .when_some(icon_name, |d, n| d.child(icon(n, 14.).text_color(color)))
+        .child(label.into())
+        .when_some(count.filter(|n| *n > 0), |d, n| {
+            d.child(
+                div()
+                    .text_size(px(P_META))
+                    .text_color(theme::text_faint())
+                    .child(n.to_string()),
+            )
+        })
+}
+
+/// A group's label over its rows, quiet, with its count at the right.
+pub fn palette_section(
+    label: impl Into<SharedString>,
+    count: Option<String>,
+    first: bool,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_between()
+        .pt(px(if first { 6. } else { 14. }))
+        .pb(px(5.))
+        .px(px(12.))
+        .text_size(px(P_META))
+        .line_height(px(16.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme::text_faint())
+        .child(label.into())
+        .when_some(count, |d, n| d.child(n))
+}
+
+/// A row of results. The caller adds its lead, title, sub and end.
+pub fn palette_row(id: impl Into<ElementId>, selected: bool) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(11.))
+        .h(px(PALETTE_ROW_H))
+        .px(px(12.))
+        .rounded(px(10.))
+        .text_size(px(P_ROW))
+        .text_color(theme::text_muted())
+        .cursor_pointer()
+        .when(selected, |d| {
+            d.bg(gpui::linear_gradient(
+                90.,
+                gpui::linear_color_stop(theme::fill_hover(), 0.),
+                gpui::linear_color_stop(theme::fill_raised(), 1.),
+            ))
+        })
+        .when(!selected, |d| d.hover(|s| s.bg(theme::fill_raised())))
+}
+
+/// The 3 px accent bar at the list's left edge beside the selected row.
+pub fn selection_bar() -> gpui::Div {
+    div()
+        .absolute()
+        .left(px(-PALETTE_LIST_PAD))
+        .top(px(9.))
+        .bottom(px(9.))
+        .w(px(3.))
+        .rounded_r(px(3.))
+        .bg(theme::accent())
+}
+
+/// How a match shows inside a title: white, semibold, underlined faintly.
+pub fn match_highlight() -> gpui::HighlightStyle {
+    gpui::HighlightStyle {
+        color: Some(gpui::white()),
+        font_weight: Some(FontWeight::SEMIBOLD),
+        underline: Some(gpui::UnderlineStyle {
+            thickness: px(1.),
+            color: Some(gpui::white().opacity(0.22)),
+            wavy: false,
+        }),
+        ..Default::default()
+    }
+}
+
+/// A row's title, its matches highlighted; white when the row is selected.
+pub fn row_title(
+    text: impl Into<SharedString>,
+    matches: &[std::ops::Range<usize>],
+    selected: bool,
+    dim: bool,
+) -> gpui::Div {
+    let text: SharedString = text.into();
+    let hl = match_highlight();
+    let runs: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> =
+        matches.iter().map(|r| (r.clone(), hl)).collect();
+    div()
+        .flex_shrink_1()
+        .min_w_0()
+        .truncate()
+        .text_color(if selected {
+            gpui::white()
+        } else if dim {
+            theme::text_subtle()
+        } else {
+            theme::text_muted()
+        })
+        .child(gpui::StyledText::new(text).with_highlights(runs))
+}
+
+/// What follows a title in a row, quieter: "writing tests", "app".
+pub fn row_sub(text: impl Into<SharedString>, selected: bool) -> gpui::Div {
+    div()
+        .flex_shrink_1()
+        .min_w_0()
+        .truncate()
+        .text_size(px(P_SMALL))
+        .text_color(if selected {
+            theme::text_subtle()
+        } else {
+            theme::text_faint()
+        })
+        .child(text.into())
+}
+
+/// The end of a row: time, line count, a shortcut's text.
+pub fn row_end(selected: bool) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .ml_auto()
+        .pl(px(10.))
+        .text_color(if selected {
+            theme::text_muted()
+        } else {
+            theme::text_faint()
+        })
+}
+
+/// Small mono text at a row's end: `12m`, `L1496`, `1,204 lines`.
+pub fn row_meta(text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .flex_none()
+        .text_size(px(P_META))
+        .font_family(theme::FONT_MONO)
+        .child(text.into())
+}
+
+/// A key cap without a border: `↵`, `Ctrl`.
+pub fn keycap(key: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .min_w(px(20.))
+        .h(px(18.))
+        .px(px(6.))
+        .rounded(px(5.))
+        .bg(theme::fill_hover())
+        .shadow(vec![gpui::BoxShadow {
+            color: theme::mix(0.07),
+            offset: gpui::point(px(0.), px(-1.)),
+            blur_radius: px(0.),
+            spread_radius: px(0.),
+            inset: true,
+        }])
+        .text_size(px(P_KEY))
+        .line_height(px(14.))
+        .font_family(theme::FONT_MONO)
+        .text_color(theme::text_muted())
+        .child(key.into())
+}
+
+/// Keys of one shortcut side by side.
+pub fn keycaps(keys: &[&str]) -> gpui::Div {
+    let mut row = div().flex().flex_none().items_center().gap(px(4.));
+    for k in keys {
+        row = row.child(keycap(k.to_string()));
+    }
+    row
+}
+
+/// A tinted word at a row's end: `review`, `5 for you`.
+pub fn palette_pill(text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(18.))
+        .px(px(8.))
+        .rounded_full()
+        .bg(color.opacity(0.1))
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .child(text.into())
+}
+
+/// A row's icon, tinted by kind.
+pub fn lead_icon(name: &str, tint: Tint) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(16.))
+        .child(icon(name, 16.).text_color(tint.color()))
+}
+
+/// A working session: a ring with a turning arc in green.
+pub fn lead_spinner(id: impl Into<ElementId>) -> AnyElement {
+    use gpui::AnimationExt as _;
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(16.))
+        .child(
+            icon("loading03", 15.)
+                .text_color(theme::success())
+                .with_animation(
+                    id,
+                    gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat(),
+                    |svg, t| {
+                        svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
+                    },
+                ),
+        )
+        .into_any_element()
+}
+
+/// An idle session: an empty ring.
+pub fn lead_ring() -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(16.))
+        .child(
+            div()
+                .size(px(14.))
+                .rounded_full()
+                .border(px(1.5))
+                .border_color(theme::border_strong()),
+        )
+}
+
+/// A dot in a state color, with a soft halo when it asks for attention.
+pub fn lead_dot(color: Hsla, halo: bool) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(16.))
+        .child(div().size(px(8.)).rounded_full().bg(color).when(halo, |d| {
+            d.shadow(vec![gpui::BoxShadow {
+                color: color.opacity(0.14),
+                offset: gpui::point(px(0.), px(0.)),
+                blur_radius: px(0.),
+                spread_radius: px(3.),
+                inset: false,
+            }])
+        }))
+}
+
+/// A person's picture in a white ring, set off from the row by a gap.
+pub fn ringed_avatar(login: &str, picture: Option<&std::path::Path>, size: f32) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(size + 3.))
+        .rounded_full()
+        .border(px(1.5))
+        .border_color(theme::mix(0.8))
+        .child(avatar_image(login, picture, size - 2.))
+}
+
+/// A square check for multi-select.
+pub fn check_box(on: bool) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(16.))
+        .rounded(px(5.))
+        .border(px(1.5))
+        .when(on, |d| {
+            d.bg(theme::accent())
+                .border_color(theme::accent())
+                .child(icon("tick02", 11.).text_color(theme::background()))
+        })
+        .when(!on, |d| d.border_color(theme::border_strong()))
+}
+
+/// A card at the top of the list (clipboard, ask an agent, an answer).
+pub fn palette_card(
+    id: impl Into<ElementId>,
+    tint: Tint,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let c = tint.color();
+    let strong = matches!(tint, Tint::Amber | Tint::Violet);
+    div()
+        .id(id)
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(12.))
+        .my(px(4.))
+        .py(px(12.))
+        .px(px(14.))
+        .rounded(px(RADIUS_LG))
+        .cursor_pointer()
+        .when(strong, |d| {
+            d.bg(gpui::linear_gradient(
+                100.,
+                gpui::linear_color_stop(c.opacity(0.11), 0.),
+                gpui::linear_color_stop(c.opacity(0.024), 0.6),
+            ))
+            .border_1()
+            .border_color(c.opacity(if selected { 0.32 } else { 0.19 }))
+        })
+        .when(!strong && tint != Tint::Neutral, |d| {
+            d.bg(c.opacity(if selected { 0.09 } else { 0.05 }))
+        })
+        .when(tint == Tint::Neutral, |d| {
+            d.bg(if selected {
+                theme::fill_hover()
+            } else {
+                theme::fill_raised()
+            })
+            .border_1()
+            .border_color(theme::border_subtle())
+        })
+}
+
+/// The tinted square holding a card's icon.
+pub fn glow_tile(icon_name: &str, tint: Tint) -> gpui::Div {
+    let c = tint.color();
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(30.))
+        .rounded(px(9.))
+        .bg(c.opacity(0.13))
+        .child(icon(icon_name, 16.).text_color(c))
+}
+
+/// A card's two lines: what it does and what it knows.
+pub fn card_text(title: impl IntoElement, sub: Option<AnyElement>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .child(
+            div()
+                .truncate()
+                .text_size(px(P_ROW))
+                .line_height(px(19.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text())
+                .child(title),
+        )
+        .when_some(sub, |d, s| {
+            d.child(
+                div()
+                    .mt(px(1.))
+                    .truncate()
+                    .text_size(px(P_SMALL))
+                    .line_height(px(18.))
+                    .text_color(theme::text_subtle())
+                    .child(s),
+            )
+        })
+}
+
+/// The preview pane at the right of the list.
+pub fn preview_pane() -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(px(PALETTE_PREVIEW_W))
+        .h_full()
+        .min_h_0()
+        .gap(px(16.))
+        .p(px(22.))
+        .border_l_1()
+        .border_color(theme::border_subtle())
+        .bg(gpui::linear_gradient(
+            180.,
+            gpui::linear_color_stop(theme::mix(0.016), 0.),
+            gpui::linear_color_stop(theme::mix(0.), 1.),
+        ))
+        .overflow_hidden()
+}
+
+/// The small line over a preview's title: `ArakunHQ/arakun · #61`.
+pub fn preview_eyebrow(icon_name: &str, text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(P_META))
+        .line_height(px(16.))
+        .text_color(theme::text_faint())
+        .child(icon(icon_name, 12.).text_color(theme::text_faint()))
+        .child(div().truncate().child(text.into()))
+}
+
+pub fn preview_title(text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .text_size(px(PALETTE_QUERY_TEXT))
+        .line_height(px(22.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::text())
+        .child(text.into())
+}
+
+/// Running text in a preview.
+pub fn preview_text(text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .text_size(px(P_ROW))
+        .line_height(px(21.))
+        .text_color(theme::text_muted())
+        .child(text.into())
+}
+
+/// Label and value rows in a preview.
+pub fn props() -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(9.))
+        .text_size(px(P_SMALL))
+        .line_height(px(18.))
+}
+
+pub fn prop(label: impl Into<SharedString>, value: impl IntoElement) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(10.))
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme::text_faint())
+                .child(label.into()),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .min_w_0()
+                .truncate()
+                .text_color(theme::text())
+                .child(value),
+        )
+}
+
+/// Mono text in props: `+140 −20 · 9 files`.
+pub fn mono(text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
+    div()
+        .flex_none()
+        .text_size(px(P_META))
+        .font_family(theme::FONT_MONO)
+        .text_color(color)
+        .child(text.into())
+}
+
+/// A darker well for code, logs and diffs.
+pub fn code_well() -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .py(px(12.))
+        .px(px(14.))
+        .rounded(px(10.))
+        .bg(theme::surface(0.045))
+        .text_size(px(P_META))
+        .line_height(px(19.5))
+        .font_family(theme::FONT_MONO)
+        .text_color(theme::text_subtle())
+        .overflow_hidden()
+}
+
+/// One line of a `code_well`, numbered or not, in a color.
+pub fn code_line(number: Option<u32>, text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
+    div()
+        .flex()
+        .gap(px(10.))
+        .min_w_0()
+        .when_some(number, |d, n| {
+            d.child(
+                div()
+                    .flex_none()
+                    .w(px(30.))
+                    .text_color(theme::text_faint())
+                    .child(n.to_string()),
+            )
+        })
+        .child(div().truncate().text_color(color).child(text.into()))
+}
+
+/// A quote of what an agent last said.
+pub fn quote(text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .pl(px(12.))
+        .border_l_2()
+        .border_color(theme::border())
+        .text_size(px(13.))
+        .line_height(px(20.))
+        .text_color(theme::text_muted())
+        .child(text.into())
+}
+
+/// Three numbers side by side: (value, label, color).
+pub fn stat_grid(cells: &[(String, String, Option<Hsla>)]) -> gpui::Div {
+    div()
+        .flex()
+        .w_full()
+        .gap(px(1.))
+        .rounded(px(11.))
+        .bg(theme::border_subtle())
+        .overflow_hidden()
+        .children(cells.iter().map(|(value, label, color)| {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .py(px(10.))
+                .px(px(12.))
+                .bg(theme::surface(0.135))
+                .child(
+                    div()
+                        .text_size(px(18.))
+                        .line_height(px(22.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(color.unwrap_or(theme::text()))
+                        .truncate()
+                        .child(value.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(P_META))
+                        .line_height(px(16.))
+                        .text_color(theme::text_faint())
+                        .truncate()
+                        .child(label.clone()),
+                )
+        }))
+}
+
+/// Check results as small green, red or amber bars.
+pub fn check_bars(colors: &[Hsla]) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .children(
+            colors
+                .iter()
+                .take(8)
+                .map(|c| div().w(px(8.)).h(px(12.)).rounded(px(2.)).bg(*c)),
+        )
+}
+
+/// The bar of hints along the palette's bottom.
+pub fn palette_footer() -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(16.))
+        .py(px(11.))
+        .px(px(20.))
+        .border_t_1()
+        .border_color(theme::border_subtle())
+        .text_size(px(12.))
+        .line_height(px(18.))
+        .text_color(theme::text_faint())
+}
+
+/// Keys and what they do: `↑ ↓ move`.
+pub fn footer_hint(keys: &[&str], label: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .child(keycaps(keys))
+        .child(label.into())
+}
+
+/// The floating bar for what is marked with Space.
+pub fn bulk_bar() -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .py(px(6.))
+        .pr(px(6.))
+        .pl(px(14.))
+        .rounded(px(RADIUS_LG))
+        .bg(theme::surface(0.16))
+        .border_1()
+        .border_color(theme::border())
+        .shadow_xl()
+        .text_size(px(P_SMALL))
+}
+
+pub fn bulk_button(
+    id: impl Into<ElementId>,
+    icon_name: Option<&str>,
+    label: impl Into<SharedString>,
+    primary: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(30.))
+        .px(px(11.))
+        .rounded(px(RADIUS))
+        .cursor_pointer()
+        .when(primary, |d| {
+            d.bg(theme::content())
+                .text_color(theme::background())
+                .font_weight(FontWeight::SEMIBOLD)
+                .hover(|s| s.bg(theme::mix(0.8)))
+        })
+        .when(!primary, |d| {
+            d.text_color(theme::text_muted())
+                .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
+        })
+        .when_some(icon_name, |d, n| {
+            d.child(icon(n, 13.).text_color(if primary {
+                theme::background()
+            } else {
+                theme::text_subtle()
+            }))
+        })
+        .child(label.into())
+}
+
+/// A pinned thing as a chip in the palette's Pinned row, with its number.
+pub fn pin_chip(
+    id: impl Into<ElementId>,
+    icon_name: &str,
+    tint: Tint,
+    label: impl Into<SharedString>,
+    number: usize,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(7.))
+        .h(px(32.))
+        .px(px(11.))
+        .rounded(px(9.))
+        .bg(if selected {
+            theme::fill_selected()
+        } else {
+            theme::fill_raised()
+        })
+        .text_size(px(P_SMALL))
+        .text_color(if selected {
+            theme::text()
+        } else {
+            theme::text_muted()
+        })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::fill_hover()))
+        .max_w(px(260.))
+        .child(icon(icon_name, 14.).text_color(tint.color()))
+        .child(div().min_w_0().truncate().child(label.into()))
+        .child(
+            div()
+                .flex_none()
+                .ml(px(4.))
+                .text_size(px(P_KEY))
+                .font_family(theme::FONT_MONO)
+                .text_color(theme::text_faint())
+                .child(number.to_string()),
+        )
+}
+
+/// The WHEN / DO / THEN box of an automation draft.
+pub fn rule_well() -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .mt(px(12.))
+        .p(px(12.))
+        .rounded(px(10.))
+        .bg(theme::surface(0.045))
+        .text_size(px(P_SMALL))
+}
+
+pub fn rule_line(word: &'static str, icon_name: &str, text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .child(
+            div()
+                .flex_none()
+                .w(px(44.))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(Tint::Violet.color())
+                .child(word),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .h(px(24.))
+                .px(px(9.))
+                .rounded(px(7.))
+                .bg(theme::fill_hover())
+                .text_color(theme::text())
+                .child(icon(icon_name, 13.).text_color(theme::text_muted()))
+                .child(text.into()),
+        )
+}
+
+/// A source an answer read: `CI #4812`, `memory #325`.
+pub fn source_chip(icon_name: &str, label: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .h(px(22.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .bg(theme::fill_raised())
+        .text_size(px(P_META))
+        .text_color(theme::text_subtle())
+        .child(icon(icon_name, 12.).text_color(theme::text_faint()))
+        .child(label.into())
+}
+
+/// Text of a quick answer or memory card: 13.5 px, loose lines.
+pub fn answer_text() -> gpui::Div {
+    div()
+        .text_size(px(P_ROW))
+        .line_height(px(21.5))
+        .text_color(theme::text_muted())
+}
+
+/// The small header line of an answer card: `Quick answer · Haiku 5.5`.
+pub fn answer_header() -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .mb(px(10.))
+        .text_size(px(12.))
+        .text_color(theme::text_faint())
+}
+
+/// A quiet line in the palette: no key yet, nothing matches.
+pub fn palette_note(text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .py(px(10.))
+        .px(px(12.))
+        .text_size(px(P_SMALL))
+        .line_height(px(18.))
+        .text_color(theme::text_faint())
+        .child(text.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

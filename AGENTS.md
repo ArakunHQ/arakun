@@ -55,7 +55,12 @@ Every commit message and pull request title follows
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
   checks below, wait for CI to pass, then mark it ready with `gh pr ready`. Marking it
   ready starts CodeRabbit, and the reviewers are asked once it finishes without
-  approving, so don't do it before then.
+  approving or with a review thread still open, so don't do it before then.
+- Answer every CodeRabbit comment: fix it and push, or reply with the reason you
+  won't. Don't resolve its threads or post `@coderabbitai resolve` or `approve`
+  yourself; the reviewer resolves what is left and approves. A workflow dismisses
+  CodeRabbit's approval when the author resolved one of its threads or one is open. If you change a rule here or in
+  CONTRIBUTING.md, check the instructions in `.coderabbit.yaml` too.
 
 ### Stacked pull requests
 

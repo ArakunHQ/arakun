@@ -254,9 +254,19 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
   while CI runs. Once the checks pass, mark it ready with `gh pr ready` or the button on
   GitHub. That starts CodeRabbit's review. When it finishes, people are asked to review
-  unless CodeRabbit approved. A pull request from outside the team always needs a
+  unless CodeRabbit approved and every review thread is resolved. A pull request from
+  outside the team always needs a
   maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
   status waits for a person.
+- **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
+  won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
+  approves only once its blocking comments are resolved. Don't resolve its comments
+  yourself: if you do, a workflow dismisses its approval and asks a person. It does
+  the same when CodeRabbit approves with comments still open: the reviewer resolves
+  them and approves. `@coderabbitai resolve` and
+  `@coderabbitai approve` don't work on your own pull request. Its review rules are in
+  [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
+  instructions there too.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

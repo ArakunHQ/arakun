@@ -111,4 +111,7 @@ gh pr checks --watch     # or your host's way to wait on a pull request
   before CI passes.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.
+- CodeRabbit comments: fix each one and push, or reply with the reason you
+  won't. Never resolve its threads or post `@coderabbitai resolve` or `approve`
+  yourself.
 - Never merge, approve or self-review. A person does that.

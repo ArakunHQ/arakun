@@ -2207,7 +2207,10 @@ fn slider_with(
                         let (offset, max) = (scroll.offset(), scroll.max_offset());
                         if let Some(y) = pin_offset(start.origin.y, b.origin.y, offset.y, max.y) {
                             scroll.set_offset(gpui::point(offset.x, y));
-                            window.refresh();
+                            // The pane already took its offset for this frame, and
+                            // `refresh` does nothing while drawing: draw once more
+                            // after it, or the slider stays off when the pointer stops.
+                            window.on_next_frame(|window, _| window.refresh());
                         }
                     }
                 },

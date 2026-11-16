@@ -752,8 +752,18 @@ impl Shell {
             composer_focus,
             _activation: activation,
             window_state: layout.window,
-            _bounds: cx.observe_window_bounds(window, |this, window, _| {
-                this.window_state = Some(state::WindowState::from_bounds(window.window_bounds()));
+            _bounds: cx.observe_window_bounds(window, |this, window, cx| {
+                let display = window
+                    .display(cx)
+                    .and_then(|d| d.uuid().ok())
+                    .map(|u| u.to_string());
+                this.window_state = Some(state::WindowState::next(
+                    this.window_state.as_ref(),
+                    window.window_bounds(),
+                    window.is_maximized(),
+                    window.is_fullscreen(),
+                    display,
+                ));
             }),
             shown_browsers: Vec::new(),
             _control: None,
@@ -954,7 +964,7 @@ impl Shell {
                 account_view::rail_shows(crate::agent::AgentKind::OpenCode),
             ],
             ui_zoom: crate::ui_zoom::pct(),
-            window: self.window_state,
+            window: self.window_state.clone(),
         };
         state::snapshot(&self.projects, self.active_project, layout)
     }

@@ -111,15 +111,36 @@ fn bind<A: gpui::Action>(keys: &str, action: A, context: &str) -> KeyBinding {
     KeyBinding::new(&keys, action, Some(&context))
 }
 
-/// Whether enough of `rect` shows on a connected display to grab its title bar.
-fn on_a_display(rect: Bounds<gpui::Pixels>, cx: &App) -> bool {
+/// The saved window and the display to open it on, while that display is
+/// connected and shows enough of it to grab the title bar.
+fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
+    let saved = state::saved_window()?;
+    let rect = saved.rect();
     let min = size(px(100.), px(40.));
-    rect.size.width >= min.width
-        && rect.size.height >= min.height
-        && cx.displays().iter().any(|d| {
-            let shown = d.bounds().intersect(&rect);
-            shown.size.width >= min.width && shown.size.height >= min.height
-        })
+    let shows = |d: &std::rc::Rc<dyn gpui::PlatformDisplay>| {
+        let shown = d.bounds().intersect(&rect);
+        shown.size.width >= min.width && shown.size.height >= min.height
+    };
+    let displays = cx.displays();
+    let display = match &saved.display {
+        Some(uuid) => {
+            let d = displays
+                .iter()
+                .find(|d| d.uuid().is_ok_and(|u| u.to_string() == *uuid))?;
+            if !shows(d) {
+                return None;
+            }
+            Some(d.id())
+        }
+        // Saved without its display: wherever it shows.
+        None => {
+            if !displays.iter().any(shows) {
+                return None;
+            }
+            None
+        }
+    };
+    Some((saved.to_bounds(), display))
 }
 
 fn main() {
@@ -232,27 +253,30 @@ fn main() {
                 }
             })
             .detach();
+            let mut display_id = None;
             let bounds = match dev::size() {
                 // The test arakun fills its virtual screen, so screenshot pixels are window points.
                 Some((w, h)) => {
                     WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))))
                 }
                 // Where it was last time, unless that screen is gone.
-                None => state::saved_window()
-                    .filter(|w| on_a_display(w.rect(), cx))
-                    .map(state::WindowState::to_bounds)
-                    .unwrap_or_else(|| {
-                        WindowBounds::Windowed(Bounds::centered(
-                            None,
-                            size(px(1280.), px(800.)),
-                            cx,
-                        ))
-                    }),
+                None => match saved_place(cx) {
+                    Some((bounds, display)) => {
+                        display_id = display;
+                        bounds
+                    }
+                    None => WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1280.), px(800.)),
+                        cx,
+                    )),
+                },
             };
             let shell = cx
                 .open_window(
                     WindowOptions {
                         window_bounds: Some(bounds),
+                        display_id,
                         titlebar: Some(TitlebarOptions {
                             title: Some("Arakun".into()),
                             appears_transparent: true,

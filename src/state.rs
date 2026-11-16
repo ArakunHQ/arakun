@@ -66,7 +66,7 @@ pub struct State {
 
 /// The window's place and size in screen points, as `gpui::WindowBounds`.
 /// For a maximized or full screen window, the bounds are where it goes back to.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct WindowState {
     pub x: f32,
     pub y: f32,
@@ -76,9 +76,36 @@ pub struct WindowState {
     pub maximized: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fullscreen: bool,
+    /// The display it was on (`PlatformDisplay::uuid`). macOS gives the bounds
+    /// relative to that display, so they mean nothing on another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 impl WindowState {
+    /// The window as it is now, after `prev`. gpui on X11 reports neither full
+    /// screen nor the bounds to go back to, and macOS reports a zoomed window as
+    /// windowed, so the flags are read too. In either mode the bounds stay the
+    /// last ones of the plain window, which are the ones to go back to.
+    pub fn next(
+        prev: Option<&WindowState>,
+        bounds: gpui::WindowBounds,
+        maximized: bool,
+        fullscreen: bool,
+        display: Option<String>,
+    ) -> Self {
+        let mut now = Self::from_bounds(bounds);
+        now.fullscreen |= fullscreen;
+        now.maximized = (now.maximized || maximized) && !now.fullscreen;
+        if (now.fullscreen || now.maximized)
+            && let Some(prev) = prev
+        {
+            (now.x, now.y, now.w, now.h) = (prev.x, prev.y, prev.w, prev.h);
+        }
+        now.display = display;
+        now
+    }
+
     pub fn from_bounds(bounds: gpui::WindowBounds) -> Self {
         let (b, maximized, fullscreen) = match bounds {
             gpui::WindowBounds::Windowed(b) => (b, false, false),
@@ -92,10 +119,11 @@ impl WindowState {
             h: b.size.height.into(),
             maximized,
             fullscreen,
+            display: None,
         }
     }
 
-    pub fn to_bounds(self) -> gpui::WindowBounds {
+    pub fn to_bounds(&self) -> gpui::WindowBounds {
         let b = self.rect();
         if self.fullscreen {
             gpui::WindowBounds::Fullscreen(b)
@@ -106,7 +134,7 @@ impl WindowState {
         }
     }
 
-    pub fn rect(self) -> gpui::Bounds<gpui::Pixels> {
+    pub fn rect(&self) -> gpui::Bounds<gpui::Pixels> {
         gpui::Bounds::new(
             gpui::point(gpui::px(self.x), gpui::px(self.y)),
             gpui::size(gpui::px(self.w), gpui::px(self.h)),
@@ -156,7 +184,7 @@ pub const PANEL_W: f32 = 260.;
 pub const SUBAGENTS_W: f32 = 360.;
 
 /// Window layout that is not tied to a project.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Layout {
     pub dock_open: bool,
     pub dock_height: f32,
@@ -1026,5 +1054,54 @@ mod tests {
         assert!(!plain.contains("maximized") && !plain.contains("fullscreen"));
         let old: State = serde_json::from_str("{}").unwrap();
         assert!(old.window.is_none(), "older state files open centred");
+    }
+
+    #[test]
+    fn a_maximized_or_full_screen_window_keeps_its_plain_bounds() {
+        let plain = gpui::Bounds::new(
+            gpui::point(gpui::px(40.), gpui::px(60.)),
+            gpui::size(gpui::px(1000.), gpui::px(700.)),
+        );
+        let screen = gpui::Bounds::new(
+            gpui::point(gpui::px(0.), gpui::px(0.)),
+            gpui::size(gpui::px(1920.), gpui::px(1080.)),
+        );
+        let uuid = || Some("display-a".to_string());
+        let windowed = WindowState::next(
+            None,
+            gpui::WindowBounds::Windowed(plain),
+            false,
+            false,
+            uuid(),
+        );
+        assert_eq!(windowed.rect(), plain);
+        assert_eq!(windowed.display, uuid());
+        // X11: full screen only shows in the flag, with the screen as bounds.
+        let full = WindowState::next(
+            Some(&windowed),
+            gpui::WindowBounds::Windowed(screen),
+            false,
+            true,
+            uuid(),
+        );
+        assert!(full.fullscreen && !full.maximized);
+        assert_eq!(full.to_bounds(), gpui::WindowBounds::Fullscreen(plain));
+        // X11 maximized reports the maximized size; macOS zoom reports Windowed.
+        for bounds in [
+            gpui::WindowBounds::Maximized(screen),
+            gpui::WindowBounds::Windowed(screen),
+        ] {
+            let max = WindowState::next(Some(&windowed), bounds, true, false, uuid());
+            assert_eq!(max.to_bounds(), gpui::WindowBounds::Maximized(plain));
+        }
+        // Back to a plain window: its own bounds again.
+        let back = WindowState::next(
+            Some(&full),
+            gpui::WindowBounds::Windowed(plain),
+            false,
+            false,
+            uuid(),
+        );
+        assert_eq!(back.to_bounds(), gpui::WindowBounds::Windowed(plain));
     }
 }

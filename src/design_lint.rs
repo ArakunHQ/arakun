@@ -20,6 +20,75 @@ const EXEMPT: &[&str] = &[
     "src/island.rs",
 ];
 
+/// Files that keep their own corners and spacing: the island process draws a
+/// fixed HUD that the app's scales must not move.
+const SCALE_EXEMPT: &[&str] = &["src/island_host"];
+
+/// The calls whose pixel argument has to go through a scale: corners through
+/// `ui::rad`, padding and gaps through `ui::sp`.
+const SCALED: &[(&str, &str)] = &[
+    (".rounded", "ui::rad"),
+    (".gap", "ui::sp"),
+    (".p(", "ui::sp"),
+    (".px(", "ui::sp"),
+    (".py(", "ui::sp"),
+    (".pt(", "ui::sp"),
+    (".pb(", "ui::sp"),
+    (".pl(", "ui::sp"),
+    (".pr(", "ui::sp"),
+];
+
+/// Corners, padding or gaps given in raw pixels, which the Corners and
+/// Spacing settings would not reach. `next` is the next line with code on
+/// it, for an argument that starts there.
+fn unscaled(line: &str, next: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for (call, fix) in SCALED {
+        let mut rest = line;
+        while let Some(i) = rest.find(call) {
+            rest = &rest[i + call.len()..];
+            // `.rounded(`, `.rounded_tl(`, `.gap_x(`: skip to the open paren.
+            let after = match rest.find('(') {
+                Some(j)
+                    if !call.ends_with('(')
+                        && rest[..j]
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c == '_') =>
+                {
+                    &rest[j + 1..]
+                }
+                _ if call.ends_with('(') => rest,
+                _ => continue,
+            };
+            let mut arg = after.trim_start();
+            // `.gap(` or `.gap( // why`: the argument is on a later line.
+            if arg.is_empty() || arg.starts_with("//") {
+                arg = next.trim_start();
+            }
+            if arg.starts_with("px(") {
+                found.push(format!(
+                    "{} in raw pixels: use {fix}(…)",
+                    call.trim_end_matches('(')
+                ));
+            }
+        }
+    }
+    found
+}
+
+/// The first of `lines` with code on it: an argument on the line after its
+/// call can have a comment or a blank line before it.
+fn next_code<'a>(lines: &[&'a str]) -> &'a str {
+    lines
+        .iter()
+        .find(|l| {
+            let t = l.trim_start();
+            !t.is_empty() && !t.starts_with("//")
+        })
+        .copied()
+        .unwrap_or("")
+}
+
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let p = entry.path();
@@ -109,9 +178,16 @@ fn views_use_the_design_system() {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
-        for (n, line) in text.lines().enumerate() {
+        let scaled = !SCALE_EXEMPT.iter().any(|d| rel.starts_with(d));
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
             for p in problems(line) {
                 report.push(format!("{rel}:{}: {p}", n + 1));
+            }
+            if scaled {
+                for p in unscaled(line, next_code(&lines[n + 1..])) {
+                    report.push(format!("{rel}:{}: {p}", n + 1));
+                }
             }
         }
     }
@@ -135,4 +211,15 @@ fn the_lint_catches_what_it_should() {
     assert_eq!(problems(".text_size(px(18.))").len(), 1);
     assert!(problems(".text_size(px(size * 0.4))").is_empty());
     assert!(problems(".text_color(theme::text_subtle())").is_empty());
+    assert_eq!(unscaled(".rounded(px(8.))", "").len(), 1);
+    assert_eq!(unscaled(".rounded_tl(px(4.)).gap_x(px(6.))", "").len(), 2);
+    assert_eq!(unscaled(".px(px(12.)).py(px(4.))", "").len(), 2);
+    assert!(unscaled(".rounded(crate::ui::rad(8.)).gap(ui::sp(6.))", "").is_empty());
+    assert!(unscaled(".rounded_full().h(px(20.)).mx(px(4.))", "").is_empty());
+    // An argument on a later line, after a comment or a blank line.
+    assert_eq!(unscaled(".gap(", next_code(&["    px(8.)", ")"])).len(), 1);
+    let later = ["        // Why eight.", "", "        px(8.))"];
+    assert_eq!(unscaled(".gap(", next_code(&later)).len(), 1);
+    assert_eq!(unscaled(".gap( // why", next_code(&later)).len(), 1);
+    assert!(unscaled(".gap(", next_code(&["", "    crate::ui::sp(8.))"])).is_empty());
 }

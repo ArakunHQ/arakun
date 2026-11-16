@@ -26,8 +26,8 @@ fn error_box(e: SharedString) -> impl IntoElement {
         .id("git-dialog-error")
         .max_h(px(160.))
         .overflow_y_scroll()
-        .p(px(10.))
-        .rounded(px(12.))
+        .p(crate::ui::sp(10.))
+        .rounded(crate::ui::rad(12.))
         .bg(gpui::rgba(0xef44441a))
         .text_size(px(ui::TEXT_SM))
         .line_height(px(17.))
@@ -179,13 +179,13 @@ impl Render for CommitDialog {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    .p(px(16.))
+                    .gap(crate::ui::sp(16.))
+                    .p(crate::ui::sp(16.))
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(6.))
+                            .gap(crate::ui::sp(6.))
                             .child(
                                 div()
                                     .text_size(px(ui::TEXT_SM))
@@ -197,8 +197,8 @@ impl Render for CommitDialog {
                                     .flex()
                                     .items_center()
                                     .h(px(ui::INPUT_H))
-                                    .px(px(10.))
-                                    .rounded(px(ui::RADIUS))
+                                    .px(crate::ui::sp(10.))
+                                    .rounded(crate::ui::rad(ui::RADIUS))
                                     .border_1()
                                     .border_color(theme::border_strong())
                                     .bg(theme::background())
@@ -212,7 +212,7 @@ impl Render for CommitDialog {
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(
                                 ui::button(
                                     "commit-cancel",
@@ -388,8 +388,8 @@ impl Render for ConfirmDialog {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    .p(px(16.))
+                    .gap(crate::ui::sp(16.))
+                    .p(crate::ui::sp(16.))
                     .text_size(px(ui::TEXT_MD))
                     .line_height(px(19.))
                     .child(
@@ -402,9 +402,9 @@ impl Render for ConfirmDialog {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(8.))
-                                .p(px(12.))
-                                .rounded(px(12.))
+                                .gap(crate::ui::sp(8.))
+                                .p(crate::ui::sp(12.))
+                                .rounded(crate::ui::rad(12.))
                                 .border_1()
                                 .border_color(theme::border())
                                 .bg(theme::fill_hover())
@@ -414,10 +414,10 @@ impl Render for ConfirmDialog {
                                     div()
                                         .flex()
                                         .items_start()
-                                        .gap(px(10.))
+                                        .gap(crate::ui::sp(10.))
                                         .child(
                                             div()
-                                                .pt(px(2.))
+                                                .pt(crate::ui::sp(2.))
                                                 .child(icon(name, 14.).text_color(*color)),
                                         )
                                         .child(div().flex_1().min_w_0().child(text.clone()))
@@ -429,12 +429,12 @@ impl Render for ConfirmDialog {
                             div()
                                 .flex()
                                 .items_start()
-                                .gap(px(10.))
+                                .gap(crate::ui::sp(10.))
                                 .text_size(px(ui::TEXT_SM))
                                 .text_color(theme::warn())
                                 .child(
                                     div()
-                                        .pt(px(2.))
+                                        .pt(crate::ui::sp(2.))
                                         .child(icon("alert-circle", 14.).text_color(theme::warn())),
                                 )
                                 .child(div().flex_1().min_w_0().child(why)),
@@ -445,7 +445,7 @@ impl Render for ConfirmDialog {
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(
                                 ui::button(
                                     "git-confirm-cancel",

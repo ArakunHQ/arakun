@@ -25,7 +25,7 @@ pub fn tree_item(last: bool, mid: f32, gap: f32, row: gpui::AnyElement) -> gpui:
     div()
         .relative()
         .min_w_0()
-        .pl(px(20.))
+        .pl(sp(20.))
         .child(
             div()
                 .absolute()
@@ -50,7 +50,7 @@ pub fn tree_item(last: bool, mid: f32, gap: f32, row: gpui::AnyElement) -> gpui:
                 .border_l_1()
                 .border_b_1()
                 .border_color(c)
-                .rounded_bl(px(8.)),
+                .rounded_bl(rad(8.)),
         )
         .child(row)
         .into_any_element()
@@ -98,9 +98,9 @@ struct Tip(SharedString);
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .px(px(8.))
-            .py(px(4.))
-            .rounded(px(RADIUS_SM))
+            .px(sp(8.))
+            .py(sp(4.))
+            .rounded(rad(RADIUS_SM))
             .bg(theme::dialog())
             .border_1()
             .border_color(theme::border())
@@ -110,6 +110,42 @@ impl Render for Tip {
             .child(self.0.clone())
     }
 }
+
+/// A tab of a tab strip: as wide as its title between 112 and 224, `TAB_H`
+/// tall, filled when active. Callers add the icon, the title and a close
+/// button (`right(px(4.))`, `TAB_CLOSE_TOP`). The dock's shorter tabs set
+/// their own width and height on top.
+pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .relative()
+        .flex()
+        .items_center()
+        .flex_shrink(1.)
+        .min_w(px(112.))
+        .max_w(px(224.))
+        .h(px(TAB_H))
+        .px(sp(8.))
+        .gap(sp(6.))
+        // Strips sit in a window card's top bar: parallel to its corner.
+        .rounded(nested(RADIUS_XL, (BAR_H - TAB_H) / 2.))
+        .text_size(px(TEXT_MD))
+        .cursor_pointer()
+        .when(active, |d| {
+            d.bg(theme::selection()).text_color(theme::content())
+        })
+        .when(!active, |d| {
+            d.text_color(theme::text_subtle())
+                .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+        })
+}
+
+/// Where a tab's 20 px close button sits, centered on the tab.
+pub const TAB_CLOSE_TOP: f32 = (TAB_H - 20.) / 2.;
+/// What a tab keeps clear at its end for that button and its offset. Fixed,
+/// like the button: a tab adds scaled air to it, so a long title never runs
+/// under the button at a tight Spacing.
+pub const TAB_CLOSE_ROOM: f32 = 20. + 4.;
 
 /// Builds the tooltip closure for `.tooltip()`: tip("New session").
 /// Shortcuts in it ("New session (Ctrl+T)") show as macOS writes them there.
@@ -143,7 +179,7 @@ pub fn icon_button(
         .items_center()
         .justify_center()
         .size(px(ICON_BUTTON))
-        .rounded(px(RADIUS))
+        .rounded(rad(RADIUS))
         .cursor_pointer()
         .group("icon-button")
         .hover(|s| s.bg(theme::fill_selected()))
@@ -243,6 +279,73 @@ pub fn project_art(art: u8) -> &'static [&'static str] {
 // 12 for cards and menus, 16 for the window's floating cards.
 // Text: 11 meta, 12 controls, 13 body, 14 reading text, 16/20 titles.
 
+/// How round corners are, 0 (square) to 2 (twice the default), in
+/// hundredths. Set from Settings › Appearance.
+static RADIUS_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+/// How much room padding and gaps take, 0.6 to 1.6, in hundredths.
+static SPACE_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+/// Room between the window's floating cards (rail, main area, panel) and
+/// around them, in pixels.
+static WINDOW_GAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(8);
+
+pub fn window_gap() -> f32 {
+    WINDOW_GAP.load(std::sync::atomic::Ordering::Relaxed) as f32
+}
+
+pub fn set_window_gap(g: f32) {
+    WINDOW_GAP.store(
+        g.clamp(0., 20.).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn radius_scale() -> f32 {
+    RADIUS_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.
+}
+
+pub fn space_scale() -> f32 {
+    SPACE_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.
+}
+
+pub fn set_radius_scale(s: f32) {
+    RADIUS_SCALE.store(
+        (s.clamp(0., 2.) * 100.).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn set_space_scale(s: f32) {
+    SPACE_SCALE.store(
+        (s.clamp(0.6, 1.6) * 100.).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// A corner radius, given at the default roundness: every `rounded` goes
+/// through here so one setting makes the whole app sharper or rounder.
+pub fn rad(r: f32) -> Pixels {
+    px((r * radius_scale()).max(0.))
+}
+
+/// The radius for something set `inset` pixels inside a container rounded
+/// at `outer`, so both corners stay parallel (concentric) instead of the
+/// inner one looking square. Never below `RADIUS_SM`, so it still reads as
+/// rounded.
+pub fn nested(outer: f32, inset: f32) -> Pixels {
+    let scale = radius_scale();
+    px((outer * scale - inset).max(RADIUS_SM * scale).max(0.))
+}
+
+/// Padding or a gap, given at the default spacing: every one goes through
+/// here so one setting makes the whole app tighter or roomier. Rounded to
+/// whole pixels so text and borders stay crisp.
+pub fn sp(n: f32) -> Pixels {
+    let s = space_scale();
+    // At the default, exactly what the view asked for.
+    if s == 1. { px(n) } else { px((n * s).round()) }
+}
+
 pub const RADIUS_SM: f32 = 4.;
 pub const RADIUS: f32 = 8.;
 pub const RADIUS_LG: f32 = 12.;
@@ -268,6 +371,9 @@ pub const INPUT_H: f32 = 32.;
 pub const BAR_H: f32 = 40.;
 /// Bars inside a view: browser toolbar, dock header, find bar.
 pub const TOOLBAR_H: f32 = 36.;
+/// A tab in the main area's tab strip.
+pub const TAB_H: f32 = 30.;
+
 /// Room around a full-page view (Tasks, Runs, Memory…).
 pub const PAGE_PAD: f32 = 24.;
 
@@ -276,7 +382,7 @@ pub const PAGE_PAD: f32 = 24.;
 /// at the root, so the clip never cuts them. The caller adds size and `bg`.
 pub fn card() -> gpui::Div {
     div()
-        .rounded(px(RADIUS_XL))
+        .rounded(rad(RADIUS_XL))
         .border_1()
         .border_color(theme::stroke())
         .overflow_hidden()
@@ -327,10 +433,10 @@ pub fn field() -> gpui::Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(sp(8.))
         .h(px(INPUT_H))
-        .px(px(10.))
-        .rounded(px(RADIUS))
+        .px(sp(10.))
+        .rounded(rad(RADIUS))
         .border_1()
         .border_color(theme::border_strong())
         .bg(theme::background())
@@ -345,7 +451,7 @@ pub fn page_title(title: impl Into<SharedString>, subtitle: Option<gpui::AnyElem
         .flex()
         .flex_col()
         .min_w_0()
-        .gap(px(4.))
+        .gap(sp(4.))
         .child(
             div()
                 .text_size(px(TEXT_TITLE))
@@ -378,10 +484,10 @@ pub fn segment(
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
+        .gap(sp(6.))
         .h(px(BUTTON_H - 2. * (SEGMENT_PAD + 1.)))
-        .px(px(8.))
-        .rounded(px(RADIUS_SM))
+        .px(sp(8.))
+        .rounded(rad(RADIUS_SM))
         .text_size(px(TEXT_SM))
         .font_weight(gpui::FontWeight::MEDIUM)
         .cursor_pointer()
@@ -412,10 +518,10 @@ pub fn segmented() -> gpui::Div {
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(2.))
+        .gap(sp(2.))
         .h(px(BUTTON_H))
-        .p(px(SEGMENT_PAD))
-        .rounded(px(RADIUS))
+        .p(sp(SEGMENT_PAD))
+        .rounded(rad(RADIUS))
         .bg(theme::fill_raised())
         .border_1()
         .border_color(theme::border())
@@ -436,7 +542,7 @@ pub fn modal_panel(id: impl Into<ElementId>, width: f32) -> gpui::Stateful<gpui:
         .w(px(width))
         .max_w_full()
         .max_h_full()
-        .rounded(px(16.))
+        .rounded(rad(16.))
         .border_1()
         .border_color(theme::border_subtle())
         .bg(theme::dialog())
@@ -454,16 +560,16 @@ pub fn modal_header(
         .flex()
         .flex_none()
         .items_start()
-        .gap(px(8.))
-        .px(px(16.))
-        .pt(px(12.))
+        .gap(sp(8.))
+        .px(sp(16.))
+        .pt(sp(12.))
         .child(
             div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .pt(px(2.))
+                .pt(sp(2.))
                 .child(div().ty(Type::Subtitle).child(title.into()))
                 .when_some(description, |d, desc| {
                     d.child(
@@ -489,7 +595,7 @@ pub fn close_button(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
         .items_center()
         .justify_center()
         .size(px(28.))
-        .rounded(px(8.))
+        .rounded(rad(8.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::fill_hover()))
         .child(hover_icon(
@@ -553,10 +659,10 @@ pub fn button_lead(
         .flex_none()
         .items_center()
         .justify_center()
-        .gap(px(6.))
+        .gap(sp(6.))
         .h(px(BUTTON_H))
-        .px(px(if leading.is_some() { 10. } else { 12. }))
-        .rounded(px(RADIUS))
+        .px(sp(if leading.is_some() { 10. } else { 12. }))
+        .rounded(rad(RADIUS))
         .text_size(px(TEXT_SM))
         .font_weight(gpui::FontWeight::MEDIUM)
         .when(enabled, |d| d.cursor_pointer())
@@ -593,15 +699,25 @@ pub fn menu_panel(id: impl Into<ElementId>, width: f32) -> gpui::Stateful<gpui::
         .id(id)
         .occlude()
         .w(px(width))
-        .p(px(4.))
+        .p(sp(4.))
         .flex()
         .flex_col()
-        .gap(px(1.))
+        .gap(sp(1.))
         .bg(theme::dialog())
         .border_1()
         .border_color(theme::border())
-        .rounded(px(RADIUS_XL))
+        .rounded(rad(MENU_RADIUS))
         .shadow_xl()
+}
+
+/// A menu's corner, and how far its items sit inside it (padding and
+/// border): items round to `nested(MENU_RADIUS, MENU_INSET)`.
+pub const MENU_RADIUS: f32 = RADIUS_LG;
+const MENU_INSET: f32 = 5.;
+
+/// The corner of a row inside a menu: parallel to the menu's.
+pub fn menu_row_radius() -> Pixels {
+    nested(MENU_RADIUS, MENU_INSET)
 }
 
 pub fn menu_item(
@@ -620,10 +736,10 @@ pub fn menu_item(
         .id(id)
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(sp(8.))
         .h(px(MENU_ROW_H))
-        .px(px(8.))
-        .rounded(px(RADIUS))
+        .px(sp(8.))
+        .rounded(menu_row_radius())
         .text_size(px(TEXT_MD))
         .text_color(color)
         .when(enabled, |d| {
@@ -641,4 +757,36 @@ pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoEle
         gpui::Animation::new(std::time::Duration::from_millis(900)).repeat(),
         |svg, t| svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// At the default scales every size is exactly what the view asked for,
+    /// so the app looks as it did before the scales existed.
+    #[test]
+    fn defaults_leave_sizes_alone() {
+        assert_eq!(radius_scale(), 1.);
+        assert_eq!(space_scale(), 1.);
+        assert_eq!(window_gap(), 8.);
+        let mut n = 0.;
+        while n <= 64. {
+            assert_eq!(sp(n), px(n), "sp({n})");
+            assert_eq!(rad(n), px(n), "rad({n})");
+            n += 0.5;
+        }
+        for r in [RADIUS_SM, RADIUS, RADIUS_LG, RADIUS_XL, 2.5, 3.5] {
+            assert_eq!(rad(r), px(r));
+        }
+    }
+
+    #[test]
+    fn nested_corners_stay_parallel_to_the_outer_one() {
+        // At the default roundness (other tests never change it).
+        assert_eq!(nested(RADIUS_XL, 8.), px(8.));
+        assert_eq!(nested(RADIUS_XL, 5.), px(11.));
+        // Deep inside a small container it still reads as rounded.
+        assert_eq!(nested(RADIUS, 12.), px(RADIUS_SM));
+    }
 }

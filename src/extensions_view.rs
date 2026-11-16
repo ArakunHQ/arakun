@@ -681,7 +681,7 @@ impl ExtensionsView {
         let filtering = !words.is_empty();
         let kind = self.kind;
         let wants = |k: Kind| kind == Kind::All || kind == k;
-        let mut body = div().flex().flex_col().gap(px(28.));
+        let mut body = div().flex().flex_col().gap(crate::ui::sp(28.));
         if !x.cli {
             body = body.child(note(
                 "The claude command is not on your PATH, so this shows the config files only: no health, no plugins.",
@@ -757,7 +757,7 @@ impl ExtensionsView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
                         .child(ui::spinner("ext-checking", 12., theme::text_faint()))
@@ -779,8 +779,8 @@ impl ExtensionsView {
                 for w in &x.warnings {
                     rows.push(
                         div()
-                            .px(px(16.))
-                            .py(px(10.))
+                            .px(crate::ui::sp(16.))
+                            .py(crate::ui::sp(10.))
                             .border_t_1()
                             .border_color(theme::border_subtle())
                             .child(note(w.clone(), Tone::Warning))
@@ -1013,7 +1013,7 @@ impl ExtensionsView {
             .child(
                 cell(Some(ACTIONS_W))
                     .justify_end()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .children(quick)
                     .children(fix_button)
                     .child(
@@ -1068,7 +1068,7 @@ impl ExtensionsView {
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .children(s.rules.iter().map(rule_chip))
         };
         detail_panel()
@@ -1078,7 +1078,7 @@ impl ExtensionsView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(ui::overline("Permissions"))
                     .child(rules),
             )
@@ -1091,7 +1091,11 @@ impl ExtensionsView {
         let busy = self.op.as_ref() == Some(&s.name);
         let typing = self.token_for.as_ref() == Some(&s.name);
         let confirming = self.confirm_remove.as_ref() == Some(&s.name);
-        let mut buttons = div().flex().flex_wrap().items_center().gap(px(8.));
+        let mut buttons = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(crate::ui::sp(8.));
         for (i, fix) in fixes.iter().copied().enumerate() {
             let label = if fix == Fix::Remove && confirming {
                 "Click again to remove"
@@ -1131,9 +1135,9 @@ impl ExtensionsView {
         Some(
             div()
                 .flex()
-                .gap(px(12.))
-                .p(px(14.))
-                .rounded(px(ui::RADIUS_LG))
+                .gap(crate::ui::sp(12.))
+                .p(crate::ui::sp(14.))
+                .rounded(crate::ui::rad(ui::RADIUS_LG))
                 .border_1()
                 .border_color(tone.color().opacity(0.35))
                 .bg(tone.color().opacity(0.06))
@@ -1144,7 +1148,7 @@ impl ExtensionsView {
                         .items_center()
                         .justify_center()
                         .size(px(28.))
-                        .rounded(px(ui::RADIUS))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .bg(tone.color().opacity(0.16))
                         .child(icon(if tone == Tone::Danger { "alert-circle" } else { "help-circle" }, 15.).text_color(tone.color())),
                 )
@@ -1154,23 +1158,23 @@ impl ExtensionsView {
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .gap(px(10.))
+                        .gap(crate::ui::sp(10.))
                         .child(div().ty(Type::Body).text_color(theme::text()).child(why))
                         .when(typing, |d| {
                             d.child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(8.))
+                                    .gap(crate::ui::sp(8.))
                                     .child(
                                         div()
                                             .flex()
                                             .flex_1()
                                             .items_center()
-                                            .gap(px(8.))
+                                            .gap(crate::ui::sp(8.))
                                             .h(px(ui::BUTTON_H))
-                                            .px(px(10.))
-                                            .rounded(px(ui::RADIUS))
+                                            .px(crate::ui::sp(10.))
+                                            .rounded(crate::ui::rad(ui::RADIUS))
                                             .border_1()
                                             .border_color(theme::border_strong())
                                             .bg(theme::background())
@@ -1207,16 +1211,16 @@ impl ExtensionsView {
         if needy.is_empty() {
             return None;
         }
-        let mut cards = div().flex().flex_col().gap(px(10.));
+        let mut cards = div().flex().flex_col().gap(crate::ui::sp(10.));
         for s in needy {
             let (word, tone) = health_badge(&s.health);
             cards = cards.child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
-                    .p(px(16.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .gap(crate::ui::sp(12.))
+                    .p(crate::ui::sp(16.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::fill_raised())
@@ -1224,7 +1228,7 @@ impl ExtensionsView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(12.))
+                            .gap(crate::ui::sp(12.))
                             .child(logos::tile(logos::mark(&s.name, &s.target), 36.))
                             .child(
                                 div()
@@ -1236,7 +1240,7 @@ impl ExtensionsView {
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap(px(8.))
+                                            .gap(crate::ui::sp(8.))
                                             .child(
                                                 div()
                                                     .ty(Type::Heading)
@@ -1283,7 +1287,7 @@ impl ExtensionsView {
         };
         div()
             .flex()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .child(kpi(
                 "link01",
                 "MCP servers",
@@ -1392,7 +1396,7 @@ impl ExtensionsView {
                 let tags = div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(ui::tag("Remote", rgb(CAT_GREEN)))
                     .child(if sign_in {
                         ui::tag("Sign in", rgb(CAT_BLUE))
@@ -1483,7 +1487,7 @@ impl ExtensionsView {
             .child(
                 cell(Some(ACTIONS_W))
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(toggle)
                     .child(
                         icon(if open { "arrow-up01" } else { "arrow-down01" }, 14.)
@@ -1530,7 +1534,7 @@ impl ExtensionsView {
                     .to_string(),
             ),
         };
-        let mut files = div().flex().flex_wrap().gap(px(6.));
+        let mut files = div().flex().flex_wrap().gap(crate::ui::sp(6.));
         for (i, (source, path)) in p.files.iter().enumerate() {
             let path = path.clone();
             files =
@@ -1539,10 +1543,10 @@ impl ExtensionsView {
                         .id(("ext-settings", i))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .h(px(ui::BUTTON_H))
-                        .px(px(10.))
-                        .rounded(px(ui::RADIUS))
+                        .px(crate::ui::sp(10.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .border_1()
                         .border_color(theme::border())
                         .bg(theme::background())
@@ -1561,10 +1565,10 @@ impl ExtensionsView {
         let banner = div()
             .flex()
             .items_center()
-            .gap(px(14.))
-            .px(px(16.))
-            .py(px(14.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(14.))
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(14.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(theme::fill_raised())
@@ -1575,7 +1579,7 @@ impl ExtensionsView {
                     .items_center()
                     .justify_center()
                     .size(px(32.))
-                    .rounded(px(ui::RADIUS))
+                    .rounded(crate::ui::rad(ui::RADIUS))
                     .bg(theme::fill_selected())
                     .child(icon("shield-alert", 16.).text_color(theme::text())),
             )
@@ -1585,12 +1589,12 @@ impl ExtensionsView {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(
                                 div()
                                     .ty(Type::Body)
@@ -1636,7 +1640,7 @@ impl ExtensionsView {
                     .items_center()
                     .justify_center()
                     .size(px(24.))
-                    .rounded(px(ui::RADIUS_SM))
+                    .rounded(crate::ui::rad(ui::RADIUS_SM))
                     .bg(theme::fill_selected())
                     .child(icon(tool_icon(tool), 13.).text_color(theme::text_muted())),
             };
@@ -1644,14 +1648,14 @@ impl ExtensionsView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(16.))
+                    .gap(crate::ui::sp(16.))
                     .h(px(44.))
-                    .px(px(16.))
+                    .px(crate::ui::sp(16.))
                     .border_t_1()
                     .border_color(theme::border_subtle())
                     .child(
                         cell(None)
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .child(lead)
                             .child(
                                 div()
@@ -1711,7 +1715,7 @@ impl ExtensionsView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(crate::ui::sp(12.))
                 .child(banner)
                 .child(table(&RULE_COLS, rows)),
         )
@@ -1722,10 +1726,10 @@ impl ExtensionsView {
             .id(SharedString::from(format!("ext-all-{key}")))
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(crate::ui::sp(4.))
             .h(px(24.))
-            .px(px(8.))
-            .rounded(px(ui::RADIUS_SM))
+            .px(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS_SM))
             .cursor_pointer()
             .ty(Type::Label)
             .text_color(theme::text_muted())
@@ -1749,7 +1753,7 @@ impl ExtensionsView {
         };
         let kind = self.kind;
         let wants = |k: Kind| kind == Kind::All || kind == k;
-        let mut body = div().flex().flex_col().gap(px(28.));
+        let mut body = div().flex().flex_col().gap(crate::ui::sp(28.));
         if let Some(e) = &self.droid_error {
             body = body.child(note(e.clone(), Tone::Danger));
         }
@@ -1758,7 +1762,7 @@ impl ExtensionsView {
             match &self.plugins {
                 None => body = body.child(ui::loading("droid-plugins", "Checking plugins…")),
                 Some(p) => {
-                    let mut content = div().flex().flex_col().gap(px(12.));
+                    let mut content = div().flex().flex_col().gap(crate::ui::sp(12.));
                     if shown("Claude SEO audits schema core web vitals geo sitemap backlinks local")
                     {
                         content = content.child(self.render_seo(p, cx));
@@ -1969,9 +1973,9 @@ impl ExtensionsView {
         div()
             .flex()
             .items_center()
-            .gap(px(16.))
-            .p(px(16.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(16.))
+            .p(crate::ui::sp(16.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(theme::fill_raised())
@@ -1982,12 +1986,12 @@ impl ExtensionsView {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(div().ty(Type::Heading).text_color(theme::text()).child("Claude SEO"))
                             .child(ui::badge("Featured", Tone::Accent))
                             .child(status_pill(if ready { "Ready" } else { "Needs setup" }, if ready { Tone::Success } else { Tone::Warning })),
@@ -2120,9 +2124,9 @@ fn table(cols: &[Col], rows: Vec<AnyElement>) -> Div {
     let header = div()
         .flex()
         .items_center()
-        .gap(px(16.))
+        .gap(crate::ui::sp(16.))
         .h(px(36.))
-        .px(px(16.))
+        .px(crate::ui::sp(16.))
         .bg(theme::fill_raised())
         .children(cols.iter().map(|c| {
             cell(c.width)
@@ -2133,7 +2137,7 @@ fn table(cols: &[Col], rows: Vec<AnyElement>) -> Div {
     div()
         .flex()
         .flex_col()
-        .rounded(px(ui::RADIUS_LG))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::background())
@@ -2154,9 +2158,9 @@ fn row_base(id: SharedString, height: f32) -> Stateful<Div> {
         .id(id)
         .flex()
         .items_center()
-        .gap(px(16.))
+        .gap(crate::ui::sp(16.))
         .h(px(height))
-        .px(px(16.))
+        .px(crate::ui::sp(16.))
         .border_t_1()
         .border_color(theme::border_subtle())
         .cursor_pointer()
@@ -2165,14 +2169,14 @@ fn row_base(id: SharedString, height: f32) -> Stateful<Div> {
 
 fn name_cell(mark: logos::Mark, size: f32, title: String, subtitle: String, dim: bool) -> Div {
     cell(None)
-        .gap(px(12.))
+        .gap(crate::ui::sp(12.))
         .child(logos::tile(mark, size).when(dim, |d| d.opacity(0.55)))
         .child(
             div()
                 .flex()
                 .flex_col()
                 .min_w_0()
-                .gap(px(1.))
+                .gap(crate::ui::sp(1.))
                 .child(
                     div()
                         .truncate()
@@ -2203,10 +2207,10 @@ fn status_pill(word: impl Into<SharedString>, tone: Tone) -> Div {
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
+        .gap(crate::ui::sp(6.))
         .h(px(24.))
-        .px(px(8.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_raised())
@@ -2221,7 +2225,7 @@ fn tag_list(tags: &[(String, u32)], max: usize) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(crate::ui::sp(4.))
         .overflow_hidden()
         .children(
             tags.iter()
@@ -2246,9 +2250,9 @@ fn kpi(
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(10.))
-        .p(px(16.))
-        .rounded(px(ui::RADIUS_LG))
+        .gap(crate::ui::sp(10.))
+        .p(crate::ui::sp(16.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_raised())
@@ -2256,7 +2260,7 @@ fn kpi(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(
                     div()
                         .flex()
@@ -2264,7 +2268,7 @@ fn kpi(
                         .items_center()
                         .justify_center()
                         .size(px(24.))
-                        .rounded(px(ui::RADIUS_SM))
+                        .rounded(crate::ui::rad(ui::RADIUS_SM))
                         .bg(tone.color().opacity(0.16))
                         .child(icon(icon_name, 13.).text_color(tone.color())),
                 )
@@ -2279,11 +2283,11 @@ fn kpi(
             div()
                 .flex()
                 .items_end()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(div().ty(Type::Title).text_color(theme::text()).child(value))
                 .child(
                     div()
-                        .pb(px(3.))
+                        .pb(crate::ui::sp(3.))
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
                         .child(sub),
@@ -2296,9 +2300,9 @@ fn group_row(label: String, action: Option<AnyElement>) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(crate::ui::sp(8.))
         .h(px(36.))
-        .px(px(16.))
+        .px(crate::ui::sp(16.))
         .border_t_1()
         .border_color(theme::border_subtle())
         .bg(theme::fill_raised())
@@ -2309,8 +2313,8 @@ fn group_row(label: String, action: Option<AnyElement>) -> Div {
 
 fn empty_row(text: &str) -> Div {
     div()
-        .px(px(16.))
-        .py(px(18.))
+        .px(crate::ui::sp(16.))
+        .py(crate::ui::sp(18.))
         .border_t_1()
         .border_color(theme::border_subtle())
         .ty(Type::Body)
@@ -2322,10 +2326,10 @@ fn detail_panel() -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
-        .pl(px(60.))
-        .pr(px(16.))
-        .py(px(16.))
+        .gap(crate::ui::sp(16.))
+        .pl(crate::ui::sp(60.))
+        .pr(crate::ui::sp(16.))
+        .py(crate::ui::sp(16.))
         .border_t_1()
         .border_color(theme::border_subtle())
         .bg(theme::fill_raised())
@@ -2336,14 +2340,14 @@ fn facts_grid(facts: Vec<(&'static str, String, bool)>) -> Div {
     div()
         .flex()
         .flex_wrap()
-        .gap_y(px(14.))
+        .gap_y(crate::ui::sp(14.))
         .children(facts.into_iter().map(|(label, value, mono)| {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
+                .gap(crate::ui::sp(3.))
                 .w(relative(0.5))
-                .pr(px(16.))
+                .pr(crate::ui::sp(16.))
                 .child(
                     div()
                         .ty(Type::Caption)
@@ -2369,18 +2373,18 @@ fn section(
     div()
         .flex()
         .flex_col()
-        .gap(px(12.))
+        .gap(crate::ui::sp(12.))
         .child(
             div()
                 .flex()
                 .items_end()
-                .gap(px(12.))
+                .gap(crate::ui::sp(12.))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .flex_1()
-                        .gap(px(2.))
+                        .gap(crate::ui::sp(2.))
                         .child(ui::heading(title))
                         .child(
                             div()
@@ -2471,11 +2475,11 @@ fn rule_chip(r: &claude_ext::Rule) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(crate::ui::sp(6.))
         .max_w(px(420.))
         .h(px(24.))
-        .px(px(8.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .border_1()
         .border_color(theme::border())
         .bg(theme::background())
@@ -2540,9 +2544,9 @@ fn capitalize(s: &str) -> String {
 
 fn note(text: impl Into<SharedString>, tone: Tone) -> Div {
     div()
-        .px(px(12.))
-        .py(px(10.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(12.))
+        .py(crate::ui::sp(10.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .bg(tone.color().opacity(0.1))
         .ty(Type::Body)
         .text_color(tone.color())
@@ -2711,9 +2715,9 @@ impl Render for ExtensionsView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .h(px(64.))
-                    .px(px(ui::PAGE_PAD))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
                     .border_b_1()
                     .border_color(theme::border_subtle())
                     .child(
@@ -2723,7 +2727,7 @@ impl Render for ExtensionsView {
                             .items_center()
                             .justify_center()
                             .size(px(32.))
-                            .rounded(px(ui::RADIUS))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .border_1()
                             .border_color(theme::border())
                             .bg(theme::fill_raised())
@@ -2778,9 +2782,9 @@ impl Render for ExtensionsView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(ui::PAGE_PAD))
-                    .py(px(12.))
+                    .gap(crate::ui::sp(8.))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .py(crate::ui::sp(12.))
                     .child(agents)
                     .child(kinds)
                     .child(
@@ -2789,10 +2793,10 @@ impl Render for ExtensionsView {
                             .flex_1()
                             .min_w(px(160.))
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .h(px(ui::BUTTON_H))
-                            .px(px(10.))
-                            .rounded(px(ui::RADIUS))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .border_1()
                             .border_color(theme::border())
                             .bg(theme::fill_raised())
@@ -2808,9 +2812,9 @@ impl Render for ExtensionsView {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(8.))
-                            .px(px(ui::PAGE_PAD))
-                            .pb(px(8.))
+                            .gap(crate::ui::sp(8.))
+                            .px(crate::ui::sp(ui::PAGE_PAD))
+                            .pb(crate::ui::sp(8.))
                             .when_some(self.error.clone(), |d, e| d.child(note(e, Tone::Danger)))
                             .when_some(self.notice.clone(), |d, n| d.child(note(n, Tone::Success))),
                     )
@@ -2827,10 +2831,10 @@ impl Render for ExtensionsView {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
-                        .px(px(ui::PAGE_PAD))
-                        .pt(px(8.))
-                        .pb(px(32.))
-                        .gap(px(16.))
+                        .px(crate::ui::sp(ui::PAGE_PAD))
+                        .pt(crate::ui::sp(8.))
+                        .pb(crate::ui::sp(32.))
+                        .gap(crate::ui::sp(16.))
                         .when_some(self.error.clone(), |d, e| d.child(note(e, Tone::Danger)))
                         .when_some(self.notice.clone(), |d, n| d.child(note(n, Tone::Success)))
                         .child(body),

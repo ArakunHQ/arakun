@@ -443,10 +443,31 @@ const DOCK_MIN_H: f32 = 120.;
 const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
 const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
 const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
-/// Air around and between the window's floating cards.
-const GAP: f32 = 8.;
+/// Air around and between the window's floating cards, set in Settings ›
+/// Appearance. The window's edges, the room above the dock and the resize
+/// handles between side cards all use this one value, so they stay equal.
+/// It is its own setting, so Spacing does not scale it.
+fn gap() -> f32 {
+    crate::ui::window_gap()
+}
+
+/// How wide a side handle can be grabbed, whatever the window gap: with no
+/// gap there would be nothing to grab between the cards.
+const SIDE_HANDLE_MIN_W: f32 = 6.;
+
+/// `gap()` as a length, for the root's padding and the side handles.
+fn gap_px() -> gpui::Pixels {
+    px(gap())
+}
+
 /// The dock card's collapsed height: the status chips live in its header.
 const DOCK_BAR_H: f32 = 32.;
+/// The dock's terminal tabs: shorter than the main tab bar's, so they fit
+/// its header, and all one width.
+const DOCK_TAB_H: f32 = 24.;
+const DOCK_TAB_W: f32 = 224.;
+/// Where a dock tab's 20 px close button sits, centered on the tab.
+const DOCK_TAB_CLOSE_TOP: f32 = (DOCK_TAB_H - 20.) / 2.;
 
 /// Which side card its gap handle is resizing.
 #[derive(Clone, Copy, PartialEq)]
@@ -1689,28 +1710,38 @@ impl Shell {
             } else {
                 self.rail_w
             };
-            GAP + w + GAP
+            gap() + w + gap()
         } else {
-            GAP
+            gap()
         }
     }
 
     /// The gap between two cards doubles as the resize handle for the side card.
     fn side_handle(&self, side: SideDrag, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id(("side-handle", side as usize))
-            .flex_none()
-            .w(px(GAP))
-            .h_full()
-            .cursor_col_resize()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.side_drag = Some(side);
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
+        let w = gap();
+        let grab = w.max(SIDE_HANDLE_MIN_W);
+        div().flex_none().w(gap_px()).h_full().relative().child(
+            // Drawn over the cards, so a narrow or zero gap can still be
+            // grabbed across the cards' edges.
+            gpui::deferred(
+                div()
+                    .id(("side-handle", side as usize))
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px((w - grab) / 2.))
+                    .w(px(grab))
+                    .cursor_col_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.side_drag = Some(side);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            ),
+        )
     }
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {
@@ -2005,7 +2036,7 @@ impl Shell {
                                 .mx_auto()
                                 .w_full()
                                 .max_w(px(896.))
-                                .p(px(6.))
+                                .p(crate::ui::sp(6.))
                                 .pt_0()
                                 // Before the composer, so the bar hides its chin. It moves
                                 // itself on top of the card above the composer when one shows.
@@ -2094,7 +2125,7 @@ impl Shell {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
+                .gap(crate::ui::sp(10.))
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
                 .child(agent_icon(env.agent, 22.))
@@ -2214,8 +2245,8 @@ impl Render for Shell {
             .when(self.dock_drag, |d| {
                 d.cursor_row_resize()
                     .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
-                        // The dock card's bottom edge is one GAP above the window's edge.
-                        let bottom = window.viewport_size().height.as_f32() - GAP;
+                        // The dock card's bottom edge is one gap above the window's edge.
+                        let bottom = window.viewport_size().height.as_f32() - gap();
                         let max = (bottom - 160.).max(DOCK_MIN_H);
                         this.dock_height = (bottom - ev.position.y.as_f32())
                             .clamp(DOCK_MIN_H, max)
@@ -2239,14 +2270,14 @@ impl Render for Shell {
                             Some(SideDrag::Rail) => {
                                 let x = ev.position.x.as_f32();
                                 let w = if this.sidebar.style.side == crate::sidebar::Side::Right {
-                                    window_w - GAP - x
+                                    window_w - gap() - x
                                 } else {
-                                    x - GAP
+                                    x - gap()
                                 };
                                 this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
-                                this.panel_w = ((window_w - GAP) - ev.position.x.as_f32())
+                                this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())
                                     .clamp(PANEL_W_RANGE.start, PANEL_W_RANGE.end)
                             }
                             Some(SideDrag::Subagents) => {
@@ -2259,13 +2290,13 @@ impl Render for Shell {
                                     this.rail_w
                                 };
                                 let right = window_w
-                                    - GAP
+                                    - gap()
                                     - if this.panel_open {
-                                        this.panel_w + GAP
+                                        this.panel_w + gap()
                                     } else {
                                         0.
                                     }
-                                    - if rail { rail_w + GAP } else { 0. };
+                                    - if rail { rail_w + gap() } else { 0. };
                                 this.subagents_w = (right - ev.position.x.as_f32())
                                     .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end)
                             }
@@ -2418,8 +2449,8 @@ impl Render for Shell {
             .flex_col()
             .size_full()
             .bg(theme::window_bg())
-            .p(px(GAP))
-            .gap(px(GAP))
+            .p(gap_px())
+            .gap(gap_px())
             .text_color(theme::content())
             .font_family(theme::FONT_SANS)
             .child(
@@ -2496,8 +2527,8 @@ impl Render for Shell {
                         .flex_col()
                         .items_center()
                         .pt(relative(0.10))
-                        .pb(px(12.))
-                        .px(px(12.))
+                        .pb(crate::ui::sp(12.))
+                        .px(crate::ui::sp(12.))
                         // The palette dims the app further: gpui has no backdrop blur.
                         .bg(gpui::black().opacity(if palette_open { 0.62 } else { 0.4 }))
                         .occlude()
@@ -2564,8 +2595,8 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .p(px(16.))
-            .gap(px(6.));
+            .p(crate::ui::sp(16.))
+            .gap(crate::ui::sp(6.));
         if notes.is_empty() {
             list = list.child(ui::empty_state(
                 "note01",
@@ -2580,10 +2611,10 @@ impl Shell {
                 div()
                     .group(group.clone())
                     .flex()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(8.))
+                    .gap(crate::ui::sp(8.))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
                     .bg(theme::fill_raised())
                     .child(
                         div()
@@ -2621,9 +2652,9 @@ impl Shell {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .h(px(36.))
-                    .px(px(14.))
+                    .px(crate::ui::sp(14.))
                     .border_b_1()
                     .border_color(theme::stroke())
                     .text_size(px(ui::TEXT_SM))
@@ -2640,7 +2671,7 @@ impl Shell {
             .child(
                 div()
                     .flex_none()
-                    .p(px(10.))
+                    .p(crate::ui::sp(10.))
                     .border_b_1()
                     .border_color(theme::stroke())
                     .child(
@@ -2648,8 +2679,8 @@ impl Shell {
                             .flex()
                             .items_center()
                             .h(px(34.))
-                            .px(px(10.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(8.))
                             .border_1()
                             .border_color(theme::border())
                             .bg(theme::background())
@@ -2676,10 +2707,10 @@ fn chip(
         .min_w_0()
         .max_w(px(260.))
         .items_center()
-        .gap(px(5.))
+        .gap(crate::ui::sp(5.))
         .h(px(ui::CONTROL_H))
-        .px(px(7.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(7.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .text_size(px(ui::TEXT_SM))
         .text_color(theme::text_muted())
         .when(enabled, |d| {
@@ -2710,7 +2741,33 @@ fn chip(
 
 #[cfg(test)]
 mod tests {
-    use super::hunk_start;
+    use super::*;
+
+    /// The dock's sizes before corners and spacing became settings. At the
+    /// default scales it must look exactly as it did.
+    #[test]
+    fn dock_keeps_its_default_sizes() {
+        assert_eq!(DOCK_BAR_H, 32.);
+        assert_eq!(
+            (DOCK_TAB_W, DOCK_TAB_H, DOCK_TAB_CLOSE_TOP),
+            (224., 24., 2.)
+        );
+        // Tab padding, gap and corner; chip padding and corner; body padding.
+        for n in [8., 28., 6., 2., 12., 10.] {
+            assert_eq!(ui::sp(n), px(n));
+        }
+        for r in [4., ui::RADIUS] {
+            assert_eq!(ui::rad(r), px(r));
+        }
+        assert_eq!(ui::RADIUS, 8.);
+    }
+
+    /// The window's edges and the room between its cards are one value.
+    #[test]
+    fn window_gap_is_one_value() {
+        assert_eq!(gap_px(), px(8.));
+        assert_eq!(gap_px(), px(crate::ui::window_gap()));
+    }
 
     #[test]
     fn hunk_lines() {

@@ -52,9 +52,9 @@ impl Shell {
             .items_center()
             .flex_none()
             .h(px(40.))
-            .pl(px(14.).max(crate::ui::traffic_lights_inset(window) - px(GAP)))
-            .pr(px(6.))
-            .gap(px(2.))
+            .pl(crate::ui::sp(14.).max(crate::ui::traffic_lights_inset(window) - px(gap())))
+            .pr(crate::ui::sp(6.))
+            .gap(crate::ui::sp(2.))
             .when(!self.sidebar.has(&crate::sidebar::Piece::Mascot), |d| {
                 d.child(self.rail_mascot.clone())
             })
@@ -123,7 +123,7 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .size(px(24.))
-                    .rounded(px(8.))
+                    .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
                     .tooltip(ui::tip("Workspace panel"))
                     .hover(|s| s.bg(theme::fill_selected()))
@@ -142,9 +142,10 @@ impl Shell {
             crate::sidebar::Variant::Card => ui::card().bg(theme::sidebar()),
             // Part of the window: no card around it.
             crate::sidebar::Variant::Flush => div().overflow_hidden(),
-            crate::sidebar::Variant::Floating => {
-                ui::card().bg(theme::sidebar()).shadow_lg().rounded(px(16.))
-            }
+            crate::sidebar::Variant::Floating => ui::card()
+                .bg(theme::sidebar())
+                .shadow_lg()
+                .rounded(crate::ui::rad(16.)),
         };
         let width = if narrow {
             rail_blocks::RAIL_ICONS_W
@@ -164,7 +165,7 @@ impl Shell {
             .when(!narrow, |d| d.child(header))
             .children(self.render_pinned_block(cx))
             .children(self.render_rail_sections(cx))
-            .pb(px(4.))
+            .pb(crate::ui::sp(4.))
     }
 
     /// The top of the rail narrowed to icons: room for the traffic lights,
@@ -204,7 +205,7 @@ impl Shell {
         only_open: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mut projects = div().flex().flex_col().gap(px(4.));
+        let mut projects = div().flex().flex_col().gap(crate::ui::sp(4.));
         for (pi, project) in self.projects.iter().enumerate() {
             let selected = pi == self.active_project;
             if only_open && !selected {
@@ -222,10 +223,10 @@ impl Shell {
                     .id(("project", pi))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .h(px(32.))
-                    .px(px(8.))
-                    .rounded(px(8.))
+                    .px(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
                     .text_size(px(ui::TEXT_LG))
                     .font_weight(FontWeight::MEDIUM)
@@ -256,7 +257,7 @@ impl Shell {
                         d.child(
                             div()
                                 .flex()
-                                .gap(px(4.))
+                                .gap(crate::ui::sp(4.))
                                 .text_size(px(ui::TEXT_XS))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(
@@ -300,7 +301,11 @@ impl Shell {
             if selected && show_envs {
                 // Envs nest under their project like steps in the chat: a spine
                 // down from the project icon that curves into each row.
-                let mut envs = div().flex().flex_col().gap(px(ENV_GAP)).ml(px(10.));
+                let mut envs = div()
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(ENV_GAP))
+                    .ml(px(10.));
                 for (ei, env) in project.environments.iter().enumerate() {
                     let active = ei == project.active_env;
                     envs = envs.child(ui::tree_item(
@@ -323,11 +328,11 @@ impl Shell {
                             .group("env-row")
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .h(px(ENV_ROW_H))
-                            .pl(px(8.))
-                            .pr(px(8.))
-                            .rounded(px(8.))
+                            .pl(crate::ui::sp(8.))
+                            .pr(crate::ui::sp(8.))
+                            .rounded(crate::ui::rad(8.))
                             .cursor_pointer()
                             .text_size(px(ui::TEXT_MD))
                             .text_color(if active {
@@ -361,7 +366,7 @@ impl Shell {
                                     d.child(
                                         div()
                                             .flex()
-                                            .gap(px(3.))
+                                            .gap(crate::ui::sp(3.))
                                             .text_size(px(ui::TEXT_XS))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(
@@ -388,7 +393,7 @@ impl Shell {
                                         .items_center()
                                         .justify_center()
                                         .size(px(14.))
-                                        .rounded(px(4.))
+                                        .rounded(crate::ui::rad(4.))
                                         .hover(|s| s.bg(theme::fill_selected()))
                                         .child(ci_mark(state))
                                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -414,11 +419,11 @@ impl Shell {
                         .group("env-add-row")
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .h(px(ENV_ROW_H))
-                        .pl(px(8.))
-                        .pr(px(8.))
-                        .rounded(px(8.))
+                        .pl(crate::ui::sp(8.))
+                        .pr(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(8.))
                         .cursor_pointer()
                         .text_size(px(ui::TEXT_MD))
                         .text_color(theme::text_faint())
@@ -447,9 +452,9 @@ impl Shell {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .h(px(32.))
-                    .rounded(px(8.))
+                    .rounded(crate::ui::rad(8.))
                     .border_1()
                     .border_dashed()
                     .border_color(theme::border_strong())
@@ -490,10 +495,10 @@ impl Shell {
                     .id(("project-switch", pi))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .h(px(30.))
-                    .px(px(8.))
-                    .rounded(px(6.))
+                    .px(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(6.))
                     .cursor_pointer()
                     .text_size(px(ui::TEXT_MD))
                     .when(selected, |d| d.bg(theme::selection()))
@@ -517,7 +522,7 @@ impl Shell {
                         d.child(
                             div()
                                 .flex()
-                                .gap(px(4.))
+                                .gap(crate::ui::sp(4.))
                                 .text_size(px(ui::TEXT_XS))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(

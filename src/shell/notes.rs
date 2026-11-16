@@ -196,9 +196,9 @@ impl Shell {
                 .bottom(px(16.))
                 .flex()
                 .flex_col()
-                .gap(px(8.))
-                .p(px(10.))
-                .rounded(px(crate::ui::RADIUS_LG))
+                .gap(crate::ui::sp(8.))
+                .p(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
                 .border_1()
                 .border_color(theme::border_strong())
                 .bg(theme::dialog())
@@ -208,7 +208,7 @@ impl Shell {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .text_size(px(crate::ui::TEXT_SM))
                         .child(icon("comment-add01", 13.).text_color(crate::agent::mark_color()))
                         .child(div().text_color(theme::text_muted()).child(what))
@@ -222,7 +222,7 @@ impl Shell {
                     div()
                         .max_h(px(58.))
                         .overflow_hidden()
-                        .pl(px(8.))
+                        .pl(crate::ui::sp(8.))
                         .border_l_2()
                         .border_color(crate::agent::mark_color().opacity(0.6))
                         .font_family(theme::FONT_MONO)
@@ -235,8 +235,8 @@ impl Shell {
                         .h(px(crate::ui::INPUT_H))
                         .flex()
                         .items_center()
-                        .px(px(8.))
-                        .rounded(px(8.))
+                        .px(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(8.))
                         .border_1()
                         .border_color(theme::border_strong())
                         .bg(theme::fill_raised())
@@ -247,7 +247,7 @@ impl Shell {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(
                             div()
                                 .flex_1()
@@ -258,9 +258,9 @@ impl Shell {
                         .child(
                             div()
                                 .id("review-add")
-                                .px(px(10.))
-                                .py(px(4.))
-                                .rounded(px(8.))
+                                .px(crate::ui::sp(10.))
+                                .py(crate::ui::sp(4.))
+                                .rounded(crate::ui::rad(8.))
                                 .cursor_pointer()
                                 .bg(theme::content())
                                 .text_color(theme::background())
@@ -309,21 +309,21 @@ impl Shell {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .px(px(12.))
-                .pt(px(10.))
+                .gap(crate::ui::sp(6.))
+                .px(crate::ui::sp(12.))
+                .pt(crate::ui::sp(10.))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(4.))
+                                .gap(crate::ui::sp(4.))
                                 .h(px(20.))
-                                .px(px(8.))
+                                .px(crate::ui::sp(8.))
                                 .rounded_full()
                                 .bg(crate::agent::mark_color().opacity(0.14))
                                 .text_size(px(crate::ui::TEXT_XS))
@@ -341,10 +341,10 @@ impl Shell {
                                     .id("submit-review")
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
+                                    .gap(crate::ui::sp(6.))
                                     .h(px(24.))
-                                    .px(px(8.))
-                                    .rounded(px(8.))
+                                    .px(crate::ui::sp(8.))
+                                    .rounded(crate::ui::rad(8.))
                                     .cursor_pointer()
                                     .bg(theme::content())
                                     .text_color(theme::background())
@@ -374,59 +374,53 @@ impl Shell {
                                 })),
                         ),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(6.))
-                        .children(notes.iter().enumerate().map(|(i, n)| {
-                            let review = n.kind == NoteKind::Review;
-                            div()
-                                .id(("note-chip", i))
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .h(px(26.))
-                                .max_w(px(320.))
-                                .pl(px(8.))
-                                .pr(px(4.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(theme::border())
-                                .bg(theme::fill_hover())
-                                .text_size(px(crate::ui::TEXT_SM))
-                                .child(
-                                    icon(if review { "comment-add01" } else { "note01" }, 12.)
-                                        .text_color(theme::text_subtle()),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_color(theme::text_muted())
-                                        .child(n.label()),
-                                )
-                                .child(
-                                    div()
-                                        .id(("note-remove", i))
-                                        .flex_none()
-                                        .size(px(18.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(theme::fill_selected()))
-                                        .child(
-                                            icon("cancel01", 11.).text_color(theme::text_subtle()),
-                                        )
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            cx.stop_propagation();
-                                            this.remove_note(i, cx);
-                                        })),
-                                )
-                        })),
-                )
+                .child(div().flex().flex_wrap().gap(crate::ui::sp(6.)).children(
+                    notes.iter().enumerate().map(|(i, n)| {
+                        let review = n.kind == NoteKind::Review;
+                        div()
+                            .id(("note-chip", i))
+                            .flex()
+                            .items_center()
+                            .gap(crate::ui::sp(6.))
+                            .h(px(26.))
+                            .max_w(px(320.))
+                            .pl(crate::ui::sp(8.))
+                            .pr(crate::ui::sp(4.))
+                            .rounded(crate::ui::rad(8.))
+                            .border_1()
+                            .border_color(theme::border())
+                            .bg(theme::fill_hover())
+                            .text_size(px(crate::ui::TEXT_SM))
+                            .child(
+                                icon(if review { "comment-add01" } else { "note01" }, 12.)
+                                    .text_color(theme::text_subtle()),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(theme::text_muted())
+                                    .child(n.label()),
+                            )
+                            .child(
+                                div()
+                                    .id(("note-remove", i))
+                                    .flex_none()
+                                    .size(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(crate::ui::rad(4.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(theme::fill_selected()))
+                                    .child(icon("cancel01", 11.).text_color(theme::text_subtle()))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.remove_note(i, cx);
+                                    })),
+                            )
+                    }),
+                ))
                 .into_any_element(),
         )
     }

@@ -422,7 +422,7 @@ impl UsageView {
         let at = now();
         let body = match &self.plan {
             Some(plan) => {
-                let mut rows = div().flex().flex_col().gap(px(8.));
+                let mut rows = div().flex().flex_col().gap(crate::ui::sp(8.));
                 let mut idle = Vec::new();
                 for w in &plan.windows {
                     if w.active || w.percent > 0 {
@@ -481,7 +481,7 @@ impl UsageView {
     fn borrowed_limits(&self) -> Option<AnyElement> {
         let b = self.borrowed.as_ref()?;
         let at = now();
-        let mut rows = div().flex().flex_col().gap(px(8.));
+        let mut rows = div().flex().flex_col().gap(crate::ui::sp(8.));
         for w in &b.windows {
             rows = rows.child(ui::limit_line(&w.label, w.percent as f32, w.reset_text(at)));
         }
@@ -498,7 +498,7 @@ impl UsageView {
     fn opencode_limits(&self) -> Option<AnyElement> {
         let go = self.go.as_ref()?;
         let at = now();
-        let mut rows = div().flex().flex_col().gap(px(8.));
+        let mut rows = div().flex().flex_col().gap(crate::ui::sp(8.));
         for w in &go.windows {
             let detail = [
                 opencode_plan::status(w).map(str::to_string),
@@ -567,7 +567,7 @@ impl UsageView {
                         limits.core.as_ref().map(|p| ("Core", p)),
                     )
                 };
-                let mut col = div().flex().flex_col().gap(px(8.));
+                let mut col = div().flex().flex_col().gap(crate::ui::sp(8.));
                 let mut idle = Vec::new();
                 if let Some((name, pool)) = main {
                     for (label, b) in pool.buckets() {
@@ -935,12 +935,12 @@ fn agent_share(agent: AgentKind, t: &Tally, total: &Tally) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(7.))
+        .gap(crate::ui::sp(7.))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .text_size(px(ui::TEXT_LG))
                 .child(agent.icon(15.))
                 .child(
@@ -988,9 +988,9 @@ fn stat(label: &str, value: String, sub: String, trend: Vec<f64>, last: bool) ->
         .flex()
         .items_end()
         .justify_between()
-        .gap(px(8.))
-        .px(px(16.))
-        .py(px(14.))
+        .gap(crate::ui::sp(8.))
+        .px(crate::ui::sp(16.))
+        .py(crate::ui::sp(14.))
         .when(!last, |d| {
             d.border_r_1().border_color(theme::border_subtle())
         })
@@ -1011,12 +1011,12 @@ fn limits_block(
     div()
         .flex()
         .flex_col()
-        .gap(px(14.))
+        .gap(crate::ui::sp(14.))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(agent.icon(14.))
                 .child(
                     div()
@@ -1049,7 +1049,7 @@ fn connect_hint(
         .flex()
         .flex_col()
         .items_start()
-        .gap(px(10.))
+        .gap(crate::ui::sp(10.))
         .child(
             div()
                 .text_size(px(ui::TEXT_SM))
@@ -1102,11 +1102,11 @@ fn breakdown_table(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .h(px(40.))
-                .px(px(6.))
+                .px(crate::ui::sp(6.))
                 .mx(px(-6.))
-                .rounded(px(ui::RADIUS_SM))
+                .rounded(crate::ui::rad(ui::RADIUS_SM))
                 .border_b_1()
                 .border_color(theme::border_subtle())
                 .hover(|d| d.bg(theme::fill_raised()))
@@ -1196,16 +1196,16 @@ impl Render for UsageView {
             .flex_none()
             .items_end()
             .justify_between()
-            .gap(px(16.))
-            .px(px(ui::PAGE_PAD))
-            .pt(px(ui::PAGE_PAD))
-            .pb(px(18.))
+            .gap(crate::ui::sp(16.))
+            .px(crate::ui::sp(ui::PAGE_PAD))
+            .pt(crate::ui::sp(ui::PAGE_PAD))
+            .pb(crate::ui::sp(18.))
             .child(ui::page_title("Usage", Some(dates.into_any_element())))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(ranges)
                     .child(refresh),
             );
@@ -1231,8 +1231,8 @@ impl Render for UsageView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(ui::PAGE_PAD))
-                    .pb(px(32.))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .pb(crate::ui::sp(32.))
                     .child(body),
             )
     }
@@ -1249,7 +1249,7 @@ impl UsageView {
         let mut trend = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .text_size(px(ui::TEXT_SM));
         if let Some(d) = delta {
             let up = d >= 0.;
@@ -1257,10 +1257,10 @@ impl UsageView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(3.))
-                    .px(px(6.))
+                    .gap(crate::ui::sp(3.))
+                    .px(crate::ui::sp(6.))
                     .h(px(20.))
-                    .rounded(px(ui::RADIUS_SM))
+                    .rounded(crate::ui::rad(ui::RADIUS_SM))
                     .bg(theme::fill_hover())
                     .text_color(if up {
                         theme::mix(0.85)
@@ -1290,14 +1290,14 @@ impl UsageView {
         let mut hero = div()
             .flex()
             .flex_col()
-            .gap(px(18.))
+            .gap(crate::ui::sp(18.))
             .w(px(300.))
             .flex_none()
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(ui::overline("Raw token cost"))
                     .child(
                         div()
@@ -1326,7 +1326,7 @@ impl UsageView {
         }
 
         // The legend doubles as a filter for the whole page.
-        let mut legend = div().flex().items_center().gap(px(2.));
+        let mut legend = div().flex().items_center().gap(crate::ui::sp(2.));
         let shown: Vec<AgentKind> = match self.agent_filter {
             Some(a) => vec![a],
             None => s.agents.iter().map(|(a, _)| *a).collect(),
@@ -1340,10 +1340,10 @@ impl UsageView {
                     .id(("usage-legend", agent as usize))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .px(px(6.))
+                    .gap(crate::ui::sp(6.))
+                    .px(crate::ui::sp(6.))
                     .h(px(22.))
-                    .rounded(px(ui::RADIUS_SM))
+                    .rounded(crate::ui::rad(ui::RADIUS_SM))
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::fill_hover()))
                     .when(self.agent_filter == Some(agent), |d| {
@@ -1378,12 +1378,12 @@ impl UsageView {
             .min_w(px(360.))
             .flex()
             .flex_col()
-            .gap(px(14.))
+            .gap(crate::ui::sp(14.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .child(
                         ui::heading(if self.measure == Measure::Cost {
                             "Daily cost"
@@ -1487,7 +1487,7 @@ impl UsageView {
             .min_w(px(380.))
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(crate::ui::sp(10.))
             .child(
                 div()
                     .flex()
@@ -1539,12 +1539,12 @@ impl UsageView {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(28.))
+            .gap(crate::ui::sp(28.))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(crate::ui::sp(16.))
                     .child(ui::heading("Plan limits"))
                     .child(self.claude_limits(cx))
                     .when_some(self.borrowed_limits(), |d, b| {
@@ -1560,7 +1560,7 @@ impl UsageView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(ui::heading("Cost quality"))
                     .child(ui::kv(
                         "Model priced",
@@ -1579,12 +1579,12 @@ impl UsageView {
         div()
             .flex()
             .flex_col()
-            .gap(px(28.))
+            .gap(crate::ui::sp(28.))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(40.))
+                    .gap(crate::ui::sp(40.))
                     .child(hero)
                     .child(chart),
             )
@@ -1594,7 +1594,7 @@ impl UsageView {
                     .flex()
                     .flex_wrap()
                     .items_start()
-                    .gap(px(40.))
+                    .gap(crate::ui::sp(40.))
                     .child(breakdown)
                     .child(side),
             )

@@ -395,7 +395,9 @@ impl ExtensionsView {
         if width <= 0. {
             return 3;
         }
-        (((width + GAP) / (MIN_CARD + GAP)).floor() as usize).clamp(1, 4)
+        // The row's gap follows the Spacing setting, so count with it.
+        let gap = f32::from(crate::ui::sp(GAP));
+        (((width + gap) / (MIN_CARD + gap)).floor() as usize).clamp(1, 4)
     }
 
     fn installed(&self, item: &Item) -> bool {
@@ -464,7 +466,7 @@ impl ExtensionsView {
         let list: AnyElement = if loading {
             match error.clone() {
                 Some(e) => div()
-                    .p(px(16.))
+                    .p(crate::ui::sp(16.))
                     .child(note(e, Tone::Danger))
                     .into_any_element(),
                 None => ui::loading(
@@ -554,10 +556,10 @@ impl ExtensionsView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(20.))
-                    .pt(px(16.))
-                    .pb(px(12.))
+                    .gap(crate::ui::sp(10.))
+                    .px(crate::ui::sp(20.))
+                    .pt(crate::ui::sp(16.))
+                    .pb(crate::ui::sp(12.))
                     .child(
                         div()
                             .ty(Type::Subtitle)
@@ -579,8 +581,8 @@ impl ExtensionsView {
             .when(error.is_some() && !loading, |d| {
                 d.child(
                     div()
-                        .px(px(20.))
-                        .pb(px(8.))
+                        .px(crate::ui::sp(20.))
+                        .pb(crate::ui::sp(8.))
                         .child(note(error.clone().unwrap_or_default(), Tone::Danger)),
                 )
             })
@@ -590,7 +592,7 @@ impl ExtensionsView {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .px(px(20.))
+                    .px(crate::ui::sp(20.))
                     .child(list),
             );
 
@@ -624,12 +626,17 @@ impl ExtensionsView {
             .w(px(220.))
             .h_full()
             .overflow_y_scroll()
-            .gap(px(2.))
-            .px(px(12.))
-            .py(px(16.))
+            .gap(crate::ui::sp(2.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(16.))
             .border_r_1()
             .border_color(theme::border_subtle())
-            .child(ui::overline("Source").flex_none().px(px(8.)).pb(px(4.)));
+            .child(
+                ui::overline("Source")
+                    .flex_none()
+                    .px(crate::ui::sp(8.))
+                    .pb(crate::ui::sp(4.)),
+            );
         for (i, (m, label, icon_name, n)) in [
             (Market::Plugins, "Claude plugins", "cube", official_plugins),
             (Market::Registry, "MCP servers", "link01", official_servers),
@@ -682,13 +689,18 @@ impl ExtensionsView {
         }
         side = side
             .child(div().flex_none().h(px(14.)))
-            .child(ui::overline("Show").flex_none().px(px(8.)).pb(px(4.)))
-            .child(div().flex_none().px(px(4.)).child(scope))
+            .child(
+                ui::overline("Show")
+                    .flex_none()
+                    .px(crate::ui::sp(8.))
+                    .pb(crate::ui::sp(4.)),
+            )
+            .child(div().flex_none().px(crate::ui::sp(4.)).child(scope))
             .child(
                 div()
                     .flex_none()
-                    .px(px(8.))
-                    .pt(px(6.))
+                    .px(crate::ui::sp(8.))
+                    .pt(crate::ui::sp(6.))
                     .ty(Type::Caption)
                     .text_color(theme::text_faint())
                     .child(if self.ms.everything {
@@ -737,7 +749,12 @@ impl ExtensionsView {
             };
             side = side
                 .child(div().flex_none().h(px(14.)))
-                .child(ui::overline(heading).flex_none().px(px(8.)).pb(px(4.)))
+                .child(
+                    ui::overline(heading)
+                        .flex_none()
+                        .px(crate::ui::sp(8.))
+                        .pb(crate::ui::sp(4.)),
+                )
                 .child(
                     nav_row(
                         "ext-cat-all",
@@ -792,9 +809,9 @@ impl ExtensionsView {
             let mut line = div()
                 .flex()
                 .w_full()
-                .gap(px(12.))
+                .gap(crate::ui::sp(12.))
                 .h(px(FEATURED_H))
-                .pb(px(GAP));
+                .pb(crate::ui::sp(GAP));
             for item in items.iter().take(3) {
                 line = line.child(
                     div()
@@ -828,7 +845,12 @@ impl ExtensionsView {
                 })
                 .into_any_element();
         }
-        let mut line = div().flex().w_full().gap(px(GAP)).h(px(ROW_H)).pb(px(GAP));
+        let mut line = div()
+            .flex()
+            .w_full()
+            .gap(crate::ui::sp(GAP))
+            .h(px(ROW_H))
+            .pb(crate::ui::sp(GAP));
         for item in items.iter().skip(start).take(per) {
             line = line.child(
                 div()
@@ -854,12 +876,13 @@ impl ExtensionsView {
             .id(SharedString::from(format!("ext-card-{}", item.key())))
             .flex()
             .flex_col()
-            .h(px(ROW_H - GAP))
+            // The row's bottom padding scales, so the card takes what is left.
+            .h(px(ROW_H) - crate::ui::sp(GAP))
             .min_w_0()
             .overflow_hidden()
-            .gap(px(10.))
-            .p(px(14.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(10.))
+            .p(crate::ui::sp(14.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(if selected {
                 theme::accent()
@@ -880,7 +903,7 @@ impl ExtensionsView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .child(logos::tile(item.mark(), 36.))
                     .child(
                         div()
@@ -914,7 +937,7 @@ impl ExtensionsView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .children(
                         item.tags()
                             .into_iter()
@@ -926,7 +949,7 @@ impl ExtensionsView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(4.))
+                            .gap(crate::ui::sp(4.))
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
                             .child(icon("download04", 11.).text_color(theme::text_faint()))
@@ -947,13 +970,13 @@ impl ExtensionsView {
         div()
             .id(SharedString::from(format!("ext-feat-{}", item.key())))
             .flex()
-            .h(px(FEATURED_H - GAP))
+            .h(px(FEATURED_H) - crate::ui::sp(GAP))
             .min_w_0()
             .overflow_hidden()
             .items_center()
-            .gap(px(14.))
-            .p(px(16.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(14.))
+            .p(crate::ui::sp(16.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .bg(linear_gradient(
@@ -970,12 +993,12 @@ impl ExtensionsView {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(crate::ui::sp(6.))
                             .child(ui::badge("Popular", Tone::Accent))
                             .children(item.installs().map(|n| {
                                 div()
@@ -1024,15 +1047,15 @@ impl ExtensionsView {
             .id("ext-detail")
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(20.))
+            .gap(crate::ui::sp(16.))
+            .p(crate::ui::sp(20.))
             .size_full()
             .overflow_y_scroll()
             .child(
                 div()
                     .flex()
                     .items_start()
-                    .gap(px(14.))
+                    .gap(crate::ui::sp(14.))
                     .child(logos::tile(item.mark(), 56.))
                     .child(
                         div()
@@ -1040,7 +1063,7 @@ impl ExtensionsView {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
-                            .gap(px(4.))
+                            .gap(crate::ui::sp(4.))
                             .child(
                                 div()
                                     .ty(Type::Subtitle)
@@ -1054,7 +1077,7 @@ impl ExtensionsView {
                             .on_click(cx.listener(|this, _, _, cx| this.close_detail(cx))),
                     ),
             );
-        let mut facts = div().flex().flex_wrap().gap(px(6.));
+        let mut facts = div().flex().flex_wrap().gap(crate::ui::sp(6.));
         for (t, c) in item.tags() {
             facts = facts.child(ui::tag(t, rgb(c)));
         }
@@ -1077,7 +1100,7 @@ impl ExtensionsView {
             Item::Plugin(p) => {
                 let busy = self.op.as_ref() == Some(&p.name);
                 let entry = p.clone();
-                let mut links = div().flex().gap(px(8.));
+                let mut links = div().flex().gap(crate::ui::sp(8.));
                 if let Some(url) = p.homepage.clone() {
                     links = links.child(
                         ui::button_with(
@@ -1113,7 +1136,7 @@ impl ExtensionsView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(ui::spinner("ext-detail-busy", 14., theme::text_faint()))
                             .child("Installing…")
                             .into_any_element()
@@ -1153,7 +1176,7 @@ impl ExtensionsView {
         let ins = self.ms.installing.as_ref()?;
         let s = &ins.server;
         let method = s.installs.get(ins.method)?;
-        let mut out = div().flex().flex_col().gap(px(14.));
+        let mut out = div().flex().flex_col().gap(crate::ui::sp(14.));
         if let Some(url) = s.repository.clone().or_else(|| s.website.clone()) {
             out = out.child(
                 div().flex().child(
@@ -1214,12 +1237,12 @@ impl ExtensionsView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(crate::ui::sp(6.))
                             .child(
                                 div()
                                     .ty(Type::Label)
@@ -1238,8 +1261,8 @@ impl ExtensionsView {
                             .flex()
                             .items_center()
                             .h(px(ui::INPUT_H))
-                            .px(px(10.))
-                            .rounded(px(ui::RADIUS))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .border_1()
                             .border_color(theme::border_strong())
                             .bg(theme::background())
@@ -1262,7 +1285,7 @@ impl ExtensionsView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(
                         div()
                             .ty(Type::Caption)
@@ -1274,9 +1297,9 @@ impl ExtensionsView {
                     )
                     .child(
                         div()
-                            .px(px(10.))
-                            .py(px(8.))
-                            .rounded(px(ui::RADIUS))
+                            .px(crate::ui::sp(10.))
+                            .py(crate::ui::sp(8.))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .bg(theme::background())
                             .ty(Type::Mono)
                             .text_color(theme::text_muted())
@@ -1446,7 +1469,7 @@ fn by_line(by: Option<String>, verified: bool) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(crate::ui::sp(4.))
         .min_w_0()
         .ty(Type::Caption)
         .text_color(theme::text_subtle())
@@ -1469,10 +1492,10 @@ fn nav_base(id: impl Into<gpui::ElementId>, on: bool) -> Stateful<Div> {
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(8.))
+        .gap(crate::ui::sp(8.))
         .h(px(30.))
-        .px(px(8.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .cursor_pointer()
         .ty(Type::Label)
         .when(on, |d| {
@@ -1555,9 +1578,9 @@ pub(super) fn card(
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(12.))
-        .p(px(16.))
-        .rounded(px(ui::RADIUS_LG))
+        .gap(crate::ui::sp(12.))
+        .p(crate::ui::sp(16.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_raised())
@@ -1566,7 +1589,7 @@ pub(super) fn card(
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(crate::ui::sp(12.))
                 .child(logos::tile(mark, 40.))
                 .child(
                     div()
@@ -1585,7 +1608,7 @@ pub(super) fn card(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(4.))
+                                .gap(crate::ui::sp(4.))
                                 .min_w_0()
                                 .ty(Type::Caption)
                                 .text_color(theme::text_subtle())
@@ -1622,7 +1645,7 @@ pub(super) fn card(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .child(tags.flex_1().min_w_0().overflow_hidden())
                 .child(div().flex_none().child(action)),
         )
@@ -1642,10 +1665,10 @@ pub(super) fn grid(cards: Vec<AnyElement>, per: usize) -> Div {
     // Every card sits in a cell of the same width, the empty cells of the last
     // line too, so a short line keeps the others' widths; cards fill their cell's height.
     let cell = || div().flex().flex_col().flex_1().min_w_0();
-    let mut out = div().flex().flex_col().gap(px(12.));
+    let mut out = div().flex().flex_col().gap(crate::ui::sp(12.));
     let mut cards = cards.into_iter().peekable();
     while cards.peek().is_some() {
-        let mut line = div().flex().gap(px(12.));
+        let mut line = div().flex().gap(crate::ui::sp(12.));
         let mut n = 0;
         for c in cards.by_ref().take(per) {
             line = line.child(cell().child(c));

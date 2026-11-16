@@ -127,7 +127,7 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts"
             }
             Section::Appearance => {
-                "theme palette color colors accent tint custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
+                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
             }
             Section::Account => "plan usage api key credits factory",
             Section::Claude => {
@@ -626,10 +626,10 @@ impl SettingsDialog {
             .w_full()
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(crate::ui::sp(10.))
             .h(px(ROW_H))
-            .px(px(8.))
-            .rounded(px(ui::RADIUS))
+            .px(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .cursor_pointer()
             .when(selected, |d| d.bg(theme::selection()))
             .when(!selected, |d| d.hover(|st| st.bg(theme::hover())))
@@ -668,13 +668,13 @@ impl SettingsDialog {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .child(tile(s.icon(), 40., true))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .min_w_0()
                     .child(div().ty(ui::Type::Subtitle).child(s.title()))
                     .child(
@@ -687,7 +687,7 @@ impl SettingsDialog {
         let body: AnyElement = match s {
             Section::General => group(vec![
                 {
-                    let mut chips = div().flex().flex_none().items_center().gap(px(6.));
+                    let mut chips = div().flex().flex_none().items_center().gap(crate::ui::sp(6.));
                     for (i, agent) in crate::agent::AgentKind::ALL.into_iter().enumerate() {
                         let on = crate::account_view::rail_shows(agent);
                         chips = chips.child(
@@ -830,7 +830,7 @@ impl SettingsDialog {
                     "Copy your API key from the OpenCode console, then Connect: a terminal asks only for the key. Go models show as opencode-go/… in the composer's model menu.",
                     div()
                         .flex()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .child(
                             ui::button_with("set-opencode-go-key", Some("link-square02"), "Get API key", ButtonKind::Ghost, true)
                                 .on_click(|_, _, cx| cx.open_url("https://opencode.ai/auth")),
@@ -847,7 +847,7 @@ impl SettingsDialog {
                     "Runs opencode auth login in a terminal: pick OpenCode Go (or another provider) and paste its API key. Its models show in the composer's model menu.",
                     div()
                         .flex()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .when(signed_in, |d| {
                             d.child(
                                 ui::button("set-opencode-out", "Sign out", ButtonKind::Danger, true)
@@ -912,8 +912,8 @@ impl SettingsDialog {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .p(px(16.))
-            .gap(px(16.))
+            .p(crate::ui::sp(16.))
+            .gap(crate::ui::sp(16.))
             .border_l_1()
             .border_color(theme::stroke())
             .child(head)
@@ -938,12 +938,12 @@ impl SettingsDialog {
 
     /// Shows the palette in use across the app without saving it.
     fn show_palette(&mut self, cx: &mut Context<Self>) {
+        crate::palettes::apply(&self.palettes);
         // The name field follows the palette in use, unless it is what changed.
         let name = self.palettes.active().name;
         if self.name_input.read(cx).text().trim() != name {
             self.name_input.update(cx, |i, cx| i.set_text(name, cx));
         }
-        theme::set_palette(&self.palettes.active());
         cx.refresh_windows();
         cx.notify();
     }
@@ -957,10 +957,15 @@ impl SettingsDialog {
         }
         change(&mut p);
         self.palettes.update(p);
+        self.save_palette_later(cx);
+    }
+
+    /// Shows a change now and saves it once changes settle: a slider drag or
+    /// typing a name changes the palette many times a second, and each save
+    /// is a synced write.
+    fn save_palette_later(&mut self, cx: &mut Context<Self>) {
         self.show_palette(cx);
         self.palette_dirty = true;
-        // A slider drag or typing a name changes the palette many times a
-        // second, and each save is a synced write; save once it settles.
         self.palette_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PALETTE_SAVE_DELAY).await;
             let _ = this.update(cx, |this, _| this.flush_palette());
@@ -1014,7 +1019,7 @@ impl SettingsDialog {
             let preview = div()
                 .flex()
                 .h(px(54.))
-                .rounded(px(ui::RADIUS))
+                .rounded(crate::ui::rad(ui::RADIUS))
                 .overflow_hidden()
                 .bg(p.background())
                 .child(
@@ -1023,8 +1028,8 @@ impl SettingsDialog {
                         .h_full()
                         .flex()
                         .flex_col()
-                        .gap(px(5.))
-                        .p(px(7.))
+                        .gap(crate::ui::sp(5.))
+                        .p(crate::ui::sp(7.))
                         .bg(p.surface(0.07))
                         .child(bar(0.6, p.accent()))
                         .child(bar(0.85, p.content().opacity(0.22)))
@@ -1035,8 +1040,8 @@ impl SettingsDialog {
                         .flex_1()
                         .flex()
                         .flex_col()
-                        .gap(px(5.))
-                        .p(px(8.))
+                        .gap(crate::ui::sp(5.))
+                        .p(crate::ui::sp(8.))
                         .child(bar(0.8, p.content().opacity(0.8)))
                         .child(bar(0.55, p.content().opacity(0.25)))
                         .child(
@@ -1044,9 +1049,9 @@ impl SettingsDialog {
                                 .mt(px(2.))
                                 .flex()
                                 .items_center()
-                                .gap(px(5.))
-                                .p(px(5.))
-                                .rounded(px(ui::RADIUS_SM))
+                                .gap(crate::ui::sp(5.))
+                                .p(crate::ui::sp(5.))
+                                .rounded(crate::ui::rad(ui::RADIUS_SM))
                                 .bg(p.surface(0.12))
                                 .child(div().size(px(7.)).rounded_full().bg(p.accent()))
                                 .child(bar(0.6, p.content().opacity(0.25))),
@@ -1058,9 +1063,9 @@ impl SettingsDialog {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .p(px(5.))
-                .rounded(px(ui::RADIUS_LG))
+                .gap(crate::ui::sp(6.))
+                .p(crate::ui::sp(5.))
+                .rounded(crate::ui::rad(ui::RADIUS_LG))
                 .border_1()
                 .border_color(if on {
                     theme::accent().opacity(0.55)
@@ -1074,9 +1079,9 @@ impl SettingsDialog {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .px(px(3.))
-                        .pb(px(1.))
+                        .gap(crate::ui::sp(6.))
+                        .px(crate::ui::sp(3.))
+                        .pb(crate::ui::sp(1.))
                         .child(
                             div()
                                 .flex_1()
@@ -1097,7 +1102,7 @@ impl SettingsDialog {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.use_palette(&id, cx)))
         };
-        let mut grid = div().flex().flex_col().gap(px(8.));
+        let mut grid = div().flex().flex_col().gap(crate::ui::sp(8.));
         let cards: Vec<_> = all
             .iter()
             .enumerate()
@@ -1113,7 +1118,7 @@ impl SettingsDialog {
             grid = grid.child(
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .children(row)
                     .children((0..pad).map(|_| div().flex_1())),
             );
@@ -1122,7 +1127,7 @@ impl SettingsDialog {
         let head = div()
             .flex()
             .items_center()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .child(label_block(
                 "Palette",
                 "The colors of the whole app. Customize one to make it yours.",
@@ -1148,16 +1153,16 @@ impl SettingsDialog {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .px(px(12.))
-            .py(px(12.))
+            .gap(crate::ui::sp(12.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(12.))
             .child(head)
             .when(self.show_import, |d| {
                 d.child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(crate::ui::sp(8.))
                         .child(field(self.share_input.clone(), 0.).flex_1())
                         .child(
                             ui::button("palette-import", "Add", ButtonKind::Outline, true)
@@ -1204,7 +1209,7 @@ impl SettingsDialog {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .child(
                     div()
                         .flex()
@@ -1263,9 +1268,9 @@ impl SettingsDialog {
         div()
             .flex()
             .flex_col()
-            .gap(px(14.))
-            .p(px(14.))
-            .rounded(px(ui::RADIUS_LG))
+            .gap(crate::ui::sp(14.))
+            .p(crate::ui::sp(14.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .bg(theme::fill_raised())
             .border_1()
             .border_color(theme::stroke())
@@ -1273,7 +1278,7 @@ impl SettingsDialog {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(
                         div()
                             .text_size(px(ui::TEXT_SM))
@@ -1323,7 +1328,7 @@ impl SettingsDialog {
                 format!("#{:06x}", p.accent),
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .children(ACCENTS.into_iter().enumerate().map(|(i, c)| {
                         ui::swatch(("pal-accent", i), gpui::rgb(c), p.accent == c).on_click(
                             cx.listener(move |this, _, _, cx| {
@@ -1337,7 +1342,7 @@ impl SettingsDialog {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .text_size(px(ui::TEXT_XS))
                     .text_color(readable.1)
                     .child(
@@ -1357,7 +1362,7 @@ impl SettingsDialog {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         ui::button("pal-copy", "Copy share line", ButtonKind::Outline, true)
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1394,6 +1399,131 @@ impl SettingsDialog {
             .into_any_element()
     }
 
+    /// Changes how round, roomy or spread out the app is, everywhere at once.
+    fn set_shape(
+        &mut self,
+        change: impl FnOnce(&mut crate::palettes::Saved),
+        cx: &mut Context<Self>,
+    ) {
+        change(&mut self.palettes);
+        self.save_palette_later(cx);
+    }
+
+    fn render_shape(&self, cx: &mut Context<Self>) -> AnyElement {
+        let s = &self.palettes;
+        let this = cx.entity().downgrade();
+        let setter = move |f: fn(&mut crate::palettes::Saved, f32)| {
+            let this = this.clone();
+            move |t: f32, _: &mut Window, cx: &mut App| {
+                let _ = this.update(cx, |this, cx| this.set_shape(|s| f(s, t), cx));
+            }
+        };
+        let presets = |id: &'static str,
+                       items: [(&'static str, f32); 3],
+                       now: f32,
+                       set: fn(&mut crate::palettes::Saved, f32),
+                       cx: &mut Context<Self>| {
+            let mut seg = ui::segmented();
+            for (i, (label, v)) in items.into_iter().enumerate() {
+                seg = seg.child(
+                    ui::segment((id, i), None, label, (now - v).abs() < 0.01).on_click(
+                        cx.listener(move |this, _, _, cx| this.set_shape(|s| set(s, v), cx)),
+                    ),
+                );
+            }
+            seg
+        };
+        let line = |title: &'static str,
+                    hint: &'static str,
+                    value: String,
+                    seg: gpui::Div,
+                    slider: gpui::Stateful<gpui::Div>| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .px(crate::ui::sp(12.))
+                .py(crate::ui::sp(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(12.))
+                        .child(label_block(title, hint))
+                        .child(
+                            div()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .child(value),
+                        )
+                        .child(seg),
+                )
+                .child(slider)
+                .into_any_element()
+        };
+        let track = || ui::blend_track(theme::fill_raised(), theme::fill_selected());
+        group(vec![
+            line(
+                "Corners",
+                "How round cards, buttons and fields are.",
+                format!("{:.0}%", s.radius * 100.),
+                presets(
+                    "shape-radius",
+                    [("Sharp", 0.5), ("Default", 1.), ("Round", 1.5)],
+                    s.radius,
+                    |s, v| s.radius = v,
+                    cx,
+                ),
+                ui::slider(
+                    "shape-radius-slider",
+                    s.radius / 2.,
+                    track(),
+                    theme::accent(),
+                    setter(|s, t| s.radius = (t * 2. * 20.).round() / 20.),
+                ),
+            ),
+            line(
+                "Spacing",
+                "The room inside and between things.",
+                format!("{:.0}%", s.space * 100.),
+                presets(
+                    "shape-space",
+                    [("Compact", 0.8), ("Default", 1.), ("Roomy", 1.25)],
+                    s.space,
+                    |s, v| s.space = v,
+                    cx,
+                ),
+                ui::slider(
+                    "shape-space-slider",
+                    s.space - 0.6,
+                    track(),
+                    theme::accent(),
+                    setter(|s, t| s.space = ((0.6 + t) * 20.).round() / 20.),
+                ),
+            ),
+            line(
+                "Window gap",
+                "The space around and between the sidebar, the main area and the panel.",
+                format!("{:.0} px", s.window_gap),
+                presets(
+                    "shape-gap",
+                    [("None", 0.), ("Default", 8.), ("Wide", 14.)],
+                    s.window_gap,
+                    |s, v| s.window_gap = v,
+                    cx,
+                ),
+                ui::slider(
+                    "shape-gap-slider",
+                    s.window_gap / 20.,
+                    track(),
+                    theme::accent(),
+                    setter(|s, t| s.window_gap = (t * 20.).round()),
+                ),
+            ),
+        ])
+    }
+
     fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = theme::diff_palette();
         let glass = theme::glass();
@@ -1405,10 +1535,10 @@ impl SettingsDialog {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(4.))
+                .gap(crate::ui::sp(4.))
                 .h(px(ui::CONTROL_H - 4.))
-                .px(px(8.))
-                .rounded(px(ui::RADIUS_SM))
+                .px(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(ui::RADIUS_SM))
                 .text_size(px(ui::TEXT_SM))
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
@@ -1462,8 +1592,8 @@ impl SettingsDialog {
         let preview = div()
             .flex()
             .flex_col()
-            .py(px(4.))
-            .rounded(px(ui::RADIUS_LG))
+            .py(crate::ui::sp(4.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .overflow_hidden()
             .border_1()
             .border_color(theme::stroke())
@@ -1475,7 +1605,7 @@ impl SettingsDialog {
                     .h(px(20.))
                     .border_l_2()
                     .border_color(gpui::transparent_black())
-                    .pl(px(20.))
+                    .pl(crate::ui::sp(20.))
                     .flex()
                     .items_center()
                     .text_color(theme::text_subtle())
@@ -1488,7 +1618,7 @@ impl SettingsDialog {
                     .h(px(20.))
                     .border_l_2()
                     .border_color(gpui::transparent_black())
-                    .pl(px(20.))
+                    .pl(crate::ui::sp(20.))
                     .flex()
                     .items_center()
                     .text_color(theme::text_subtle())
@@ -1497,20 +1627,21 @@ impl SettingsDialog {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(crate::ui::sp(12.))
             .child(group(vec![self.render_palettes(cx)]))
+            .child(self.render_shape(cx))
             .child(group(vec![
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
-                    .px(px(12.))
-                    .py(px(10.))
+                    .gap(crate::ui::sp(10.))
+                    .px(crate::ui::sp(12.))
+                    .py(crate::ui::sp(10.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(12.))
+                            .gap(crate::ui::sp(12.))
                             .child(label_block(
                                 "Diff colors",
                                 "Colorblind uses blue and orange. Lines keep their + and − marks.",
@@ -1586,7 +1717,7 @@ impl SettingsDialog {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .child(field(self.key_input.clone(), 150.))
             .child(
                 ui::button("set-voice-key-save", "Save", ButtonKind::Outline, !busy)
@@ -1621,7 +1752,7 @@ impl SettingsDialog {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .when(busy, |d| {
                 d.child(ui::spinner("set-voice-busy", 12., theme::mix(0.5)))
             })
@@ -1660,7 +1791,7 @@ impl SettingsDialog {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(crate::ui::sp(10.))
             .child(group(vec![
                 row(
                     "Read questions aloud",
@@ -1689,7 +1820,7 @@ impl SettingsDialog {
             .when_some(note, |d, (text, failed)| {
                 d.child(
                     div()
-                        .px(px(4.))
+                        .px(crate::ui::sp(4.))
                         .text_size(px(ui::TEXT_SM))
                         .line_height(px(17.))
                         .text_color(if failed { theme::danger().into() } else { theme::mix(0.55) })
@@ -1710,7 +1841,7 @@ impl SettingsDialog {
         }
         if groups.is_empty() {
             return div()
-                .py(px(24.))
+                .py(crate::ui::sp(24.))
                 .text_center()
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
@@ -1720,15 +1851,15 @@ impl SettingsDialog {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(crate::ui::sp(16.))
             .children(groups.into_iter().map(|(name, items)| {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(
                         div()
-                            .px(px(4.))
+                            .px(crate::ui::sp(4.))
                             .text_size(px(ui::TEXT_XS))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text_subtle())
@@ -1741,10 +1872,10 @@ impl SettingsDialog {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(12.))
+                                    .gap(crate::ui::sp(12.))
                                     .min_h(px(32.))
-                                    .px(px(12.))
-                                    .py(px(4.))
+                                    .px(crate::ui::sp(12.))
+                                    .py(crate::ui::sp(4.))
                                     .child(
                                         div()
                                             .flex_1()
@@ -1777,7 +1908,7 @@ fn tile(name: &str, size: f32, lit: bool) -> gpui::Div {
         .items_center()
         .justify_center()
         .size(px(size))
-        .rounded(px(if size > 32. {
+        .rounded(crate::ui::rad(if size > 32. {
             ui::RADIUS_LG
         } else {
             ui::RADIUS
@@ -1802,8 +1933,8 @@ fn field(input: Entity<TextInput>, width: f32) -> gpui::Div {
         .items_center()
         .w(px(width))
         .h(px(ui::BUTTON_H))
-        .px(px(8.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .border_1()
         .border_color(theme::border())
         .bg(theme::background())
@@ -1817,7 +1948,7 @@ fn group(rows: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .rounded(px(ui::RADIUS_LG))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::stroke())
         .bg(theme::fill_raised())
@@ -1836,7 +1967,7 @@ fn label_block(title: impl Into<SharedString>, hint: impl Into<SharedString>) ->
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(2.))
+        .gap(crate::ui::sp(2.))
         .child(div().text_size(px(ui::TEXT_MD)).child(title.into()))
         .child(
             div()
@@ -1856,9 +1987,9 @@ fn row(
     div()
         .flex()
         .items_center()
-        .gap(px(12.))
-        .px(px(12.))
-        .py(px(10.))
+        .gap(crate::ui::sp(12.))
+        .px(crate::ui::sp(12.))
+        .py(crate::ui::sp(10.))
         .hover(|s| s.bg(theme::fill_raised()))
         .child(label_block(title, hint))
         .child(control)
@@ -1871,11 +2002,11 @@ fn keycaps(keys: &str) -> AnyElement {
         div()
             .min_w(px(20.))
             .h(px(20.))
-            .px(px(4.))
+            .px(crate::ui::sp(4.))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(ui::RADIUS_SM))
+            .rounded(crate::ui::rad(ui::RADIUS_SM))
             .border_1()
             .border_color(theme::border())
             .bg(theme::fill_hover())
@@ -1886,12 +2017,16 @@ fn keycaps(keys: &str) -> AnyElement {
     };
     let sep = |s: &str| {
         div()
-            .px(px(2.))
+            .px(crate::ui::sp(2.))
             .text_size(px(ui::TEXT_XS))
             .text_color(theme::text_faint())
             .child(s.to_string())
     };
-    let mut out = div().flex().flex_none().items_center().gap(px(4.));
+    let mut out = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(crate::ui::sp(4.));
     for (i, alt) in keys.split(" / ").enumerate() {
         if i > 0 {
             out = out.child(sep("/"));
@@ -1934,10 +2069,10 @@ impl Render for SettingsDialog {
             .flex_1()
             .min_w_0()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .h(px(ui::INPUT_H))
-            .px(px(10.))
-            .rounded(px(ui::RADIUS))
+            .px(crate::ui::sp(10.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .border_1()
             .border_color(theme::border_strong())
             .bg(theme::background())
@@ -1969,9 +2104,9 @@ impl Render for SettingsDialog {
             .w(px(LIST_W))
             .h_full()
             .overflow_y_scroll()
-            .px(px(8.))
-            .pb(px(8.))
-            .gap(px(2.))
+            .px(crate::ui::sp(8.))
+            .pb(crate::ui::sp(8.))
+            .gap(crate::ui::sp(2.))
             .children(shown.iter().map(|s| self.render_row(*s, cx)));
 
         let body: AnyElement = if shown.is_empty() {
@@ -1980,7 +2115,7 @@ impl Render for SettingsDialog {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
+                .gap(crate::ui::sp(10.))
                 .size_full()
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
@@ -2002,12 +2137,12 @@ impl Render for SettingsDialog {
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(crate::ui::sp(4.))
                 .child(
                     div()
-                        .px(px(4.))
+                        .px(crate::ui::sp(4.))
                         .h(px(16.))
-                        .rounded(px(ui::RADIUS_SM))
+                        .rounded(crate::ui::rad(ui::RADIUS_SM))
                         .bg(theme::fill_selected())
                         .text_size(px(ui::TEXT_XS))
                         .line_height(px(16.))
@@ -2028,17 +2163,17 @@ impl Render for SettingsDialog {
                 div()
                     .flex()
                     .items_center()
-                    .px(px(16.))
-                    .pt(px(12.))
+                    .px(crate::ui::sp(16.))
+                    .pt(crate::ui::sp(12.))
                     .child(field),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .px(px(20.))
-                    .pt(px(12.))
-                    .pb(px(4.))
+                    .px(crate::ui::sp(20.))
+                    .pt(crate::ui::sp(12.))
+                    .pb(crate::ui::sp(4.))
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_subtle())
                     .child(div().flex_1().min_w_0().truncate().child(crumb))
@@ -2057,9 +2192,9 @@ impl Render for SettingsDialog {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(16.))
-                    .py(px(10.))
+                    .gap(crate::ui::sp(12.))
+                    .px(crate::ui::sp(16.))
+                    .py(crate::ui::sp(10.))
                     .border_t_1()
                     .border_color(theme::stroke())
                     .text_size(px(ui::TEXT_XS))

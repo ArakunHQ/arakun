@@ -401,7 +401,7 @@ arakun-server log <id>            # a session's status and last entries
 arakun-server wait <id>           # until it stops working; prints its answer or what it asks
 arakun-server send <id> <text>    # a follow-up
 arakun-server approve <id>        # or deny: answer the permission it asks for
-arakun-server stop <id>           # stop its turn
+arakun-server stop <id>           # stop its turn; follow-ups waiting behind it are dropped
 arakun-server devices             # paired devices; `unpair <device>` forgets one
 arakun-server status
 ```
@@ -429,9 +429,15 @@ arakun-server status
   that folder, which only your user can open. It is also what keeps a second server
   off the same folder.
 - **A turn that is running when the server stops** is cut off. Its session is still
-  there after a restart, and the next message picks it up.
+  there after a restart, and the next message picks it up. Follow-ups that were
+  waiting behind that turn run first, then the new message.
 
-To keep it running on Linux, a systemd user unit is enough:
+To keep it running on Linux, put the binary where the unit below looks for it, and a
+systemd user unit is enough:
+
+```sh
+install -Dm755 target/release/arakun-server ~/.local/bin/arakun-server
+```
 
 ```ini
 # ~/.config/systemd/user/arakun-server.service

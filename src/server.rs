@@ -114,7 +114,7 @@ Usage:
                              print its status and last message, or what it
                              asks; fail on error
   {name} send <id> <text…>   send it a follow-up
-  {name} stop <id>           stop its running turn
+  {name} stop <id>           stop its running turn; follow-ups that wait are dropped
   {name} approve <id> | deny <id>
                              answer the permission it asks for
   {name} answer <id> <answer>…

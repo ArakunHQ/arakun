@@ -308,7 +308,18 @@ pub fn run(opts: Options) -> i32 {
         eprintln!("arakun server: {}: {e}", dir.display());
         return 1;
     }
-    // Before anything listens: a server that cannot read what it kept does not start.
+    // The socket first: it is what says a server already runs in this folder.
+    // A second `serve` must be turned away before it saves how it was started
+    // over what the running one, and its next start, go by.
+    let socket = super::socket_path();
+    let (listening, requests) = match local::serve(&socket) {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("arakun server: {e}");
+            return 1;
+        }
+    };
+    // Before a device can reach it: a server that cannot read what it kept does not start.
     let store = match Store::load(&dir) {
         Ok(store) => store,
         Err(e) => {
@@ -344,14 +355,6 @@ pub fn run(opts: Options) -> i32 {
     settings.enabled = true;
     settings.save();
 
-    let socket = super::socket_path();
-    let (listening, requests) = match local::serve(&socket) {
-        Ok(found) => found,
-        Err(e) => {
-            eprintln!("arakun server: {e}");
-            return 1;
-        }
-    };
     let writer = match Writer::start() {
         Ok(writer) => writer,
         Err(e) => {
@@ -531,6 +534,21 @@ fn status_of(t: &Thread) -> Status {
         }
         ThreadStatus::Connecting | ThreadStatus::Idle => Status::Idle,
     }
+}
+
+/// Stops a session's turn and drops the follow-ups that waited behind it;
+/// says how many. In the app they would stay, held, until someone lets them
+/// go or removes them. Nobody sees them here: held, they would stand in front
+/// of every prompt sent after, and none of those would run.
+fn stop_turn(thread: &Entity<Thread>, cx: &mut App) -> usize {
+    thread.update(cx, |t, cx| {
+        t.cancel(cx);
+        let waited = t.queued().len();
+        for _ in 0..waited {
+            t.remove_queued(0, cx);
+        }
+        waited
+    })
 }
 
 /// The first line of a prompt, cut to a title's length.
@@ -1478,7 +1496,7 @@ impl Daemon {
             }
             ClientMsg::Cancel { session } => {
                 if let Some(thread) = self.thread(&session) {
-                    thread.update(cx, |t, cx| t.cancel(cx));
+                    stop_turn(&thread, cx);
                 }
             }
             ClientMsg::Permission { session, option } => {
@@ -1568,7 +1586,15 @@ impl Daemon {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let thread = self.ensure_live(id, cx)?;
-        thread.update(cx, |t, cx| t.send(text, cx));
+        thread.update(cx, |t, cx| {
+            t.send(text, cx);
+            // Follow-ups that waited when the server stopped come back held,
+            // for someone to let go in the app's window. Here a new prompt is
+            // that someone: held, they would keep this one from ever running.
+            if t.queue_paused() {
+                t.resume_queue(cx);
+            }
+        });
         if let Some(s) = self.store.session_mut(id) {
             s.updated = unix_now();
         }
@@ -1778,8 +1804,13 @@ impl Daemon {
                                 Status::Working | Status::NeedsInput
                             ) =>
                         {
-                            t.update(cx, |t, cx| t.cancel(cx));
-                            Reply::ok(format!("stopping {id}"))
+                            Reply::ok(match stop_turn(&t, cx) {
+                                0 => format!("stopping {id}"),
+                                1 => format!("stopping {id}; the follow-up that waited is dropped"),
+                                n => format!(
+                                    "stopping {id}; the {n} follow-ups that waited are dropped"
+                                ),
+                            })
                         }
                         _ => Reply::ok(format!("{id} is not working")),
                     },

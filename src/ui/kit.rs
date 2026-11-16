@@ -1356,21 +1356,21 @@ pub fn selection_bar() -> gpui::Div {
         .bg(theme::accent())
 }
 
-/// How a match shows inside a title: white, semibold, underlined faintly.
+/// How a match shows inside a title: the text color, semibold, underlined faintly.
 pub fn match_highlight() -> gpui::HighlightStyle {
     gpui::HighlightStyle {
-        color: Some(gpui::white()),
+        color: Some(theme::text()),
         font_weight: Some(FontWeight::SEMIBOLD),
         underline: Some(gpui::UnderlineStyle {
             thickness: px(1.),
-            color: Some(gpui::white().opacity(0.22)),
+            color: Some(theme::text().opacity(0.22)),
             wavy: false,
         }),
         ..Default::default()
     }
 }
 
-/// A row's title, its matches highlighted; white when the row is selected.
+/// A row's title, its matches highlighted; full text color when selected.
 pub fn row_title(
     text: impl Into<SharedString>,
     matches: &[std::ops::Range<usize>],
@@ -1386,7 +1386,7 @@ pub fn row_title(
         .min_w_0()
         .truncate()
         .text_color(if selected {
-            gpui::white()
+            theme::text()
         } else if dim {
             theme::text_subtle()
         } else {
@@ -2172,7 +2172,7 @@ pub fn slider(
                 .size(px(KNOB))
                 .rounded_full()
                 .border_2()
-                .border_color(gpui::white())
+                .border_color(theme::text())
                 .bg(knob)
                 .shadow_sm(),
         )

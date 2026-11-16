@@ -1552,7 +1552,11 @@ impl Ctx<'_> {
             .map(|n| n.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        let gutter = (count.to_string().len() as f32 * 6.5 + 14.).max(24.);
+        // The digits and a little room, plus the right padding, which
+        // follows the Spacing setting: a fixed width would squeeze the
+        // numbers at a roomier spacing.
+        let gutter =
+            (px(count.to_string().len() as f32 * 6.5 + 4.) + crate::ui::sp(10.)).max(px(24.));
         let base = theme::mix(0.85);
         let runs = code_runs(shown, spans, base);
         div()
@@ -1610,7 +1614,7 @@ impl Ctx<'_> {
                         d.child(
                             div()
                                 .flex_none()
-                                .w(px(gutter))
+                                .w(gutter)
                                 .pr(crate::ui::sp(10.))
                                 .text_right()
                                 .text_size(px(crate::ui::TEXT_XS))

@@ -20,14 +20,19 @@ pub mod queue;
 
 /// How many notifications one read asks for.
 const PER_PAGE: usize = 50;
-const POLL_ACTIVE: Duration = Duration::from_secs(60);
+/// The least time between two reads Arakun starts on its own (polls, the
+/// window coming back, the tab opening, a list it shows): GitHub's API is
+/// for clients, and reading it often looks like scraping. Only a Refresh the
+/// user asks for reads sooner.
+const MIN_GAP: Duration = Duration::from_secs(150);
+const POLL_ACTIVE: Duration = MIN_GAP;
 const POLL_IDLE: Duration = Duration::from_secs(300);
 /// Data older than this is read again when the window comes back.
-const STALE: Duration = Duration::from_secs(30);
+const STALE: Duration = MIN_GAP;
 /// How many pull requests or issues are read at once for the queue.
 const DETAILS_AT_ONCE: usize = 3;
 /// How long a failed read of an item waits before a poll may try it again.
-const DETAILS_RETRY: Duration = Duration::from_secs(60);
+const DETAILS_RETRY: Duration = MIN_GAP;
 /// The pulse changes slowly and its query is heavy: read it this often.
 const PULSE_EVERY: Duration = Duration::from_secs(300);
 /// How far back a mention still counts.
@@ -532,7 +537,7 @@ pub fn parse_repo_pulls(json: &[u8]) -> Result<Vec<RepoPull>, Problem> {
 }
 
 /// How long a repository's open pull requests are reused before reading them again.
-const REPO_PULLS_FRESH: Duration = Duration::from_secs(60);
+const REPO_PULLS_FRESH: Duration = MIN_GAP;
 
 fn gh_out(args: &[&str]) -> Result<Vec<u8>, Problem> {
     // These calls name no repository, so gh runs away from any checkout: a
@@ -730,6 +735,8 @@ pub struct GitHub {
     /// Why the last "mark read" didn't reach GitHub.
     mark_problem: Option<Problem>,
     last_fetch: Option<Instant>,
+    /// When the last read started: the gap between reads counts from here.
+    last_start: Option<Instant>,
     seen: Option<Seen>,
     /// Threads marked read here (id → `updated_at`): a read that started before
     /// GitHub knew would bring them back.
@@ -787,7 +794,7 @@ impl GitHub {
             loop {
                 let polled = this.update(cx, |this, cx| {
                     if this.polls() {
-                        this.refresh(cx);
+                        this.refresh_if_stale(MIN_GAP, cx);
                     }
                 });
                 if polled.is_err() {
@@ -810,6 +817,7 @@ impl GitHub {
             problem: None,
             mark_problem: None,
             last_fetch: None,
+            last_start: None,
             seen: None,
             read_marks: HashMap::new(),
             settings: load(),
@@ -848,7 +856,7 @@ impl GitHub {
             self.settings.opened = true;
             store(&self.settings);
         }
-        self.refresh_if_stale(Duration::from_secs(20), cx);
+        self.refresh_if_stale(MIN_GAP, cx);
     }
 
     fn poll_interval(&self) -> Duration {
@@ -935,8 +943,11 @@ impl GitHub {
         }
     }
 
+    /// Reads again when the last read is older than `max_age`, and never
+    /// sooner than `MIN_GAP` after it.
     pub fn refresh_if_stale(&mut self, max_age: Duration, cx: &mut Context<Self>) {
-        if self.last_fetch.is_none_or(|t| t.elapsed() > max_age) {
+        let max_age = max_age.max(MIN_GAP);
+        if self.last_start.is_none_or(|t| t.elapsed() >= max_age) {
             self.refresh(cx);
         }
     }
@@ -950,6 +961,7 @@ impl GitHub {
             return;
         }
         self.busy = true;
+        self.last_start = Some(Instant::now());
         cx.notify();
         let want_all = self.show_all;
         let now = crate::model::unix_now();
@@ -1008,7 +1020,7 @@ impl GitHub {
                 this.fetch_avatars(cx);
                 cx.notify();
                 if std::mem::take(&mut this.again) {
-                    this.refresh(cx);
+                    this.refresh_if_stale(MIN_GAP, cx);
                 }
             });
         })
@@ -1520,7 +1532,7 @@ impl GitHub {
                     this.read_marks.remove(id);
                 }
                 this.mark_problem = failed.into_iter().next().map(|(_, p)| p);
-                this.refresh(cx);
+                this.refresh_if_stale(MIN_GAP, cx);
                 cx.notify();
             });
         })
@@ -1539,6 +1551,21 @@ mod tests {
         // Not at once, which would loop while offline; on a later poll.
         assert!(!ask_details(true, Some(Duration::from_secs(1))));
         assert!(ask_details(true, Some(DETAILS_RETRY)));
+    }
+
+    #[test]
+    fn nothing_reads_github_on_its_own_more_often_than_every_150_s() {
+        assert!(MIN_GAP >= Duration::from_secs(150));
+        for gap in [
+            POLL_ACTIVE,
+            POLL_IDLE,
+            STALE,
+            DETAILS_RETRY,
+            REPO_PULLS_FRESH,
+            PULSE_EVERY,
+        ] {
+            assert!(gap >= MIN_GAP, "{gap:?}");
+        }
     }
 
     #[test]

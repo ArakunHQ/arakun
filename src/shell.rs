@@ -297,12 +297,11 @@ pub struct Shell {
     file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
     file_index_loading: bool,
     /// The ASCII face over the start and welcome screens (redraws the shell
-    /// while its intro fades the screen in), the small raccoon atop the rail,
-    /// and the one asleep in an empty session list.
+    /// while its intro fades the screen in) and the small raccoon atop the
+    /// rail, which steps aside while a raccoon shows in the main view.
     home_face: Entity<crate::ascii_face::AsciiFace>,
     _home_face: Subscription,
     rail_mascot: Entity<crate::mascot::Mascot>,
-    panel_mascot: Entity<crate::mascot::Mascot>,
     explorer_scroll: UniformListScrollHandle,
     focus: FocusHandle,
     composer_focus: FocusHandle,
@@ -745,11 +744,6 @@ impl Shell {
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
-            panel_mascot: cx.new(|cx| {
-                let mut m = crate::mascot::Mascot::new(56., cx);
-                m.set_mood(crate::mascot::Mood::Sleeping);
-                m
-            }),
             explorer_scroll: UniformListScrollHandle::new(),
             focus,
             composer_focus,
@@ -2041,6 +2035,20 @@ impl Focusable for Shell {
 }
 
 impl Shell {
+    /// Whether a pane in view already shows a raccoon: the start screen's
+    /// ASCII face or a session's raccoon on its composer. The rail's then
+    /// steps aside, so only one raccoon is in view at a time.
+    pub(super) fn main_shows_raccoon(&self) -> bool {
+        let env = self.env();
+        let has = |i: usize| {
+            matches!(
+                env.tabs.get(i).map(|t| &t.kind),
+                None | Some(TabKind::NewSession) | Some(TabKind::Session { .. })
+            )
+        };
+        has(env.active_tab) || env.split_other().is_some_and(has)
+    }
+
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let env = self.env();
         match env.split_other() {

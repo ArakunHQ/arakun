@@ -177,7 +177,7 @@ it shows in `github/avatars/` (each downloaded again after a week).
   read. A palette fits in one line (`arakun:palette/v1:…`) that anyone can paste there to
   get it. The choice and your palettes are kept in `palettes.json` next to the state.
 - **Dark and light.** Settings › Appearance › Mode draws the palette on black or on a
-  near-white background with dark text. The choice is kept in `palettes.json`.
+  white background with dark text. The choice is kept in `palettes.json`.
 - **Corners and spacing.** Settings › Appearance also sets the shape of the whole app,
   live. Corners makes cards, buttons and fields sharper or rounder (0 to 200%; presets
   Sharp, Default, Round). Spacing makes the room inside and between things tighter or

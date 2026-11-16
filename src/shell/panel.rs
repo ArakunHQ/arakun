@@ -261,7 +261,6 @@ impl Shell {
                 .px(crate::ui::sp(24.))
                 .py(crate::ui::sp(40.))
                 .gap(crate::ui::sp(12.))
-                .child(self.panel_mascot.clone())
                 .child(
                     div()
                         .text_size(px(ui::TEXT_MD))

@@ -57,9 +57,10 @@ impl Shell {
             .pl(crate::ui::sp(14.).max(crate::ui::traffic_lights_inset(window) - px(gap())))
             .pr(ui::icon_inset())
             .gap(crate::ui::sp(2.))
-            .when(!self.sidebar.has(&crate::sidebar::Piece::Mascot), |d| {
-                d.child(self.rail_mascot.clone())
-            })
+            .when(
+                !self.sidebar.has(&crate::sidebar::Piece::Mascot) && !self.main_shows_raccoon(),
+                |d| d.child(self.rail_mascot.clone()),
+            )
             .child(
                 div()
                     .flex_1()

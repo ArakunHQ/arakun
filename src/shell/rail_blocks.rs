@@ -694,7 +694,10 @@ impl Shell {
                 .items_center()
                 .justify_center()
                 .h(px(40.))
-                .child(self.rail_mascot.clone())
+                // Keeps its place, empty while the main view shows a raccoon.
+                .when(!self.main_shows_raccoon(), |d| {
+                    d.child(self.rail_mascot.clone())
+                })
                 .into_any_element(),
             Piece::Separator => div()
                 .my(px(5.))

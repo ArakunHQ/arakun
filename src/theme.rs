@@ -2,7 +2,7 @@
 //! dark the background is, and an accent) plus alpha mixes of the content
 //! color. The default is Arakun Black (neutral, no tint) with an amber
 //! accent; users pick another palette or make their own in Settings ›
-//! Appearance. [`Mode::Light`] draws the same palette on a near-white
+//! Appearance. [`Mode::Light`] draws the same palette on a white
 //! background with dark content, so every gray role flips with it.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -77,7 +77,7 @@ static DIFF_PALETTE: AtomicU8 = AtomicU8::new(0);
 static GLASS: AtomicBool = AtomicBool::new(false);
 static LIGHT: AtomicBool = AtomicBool::new(false);
 
-/// Dark or light: the same palette, on a dark or a near-white background.
+/// Dark or light: the same palette, on a dark or a white background.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Dark,
@@ -141,7 +141,7 @@ const DIALOG_LIFT: f32 = 0.035;
 const CONTENT_L: f32 = 0.92;
 /// Light mode: the window's lightness, and the content drawn on it. Raised
 /// surfaces (dialogs) go up to white, wells and terminals go a little gray.
-const LIGHT_BG_L: f32 = 0.975;
+const LIGHT_BG_L: f32 = 1.;
 const LIGHT_CONTENT_L: f32 = 0.07;
 /// What light mode's accent keeps against the background: WCAG's 3:1 for
 /// icons and outlines, since it is drawn as a mark more often than as text.
@@ -337,14 +337,13 @@ impl Palette {
         at(hi)
     }
 
-    /// Light mode's background for this palette: near white, carrying the
-    /// tint faintly.
+    /// Light mode's background for this palette: white.
     pub fn light_background(&self) -> Hsla {
         light_tinted(self.hue, self.tint, BASE_L)
     }
 
     /// The accent as light mode draws it: the one asked for, made darker
-    /// (same hue) until it stands out from the near-white background. Text
+    /// (same hue) until it stands out from the white background. Text
     /// on it is drawn dark ([`on_accent`]), so the fill stays bright.
     pub fn readable_light_accent(&self) -> u32 {
         let back = self.light_background();
@@ -355,7 +354,7 @@ impl Palette {
         }
         let base = Hsla::from(rgb(asked));
         let at = |l: f32| to_hex(hsla(base.h, base.s, l, 1.));
-        // Black always stands out on a near-white background.
+        // Black always stands out on a white background.
         let (mut lo, mut hi) = (0., base.l);
         for _ in 0..16 {
             let mid = (lo + hi) / 2.;
@@ -422,8 +421,8 @@ fn tinted(hue: f32, tint: f32, bg: f32, l: f32) -> Hsla {
 }
 
 /// Light mode's surface at lightness `l` (given as for the dark default):
-/// the same offsets from a near-white background, so dialogs reach white
-/// and wells sit a little darker.
+/// the same offsets from white, so raised surfaces stay white and wells and
+/// terminals sit a little gray.
 fn light_tinted(hue: f32, tint: f32, l: f32) -> Hsla {
     hsla(
         hue / 360.,
@@ -532,7 +531,7 @@ pub fn surface(l: f32) -> Hsla {
     current_surface(l)
 }
 
-/// `#0b0b0b` in the default palette; near white in light mode.
+/// `#0b0b0b` in the default palette; white in light mode.
 pub fn background() -> Hsla {
     current_surface(BASE_L)
 }
@@ -744,6 +743,15 @@ pub fn warn() -> Rgba {
 pub fn accent() -> Hsla {
     let a = if is_light() { &ACCENT_LIGHT } else { &ACCENT };
     rgb(a.load(Ordering::Relaxed)).into()
+}
+
+/// The logo's own colors, the same in every palette and mode: the raccoon's
+/// paper fur and the ink of its tile, mask and nose.
+pub fn brand_paper() -> Hsla {
+    rgb(0xf1efe8).into()
+}
+pub fn brand_ink() -> Hsla {
+    rgb(0x151515).into()
 }
 
 /// Text and icons drawn on an accent fill: the background in dark mode, the

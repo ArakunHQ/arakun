@@ -1832,7 +1832,7 @@ impl SettingsDialog {
                     }
                     row(
                         "Mode",
-                        "Dark draws the palette on black; Light on a near-white background with dark text.",
+                        "Dark draws the palette on black; Light on white with dark text.",
                         seg.into_any_element(),
                     )
                     .into_any_element()

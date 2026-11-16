@@ -2,8 +2,16 @@
 <svg id="Capa_2" data-name="Capa 2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 178.54 137.16">
   <defs>
     <style>
-      .cls-1, .cls-2 {
-        fill: #ffb647;
+      .cls-1 {
+        fill: #ffb547;
+      }
+
+      .cls-2 {
+        fill: #f1efe8;
+      }
+
+      .cls-3, path:not([class]) {
+        fill: #151515;
       }
 
       .cls-3, .cls-2 {

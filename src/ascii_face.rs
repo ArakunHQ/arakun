@@ -238,6 +238,8 @@ struct FaceCell {
     row: usize,
     ch: char,
     rgb: [f32; 3],
+    /// An eye cell: amber in either mode.
+    amber: bool,
 }
 
 /// The characters of the face: only cells near the head are looked at, and
@@ -300,6 +302,7 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
                 row,
                 ch,
                 rgb: c.map(|v| (v * gain).min(255.)),
+                amber,
             });
         }
     }
@@ -649,7 +652,14 @@ fn paint(frame: &Frame, b: Bounds<Pixels>, window: &mut Window) {
     for c in &frame.cells {
         taken[c.row * grid.cols + c.col] = true;
         if let Some(&(font, id)) = g.ids.get(&c.ch) {
-            let _ = window.paint_glyph(at(c.col, c.row), font, id, size, rgb(c.rgb, 1.));
+            // Light mode draws the face like ink on paper: the bright fur's
+            // dense characters in the text color, the eyes in the accent.
+            let color = match (theme::is_light(), c.amber) {
+                (false, _) => rgb(c.rgb, 1.),
+                (true, true) => theme::accent(),
+                (true, false) => theme::content(),
+            };
+            let _ = window.paint_glyph(at(c.col, c.row), font, id, size, color);
         }
     }
     if frame.dots <= 0. {

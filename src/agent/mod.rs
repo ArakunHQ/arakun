@@ -14,6 +14,7 @@ pub mod catalog;
 pub mod chart;
 pub mod claude_auth;
 pub mod claude_ext;
+pub mod cliproxy;
 pub mod diff;
 pub mod extensions;
 mod kind;

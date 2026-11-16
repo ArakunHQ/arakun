@@ -16,7 +16,8 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+/// Also read through CLIProxyAPI (`cliproxy`), with each account's own token.
+pub(crate) const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 /// A long-lived token can't read [`ENDPOINT`]; a one-token message can, from
 /// the `anthropic-ratelimit-unified-*` headers of its answer.
 const MESSAGES: &str = "https://api.anthropic.com/v1/messages";
@@ -554,6 +555,29 @@ fn http_with(
     headers: &[(&str, String)],
     extra: &str,
 ) -> Result<(String, u32)> {
+    curl(&curl_config(url, post, headers, extra, false))
+}
+
+/// The body and the HTTP status, whatever it is. `direct` goes past any
+/// proxy in the environment (`http_proxy`): for a server on this machine,
+/// whose headers no proxy should see.
+pub(crate) fn http_status(
+    url: &str,
+    post: Option<&str>,
+    headers: &[(&str, String)],
+    direct: bool,
+) -> Result<(String, u32)> {
+    curl(&curl_config(url, post, headers, "", direct))
+}
+
+/// curl's config: the flags and headers it reads from stdin.
+fn curl_config(
+    url: &str,
+    post: Option<&str>,
+    headers: &[(&str, String)],
+    extra: &str,
+    direct: bool,
+) -> String {
     let mut config = format!(
         "url = \"{url}\"\nsilent\nshow-error\nmax-time = 20\nwrite-out = \"{}\\n%{{http_code}}\"\n",
         extra.replace('"', "\\\"")
@@ -572,6 +596,14 @@ fn http_with(
             body.replace('\\', "\\\\").replace('"', "\\\"")
         ));
     }
+    if direct {
+        config.push_str("noproxy = \"*\"\n");
+    }
+    config
+}
+
+/// Runs curl with `config` on stdin, so tokens never sit in the process list.
+fn curl(config: &str) -> Result<(String, u32)> {
     let mut child = crate::platform::command("curl")
         .args(["--config", "-"])
         .stdin(std::process::Stdio::piped())
@@ -607,9 +639,13 @@ fn http_headers(url: &str, post: Option<&str>, headers: &[(&str, String)]) -> Re
     ))
 }
 
+fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
+    parse_usage(json, &oauth.subscription, &oauth.tier)
+}
+
 /// The endpoint's JSON into our shape. `limits[]` is the canonical list; the
 /// five_hour/seven_day fields cover accounts the list does not serve.
-fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
+pub(crate) fn parse_usage(json: &Value, subscription: &str, tier: &str) -> PlanUsage {
     let mut windows = Vec::new();
     if let Some(limits) = json["limits"].as_array().filter(|l| !l.is_empty()) {
         for l in limits {
@@ -661,8 +697,8 @@ fn parse(json: &Value, oauth: &Oauth) -> PlanUsage {
     let spend = spend(json);
     PlanUsage {
         at: now(),
-        subscription: oauth.subscription.clone(),
-        tier: oauth.tier.clone(),
+        subscription: subscription.to_string(),
+        tier: tier.to_string(),
         windows,
         spend,
         borrowed: false,
@@ -874,6 +910,15 @@ mod tests {
         let back: Seats = serde_json::from_str(&json).unwrap();
         assert_eq!(back, seats);
         assert_eq!(back.borrowed.as_ref().unwrap().windows[0].percent, 100);
+    }
+
+    #[test]
+    fn a_direct_call_skips_the_environments_proxy() {
+        let headers = [("Authorization", "Bearer k".to_string())];
+        let direct = curl_config("http://127.0.0.1:8317/x", None, &headers, "", true);
+        assert!(direct.contains("noproxy = \"*\"\n"));
+        let normal = curl_config(ENDPOINT, None, &headers, "", false);
+        assert!(!normal.contains("noproxy"));
     }
 
     #[test]

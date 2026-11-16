@@ -110,6 +110,7 @@ build with the browser.
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
+| CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
@@ -131,9 +132,10 @@ Manager (Windows Credentials, Generic Credentials).
   that separates them from the bar; on Linux and macOS they are 28 px squares with
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
-- **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies) is
-  written owner-only (mode 0600, and 0700 for a folder it creates). Windows has no such
-  modes, so there it gets the default access rules of `%LOCALAPPDATA%\arakun\`.
+- **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies),
+  `cliproxy-management-key` and `cliproxy-plan.json` are written owner-only (mode 0600,
+  and 0700 for a folder it creates). Windows has no such modes, so there they get the
+  default access rules of `%LOCALAPPDATA%\arakun\`.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
   `SYSTEM` and the Administrators can read it. To check who can read the folder and the

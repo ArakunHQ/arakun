@@ -58,7 +58,7 @@ yourself (open the PNG) before you call the change done. Check light and dark
 if the change touches color.
 
 For the "before" shot, build `main` in another worktree, or take it before your
-first edit.
+first edit, and save it as `before.png` the same way.
 
 ## Hand it over
 
@@ -66,23 +66,31 @@ first edit.
   `docs/screenshots/`, which holds the README's images.
 - The pull request needs before and after screenshots (a short GIF for an
   interaction). GitHub has no API to upload images, so they go in the public
-  repository [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets), one
-  folder per branch (`/` becomes `-`), named `before-<what>.png` and
-  `after-<what>.png`. Push them to its `main` and embed each one by its raw URL:
+  repository [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets). Each
+  upload gets a new folder named after the branch and its commit, so two branches
+  never share one and a later upload never replaces images a pull request shows.
+  Copy each file by name, never with a glob: an old capture left in
+  `${TMPDIR:-/tmp}` would be published with it.
 
   ```sh
+  folder="$(git branch --show-current | tr / -)-$(git rev-parse --short=12 HEAD)"
   dir=$(mktemp -d) && gh repo clone ArakunHQ/pr-assets "$dir" -- -q
-  mkdir -p "$dir/<branch>" && cp "${TMPDIR:-/tmp}"/after-*.png "$dir/<branch>/"
-  git -C "$dir" add -A && git -C "$dir" commit -m "docs: add <branch> screenshots"
+  mkdir "$dir/$folder"   # fails instead of overwriting an earlier upload
+  cp "${TMPDIR:-/tmp}/before.png" "$dir/$folder/before-<what>.png"
+  cp "${TMPDIR:-/tmp}/after.png" "$dir/$folder/after-<what>.png"   # one cp per file, a GIF too
+  git -C "$dir" add "$folder" && git -C "$dir" commit -m "docs: add $folder screenshots"
   git -C "$dir" push origin main
   ```
 
+  Embed each one by its raw URL:
+
   ```markdown
-  ![After](https://raw.githubusercontent.com/ArakunHQ/pr-assets/main/<branch>/after-<what>.png)
+  ![After](https://raw.githubusercontent.com/ArakunHQ/pr-assets/main/<folder>/after-<what>.png)
   ```
 
-  Anything there is public at once: use made-up data, and check the shot shows no
-  real account, token, email or home-directory path. Without push access
+  Anything there is public at once: use made-up data, and look at every file you
+  copy for a real account, token, email or home-directory path (the status bar
+  shows the project's path; the test Arakun can show your GitHub notifications). Without push access
   (`gh api repos/ArakunHQ/pr-assets --jq .permissions.push`), give the user the
   paths and say they need to be dragged into the pull request.
 - Changed a shortcut, a setting or a command? Update the README, and

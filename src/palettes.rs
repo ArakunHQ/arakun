@@ -25,6 +25,10 @@ pub struct Saved {
     /// Pixels between the window's floating cards.
     #[serde(default = "eight")]
     pub window_gap: f32,
+    /// The file could not be read in full nor moved aside, so saving would
+    /// write over what it still holds. Saves are refused for this session.
+    #[serde(skip)]
+    read_only: bool,
 }
 
 fn one() -> f32 {
@@ -43,6 +47,7 @@ impl Default for Saved {
             radius: 1.,
             space: 1.,
             window_gap: 8.,
+            read_only: false,
         }
     }
 }
@@ -123,33 +128,51 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> Saved {
-    load_from(&file())
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    load_from(&file(), now)
 }
 
 /// Reads the file one palette at a time, so one entry that doesn't parse
 /// (hand edited, or written by a newer version) costs only itself. A file
 /// that couldn't be read in full is moved aside first, since the next save
 /// would replace it; the palettes that did read are written back so the
-/// next start doesn't move it again.
-fn load_from(path: &std::path::Path) -> Saved {
-    let Ok(bytes) = std::fs::read(path) else {
-        return Saved::default();
+/// next start doesn't move it again. If it can't be moved, nothing is
+/// saved over it this session.
+fn load_from(path: &std::path::Path, now: u64) -> Saved {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Saved::default(),
+        Err(e) => {
+            // It may still hold the user's palettes: don't save over it.
+            eprintln!("arakun: could not read {}: {e}", path.display());
+            return Saved {
+                read_only: true,
+                ..Saved::default()
+            };
+        }
     };
     match parse(&bytes) {
         Some((saved, 0)) => saved,
-        Some((saved, skipped)) => {
+        Some((mut saved, skipped)) => {
             eprintln!(
                 "arakun: skipped {skipped} palette(s) in {} that could not be read",
                 path.display()
             );
-            keep_aside(path);
-            store_at(path, &saved);
+            if keep_aside(path, now) {
+                store_at(path, &saved);
+            } else {
+                saved.read_only = true;
+            }
             saved
         }
         None => {
             eprintln!("arakun: could not read {}", path.display());
-            keep_aside(path);
-            Saved::default()
+            Saved {
+                read_only: !keep_aside(path, now),
+                ..Saved::default()
+            }
         }
     }
 }
@@ -199,6 +222,7 @@ fn parse(bytes: &[u8]) -> Option<(Saved, usize)> {
             radius,
             space,
             window_gap,
+            read_only: false,
         },
         skipped,
     ))
@@ -206,16 +230,21 @@ fn parse(bytes: &[u8]) -> Option<(Saved, usize)> {
 
 /// Moves a palettes file that couldn't be read in full to
 /// `palettes.json.corrupt-<unix time>`, so the user can still get it back.
-fn keep_aside(path: &std::path::Path) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+/// `false` when it is still in place (a rename can fail on Windows while
+/// another program holds the file open).
+fn keep_aside(path: &std::path::Path, now: u64) -> bool {
     let mut name = path.as_os_str().to_owned();
-    name.push(format!(".corrupt-{secs}"));
+    name.push(format!(".corrupt-{now}"));
     let aside = PathBuf::from(name);
     match std::fs::rename(path, &aside) {
-        Ok(()) => eprintln!("arakun: kept the old file as {}", aside.display()),
-        Err(e) => eprintln!("arakun: could not keep {} aside: {e}", path.display()),
+        Ok(()) => {
+            eprintln!("arakun: kept the old file as {}", aside.display());
+            true
+        }
+        Err(e) => {
+            eprintln!("arakun: could not keep {} aside: {e}", path.display());
+            false
+        }
     }
 }
 
@@ -225,6 +254,13 @@ pub fn store(saved: &Saved) -> bool {
 }
 
 fn store_at(path: &std::path::Path, saved: &Saved) -> bool {
+    if saved.read_only {
+        eprintln!(
+            "arakun: not saving {}: it holds palettes that could not be read",
+            path.display()
+        );
+        return false;
+    }
     match crate::durable::write(path, &serde_json::to_vec_pretty(saved).unwrap_or_default()) {
         Ok(()) => true,
         Err(e) => {
@@ -318,7 +354,7 @@ mod tests {
             ]
         }"#;
         std::fs::write(&path, body).unwrap();
-        let s = load_from(&path);
+        let s = load_from(&path, 42);
         let ids: Vec<_> = s.custom.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["custom-1", "custom-2"]);
         assert_eq!(s.active().name, "Sea");
@@ -327,7 +363,7 @@ mod tests {
         let kept = asides(&dir);
         assert_eq!(kept.len(), 1);
         assert_eq!(std::fs::read_to_string(&kept[0]).unwrap(), body);
-        assert_eq!(load_from(&path), s);
+        assert_eq!(load_from(&path, 42), s);
         assert_eq!(asides(&dir).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -337,7 +373,7 @@ mod tests {
         let dir = scratch("garbage");
         let path = dir.join("palettes.json");
         std::fs::write(&path, b"{\"current\": \"custom-1\", \"custom\": [{").unwrap();
-        assert_eq!(load_from(&path), Saved::default());
+        assert_eq!(load_from(&path, 42), Saved::default());
         assert!(!path.exists(), "the next save can't overwrite it");
         let kept = asides(&dir);
         assert_eq!(kept.len(), 1);
@@ -347,6 +383,59 @@ mod tests {
         );
         assert_eq!(parse(b"[1, 2]"), None);
         assert_eq!(parse(b"{\"custom\": 3}"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory where `keep_aside` would move the file, so the rename fails.
+    fn block_aside(path: &std::path::Path) {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".corrupt-42");
+        let dir = PathBuf::from(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("keep"), b"").unwrap();
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_moved_aside_is_not_overwritten() {
+        let dir = scratch("stuck-entry");
+        let path = dir.join("palettes.json");
+        let body = r#"{"custom": [
+            {"id": "custom-1", "name": "Sunset", "hue": 265, "tint": 0.32, "bg": 0.075, "accent": 16742745},
+            {"id": "custom-2", "name": "Broken", "hue": "red"}
+        ]}"#;
+        std::fs::write(&path, body).unwrap();
+        block_aside(&path);
+        let mut s = load_from(&path, 42);
+        assert_eq!(s.custom.len(), 1);
+        // Neither the load nor a later save drops the entry it skipped.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        s.add(&Palette::night());
+        assert!(!store_at(&path, &s));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_garbage_file_that_cannot_be_moved_aside_is_not_overwritten() {
+        let dir = scratch("stuck-garbage");
+        let path = dir.join("palettes.json");
+        std::fs::write(&path, b"not json").unwrap();
+        block_aside(&path);
+        let s = load_from(&path, 42);
+        assert!(!store_at(&path, &s));
+        assert_eq!(std::fs::read(&path).unwrap(), b"not json");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_not_overwritten() {
+        let dir = scratch("unreadable");
+        // A directory can't be read as a file, and must not be replaced either.
+        let path = dir.join("palettes.json");
+        std::fs::create_dir_all(&path).unwrap();
+        let s = load_from(&path, 42);
+        assert!(!store_at(&path, &s));
+        assert!(path.is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -369,7 +458,7 @@ mod tests {
         let mut s = Saved::default();
         s.add(&Palette::night());
         std::fs::write(&path, serde_json::to_vec_pretty(&s).unwrap()).unwrap();
-        assert_eq!(load_from(&path), s);
+        assert_eq!(load_from(&path, 42), s);
         assert!(asides(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

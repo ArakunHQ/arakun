@@ -1678,9 +1678,12 @@ pub fn card_text(title: impl IntoElement, sub: Option<AnyElement>) -> gpui::Div 
         })
 }
 
-/// The preview pane at the right of the list.
-pub fn preview_pane() -> gpui::Div {
+/// The preview pane at the right of the list. It scrolls: a pull request
+/// with its people, checks and diff lines is taller than the palette. Give
+/// each item its own `id`, so a new one starts at the top.
+pub fn preview_pane(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
     div()
+        .id(id)
         .flex()
         .flex_col()
         .flex_none()
@@ -1696,7 +1699,7 @@ pub fn preview_pane() -> gpui::Div {
             gpui::linear_color_stop(theme::mix(0.016), 0.),
             gpui::linear_color_stop(theme::mix(0.), 1.),
         ))
-        .overflow_hidden()
+        .overflow_y_scroll()
 }
 
 /// The small line over a preview's title: `ArakunHQ/arakun · #61`.

@@ -328,7 +328,11 @@ fn problems(line: &str) -> Vec<String> {
     let code = &code_only(line);
     // The brand has two faces, so any other name is off-brand and these two
     // are spelled once, in theme.
-    if code.contains(".font_family(\"") {
+    // Any call on the line, with a comment or space before its argument.
+    let named = code
+        .match_indices(".font_family(")
+        .any(|(i, m)| code[i + m.len()..].trim_start().starts_with('"'));
+    if named {
         found.push("font by name: use theme::FONT_SANS / FONT_MONO".into());
     }
     // The brand stops at SemiBold (600); nothing heavier is bundled.
@@ -404,6 +408,11 @@ fn the_lint_catches_what_it_should() {
     assert!(problems(".flex() // not .font_family(\"Caveat\")").is_empty());
     assert!(problems(".flex() /* FontWeight::BOLD */").is_empty());
     assert_eq!(problems(".font_family(r\"Caveat\")").len(), 1);
+    assert_eq!(problems(".font_family(/* reason */ \"Caveat\")").len(), 1);
+    assert_eq!(
+        problems(".font_family(theme::FONT_SANS).child(div().font_family( \"X\"))").len(),
+        1
+    );
     assert!(problems(".font_weight(FontWeight::SEMIBOLD)").is_empty());
     assert!(problems(".bg(theme::mix(0.8))").is_empty());
     assert!(problems(".text_size(px(ui::TEXT_SM))").is_empty());

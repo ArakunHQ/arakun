@@ -164,7 +164,7 @@ impl Palette {
                     stats.push((c.clone(), "cost".into(), None));
                 }
                 stats.truncate(3);
-                if *added > 0 || cost.is_some() {
+                if *added > 0 || *removed > 0 || cost.is_some() {
                     out.push(kit::stat_grid(&stats).into_any_element());
                 }
                 out

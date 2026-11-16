@@ -625,6 +625,11 @@ impl Palette {
                 self.start_answer(cx);
                 return;
             }
+            // The same as Alt+Enter: the row says "Ask … about".
+            Some(Card::Ask) => {
+                self.ask_agent(cx);
+                return;
+            }
             Some(Card::OfferRule) => {
                 self.start_rule(cx);
                 return;

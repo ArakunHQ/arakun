@@ -1677,10 +1677,21 @@ fn tag_attr<'a>(attrs: &'a str, attr: &str) -> Option<&'a str> {
 }
 
 /// Where `close` (a lowercase closing tag) starts in `rest`, in any case.
-fn find_close(rest: &str, close: &str) -> Option<usize> {
-    rest.as_bytes()
-        .windows(close.len())
-        .position(|w| w.eq_ignore_ascii_case(close.as_bytes()))
+/// With `spans`, one in a code span is text and doesn't count; inside
+/// `<code>` a backtick is text, so there it does.
+fn find_close(rest: &str, close: &str, spans: bool) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    let mut at = 0;
+    while at + close.len() <= bytes.len() {
+        if spans && bytes[at] == b'`' {
+            at += code_span_len(&rest[at..]);
+        } else if bytes[at..at + close.len()].eq_ignore_ascii_case(close.as_bytes()) {
+            return Some(at);
+        } else {
+            at += 1;
+        }
+    }
+    None
 }
 
 /// An `<img>` someone put in the text (a screenshot) as a markdown image.
@@ -1847,7 +1858,8 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
             if missing.contains(&close) {
                 return None;
             }
-            let end = find_close(rest, close);
+            let spans = !matches!(close, "</code>" | "</kbd>");
+            let end = find_close(rest, close, spans);
             if end.is_none() {
                 missing.push(close);
             }
@@ -2479,6 +2491,20 @@ mod tests {
     fn a_fence_indented_four_spaces_does_not_close() {
         let body = "```html\n    ```\n<b>x</b>\n```";
         assert_eq!(without_html(body), body);
+    }
+
+    #[test]
+    fn a_closing_tag_in_a_code_span_is_text() {
+        assert_eq!(
+            without_html("<a href=\"x\">see `a\n</a>` end</a>"),
+            "[see `a\n</a>` end](<x>)"
+        );
+        assert_eq!(
+            without_html("<summary>`</summary>` x</summary>"),
+            "**`</summary>` x**"
+        );
+        // In `<code>` a backtick is text.
+        assert_eq!(without_html("<code>`</code> `b`"), "`` ` `` `b`");
     }
 
     #[test]

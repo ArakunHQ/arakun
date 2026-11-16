@@ -142,6 +142,10 @@ pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> 
 
 /// Where a tab's 20 px close button sits, centered on the tab.
 pub const TAB_CLOSE_TOP: f32 = (TAB_H - 20.) / 2.;
+/// What a tab keeps clear at its end for that button and its offset. Fixed,
+/// like the button: a tab adds scaled air to it, so a long title never runs
+/// under the button at a tight Spacing.
+pub const TAB_CLOSE_ROOM: f32 = 20. + 4.;
 
 /// Builds the tooltip closure for `.tooltip()`: tip("New session").
 /// Shortcuts in it ("New session (Ctrl+T)") show as macOS writes them there.

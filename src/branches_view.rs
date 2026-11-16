@@ -469,7 +469,13 @@ impl BranchesView {
         .right(px(STATUS_W))
         .h(px(height));
 
-        let mut list = div().relative().flex().flex_col().pt(crate::ui::sp(AXIS_H));
+        // The lanes are painted from a fixed AXIS_H, so the rows start there
+        // too, whatever the Spacing: a spacer, not padding, keeps them on it.
+        let mut list = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(div().flex_none().h(px(AXIS_H)));
         for (i, row) in rows.iter().enumerate() {
             list = list.child(self.render_row(map, row, i, now, cx));
         }

@@ -551,13 +551,15 @@ impl RunsView {
                     .items_center()
                     .gap(crate::ui::sp(10.))
                     .h(px(ROW_H))
-                    .pl(crate::ui::sp(GUTTER))
                     .pr(crate::ui::sp(16.))
                     .when(run.is_some(), |d| {
                         d.cursor_pointer().hover(|s| s.bg(theme::fill_raised()))
                     })
                     .child(
                         div()
+                            // Clear of the lanes, which are painted at fixed
+                            // pixels: not spacing, so Spacing leaves it alone.
+                            .ml(px(GUTTER))
                             .flex()
                             .flex_col()
                             .flex_1()

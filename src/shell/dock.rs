@@ -328,7 +328,7 @@ impl Shell {
                     .w(px(DOCK_TAB_W))
                     .h(px(DOCK_TAB_H))
                     .group(group.clone())
-                    .pr(crate::ui::sp(28.))
+                    .pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
                     .child(icon("computer-terminal01", 14.).text_color(if active {
                         theme::content()
                     } else {

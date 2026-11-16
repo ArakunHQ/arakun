@@ -370,10 +370,11 @@ impl Render for AreaChart {
                     .child((self.axis_format)(step * (ticks - k) as f64)),
             );
         }
+        // Starts where the plot does, after the fixed-width y axis column.
         let mut x_row = div()
             .flex()
             .justify_between()
-            .pl(crate::ui::sp(AXIS_W))
+            .ml(px(AXIS_W))
             .ty(Type::Caption)
             .text_color(theme::text_faint());
         for t in &self.ticks {

@@ -217,7 +217,10 @@ impl Shell {
             list = list.child(
                 ui::tab(("tab", i), active)
                     .group(group.clone())
-                    .when(closable, |d| d.pr(crate::ui::sp(28.)))
+                    // The close button keeps its size; only the air beside it scales.
+                    .when(closable, |d| {
+                        d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
+                    })
                     // The tab on screen in the other pane.
                     .when(shown_beside, |d| {
                         d.border_1()

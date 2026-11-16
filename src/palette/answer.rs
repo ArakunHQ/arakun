@@ -529,11 +529,13 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
         }
     }
     // Its output closed: it has ended or is about to. The status is read
-    // before `proc` goes, which would kill it if it hadn't.
+    // before `proc` goes, which kills and reaps it if it hadn't. The wait is
+    // bounded: a process that closed its output but ignores SIGTERM would
+    // hold this thread forever.
     let code = if finished {
         None
     } else {
-        proc.child.wait().ok().map(|s| s.code())
+        status_within(&mut proc.child, EXIT_GRACE).map(|s| s.code())
     };
     drop(proc);
     if job.timed_out() {
@@ -541,6 +543,23 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
     } else if !finished {
         // Without its result line the answer is cut short, not done.
         let _ = tx.send(Event::Failed(cut_short(code.flatten())));
+    }
+}
+
+/// How long a process that closed its output gets to exit on its own.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// The child's exit status if it exits within `limit`, else None.
+fn status_within(child: &mut Child, limit: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => return None,
+        }
     }
 }
 
@@ -708,6 +727,39 @@ mod tests {
         let pid = late.id();
         assert!(watch.started(late, ANSWER_LIMIT).is_none());
         assert!(!exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_closes_its_output_and_ignores_sigterm_is_killed() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; exec >&-; sleep 30"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (job, watch) = job();
+        let mut proc = watch.started(child, ANSWER_LIMIT).unwrap();
+        let pid = proc.child.id();
+        let t = Instant::now();
+        use std::io::Read as _;
+        let _ = proc
+            .child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut Vec::new());
+        // Cancelling sends only SIGTERM, which it ignores.
+        drop(job);
+        assert_eq!(
+            status_within(&mut proc.child, Duration::from_millis(200)),
+            None
+        );
+        drop(proc);
+        assert!(t.elapsed() < Duration::from_secs(10));
+        assert!(!exists(pid), "killed and reaped");
+        // One that exits in time gives its status.
+        let mut done = std::process::Command::new("true").spawn().unwrap();
+        assert!(status_within(&mut done, Duration::from_secs(5)).is_some_and(|s| s.success()));
     }
 
     #[cfg(unix)]

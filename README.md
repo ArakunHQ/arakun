@@ -28,7 +28,9 @@ window, and exposes the same workspace to the agents through a command line.
   diffs show what each turn changed, including changes made by shell commands.
 - **Project check.** A per-project command (`cargo test`, `npm test`...) runs after each
   turn that edits files; on failure the tail of the output goes back to the agent, up to
-  three times in a row. Arakun also notices when an agent loops (the same failing command
+  three times in a row. Checks run one at a time across all sessions, at low priority and
+  with half the cores for builds (`CARGO_BUILD_JOBS`), so several agents finishing
+  together don't stall the computer. Arakun also notices when an agent loops (the same failing command
   or the same edit over and over) and offers to stop and rethink.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a

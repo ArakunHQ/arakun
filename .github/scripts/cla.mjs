@@ -38,9 +38,16 @@ const normalize = (text) => text.toLowerCase().replace(/\s+/g, " ").trim();
  * quote: someone who quotes the bot to ask a question has not agreed.
  */
 export function signs(body) {
+  // A quote runs on over lines without ">" until a blank line, as in GitHub's
+  // markdown. Dropping too much only means signing again.
+  let quoted = false;
   const own = (body ?? "")
     .split("\n")
-    .filter((line) => !/^\s*>/.test(line))
+    .filter((line) => {
+      if (/^\s*>/.test(line)) quoted = true;
+      else if (line.trim() === "") quoted = false;
+      return !quoted;
+    })
     .join("\n");
   return normalize(own).includes(normalize(SENTENCE));
 }
@@ -212,17 +219,15 @@ async function addSignature(user, comment, prNumber, repoId) {
 
 /**
  * Who has to sign for pull request `pr` at commit `sha`. The commits come from
- * comparing the base branch with `sha` itself, not from the pull request,
- * whose head may have moved since: a status on `sha` must judge `sha`.
+ * comparing the base commit with `sha` itself, not from the pull request,
+ * whose head may have moved since: a status on `sha` must judge `sha`. The
+ * base is a commit, not the branch name, so every page compares the same two.
  */
 async function review(pr, sha) {
   const commits = [];
   let total;
   for (let page = 1; ; page++) {
-    const compare = await gh(
-      "GET",
-      `/repos/${REPO}/compare/${encodeURIComponent(pr.base.ref)}...${sha}?per_page=100&page=${page}`,
-    );
+    const compare = await gh("GET", `/repos/${REPO}/compare/${pr.baseSha}...${sha}?per_page=100&page=${page}`);
     total = compare.total_commits;
     commits.push(...compare.commits);
     if (compare.commits.length < 100 || commits.length >= total) break;
@@ -230,6 +235,13 @@ async function review(pr, sha) {
   // If GitHub didn't return every commit (or no count), the authors of the
   // rest are unknown, so the check fails rather than pass on what it saw.
   return { pr, ...signers(pr, commits), truncated: !(commits.length >= total) };
+}
+
+/** `pr` with `baseSha`, the commit its base branch points at now. */
+async function withBase(pr) {
+  const ref = pr.base.ref.split("/").map(encodeURIComponent).join("/");
+  const { object } = await gh("GET", `/repos/${REPO}/git/ref/heads/${ref}`);
+  return { ...pr, baseSha: object.sha };
 }
 
 /**
@@ -267,27 +279,50 @@ async function updateComment(result, claUrl) {
 }
 
 const openPulls = () => paged(`/repos/${REPO}/pulls?state=open`);
-// What a review depends on: the same pull request can change its base.
-const key = (pr) => `${pr.number}:${pr.base.ref}`;
+// What a review depends on: the base can move or be rewritten under the same
+// pull request, and that changes which commits it brings.
+const key = (pr) => `${pr.number}:${pr.baseSha}`;
+
+/** The open pull requests with `sha` as their head, with their base commits. */
+async function headsOf(sha) {
+  return Promise.all((await openPulls()).filter((p) => p.head.sha === sha).map(withBase));
+}
+
+/** Leaves `sha` blocked with a reason, when this run can't vouch for its result. */
+async function giveUp(sha, description) {
+  try {
+    await gh("POST", `/repos/${REPO}/statuses/${sha}`, {
+      state: "error",
+      context: CONTEXT,
+      description,
+      target_url: process.env.RUN_URL || undefined,
+    });
+  } catch (e) {
+    console.log(`::error::${sha}: couldn't set the error status: ${e.message}`);
+  }
+}
 
 /** Sets the status of `sha` from the open pull requests that have it as their head. */
 async function check(sha, claUrl) {
-  const headsOf = async () => (await openPulls()).filter((p) => p.head.sha === sha);
-  let prs = await headsOf();
+  let prs = await headsOf(sha);
   if (prs.length === 0) {
     console.log(`${sha}: the head of no open pull request, skipped.`);
     return;
   }
-  // The commits behind `sha` don't change, so a review is reused across tries.
+  // The commits between a base commit and `sha` don't change, so a review is
+  // reused across tries.
   const reviews = new Map();
   // Runs don't wait for each other: another run may record a signature, or a
-  // pull request may open with this head, while this one checks. After
-  // posting, look at both again, and check again if either changed, so the
-  // last status posted for `sha` saw the newest of both.
+  // pull request with this head may open or change its base, while this one
+  // checks. After posting, look at all of it again, and check again if
+  // anything changed, so the last status posted for `sha` saw the newest.
   let before = await readSignatures();
   for (let attempt = 1; ; attempt++) {
     for (const pr of prs) if (!reviews.has(key(pr))) reviews.set(key(pr), await review(pr, sha));
-    const results = prs.map((pr) => ({ ...reviews.get(key(pr)), missing: unsigned(reviews.get(key(pr)).users, before.data) }));
+    const results = prs.map((pr) => {
+      const r = reviews.get(key(pr));
+      return { ...r, missing: unsigned(r.users, before.data) };
+    });
     const { state, description } = verdict(results);
     await gh("POST", `/repos/${REPO}/statuses/${sha}`, {
       state,
@@ -296,13 +331,34 @@ async function check(sha, claUrl) {
       target_url: process.env.RUN_URL || undefined,
     });
     console.log(`${sha} (${prs.map((p) => `#${p.number}`).join(", ")}): ${state}, ${description}`);
-    for (const result of results) await updateComment(result, claUrl);
+    // A comment that fails to update must not skip the look below: the status
+    // just posted may already be stale.
+    const errors = [];
+    for (const result of results) {
+      try {
+        await updateComment(result, claUrl);
+      } catch (e) {
+        errors.push(e);
+      }
+    }
 
-    const [after, now] = await Promise.all([readSignatures(), headsOf()]);
+    let after, now;
+    try {
+      [after, now] = await Promise.all([readSignatures(), headsOf(sha)]);
+    } catch (e) {
+      await giveUp(sha, "Couldn't confirm the result; post recheck on the pull request.");
+      throw e;
+    }
     const same = (a, b) => a.map(key).sort().join() === b.map(key).sort().join();
     // No open pull request has this head any more, so its status no longer matters.
-    if (now.length === 0 || (after.sha === before.sha && same(now, prs))) return;
-    if (attempt === 5) throw new Error(`${sha}: the signatures or pull requests kept changing; run the check again.`);
+    if (now.length === 0 || (after.sha === before.sha && same(now, prs))) {
+      if (errors.length > 0) throw errors[0];
+      return;
+    }
+    if (attempt === 5) {
+      await giveUp(sha, "Signatures or pull requests kept changing; post recheck on the pull request.");
+      throw new Error(`${sha}: the signatures or pull requests kept changing.`);
+    }
     before = after;
     prs = now;
   }
@@ -326,7 +382,7 @@ async function main() {
   } else if (name === "issue_comment") {
     if (!event.issue.pull_request) return;
     const { comment } = event;
-    const pr = await gh("GET", `/repos/${REPO}/pulls/${event.issue.number}`);
+    const pr = await withBase(await gh("GET", `/repos/${REPO}/pulls/${event.issue.number}`));
     shas = [pr.head.sha];
     if (signs(comment.body)) {
       // Only someone this pull request needs can sign here, so a comment

@@ -9,6 +9,8 @@ name: CLA
 # - pull_request_target: a pull request was opened or got new commits, which
 #   may have new authors. After a push or a close, the old head commit may
 #   still be the head of another open pull request, so it is checked again.
+#   `edited` covers a new base: a stacked pull request moves to main before
+#   it merges, and the commits it brings are judged again then.
 # - issue_comment: someone signed or asked for a "recheck".
 # - push: this file or the script changed on the default branch, so every
 #   open pull request is checked again under the new rules.
@@ -24,7 +26,7 @@ on:
   # Safe as the comment above says; zizmor can't see that no job checks out
   # the pull request.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types: [opened, reopened, synchronize, closed]
+    types: [opened, reopened, synchronize, edited, closed]
   issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
   push:

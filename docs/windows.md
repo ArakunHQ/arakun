@@ -9,7 +9,15 @@ not.
 under Wine: 170 of 176 pass, two are ignored just as on Linux, and the other four need
 `git`, which the Wine prefix did not have. The window could not be opened under Wine (gpui
 uses DirectManipulation, which Wine does not implement), so **the interface has not been
-tested on real Windows**. If something fails, the sections below help diagnose it.
+tested on real Windows** beyond the check below. If something fails, the sections below
+help diagnose it.
+
+**What was verified on real Windows:** the GitHub tab, once, on Windows 11 with a release
+build without the `browser` feature and `ARAKUN_GITHUB=readonly`. The queue, a pull
+request's timeline, files, checks and commits, moving with J/K, and an approve refused as
+read-only all worked, with no console windows. Real writes (comment, approve, merge,
+close) and error states (no `gh`, signed out) were not tested, and neither were the rest
+of `Ctrl+K`, the palettes and the notices.
 
 Release builds for Windows (from GitHub Releases) contain only `arakun.exe`, built
 without the `browser` feature. For browser tabs, build from source as described here.
@@ -98,6 +106,8 @@ build with the browser.
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
+| GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
+| Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
@@ -114,7 +124,26 @@ Manager (Windows Credentials, Generic Credentials).
 - **`arakun run` and project scripts** open their terminal in PowerShell, at
   *BelowNormal* priority, and print `[exit N]` when done, as on Linux.
 - **Title bar:** Windows handles dragging and the minimize, maximize and close buttons as
-  native system areas, not through Arakun's mouse events.
+  native system areas, not through Arakun's mouse events. The buttons look different too:
+  on Windows each is 40 px wide, as tall as the title bar and square, after a thin line
+  that separates them from the bar; on Linux and macOS they are 28 px squares with
+  rounded corners (8 px at the default roundness). This comes from the code
+  (`src/shell/titlebar.rs`) and has not been checked on real Windows.
+- **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies) is
+  written owner-only (mode 0600, and 0700 for a folder it creates). Windows has no such
+  modes, so there it gets the default access rules of `%LOCALAPPDATA%\arakun\`.
+  `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
+  platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
+  `SYSTEM` and the Administrators can read it. To check who can read the folder, or to
+  keep it to your account and `SYSTEM` only, run in PowerShell:
+
+  ```powershell
+  icacls "$env:LOCALAPPDATA\arakun"
+  icacls "$env:LOCALAPPDATA\arakun" /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
+  ```
+
+  The second command also drops the Administrators' access, which some backup tools
+  need.
 - **Command line (`arakun browse`, `arakun run`, ...):** the same as on Linux. Arakun's
   terminals and agents have `%LOCALAPPDATA%\arakun\bin` on their `PATH`, with a hard link
   to `arakun.exe` (or a copy if the disk does not support hard links). The socket is

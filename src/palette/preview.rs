@@ -671,7 +671,7 @@ impl Palette {
             Card::Confirm(item, title, head) => vec![
                 kit::preview_eyebrow("git-merge", format!("{} · #{} · {}", item.repo, item.number, super::short_head(head))).into_any_element(),
                 kit::preview_title(title.clone()).into_any_element(),
-                kit::preview_text("Merging writes to GitHub. The Merge button checks it can be merged first and says why when it can't.")
+                kit::preview_text("Merging writes to GitHub. Enter squashes and merges the commit shown here, and says why when GitHub refuses.")
                     .into_any_element(),
             ],
         }

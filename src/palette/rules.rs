@@ -638,8 +638,14 @@ pub fn parse_reminder(text: &str, clock: &Clock) -> Option<Draft> {
     let t = text.to_lowercase();
     let bare = has_phrase(&w, TIMER_WORDS);
     let (at, span) = relative_time(&t, clock.now, bare).or_else(|| clock_time(&t, clock))?;
-    // Lower case can change a letter's length; then cut the lower-case text instead.
-    let src = if t.len() == text.len() { text } else { &t };
+    // The span's offsets are in `t`. They fit `text` only when no letter changed
+    // its length when lowered (equal total lengths can hide `İ` and `K` cancelling
+    // out); else cut the lower-case text instead.
+    let src = if super::rank::lower_keeps_offsets(text) {
+        text
+    } else {
+        &t
+    };
     let what = what_to_remember(&format!("{} {}", &src[..span.0], &src[span.1..]));
     let text = if what.is_empty() {
         "Time's up".to_string()
@@ -1136,6 +1142,10 @@ pub struct Rules {
     pub next_id: u64,
     #[serde(default)]
     pub items: Vec<Rule>,
+    /// The last save failed: what is on disk is older than `items`, and the
+    /// next check saves again.
+    #[serde(skip)]
+    pub unsaved: bool,
 }
 
 impl Rules {
@@ -1226,10 +1236,45 @@ impl Rules {
         }
     }
 
-    pub fn save(&self) {
-        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::durable::write(&file(), &bytes);
+    /// Writes the rules to disk. A rule's state counts only once it is there:
+    /// after a restart the file is all that is left.
+    pub fn save(&mut self) -> Result<(), String> {
+        self.save_with(|bytes| crate::durable::write(&file(), bytes))
+    }
+
+    fn save_with(
+        &mut self,
+        write: impl FnOnce(&[u8]) -> std::io::Result<()>,
+    ) -> Result<(), String> {
+        let done = serde_json::to_vec_pretty(&*self)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| write(&bytes).map_err(|e| e.to_string()));
+        self.unsaved = done.is_err();
+        done
+    }
+
+    /// Saves after `fired` were set Running, and says whether they may run.
+    /// A rule runs only once Running is on disk: else the file still says
+    /// Waiting, and after a restart it would run again. When the save fails
+    /// they go back to Waiting, and the next check tries again.
+    pub fn save_fired(&mut self, fired: &[u64]) -> Result<(), String> {
+        self.save_fired_with(fired, |bytes| crate::durable::write(&file(), bytes))
+    }
+
+    fn save_fired_with(
+        &mut self,
+        fired: &[u64],
+        write: impl FnOnce(&[u8]) -> std::io::Result<()>,
+    ) -> Result<(), String> {
+        let done = self.save_with(write);
+        if done.is_err() {
+            for r in &mut self.items {
+                if fired.contains(&r.id) && r.state == State::Running {
+                    r.state = State::Waiting;
+                }
+            }
         }
+        done
     }
 }
 
@@ -1345,6 +1390,22 @@ mod tests {
         assert!(parse_reminder("en 20 min revisa el PR", &c).is_none());
         assert!(sounds_like_rule("créame un recordatorio de algo"));
         assert!(title_for(&d.trigger, &d.steps).starts_with("Reminder: "));
+    }
+
+    #[test]
+    fn reminders_with_letters_that_change_length_do_not_panic() {
+        let now = local(2026, 1, 15, 10, 0);
+        let c = zone(now);
+        // `İ` grows and the Kelvin sign shrinks when lowered: the totals match,
+        // but the span's end falls inside `é` in the typed text.
+        let d = parse_reminder("İİ reminder in 5 min é\u{212A}", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 300 });
+        assert!(notice(&d).contains('é'));
+        // Letters that keep their length keep their case too.
+        let d = parse_reminder("recuérdame en 5 min llamar a José 🦀", &c).unwrap();
+        assert_eq!(notice(&d), "llamar a José 🦀");
+        let d = parse_reminder("İstanbul: remind me in 10 min", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 600 });
     }
 
     #[test]
@@ -1731,6 +1792,66 @@ mod tests {
         rules.interrupted();
         assert!(matches!(rules.items[2].state, State::Failed(_)));
         assert_eq!(rules.items[2].id, cut);
+        assert_eq!(rules.waiting().count(), 0);
+    }
+
+    #[test]
+    fn a_rule_runs_only_once_running_is_saved() {
+        let mut rules = Rules::default();
+        let draft = Draft {
+            title: "Reminder".into(),
+            trigger: Trigger::At { at: 10 },
+            steps: vec![Step::Notify { text: "hi".into() }],
+            hours: 0,
+        };
+        let id = rules.add(draft, None, 5);
+        let full = |_: &[u8]| Err(std::io::Error::other("disk full"));
+        rules.items[0].state = State::Running;
+        assert!(rules.save_fired_with(&[id], full).is_err());
+        // Not on disk as Running: back to Waiting, not run, saved again later.
+        assert_eq!(rules.items[0].state, State::Waiting);
+        assert!(rules.unsaved);
+        assert_eq!(
+            check(&mut rules.items[0], &Facts::default(), 20),
+            Outcome::Fire
+        );
+        rules.items[0].state = State::Running;
+        let mut written = Vec::new();
+        assert!(
+            rules
+                .save_fired_with(&[id], |b| {
+                    written = b.to_vec();
+                    Ok(())
+                })
+                .is_ok()
+        );
+        assert_eq!(rules.items[0].state, State::Running);
+        assert!(!rules.unsaved);
+        let on_disk: Rules = serde_json::from_slice(&written).unwrap();
+        assert_eq!(on_disk.items[0].state, State::Running);
+    }
+
+    #[test]
+    fn an_unsaved_cancel_still_stops_the_rule_here() {
+        let mut rules = Rules::default();
+        let draft = Draft {
+            title: "Reminder".into(),
+            trigger: Trigger::At { at: 10 },
+            steps: vec![Step::Notify { text: "hi".into() }],
+            hours: 0,
+        };
+        let id = rules.add(draft, None, 5);
+        assert!(rules.cancel(id));
+        let full = |_: &[u8]| Err(std::io::Error::other("disk full"));
+        assert!(rules.save_with(full).is_err());
+        // The person asked to stop it: it never fires in this run, and the
+        // next check saves again.
+        assert!(rules.unsaved);
+        assert_eq!(rules.items[0].state, State::Cancelled);
+        assert!(matches!(
+            check(&mut rules.items[0], &Facts::default(), 20),
+            Outcome::Wait(_)
+        ));
         assert_eq!(rules.waiting().count(), 0);
     }
 

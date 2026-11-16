@@ -114,8 +114,9 @@ for _f in FILES:
         return None
     # a pill parent clips its stripes, so its corners need no match; its
     # insets still do (a chip in a pill-shaped bar sits as far from the side
-    # as from the top)
-    def pill(P): return max(P['r'])>=min(P['b'][2],P['b'][3])/2-0.5
+    # as from the top). All four corners: one rounded corner on a bar (a tab)
+    # is no pill.
+    def pill(P): return min(P['r'])>=min(P['b'][2],P['b'][3])/2-0.5
     def add(at,kind,msg):
         out.setdefault((at,kind),msg)
     def corner(c,P):

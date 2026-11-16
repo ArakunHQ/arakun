@@ -7,6 +7,9 @@ use gpui::{
     ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
+use std::ops::Range;
+use std::rc::Rc;
+
 use super::{Confirm, GitHubView, body_style};
 use crate::github::pr::{self, Event, EventKind, LineKind, Thread, Verdict};
 use crate::github::queue::Details;
@@ -32,6 +35,31 @@ fn estimated_lines(text: &str, cols: usize) -> usize {
         halves += if n == 0 { 1 } else { 2 * n.div_ceil(cols) };
     }
     halves.div_ceil(2)
+}
+
+/// The widest line `fold_start` reckons with: at any narrower width the
+/// same text takes more lines, never fewer.
+const WIDEST_COLS: usize = 200;
+
+/// The start of a body (its HTML already dropped) that fills its fold twice
+/// over at any width, cut at the end of a line. A folded body shows its first
+/// lines only; the rest of a long bot review was laid out on every frame.
+pub(super) fn fold_start(text: &str) -> &str {
+    let mut halves = 0;
+    let mut end = 0;
+    for line in text.split_inclusive('\n') {
+        let n = line.trim_end().chars().count();
+        halves += if n == 0 {
+            1
+        } else {
+            2 * n.div_ceil(WIDEST_COLS)
+        };
+        end += line.len();
+        if halves > 4 * FOLD_LINES {
+            break;
+        }
+    }
+    &text[..end]
 }
 
 /// Whether a body is long enough to fold to its first lines. A body only a
@@ -74,8 +102,9 @@ fn first_words(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// One event: its avatar on the rail, and the line down to the next.
-fn event(lead: AnyElement, last: bool, body: impl IntoElement) -> gpui::Div {
+/// One event, or the piece of one a row of the list holds: its avatar on the
+/// rail (on the first piece), and the line down to the next event.
+fn event(lead: AnyElement, last: bool, part: Part, body: impl IntoElement) -> gpui::Div {
     div()
         .relative()
         .flex()
@@ -83,13 +112,14 @@ fn event(lead: AnyElement, last: bool, body: impl IntoElement) -> gpui::Div {
         .w_full()
         .min_w_0()
         // The line runs in the event itself: the rail has no height of its own.
+        // Across the pieces of one event it runs edge to edge, so it reads as one.
         .when(!last, |d| {
             d.child(
                 div()
                     .absolute()
                     .left(px(RAIL / 2. - 0.5))
-                    .top(px(RAIL + 6.))
-                    .bottom(px(6.))
+                    .top(px(if part.first { RAIL + 6. } else { 0. }))
+                    .bottom(px(if part.end { 6. } else { 0. }))
                     .w(px(1.))
                     .bg(theme::border_subtle()),
             )
@@ -101,7 +131,7 @@ fn event(lead: AnyElement, last: bool, body: impl IntoElement) -> gpui::Div {
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .pb(crate::ui::sp(24.))
+                .when(part.end, |d| d.pb(crate::ui::sp(24.)))
                 .child(body),
         )
 }
@@ -267,6 +297,85 @@ fn hunk_lines(hunk: &str) -> Vec<AnyElement> {
         .collect()
 }
 
+/// The timeline of one version of an item, worked out once: the list asks
+/// for its rows one at a time as they come on screen.
+pub(super) struct Timeline {
+    /// The item, its version, who looks, and whether a draft shows last.
+    key: (String, String, String, bool),
+    author: String,
+    opened_at: u64,
+    body: String,
+    noun: &'static str,
+    events: Vec<Event>,
+    rows: Vec<Row>,
+    new_oids: Vec<String>,
+}
+
+/// A row of the timeline list.
+#[derive(Clone)]
+enum Row {
+    /// The opening post.
+    Open,
+    /// One event, or a run of commits by one author.
+    Event(Range<usize>),
+    /// A thread of a review, under it: a review can open dozens of long ones,
+    /// and a row is built whole whenever a bit of it shows.
+    Thread { event: usize, n: usize, last: bool },
+    /// The agent's draft review.
+    Draft,
+}
+
+/// Which piece of its event a row is.
+#[derive(Clone, Copy)]
+struct Part {
+    first: bool,
+    end: bool,
+}
+
+/// The rows: the opening post, the events (a review, then each of its
+/// threads), then the draft review.
+fn rows(events: &[Event], draft: bool) -> Vec<Row> {
+    let mut rows = vec![Row::Open];
+    for range in pr::group_pushes(events) {
+        let event = range.start;
+        rows.push(Row::Event(range));
+        if let EventKind::Review { threads, .. } = &events[event].kind {
+            let len = threads.len();
+            rows.extend((0..len).map(|n| Row::Thread {
+                event,
+                n,
+                last: n + 1 == len,
+            }));
+        }
+    }
+    if draft {
+        rows.push(Row::Draft);
+    }
+    rows
+}
+
+impl Timeline {
+    fn part(&self, ix: usize) -> Part {
+        match self.rows[ix] {
+            Row::Event(ref r) => Part {
+                first: true,
+                end: !matches!(
+                    &self.events[r.start].kind,
+                    EventKind::Review { threads, .. } if !threads.is_empty()
+                ),
+            },
+            Row::Thread { last, .. } => Part {
+                first: false,
+                end: last,
+            },
+            Row::Open | Row::Draft => Part {
+                first: true,
+                end: true,
+            },
+        }
+    }
+}
+
 pub(super) fn verdict_word(v: Verdict) -> &'static str {
     match v {
         Verdict::Approve => "approval",
@@ -333,11 +442,12 @@ impl GitHubView {
     fn body_card(&self, key: &str, text: &str, cols: usize, cx: &mut Context<Self>) -> gpui::Div {
         let long = folds(text, cols);
         let open = self.expanded.contains(key);
-        let content = self.markdown(
-            gpui::SharedString::from(key.to_string()),
-            text,
-            body_style(),
-        );
+        let id = gpui::SharedString::from(key.to_string());
+        let content = if long && !open {
+            self.markdown_start(id, text, body_style())
+        } else {
+            self.markdown(id, text, body_style())
+        };
         let k = key.to_string();
         card()
             .child(if long && !open {
@@ -454,27 +564,30 @@ impl GitHubView {
         ((main - 130.) / 7.4).max(30.) as usize
     }
 
-    pub(super) fn render_timeline(
-        &self,
-        details: &Details,
-        me: &str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let you = |who: &str| {
-            if !who.is_empty() && who.eq_ignore_ascii_case(me) {
-                "You".to_string()
-            } else {
-                who.to_string()
-            }
+    /// Works the timeline out again when the item, its version or the draft
+    /// changed, and tells the list. Scrolling doesn't come here twice: the list
+    /// renders only the rows on screen and keeps the height of the others.
+    pub(super) fn sync_timeline(&mut self, cx: &App) {
+        let Some(item) = self.item() else {
+            return;
         };
-        let cols = self.timeline_cols();
-        let mut rows: Vec<(AnyElement, AnyElement)> = Vec::new();
-        let face =
-            |this: &Self, login: &str, cx: &App| this.face(login, RAIL, cx).into_any_element();
-
+        let g = self.github.read(cx);
+        let Some(details) = g.details(&item) else {
+            return;
+        };
+        let me = g.me().unwrap_or_default().to_string();
+        let key = (
+            crate::github::queue::key_of(&item),
+            details.updated_at().to_string(),
+            me.clone(),
+            self.draft.is_some(),
+        );
+        if self.timeline.as_ref().is_some_and(|t| t.key == key) {
+            return;
+        }
         let (author, created, body, events, new_oids, noun) = match details {
             Details::Pull(p) => {
-                let new: Vec<String> = pr::new_since_my_review(p, me)
+                let new: Vec<String> = pr::new_since_my_review(p, &me)
                     .iter()
                     .map(|c| c.oid.clone())
                     .collect();
@@ -496,29 +609,115 @@ impl GitHubView {
                 "opened this issue",
             ),
         };
-        let opened_at = crate::ci::parse_time(&created).unwrap_or(0);
-        rows.push((
-            face(self, &author, cx),
-            div()
-                .flex()
-                .flex_col()
-                .child(header(&you(&author), noun, opened_at, Vec::new()))
-                .child(if body.trim().is_empty() {
-                    card()
-                        .child(ui::text(Type::Body, theme::text_faint(), "No description."))
-                        .into_any_element()
-                } else {
-                    self.body_card("gh-ev-open", &body, cols, cx)
-                        .into_any_element()
-                })
-                .into_any_element(),
-        ));
+        let rows = rows(&events, key.3);
+        let same_item = self.timeline.as_ref().is_some_and(|t| t.key.0 == key.0);
+        let old_rows = self.timeline.as_ref().map_or(0, |t| t.rows.len());
+        let t = Timeline {
+            key,
+            author,
+            opened_at: crate::ci::parse_time(&created).unwrap_or(0),
+            body,
+            noun,
+            events,
+            rows,
+            new_oids,
+        };
+        let rows = t.rows.len();
+        self.timeline = Some(Rc::new(t));
+        if same_item {
+            // A new version of the same item: keep the place, measure again.
+            let keep = old_rows.min(rows);
+            self.timeline_list.splice(keep..old_rows, rows - keep);
+            self.timeline_list.remeasure();
+        } else {
+            self.timeline_list.reset(rows);
+        }
+    }
 
-        for range in pr::group_pushes(&events) {
+    /// One row of the timeline list: an event with its avatar on the rail.
+    pub(super) fn render_timeline_row(
+        &mut self,
+        ix: usize,
+        _: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(t) = self.timeline.clone() else {
+            return div().into_any_element();
+        };
+        let Some(row) = t.rows.get(ix) else {
+            return div().into_any_element();
+        };
+        let last = ix + 1 == t.rows.len();
+        // The last event has no line to a next one, in any of its pieces.
+        let last_event = t.rows[ix + 1..]
+            .iter()
+            .all(|r| matches!(r, Row::Thread { .. }));
+        let (lead, body) = self.timeline_row(&t, row, cx);
+        div()
+            .px(crate::ui::sp(24.))
+            .when(ix == 0, |d| d.pt(crate::ui::sp(20.)))
+            .when(last, |d| d.pb(crate::ui::sp(4.)))
+            .child(event(lead, last_event, t.part(ix), body))
+            .into_any_element()
+    }
+
+    fn timeline_row(
+        &self,
+        t: &Timeline,
+        row: &Row,
+        cx: &mut Context<Self>,
+    ) -> (AnyElement, AnyElement) {
+        let me = t.key.2.as_str();
+        let you = |who: &str| {
+            if !who.is_empty() && who.eq_ignore_ascii_case(me) {
+                "You".to_string()
+            } else {
+                who.to_string()
+            }
+        };
+        let cols = self.timeline_cols();
+        let face =
+            |this: &Self, login: &str, cx: &App| this.face(login, RAIL, cx).into_any_element();
+        let new_oids = &t.new_oids;
+        let events = &t.events;
+
+        if let Row::Thread { event, n, .. } = *row {
+            let EventKind::Review { threads, .. } = &events[event].kind else {
+                return (div().into_any_element(), div().into_any_element());
+            };
+            return (
+                div().into_any_element(),
+                div()
+                    .mt(px(8.))
+                    .child(self.render_thread(&format!("gh-ev-{event}-t{n}"), &threads[n], cx))
+                    .into_any_element(),
+            );
+        }
+        if let Row::Open = row {
+            return (
+                face(self, &t.author, cx),
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(header(&you(&t.author), t.noun, t.opened_at, Vec::new()))
+                    .child(if t.body.trim().is_empty() {
+                        card()
+                            .child(ui::text(Type::Body, theme::text_faint(), "No description."))
+                            .into_any_element()
+                    } else {
+                        self.body_card("gh-ev-open", &t.body, cols, cx)
+                            .into_any_element()
+                    })
+                    .into_any_element(),
+            );
+        }
+        if let Row::Event(range) = row {
+            let range = range.clone();
             let i = range.start;
             let e: &Event = &events[i];
             let key = format!("gh-ev-{i}");
             let lead = face(self, &e.author, cx);
+            let mut rows: Vec<(AnyElement, AnyElement)> = Vec::new();
             match &e.kind {
                 EventKind::Commit { .. } => {
                     let run = &events[range.clone()];
@@ -618,7 +817,8 @@ impl GitHubView {
                             .into_any_element(),
                     ));
                 }
-                EventKind::Review { state, threads } => {
+                // Its threads come in rows of their own.
+                EventKind::Review { state, .. } => {
                     let what = match state.as_str() {
                         "APPROVED" => "approved these changes",
                         "CHANGES_REQUESTED" => "requested changes",
@@ -633,13 +833,6 @@ impl GitHubView {
                     ));
                     if !e.body.trim().is_empty() {
                         body = body.child(self.body_card(&key, &e.body, cols, cx));
-                    }
-                    for (n, t) in threads.iter().enumerate() {
-                        body = body.child(div().mt(px(8.)).child(self.render_thread(
-                            &format!("{key}-t{n}"),
-                            t,
-                            cx,
-                        )));
                     }
                     rows.push((lead, body.into_any_element()));
                 }
@@ -660,16 +853,29 @@ impl GitHubView {
                     ));
                 }
             }
+            return rows.pop().expect("every event makes a row");
         }
-
-        if let (Some(draft), Details::Pull(p)) = (&self.draft, details) {
-            let stale = pr::draft_is_stale(draft, p);
+        let Some(draft) = &self.draft else {
+            return (div().into_any_element(), div().into_any_element());
+        };
+        // A draft is only ever left on a pull request.
+        let Some((stale, posts_as)) =
+            self.item()
+                .and_then(|i| match self.github.read(cx).details(&i) {
+                    Some(Details::Pull(p)) => {
+                        Some((pr::draft_is_stale(draft, p), pr::draft_posts_as(draft, p)))
+                    }
+                    _ => None,
+                })
+        else {
+            return (div().into_any_element(), div().into_any_element());
+        };
+        {
             let who = if draft.author.is_empty() {
                 "an agent".to_string()
             } else {
                 draft.author.clone()
             };
-            let posts_as = pr::draft_posts_as(draft, p);
             let post = format!("Post as {}", verdict_word(posts_as));
             let sha: String = draft.head_sha.chars().take(7).collect();
             let busy = self.busy.is_some();
@@ -763,7 +969,7 @@ impl GitHubView {
                 self.markdown_as_written("gh-draft-body", &draft.body, body_style())
             };
             let accent = theme::accent();
-            rows.push((
+            (
                 ui::icon_chip("sparkles", RAIL, Some(accent)).into_any_element(),
                 div()
                     .flex()
@@ -803,22 +1009,8 @@ impl GitHubView {
                             .child(actions),
                     )
                     .into_any_element(),
-            ));
-        }
-
-        let n = rows.len();
-        div()
-            .flex()
-            .flex_col()
-            .px(crate::ui::sp(24.))
-            .pt(crate::ui::sp(20.))
-            .pb(crate::ui::sp(4.))
-            .children(
-                rows.into_iter()
-                    .enumerate()
-                    .map(|(i, (lead, body))| event(lead, i + 1 == n, body)),
             )
-            .into_any_element()
+        }
     }
 }
 
@@ -839,6 +1031,20 @@ mod tests {
         // Narrow columns wrap more.
         assert!(folds(&"word ".repeat(150), 30));
         assert!(!folds(&"word ".repeat(150), 120));
+    }
+
+    #[test]
+    fn a_fold_lays_out_only_the_start_of_a_body() {
+        let body = "line\n".repeat(500);
+        let start = fold_start(&body);
+        // Twice the fold, whole lines, far from the whole body.
+        assert_eq!(start.lines().count(), 2 * FOLD_LINES + 1);
+        assert!(start.ends_with('\n'));
+        // Long lines count as the lines they take at the widest width.
+        let long = format!("{}\n", "x".repeat(WIDEST_COLS * 3)).repeat(50);
+        assert_eq!(fold_start(&long).lines().count(), 7);
+        // A short body stays whole.
+        assert_eq!(fold_start("a\n\nb"), "a\n\nb");
     }
 
     #[test]

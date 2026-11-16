@@ -476,7 +476,7 @@ impl GitHubView {
                     format!(
                         "{} {} into {base}?",
                         super::merge_label(m),
-                        super::short_sha(&self.confirm_head)
+                        crate::github::pr::short_sha(&self.confirm_head)
                     ),
                     super::merge_label(m).to_string(),
                     false,
@@ -1328,12 +1328,6 @@ impl GitHubView {
         }
         let lay = self.layout();
         let main_w = lay.item_w - if lay.side_props { SIDE_W } else { 0. };
-        let content = match (tab, details) {
-            (Tab::Files, Details::Pull(p)) => self.render_files(p, cx),
-            (Tab::Checks, Details::Pull(p)) => self.render_checks(p, cx),
-            (Tab::Commits, Details::Pull(p)) => self.render_commits(p, &me, cx),
-            _ => self.render_timeline(details, &me, cx),
-        };
         div()
             .flex()
             .flex_col()
@@ -1343,16 +1337,55 @@ impl GitHubView {
             .children(head)
             // An issue has only its timeline: a row of one tab says nothing.
             .when(matches!(details, Details::Pull(_)), |d| d.child(tabs))
-            .child(
-                div()
-                    .id("gh-body")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.body_scroll)
-                    .child(content),
-            )
+            // A pane of its own: scrolling it builds only what it shows.
+            .child(super::Pane::cached(
+                &self.body_pane,
+                gpui::StyleRefinement::default().flex_1().min_h_0(),
+            ))
             .child(self.render_command_bar(main_w, cx))
+            .into_any_element()
+    }
+
+    /// What the tab picked shows, in the body under the tabs.
+    pub(super) fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.sync_timeline(cx);
+        self.sync_files();
+        let Some(item) = self.item() else {
+            return div().into_any_element();
+        };
+        let g = self.github.read(cx);
+        let me = g.me().unwrap_or_default();
+        let Some(details) = g.details(&item) else {
+            return div().into_any_element();
+        };
+        let tab = if matches!(details, Details::Issue(_)) {
+            Tab::Timeline
+        } else {
+            self.tab
+        };
+        let content = match (tab, details) {
+            (Tab::Files, Details::Pull(p)) => self.render_files(p, cx),
+            (Tab::Checks, Details::Pull(p)) => self.render_checks(p, cx),
+            (Tab::Commits, Details::Pull(p)) => self.render_commits(p, me, cx),
+            _ => gpui::list(
+                self.timeline_list.clone(),
+                cx.processor(Self::render_timeline_row),
+            )
+            .size_full()
+            .into_any_element(),
+        };
+        // The timeline and the files are lists that scroll themselves.
+        let scrolls = matches!(
+            (tab, details),
+            (Tab::Checks | Tab::Commits, Details::Pull(_))
+        );
+        div()
+            .id("gh-body")
+            .size_full()
+            .when(scrolls, |d| {
+                d.overflow_y_scroll().track_scroll(&self.body_scroll)
+            })
+            .child(content)
             .into_any_element()
     }
 

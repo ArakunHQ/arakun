@@ -512,6 +512,8 @@ fn the_layout_audit_catches_what_it_should() {
         "src/pillbar.rs:9 [inset]",
         // A wrapper that draws nothing doesn't hide a cut child.
         "src/wrapped.rs:9 [clip]",
+        // One rounded corner is no pill: its corner still has to match.
+        "src/tab.rs:5 [radius]",
     ] {
         assert!(text.contains(kind), "missing {kind}:\n{text}");
     }

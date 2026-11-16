@@ -69,8 +69,8 @@ impl ThreadView {
             .p(crate::ui::sp(12.))
             .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
-            .border_color(amber().opacity(0.45))
-            .bg(theme::fill_raised())
+            .border_color(amber().opacity(0.35))
+            .bg(theme::raised())
             .child(
                 div()
                     .flex()
@@ -224,14 +224,11 @@ impl ThreadView {
             .flex_col()
             .gap(crate::ui::sp(10.))
             .p(crate::ui::sp(12.))
+            // Raised off the sheet; the amber hairline says it waits on you.
             .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
-            .border_color(if focused {
-                amber().opacity(0.45)
-            } else {
-                theme::mix(0.12)
-            })
-            .bg(theme::fill_raised())
+            .border_color(amber().opacity(if focused { 0.45 } else { 0.22 }))
+            .bg(theme::raised())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -342,14 +339,11 @@ impl ThreadView {
             .mb(px(6.))
             .flex()
             .flex_col()
+            // Raised off the sheet; the amber hairline says it waits on you.
             .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
-            .border_color(if focused {
-                amber().opacity(0.45)
-            } else {
-                theme::mix(0.12)
-            })
-            .bg(theme::fill_raised())
+            .border_color(amber().opacity(if focused { 0.45 } else { 0.22 }))
+            .bg(theme::raised())
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
@@ -359,8 +353,6 @@ impl ThreadView {
                     .gap(crate::ui::sp(8.))
                     .px(crate::ui::sp(12.))
                     .py(crate::ui::sp(8.))
-                    .border_b_1()
-                    .border_color(theme::stroke())
                     .child(icon("note01", 14.).text_color(amber()))
                     .child(
                         div()
@@ -402,8 +394,6 @@ impl ThreadView {
                     .gap(crate::ui::sp(6.))
                     .px(crate::ui::sp(12.))
                     .py(crate::ui::sp(10.))
-                    .border_t_1()
-                    .border_color(theme::stroke())
                     .children(p.options.iter().enumerate().map(|(i, o)| {
                         // The one Enter picks (see `Thread::allow_permission`).
                         let primary = o.id == primary_id;
@@ -480,7 +470,7 @@ impl ThreadView {
             .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
             .border_color(amber().opacity(0.35))
-            .bg(theme::fill_raised())
+            .bg(theme::raised())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(req.questions.iter().enumerate().map(|(qi, q)| {
                 let picked: &[usize] = ask
@@ -652,9 +642,7 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
         .flex()
         .flex_col()
         .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::fill_raised())
+        .bg(theme::raised())
         .overflow_hidden()
         .child(
             div()
@@ -663,8 +651,6 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
                 .gap(crate::ui::sp(8.))
                 .px(crate::ui::sp(10.))
                 .py(crate::ui::sp(8.))
-                .border_b_1()
-                .border_color(theme::stroke())
                 .child(icon("list-end", 16.).text_color(theme::text_subtle()))
                 .child(
                     div()

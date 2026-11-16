@@ -29,7 +29,8 @@ const FILE = "signatures/cla.json";
 // Finds our own comment again, so a pull request gets one, kept up to date.
 const MARKER = "<!-- arakun-cla -->";
 // The copyright holder doesn't need a license from themselves.
-const ALLOWED = new Set(["karloaldrete"]);
+// By user id (KarloAldrete), which survives a rename.
+const ALLOWED = new Set([66887635]);
 
 const normalize = (text) => text.toLowerCase().replace(/\s+/g, " ").trim();
 
@@ -58,7 +59,7 @@ export function rechecks(body) {
 }
 
 export function exempt(user) {
-  return user.type === "Bot" || user.login.endsWith("[bot]") || ALLOWED.has(user.login.toLowerCase());
+  return user.type === "Bot" || user.login.endsWith("[bot]") || ALLOWED.has(user.id);
 }
 
 /**
@@ -302,12 +303,29 @@ async function giveUp(sha, description) {
   }
 }
 
-/** Sets the status of `sha` from the open pull requests that have it as their head. */
+/**
+ * Sets the status of `sha` from the open pull requests that have it as their
+ * head. Fails closed: if anything goes wrong before the status is confirmed,
+ * an earlier status, maybe a success, must not stand, so it becomes an error.
+ */
 async function check(sha, claUrl) {
+  let errors;
+  try {
+    errors = await judge(sha, claUrl);
+  } catch (e) {
+    await giveUp(sha, e.giveUp ?? "Couldn't check this commit; post recheck on the pull request.");
+    throw e;
+  }
+  // Only comments failed: the status itself is right, so it stays.
+  if (errors.length > 0) throw errors[0];
+}
+
+/** check() without the fallback. Returns the errors from updating comments. */
+async function judge(sha, claUrl) {
   let prs = await headsOf(sha);
   if (prs.length === 0) {
     console.log(`${sha}: the head of no open pull request, skipped.`);
-    return;
+    return [];
   }
   // The commits between a base commit and `sha` don't change, so a review is
   // reused across tries.
@@ -342,22 +360,14 @@ async function check(sha, claUrl) {
       }
     }
 
-    let after, now;
-    try {
-      [after, now] = await Promise.all([readSignatures(), headsOf(sha)]);
-    } catch (e) {
-      await giveUp(sha, "Couldn't confirm the result; post recheck on the pull request.");
-      throw e;
-    }
+    const [after, now] = await Promise.all([readSignatures(), headsOf(sha)]);
     const same = (a, b) => a.map(key).sort().join() === b.map(key).sort().join();
     // No open pull request has this head any more, so its status no longer matters.
-    if (now.length === 0 || (after.sha === before.sha && same(now, prs))) {
-      if (errors.length > 0) throw errors[0];
-      return;
-    }
+    if (now.length === 0 || (after.sha === before.sha && same(now, prs))) return errors;
     if (attempt === 5) {
-      await giveUp(sha, "Signatures or pull requests kept changing; post recheck on the pull request.");
-      throw new Error(`${sha}: the signatures or pull requests kept changing.`);
+      throw Object.assign(new Error(`${sha}: the signatures or pull requests kept changing.`), {
+        giveUp: "Signatures or pull requests kept changing; post recheck on the pull request.",
+      });
     }
     before = after;
     prs = now;

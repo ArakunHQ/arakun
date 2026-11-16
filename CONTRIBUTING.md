@@ -242,6 +242,12 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   unless CodeRabbit approved. A pull request from outside the team always needs a
   maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
   status waits for a person.
+- **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
+  won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
+  approves only once its blocking comments are resolved, and you can't resolve those
+  yourself with `@coderabbitai resolve` on your own pull request; ask a maintainer if
+  one is wrong. Its review rules are in [.coderabbit.yaml](.coderabbit.yaml). If you
+  change a rule in this guide, check the instructions there too.
 - **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
   a review. If a check fails and you think it is not your change, say so in the pull
   request.

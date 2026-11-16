@@ -1,6 +1,8 @@
 # CodeRabbit review settings. Schema: https://coderabbit.ai/integrations/schema.v2.json
 # The rules it reviews against come from AGENTS.md and CONTRIBUTING.md; keep
-# the path instructions below in step with them.
+# the path instructions below in step with them. The Reviewers workflow
+# (.github/workflows/reviewers.yml) relies on the "CodeRabbit" check run and
+# on coderabbitai[bot]'s approval, so keep both turned on.
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
 language: en-US
@@ -20,17 +22,33 @@ reviews:
   auto_approvals:
     enabled: true
     max_merge_risk: minimal
+    # An author could otherwise clear CodeRabbit's blocking findings on their
+    # own pull request with `@coderabbitai resolve` and get it approved.
+    # Someone else has to run `approve` or `resolve` now.
+    allow_author_approval: false
   merge_risk_instructions: >-
-    Minimal risk: changes only to docs or Markdown, comments, tests, iso/*.rhai
-    scenes or screenshots, or a typo or label in UI text, with no change in
-    behavior. Low risk: a small UI or layout change in one view that uses the
-    design system tokens. Moderate or higher: any change to src/phone (end-to-end
-    encryption and its wire format), relay/ or phone/, .github/workflows,
-    Cargo.toml, Cargo.lock or deny.toml, tools/setup-dev.* or tools/install*
-    (they run on users' machines, often with sudo), src/platform.rs, git
-    operations in src/git.rs, how agents and shells are launched, and any format
-    stored on disk or a CLI flag that other tools rely on. A change for one
-    platform that the other platforms build without testing also raises the risk.
+    Minimal risk: changes only to docs or Markdown that people read (README.md,
+    docs/, CONTRIBUTING.md), comments, tests, iso/*.rhai scenes or screenshots,
+    or a typo or label in UI text, with no change in behavior. Low risk: a small
+    UI or layout change in one view that uses the design system tokens, or a
+    change to AGENTS.md, CLAUDE.md or a skill in .claude/skills (agents follow
+    those and run the commands in them). Moderate or higher: any change to
+    src/phone (end-to-end encryption and its wire format), relay/ or phone/;
+    the headless agent sandbox, its policy and its broker (src/headless*);
+    the control socket (src/control.rs); code that reads, stores or sends
+    tokens and API keys (src/account.rs, src/fetch.rs, src/voice.rs,
+    src/cloudflare, src/posthog, src/github); .github/workflows or
+    .github/actions; .coderabbit.yaml (it sets these approval rules);
+    .claude/settings.json or .claude/hooks (they run when a session starts);
+    lefthook.yml; Cargo.toml, Cargo.lock, deny.toml, build.rs or
+    rust-toolchain.toml; tools/setup-dev.* or tools/install* (they run on
+    users' machines, often with sudo); src/platform.rs; git operations in
+    src/git.rs; how agents and shells are launched; and any format stored on
+    disk (state.json, memory, transcripts) or a CLI flag that other tools rely
+    on. A change for one platform that the other platforms build without
+    testing also raises the risk. Code behind the `browser` feature is only
+    built on Linux in CI, so a change there that touches Windows or macOS
+    paths raises it too.
 
   # The summary goes at the end of the description, under the template.
   high_level_summary: true
@@ -87,6 +105,34 @@ reviews:
           Fail if the diff adds or changes code behind `cfg(feature = "team")` or
           `cfg(feature = "coderlabs")`, or adds files under src/team*,
           src/team_view* or src/shell/team.rs. Pass otherwise.
+      - name: Phone and desktop agree on the wire
+        mode: warning
+        instructions: >-
+          Fail if the diff changes the encryption, keys, nonces, framing or
+          message format in src/phone/e2e.rs or src/phone/identity.rs, and
+          neither phone/*.js nor phone/test/vectors/ changes in the same pull
+          request. Fail the same way the other way round: phone/*.js changes the
+          format and src/phone does not. Pass when the change is a refactor with
+          no change to bytes on the wire and the description says so, or when
+          neither side changes the format.
+      - name: Setup scripts stay in step
+        mode: warning
+        instructions: >-
+          Fail if tools/setup-dev.sh changes what it installs or checks (a tool,
+          a library, a version, a flag) and tools/setup-dev.ps1 does not change,
+          or the other way round, unless the change is for one platform only
+          (Linux or macOS packages, winget or Visual Studio) and the description
+          says so. Apply the same rule to tools/install-release.sh and
+          tools/install-release.ps1. Pass otherwise.
+      - name: AGENTS.md matches CONTRIBUTING.md
+        mode: warning
+        instructions: >-
+          AGENTS.md repeats the rules of CONTRIBUTING.md for coding agents.
+          Fail if the diff changes a rule, command or check in one of them
+          (commit format, the checks to run before committing, pull request or
+          stacking steps, code rules) and the other file still says the old
+          thing. Pass if neither changes, or both say the same thing after the
+          change.
 
   path_filters:
     - "!Cargo.lock"
@@ -94,20 +140,23 @@ reviews:
     - "!assets/**"
     - "!docs/screenshots/**"
     - "!phone/*.png"
+    # Written by `WRITE_VECTORS=1 cargo test phone::e2e::vectors`; the phone
+    # tests and the plain Rust run check them.
     - "!phone/test/vectors/**"
 
   path_instructions:
     - path: "**/*.rs"
       instructions: |
-        - CI runs rustfmt, `clippy -D warnings` and the tests. Do not repeat what they catch; look for logic errors, panics (unwrap, indexing, slicing on char boundaries), blocking work on the UI thread, races and leaked tasks or processes.
-        - Code for one platform must sit behind `cfg(...)`, and the other platforms must still build. Flag a Unix-only or Windows-only API used without a cfg.
+        - CI runs rustfmt and `clippy -D warnings` on Linux, Windows and macOS, and the tests on Linux and macOS. Do not repeat what they catch; look for logic errors, panics (unwrap, indexing, slicing on char boundaries), blocking work on the UI thread, races and leaked tasks or processes.
+        - Code for one platform must sit behind `cfg(...)`, and the other platforms must still build. Flag a Unix-only or Windows-only API used without a cfg. Windows tests do not run in CI, so Windows-only logic needs extra care.
         - `#[allow(...)]` needs a comment that says why the lint is wrong there.
         - Tests belong in a `#[cfg(test)] mod tests` at the bottom of the file they test. A bug fix should add a test when the logic runs without a window.
         - Comments say why, not what, in plain short sentences. A new module starts with a `//!` comment saying what it is for.
         - Tests marked `#[ignore]` read this machine's state. A new test that reads the real home directory, sign-ins or network must be `#[ignore]`.
+        - Never print, log or put a token, API key or password in an error message, a URL, a process argument or a panic message.
     - path: "src/**/*.rs"
       instructions: |
-        UI code (views, dialogs, the sidebar, anything that builds GPUI elements) must use the design system: colors, grays, text sizes and fonts from `theme` and `ui` (`theme::text_muted()`, `theme::border()`, `ui::TEXT_SM`, `theme::FONT_MONO`, `ui::RADIUS`). Flag hand-written values where the system has a name. `src/design_lint.rs` catches colors, text sizes and fonts, but not corner radii or spacing.
+        UI code (views, dialogs, the sidebar, anything that builds GPUI elements) must use the design system: colors, grays, text sizes, radii, heights and fonts from `theme` and `ui` (`theme::text_muted()`, `theme::border()`, `ui::TEXT_SM`, `ui::RADIUS_*`, `ui::BUTTON_H`, `theme::FONT_MONO`). Flag hand-written values where the system has a name. `src/design_lint.rs` catches colors, text sizes and fonts, but not corner radii or spacing, so check those by eye.
     - path: "src/ui/**"
       instructions: |
         This is the design system itself. A change here affects every view. Check that a new token or component is used consistently and shows up in the gallery (`src/gallery_view.rs`).
@@ -116,10 +165,40 @@ reviews:
         This is the phone's end-to-end encryption and wire format. The phone (`phone/*.js`) and its test vectors (`phone/test/vectors`) must change with any change to the format, keys or framing here. Review crypto carefully: nonce reuse, key handling, constant-time comparison, and anything that logs secrets.
     - path: "phone/**"
       instructions: |
-        The phone web app talks to the Rust side in `src/phone` through the relay. A change to the encryption or message format must match `src/phone` and the test vectors. Never log keys, tokens or message contents.
+        The phone web app talks to the Rust side in `src/phone` through the relay. A change to the encryption or message format must match `src/phone` and the test vectors. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
     - path: "relay/**"
       instructions: |
-        The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound.
+        The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.
+    - path: "src/headless*/**"
+      instructions: |
+        This is the security boundary for headless agents. `sandbox.rs` must keep credentials, the host's sockets and the network out of the sandbox unless a `--allow` grants them. `policy.rs` reads commands the way a shell would; a new rule must hold up against quoting, `;`, `&&`, pipes, `$(…)`, `bash -c` and env prefixes, and must err toward asking. Actions in `broker.rs` that send, push, publish or pay must wait for the user's approval. Ask for a test for every new policy rule or way around one.
+    - path: "src/headless.rs"
+      instructions: |
+        The headless agent host. Check that the host process keeps the API keys and the broker's actions outside the sandbox, and that a crashed or killed host leaves no agent process behind.
+    - path: "src/control.rs"
+      instructions: |
+        The control socket lets any process inside arakun open pages, files and terminals. Check that the socket is created with permissions only the user can use, that every JSON line is validated before use, and that Windows (`uds_windows`) behaves the same.
+    - path: "src/{account,fetch,voice}.rs"
+      instructions: |
+        These read and use API keys. Keys come from the desktop keyring or an environment variable and must never be logged, shown in full, or written to a file other than the keyring.
+    - path: "src/{cloudflare,posthog,github}/**"
+      instructions: |
+        These use the user's sign-ins (the `cf` profile, PostHog API keys in a 0600 file, the `gh` CLI). Check that tokens are never logged or shown, that files holding them are created 0600, and that network calls run off the UI thread with a timeout.
+    - path: "src/{state,durable,memory}.rs"
+      instructions: |
+        These are formats stored on disk. Files written by the last release must still load: new fields need `#[serde(default)]`, and a renamed or removed field breaks users. Writes must go through `durable.rs` so a crash never leaves a half-written file.
+    - path: "src/git.rs"
+      instructions: |
+        Every function here blocks; callers must run it on the background executor. Keep `GIT_OPTIONAL_LOCKS=0` on polling commands. Put `--` before paths and pass refs and paths as separate arguments, never through a shell.
+    - path: "src/agent/**"
+      instructions: |
+        Agents run as child processes that speak JSON-RPC on stdio. Check that a process is killed and reaped when its thread closes, that reads from its stdio never block the UI thread, and that unknown or missing fields in a message do not panic.
+    - path: "src/browser/**"
+      instructions: |
+        Browser tabs build only with the `browser` feature. CI builds them with clippy on Linux only, never on Windows or macOS and never in the tests. Check `cfg` gates and platform-specific paths by eye, and that code outside `src/browser` that uses them is behind `cfg(feature = "browser")`.
+    - path: "src/terminal/**"
+      instructions: |
+        The terminal paints every frame. Flag allocations, locks held across painting, and work per cell that could be done per line. The PTY and its shell must be cleaned up when the `Terminal` drops.
     - path: "src/platform.rs"
       instructions: |
         Windows-specific behavior lives here. Changes need a check on a real Windows machine; say so if the pull request does not mention one. Check that docs/windows.md still matches.
@@ -134,10 +213,22 @@ reviews:
         Adding a license to the allow-list needs a maintainer's agreement in an issue first. Flag any new license or advisory exception and ask for the reason.
     - path: ".github/workflows/**"
       instructions: |
-        Check permissions are as narrow as the job needs, a new third-party action is pinned to a release tag or commit SHA rather than a branch (`dtolnay/rust-toolchain@stable` is fine), untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge.
+        Check permissions are as narrow as the job needs, a new third-party action is pinned to a release tag or commit SHA rather than a branch (`dtolnay/rust-toolchain@stable` is fine), untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge. A change to the paths the "What changed" job in ci.yml sorts must match the globs in lefthook.yml.
+    - path: "lefthook.yml"
+      instructions: |
+        The hooks run on contributors' machines. Each job's globs must match what the "What changed" job in `.github/workflows/ci.yml` uses to decide which checks run, and its command must match the one in CONTRIBUTING.md under "Checks".
     - path: "tools/**"
       instructions: |
         The setup and install scripts run on contributors' and users' machines, often with sudo. Check quoting, `set -eu` (or `$ErrorActionPreference = 'Stop'` in PowerShell), idempotence (safe to run again) and that a .sh change has a matching .ps1 change where one exists.
+    - path: ".claude/**"
+      instructions: |
+        `.claude/settings.json` and `.claude/hooks` run commands when a Claude Code session starts, including on the web; treat them like the setup scripts. Skills in `.claude/skills` tell agents what to run: check that every command, flag and path they name exists and matches CONTRIBUTING.md and AGENTS.md.
+    - path: "{AGENTS,CLAUDE,CONTRIBUTING}.md"
+      instructions: |
+        AGENTS.md repeats CONTRIBUTING.md's rules for agents, and CONTRIBUTING.md wins when they disagree. A rule changed in one must change in the other. `.coderabbit.yaml`, `.github/pull_request_template.md` and the skills in `.claude/skills` quote these rules too; check they still match.
+    - path: ".coderabbit.yaml"
+      instructions: |
+        Check every key against the schema at https://coderabbit.ai/integrations/schema.v2.json. Flag a change that loosens `auto_approvals` (a higher `max_merge_risk`, `allow_author_approval`, `approve_on_skipped_review`) or turns off the "CodeRabbit" check run or commit status, which the Reviewers workflow waits for.
     - path: "iso/**/*.rhai"
       instructions: |
         Isometric scene scripts in the line-iso style: thin ink outlines, three-tone faces, one accent color. See the arakun-iso skill in .claude/skills.
@@ -151,19 +242,39 @@ reviews:
       enabled: false
     shellcheck:
       enabled: true
+    psscriptanalyzer:
+      enabled: true
     actionlint:
       enabled: true
     zizmor:
       enabled: true
     gitleaks:
       enabled: true
+    # Checks the skills in .claude/skills for unsafe instructions.
+    skillspector:
+      enabled: true
     markdownlint:
       enabled: true
     github-checks:
       enabled: true
 
+code_generation:
+  unit_tests:
+    path_instructions:
+      - path: "**/*.rs"
+        instructions: |
+          Put tests in the `#[cfg(test)] mod tests` at the bottom of the file under test, creating it if needed. Use only std and the crates already in Cargo.toml. Tests must not open a window, touch the network, or read the real home directory, sign-ins or keyring; use a temporary directory. A test that needs this machine's state gets `#[ignore]`. Name each test after the behavior it checks.
+      - path: "relay/**/*.ts"
+        instructions: |
+          Tests go in `relay/test/*.test.ts` and run with vitest and `@cloudflare/vitest-plugin`. Reuse the helpers in `relay/test/helpers.ts`.
+      - path: "phone/**/*.js"
+        instructions: |
+          Tests go in `phone/test/*.test.mjs` and run with `node --test`, without extra packages. Format checks use the vectors in `phone/test/vectors`, which the Rust side writes.
+
 chat:
   auto_reply: true
+  # Same reason as tone_instructions: no emoji or ASCII art.
+  art: false
 
 knowledge_base:
   code_guidelines:
@@ -172,6 +283,10 @@ knowledge_base:
       - "AGENTS.md"
       - "CONTRIBUTING.md"
       - ".github/pull_request_template.md"
+      - files: ".claude/skills/ui-change/SKILL.md"
+        applyTo: "src/**/*.rs"
+      - files: ".claude/skills/arakun-iso/SKILL.md"
+        applyTo: "iso/**,src/iso/**"
 
 issue_enrichment:
   auto_enrich:

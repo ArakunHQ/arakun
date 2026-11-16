@@ -904,7 +904,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
                 .child(ui::spinner(
                     SharedString::from(format!("bw-{}", s.id)),
                     10.,
-                    theme::working(),
+                    session_color(s.status),
                 ))
                 .into_any_element(),
         );
@@ -1035,6 +1035,14 @@ fn fix_prompt(map: &Map, b: &Branch, status: Status) -> Option<(String, String)>
             ),
         )),
         _ => None,
+    }
+}
+
+/// A live session's spinner: amber when it waits for you, green while it works.
+fn session_color(s: SessionStatus) -> Hsla {
+    match s {
+        SessionStatus::NeedsInput => theme::needs_you(),
+        _ => theme::working(),
     }
 }
 
@@ -1553,6 +1561,12 @@ mod tests {
             who: Who::Person,
             pushed: true,
         }
+    }
+
+    #[test]
+    fn a_session_that_needs_you_is_not_drawn_as_working() {
+        assert_eq!(session_color(SessionStatus::NeedsInput), theme::needs_you());
+        assert_eq!(session_color(SessionStatus::Working), theme::working());
     }
 
     #[test]

@@ -14,8 +14,30 @@ const LIVES: Duration = Duration::from_secs(30 * 60);
 /// The most pieces one photo may come in.
 const MAX_PARTS: usize = 512;
 
+/// How much a device may leave here. Pieces are kept in memory until the
+/// photo is whole, and a paired device can start as many photos as it likes
+/// and finish none: without these, that fills the memory of the one process
+/// every session runs in.
+#[derive(Clone, Copy)]
+struct Limits {
+    /// The most bytes one photo may hold: no photo larger than this is saved.
+    one: usize,
+    /// The most bytes all half-sent photos may hold together.
+    all: usize,
+    /// The most photos kept at once, half-sent or waiting for their prompt.
+    count: usize,
+}
+
+const LIMITS: Limits = Limits {
+    one: crate::agent::attach::MAX_IMAGE_BYTES as usize,
+    all: 3 * crate::agent::attach::MAX_IMAGE_BYTES as usize,
+    count: 32,
+};
+
 struct Upload {
     parts: Vec<Option<Vec<u8>>>,
+    /// The bytes its pieces hold so far.
+    held: usize,
     name: String,
     at: Instant,
     /// Where it landed once its last piece arrived.
@@ -31,6 +53,8 @@ impl Uploads {
     /// Takes piece `part` of `of` of the photo `upload`. Once every piece is
     /// here, `save` gets the bytes and the extension to save them under, and
     /// the file it made is returned (again for a piece that comes twice).
+    /// A photo that grows past what one may hold, or past what all may hold
+    /// together, is dropped with the pieces it had.
     pub fn piece(
         &mut self,
         upload: &str,
@@ -40,12 +64,36 @@ impl Uploads {
         data: &str,
         save: impl FnOnce(&[u8], &str) -> std::io::Result<PathBuf>,
     ) -> Option<PathBuf> {
+        self.piece_within(LIMITS, upload, name, part, of, data, save)
+    }
+
+    #[allow(clippy::too_many_arguments)] // `piece`, with the limits a test can make small.
+    fn piece_within(
+        &mut self,
+        limits: Limits,
+        upload: &str,
+        name: &str,
+        part: usize,
+        of: usize,
+        data: &str,
+        save: impl FnOnce(&[u8], &str) -> std::io::Result<PathBuf>,
+    ) -> Option<PathBuf> {
         self.by_id.retain(|_, u| u.at.elapsed() < LIVES);
+        if !self.by_id.contains_key(upload) && self.by_id.len() >= limits.count {
+            return None;
+        }
+        let others: usize = self
+            .by_id
+            .iter()
+            .filter(|(id, _)| id.as_str() != upload)
+            .map(|(_, u)| u.held)
+            .sum();
         let entry = self
             .by_id
             .entry(upload.to_string())
             .or_insert_with(|| Upload {
                 parts: vec![None; of.clamp(1, MAX_PARTS)],
+                held: 0,
                 name: name.to_string(),
                 at: Instant::now(),
                 path: None,
@@ -54,14 +102,21 @@ impl Uploads {
             entry.parts.get_mut(part),
             base64::engine::general_purpose::STANDARD.decode(data.as_bytes()),
         ) {
+            // A piece sent again takes the place of the one before it.
+            let held = entry.held - slot.as_ref().map_or(0, Vec::len) + bytes.len();
+            if held > limits.one || others + held > limits.all {
+                self.by_id.remove(upload);
+                return None;
+            }
+            entry.held = held;
             *slot = (!bytes.is_empty()).then_some(bytes);
         }
         if entry.path.is_none() && entry.parts.iter().all(|p| p.is_some()) {
             let bytes: Vec<u8> = entry.parts.iter().flatten().flatten().cloned().collect();
-            if bytes.len() <= crate::agent::attach::MAX_IMAGE_BYTES as usize
-                && let Ok(path) = save(&bytes, ext(&entry.name))
-            {
+            if let Ok(path) = save(&bytes, ext(&entry.name)) {
                 entry.path = Some(path);
+                // On disk now: only where it is has to be remembered.
+                (entry.parts, entry.held) = (Vec::new(), 0);
             }
         }
         entry.path.clone()
@@ -162,5 +217,46 @@ mod tests {
         assert_eq!(ext("shot.webp"), "webp");
         assert_eq!(ext("IMG_0001.HEIC"), "jpg");
         assert_eq!(ext("no extension"), "jpg");
+    }
+    #[test]
+    fn a_device_cannot_leave_more_than_the_limits_in_memory() {
+        let limits = Limits {
+            one: 8,
+            all: 12,
+            count: 3,
+        };
+        let mut uploads = Uploads::default();
+        let held = |u: &Uploads| u.by_id.values().map(|u| u.held).sum::<usize>();
+        let save = |_: &[u8], _: &str| Ok(PathBuf::from("/tmp/photo.jpg"));
+        let piece = |u: &mut Uploads, id: &str, part: usize, bytes: &[u8]| {
+            u.piece_within(limits, id, "a.jpg", part, 3, &b64(bytes), save)
+        };
+
+        // The first piece of a photo that is never finished, again and again.
+        assert_eq!(piece(&mut uploads, "a", 0, b"1234"), None);
+        assert_eq!(piece(&mut uploads, "b", 0, b"1234"), None);
+        assert_eq!(piece(&mut uploads, "c", 0, b"1234"), None);
+        assert_eq!((uploads.by_id.len(), held(&uploads)), (3, 12));
+        // A fourth photo is not taken in while three are kept.
+        assert_eq!(piece(&mut uploads, "d", 0, b"1"), None);
+        assert!(!uploads.by_id.contains_key("d"));
+        // One more byte than all may hold together: that photo goes, pieces and all.
+        assert_eq!(piece(&mut uploads, "a", 1, b"5"), None);
+        assert_eq!((uploads.by_id.len(), held(&uploads)), (2, 8));
+        // A photo that grows past what one may hold goes too.
+        uploads.by_id.remove("c");
+        assert_eq!(piece(&mut uploads, "b", 1, b"5678"), None);
+        assert_eq!(held(&uploads), 8);
+        assert_eq!(piece(&mut uploads, "b", 2, b"9"), None);
+        assert!(uploads.by_id.is_empty());
+        // The same piece again replaces itself and is counted once.
+        assert_eq!(piece(&mut uploads, "e", 0, b"1234"), None);
+        assert_eq!(piece(&mut uploads, "e", 0, b"1234"), None);
+        assert_eq!(held(&uploads), 4);
+        // Whole and saved, a photo holds nothing here but where it is.
+        assert_eq!(piece(&mut uploads, "e", 1, b"56"), None);
+        assert!(piece(&mut uploads, "e", 2, b"78").is_some());
+        assert_eq!(held(&uploads), 0);
+        assert!(piece(&mut uploads, "e", 0, b"1234").is_some());
     }
 }

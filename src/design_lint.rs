@@ -436,6 +436,8 @@ fn the_layout_audit_catches_what_it_should() {
         "src/field.rs:7 [clip]",
         // A border on top only cuts a full-height child too.
         "src/rule.rs:8 [clip]",
+        // A square bar frames its chips as much as a rounded one.
+        "src/squarebar.rs:9 [inset]",
     ] {
         assert!(text.contains(kind), "missing {kind}:\n{text}");
     }

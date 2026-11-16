@@ -105,23 +105,19 @@ for _f in FILES:
     except OSError as e: d,why=None,f"can't read {_f}: {e.strerror}"
     if why: print(f"layout audit: {why}",file=sys.stderr); sys.exit(2)
     def vis(r): return r['bg'] or sum(1 for x in r['border'] if x>0)>=3
-    def anc(i):
+    def anc(i,rounded):
+        """The nearest drawn box around i (with a corner, if rounded)."""
         p=d[i]['parent']
         while p!=-1:
-            if vis(d[p]) and max(d[p]['r'])>0: return p
+            if vis(d[p]) and (not rounded or max(d[p]['r'])>0): return p
             p=d[p]['parent']
         return None
+    # a pill parent clips its stripes; circles and pills inside need no corner match
+    def pill(P): return max(P['r'])>=min(P['b'][2],P['b'][3])/2-0.5
     def add(at,kind,msg):
         out.setdefault((at,kind),msg)
-    for i,c in enumerate(d):
-        if not vis(c): continue
-        x,y,w,h=c['b']
-        if w<4 or h<4: continue
-        p=anc(i)
-        if p is None: continue
-        P=d[p]; px_,py,pw,ph=P['b']; R=P['r']
-        # a pill parent clips its stripes; circles and pills inside need no corner match
-        if max(R)>=min(pw,ph)/2-0.5: continue
+    def corner(c,P):
+        x,y,w,h=c['b']; px_,py,pw,ph=P['b']; R=P['r']
         # corners: tl,tr,br,bl distances
         ins=[(x-px_,y-py),((px_+pw)-(x+w),y-py),((px_+pw)-(x+w),(py+ph)-(y+h)),(x-px_,(py+ph)-(y+h))]
         for k in range(4):
@@ -134,11 +130,24 @@ for _f in FILES:
             if abs(cr-exp)>2:
                 add(c['at'],'radius',f"corner r={cr:g}, {dd:g}px inside a r={Rk:g} corner ({P['at']}): want ≈{exp:g}")
                 break
+    def inset(c,P):
+        x,y,w,h=c['b']; px_,py,pw,ph=P['b']
         # inset: chip-like child near the left edge of a bar, vertically
         # centered; round icon buttons and pills too (only corners skip them)
         top=y-py; bot=(py+ph)-(y+h); left=x-px_
         if ph<=64 and abs(top-bot)<=1.5 and 0<=left<20 and top>0 and abs(left-top)>2:
             add(c['at'],'inset',f"{left:g}px from the side but {top:g}px from top/bottom of {P['at']}")
+    for i,c in enumerate(d):
+        if not vis(c): continue
+        x,y,w,h=c['b']
+        if w<4 or h<4: continue
+        p=anc(i,True)
+        if p is not None and not pill(d[p]):
+            corner(c,d[p])
+        # A bar can be square: insets are measured in the nearest drawn box.
+        p=anc(i,False)
+        if p is not None and not pill(d[p]):
+            inset(c,d[p])
     # clip: child as tall as a bordered parent
     for i,c in enumerate(d):
         p=c['parent']

@@ -2082,6 +2082,25 @@ pub fn palette_note(text: impl Into<SharedString>) -> gpui::Div {
 // ---------------------------------------------------------------------------
 // Slider
 
+thread_local! {
+    /// The slider the left button went down on. gpui sends a move with the
+    /// button held to whatever slider is under the pointer, so without this a
+    /// drag that starts on one slider would change the next one it crosses.
+    static SLIDER_DRAG: std::cell::RefCell<Option<ElementId>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether a move with the left button `held` may change slider `id`: only
+/// the one the drag started on. A move without the button means the release
+/// happened where no slider saw it, so the drag is over.
+fn slider_drags(id: &ElementId, held: bool) -> bool {
+    SLIDER_DRAG.with_borrow_mut(|d| {
+        if !held {
+            *d = None;
+        }
+        d.as_ref() == Some(id)
+    })
+}
+
 /// A value from 0 to 1 picked on a track: click or drag. `track` fills the
 /// track (a gradient shows what the value means, as a hue rainbow does); the
 /// knob is filled with `knob`. `on_change` gets the new
@@ -2104,6 +2123,8 @@ pub fn slider(
     let seen = bounds.clone();
     let (down_b, move_b) = (bounds.clone(), bounds.clone());
     let (down_f, move_f) = (on_change.clone(), on_change);
+    let id = id.into();
+    let (down_id, move_id) = (id.clone(), id.clone());
     div()
         .id(id)
         .relative()
@@ -2147,15 +2168,17 @@ pub fn slider(
         )
         .on_mouse_down(gpui::MouseButton::Left, move |ev, window, cx| {
             cx.stop_propagation();
+            SLIDER_DRAG.set(Some(down_id.clone()));
             down_f(at(down_b.get(), ev.position.x), window, cx);
         })
         .on_mouse_move(move |ev, window, cx| {
-            if ev.pressed_button == Some(gpui::MouseButton::Left)
-                && move_b.get().contains(&ev.position)
-            {
+            let held = ev.pressed_button == Some(gpui::MouseButton::Left);
+            if slider_drags(&move_id, held) && move_b.get().contains(&ev.position) {
                 move_f(at(move_b.get(), ev.position.x), window, cx);
             }
         })
+        .on_mouse_up(gpui::MouseButton::Left, |_, _, _| SLIDER_DRAG.set(None))
+        .on_mouse_up_out(gpui::MouseButton::Left, |_, _, _| SLIDER_DRAG.set(None))
 }
 
 /// A slider track that runs through every hue, for picking a tint.
@@ -2203,6 +2226,20 @@ pub fn swatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drag_changes_only_the_slider_it_started_on() {
+        let (tint, bg): (ElementId, ElementId) = ("tint".into(), "bg".into());
+        SLIDER_DRAG.set(Some(tint.clone()));
+        assert!(slider_drags(&tint, true));
+        // Crossing another slider with the button still held.
+        assert!(!slider_drags(&bg, true));
+        // Released where no slider saw it: the next move ends the drag.
+        assert!(!slider_drags(&bg, false));
+        assert!(!slider_drags(&tint, true));
+        // Pressing the button off any slider starts no drag.
+        assert!(!slider_drags(&bg, true));
+    }
 
     #[test]
     fn type_steps_up_and_back() {

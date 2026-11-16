@@ -165,15 +165,18 @@ fn keep_aside(path: &std::path::Path) {
     }
 }
 
-pub fn store(saved: &Saved) {
-    store_at(&file(), saved);
+/// Returns whether it saved, so a failed save can be tried again later.
+pub fn store(saved: &Saved) -> bool {
+    store_at(&file(), saved)
 }
 
-fn store_at(path: &std::path::Path, saved: &Saved) {
-    if let Err(e) =
-        crate::durable::write(path, &serde_json::to_vec_pretty(saved).unwrap_or_default())
-    {
-        eprintln!("arakun: could not save {}: {e}", path.display());
+fn store_at(path: &std::path::Path, saved: &Saved) -> bool {
+    match crate::durable::write(path, &serde_json::to_vec_pretty(saved).unwrap_or_default()) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("arakun: could not save {}: {e}", path.display());
+            false
+        }
     }
 }
 
@@ -280,6 +283,18 @@ mod tests {
         );
         assert_eq!(parse(b"[1, 2]"), None);
         assert_eq!(parse(b"{\"custom\": 3}"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_save_says_so() {
+        let dir = scratch("failed-save");
+        // A file where the folder should be: the write can't succeed.
+        let blocker = dir.join("not-a-dir");
+        std::fs::write(&blocker, b"").unwrap();
+        let s = Saved::default();
+        assert!(!store_at(&blocker.join("palettes.json"), &s));
+        assert!(store_at(&dir.join("palettes.json"), &s));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

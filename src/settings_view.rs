@@ -930,8 +930,9 @@ impl SettingsDialog {
 
     fn apply_palette(&mut self, cx: &mut Context<Self>) {
         self.palette_save = None;
-        self.palette_dirty = false;
-        crate::palettes::store(&self.palettes);
+        // Still dirty if the save failed, so closing Settings or quitting
+        // tries it again.
+        self.palette_dirty = !crate::palettes::store(&self.palettes);
         self.show_palette(cx);
     }
 
@@ -966,10 +967,11 @@ impl SettingsDialog {
         }));
     }
 
-    /// Saves a palette edit that is still waiting, if there is one.
+    /// Saves a palette edit that is still waiting, if there is one. A failed
+    /// save keeps it waiting, so closing Settings or quitting tries again.
     fn flush_palette(&mut self) {
-        if std::mem::take(&mut self.palette_dirty) {
-            crate::palettes::store(&self.palettes);
+        if self.palette_dirty {
+            self.palette_dirty = !crate::palettes::store(&self.palettes);
         }
     }
 

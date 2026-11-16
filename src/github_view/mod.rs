@@ -1346,16 +1346,19 @@ fn render_markdown(
 fn without_html(text: &str) -> String {
     // Each line out, and whether it is inside a fenced code block.
     let mut lines: Vec<(String, bool)> = Vec::new();
-    // The open fence, and whether it opened in a block quote.
-    let mut fence: Option<(char, usize, bool)> = None;
+    // The open fence, and how many block quotes it opened in.
+    let mut fence: Option<(char, usize, usize)> = None;
     let mut in_comment = false;
     for line in text.lines() {
-        if let Some((ch, len, quoted)) = fence {
+        if let Some((ch, len, quotes)) = fence {
+            // Only the quotes the fence opened in are markup: a `>` past
+            // them is code.
+            let (inner, found) = unquote(line, quotes);
             // A fence in a block quote ends with the quote.
-            if quoted && !line.trim_start().starts_with('>') {
+            if found < quotes {
                 fence = None;
             } else {
-                let t = unquoted(line).trim_start();
+                let t = inner.trim_start();
                 if t.len() - t.trim_start_matches(ch).len() >= len
                     && t.trim_start_matches(ch).trim().is_empty()
                 {
@@ -1365,8 +1368,9 @@ fn without_html(text: &str) -> String {
                 continue;
             }
         }
-        if !in_comment && let Some((ch, len)) = fence_open(unquoted(line)) {
-            fence = Some((ch, len, unquoted(line) != line));
+        let (inner, quotes) = unquote(line, usize::MAX);
+        if !in_comment && let Some((ch, len)) = fence_open(inner) {
+            fence = Some((ch, len, quotes));
             lines.push((line.to_string(), true));
             continue;
         }
@@ -1412,16 +1416,19 @@ fn without_html(text: &str) -> String {
     out.join("\n")
 }
 
-/// A line inside block quotes without their `>` markers: a fence opens and
-/// closes there as anywhere else.
-fn unquoted(line: &str) -> &str {
+/// A line inside block quotes without up to `max` of their `>` markers, and
+/// how many it took off: a fence opens and closes there as anywhere else.
+fn unquote(line: &str, max: usize) -> (&str, usize) {
     let mut t = line;
-    loop {
+    let mut n = 0;
+    while n < max {
         match t.trim_start_matches(' ').strip_prefix('>') {
             Some(r) => t = r.strip_prefix(' ').unwrap_or(r),
-            None => return t,
+            None => break,
         }
+        n += 1;
     }
+    (t, n)
 }
 
 /// The parts of each line of a paragraph that are in a code span running
@@ -1439,14 +1446,19 @@ fn multiline_spans(lines: &[&str]) -> Vec<Vec<(usize, usize)>> {
         }
         at = end;
     }
+    // The spans are in order and don't overlap: skip those already passed.
+    let mut next = 0;
     let mut start = 0;
     lines
         .iter()
         .map(|line| {
             let end = start + line.len();
-            let keep = spans
+            while spans.get(next).is_some_and(|&(_, b)| b <= start) {
+                next += 1;
+            }
+            let keep = spans[next..]
                 .iter()
-                .filter(|&&(a, b)| a < end && b > start)
+                .take_while(|&&(a, _)| a < end)
                 .map(|&(a, b)| (a.max(start) - start, b.min(end) - start))
                 .collect();
             start = end + 1;
@@ -1659,7 +1671,27 @@ fn content_image(attrs: &str) -> Option<String> {
     }
     let alt = tag_attr(attrs, "alt").unwrap_or("").trim();
     let alt = alt.replace('[', "\\[").replace(']', "\\]");
-    Some(format!("![{alt}](<{src}>)"))
+    Some(format!("![{alt}]({})", link_dest(src)))
+}
+
+/// `url` as a markdown link destination: in `<>`, so a `)` or a space in it
+/// doesn't end the link early.
+fn link_dest(url: &str) -> String {
+    let mut out = String::with_capacity(url.len() + 2);
+    out.push('<');
+    for c in url.chars() {
+        match c {
+            '<' | '>' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            // A line break can't be in one.
+            '\n' | '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out.push('>');
+    out
 }
 
 /// The attributes of the first `<img>` in a picture.
@@ -1818,7 +1850,7 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
                     let text = text.trim();
                     match tag_attr(attrs, "href") {
                         Some(href) if !text.is_empty() && !plain => {
-                            out.push_str(&format!("[{text}]({href})"))
+                            out.push_str(&format!("[{text}]({})", link_dest(href)))
                         }
                         _ => out.push_str(text),
                     }
@@ -2220,6 +2252,42 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_marker_in_a_fence_is_code() {
+        // Not in a quote: `> ```` is code, not the closing fence.
+        let body = "```text\n> ```\n<b>x</b>\n```";
+        assert_eq!(without_html(body), body);
+        // In one quote: only its marker is markup.
+        let body = "> ```\n> > ```\n> <b>x</b>\n> ```";
+        assert_eq!(without_html(body), body);
+        // The quote ends, and the fence with it.
+        assert_eq!(without_html("> ```\n> a\n<b>x</b>"), "> ```\n> a\n**x**");
+    }
+
+    #[test]
+    fn a_link_keeps_its_whole_destination() {
+        let md =
+            without_html("<a href=\"https://example.com/a)b c\">docs</a> <img src=\"s>(.png\">");
+        let dests: Vec<String> = pulldown_cmark::Parser::new(&md)
+            .filter_map(|e| match e {
+                pulldown_cmark::Event::Start(
+                    pulldown_cmark::Tag::Link { dest_url, .. }
+                    | pulldown_cmark::Tag::Image { dest_url, .. },
+                ) => Some(dest_url.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dests, ["https://example.com/a)b c", "s>(.png"], "{md}");
+    }
+
+    #[test]
+    fn many_code_spans_over_lines_stay_fast() {
+        let body = "`a\nb`\n".repeat(10_000);
+        let start = std::time::Instant::now();
+        assert_eq!(without_html(&body), body.trim_end());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
     fn html_in_bodies_reads_as_markdown() {
         let body = "Intro <!-- hidden -->text\n<details>\n<summary>Why it matters</summary>\n\nInside.\n</details>";
         assert_eq!(
@@ -2251,7 +2319,7 @@ mod tests {
                 "**Merge Risk: Moderate · up to 8b9cb**\n\n",
                 "**Failed checks: 1 warning**\n\n",
                 "**Review info**\n",
-                "See [the docs](https://docs.coderabbit.ai) and **this**.\n",
+                "See [the docs](<https://docs.coderabbit.ai>) and **this**.\n",
                 // An icon that counts keeps its words.
                 "**Pre-merge checks: Passed 4 · Failed 1**",
             )
@@ -2313,7 +2381,7 @@ mod tests {
         assert_eq!(without_html("<span title=\"a > b\">word</span>"), "word ");
         assert_eq!(
             without_html("<a href='https://e.com'>docs</a> <a href=https://f.com>more</a>"),
-            "[docs](https://e.com) [more](https://f.com)"
+            "[docs](<https://e.com>) [more](<https://f.com>)"
         );
         assert_eq!(
             without_html("<picture><img data-alt=\"No\" alt=\"Yes\" width=\"16\"></picture> 3"),

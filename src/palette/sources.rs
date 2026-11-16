@@ -90,7 +90,8 @@ pub fn symbols_in(file: &str, text: &str) -> Vec<Symbol> {
                     .trim_start_matches("const ")
                     .trim_start_matches("unsafe ");
                 if let Some(rest) = line.strip_prefix("impl") {
-                    let rest = rest.trim_start_matches(|c: char| c == '<' || c.is_whitespace());
+                    // `impl<T> Wrapper<T>`: the owner comes after the generics.
+                    let rest = after_generics(rest.trim_start());
                     let rest = rest.split(" for ").last().unwrap_or(rest);
                     let name: String = rest
                         .trim_start_matches(|c: char| !c.is_alphanumeric())
@@ -167,6 +168,30 @@ pub fn symbols_in(file: &str, text: &str) -> Vec<Symbol> {
 }
 
 /// Every definition in the project's source files. Blocking.
+/// `s` past a leading `<...>` group, nested ones included. The `>` of an
+/// arrow (`Fn() -> u8`) does not close it.
+fn after_generics(s: &str) -> &str {
+    if !s.starts_with('<') {
+        return s;
+    }
+    let mut depth = 0usize;
+    let mut prev = ' ';
+    for (at, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' if prev != '-' => {
+                depth -= 1;
+                if depth == 0 {
+                    return s[at + 1..].trim_start();
+                }
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    ""
+}
+
 pub fn index_symbols(root: &Path, files: &[String]) -> Vec<Symbol> {
     let mut out = Vec::new();
     for rel in files
@@ -338,6 +363,17 @@ mod tests {
         );
         assert_eq!(s[0].kind, "struct");
         assert_eq!(s[1].kind, "fn");
+    }
+
+    #[test]
+    fn generic_inherent_impls_name_their_type() {
+        let text = "impl<T> Wrapper<T> {\n    fn new() {}\n}\nimpl<'a> Foo<'a> {\n    fn get(&self) {}\n}\nimpl<F: Fn() -> u8, T: Into<Vec<u8>>> Café<F, T> {\n    fn run(&self) {}\n}\n";
+        let labels: Vec<String> = symbols_in("src/a.rs", text)
+            .iter()
+            .map(|s| s.label())
+            .collect();
+        assert_eq!(labels, vec!["Wrapper::new", "Foo::get", "Café::run"]);
+        assert_eq!(after_generics("<T"), "");
     }
 
     #[test]

@@ -184,10 +184,13 @@ fn is_path(p: &str) -> bool {
 
 fn path_line(word: &str) -> Option<(String, u32)> {
     let word = word.trim_matches(|c: char| c == '`' || c == '\'' || c == '"' || c == ',');
-    let mut parts = word.split(':');
-    let path = parts.next()?;
-    let n: u32 = parts.next()?.parse().ok()?;
-    is_path(path).then(|| (path.to_string(), n))
+    // The first colon that ends a path and starts a line number, not simply the
+    // first colon: `C:\work\app.rs:12:5` keeps its drive letter.
+    word.match_indices(':').find_map(|(at, _)| {
+        let path = &word[..at];
+        let n: u32 = word[at + 1..].split(':').next()?.parse().ok()?;
+        is_path(path).then(|| (path.to_string(), n))
+    })
 }
 
 #[cfg(test)]
@@ -275,6 +278,18 @@ mod tests {
         };
         assert_eq!(e.language, "a Rust panic");
         assert_eq!(e.location, Some(("src/main.rs".into(), 12)));
+    }
+
+    #[test]
+    fn a_windows_path_keeps_its_drive_letter() {
+        let t = "error[E0425]: cannot find value `x`\n  --> C:\\work\\app.rs:12:5\n";
+        assert_eq!(location(t), Some((r"C:\work\app.rs".into(), 12)));
+        assert_eq!(
+            location(r"see C:\work\src\é.rs:7 here"),
+            Some((r"C:\work\src\é.rs".into(), 7))
+        );
+        assert_eq!(location("--> src/a.rs:3:1"), Some(("src/a.rs".into(), 3)));
+        assert_eq!(location(r"C:\work\app.rs"), None);
     }
 
     #[test]

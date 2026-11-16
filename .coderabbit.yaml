@@ -1,8 +1,10 @@
 # CodeRabbit review settings. Schema: https://coderabbit.ai/integrations/schema.v2.json
 # The rules it reviews against come from AGENTS.md and CONTRIBUTING.md; keep
 # the path instructions below in step with them. The Reviewers workflow
-# (.github/workflows/reviewers.yml) relies on the "CodeRabbit" check run and
-# on coderabbitai[bot]'s approval, so keep both turned on.
+# (.github/workflows/reviewers.yml) starts on the "CodeRabbit" check run
+# (`reviews.review_progress`) and reads coderabbitai[bot]'s approval, so keep
+# both turned on. With review_progress off, CodeRabbit posts only a commit
+# status, and the workflow never runs.
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
 language: en-US
@@ -17,10 +19,11 @@ reviews:
   # minimal risk, once those findings are resolved. Merging still takes a
   # person with write access. CodeRabbit also rates security risk, but no
   # limit is set on it: the merge-risk limit already covers the sensitive paths.
-  # Team members are trusted not to resolve blocking threads in the GitHub UI
-  # just to get an approval; nothing here can stop that. The Reviewers
-  # workflow dismisses an approval of a pull request from outside the team,
-  # because overrides can only match members of a team.
+  # The Reviewers workflow dismisses an approval of a pull request from
+  # outside the team, because overrides can only match members of a team. It
+  # also dismisses one when the author resolved CodeRabbit's threads in the
+  # GitHub UI, which no setting here can stop, and asks a person when
+  # CodeRabbit approves with threads still open.
   auto_approvals:
     enabled: true
     max_merge_risk: minimal
@@ -53,6 +56,9 @@ reviews:
     paths raises it too.
 
   # The summary goes at the end of the description, under the template.
+  # The "CodeRabbit" check run the Reviewers workflow starts on.
+  review_progress: true
+
   high_level_summary: true
   high_level_summary_in_walkthrough: false
   high_level_summary_instructions: >-
@@ -217,7 +223,10 @@ reviews:
         Adding a license to the allow-list needs a maintainer's agreement in an issue first. Flag any new license or advisory exception and ask for the reason.
     - path: ".github/workflows/**"
       instructions: |
-        Check permissions are as narrow as the job needs, a new third-party action is pinned to a release tag or commit SHA rather than a branch (`dtolnay/rust-toolchain@stable` is fine), untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge. A change to the paths the "What changed" job in ci.yml sorts must match the globs in lefthook.yml.
+        Check permissions are as narrow as the job needs, every action is pinned to a full commit SHA with its version as a comment (`uses: owner/action@<sha> # v1.2.3`), never a tag or branch, untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge. A change to the paths the "What changed" job in ci.yml sorts must match the globs in lefthook.yml. `reviewers.yml` and `human-approval.yml` run with a write token on pull requests from forks; they must never check out or run the pull request's code.
+    - path: ".github/actions/**"
+      instructions: |
+        Composite actions run inside the CI jobs that use them, with those jobs' tokens. Pin every action they use to a full commit SHA with its version as a comment. Pass inputs to shell steps through `env:`, never by putting `${{ inputs.* }}` straight into a `run:` script.
     - path: "lefthook.yml"
       instructions: |
         The hooks run on contributors' machines. Each job's globs must match what the "What changed" job in `.github/workflows/ci.yml` uses to decide which checks run, and its command must match the one in CONTRIBUTING.md under "Checks".
@@ -232,7 +241,7 @@ reviews:
         AGENTS.md repeats CONTRIBUTING.md's rules for agents, and CONTRIBUTING.md wins when they disagree. A rule changed in one must change in the other. `.coderabbit.yaml`, `.github/pull_request_template.md` and the skills in `.claude/skills` quote these rules too; check they still match.
     - path: ".coderabbit.yaml"
       instructions: |
-        Check every key against the schema at https://coderabbit.ai/integrations/schema.v2.json. Flag a change that loosens `auto_approvals` (a higher `max_merge_risk`, `allow_author_approval`, `approve_on_skipped_review`) or turns off the "CodeRabbit" check run or commit status, which the Reviewers workflow waits for.
+        Check every key against the schema at https://coderabbit.ai/integrations/schema.v2.json. Flag a change that loosens `auto_approvals` (a higher `max_merge_risk`, `allow_author_approval`, `approve_on_skipped_review`) or turns off `review_progress` (the "CodeRabbit" check run the Reviewers workflow starts on) or `commit_status`.
     - path: "iso/**/*.rhai"
       instructions: |
         Isometric scene scripts in the line-iso style: thin ink outlines, three-tone faces, one accent color. See the arakun-iso skill in .claude/skills.

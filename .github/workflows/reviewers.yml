@@ -2,7 +2,12 @@ name: Reviewers
 
 # Requests reviewers once CodeRabbit has finished reviewing a pull request and
 # has not approved it. A CodeRabbit approval is enough to merge a routine
-# change from the team, so nobody is asked then. It replaces CODEOWNERS, so
+# change from the team, so nobody is asked then, unless a review thread is
+# still open: the main ruleset requires every thread resolved, and authors
+# leave CodeRabbit's threads to a person (CONTRIBUTING.md), so someone has to
+# be asked or the pull request sits blocked. If the author resolved one of
+# CodeRabbit's threads, its approval is dismissed and a person asked, so an
+# author can't clear its findings to get approved. It replaces CODEOWNERS, so
 # the main ruleset no longer has to require a code owner's approval: any
 # approval from someone with write access counts.
 #
@@ -12,7 +17,9 @@ name: Reviewers
 # match members of a team, not everyone outside it.
 #
 # The dismissal comes after the approval, so it can't stop a merge in
-# between. The "Human approval" commit status does; human-approval.yml sets it.
+# between. For an outside pull request the "Human approval" commit status
+# does; human-approval.yml sets it. For a team pull request whose author
+# resolved CodeRabbit's threads, nothing covers those minutes.
 #
 # Each pull request goes to the person who can check it on their own machine:
 # Karlo for Linux and for changes that are not platform specific (Rik if Karlo
@@ -92,6 +99,8 @@ jobs:
           SHA: ${{ github.event.check_run.head_sha }}
           PR: ${{ github.event.issue.number || inputs.pr }}
           CODERABBIT: coderabbitai[bot]
+          # GraphQL names the author of CodeRabbit's threads without "[bot]".
+          CODERABBIT_AUTHOR: coderabbitai
           # How long to wait, after CodeRabbit's check run completes, for its
           # approval of a team pull request. It can come about a minute later.
           APPROVAL_WAIT: 120
@@ -120,6 +129,35 @@ jobs:
             gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate --jq \
               '.[] | select(.user.login == env.CODERABBIT and .commit_id == env.HEAD) | .state' |
               grep -xE 'APPROVED|CHANGES_REQUESTED' | tail -n 1 || true
+          }
+
+          # One line per review thread that matters here: "open" for an
+          # unresolved one, "self" for one of CodeRabbit's the author resolved.
+          thread_states() {
+            # The $ names are GraphQL variables, not the shell's.
+            # shellcheck disable=SC2016
+            AUTHOR=$2 gh api graphql --paginate \
+              -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F pr="$1" \
+              -f query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
+                  reviewThreads(first: 100, after: $endCursor) {
+                    nodes { isResolved resolvedBy { login } comments(first: 1) { nodes { author { login } } } }
+                    pageInfo { hasNextPage endCursor } } } } }' \
+              --jq '.data.repository.pullRequest.reviewThreads.nodes[] |
+                if .isResolved | not then "open"
+                elif (.comments.nodes[0].author.login // "") == env.CODERABBIT_AUTHOR and
+                  .resolvedBy.login == env.AUTHOR then "self"
+                else empty end'
+          }
+
+          dismiss_approvals() {
+            local id
+            for id in $(gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
+              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'); do
+              gh api -X PUT "repos/$GH_REPO/pulls/$1/reviews/$id/dismissals" --silent \
+                -f event=DISMISS -f message="$2"
+              echo "Dismissed CodeRabbit's approval: $2"
+            done
           }
 
           handle() {
@@ -157,18 +195,23 @@ jobs:
             fi
 
             if ! in_team "$author"; then
-              local id
-              for id in $(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate \
-                --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'); do
-                gh api -X PUT "repos/$GH_REPO/pulls/$pr/reviews/$id/dismissals" --silent \
-                  -f event=DISMISS \
-                  -f message="A pull request from outside the team needs a person's approval. CodeRabbit's comments still apply."
-                echo "Dismissed CodeRabbit's approval: $author is not on the team."
-              done
+              dismiss_approvals "$pr" \
+                "A pull request from outside the team needs a person's approval. CodeRabbit's comments still apply."
             elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
-              echo "CodeRabbit approved $HEAD; no reviewer needed."
-              echo "::endgroup::"
-              return
+              local threads open self
+              threads=$(thread_states "$pr" "$author")
+              open=$(grep -cx open <<<"$threads" || true)
+              self=$(grep -cx self <<<"$threads" || true)
+              if [ "$self" -gt 0 ]; then
+                dismiss_approvals "$pr" \
+                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply."
+              elif [ "$open" -gt 0 ]; then
+                echo "CodeRabbit approved $HEAD, but $open review threads are open; a person has to resolve them."
+              else
+                echo "CodeRabbit approved $HEAD and every thread is resolved; no reviewer needed."
+                echo "::endgroup::"
+                return
+              fi
             fi
 
             # Old paths too, so moving a platform's file away still counts.

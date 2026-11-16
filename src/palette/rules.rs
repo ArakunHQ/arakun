@@ -717,8 +717,10 @@ fn what_to_remember(text: &str) -> String {
     }) {
         kept.remove(0);
     }
+    // A period ends the sentence but may also start the message (".env").
     kept.join(" ")
-        .trim_matches(|c: char| c == ',' || c == '.' || c == ':' || c.is_whitespace())
+        .trim_start_matches(|c: char| c == ',' || c == ':' || c.is_whitespace())
+        .trim_end_matches(|c: char| c == ',' || c == '.' || c == ':' || c.is_whitespace())
         .to_string()
 }
 
@@ -810,9 +812,13 @@ fn tomorrow_words(t: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for word in ["mañana", "manana", "tomorrow"] {
         for (j, _) in t.match_indices(word) {
+            let after = &t[j + word.len()..];
             if word_start(t, j)
                 && !word_start_after(t, j + word.len())
                 && !t[..j].ends_with("de la ")
+                // "tomorrow's meeting" names a thing, not the day.
+                && !after.starts_with("'s")
+                && !after.starts_with("’s")
             {
                 out.push((j, word.len()));
             }
@@ -1501,6 +1507,11 @@ mod tests {
         assert_eq!(notice(&d), "🔑");
         let d = parse_reminder("remind me in 5 minutes 🔑 keys", &c).unwrap();
         assert_eq!(notice(&d), "🔑 keys");
+        let d = parse_reminder("remind me in 5 minutes .env", &c).unwrap();
+        assert_eq!(notice(&d), ".env");
+        let d = parse_reminder("remind me at 5pm, tomorrow's meeting starts at 9", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: today });
+        assert_eq!(notice(&d), "tomorrow's meeting starts at 9");
     }
 
     #[test]

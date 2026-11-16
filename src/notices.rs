@@ -17,6 +17,11 @@ const PREVIEW_CHARS: usize = 140;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Notice {
+    /// Unique in the history and kept when older notices fall off, so the
+    /// Inbox finds the notice it drew even if the list moved since. Files
+    /// from before it was kept get one on load.
+    #[serde(default)]
+    pub id: u64,
     /// Unix seconds.
     pub at: u64,
     pub kind: AlertKind,
@@ -42,6 +47,8 @@ pub struct Notice {
 impl Notice {
     pub fn from_alert(alert: &crate::island::Alert, at: u64) -> Notice {
         Notice {
+            // `History::push` gives it one.
+            id: 0,
             at,
             kind: alert.kind,
             title: alert.title.to_string(),
@@ -90,6 +97,8 @@ impl History {
         {
             return false;
         }
+        let mut n = n;
+        n.id = self.next_id();
         self.notices.push(n);
         self.arrived += 1;
         let over = self.notices.len().saturating_sub(CAP);
@@ -101,9 +110,29 @@ impl History {
         self.notices.iter().filter(|n| !n.seen).count()
     }
 
-    /// `false` when nothing changed.
-    pub fn mark_seen(&mut self, index: usize) -> bool {
-        match self.notices.get_mut(index) {
+    /// The newest notice is never dropped first, so one past the largest id
+    /// is never an id given before.
+    fn next_id(&self) -> u64 {
+        self.notices.iter().map(|n| n.id).max().unwrap_or(0) + 1
+    }
+
+    /// Gives an id to each notice that has none or shares one, as in a file
+    /// written before notices had ids.
+    fn assign_ids(&mut self) {
+        let mut next = self.next_id();
+        let mut taken = std::collections::HashSet::new();
+        for n in &mut self.notices {
+            if n.id == 0 || !taken.insert(n.id) {
+                n.id = next;
+                next += 1;
+            }
+        }
+    }
+
+    /// Marks the notice with this `id`. `false` when nothing changed, or
+    /// when it has fallen off.
+    pub fn mark_seen(&mut self, id: u64) -> bool {
+        match self.notices.iter_mut().find(|n| n.id == id) {
             Some(n) if !n.seen => {
                 n.seen = true;
                 true
@@ -289,13 +318,12 @@ fn parse(bytes: &[u8]) -> serde_json::Result<(History, usize)> {
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect();
     let bad = total - notices.len();
-    Ok((
-        History {
-            notices,
-            ..History::default()
-        },
-        bad,
-    ))
+    let mut history = History {
+        notices,
+        ..History::default()
+    };
+    history.assign_ids();
+    Ok((history, bad))
 }
 
 /// How many `.corrupt-<time>-<n>` names `set_aside` tries in one second.
@@ -480,6 +508,7 @@ mod tests {
 
     fn notice(at: u64, title: &str) -> Notice {
         Notice {
+            id: 0,
             at,
             kind: AlertKind::Info,
             title: title.into(),
@@ -526,9 +555,10 @@ mod tests {
         h.push(notice(2, "b"));
         h.push(notice(3, "c"));
         assert_eq!(h.unseen(), 3);
-        assert!(h.mark_seen(1));
-        assert!(!h.mark_seen(1));
-        assert!(!h.mark_seen(9));
+        let b = h.notices[1].id;
+        assert!(h.mark_seen(b));
+        assert!(!h.mark_seen(b));
+        assert!(!h.mark_seen(99));
         assert_eq!(h.unseen(), 2);
         assert!(h.mark_all_seen());
         assert!(!h.mark_all_seen());
@@ -554,6 +584,48 @@ mod tests {
         let shown = h.arrived();
         h.push(notice(1, "new"));
         assert!(!h.mark_seen_until(shown));
+    }
+
+    #[test]
+    fn a_click_after_eviction_marks_nothing() {
+        // Every notice has the same time and key, so only the id tells them apart.
+        let mut h = History::default();
+        for _ in 0..CAP {
+            h.push(notice(7, "same"));
+        }
+        // The Inbox drew the oldest; a new one pushes it out before the click.
+        let drawn = h.notices[0].id;
+        h.push(notice(7, "same"));
+        assert!(!h.mark_seen(drawn));
+        assert_eq!(h.unseen(), CAP);
+        // The one now first is still found by its own id.
+        assert!(h.mark_seen(h.notices[0].id));
+        assert!(h.notices[0].seen);
+    }
+
+    #[test]
+    fn ids_are_unique_and_survive_a_save() {
+        let dir = scratch("ids");
+        let path = dir.join("notices.json");
+        // A file from before ids, and one with a repeated id.
+        std::fs::write(
+            &path,
+            r#"{"notices":[
+                {"at":1,"kind":"info","title":"a"},
+                {"id":4,"at":2,"kind":"info","title":"b"},
+                {"id":4,"at":3,"kind":"info","title":"c"},
+                {"at":4,"kind":"info","title":"d"}
+            ]}"#,
+        )
+        .unwrap();
+        let mut h = load_from(&path, 9);
+        let ids: Vec<u64> = h.notices.iter().map(|n| n.id).collect();
+        assert_eq!(ids, [5, 4, 6, 7]);
+        h.push(notice(5, "e"));
+        assert_eq!(h.notices[4].id, 8);
+        store_to(&path, &mut h, 9);
+        assert_eq!(load_from(&path, 10).notices, h.notices);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

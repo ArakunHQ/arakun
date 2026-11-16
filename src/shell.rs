@@ -1573,6 +1573,11 @@ impl Shell {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A second dialog would read the palettes before the open one's
+        // pending save lands, then save over that edit.
+        if matches!(self.modal, Some((Modal::Settings(_), _))) {
+            return;
+        }
         self.menu = None;
         self.env_menu_open = false;
         let arcade = self.arcade;

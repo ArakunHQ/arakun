@@ -81,8 +81,9 @@ impl ItemRef {
         let (at, item) = Self::split_url(url)?;
         let at = at.to_ascii_lowercase();
         let host = host.to_ascii_lowercase();
-        let at = at.strip_prefix("www.").unwrap_or(&at);
-        (at == host).then_some(item)
+        // `www.` is an alias only on top of the host: with `GH_HOST` set to
+        // `www.ghe.corp`, an address on that host must still match it.
+        (at == host || at.strip_prefix("www.") == Some(host.as_str())).then_some(item)
     }
 
     fn split_url(url: &str) -> Option<(String, Self)> {
@@ -133,12 +134,18 @@ impl ItemRef {
         format!("{}#{}", self.repo, self.number)
     }
 
+    /// Its web address on the host `gh` talks to, which is where `-R
+    /// owner/name` finds it: with `GH_HOST` set, not github.com.
     pub fn url(&self) -> String {
+        self.url_on(&gh_host())
+    }
+
+    fn url_on(&self, host: &str) -> String {
         let page = match self.kind {
             ItemKind::Pull => "pull",
             ItemKind::Issue => "issues",
         };
-        format!("https://github.com/{}/{page}/{}", self.repo, self.number)
+        format!("https://{host}/{}/{page}/{}", self.repo, self.number)
     }
 
     /// The `gh` subcommand family: `gh pr …` or `gh issue …`.
@@ -2364,19 +2371,112 @@ pub struct DraftArgs {
 
 pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--head <sha>] [--agent <name>]";
 
-/// The host `gh` reads `-R owner/name` on: `GH_HOST` when set, else GitHub.
-fn gh_host() -> String {
+/// The host `gh` reads `-R owner/name` on, chosen as `gh` chooses it:
+/// `GH_HOST` when set, else the only host `gh` is signed in to, else GitHub.
+/// Signed in to GitHub Enterprise alone, `gh` reads there with no `GH_HOST`.
+///
+/// It never waits on the disk: the palette asks while it draws. `gh`'s
+/// sign-ins are read on another thread and kept, and read again when the
+/// kept answer is old, so signing in to a new host shows up a moment later.
+pub fn gh_host() -> String {
+    env_host().unwrap_or_else(signed_in_host)
+}
+
+/// `gh_host` read now, for the command line, which asks once and exits
+/// before a read on another thread would be back.
+fn gh_host_now() -> String {
+    env_host().unwrap_or_else(|| default_host(None, read_hosts_yml().as_deref()))
+}
+
+fn env_host() -> Option<String> {
     std::env::var("GH_HOST")
         .ok()
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "github.com".into())
+}
+
+/// The host from `gh`'s sign-ins as last read, GitHub until a read is back.
+fn signed_in_host() -> String {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    // The answer, when it was asked for, and whether a read is running.
+    static KEPT: Mutex<(Option<String>, Option<Instant>, bool)> = Mutex::new((None, None, false));
+    const FRESH: Duration = Duration::from_secs(30);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let stale = kept.1.is_none_or(|at| at.elapsed() > FRESH);
+    if stale && !kept.2 {
+        kept.1 = Some(Instant::now());
+        kept.2 = true;
+        std::thread::spawn(|| {
+            let host = default_host(None, read_hosts_yml().as_deref());
+            let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+            kept.0 = Some(host);
+            kept.2 = false;
+        });
+    }
+    kept.0.clone().unwrap_or_else(|| "github.com".into())
+}
+
+/// `gh`'s sign-ins. Tests never read the real ones: what they check would
+/// change with who runs them.
+fn read_hosts_yml() -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+    std::fs::read_to_string(gh_config_dir()?.join("hosts.yml")).ok()
+}
+
+/// The folder `gh` keeps its settings in, found in the same order `gh` looks.
+fn gh_config_dir() -> Option<std::path::PathBuf> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    if let Some(d) = var("GH_CONFIG_DIR") {
+        return Some(d.into());
+    }
+    if let Some(d) = var("XDG_CONFIG_HOME") {
+        return Some(std::path::PathBuf::from(d).join("gh"));
+    }
+    #[cfg(windows)]
+    if let Some(d) = var("AppData") {
+        return Some(std::path::PathBuf::from(d).join("GitHub CLI"));
+    }
+    std::env::home_dir().map(|h| h.join(".config").join("gh"))
+}
+
+/// `gh_host` from `GH_HOST` and the text of `gh`'s `hosts.yml`.
+fn default_host(env: Option<String>, hosts_yml: Option<&str>) -> String {
+    if let Some(h) = env.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) {
+        return h;
+    }
+    match hosts_yml.map(signed_in_hosts).as_deref() {
+        Some([only]) => only.clone(),
+        _ => "github.com".into(),
+    }
+}
+
+/// The top-level keys of `hosts.yml`: one per host `gh` is signed in to.
+/// Read by hand, as `gh` writes it: `host:` at the start of a line, maybe
+/// with a comment after it.
+fn signed_in_hosts(yml: &str) -> Vec<String> {
+    yml.lines()
+        .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
+        .map(without_comment)
+        .filter_map(|l| l.trim_end().strip_suffix(':'))
+        .map(|k| k.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// A YAML line without its comment: `#` after a space or a tab.
+fn without_comment(l: &str) -> &str {
+    l.char_indices()
+        .find(|&(i, c)| c == '#' && l[..i].ends_with([' ', '\t']))
+        .map_or(l, |(i, _)| &l[..i])
 }
 
 /// The arguments after `arakun github draft`. The pull request may also be
 /// given as its address.
 pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
-    parse_draft_args_on(args, &gh_host())
+    parse_draft_args_on(args, &gh_host_now())
 }
 
 /// `parse_draft_args` for URLs on `host`: tests name it instead of reading
@@ -2623,6 +2723,10 @@ mod tests {
             pull("o/r", 7)
         );
         assert_eq!(
+            ItemRef::from_url_on("https://www.ghe.corp/o/r/pull/7", "www.ghe.corp"),
+            pull("o/r", 7)
+        );
+        assert_eq!(
             ItemRef::from_url_on("https://ghe.corp/o/r/pull/7", "GHE.corp"),
             pull("o/r", 7)
         );
@@ -2660,17 +2764,22 @@ mod tests {
 
         let it = item(ItemKind::Pull);
         assert_eq!(
-            (it.label().as_str(), it.url().as_str()),
+            (it.label().as_str(), it.url_on("github.com").as_str()),
             (
                 "ArakunHQ/arakun#41",
                 "https://github.com/ArakunHQ/arakun/pull/41"
             )
         );
         assert_eq!(
-            item(ItemKind::Issue).url(),
+            item(ItemKind::Issue).url_on("github.com"),
             "https://github.com/ArakunHQ/arakun/issues/41"
         );
-        assert_eq!(ItemRef::from_url(&it.url()), Some(it));
+        // With GH_HOST on GitHub Enterprise, the address names that host.
+        assert_eq!(
+            it.url_on("ghe.corp"),
+            "https://ghe.corp/ArakunHQ/arakun/pull/41"
+        );
+        assert_eq!(ItemRef::from_url(&it.url_on("github.com")), Some(it));
     }
 
     #[test]
@@ -4031,26 +4140,40 @@ mod tests {
     }
 
     #[test]
+    fn the_gh_host_is_the_one_gh_reads() {
+        let both = "github.com:\n    user: me\n    git_protocol: https\nghe.corp:\n    user: me\n";
+        let one = "ghe.corp:\n    users:\n        me:\n    user: me\n";
+        assert_eq!(default_host(Some(" ghe.io ".into()), Some(one)), "ghe.io");
+        assert_eq!(default_host(None, Some(one)), "ghe.corp");
+        assert_eq!(default_host(Some(String::new()), Some(one)), "ghe.corp");
+        assert_eq!(default_host(None, Some(both)), "github.com");
+        assert_eq!(default_host(None, Some("")), "github.com");
+        assert_eq!(default_host(None, None), "github.com");
+        let noted = "# gh's sign-ins\nghe.corp: # work\n    user: me # me\n";
+        assert_eq!(default_host(None, Some(noted)), "ghe.corp");
+        assert_eq!(
+            signed_in_hosts("github.com:\t# home\nghe.corp:\n"),
+            ["github.com", "ghe.corp"]
+        );
+    }
+
+    #[test]
     fn the_review_prompt_asks_for_a_draft_and_nothing_else() {
+        // The address follows GH_HOST, so a run on GitHub Enterprise passes too.
+        let url = item(ItemKind::Pull).url();
         let p = review_prompt(
             &item(ItemKind::Pull),
             "fix(terminal): keep the tab name on resize",
         );
         assert!(p.starts_with("Review the pull request \"fix(terminal): keep the tab name on resize\" (ArakunHQ/arakun#41)"), "{p}");
-        assert!(
-            p.contains("URL: https://github.com/ArakunHQ/arakun/pull/41\n"),
-            "{p}"
-        );
+        assert!(p.contains(&format!("URL: {url}\n")), "{p}");
         assert!(
             p.contains(
                 "the description, the full diff, the existing reviews and comments, and the checks"
             ),
             "{p}"
         );
-        assert!(
-            p.contains("`gh pr diff https://github.com/ArakunHQ/arakun/pull/41`"),
-            "{p}"
-        );
+        assert!(p.contains(&format!("`gh pr diff {url}`")), "{p}");
         assert!(
             p.contains("`gh api repos/ArakunHQ/arakun/pulls/41/comments`"),
             "{p}"
@@ -4064,7 +4187,7 @@ mod tests {
             "{p}"
         );
         assert!(
-            p.contains("First note the commit you are reviewing: `gh pr view https://github.com/ArakunHQ/arakun/pull/41 --json headRefOid --jq .headRefOid`."),
+            p.contains(&format!("First note the commit you are reviewing: `gh pr view {url} --json headRefOid --jq .headRefOid`.")),
             "{p}"
         );
         assert!(p.ends_with("Never post a comment or a review, approve, request changes, merge or close anything on GitHub yourself."), "{p}");
@@ -4079,7 +4202,7 @@ mod tests {
         assert!(text.starts_with("Catch me up on the pull request \"fix(terminal): keep the tab name on resize\" (ArakunHQ/arakun#41)"), "{text}");
         assert!(text.contains("I last reviewed it 2h ago. These commits arrived after my review:\n- bbbbbbb test the resize\n"), "{text}");
         assert!(
-            text.contains("`gh pr diff https://github.com/ArakunHQ/arakun/pull/41`"),
+            text.contains(&format!("`gh pr diff {}`", it.url())),
             "{text}"
         );
         assert!(text.ends_with(HANDS_OFF), "{text}");
@@ -4100,9 +4223,10 @@ mod tests {
         let issue = summarize_prompt(&item(ItemKind::Issue), "Windows build stuck");
         assert!(
             issue.contains("the issue \"Windows build stuck\"")
-                && issue.contains(
-                    "`gh issue view https://github.com/ArakunHQ/arakun/issues/41 --comments`"
-                ),
+                && issue.contains(&format!(
+                    "`gh issue view {} --comments`",
+                    item(ItemKind::Issue).url()
+                )),
             "{issue}"
         );
         assert!(HANDS_OFF.contains(

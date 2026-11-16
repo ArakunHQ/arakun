@@ -81,8 +81,9 @@ impl ItemRef {
         let (at, item) = Self::split_url(url)?;
         let at = at.to_ascii_lowercase();
         let host = host.to_ascii_lowercase();
-        let at = at.strip_prefix("www.").unwrap_or(&at);
-        (at == host).then_some(item)
+        // `www.` is an alias only on top of the host: with `GH_HOST` set to
+        // `www.ghe.corp`, an address on that host must still match it.
+        (at == host || at.strip_prefix("www.") == Some(host.as_str())).then_some(item)
     }
 
     fn split_url(url: &str) -> Option<(String, Self)> {
@@ -2370,13 +2371,50 @@ pub struct DraftArgs {
 
 pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --verdict <approve|request-changes|comment> --body-file <file|-> [--head <sha>] [--agent <name>]";
 
-/// The host `gh` reads `-R owner/name` on: `GH_HOST` when set, else GitHub.
+/// The host `gh` reads `-R owner/name` on, chosen as `gh` chooses it:
+/// `GH_HOST` when set, else the only host `gh` is signed in to, else GitHub.
+/// Signed in to GitHub Enterprise alone, `gh` reads there with no `GH_HOST`.
 pub fn gh_host() -> String {
-    std::env::var("GH_HOST")
-        .ok()
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "github.com".into())
+    let hosts = gh_config_dir().and_then(|d| std::fs::read_to_string(d.join("hosts.yml")).ok());
+    default_host(std::env::var("GH_HOST").ok(), hosts.as_deref())
+}
+
+/// The folder `gh` keeps its settings in, found in the same order `gh` looks.
+fn gh_config_dir() -> Option<std::path::PathBuf> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    if let Some(d) = var("GH_CONFIG_DIR") {
+        return Some(d.into());
+    }
+    if let Some(d) = var("XDG_CONFIG_HOME") {
+        return Some(std::path::PathBuf::from(d).join("gh"));
+    }
+    #[cfg(windows)]
+    if let Some(d) = var("AppData") {
+        return Some(std::path::PathBuf::from(d).join("GitHub CLI"));
+    }
+    std::env::home_dir().map(|h| h.join(".config").join("gh"))
+}
+
+/// `gh_host` from `GH_HOST` and the text of `gh`'s `hosts.yml`.
+fn default_host(env: Option<String>, hosts_yml: Option<&str>) -> String {
+    if let Some(h) = env.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) {
+        return h;
+    }
+    match hosts_yml.map(signed_in_hosts).as_deref() {
+        Some([only]) => only.clone(),
+        _ => "github.com".into(),
+    }
+}
+
+/// The top-level keys of `hosts.yml`: one per host `gh` is signed in to.
+/// Read by hand, as `gh` writes it: `host:` at the start of a line.
+fn signed_in_hosts(yml: &str) -> Vec<String> {
+    yml.lines()
+        .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
+        .filter_map(|l| l.trim_end().strip_suffix(':'))
+        .map(|k| k.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
 }
 
 /// The arguments after `arakun github draft`. The pull request may also be
@@ -2626,6 +2664,10 @@ mod tests {
         );
         assert_eq!(
             ItemRef::from_url_on("https://www.GitHub.com/o/r/pull/7", "github.com"),
+            pull("o/r", 7)
+        );
+        assert_eq!(
+            ItemRef::from_url_on("https://www.ghe.corp/o/r/pull/7", "www.ghe.corp"),
             pull("o/r", 7)
         );
         assert_eq!(
@@ -4039,6 +4081,18 @@ mod tests {
                 v
             );
         }
+    }
+
+    #[test]
+    fn the_gh_host_is_the_one_gh_reads() {
+        let both = "github.com:\n    user: me\n    git_protocol: https\nghe.corp:\n    user: me\n";
+        let one = "ghe.corp:\n    users:\n        me:\n    user: me\n";
+        assert_eq!(default_host(Some(" ghe.io ".into()), Some(one)), "ghe.io");
+        assert_eq!(default_host(None, Some(one)), "ghe.corp");
+        assert_eq!(default_host(Some(String::new()), Some(one)), "ghe.corp");
+        assert_eq!(default_host(None, Some(both)), "github.com");
+        assert_eq!(default_host(None, Some("")), "github.com");
+        assert_eq!(default_host(None, None), "github.com");
     }
 
     #[test]

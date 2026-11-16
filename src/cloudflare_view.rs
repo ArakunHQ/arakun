@@ -2626,7 +2626,9 @@ impl Render for CloudflareView {
                 let now = bounds.size.width.as_f32();
                 if (now - cell.get()).abs() > 0.5 {
                     cell.set(now);
-                    cx.notify(id);
+                    // A notify while the window paints marks no new frame, so
+                    // send it once this one is drawn.
+                    cx.defer(move |cx| cx.notify(id));
                 }
             },
         )

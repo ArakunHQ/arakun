@@ -94,15 +94,11 @@ fn file() -> PathBuf {
 /// "agrega a mis pendientes revisar el PR", "add buy milk to my todos".
 pub fn parse(text: &str) -> Option<String> {
     let trimmed = text.trim();
-    let lower = trimmed.to_lowercase();
-    // Offsets below come from `lower`. They fit the typed text only when no
-    // letter changed its length when lowered (the Kelvin sign shrinks, `İ`
-    // grows); else cut the lower-case text, which never panics.
-    let t = if super::rank::lower_keeps_offsets(trimmed) {
-        trimmed
-    } else {
-        lower.as_str()
-    };
+    // Offsets below come from the lower case, where some letters change
+    // length (the Kelvin sign shrinks, `İ` grows): map them back to cut the
+    // typed text, so the task keeps its case.
+    let low = super::rank::Lowered::new(trimmed);
+    let lower = low.text.as_str();
     const HEADS: &[&str] = &[
         "agrega a mis pendientes",
         "agregar a mis pendientes",
@@ -136,7 +132,7 @@ pub fn parse(text: &str) -> Option<String> {
         if let Some(rest) = lower.strip_prefix(h)
             && !rest.starts_with(char::is_alphanumeric)
         {
-            let what = t[t.len() - rest.len()..]
+            let what = trimmed[low.back(lower.len() - rest.len()..lower.len())]
                 .trim()
                 .trim_start_matches([':', '-'])
                 .trim();
@@ -168,7 +164,7 @@ pub fn parse(text: &str) -> Option<String> {
                 if let Some(mid) = lower.strip_suffix(tail)
                     && mid.ends_with(char::is_whitespace)
                 {
-                    let what = t[head.len()..mid.len()].trim();
+                    let what = trimmed[low.back(head.len()..mid.len())].trim();
                     if !what.is_empty() {
                         return Some(what.to_string());
                     }
@@ -219,13 +215,19 @@ mod tests {
     fn letters_that_change_length_do_not_panic() {
         // The Kelvin sign lowers to one byte, `İ` to three: offsets taken in
         // the lower-case text would cut inside a letter of the typed one.
-        assert_eq!(parse("todo: \u{212A}").as_deref(), Some("k"));
-        assert_eq!(parse("todo: İstanbul").as_deref(), Some("i\u{307}stanbul"));
-        assert_eq!(parse("add \u{212A}é to my todos").as_deref(), Some("ké"));
+        // The task is cut from the typed text, so it keeps its case.
+        assert_eq!(parse("todo: \u{212A}").as_deref(), Some("\u{212A}"));
+        assert_eq!(parse("todo: İstanbul").as_deref(), Some("İstanbul"));
         assert_eq!(
-            parse("añade İİ a mis pendientes").as_deref(),
-            Some("i\u{307}i\u{307}")
+            parse("todo: Fix İstanbul/README.md").as_deref(),
+            Some("Fix İstanbul/README.md")
         );
+        assert_eq!(
+            parse("add \u{212A}é to my todos").as_deref(),
+            Some("\u{212A}é")
+        );
+        assert_eq!(parse("añade İİ a mis pendientes").as_deref(), Some("İİ"));
+        assert_eq!(parse("İİ todo: x"), None);
         // Letters that keep their length keep their case.
         assert_eq!(
             parse("TODO: Llamar a José 🦀").as_deref(),

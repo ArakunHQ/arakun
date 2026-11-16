@@ -428,8 +428,11 @@ impl UsageView {
     /// a single line, or the sign-in prompt.
     fn claude_limits(&self, cx: &mut Context<Self>) -> AnyElement {
         let label = match (&self.plan, &self.access) {
-            (Some(p), _) => p.plan_label(),
-            (None, Some(a)) => a.label(),
+            (Some(p), Some(a)) if !p.plan_label().is_empty() => {
+                format!("{} · runs on {}", p.plan_label(), a.label())
+            }
+            (Some(p), None) => p.plan_label(),
+            (_, Some(a)) => a.label(),
             (None, None) => String::new(),
         };
         let at = now();
@@ -1330,7 +1333,12 @@ impl UsageView {
                         div()
                             .text_size(px(ui::TEXT_XS))
                             .text_color(theme::text_faint())
-                            .child("* if billed at full API rate; your plans don't charge it"),
+                            .child(if self.access.is_some() {
+                                // A key, a gateway or a cloud provider may bill these tokens.
+                                "* at full API rate; a key or endpoint may bill it"
+                            } else {
+                                "* if billed at full API rate; your plans don't charge it"
+                            }),
                     ),
             );
         for (agent, t) in &s.agents {

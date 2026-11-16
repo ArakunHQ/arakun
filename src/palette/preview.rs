@@ -496,7 +496,7 @@ impl Palette {
                                 theme::text_subtle()
                             },
                         )
-                        .when(at, |d| d.text_color(theme::accent()))
+                        .when(at, |d| d.text_color(theme::active()))
                     }))
                     .into_any_element(),
             ),
@@ -700,7 +700,7 @@ fn error_preview(e: &clip::ErrorText) -> Vec<AnyElement> {
             .flex()
             .items_center()
             .gap(crate::ui::sp(6.))
-            .child(icon("sparkles", 12.).text_color(theme::accent()))
+            .child(icon("sparkles", 12.).text_color(theme::text_subtle()))
             .child(kit::row_sub(
                 "Enter starts a session with the error and its file as context",
                 false,

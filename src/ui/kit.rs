@@ -354,15 +354,19 @@ pub fn switch(on: bool) -> gpui::Div {
         .p(crate::ui::sp(2.))
         .rounded_full()
         .bg(if on {
-            theme::accent()
+            theme::active()
         } else {
             theme::fill_selected()
         })
         .when(on, |d| d.justify_end())
-        .child(div().size(px(14.)).rounded_full().bg(theme::content()))
+        .child(div().size(px(14.)).rounded_full().bg(if on {
+            theme::background()
+        } else {
+            theme::content()
+        }))
 }
 
-/// A radio dot: an accent ring with a center when picked.
+/// A radio dot: a ring with a center when picked.
 pub fn radio(on: bool) -> gpui::Div {
     div()
         .flex_none()
@@ -373,8 +377,8 @@ pub fn radio(on: bool) -> gpui::Div {
         .items_center()
         .justify_center()
         .when(on, |d| {
-            d.border_color(theme::accent())
-                .child(div().size(px(6.)).rounded_full().bg(theme::accent()))
+            d.border_color(theme::active())
+                .child(div().size(px(6.)).rounded_full().bg(theme::active()))
         })
         .when(!on, |d| d.border_color(theme::border_strong()))
 }
@@ -1193,11 +1197,11 @@ pub fn palette_query() -> gpui::Div {
         .text_color(theme::text())
 }
 
-/// The scope a prefix set (`>`, `/`, `:`, `@`, `#`), in the accent.
+/// The scope a prefix set (`>`, `/`, `:`, `@`, `#`).
 pub fn palette_scope_glyph(glyph: &'static str) -> gpui::Div {
     div()
         .flex_none()
-        .text_color(theme::accent())
+        .text_color(theme::active())
         .font_weight(FontWeight::MEDIUM)
         .child(glyph)
 }
@@ -1353,7 +1357,7 @@ pub fn selection_bar() -> gpui::Div {
         .bottom(px(9.))
         .w(px(3.))
         .rounded_r(crate::ui::rad(3.))
-        .bg(theme::accent())
+        .bg(theme::active())
 }
 
 /// How a match shows inside a title: the text color, semibold, underlined faintly.
@@ -1585,8 +1589,8 @@ pub fn check_box(on: bool) -> gpui::Div {
         .rounded(crate::ui::rad(5.))
         .border(px(1.5))
         .when(on, |d| {
-            d.bg(theme::accent())
-                .border_color(theme::accent())
+            d.bg(theme::active())
+                .border_color(theme::active())
                 .child(icon("tick02", 11.).text_color(theme::background()))
         })
         .when(!on, |d| d.border_color(theme::border_strong()))

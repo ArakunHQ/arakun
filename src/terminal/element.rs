@@ -751,7 +751,7 @@ impl Element for TerminalElement {
                 ));
                 let _ = marked.paint(o, line_height, TextAlign::Left, None, window, cx);
             } else if let Some((rect, shape, text)) = &p.cursor {
-                let accent = theme::accent();
+                let accent = theme::active();
                 match shape {
                     CursorShape::HollowBlock => {
                         window.paint_quad(outline(*rect, accent, BorderStyle::Solid))

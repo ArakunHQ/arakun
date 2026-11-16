@@ -663,6 +663,23 @@ pub fn accent() -> Hsla {
     rgb(ACCENT.load(Ordering::Relaxed)).into()
 }
 
+/// Something waiting on the user: a question from an agent, a review that's
+/// theirs. The one thing the accent means, so it stands out wherever it is.
+pub fn needs_you() -> Hsla {
+    accent()
+}
+
+/// An agent at work: green, like a run that's going fine.
+pub fn working() -> Hsla {
+    success().into()
+}
+
+/// A caret, a switch that's on, where a drag would land: the content color,
+/// so the accent keeps meaning "needs you".
+pub fn active() -> Hsla {
+    content()
+}
+
 /// Selected text: a light night blue, so amber stays for the accent,
 /// search hits and notes.
 pub fn text_selection() -> Hsla {

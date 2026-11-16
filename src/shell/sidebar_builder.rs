@@ -87,7 +87,7 @@ fn drag_pill(title: SharedString, offset: Point<Pixels>, icon_name: &str) -> gpu
         .px(crate::ui::sp(10.))
         .rounded(crate::ui::rad(8.))
         .border_1()
-        .border_color(theme::accent().opacity(0.6))
+        .border_color(theme::active().opacity(0.6))
         .bg(theme::dialog())
         .shadow_lg()
         .font_family(theme::FONT_SANS)
@@ -579,9 +579,9 @@ impl Shell {
                         div()
                             .px(crate::ui::sp(5.))
                             .rounded(crate::ui::rad(4.))
-                            .bg(theme::accent().opacity(0.18))
+                            .bg(theme::fill_hover().opacity(0.18))
                             .text_size(px(ui::TEXT_XS))
-                            .text_color(theme::accent())
+                            .text_color(theme::text_muted())
                             .child(n),
                     )
                 });
@@ -811,10 +811,10 @@ impl Shell {
                 .cursor_pointer()
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
-                .hover(|s| s.border_color(theme::accent()).text_color(theme::content()))
+                .hover(|s| s.border_color(theme::active()).text_color(theme::content()))
                 .child(icon("add01", 14.).text_color(theme::text_subtle()))
                 .child("Add segment")
-                .drag_over::<DraggedSection>(|s, _, _, _| s.border_color(theme::accent()))
+                .drag_over::<DraggedSection>(|s, _, _, _| s.border_color(theme::active()))
                 .on_drop(cx.listener(|this, d: &DraggedSection, _, cx| {
                     let n = this.sidebar.sections.len();
                     this.change_sidebar(cx, |s| {
@@ -920,12 +920,12 @@ impl Shell {
                     .rounded(crate::ui::rad(6.))
                     .border_1()
                     .border_color(if scroll {
-                        theme::accent().opacity(0.5)
+                        theme::active().opacity(0.5)
                     } else {
                         theme::border()
                     })
                     .text_color(if scroll {
-                        theme::accent()
+                        theme::active()
                     } else {
                         theme::text_subtle()
                     })
@@ -987,7 +987,7 @@ impl Shell {
                         .text_color(theme::text_faint())
                         .child("Drop pieces here")
                 })
-                .drag_over::<DraggedPiece>(|s, _, _, _| s.bg(theme::accent().opacity(0.12)))
+                .drag_over::<DraggedPiece>(|s, _, _, _| s.bg(theme::active().opacity(0.12)))
                 .on_drop(cx.listener(move |this, d: &DraggedPiece, _, cx| {
                     this.drop_piece(d, (si, end), cx)
                 })),
@@ -1000,7 +1000,7 @@ impl Shell {
             .p(crate::ui::sp(8.))
             .rounded(crate::ui::rad(10.))
             .border_1()
-            .when(selected, |d| d.border_color(theme::accent()))
+            .when(selected, |d| d.border_color(theme::active()))
             .when(!selected, |d| {
                 d.border_dashed().border_color(theme::border())
             })
@@ -1012,7 +1012,7 @@ impl Shell {
                 this.select_builder(BuilderSel::Section(si), window, cx)
             }))
             // A segment dropped on another lands above it.
-            .drag_over::<DraggedSection>(|s, _, _, _| s.border_t_2().border_color(theme::accent()))
+            .drag_over::<DraggedSection>(|s, _, _, _| s.border_t_2().border_color(theme::active()))
             .on_drop(cx.listener(move |this, d: &DraggedSection, _, cx| {
                 this.builder.lifted = None;
                 this.change_sidebar(cx, |s| {
@@ -1157,7 +1157,7 @@ impl Shell {
                                 .w(px(90.))
                                 .h_full()
                                 .rounded(crate::ui::rad(3.))
-                                .bg(theme::accent()),
+                                .bg(theme::active()),
                         ),
                 )
                 .into_any_element(),
@@ -1260,7 +1260,7 @@ impl Shell {
             .cursor_grab()
             .border_1()
             .border_color(if selected {
-                theme::accent()
+                theme::active()
             } else {
                 gpui::transparent_black()
             })
@@ -1312,7 +1312,7 @@ impl Shell {
                 }
             })
             // The line above the row says where a dropped piece lands.
-            .drag_over::<DraggedPiece>(|s, _, _, _| s.border_t_2().border_color(theme::accent()))
+            .drag_over::<DraggedPiece>(|s, _, _, _| s.border_t_2().border_color(theme::active()))
             .on_drop(cx.listener(move |this, d: &DraggedPiece, _, cx| this.drop_piece(d, path, cx)))
     }
 

@@ -156,7 +156,7 @@ impl Render for DraggedImage {
             .h(px(120.))
             .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
-            .border_color(theme::accent().opacity(0.6))
+            .border_color(theme::active().opacity(0.6))
             .bg(theme::dialog())
             .shadow_lg()
             .overflow_hidden()

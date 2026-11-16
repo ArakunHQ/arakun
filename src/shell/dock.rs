@@ -348,7 +348,7 @@ impl Shell {
                                 .flex_none()
                                 .size(px(6.))
                                 .rounded_full()
-                                .bg(theme::accent()),
+                                .bg(theme::text()),
                         )
                     })
                     .when(exited, |d| d.opacity(0.6))

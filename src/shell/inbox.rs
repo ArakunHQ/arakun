@@ -139,7 +139,7 @@ impl Shell {
             .border_color(theme::border_subtle())
             .child(ui::text(Type::Heading, theme::text(), "Inbox"))
             .when(unseen > 0, |d| {
-                d.child(ui::pill(format!("{unseen} new"), theme::accent()))
+                d.child(ui::pill(format!("{unseen} new"), theme::text_muted()))
             })
             .child(div().flex_1())
             .when(unseen > 0, |d| {
@@ -309,7 +309,7 @@ fn notice_row(i: usize, n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl I
                 .self_start()
                 .pt(crate::ui::sp(1.))
                 .when(unseen, |d| {
-                    d.child(div().size(px(6.)).rounded_full().bg(theme::accent()))
+                    d.child(div().size(px(6.)).rounded_full().bg(theme::text()))
                 })
                 .child(ui::text(Type::Mono, theme::text_faint(), age)),
         )
@@ -366,7 +366,7 @@ fn picture(n: &Notice) -> AnyElement {
     }
     let (name, color): (&str, Option<Hsla>) = match n.kind {
         AlertKind::Finished | AlertKind::Success => ("tick02", Some(theme::success().into())),
-        AlertKind::Input | AlertKind::Confirm => ("help-circle", Some(theme::warn().into())),
+        AlertKind::Input | AlertKind::Confirm => ("help-circle", Some(theme::needs_you())),
         AlertKind::Warning => ("alert-circle", Some(theme::attention().into())),
         AlertKind::Error | AlertKind::Failure => ("cancel-circle", Some(theme::error().into())),
         AlertKind::Info => ("message01", None),

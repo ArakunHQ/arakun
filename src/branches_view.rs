@@ -771,7 +771,7 @@ impl BranchesView {
                                 d.child(ui::spinner(
                                     SharedString::from(format!("bs-spin-{}", s.id)),
                                     10.,
-                                    theme::accent(),
+                                    theme::working(),
                                 ))
                             })
                             .on_click(cx.listener(move |_, _, _, cx| {
@@ -904,7 +904,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
                 .child(ui::spinner(
                     SharedString::from(format!("bw-{}", s.id)),
                     10.,
-                    theme::accent(),
+                    theme::working(),
                 ))
                 .into_any_element(),
         );
@@ -1043,7 +1043,7 @@ fn status_color(s: Status) -> Hsla {
         Status::Conflict | Status::Failing => theme::danger().into(),
         Status::Ready => theme::success().into(),
         Status::Review => theme::pr_open().into(),
-        Status::Working => theme::accent(),
+        Status::Working => theme::working(),
         Status::Local => theme::warn().into(),
         Status::Merged => theme::pr_merged().into(),
         Status::Idle => theme::mix(0.35),

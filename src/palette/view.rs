@@ -395,7 +395,7 @@ impl Palette {
                         .w_full()
                         .child(
                             kit::answer_header()
-                                .child(icon("sparkles", 13.).text_color(theme::accent()))
+                                .child(icon("sparkles", 13.).text_color(theme::text_subtle()))
                                 .child(format!("Quick answer · {}{read}", answer::MODEL_LABEL)),
                         )
                         .child(match error {
@@ -415,7 +415,7 @@ impl Palette {
                                             .w(px(7.))
                                             .h(px(15.))
                                             .rounded(crate::ui::rad(1.))
-                                            .bg(theme::accent())
+                                            .bg(theme::active())
                                             .with_animation(
                                                 "answer-cursor",
                                                 Animation::new(Duration::from_millis(900)).repeat(),

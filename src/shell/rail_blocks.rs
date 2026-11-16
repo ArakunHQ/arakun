@@ -27,7 +27,7 @@ impl Badge {
 
     fn color(self) -> Hsla {
         if self.needs_you {
-            theme::accent()
+            theme::needs_you()
         } else {
             theme::text_faint()
         }
@@ -130,10 +130,10 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
         .justify_center()
         .size(px(size))
         .rounded_full()
-        .bg(theme::accent())
+        .bg(theme::fill_selected())
         .text_size(px(size * 0.45))
         .font_weight(FontWeight::BOLD)
-        .text_color(theme::background())
+        .text_color(theme::text())
         .child(letter)
 }
 

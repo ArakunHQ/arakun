@@ -8,7 +8,9 @@
 //! The management API needs the proxy's management key. Every wrong or missing
 //! key counts toward a 30-minute ban of this address (5 tries), which would
 //! also lock out the proxy's own web panel, so nothing is sent without a key
-//! and a key the proxy refused is not tried again.
+//! and a key the proxy refused is not tried again. The key is saved with the
+//! proxy it was typed for and only ever sent there, never in the clear to
+//! another machine: switch Claude Code to another endpoint and the tab asks again.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,8 +23,6 @@ use super::plan::{self, PlanUsage};
 
 /// Refetch at most this often; `refresh` serves the cache in between.
 const STALE: u64 = 5 * 60;
-/// Overrides the key saved from the Usage tab.
-const KEY_ENV: &str = "ARAKUN_CLIPROXY_KEY";
 
 /// What the proxy's Claude accounts have left.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -66,27 +66,66 @@ fn cache_path() -> PathBuf {
     crate::platform::app_dir().join("cliproxy-plan.json")
 }
 
-/// The management key: `ARAKUN_CLIPROXY_KEY`, else the one saved from the
-/// Usage tab. Never logged or shown.
-fn key() -> Option<String> {
-    std::env::var(KEY_ENV)
-        .ok()
-        .or_else(|| std::fs::read_to_string(key_path()).ok())
-        .map(|k| k.trim().to_string())
+/// The management key as saved from the Usage tab, with the management base
+/// it was typed for. Never logged or shown.
+#[derive(Serialize, Deserialize)]
+struct SavedKey {
+    base: String,
+    key: String,
+}
+
+fn saved_key() -> Option<SavedKey> {
+    serde_json::from_slice(&std::fs::read(key_path()).ok()?).ok()
+}
+
+/// The saved key, only when it was typed for `base`.
+fn key_for(saved: Option<SavedKey>, base: &str) -> Option<String> {
+    saved
+        .filter(|s| s.base == base)
+        .map(|s| s.key.trim().to_string())
         .filter(|k| !k.is_empty())
 }
 
-/// Saves the management key where only this user can read it; an empty key
-/// removes it.
-pub fn save_key(key: &str) -> std::io::Result<()> {
-    let key = key.trim();
-    if key.is_empty() {
-        return match std::fs::remove_file(key_path()) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        };
-    }
-    crate::durable::write_private(&key_path(), key.as_bytes())
+/// The management base of the endpoint Claude Code runs on now.
+fn current_base() -> Option<String> {
+    management_base(&super::claude_auth::endpoint_url()?)
+}
+
+/// Saves the management key for the proxy Claude Code runs on now, where only
+/// this user can read it.
+pub fn save_key(key: &str) -> Result<()> {
+    let base = current_base().ok_or_else(|| anyhow!("Claude Code no longer runs on a proxy"))?;
+    let saved = SavedKey {
+        base,
+        key: key.trim().to_string(),
+    };
+    crate::durable::write_private(&key_path(), &serde_json::to_vec(&saved)?)?;
+    Ok(())
+}
+
+/// Whether the key may travel to `base`: over https, or plain http to this
+/// machine. Anything else would send it in the clear.
+fn safe_to_send(base: &str) -> bool {
+    let Some((scheme, rest)) = base.split_once("://") else {
+        return false;
+    };
+    let host = rest.split('/').next().unwrap_or_default();
+    // "[::1]:8317", "127.0.0.1:8317", "localhost".
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    };
+    scheme == "https"
+        || (scheme == "http"
+            && (host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())))
+}
+
+/// At most `n` characters of `s`, cut on a character boundary.
+fn clip(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
 }
 
 /// The management API's base for Claude Code's `ANTHROPIC_BASE_URL`: the
@@ -120,30 +159,52 @@ fn store(p: &Proxy) {
 /// The cache while it is fresh, a read when it is not, or now with `force`
 /// (a key was just saved). Reads files and the network; keep it off the UI thread.
 pub fn refresh(force: bool) -> Option<Proxy> {
-    let base = management_base(&super::claude_auth::endpoint_url()?)?;
-    let key = key();
-    let at = now();
-    let mut out = cached()
-        .filter(|c| c.base == base)
-        .unwrap_or_else(|| Proxy {
-            base: base.clone(),
-            ..Proxy::default()
-        });
+    let base = current_base()?;
+    let key = key_for(saved_key(), &base);
+    let cache = cached().filter(|c| c.base == base);
+    let (out, read_now) = decide(base, key.as_deref(), cache, now(), force, read);
+    if read_now {
+        store(&out);
+    }
+    Some(out)
+}
+
+/// [`refresh`] without the files: whether to call `read` and what to show.
+/// The second value says `read` ran and the cache should be written.
+fn decide(
+    base: String,
+    key: Option<&str>,
+    cache: Option<Proxy>,
+    at: u64,
+    force: bool,
+    read: impl FnOnce(&str, &str) -> Result<Vec<Account>, Failure>,
+) -> (Proxy, bool) {
+    let mut out = cache.unwrap_or_else(|| Proxy {
+        base: base.clone(),
+        ..Proxy::default()
+    });
     out.has_key = key.is_some();
     let Some(key) = key else {
-        return Some(out);
+        return (out, false);
     };
-    let print = fingerprint(&key);
+    if !safe_to_send(&base) {
+        out.error = Some(
+            "The management key is only sent over https or to this machine; use an https address for the proxy."
+                .into(),
+        );
+        return (out, false);
+    }
+    let print = fingerprint(key);
     if out.refused == Some(print) {
-        return Some(out);
+        return (out, false);
     }
     let fresh = out.refused.is_none() && at.saturating_sub(out.at) < STALE && out.at > 0;
     if fresh && !force {
-        return Some(out);
+        return (out, false);
     }
     out.at = at;
     out.refused = None;
-    match read(&base, &key) {
+    match read(&base, key) {
         Ok(accounts) => {
             out.accounts = accounts;
             out.error = None;
@@ -156,8 +217,7 @@ pub fn refresh(force: bool) -> Option<Proxy> {
         // The proxy is down or restarting: keep the last windows on screen.
         Err(Failure::Other(e)) => out.error = Some(format!("{e:#}")),
     }
-    store(&out);
-    Some(out)
+    (out, true)
 }
 
 enum Failure {
@@ -228,9 +288,9 @@ fn management(base: &str, key: &str, path: &str, body: Option<&str>) -> Result<V
         s => Err(Failure::Other(anyhow!(
             "CLIProxyAPI: HTTP {s} {}",
             if msg.is_empty() {
-                &out[..out.len().min(200)]
+                clip(&out, 200)
             } else {
-                msg
+                msg.to_string()
             }
         ))),
     }
@@ -339,6 +399,112 @@ mod tests {
         let expired = json!({"status_code": 401, "body": r#"{"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}"#});
         let err = account_usage(&expired).unwrap_err().to_string();
         assert_eq!(err, "HTTP 401: OAuth token has expired.");
+    }
+
+    const LOCAL: &str = "http://127.0.0.1:8317/v0/management";
+
+    fn never(_: &str, _: &str) -> Result<Vec<Account>, Failure> {
+        panic!("nothing may reach the proxy here")
+    }
+
+    fn refused(_: &str, _: &str) -> Result<Vec<Account>, Failure> {
+        Err(Failure::Refused(
+            "CLIProxyAPI refused the management key".into(),
+        ))
+    }
+
+    fn one_account(_: &str, _: &str) -> Result<Vec<Account>, Failure> {
+        Ok(vec![Account {
+            name: "amy@example.com".into(),
+            usage: None,
+            error: None,
+        }])
+    }
+
+    #[test]
+    fn nothing_is_sent_without_a_key() {
+        let (p, read) = decide(LOCAL.into(), None, None, 1_000, true, never);
+        assert!(!read && !p.has_key && p.error.is_none());
+    }
+
+    #[test]
+    fn a_refused_key_is_sent_once() {
+        let (p, read) = decide(LOCAL.into(), Some("bad"), None, 1_000, false, refused);
+        assert!(read && p.refused.is_some() && p.error.is_some());
+        // Not again, even when forced or long after.
+        let (p, read) = decide(LOCAL.into(), Some("bad"), Some(p), 99_000, true, never);
+        assert!(!read && p.error.is_some());
+        // A new key is tried.
+        let (p, read) = decide(
+            LOCAL.into(),
+            Some("good"),
+            Some(p),
+            99_000,
+            false,
+            one_account,
+        );
+        assert!(read && p.refused.is_none() && p.error.is_none());
+        assert_eq!(p.accounts.len(), 1);
+    }
+
+    #[test]
+    fn a_fresh_read_is_served_from_the_cache() {
+        let (p, _) = decide(LOCAL.into(), Some("k"), None, 1_000, false, one_account);
+        let (p, read) = decide(
+            LOCAL.into(),
+            Some("k"),
+            Some(p),
+            1_000 + STALE - 1,
+            false,
+            never,
+        );
+        assert!(!read);
+        let (_, read) = decide(LOCAL.into(), Some("k"), Some(p), 1_001, true, one_account);
+        assert!(read, "a saved key reads at once");
+    }
+
+    #[test]
+    fn the_key_only_goes_to_the_proxy_it_was_typed_for() {
+        let saved = || {
+            Some(SavedKey {
+                base: LOCAL.into(),
+                key: "k".into(),
+            })
+        };
+        assert_eq!(key_for(saved(), LOCAL).as_deref(), Some("k"));
+        assert_eq!(
+            key_for(saved(), "https://gw.example.com/v0/management"),
+            None
+        );
+        assert_eq!(key_for(None, LOCAL), None);
+    }
+
+    #[test]
+    fn the_key_never_travels_in_the_clear() {
+        for base in [
+            LOCAL,
+            "http://localhost:8317/v0/management",
+            "http://[::1]:8317/v0/management",
+            "https://proxy.example.com/v0/management",
+        ] {
+            assert!(safe_to_send(base), "{base}");
+        }
+        for base in [
+            "http://proxy.example.com:8317/v0/management",
+            "http://192.168.1.5:8317/v0/management",
+            "http://127.0.0.1.example.com/v0/management",
+        ] {
+            assert!(!safe_to_send(base), "{base}");
+            let (p, read) = decide(base.into(), Some("k"), None, 1_000, true, never);
+            assert!(!read && p.error.is_some(), "{base}");
+        }
+    }
+
+    #[test]
+    fn long_error_bodies_are_cut_on_a_character() {
+        let body = "é".repeat(150);
+        assert_eq!(clip(&body, 200).chars().count(), 150);
+        assert_eq!(clip(&"€".repeat(300), 200).chars().count(), 200);
     }
 
     #[test]

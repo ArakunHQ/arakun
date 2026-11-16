@@ -104,7 +104,7 @@ jobs:
           WINDOWS_PATHS: docs/windows\.md|src/bin/arakun-helper\.manifest|.*\.ps1
           WINDOWS_DIFF: (cfg|cfg_attr|cfg!)\(.*\bwindows\b|target_(os|family) *= *"windows"|runs-on:.*windows
           MACOS_REVIEWER: rikvisser-dev
-          MACOS_PATHS: tools/macos-app\.sh
+          MACOS_PATHS: tools/macos-app\.sh|tools/Arakun\.icon/.*|assets/brand/arakun-macos.*
           MACOS_DIFF: (cfg|cfg_attr|cfg!)\(.*\bunix\b|target_os *= *"macos"|target_family *= *"unix"|runs-on:.*macos
           LINUX_REVIEWER: KarloAldrete
           LINUX_PATHS: ""

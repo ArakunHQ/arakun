@@ -34,11 +34,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Dry runs: a change to this file or to the macOS bundle script, or a manual
+  # Dry runs: a change to this file or to the macOS bundle script or icon, or a manual
   # run from the Actions tab, builds the archives without publishing, so a
   # broken release build shows up before a tag.
   pull_request:
-    paths: [".github/workflows/release.yml", "tools/macos-app.sh"]
+    paths: [".github/workflows/release.yml", "tools/macos-app.sh", "tools/Arakun.icon/**"]
   workflow_dispatch:
 
 permissions:
@@ -197,8 +197,10 @@ jobs:
     needs: ci
     # GitHub-hosted like ci.yml's macOS jobs, but a fixed image rather than
     # macos-latest, so the toolchain does not change under a release. arm64.
+    # macOS 26: actool from Xcode 26, which compiles the Liquid Glass icon,
+    # crashes on macOS 15 (its asset service needs macOS 26 frameworks).
     # No runner-usage step: it supports only Linux and Windows.
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       # The oldest macOS the binary runs on. LSMinimumSystemVersion in
       # Info.plist (tools/macos-app.sh) says the same.
@@ -237,6 +239,9 @@ jobs:
           tar -C smoke -xzf dist/*.tar.gz
           app=$(echo smoke/*/Arakun.app)
           codesign --verify --deep --strict "$app"
+          test -f "$app/Contents/Resources/Assets.car"
+          # Which images the icon catalog holds, for each macOS version and appearance.
+          echo "::group::Assets.car"; xcrun assetutil --info "$app/Contents/Resources/Assets.car"; echo "::endgroup::"
           "$app/Contents/MacOS/arakun" --version
 
       # Ad-hoc signed. Where the notarize job runs, it replaces this artifact

@@ -1061,7 +1061,13 @@ impl Shell {
                 View::Canvas => Target::Canvas,
                 v => Target::View(v),
             };
-            if !has && !matches!(v, View::Usage | View::Extensions | View::Memory) {
+            // GitHub reads GitHub, not a project, so it opens without one.
+            if !has
+                && !matches!(
+                    v,
+                    View::Usage | View::Extensions | View::Memory | View::GitHub
+                )
+            {
                 continue;
             }
             let tint = match v {

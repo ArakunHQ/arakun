@@ -66,27 +66,7 @@ impl Shell {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .h(px(40.))
-                    .on_mouse_down(MouseButton::Left, |ev, window, _| crate::ui::drag_window(ev, window))
-                    .when(cfg!(windows), |d| d.window_control_area(WindowControlArea::Drag))
-                    .child(div().flex_1())
-                    .when(cfg!(not(target_os = "macos")), |d| d.child(
-                        caption_buttons()
-                            .child(
-                                window_button("win-min", "minus-sign", 14., false)
-                                    .on_click(|_, window, _| window.minimize_window()),
-                            )
-                            .child(max_button(maximized))
-                            .child(
-                                window_button("win-close", "cancel01", 14., true)
-                                    .on_click(|_, _, cx| cx.quit()),
-                            ),
-                    )),
-            )
+            .child(welcome_bar(maximized, None, px(0.)))
             .child(
                 div()
                     .flex()
@@ -132,4 +112,81 @@ impl Shell {
                     ),
             )
     }
+
+    /// The GitHub tab with no project added, in the welcome's place: the
+    /// window's bar with a way back, over the queue.
+    pub(super) fn render_github_alone(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let back = icon_button("github-alone-back", "arrow-left01", 14.)
+            .tooltip(ui::tip("Back to the welcome screen"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.github_alone = false;
+                cx.notify();
+            }));
+        div()
+            .id("github-alone")
+            .map(crate::ui::stop_window_move)
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(welcome_bar(
+                window.is_maximized(),
+                Some(back.into_any_element()),
+                // Clear of the traffic lights when no rail is left of it.
+                ui::traffic_lights_inset(window) - px(self.titlebar_x()),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.github_view.clone()),
+            )
+    }
+}
+
+/// The welcome screen's top: room to drag the window, its buttons, and
+/// `lead` at the left, clear of the `lights` the traffic lights take.
+fn welcome_bar(maximized: bool, lead: Option<AnyElement>, lights: Pixels) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .h(px(40.))
+        .on_mouse_down(MouseButton::Left, |ev, window, _| {
+            crate::ui::drag_window(ev, window)
+        })
+        .when(cfg!(windows), |d| {
+            d.window_control_area(WindowControlArea::Drag)
+        })
+        .when_some(lead, |d, lead| {
+            d.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .pl(ui::icon_inset().max(lights))
+                    // A press on the button isn't a drag of the window.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(lead),
+            )
+        })
+        .child(div().flex_1())
+        .when(cfg!(not(target_os = "macos")), |d| {
+            d.child(
+                caption_buttons()
+                    .child(
+                        window_button("win-min", "minus-sign", 14., false)
+                            .on_click(|_, window, _| window.minimize_window()),
+                    )
+                    .child(max_button(maximized))
+                    .child(
+                        window_button("win-close", "cancel01", 14., true)
+                            .on_click(|_, _, cx| cx.quit()),
+                    ),
+            )
+        })
 }

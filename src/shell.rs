@@ -437,6 +437,9 @@ pub struct Shell {
     notices: RefCell<crate::notices::History>,
     /// The Inbox was open at the last frame: when it closes, what it showed counts as seen.
     inbox_open: bool,
+    /// The GitHub tab shown with no project added: the queue reads GitHub,
+    /// not a project, so it doesn't need one. It takes the welcome's place.
+    github_alone: bool,
     /// `History::arrived` when the Inbox last drew: what it showed.
     inbox_shown: Cell<u64>,
     /// "Clear" was clicked once; the second click empties the history.
@@ -833,6 +836,7 @@ impl Shell {
             team: None,
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
+            github_alone: false,
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
@@ -2190,6 +2194,11 @@ impl Render for Shell {
             });
         }
         let has_projects = self.has_projects();
+        if has_projects {
+            // With a project the GitHub tab is a tab again; without one later,
+            // the welcome comes back first.
+            self.github_alone = false;
+        }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
         if has_projects {
             if self.browsers_out_of_date() {
@@ -2230,6 +2239,8 @@ impl Render for Shell {
                         .when_some(self.render_image_drop_zone(cx), |d, zone| d.child(zone)),
                 )
                 .into_any_element()
+        } else if self.github_alone {
+            self.render_github_alone(window, cx).into_any_element()
         } else {
             self.render_welcome(window, cx).into_any_element()
         };

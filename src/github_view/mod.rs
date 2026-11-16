@@ -17,9 +17,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels,
-    Point, Render, ScrollHandle, Styled as _, Subscription, Window, canvas, div, px,
+    AnyElement, AnyView, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState,
+    MouseButton, ParentElement as _, Pixels, Point, Render, ScrollHandle, StyleRefinement,
+    Styled as _, Subscription, WeakEntity, Window, canvas, div, px,
 };
 
 use crate::agent::markdown::{self, Block, MdStyle};
@@ -228,6 +229,10 @@ pub struct GitHubView {
     merge_methods: HashMap<String, Option<Vec<MergeMethod>>>,
     /// Markdown already parsed, by its text.
     md: RefCell<HashMap<String, Rc<Vec<Block>>>>,
+    /// Drafts parsed as written, HTML and all, by their text.
+    md_raw: RefCell<HashMap<String, Rc<Vec<Block>>>>,
+    /// The start of long bodies, parsed for their fold, by the whole text.
+    md_start: RefCell<HashMap<String, Rc<Vec<Block>>>>,
     /// The size this view got last frame: (width, height).
     size: Rc<Cell<(f32, f32)>>,
     /// The folded pulse strip is open.
@@ -238,8 +243,60 @@ pub struct GitHubView {
     expanded: HashSet<String>,
     queue_scroll: ScrollHandle,
     body_scroll: ScrollHandle,
+    /// The timeline of the picked item, and the list that shows it: only the
+    /// rows on screen are built and laid out, so scrolling a long one stays
+    /// cheap.
+    timeline: Option<Rc<timeline::Timeline>>,
+    timeline_list: ListState,
+    /// The Files tab's list, the same way.
+    files_rows: Option<diff::FilesRows>,
+    files_list: ListState,
+    /// The queue, the item card and the card's scrolling body, each a view of
+    /// its own (see `Pane`).
+    queue_pane: Entity<Pane>,
+    card_pane: Entity<Pane>,
+    body_pane: Entity<Pane>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
+}
+
+/// A part of the tab drawn as a view of its own, from the tab's state. A
+/// scroll redraws only the view it scrolls in (and the views around it), so
+/// with the queue and the item card as panes GPUI reuses last frame's layout
+/// of the part that didn't move, instead of building the whole tab again on
+/// every step of the wheel.
+pub(super) struct Pane {
+    view: WeakEntity<GitHubView>,
+    draw: fn(&mut GitHubView, &mut Context<GitHubView>) -> AnyElement,
+    _follow: Subscription,
+}
+
+impl Pane {
+    fn new(
+        view: &Entity<GitHubView>,
+        draw: fn(&mut GitHubView, &mut Context<GitHubView>) -> AnyElement,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        cx.new(|cx| Self {
+            view: view.downgrade(),
+            draw,
+            // The pane shows the tab's state: whatever changes the tab changes it.
+            _follow: cx.observe(view, |_, _, cx| cx.notify()),
+        })
+    }
+
+    /// The pane in the place `style` lays out; it fills that place.
+    fn cached(pane: &Entity<Self>, style: StyleRefinement) -> AnyElement {
+        AnyView::from(pane.clone()).cached(style).into_any_element()
+    }
+}
+
+impl Render for Pane {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.view
+            .update(cx, self.draw)
+            .unwrap_or_else(|_| div().into_any_element())
+    }
 }
 
 impl EventEmitter<GitHubViewEvent> for GitHubView {}
@@ -271,6 +328,33 @@ impl GitHubView {
                 _ => {}
             }),
         ];
+        let me = cx.entity();
+        let queue_pane = Pane::new(
+            &me,
+            |this, cx| {
+                // The queue card grows to fill the column, as it did inline.
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .child(this.render_queue(cx))
+                    .into_any_element()
+            },
+            cx,
+        );
+        let card_pane = Pane::new(
+            &me,
+            |this, cx| {
+                let lay = this.layout();
+                div()
+                    .flex()
+                    .size_full()
+                    .child(this.render_item(lay, cx))
+                    .into_any_element()
+            },
+            cx,
+        );
+        let body_pane = Pane::new(&me, |this, cx| this.render_body(cx), cx);
         let mut this = Self {
             github,
             picked: None,
@@ -299,13 +383,22 @@ impl GitHubView {
             unfolded_lines: HashSet::new(),
             merge_methods: HashMap::new(),
             md: RefCell::new(HashMap::new()),
+            md_raw: RefCell::new(HashMap::new()),
+            md_start: RefCell::new(HashMap::new()),
             size: Rc::new(Cell::new((1200., 900.))),
             pulse_open: false,
             head_open: false,
             expanded: HashSet::new(),
             queue_scroll: ScrollHandle::new(),
             body_scroll: ScrollHandle::new(),
+            timeline: None,
+            timeline_list: ListState::new(0, ListAlignment::Top, px(600.)),
+            files_rows: None,
+            files_list: ListState::new(0, ListAlignment::Top, px(600.)),
             focus: cx.focus_handle(),
+            queue_pane,
+            card_pane,
+            body_pane,
             _subs: subs,
         };
         this.resubscribe_body(cx);
@@ -559,6 +652,8 @@ impl GitHubView {
     fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
         self.body_scroll = ScrollHandle::new();
+        self.timeline_list.scroll_to(gpui::ListOffset::default());
+        self.files_list.scroll_to(gpui::ListOffset::default());
         if tab == Tab::Files
             && let Some(item) = self.item()
         {
@@ -1155,7 +1250,8 @@ impl GitHubView {
         text: &str,
         st: MdStyle,
     ) -> gpui::AnyElement {
-        self.markdown_with(id, text, st, true)
+        let blocks = parsed(&self.md, text, |t| markdown::parse(&without_html(t)));
+        render_markdown(id, &blocks, st)
     }
 
     /// A draft as it will be posted: its HTML, comments too, stays as text,
@@ -1166,48 +1262,60 @@ impl GitHubView {
         text: &str,
         st: MdStyle,
     ) -> gpui::AnyElement {
-        self.markdown_with(id, text, st, false)
+        let blocks = parsed(&self.md_raw, text, markdown::parse);
+        render_markdown(id, &blocks, st)
     }
 
-    fn markdown_with(
+    /// Only the start of a long body, for its fold: what the fold hides
+    /// would still be laid out on every frame the body shows.
+    fn markdown_start(
         &self,
         id: impl Into<gpui::ElementId>,
         text: &str,
         st: MdStyle,
-        tidy: bool,
     ) -> gpui::AnyElement {
-        let mut md = self.md.borrow_mut();
-        // Bodies of items looked at long ago: parsing again is cheap next to keeping them all.
-        if md.len() > 400 {
-            md.clear();
-        }
-        let key = if tidy {
-            text.to_string()
-        } else {
-            format!("\0{text}")
-        };
-        let blocks = md
-            .entry(key)
-            .or_insert_with(|| {
-                Rc::new(markdown::parse(&if tidy {
-                    without_html(text)
-                } else {
-                    text.to_string()
-                }))
-            })
-            .clone();
-        markdown::render(
-            id,
-            &blocks,
-            st,
-            &crate::agent::TextMap::default(),
-            None,
-            &[],
-            None,
-            None,
-            None,
-        )
+        let blocks = parsed(&self.md_start, text, |t| {
+            markdown::parse(timeline::fold_start(&without_html(t)))
+        });
+        render_markdown(id, &blocks, st)
     }
+}
+
+/// `text` as markdown, parsed by `parse` on its first use.
+fn parsed(
+    cache: &RefCell<HashMap<String, Rc<Vec<Block>>>>,
+    text: &str,
+    parse: impl FnOnce(&str) -> Vec<Block>,
+) -> Rc<Vec<Block>> {
+    let mut md = cache.borrow_mut();
+    if let Some(blocks) = md.get(text) {
+        return blocks.clone();
+    }
+    // Bodies of items looked at long ago: parsing again is cheap next to keeping them all.
+    if md.len() > 400 {
+        md.clear();
+    }
+    let blocks = Rc::new(parse(text));
+    md.insert(text.to_string(), blocks.clone());
+    blocks
+}
+
+fn render_markdown(
+    id: impl Into<gpui::ElementId>,
+    blocks: &[Block],
+    st: MdStyle,
+) -> gpui::AnyElement {
+    markdown::render(
+        id,
+        blocks,
+        st,
+        &crate::agent::TextMap::default(),
+        None,
+        &[],
+        None,
+        None,
+        None,
+    )
 }
 
 /// GitHub bodies with the HTML the markdown renderer would show as text:
@@ -1341,6 +1449,8 @@ impl Render for GitHubView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The width this view got last frame decides the layout of this one.
         let (cell, id) = (self.size.clone(), cx.entity_id());
+        // The panes lay themselves out from the size too.
+        let panes = [&self.queue_pane, &self.card_pane, &self.body_pane].map(|p| p.entity_id());
         let measure = canvas(
             |_, _, _| {},
             move |bounds: Bounds<Pixels>, _, _: &mut Window, cx: &mut App| {
@@ -1349,6 +1459,9 @@ impl Render for GitHubView {
                 if (now.0 - was.0).abs() > 0.5 || (now.1 - was.1).abs() > 0.5 {
                     cell.set(now);
                     cx.notify(id);
+                    for pane in panes {
+                        cx.notify(pane);
+                    }
                 }
             },
         )
@@ -1392,20 +1505,29 @@ impl Render for GitHubView {
             .gap(crate::ui::sp(GAP))
             .when(narrow, |d| d.flex_1().w_full())
             .when(!narrow, |d| d.w(px(lay.left_w)))
-            .child(self.render_queue(cx))
+            .child(Pane::cached(
+                &self.queue_pane,
+                StyleRefinement::default().flex_1().min_h_0(),
+            ))
             .child(if lay.pulse_full {
                 self.render_pulse(cx)
             } else {
                 self.render_pulse_strip(cx)
             });
+        let card = || {
+            Pane::cached(
+                &self.card_pane,
+                StyleRefinement::default().flex_1().min_w_0(),
+            )
+        };
         let root = if narrow {
             if self.narrow_open && self.picked.is_some() {
-                root.child(self.render_item(lay, cx))
+                root.child(card())
             } else {
                 root.child(left)
             }
         } else {
-            root.child(left).child(self.render_item(lay, cx))
+            root.child(left).child(card())
         };
         let root = root.when_some(self.focus_at, |d, at| {
             d.child(

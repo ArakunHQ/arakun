@@ -906,14 +906,25 @@ pub fn load_zero_days() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Adds `day` when it isn't there yet; keeps the last 60 days.
+/// How many zero days `github-streak.json` keeps.
+pub const KEPT_DAYS: usize = 60;
+
+/// The local days back from `now`, today first, as many as are kept: a
+/// streak can be as long as the history, not only the days on the chart.
+pub fn recent_days(now: u64) -> Vec<String> {
+    (0..=KEPT_DAYS as i32)
+        .map(|i| day_key(day_start(now, i) + 3600))
+        .collect()
+}
+
+/// Adds `day` when it isn't there yet; keeps the last `KEPT_DAYS` days.
 pub fn record_zero_day(days: &mut Vec<String>, day: &str) -> bool {
     if days.iter().any(|d| d == day) {
         return false;
     }
     days.push(day.to_string());
     days.sort();
-    let extra = days.len().saturating_sub(60);
+    let extra = days.len().saturating_sub(KEPT_DAYS);
     days.drain(..extra);
     true
 }
@@ -1289,8 +1300,19 @@ mod tests {
         assert_eq!(streak(&[], &recent), 0);
         let mut many: Vec<String> = (0..70).map(|i| format!("2026-01-{i:02}")).collect();
         record_zero_day(&mut many, "2026-12-01");
-        assert_eq!(many.len(), 60);
+        assert_eq!(many.len(), KEPT_DAYS);
         assert_eq!(many.last().map(String::as_str), Some("2026-12-01"));
+    }
+
+    #[test]
+    fn the_streak_goes_past_the_chart() {
+        let now = DAY + 12 * 3600;
+        let recent = recent_days(now);
+        assert_eq!(recent.len(), KEPT_DAYS + 1);
+        assert_eq!(recent[0], day_key(now));
+        // Ten days in a row, today included: more than the seven on the chart.
+        let days: Vec<String> = recent[..10].to_vec();
+        assert_eq!(streak(&days, &recent), 10);
     }
 
     #[test]

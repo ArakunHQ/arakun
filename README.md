@@ -46,9 +46,9 @@ window, and exposes the same workspace to the agents through a command line.
   requests whose review is asked of you, mentions and assignments, your own open pull
   requests, what is ready to merge and what was done today. It reads your notifications
   and runs searches through the `gh` CLI and its session, so what you already read on
-  github.com still shows. Pick an item to see its state, checks, what blocks the merge,
-  its timeline, files and commits; comment, approve, request changes or merge from
-  there. A comment posts at once; approve, request changes and merge ask a second time,
+  github.com still shows. It opens before you add a project too. Pick an item to see
+  its state, checks, what blocks the merge, its timeline, files and commits; comment,
+  approve, request changes or merge from there. A comment posts at once; approve, request changes and merge ask a second time,
   and an approval or a merge stops if new commits came after you looked. An agent can
   review a pull request for you
   and leave a draft (`arakun github draft`) that you post, edit or discard. Posting a
@@ -57,7 +57,8 @@ window, and exposes the same workspace to the agents through a command line.
   requests, mentions and assignments raise an alert; so does anything new in the
   organizations and repositories on your watch list. Click the line under "Review
   queue" to show only some organizations or repositories; the rest doesn't show, count
-  or alert. Arakun reads GitHub in the background only after you open the tab once,
+  or alert. "Mark all read" marks only what that choice shows. Arakun reads GitHub in
+  the background only after you open the tab once,
   and stops while `gh` is missing or signed out. It keeps the watch list, that choice
   and whether you opened the tab in `github.json` next to its state, the days your queue reached zero in
   `github-streak.json`, drafts in `github/drafts/` beside them, and the profile
@@ -312,9 +313,11 @@ out first.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them
-- In the GitHub tab: `J` / `K` next and previous item, `A` approve, `C` comment, `R`
-  review with an agent, `U` catch me up, `S` summarize, `O` open on GitHub;
-  `Ctrl+Enter` sends a comment, `/` in the comment box lists the actions
+- In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
+  `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
+  GitHub; `Ctrl+Enter` sends a comment, `/` in the comment box lists the actions. In
+  a narrow window the keys move through the list and `Enter` opens the item; `Esc`
+  goes back to the list
 
 ## Contributing
 

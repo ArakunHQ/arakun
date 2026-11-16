@@ -17,12 +17,13 @@ impl Shell {
     /// Opens (or focuses) the GitHub tab of the visible environment.
     pub(super) fn open_github_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
-        if !self.has_projects() {
-            self.open_picker(window, cx);
-            return;
+        if self.has_projects() {
+            self.show_view_tab("GitHub", TabKind::GitHub, |k| matches!(k, TabKind::GitHub));
+            self.note_active_tab();
+        } else {
+            // The queue doesn't need a project: it shows in the welcome's place.
+            self.github_alone = true;
         }
-        self.show_view_tab("GitHub", TabKind::GitHub, |k| matches!(k, TabKind::GitHub));
-        self.note_active_tab();
         self.github.update(cx, |g, cx| g.opened(cx));
         self.github_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -45,7 +46,9 @@ impl Shell {
         match ev {
             GitHubViewEvent::Open(url) => self.open_url(url.clone(), window, cx),
             GitHubViewEvent::Ask { title, prompt } => {
+                // An agent works in a project: without one, add one first.
                 if !self.has_projects() {
+                    self.open_picker(window, cx);
                     return;
                 }
                 let (path, agent) = (self.env().path.clone(), self.env().agent);
@@ -72,11 +75,14 @@ impl Shell {
     ) {
         let GitHubEvent::New(new) = ev;
         let watching = window.is_window_active()
-            && self.has_projects()
-            && matches!(
-                self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
-                Some(TabKind::GitHub)
-            );
+            && if self.has_projects() {
+                matches!(
+                    self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
+                    Some(TabKind::GitHub)
+                )
+            } else {
+                self.github_alone
+            };
         if watching {
             return;
         }

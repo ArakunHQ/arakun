@@ -335,12 +335,71 @@ fn set_aside(path: &Path, now: u64) -> bool {
     }
 }
 
+/// Saves `history` on a background thread, so a slow disk flush doesn't
+/// stall the window. One thread writes every save in the order they came.
 pub fn store(history: &mut History) {
-    store_to(&file(), history, crate::model::unix_now());
+    let path = file();
+    if !ready_to_store(&path, history, crate::model::unix_now()) {
+        return;
+    }
+    let bytes = serde_json::to_vec_pretty(history).unwrap_or_default();
+    if let Err(std::sync::mpsc::SendError(Save::Write(path, bytes))) =
+        writer().send(Save::Write(path, bytes))
+    {
+        write_file(&path, &bytes);
+    }
+}
+
+/// Waits until every save sent so far is on disk (before quitting).
+pub fn flush() {
+    let (done, wait) = std::sync::mpsc::channel();
+    if writer().send(Save::Flush(done)).is_ok() {
+        let _ = wait.recv();
+    }
+}
+
+enum Save {
+    Write(PathBuf, Vec<u8>),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+fn writer() -> &'static std::sync::mpsc::Sender<Save> {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<Save>> = std::sync::OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Save>();
+        let spawned = std::thread::Builder::new()
+            .name("notices-writer".into())
+            .spawn(move || {
+                for save in rx {
+                    match save {
+                        Save::Write(path, bytes) => write_file(&path, &bytes),
+                        Save::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            // The receiver is gone with the closure: sends fail, and
+            // `store` writes on the spot.
+            eprintln!("arakun: could not start the notices writer: {e}");
+        }
+        tx
+    })
 }
 
 /// Private: subtitles hold the start of agent replies.
 fn store_to(path: &Path, history: &mut History, now: u64) {
+    if ready_to_store(path, history, now) {
+        write_file(
+            path,
+            &serde_json::to_vec_pretty(history).unwrap_or_default(),
+        );
+    }
+}
+
+/// False while a file that could not be read is still in the way.
+fn ready_to_store(path: &Path, history: &mut History, now: u64) -> bool {
     if history.unsaved_file {
         // The file that could not be read is still there: move it first.
         history.unsaved_file = match std::fs::symlink_metadata(path) {
@@ -352,13 +411,14 @@ fn store_to(path: &Path, history: &mut History, now: u64) {
                 "arakun: not saving {}: it holds notices that could not be read",
                 path.display()
             );
-            return;
+            return false;
         }
     }
-    if let Err(e) = crate::durable::write_private(
-        path,
-        &serde_json::to_vec_pretty(history).unwrap_or_default(),
-    ) {
+    true
+}
+
+fn write_file(path: &Path, bytes: &[u8]) {
+    if let Err(e) = crate::durable::write_private(path, bytes) {
         eprintln!("arakun: could not save {}: {e}", path.display());
     }
 }
@@ -621,6 +681,20 @@ mod tests {
         store_to(&path, &mut h, 42);
         assert_eq!(std::fs::read_to_string(aside(7)).unwrap(), torn);
         assert_eq!(load_from(&path, 60).notices, h.notices);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn background_saves_land_in_order() {
+        let dir = scratch("writer");
+        let path = dir.join("notices.json");
+        for n in 0..20 {
+            writer()
+                .send(Save::Write(path.clone(), format!("{n}").into_bytes()))
+                .unwrap();
+        }
+        flush();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "19");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -169,15 +169,8 @@ impl AutomationsDialog {
     }
 
     /// The palette's rules: waiting ones first, then the last finished.
-    pub fn set_rules(
-        &mut self,
-        mut rules: Vec<crate::palette::rules::Rule>,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::palette::rules::State;
-        rules.sort_by_key(|r| (r.state != State::Waiting, std::cmp::Reverse(r.created)));
-        rules.truncate(8);
-        self.rules = rules;
+    pub fn set_rules(&mut self, rules: Vec<crate::palette::rules::Rule>, cx: &mut Context<Self>) {
+        self.rules = shown_rules(rules);
         cx.notify();
     }
 
@@ -854,5 +847,69 @@ impl Render for AutomationsDialog {
             ))
             .child(body.flex_1().max_h(px(520.)))
             .child(footer)
+    }
+}
+
+/// How many rules the dialog lists when some are finished.
+const RULES_SHOWN: usize = 8;
+
+/// Waiting rules first, newest first, then the last finished ones. Every
+/// waiting or running rule stays, with its Cancel: only finished ones are
+/// cut to fit.
+fn shown_rules(mut rules: Vec<crate::palette::rules::Rule>) -> Vec<crate::palette::rules::Rule> {
+    use crate::palette::rules::State;
+    rules.sort_by_key(|r| (r.state != State::Waiting, std::cmp::Reverse(r.created)));
+    let live = rules
+        .iter()
+        .filter(|r| matches!(r.state, State::Waiting | State::Running))
+        .count();
+    let mut finished = RULES_SHOWN.saturating_sub(live);
+    rules.retain(|r| {
+        if matches!(r.state, State::Waiting | State::Running) {
+            return true;
+        }
+        let keep = finished > 0;
+        finished = finished.saturating_sub(1);
+        keep
+    });
+    rules
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::palette::rules::{Rule, State, Trigger};
+
+    fn rule(id: u64, state: State) -> Rule {
+        Rule {
+            id,
+            title: String::new(),
+            trigger: Trigger::CiFailed {
+                branch: "main".into(),
+                project: None,
+            },
+            steps: Vec::new(),
+            dir: None,
+            created: id,
+            expires: 0,
+            state,
+            note: String::new(),
+            seen_busy: false,
+        }
+    }
+
+    #[test]
+    fn every_waiting_rule_is_listed() {
+        let mut rules: Vec<Rule> = (0..10).map(|i| rule(i, State::Done)).collect();
+        rules.extend((10..20).map(|i| rule(i, State::Waiting)));
+        rules.push(rule(20, State::Running));
+        let shown = shown_rules(rules);
+        assert_eq!(shown.len(), 11);
+        assert!(shown.iter().all(|r| r.state != State::Done));
+        // With few waiting, the newest finished fill the rest.
+        let mut rules: Vec<Rule> = (0..10).map(|i| rule(i, State::Done)).collect();
+        rules.push(rule(10, State::Waiting));
+        let ids: Vec<u64> = shown_rules(rules).iter().map(|r| r.id).collect();
+        assert_eq!(ids, [10, 9, 8, 7, 6, 5, 4, 3]);
     }
 }

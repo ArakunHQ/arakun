@@ -1085,6 +1085,8 @@ impl SettingsDialog {
                 self.palettes.add(&p);
                 self.share_input.update(cx, |i, cx| i.set_text("", cx));
                 self.show_import = false;
+                // A Delete armed for the old palette must not delete the new one.
+                self.confirm_delete = false;
                 self.palette_note = Some(("Added and in use.".into(), false));
                 self.apply_palette(cx);
             }
@@ -1388,7 +1390,7 @@ impl SettingsDialog {
                     p.hue / 360.,
                     ui::hue_track(0.6, 0.55),
                     gpui::hsla(p.hue / 360., 0.6, 0.55, 1.),
-                    setter(|p, t| p.hue = t * 360.),
+                    setter(|p, t| p.hue = hue_at(t)),
                 )
                 .into_any_element(),
             ))
@@ -2311,9 +2313,22 @@ impl Render for SettingsDialog {
     }
 }
 
+/// The tint at slider position `t`. 360° is 0° again, which would send the
+/// thumb back to the left end, so the right end stops just short of it.
+fn hue_at(t: f32) -> f32 {
+    (t * 360.).clamp(0., 359.)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tint_slider_stops_short_of_360() {
+        assert_eq!(hue_at(0.), 0.);
+        assert_eq!(hue_at(0.5), 180.);
+        assert_eq!(hue_at(1.), 359.);
+    }
 
     #[test]
     fn shortcut_search_reads_keys_and_words() {

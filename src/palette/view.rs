@@ -431,7 +431,7 @@ impl Palette {
                                     .flex()
                                     .flex_wrap()
                                     .gap(crate::ui::sp(6.))
-                                    .mt(px(12.))
+                                    .mt(crate::ui::sp(12.))
                                     .children(
                                         sources
                                             .iter()
@@ -578,10 +578,7 @@ impl Palette {
                         .gap(crate::ui::sp(4.))
                         .child(kit::keycaps(&["Ctrl", "1"]))
                         .when(n > 1, |d| {
-                            d.child("…").child(kit::keycaps(&[
-                                "Ctrl",
-                                ["1", "2", "3", "4", "5", "6", "7", "8", "9"][n - 1],
-                            ]))
+                            d.child("…").child(kit::keycaps(&["Ctrl", last_pin_key(n)]))
                         }),
                 ),
             )
@@ -818,8 +815,10 @@ impl Palette {
                 .id("palette-actions")
                 .occlude()
                 .absolute()
-                .right(px(kit::PALETTE_PREVIEW_W + 16.))
-                .bottom(px(58.))
+                // Clear of the preview and of the footer, whose padding
+                // scales with the spacing while its text line doesn't.
+                .right(px(kit::PALETTE_PREVIEW_W) + crate::ui::sp(16.))
+                .bottom(px(19.) + crate::ui::sp(39.))
                 .w(px(290.))
                 .p(crate::ui::sp(6.))
                 .flex()
@@ -879,7 +878,7 @@ impl Palette {
         let sessions = kinds.iter().all(|k| *k == Kind::Session);
         let mut bar = kit::bulk_bar().child(
             div()
-                .mr(px(8.))
+                .mr(crate::ui::sp(8.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme::text())
                 .child(format!("{} selected", self.marked.len())),
@@ -1058,5 +1057,23 @@ impl Render for Palette {
                 Animation::new(Duration::from_millis(140)).with_easing(gpui::ease_out_quint()),
                 |d, t| d.opacity(t).mt(px(6. * (1. - t))),
             )
+    }
+}
+
+/// The key of the last pin with one: a hand-edited pins.json can hold
+/// more than nine, and only the first nine have a key.
+fn last_pin_key(pins: usize) -> &'static str {
+    ["1", "2", "3", "4", "5", "6", "7", "8", "9"][pins.clamp(1, 9) - 1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn more_than_nine_pins_show_the_ninth_key() {
+        assert_eq!(last_pin_key(2), "2");
+        assert_eq!(last_pin_key(9), "9");
+        assert_eq!(last_pin_key(12), "9");
     }
 }

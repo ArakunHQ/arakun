@@ -359,7 +359,9 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
     } else if has_any(&t, &["falle", "fails", "falla", "breaks", "se rompa"])
         && has_any(&t, &["ci", "build", "checks"])
     {
-        let branch = word_after(text, &["de ", "on ", "en "]).unwrap_or_else(|| "main".into());
+        let branch = word_after(text, &["de ", "on ", "en "])
+            .or_else(|| plain_branch(text))
+            .unwrap_or_else(|| "main".into());
         Trigger::CiFailed {
             branch,
             project: None,
@@ -875,6 +877,62 @@ fn word_after(text: &str, heads: &[&str]) -> Option<String> {
             if w.contains('-') || w.contains('/') || w == "main" || w == "master" {
                 return Some(w);
             }
+        }
+    }
+    None
+}
+
+/// A branch named without `-` or `/` ("CI fails on develop"), read only
+/// after the CI is named, so "notify me on Slack when CI fails" has none.
+fn plain_branch(text: &str) -> Option<String> {
+    const CI: &[&str] = &[
+        "ci", "build", "checks", "fails", "falle", "falla", "breaks", "rompa",
+    ];
+    const HEADS: &[&str] = &["de", "on", "en", "rama", "branch"];
+    // Skipped between a head and the branch: "on the develop branch".
+    const ARTICLES: &[&str] = &["el", "la", "the", "my", "mi", "our", "nuestra"];
+    const NOT_BRANCHES: &[&str] = &[
+        "ci",
+        "build",
+        "checks",
+        "rama",
+        "branch",
+        "proyecto",
+        "project",
+        "repo",
+        "que",
+        "a",
+        "an",
+        "any",
+        "un",
+        "una",
+        "this",
+        "este",
+        "esta",
+        "cualquier",
+    ];
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| {
+            w.chars()
+                .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | '_' | '.'))
+                .collect::<String>()
+                .trim_end_matches('.')
+                .to_string()
+        })
+        .collect();
+    let lower = |w: &str| w.to_lowercase();
+    let start = words.iter().position(|w| CI.contains(&lower(w).as_str()))?;
+    let mut rest = words[start + 1..].iter();
+    while let Some(w) = rest.next() {
+        if !HEADS.contains(&lower(w).as_str()) {
+            continue;
+        }
+        let next = rest
+            .clone()
+            .find(|w| !ARTICLES.contains(&lower(w).as_str()))?;
+        if !next.is_empty() && !NOT_BRANCHES.contains(&lower(next).as_str()) {
+            return Some(next.clone());
         }
     }
     None
@@ -1951,6 +2009,30 @@ mod tests {
         assert_eq!(timeless_reminder("open src/alarms.rs"), None);
         assert_eq!(timeless_reminder("open src/timer.rs"), None);
         assert_eq!(timeless_reminder("fix the timeranges bug"), None);
+    }
+
+    #[test]
+    fn a_plain_branch_name_is_read_after_the_ci() {
+        let branch = |text: &str| match parse(text, None, &[]).unwrap().trigger {
+            Trigger::CiFailed { branch, .. } => branch,
+            t => panic!("{t:?}"),
+        };
+        assert_eq!(branch("tell me when CI fails on develop"), "develop");
+        assert_eq!(branch("avísame si el CI falla en staging."), "staging");
+        assert_eq!(
+            branch("when the build breaks on the develop branch"),
+            "develop"
+        );
+        assert_eq!(
+            branch("avísame si falla el CI en la rama release"),
+            "release"
+        );
+        // "on Slack" comes before the CI: it isn't a branch.
+        assert_eq!(branch("notify me on Slack when CI fails"), "main");
+        assert_eq!(
+            branch("avísame cuando falle el CI de este proyecto"),
+            "main"
+        );
     }
 
     #[test]

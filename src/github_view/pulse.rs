@@ -408,10 +408,8 @@ impl GitHubView {
                 );
         }
 
-        // The last seven days, oldest first; today last.
-        let recent: Vec<String> = (0..7)
-            .map(|i| queue::day_key(queue::day_start(now, i) + 3600))
-            .collect();
+        // Today first, then each day back; the chart shows the first seven.
+        let recent = queue::recent_days(now);
         let zero = g.zero_days();
         let streak = queue::streak(zero, &recent);
         let dots = div()

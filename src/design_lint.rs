@@ -115,6 +115,50 @@ fn unscaled(line: &str, next: &str) -> Vec<String> {
             }
         }
     }
+    found.extend(shorthands(line));
+    found
+}
+
+/// GPUI's fixed-size shorthands (`.rounded_lg()`, `.p_2()`, `.gap_2()`):
+/// a size in the name, which no scale reaches. `.rounded_full()` and
+/// `.rounded_none()` aren't sizes, and nothing scales zero (`.p_0()`).
+fn shorthands(line: &str) -> Vec<String> {
+    const SPACE: &[&str] = &[
+        "gap_x", "gap_y", "gap", "px", "py", "pt", "pb", "pl", "pr", "p",
+    ];
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(i) = line[at..].find('.') {
+        let before = &line[..at + i];
+        at += i + 1;
+        let name: String = line[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if before.ends_with('.')
+            || before.ends_with("self")
+            || !line[at + name.len()..].starts_with("()")
+        {
+            continue;
+        }
+        if let Some(rest) = name.strip_prefix("rounded_") {
+            if !rest.ends_with("full") && !rest.ends_with("none") {
+                found.push(format!(
+                    ".{name}() is a fixed size: use .rounded(ui::rad(…))"
+                ));
+            }
+            continue;
+        }
+        let size = SPACE
+            .iter()
+            .find_map(|p| name.strip_prefix(p)?.strip_prefix('_'));
+        if let Some(size) = size
+            && size.starts_with(|c: char| c.is_ascii_digit())
+            && size != "0"
+        {
+            found.push(format!(".{name}() is a fixed size: use ui::sp(…)"));
+        }
+    }
     found
 }
 
@@ -127,6 +171,19 @@ fn code_only(line: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '/' if chars.peek() == Some(&'/') => break,
+            // `/* … */`: gone, so `.gap(/* why */ ui::sp(8.))` reads as
+            // `.gap( ui::sp(8.))`. One left open runs to the end of the line.
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut last = ' ';
+                for c in chars.by_ref() {
+                    if last == '*' && c == '/' {
+                        break;
+                    }
+                    last = c;
+                }
+                out.push(' ');
+            }
             // `r"…"`, `r#"…"#` or `br"…"`: no escapes, ends at a quote and
             // as many #.
             'r' if matches!(chars.peek(), Some('"' | '#'))
@@ -337,6 +394,16 @@ fn the_lint_catches_what_it_should() {
     assert_eq!(unscaled(".px(px(12.)).py(px(4.))", "").len(), 2);
     assert!(unscaled(".rounded(crate::ui::rad(8.)).gap(ui::sp(6.))", "").is_empty());
     assert!(unscaled(".rounded_full().h(px(20.)).mx(px(4.))", "").is_empty());
+    // Shorthands with a size in their name skip the scales too.
+    assert_eq!(unscaled(".rounded_lg().p_2().gap_2()", "").len(), 3);
+    assert_eq!(unscaled(".rounded_t_md().gap_x_1p5().px_4()", "").len(), 3);
+    assert!(unscaled(".rounded_none().p_0().pr_number()", "").is_empty());
+    assert!(unscaled(".rounded_l_full().gap_0()", "").is_empty());
+    // A block comment is not code: neither what it hides nor what it holds.
+    assert!(unscaled(".gap(/* why */ ui::sp(8.))", "").is_empty());
+    assert!(unscaled(".gap(ui::sp(8.)) /* .p(px(4.)) */", "").is_empty());
+    assert_eq!(unscaled(".gap(/* why */ px(8.))", "").len(), 1);
+    assert!(unscaled(".pl(ui::sp(6.)) /* never closed .gap(px(2.))", "").is_empty());
     // An argument on a later line, after a comment or a blank line.
     assert_eq!(unscaled(".gap(", next_code(&["    px(8.)", ")"])).len(), 1);
     let later = ["        // Why eight.", "", "        px(8.))"];
@@ -425,6 +492,9 @@ fn the_layout_audit_catches_what_it_should() {
 
     let (code, text) = run("good.json");
     assert_eq!(code, 0, "{text}");
+    // good.json also has a full-height wrapper that draws nothing in a
+    // bordered box, around a child that fits: no edge of it is cut.
+    assert!(!text.contains("src/framed.rs"), "{text}");
 
     let (code, text) = run("bad.json");
     assert_eq!(code, 1, "{text}");
@@ -438,6 +508,10 @@ fn the_layout_audit_catches_what_it_should() {
         "src/rule.rs:8 [clip]",
         // A square bar frames its chips as much as a rounded one.
         "src/squarebar.rs:9 [inset]",
+        // A pill-shaped bar skips the corner check, not the inset one.
+        "src/pillbar.rs:9 [inset]",
+        // A wrapper that draws nothing doesn't hide a cut child.
+        "src/wrapped.rs:9 [clip]",
         // One rounded corner is no pill: its corner still has to match.
         "src/tab.rs:5 [radius]",
     ] {

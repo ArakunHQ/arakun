@@ -184,16 +184,24 @@ impl PhoneView {
 
     fn render_qr(url: &str) -> impl IntoElement {
         const CELL: f32 = 4.;
+        const QUIET: usize = 4;
         let code = qrcode::QrCode::new(url.as_bytes()).ok();
         let Some(code) = code else {
             return div().child("QR code unavailable");
         };
         let width = code.width();
         let colors = code.to_colors();
+        // The quiet zone is part of the code: four modules, the size the
+        // standard asks for, whatever the Spacing setting. A fixed box with
+        // the modules centred makes it, so no padding scales it.
+        let side = px((width + 2 * QUIET) as f32 * CELL);
         let mut rows = div()
             .flex()
             .flex_col()
-            .p(crate::ui::sp(CELL * 3.))
+            .items_center()
+            .justify_center()
+            .flex_none()
+            .size(side)
             .bg(gpui::white())
             .rounded(crate::ui::rad(ui::RADIUS));
         for y in 0..width {

@@ -59,6 +59,7 @@ impl GitHubView {
         };
         let scope = format!("{place} · {} tracked", q.tracked());
         let focused = !g.focus().is_empty();
+        let has_rows = !q.rows.is_empty();
         let header = div()
             .flex()
             .flex_none()
@@ -191,6 +192,20 @@ impl GitHubView {
                     )
             }));
 
+        // The list's keys; the narrow layout opens the pick with Enter.
+        let narrow = self.narrow();
+        let hints = div()
+            .flex()
+            .flex_none()
+            .flex_wrap()
+            .items_center()
+            .gap(crate::ui::sp(14.))
+            .px(crate::ui::sp(16.))
+            .pb(crate::ui::sp(10.))
+            .child(ui::key_hint("Next", "J/↓"))
+            .child(ui::key_hint("Previous", "K/↑"))
+            .when(narrow, |d| d.child(ui::key_hint("Open", "↵")));
+
         let body = self.render_queue_body(cx);
         ui::surface_card()
             .flex_1()
@@ -204,6 +219,7 @@ impl GitHubView {
                     .mb(px(10.))
                     .child(body),
             )
+            .when(has_rows, |d| d.child(hints))
             .into_any_element()
     }
 
@@ -567,7 +583,8 @@ impl GitHubView {
     /// The header menu: refresh, mark all read, and the watch list.
     pub(super) fn render_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let g: &GitHub = self.github.read(cx);
-        let to_mark: Vec<String> = g.list(false).iter().map(|n| n.id.clone()).collect();
+        // Only what the focus shows: hidden threads would be marked unseen.
+        let to_mark = g.unread_in_focus();
         let can_mark = !to_mark.is_empty();
         // The same threads, not just as many: one that left and one that
         // arrived would keep the count.

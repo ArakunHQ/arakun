@@ -384,10 +384,13 @@ fn busy(rows: &[Row]) -> View {
 /// Whether `view`'s content, drawn from `rows` now, still has the size the
 /// view was made for. The dots and the list read the live feed, so a view kept
 /// from before the feed changed would draw the new dots or rows in the old
-/// room and spill out of it.
-fn drawn_as(view: View, rows: &[Row]) -> bool {
+/// room and spill out of it. Recording swaps the dots for its bars, which
+/// need the recording view's width.
+fn drawn_as(view: View, rows: &[Row], recording: bool) -> bool {
+    let bars_fit = || view.size().0 >= View::Recording.size().0;
     match view {
-        View::Busy(..) => busy(rows) == view,
+        View::Busy(..) => busy(rows) == view && (!recording || bars_fit()),
+        View::Compact(_) if recording => bars_fit(),
         View::List(n) => rows.len().min(MAX_ROWS) == n,
         _ => true,
     }
@@ -1520,7 +1523,7 @@ impl Island {
     fn prev_alpha(&self) -> Option<(View, f32)> {
         let (v, at) = self.prev?;
         let a = 1. - at.elapsed().as_secs_f32() / 0.12;
-        (a > 0. && drawn_as(v, &self.feed.rows)).then_some((v, a))
+        (a > 0. && drawn_as(v, &self.feed.rows, self.recording.is_some())).then_some((v, a))
     }
 
     /// The pointer came or went. Leaving waits `LEAVE_GRACE` first: a screenshot
@@ -2801,14 +2804,21 @@ mod tests {
         let one = busy(&working(1));
         let seven = working(7);
         assert_eq!(one, View::Busy(1, 0));
-        assert!(drawn_as(one, &working(1)));
-        assert!(!drawn_as(one, &seven));
-        assert!(drawn_as(busy(&seven), &seven));
-        assert!(drawn_as(View::List(3), &working(3)));
-        assert!(!drawn_as(View::List(3), &seven));
+        assert!(drawn_as(one, &working(1), false));
+        assert!(!drawn_as(one, &seven, false));
+        assert!(drawn_as(busy(&seven), &seven, false));
+        assert!(drawn_as(View::List(3), &working(3), false));
+        assert!(!drawn_as(View::List(3), &seven, false));
         // Views whose content doesn't come from the rows always fit.
-        assert!(drawn_as(View::Recording, &seven));
-        assert!(drawn_as(View::Compact(Phase::Idle), &seven));
+        assert!(drawn_as(View::Recording, &seven, true));
+        assert!(drawn_as(View::Compact(Phase::Idle), &seven, false));
+        // Recording starts while the island sleeps: the sleeping view would
+        // draw the bars in the raccoon's room, so it doesn't fade out.
+        let sleeping = View::Compact(Phase::Sleeping);
+        assert!(drawn_as(sleeping, &[], false));
+        assert!(!drawn_as(sleeping, &[], true));
+        assert!(!drawn_as(one, &working(1), true));
+        assert!(drawn_as(View::Compact(Phase::Working), &[], true));
     }
 
     #[test]

@@ -2024,11 +2024,17 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn only_the_sessions_own_host_is_signalled() {
-        // `sh -c … agent-host h-1` has the arguments a host for h-1 has.
+        // `sh -c … agent-host h-1` has the arguments a host for h-1 has. The
+        // trailing `; :` keeps sh from exec'ing into `sleep`, which would drop
+        // those arguments, and the wait covers the moment before sh starts.
         let mut host = std::process::Command::new("sh")
-            .args(["-c", "sleep 30", "agent-host", "h-1"])
+            .args(["-c", "sleep 30; :", "agent-host", "h-1"])
             .spawn()
             .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !hosts(host.id(), "h-1") && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let mut other = std::process::Command::new("sleep")
             .arg("30")
             .spawn()

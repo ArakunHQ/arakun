@@ -528,14 +528,28 @@ fn run(ctx: &Context, tx: &mpsc::Sender<Event>, job: &Watch) {
             return;
         }
     }
+    // Its output closed: it has ended or is about to. The status is read
+    // before `proc` goes, which would kill it if it hadn't.
+    let code = if finished {
+        None
+    } else {
+        proc.child.wait().ok().map(|s| s.code())
+    };
     drop(proc);
     if job.timed_out() {
         let _ = tx.send(Event::Failed(too_slow(ANSWER_LIMIT)));
     } else if !finished {
-        let _ = tx.send(Event::Done {
-            input: 0,
-            output: 0,
-        });
+        // Without its result line the answer is cut short, not done.
+        let _ = tx.send(Event::Failed(cut_short(code.flatten())));
+    }
+}
+
+/// Why an answer stopped without Claude Code's result line.
+fn cut_short(code: Option<i32>) -> String {
+    match code {
+        Some(0) => "Claude Code stopped without finishing the answer.".into(),
+        Some(c) => format!("Claude Code stopped with exit code {c} before finishing the answer."),
+        None => "Claude Code was stopped before finishing the answer.".into(),
     }
 }
 
@@ -636,6 +650,13 @@ mod tests {
         let e = parse_line(r#"{"type":"result","is_error":true,"result":"Not logged in"}"#);
         assert!(matches!(e, Some(Event::Failed(ref s)) if s == "Not logged in"));
         assert!(parse_line(r#"{"type":"system","subtype":"init"}"#).is_none());
+    }
+
+    #[test]
+    fn an_answer_cut_short_says_how() {
+        assert!(cut_short(Some(0)).contains("without finishing"));
+        assert!(cut_short(Some(2)).contains("exit code 2"));
+        assert!(cut_short(None).contains("was stopped"));
     }
 
     #[test]

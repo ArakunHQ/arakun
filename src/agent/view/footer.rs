@@ -155,8 +155,9 @@ impl ThreadView {
         if rows == 0 {
             return 0.;
         }
-        // Padding top and bottom, and the top border.
-        (rows + usize::from(t.queue_paused())) as f32 * 28. + 9.
+        // Padding top and bottom (it follows the Spacing setting, as in
+        // `render_queue`), and the top border.
+        (rows + usize::from(t.queue_paused())) as f32 * 28. + 2. * f32::from(crate::ui::sp(4.)) + 1.
     }
 
     pub(super) fn render_queue(&self, cx: &Context<Self>) -> Option<AnyElement> {

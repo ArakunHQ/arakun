@@ -16,10 +16,10 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla, IntoElement,
-    MouseButton, MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder, PathStyle,
-    Pixels, Point, Render, SharedString, StrokeOptions, Styled as _, TextRun, TruncateFrom, Window,
-    canvas, div, hsla, point, prelude::*, px, rgb, size,
+    AnimationExt as _, App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla,
+    IntoElement, MouseButton, MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder,
+    PathStyle, Pixels, Point, Render, SharedString, StrokeOptions, Styled as _, TextRun,
+    TruncateFrom, Window, canvas, div, hsla, point, prelude::*, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin};
 
@@ -59,6 +59,8 @@ const CARD_W: f32 = 440.;
 const PILL_W: f32 = 330.;
 const PILL_H: f32 = 54.;
 const BADGE: f32 = 26.;
+/// A card's buttons' height.
+const BUTTON_H: f32 = 28.;
 /// A notice's picture, where the badge goes.
 const AVATAR: f32 = 32.;
 const TITLE_SIZE: f32 = 14.5;
@@ -647,7 +649,9 @@ impl CardLayout {
         let flat = |s: &str| SharedString::from(s.split_whitespace().collect::<Vec<_>>().join(" "));
         let (title, body) = (flat(&alert.title), flat(&alert.subtitle));
         let session = alert.kind.session();
-        let buttons = alert.buttons();
+        // Only a confirmation keeps its buttons on the card; the others show
+        // theirs over it on hover, so they take no room.
+        let buttons = alert.kind == AlertKind::Confirm;
         let bold = gpui::Font {
             weight: FontWeight::SEMIBOLD,
             ..gpui::font(theme::FONT_SANS)
@@ -696,7 +700,7 @@ impl CardLayout {
         } else {
             Self::face(alert)
         };
-        let foot = if buttons { 10. + 26. + 14. } else { 14. };
+        let foot = if buttons { 12. + BUTTON_H + 14. } else { 14. };
         CardLayout {
             title,
             body,
@@ -967,6 +971,9 @@ pub struct Island {
     /// When an agent was last busy.
     busy_at: Option<Instant>,
     hovered: bool,
+    /// The card (by its seq) the pointer is on: its buttons show only then,
+    /// the way a phone shows a notification's actions on a swipe.
+    card_hot: Option<u64>,
     /// Bumped on every pointer change, so a delayed leave knows if it still holds.
     leaving: u64,
     /// Off after a click, so the next state shows under the pointer.
@@ -1024,6 +1031,7 @@ impl Island {
             armed: None,
             busy_at: None,
             hovered: false,
+            card_hot: None,
             leaving: 0,
             peek: true,
             pinned: false,
@@ -1503,24 +1511,43 @@ impl Island {
         let session = a.kind.session();
         let confirm = a.kind == AlertKind::Confirm;
         let seq = card.seq;
-        let (no, yes) = if confirm {
-            ("Rechazar", "Aprobar")
-        } else {
-            ("Luego", "Ver")
-        };
-        let pill = |label: &'static str, strong: bool| {
+        // The action is a white pill with an arrow, the way out a quiet word
+        // beside it: the eye lands on what the card is for.
+        let primary = |label: &'static str| {
             div()
                 .id(label)
-                .h(px(26.))
-                .px(px(16.))
+                .h(px(BUTTON_H))
+                .pl(px(13.))
+                .pr(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .rounded_full()
+                .bg(gpui::white())
+                .hover(|s| s.bg(hsla(0., 0., 0.86, 1.)))
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(gpui::black())
+                .child(label)
+                .child(
+                    gpui::svg()
+                        .path("icons/arrow-right01.svg")
+                        .size(px(13.))
+                        .text_color(gpui::black()),
+                )
+        };
+        let quiet = |label: &'static str| {
+            div()
+                .id(label)
+                .h(px(BUTTON_H))
+                .px(px(11.))
                 .flex()
                 .items_center()
                 .rounded_full()
-                .bg(hsla(0., 0., if strong { 0.24 } else { 0.15 }, 1.))
-                .hover(|s| s.bg(hsla(0., 0., if strong { 0.3 } else { 0.2 }, 1.)))
+                .hover(|s| s.bg(hsla(0., 0., 1., 0.1)))
                 .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(gpui::white())
+                .text_color(hsla(0., 0., 1., 0.62))
                 .child(label)
         };
         let face = if session {
@@ -1560,37 +1587,32 @@ impl Island {
             .when(!layout.pill && layout.body_lines > 0, |d| d.gap(px(3.)))
             .child(title)
             .when(layout.body_lines > 0, |d| d.child(body));
-        let buttons = a.buttons().then(|| {
+        // Under the text, not in the far corner, so the card has no empty
+        // stretch at the bottom left.
+        let indent = CardLayout::text_x(a) - if session { 18. } else { 14. };
+        let hot = self.card_hot == Some(seq);
+        let buttons = (a.buttons() && (confirm || hot)).then(|| {
             div()
                 .flex()
-                .justify_end()
-                .gap(px(8.))
-                .child(pill(no, false).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.showing(seq) {
-                            if confirm {
-                                this.answer(false, cx)
-                            } else {
-                                this.later(cx)
+                .items_center()
+                .when(confirm, |d| d.pl(px(indent)))
+                .gap(px(4.))
+                .children(card_buttons(confirm).map(|(label, action)| {
+                    let pill = if action { primary(label) } else { quiet(label) };
+                    pill.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if this.showing(seq) {
+                                match (confirm, action) {
+                                    (true, approve) => this.answer(approve, cx),
+                                    (false, true) => this.see(cx),
+                                    (false, false) => this.later(cx),
+                                }
                             }
-                        }
-                    }),
-                ))
-                .child(pill(yes, true).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.showing(seq) {
-                            if confirm {
-                                this.answer(true, cx)
-                            } else {
-                                this.see(cx)
-                            }
-                        }
-                    }),
-                ))
+                        }),
+                    )
+                }))
         });
         div()
             .absolute()
@@ -1606,15 +1628,73 @@ impl Island {
             })
             .pl(px(if session { 18. } else { 14. }))
             .pr(px(18.))
+            .id(("card", seq as usize))
+            .on_hover(cx.listener(move |this, on: &bool, _, cx| {
+                let hot = on.then_some(seq);
+                if this.card_hot != hot {
+                    this.card_hot = hot;
+                    cx.notify();
+                }
+            }))
+            // A click anywhere on a notice opens what it is about, like "Ver".
+            .when(a.buttons() && !confirm, |d| {
+                d.cursor_pointer().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if this.showing(seq) {
+                            this.see(cx)
+                        }
+                    }),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .gap(px(12.))
-                    .when(layout.pill, |d| d.items_center())
+                    // A notice's picture sits centered on its text; the raccoon
+                    // of a session card stays at the top.
+                    .when(layout.pill || !session, |d| d.items_center())
                     .child(face)
                     .child(text),
             )
-            .children(buttons)
+            .map(|d| match buttons {
+                Some(row) if confirm => d.child(row),
+                // Over the end of the text, which fades into the card's black.
+                Some(row) => d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .pl(px(44.))
+                        .pr(px(14.))
+                        .rounded_r(px(layout.h.min(28.)))
+                        .bg(gpui::linear_gradient(
+                            90.,
+                            gpui::linear_color_stop(gpui::black().opacity(0.), 0.),
+                            gpui::linear_color_stop(gpui::black(), 0.3),
+                        ))
+                        // The buttons slide in from the right edge as they fade
+                        // in, like a phone notification's actions on a swipe.
+                        .child(
+                            row.with_animation(
+                                ("card-actions", seq as usize),
+                                gpui::Animation::new(Duration::from_millis(280))
+                                    .with_easing(gpui::ease_out_quint()),
+                                |el, t| el.opacity(t).mr(px(-(1. - t) * 22.)),
+                            ),
+                        )
+                        .with_animation(
+                            ("card-actions-fade", seq as usize),
+                            gpui::Animation::new(Duration::from_millis(180)),
+                            |el, t| el.opacity(t),
+                        ),
+                ),
+                None => d,
+            })
             .into_any_element()
     }
 
@@ -2033,12 +2113,16 @@ fn avatar(alert: &Alert) -> impl IntoElement {
         kind,
         AlertKind::Success | AlertKind::Warning | AlertKind::Failure
     );
-    let color = kind.badge();
+    // A notice from a service (GitHub) gets a white ring instead: the user
+    // knows what it is, and the picture stays whole and centered.
+    let branded = !tinted && !alert.brand.is_empty();
+    let ringed = tinted || branded;
+    let color = if branded { gpui::white() } else { kind.badge() };
     // A black gap between ring and picture, so the ring reads on any photo.
     let pic = gpui::img(std::path::PathBuf::from(alert.image.as_ref()))
         .size_full()
         .rounded_full()
-        .when(tinted, |i| i.border_2().border_color(gpui::black()));
+        .when(ringed, |i| i.border_2().border_color(gpui::black()));
     let mark = canvas(
         |_, _, _| {},
         move |b, _, window, _| {
@@ -2069,7 +2153,7 @@ fn avatar(alert: &Alert) -> impl IntoElement {
         .relative()
         .size(px(AVATAR))
         .rounded_full()
-        .when(tinted, |d| d.border_2().border_color(color))
+        .when(ringed, |d| d.border_2().border_color(color))
         .child(pic)
         .when(tinted, |d| {
             // Deferred: painted after the ring and the picture, always on top.
@@ -2089,9 +2173,18 @@ fn avatar(alert: &Alert) -> impl IntoElement {
                 .with_priority(1),
             )
         })
-        .when(!tinted && !alert.brand.is_empty(), |d| {
-            d.child(gpui::deferred(brand_mark(&alert.brand)).with_priority(1))
-        })
+}
+
+/// A card's buttons, left to right, and whether each is the action. The
+/// action stays on the right, where "Aprobar" has always been: swapping it
+/// with "Rechazar" would turn a habit into the wrong answer. On hover the row
+/// sits at the card's right edge, so "Ver" lands under the thumb too.
+fn card_buttons(confirm: bool) -> [(&'static str, bool); 2] {
+    if confirm {
+        [("Rechazar", false), ("Aprobar", true)]
+    } else {
+        [("Luego", false), ("Ver", true)]
+    }
 }
 
 /// The service's logo file under `icons/`, for a notice's `brand`.
@@ -2118,31 +2211,6 @@ fn brand_face(brand: &str) -> impl IntoElement {
                 gpui::svg()
                     .path(path)
                     .size(px(20.))
-                    .text_color(gpui::black()),
-            )
-        })
-}
-
-/// The service's logo on a picture's corner, so a GitHub notice and a
-/// teammate's message don't look alike.
-fn brand_mark(brand: &str) -> impl IntoElement {
-    div()
-        .absolute()
-        .right(px(-5.))
-        .bottom(px(-5.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(px(17.))
-        .rounded_full()
-        .bg(gpui::white())
-        .border_2()
-        .border_color(gpui::black())
-        .when_some(brand_icon(brand), |d, path| {
-            d.child(
-                gpui::svg()
-                    .path(path)
-                    .size(px(10.))
                     .text_color(gpui::black()),
             )
         })
@@ -2621,6 +2689,18 @@ mod tests {
         let c = rearm(b, Some(9), true, late);
         assert!(!may_approve(c, Some(9), late + Duration::from_secs(5)));
         assert_eq!(rearm(c, None, false, late), None);
+    }
+
+    #[test]
+    fn approve_stays_right_of_reject() {
+        assert_eq!(
+            super::card_buttons(true),
+            [("Rechazar", false), ("Aprobar", true)]
+        );
+        assert_eq!(
+            super::card_buttons(false),
+            [("Luego", false), ("Ver", true)]
+        );
     }
 
     #[test]

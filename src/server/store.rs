@@ -108,12 +108,21 @@ pub struct Store {
 }
 
 impl Store {
-    /// What `dir` holds; empty when it holds nothing yet or the file is not ours.
-    pub fn load(dir: &Path) -> Store {
-        let mut store: Store = std::fs::read(dir.join("state.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+    /// What `dir` holds; empty when it holds nothing yet. A file that is there
+    /// but cannot be read is an error, never an empty store: the next save
+    /// would write that emptiness over every session and folder on record.
+    pub fn load(dir: &Path) -> Result<Store, String> {
+        let path = dir.join("state.json");
+        let mut store: Store = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+                format!(
+                    "{} is not what the server wrote ({e}); move it aside to start with nothing",
+                    path.display()
+                )
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Store::default(),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
         store.dir = dir.to_path_buf();
         for s in &mut store.sessions {
             s.status = if s.failed {
@@ -122,7 +131,7 @@ impl Store {
                 Status::Idle
             };
         }
-        store
+        Ok(store)
     }
 
     pub fn save(&mut self) -> std::io::Result<()> {
@@ -264,7 +273,7 @@ mod tests {
     #[test]
     fn a_saved_session_is_never_working_when_read_back() {
         let dir = temp("store");
-        let mut store = Store::load(&dir);
+        let mut store = Store::load(&dir).unwrap();
         assert!(store.add_place(Path::new("/w/app"), AgentKind::Claude));
         assert!(!store.add_place(Path::new("/w/app"), AgentKind::Droid));
         store.sessions.push(record("s1-0", Status::Working));
@@ -272,7 +281,7 @@ mod tests {
         store.sessions.push(record("s3-0", Status::NeedsInput));
         store.save().unwrap();
 
-        let back = Store::load(&dir);
+        let back = Store::load(&dir).unwrap();
         assert_eq!(back.places, store.places);
         let statuses: Vec<Status> = back.sessions.iter().map(|s| s.status).collect();
         assert_eq!(statuses, [Status::Idle, Status::Error, Status::Idle]);
@@ -280,6 +289,27 @@ mod tests {
             back.transcript_path("s1-0"),
             dir.join("sessions").join("s1-0.json")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_state_that_cannot_be_read_is_left_alone() {
+        let dir = temp("broken");
+        let file = dir.join("state.json");
+        std::fs::write(&file, b"{ \"sessions\": [ half a file").unwrap();
+        let e = Store::load(&dir).err().unwrap();
+        assert!(
+            e.contains("state.json") && e.contains("move it aside"),
+            "{e}"
+        );
+        // Nothing was written over it: the sessions can still be recovered by hand.
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            b"{ \"sessions\": [ half a file"
+        );
+        // No file at all is a server that has not run yet.
+        std::fs::remove_file(&file).unwrap();
+        assert!(Store::load(&dir).unwrap().sessions.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

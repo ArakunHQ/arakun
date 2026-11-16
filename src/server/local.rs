@@ -65,8 +65,8 @@ impl From<Result<String, String>> for Reply {
 
 pub type Incoming = (Request, oneshot::Sender<Reply>);
 
-/// How long a request waits for the server's answer.
-const REPLY_WAIT: Duration = Duration::from_secs(30);
+/// How long a request waits for the server's answer, unless told less.
+pub const REPLY_WAIT: Duration = Duration::from_secs(30);
 
 /// The socket while the server listens on it. Dropping it removes the file.
 pub struct Listening {
@@ -150,10 +150,11 @@ fn answer(stream: UnixStream, tx: mpsc::UnboundedSender<Incoming>) {
     );
 }
 
-/// Asks the server listening on `path`.
-pub fn send(path: &Path, req: &Request) -> std::io::Result<Reply> {
+/// Asks the server listening on `path`, waiting at most `wait` for its answer.
+pub fn send(path: &Path, req: &Request, wait: Duration) -> std::io::Result<Reply> {
     let mut stream = UnixStream::connect(path)?;
-    stream.set_read_timeout(Some(REPLY_WAIT))?;
+    // A zero timeout means none to the socket.
+    stream.set_read_timeout(Some(wait.max(Duration::from_millis(1))))?;
     writeln!(stream, "{}", serde_json::to_string(req).unwrap_or_default())?;
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
@@ -179,7 +180,7 @@ mod tests {
                 futures::executor::block_on(futures::StreamExt::next(&mut rx)).unwrap();
             let _ = done.send(Reply::ok(format!("{} {}", req.cmd, req.args.join(","))));
         });
-        let reply = send(&path, &Request::new("log", &["s1", "30"])).unwrap();
+        let reply = send(&path, &Request::new("log", &["s1", "30"]), REPLY_WAIT).unwrap();
         assert_eq!(reply, Reply::ok("log s1,30"));
         server.join().unwrap();
 
@@ -190,7 +191,23 @@ mod tests {
 
         drop(listening);
         assert!(!path.exists());
-        assert!(send(&path, &Request::new("ls", &[])).is_err());
+        assert!(send(&path, &Request::new("ls", &[]), REPLY_WAIT).is_err());
+    }
+
+    #[test]
+    fn a_server_that_does_not_answer_is_waited_for_only_so_long() {
+        let path = socket("slow");
+        let _ = std::fs::remove_file(&path);
+        // Requests are taken and never answered.
+        let (_listening, _rx) = serve(&path).unwrap();
+        let started = std::time::Instant::now();
+        let reply = send(
+            &path,
+            &Request::new("state", &["s1"]),
+            Duration::from_millis(150),
+        );
+        assert!(reply.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

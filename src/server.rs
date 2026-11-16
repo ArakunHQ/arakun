@@ -329,8 +329,13 @@ fn fail(message: &str) -> i32 {
 
 /// Asks the running server; its message, or why there is none.
 fn ask(req: &Request) -> Result<String, String> {
+    ask_within(req, local::REPLY_WAIT)
+}
+
+/// [`ask`], giving the server at most `wait` to answer.
+fn ask_within(req: &Request, wait: Duration) -> Result<String, String> {
     let socket = socket_path();
-    match local::send(&socket, req) {
+    match local::send(&socket, req, wait) {
         Ok(reply) if reply.ok => Ok(reply.message),
         Ok(reply) => Err(reply.message),
         Err(e)
@@ -343,6 +348,14 @@ fn ask(req: &Request) -> Result<String, String> {
                 "no server is running here; start one with `{} serve`",
                 name()
             ))
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            Err("the server did not answer in time".into())
         }
         Err(e) => Err(format!("{}: {e}", socket.display())),
     }
@@ -429,8 +442,20 @@ fn pairing_text(reply: &str) -> String {
 fn wait(id: &str, timeout: Duration) -> i32 {
     let req = Request::new("state", &[id]);
     let start = Instant::now();
+    let still_working = || {
+        fail(&format!(
+            "the session is still working after {} s",
+            timeout.as_secs()
+        ))
+    };
     loop {
-        let reply = match ask(&req) {
+        // The time left holds for the question itself too: a server that
+        // takes it and says nothing must not outlast --timeout.
+        let left = timeout.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            return still_working();
+        }
+        let reply = match ask_within(&req, left.min(local::REPLY_WAIT)) {
             Ok(text) => text,
             Err(e) => return fail(&e),
         };
@@ -442,13 +467,11 @@ fn wait(id: &str, timeout: Duration) -> i32 {
             }
             return if status == "error" { 1 } else { 0 };
         }
-        if start.elapsed() >= timeout {
-            return fail(&format!(
-                "the session is still working after {} s",
-                timeout.as_secs()
-            ));
+        let left = timeout.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            return still_working();
         }
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(left.min(Duration::from_millis(500)));
     }
 }
 

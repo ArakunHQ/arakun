@@ -137,32 +137,52 @@ pub struct Daemon {
 /// handed over: a save never holds up the agents, and an older one never
 /// lands over a newer one.
 struct Writer {
-    tx: Option<std::sync::mpsc::Sender<(PathBuf, Transcript)>>,
+    tx: Option<std::sync::mpsc::Sender<Job>>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+enum Job {
+    // Boxed: a transcript is far bigger than a flush, and most jobs wait in a queue.
+    Save(PathBuf, Box<Transcript>),
+    /// Answered once every save handed over before it is on disk.
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+fn write_transcript(path: &Path, transcript: &Transcript) {
+    let saved = serde_json::to_vec(transcript)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| crate::durable::write_private(path, &bytes));
+    if let Err(e) = saved {
+        eprintln!("arakun server: could not save {}: {e}", path.display());
+    }
 }
 
 impl Writer {
     fn start() -> Writer {
-        let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Transcript)>();
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
         let thread = std::thread::Builder::new()
             .name("arakun-server-save".into())
             .spawn(move || {
                 while let Ok(first) = rx.recv() {
-                    // Only the newest of each file waiting is worth writing.
-                    let mut batch = vec![first];
-                    batch.extend(rx.try_iter());
-                    let mut done: Vec<&Path> = Vec::new();
-                    for (path, transcript) in batch.iter().rev() {
-                        if done.contains(&path.as_path()) {
-                            continue;
+                    // Of the saves waiting, only the newest of each file is
+                    // worth writing; a flush wants all before it written first.
+                    let mut waiting: Vec<(PathBuf, Box<Transcript>)> = Vec::new();
+                    for job in std::iter::once(first).chain(rx.try_iter()) {
+                        match job {
+                            Job::Save(path, transcript) => {
+                                waiting.retain(|(p, _)| *p != path);
+                                waiting.push((path, transcript));
+                            }
+                            Job::Flush(done) => {
+                                for (path, transcript) in waiting.drain(..) {
+                                    write_transcript(&path, &transcript);
+                                }
+                                let _ = done.send(());
+                            }
                         }
-                        done.push(path);
-                        let saved = serde_json::to_vec(transcript)
-                            .map_err(std::io::Error::other)
-                            .and_then(|bytes| crate::durable::write_private(path, &bytes));
-                        if let Err(e) = saved {
-                            eprintln!("arakun server: could not save {}: {e}", path.display());
-                        }
+                    }
+                    for (path, transcript) in waiting {
+                        write_transcript(&path, &transcript);
                     }
                 }
             })
@@ -175,7 +195,19 @@ impl Writer {
 
     fn save(&self, path: PathBuf, transcript: Transcript) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send((path, transcript));
+            let _ = tx.send(Job::Save(path, Box::new(transcript)));
+        }
+    }
+
+    /// Waits until every save handed over so far is on disk. Whatever reads a
+    /// transcript file, or removes one, comes here first: a save still on its
+    /// way would otherwise be missed, or come back after the file was deleted.
+    fn flush(&self) {
+        let (done, wait) = std::sync::mpsc::channel();
+        if let Some(tx) = &self.tx
+            && tx.send(Job::Flush(done)).is_ok()
+        {
+            let _ = wait.recv();
         }
     }
 
@@ -195,6 +227,14 @@ pub fn run(opts: Options) -> i32 {
         eprintln!("arakun server: {}: {e}", dir.display());
         return 1;
     }
+    // Before anything listens: a server that cannot read what it kept does not start.
+    let store = match Store::load(&dir) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("arakun server: {e}");
+            return 1;
+        }
+    };
     let settings_path = dir.join("phone.json");
     let first_run = !settings_path.exists();
     phone::use_settings_file(settings_path);
@@ -268,7 +308,6 @@ pub fn run(opts: Options) -> i32 {
     );
     println!("Pair a device with `{} pair`.", super::name());
 
-    let store = Store::load(&dir);
     let code = Rc::new(Cell::new(0));
     let out = code.clone();
     let reach = settings.reach;
@@ -684,6 +723,8 @@ impl Daemon {
             return Some(live.thread.clone());
         }
         let record = self.store.session(id)?.clone();
+        // The save its agent was let go with may still be on its way.
+        self.writer.flush();
         let transcript = self.store.transcript_path(id);
         let thread = transcript
             .exists()
@@ -824,6 +865,7 @@ impl Daemon {
                 f(t.entries(), t.cwd())
             }
             None => {
+                self.writer.flush();
                 let (all, cwd) = Thread::read_transcript(&self.store.transcript_path(id))
                     .map(|t| (t.entries, t.meta.cwd))
                     .unwrap_or_default();
@@ -1078,9 +1120,10 @@ impl Daemon {
         }
         match msg {
             Incoming::Connected(id, _device) => {
+                // To this device alone: what the others last got stays as it
+                // is, or a change they have not seen would never reach them.
                 let inbox = self.inbox(cx);
-                self.transport.send(id, inbox.clone());
-                self.last_inbox = inbox;
+                self.transport.send(id, inbox);
                 // The device's last_seen moved.
                 self.save_devices();
             }
@@ -1352,7 +1395,6 @@ impl Daemon {
                 })
                 .detach();
                 let usage = self.usage(cx);
-                self.last_usage = usage.clone();
                 self.transport.send(client, usage);
             }
             ClientMsg::Visible { visible } => {
@@ -1572,8 +1614,15 @@ impl Daemon {
                         .send_to_session(&id, arg(1).to_string(), cx)
                         .map(|()| format!("sent to {id}"))
                         .into(),
+                    // One waiting on an answer counts: stopping it withdraws
+                    // the question, and `rm` asks for a stop first.
                     "stop" => match self.thread(&id) {
-                        Some(t) if status_of(t.read(cx)) == Status::Working => {
+                        Some(t)
+                            if matches!(
+                                status_of(t.read(cx)),
+                                Status::Working | Status::NeedsInput
+                            ) =>
+                        {
                             t.update(cx, |t, cx| t.cancel(cx));
                             Reply::ok(format!("stopping {id}"))
                         }
@@ -1883,6 +1932,8 @@ impl Daemon {
         }
         self.watching.retain(|_, watched| watched != id);
         self.notified.remove(id);
+        // A save still on its way would bring the file back after it is deleted.
+        self.writer.flush();
         self.store.remove_session(id);
         self.save_store();
         self.inbox_changed(cx);
@@ -2111,18 +2162,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("arakun-server-wr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (a, b) = (dir.join("sessions/a.json"), dir.join("sessions/b.json"));
+        let last = |path: &Path| last_message(&Thread::read_transcript(path).unwrap().entries);
         let mut writer = Writer::start();
         writer.save(a.clone(), transcript("first"));
         writer.save(b.clone(), transcript("other"));
         writer.save(a.clone(), transcript("second"));
-        // Everything handed over is on disk once this returns.
-        writer.finish();
-        let last = |path: &Path| last_message(&Thread::read_transcript(path).unwrap().entries);
+        // A read comes after a flush, and finds every save made before it.
+        writer.flush();
         assert_eq!(last(&a), "second");
         assert_eq!(last(&b), "other");
-        // Stopped: a late save is dropped, not a panic.
+        // A removal too: nothing is left to write the file again.
+        writer.save(a.clone(), transcript("third"));
+        writer.flush();
+        std::fs::remove_file(&a).unwrap();
+        writer.save(b.clone(), transcript("last"));
+        // Everything handed over is on disk once this returns.
+        writer.finish();
+        assert!(!a.exists());
+        assert_eq!(last(&b), "last");
+        // Stopped: a late save or flush is dropped, not a panic or a wait.
         writer.save(a.clone(), transcript("late"));
-        assert_eq!(last(&a), "second");
+        writer.flush();
+        assert!(!a.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

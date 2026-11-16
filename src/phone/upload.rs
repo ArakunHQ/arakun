@@ -73,7 +73,8 @@ impl Uploads {
         let paths: Vec<String> = ids
             .iter()
             .filter_map(|id| self.by_id.remove(id).and_then(|u| u.path))
-            .map(|path| format!("@{}", path.display()))
+            // Quoted when the path has a space in it, or the prompt would name half of it.
+            .map(|path| crate::agent::attach::mention(&path.to_string_lossy()))
             .collect();
         if paths.is_empty() {
             text
@@ -129,6 +130,23 @@ mod tests {
         assert_eq!(text, "look @/tmp/photo.png");
         // Spent with the prompt that carried it.
         assert_eq!(uploads.attach("again".into(), &["u1".into()]), "again");
+    }
+
+    #[test]
+    fn a_photo_in_a_folder_with_a_space_is_still_read_as_one_path() {
+        let mut uploads = Uploads::default();
+        let save = |_: &[u8], _: &str| Ok(PathBuf::from("/srv/Agent Data/uploads/photo-1.jpg"));
+        assert!(
+            uploads
+                .piece("u", "a.jpg", 0, 1, &b64(b"x"), save)
+                .is_some()
+        );
+        let text = uploads.attach("look".into(), &["u".into()]);
+        assert_eq!(text, "look @\"/srv/Agent Data/uploads/photo-1.jpg\"");
+        assert_eq!(
+            crate::agent::attach::mentions(&text),
+            ["/srv/Agent Data/uploads/photo-1.jpg"]
+        );
     }
 
     #[test]

@@ -288,6 +288,9 @@ Usage:
   arakun agent approve|deny <id> <req_id>
                              answer one (it times out denied after 24 h)
   arakun agent rm <id>         delete a finished headless session
+  arakun server …              arakun without a window, for a machine nobody sits
+                             at: it runs agent sessions there, and paired
+                             devices follow and answer them (arakun server help)
   arakun fetch [--html | --links] <url>
                              a web page as Markdown (or HTML, or its links),
                              loaded in Cloudflare Browser Run: for sites that
@@ -393,6 +396,9 @@ fn cli(args: Vec<String>) -> Cli {
     }
     if first == "agent-host" {
         return Cli::Exit(crate::headless::host_main(&args[1..]));
+    }
+    if first == "server" {
+        return Cli::Exit(crate::server::cli(&args[1..]));
     }
     if first == "island-host" {
         return Cli::Exit(crate::island_host::main());

@@ -18,7 +18,12 @@ pub mod identity;
 pub mod push;
 pub mod relay;
 pub mod tailscale;
+mod transport;
+mod upload;
 pub mod wire;
+
+pub use transport::Transport;
+pub use upload::Uploads;
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -29,14 +34,11 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
-use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tungstenite::{Message, WebSocket};
 
-#[derive(RustEmbed)]
-#[folder = "phone"]
-struct Page;
+use crate::phone_page::Page;
 
 pub const DEFAULT_PORT: u16 = 7474;
 /// How long a pairing code is good for.
@@ -599,7 +601,20 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Where `arakun server` keeps its settings; the app's own file when unset.
+static SETTINGS_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Makes this process keep its phones, its relay identity and its push keys in
+/// `path`. `arakun server` calls it before anything loads the settings: with
+/// the app's file it would take the app's place at the relay.
+pub fn use_settings_file(path: PathBuf) {
+    let _ = SETTINGS_FILE.set(path);
+}
+
 fn settings_file() -> PathBuf {
+    if let Some(path) = SETTINGS_FILE.get() {
+        return path.clone();
+    }
     // A test instance with its own state file keeps its own phone, on its own port.
     if let Some(state) = std::env::var_os("ARAKUN_STATE") {
         return PathBuf::from(state).with_file_name("phone.json");

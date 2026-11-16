@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::StreamExt as _;
 use gpui::{App, Context, SharedString, Task, Window};
@@ -14,11 +14,11 @@ use serde_json::json;
 
 use super::Shell;
 use super::sessions::{Notice, summary};
-use crate::agent::{Setting, SettingOption, Thread, ThreadEvent};
+use crate::agent::{Setting, Thread, ThreadEvent};
 use crate::model::TabKind;
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
-    self, Access, ClientId, ClientMsg, Incoming, Reach, Server, push, tailscale, wire,
+    self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, push, tailscale, wire,
 };
 use crate::phone_view::{Address, DeviceInfo, PairingInfo, PhoneEvent, PhoneState, RelayInfo};
 use crate::state;
@@ -35,82 +35,6 @@ const TAILSCALE_RETRY: Duration = Duration::from_secs(3);
 const TAILSCALE_RETRY_LATER: Duration = Duration::from_secs(15);
 const TAILSCALE_QUICK_TRIES: u32 = 20;
 const TAILSCALE_RECHECK: Duration = Duration::from_secs(60);
-
-/// How phones' bytes get here: a server of our own on the network, or the
-/// connection to the relay. Phones look the same to the shell either way.
-enum Transport {
-    Local(Server),
-    Relay(RelayClient),
-}
-
-impl Transport {
-    /// The port the server listens on; none through the relay.
-    fn port(&self) -> Option<u16> {
-        match self {
-            Transport::Local(s) => Some(s.port()),
-            Transport::Relay(_) => None,
-        }
-    }
-
-    fn device_of(&self, id: ClientId) -> Option<String> {
-        match self {
-            Transport::Local(s) => s.device_of(id),
-            Transport::Relay(r) => r.device_of(id),
-        }
-    }
-
-    fn send(&self, id: ClientId, text: String) {
-        match self {
-            Transport::Local(s) => s.send(id, text),
-            Transport::Relay(r) => r.send(id, text),
-        }
-    }
-
-    fn broadcast(&self, text: &str) {
-        match self {
-            Transport::Local(s) => s.broadcast(text),
-            Transport::Relay(r) => r.broadcast(text),
-        }
-    }
-
-    fn client_count(&self) -> usize {
-        match self {
-            Transport::Local(s) => s.client_count(),
-            Transport::Relay(r) => r.client_count(),
-        }
-    }
-
-    fn connected_devices(&self) -> Vec<String> {
-        match self {
-            Transport::Local(s) => s.connected_devices(),
-            Transport::Relay(r) => r.connected_devices(),
-        }
-    }
-
-    fn disconnect_device(&self, device: &str) {
-        match self {
-            Transport::Local(s) => s.disconnect_device(device),
-            Transport::Relay(r) => r.disconnect_device(device),
-        }
-    }
-
-    /// The relay admits phones by ticket: it hears the list whenever the devices change.
-    fn sync_tickets(&self, access: &phone::Shared) {
-        if let Transport::Relay(r) = self {
-            r.set_tickets(access.lock().unwrap().ticket_hashes());
-        }
-    }
-
-    /// The relay lets one phone in with the pairing code while it is open.
-    fn sync_pairing(&self, access: &phone::Shared) {
-        if let Transport::Relay(r) = self {
-            match access.lock().unwrap().pairing_hash() {
-                Some((hash, left)) => r.open_pairing(hash, left),
-                None => r.close_pairing(),
-            }
-        }
-    }
-}
 
 pub(super) struct PhoneLink {
     server: Transport,
@@ -136,51 +60,14 @@ pub(super) struct PhoneLink {
     last_inbox: String,
     /// The plan limits phones last got, so a refresh that changed nothing stays quiet.
     last_usage: String,
-    /// Photos phones are sending, in pieces, by their upload id: where each
-    /// landed once its last piece arrived.
-    uploads: HashMap<String, Upload>,
+    /// Photos phones are sending, in pieces.
+    uploads: phone::Uploads,
     _listen: Task<()>,
     _tick: Task<()>,
 }
 
-/// A photo arriving in pieces over the socket. Saved like a pasted image when
-/// complete; the prompt that names it (`Send` with this `upload` id) attaches it.
-struct Upload {
-    parts: Vec<Option<Vec<u8>>>,
-    name: String,
-    at: Instant,
-    path: Option<PathBuf>,
-}
-
-/// How long half-sent photos are kept before the pieces are dropped.
-const UPLOAD_LIVES: Duration = Duration::from_secs(30 * 60);
-
 /// The settings a phone can pick: the model, then the reasoning (its choices depend on the model).
 const PHONE_SETTINGS: [Setting; 2] = [Setting::Model, Setting::Effort];
-
-/// The extension a phone's photo is saved under: what its name says when it
-/// says something short and plain, jpg otherwise (the page re-encodes to JPEG).
-fn upload_ext(name: &str) -> &str {
-    let ext = name.rsplit('.').next().unwrap_or("");
-    if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "gif") {
-        ext
-    } else {
-        "jpg"
-    }
-}
-
-/// Settings with their value and choices, as the phone shows them.
-fn settings_json(list: Vec<(Setting, (String, Vec<SettingOption>))>) -> serde_json::Value {
-    let list = list.into_iter().map(|(s, (current, options))| {
-        json!({
-            "key": s.key(),
-            "label": s.label(),
-            "current": current,
-            "options": options.iter().map(|o| json!({ "id": o.id, "name": o.name, "detail": o.detail, "disabled": o.disabled })).collect::<Vec<_>>(),
-        })
-    });
-    serde_json::Value::Array(list.collect())
-}
 
 impl Shell {
     /// Whether a phone is looking at this session, so it stays live like an open tab.
@@ -450,7 +337,7 @@ impl Shell {
             flush: None,
             last_inbox: String::new(),
             last_usage: String::new(),
-            uploads: HashMap::new(),
+            uploads: phone::Uploads::default(),
             _listen: listen,
             _tick: tick,
         });
@@ -644,22 +531,9 @@ impl Shell {
                 // The prompt carries photos by the id they finished uploading
                 // under: their files become `@` mentions in the text, the same
                 // way pasted images attach on the desktop.
-                let text = if uploads.is_empty() {
-                    text
-                } else {
-                    let mut paths = Vec::new();
-                    if let Some(link) = &mut self.phone {
-                        for id in &uploads {
-                            if let Some(path) = link.uploads.remove(id).and_then(|u| u.path) {
-                                paths.push(format!("@{}", path.display()));
-                            }
-                        }
-                    }
-                    if paths.is_empty() {
-                        text
-                    } else {
-                        format!("{} {}", text.trim_end(), paths.join(" "))
-                    }
+                let text = match &mut self.phone {
+                    Some(link) => link.uploads.attach(text, &uploads),
+                    None => text,
                 };
                 self.ensure_live(&env_path, &session, window, cx);
                 if let Some(thread) = self.phone_thread(&env_path, &session) {
@@ -681,37 +555,10 @@ impl Shell {
                 of,
                 data,
             } => {
-                use base64::Engine as _;
-                let saved = {
-                    let Some(link) = &mut self.phone else { return };
-                    link.uploads.retain(|_, u| u.at.elapsed() < UPLOAD_LIVES);
-                    let entry = link
-                        .uploads
-                        .entry(upload.clone())
-                        .or_insert_with(|| Upload {
-                            parts: vec![None; of.clamp(1, 512)],
-                            name: name.clone(),
-                            at: Instant::now(),
-                            path: None,
-                        });
-                    if let (Some(slot), Ok(bytes)) = (
-                        entry.parts.get_mut(part),
-                        base64::engine::general_purpose::STANDARD.decode(data.as_bytes()),
-                    ) {
-                        *slot = (!bytes.is_empty()).then_some(bytes);
-                    }
-                    if entry.path.is_none() && entry.parts.iter().all(|p| p.is_some()) {
-                        let bytes: Vec<u8> =
-                            entry.parts.iter().flatten().flatten().cloned().collect();
-                        if bytes.len() <= crate::agent::attach::MAX_IMAGE_BYTES as usize
-                            && let Ok(path) =
-                                super::paste::save_image(&bytes, upload_ext(&entry.name))
-                        {
-                            entry.path = Some(path);
-                        }
-                    }
-                    entry.path.clone()
-                };
+                let Some(link) = &mut self.phone else { return };
+                let saved =
+                    link.uploads
+                        .piece(&upload, &name, part, of, &data, super::paste::save_image);
                 if let Some(path) = saved {
                     let name = path
                         .file_name()
@@ -764,7 +611,7 @@ impl Shell {
                     .into_iter()
                     .filter_map(|s| Some((s, self.draft_choices(&path, agent, s)?)))
                     .collect();
-                let reply = json!({ "type": "options", "env": env, "agent": agent.key(), "settings": settings_json(list) });
+                let reply = json!({ "type": "options", "env": env, "agent": agent.key(), "settings": wire::settings(list) });
                 self.phone_send(client, reply.to_string());
             }
             ClientMsg::Settings { session } => {
@@ -783,7 +630,7 @@ impl Shell {
                     None => Vec::new(),
                 };
                 let reply =
-                    json!({ "type": "settings", "id": session, "settings": settings_json(list) });
+                    json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
                 self.phone_send(client, reply.to_string());
             }
             ClientMsg::Setting {
@@ -815,7 +662,7 @@ impl Shell {
                     .filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?)))
                     .collect();
                 let reply =
-                    json!({ "type": "settings", "id": session, "settings": settings_json(list) });
+                    json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
                 self.phone_send(client, reply.to_string());
             }
             ClientMsg::Cancel { session } => {
@@ -986,35 +833,31 @@ impl Shell {
         let mut places: Vec<serde_json::Value> = Vec::new();
         for p in &self.projects {
             for e in &p.environments {
-                places.push(json!({ "path": e.path, "project": p.name, "env": e.name, "branch": e.branch, "agent": e.agent.key() }));
+                places.push(wire::inbox_place(
+                    &e.path,
+                    &p.name,
+                    &e.name,
+                    Some(&e.branch),
+                    e.agent.key(),
+                ));
                 for s in &e.sessions {
-                    let asks = s.live.as_ref().and_then(|l| {
-                        let t = l.thread.read(cx);
-                        t.pending_permission()
-                            .map(|p| json!({ "kind": "permission", "text": p.title }))
-                            .or_else(|| {
-                                let q = t.pending_question()?;
-                                Some(json!({ "kind": "question", "text": q.questions.first()?.question }))
-                            })
-                    });
-                    sessions.push(json!({
-                        "id": s.id,
-                        "title": s.title,
-                        "agent": s.agent.label(),
-                        "status": wire::status(s.status),
-                        "updated": s.updated,
-                        "added": s.added,
-                        "removed": s.removed,
-                        "project": p.name,
-                        "env": e.name,
-                        "pr": s.meta.as_ref().and_then(|m| m.pr.clone()),
-                        "asks": asks,
+                    sessions.push(wire::inbox_session(wire::InboxSession {
+                        id: &s.id,
+                        title: &s.title,
+                        agent: s.agent.label(),
+                        status: s.status,
+                        updated: s.updated,
+                        added: s.added,
+                        removed: s.removed,
+                        project: &p.name,
+                        env: &e.name,
+                        pr: s.meta.as_ref().and_then(|m| m.pr.as_deref()),
+                        asks: s.live.as_ref().and_then(|l| wire::asks(l.thread.read(cx))),
                     }));
                 }
             }
         }
-        sessions.sort_by_key(|s| std::cmp::Reverse(s["updated"].as_u64().unwrap_or(0)));
-        json!({ "type": "inbox", "host": phone::host_name(), "sessions": sessions, "places": places }).to_string()
+        wire::inbox(&phone::host_name(), sessions, places)
     }
 
     /// Sends the inbox to every phone when it differs from what they last got.
@@ -1059,48 +902,28 @@ impl Shell {
             return wire::error("that session is gone");
         };
         let s = &env.sessions[i];
-        let (title, agent, status) = (s.title.clone(), s.agent.label(), wire::status(s.status));
+        let (title, agent, status) = (s.title.clone(), s.agent.label(), s.status);
         let place = self.env_label(env_path);
-        let mut msg = json!({
-            "type": "session", "id": id, "title": title, "agent": agent, "status": status, "place": place,
-            "permission": null, "question": null, "usage": null, "elapsed_ms": null, "changes": null,
-        });
+        let head = wire::SessionHead {
+            id,
+            title: &title,
+            agent,
+            status,
+            place: &place,
+        };
         match self.phone_thread(env_path, id) {
             Some(thread) => {
                 let t = thread.read(cx);
-                let all = t.entries();
-                let from = all.len().saturating_sub(wire::TAIL);
-                msg["count"] = json!(all.len());
-                msg["from"] = json!(from);
-                msg["entries"] = json!(wire::entries(all, from, &self.phone_scope(t.cwd())));
-                msg["changes"] = wire::change_totals(all);
-                msg["permission"] = t
-                    .pending_permission()
-                    .map(wire::permission)
-                    .unwrap_or(serde_json::Value::Null);
-                msg["question"] = t
-                    .pending_question()
-                    .map(wire::question)
-                    .unwrap_or(serde_json::Value::Null);
-                msg["usage"] = wire::usage(t.usage());
-                msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
-                msg["status"] = json!(wire::status(super::sessions::status_of(t)));
-                if !t.title().is_empty() {
-                    msg["title"] = json!(t.title());
-                }
+                let status = super::sessions::status_of(t);
+                wire::session_live(&head, t, status, &self.phone_scope(t.cwd()))
             }
             None => {
                 let (all, cwd) = Thread::read_transcript(&state::transcript_path(id))
                     .map(|t| (t.entries, t.meta.cwd))
                     .unwrap_or_default();
-                let from = all.len().saturating_sub(wire::TAIL);
-                msg["count"] = json!(all.len());
-                msg["from"] = json!(from);
-                msg["entries"] = json!(wire::entries(&all, from, &self.phone_scope(&cwd)));
-                msg["changes"] = wire::change_totals(&all);
+                wire::session_saved(&head, &all, &self.phone_scope(&cwd))
             }
         }
-        msg.to_string()
     }
 
     /// Entries `from..to` of a session and how many it has.
@@ -1226,12 +1049,7 @@ impl Shell {
                 continue;
             };
             let t = thread.read(cx);
-            let all = t.entries();
-            let msg = json!({
-                "type": "entries", "id": id, "from": from.min(all.len()), "count": all.len(),
-                "entries": wire::entries(all, from, &self.phone_scope(t.cwd())),
-            })
-            .to_string();
+            let msg = wire::entries_message(&id, t.entries(), from, &self.phone_scope(t.cwd()));
             self.phone_send_watchers(&id, msg);
         }
         for id in states {
@@ -1242,16 +1060,7 @@ impl Shell {
                 continue;
             };
             let t = thread.read(cx);
-            let msg = json!({
-                "type": "state", "id": id, "status": wire::status(super::sessions::status_of(t)),
-                "permission": t.pending_permission().map(wire::permission),
-                "question": t.pending_question().map(wire::question),
-                "usage": wire::usage(t.usage()),
-                "elapsed_ms": t.turn_elapsed().map(|d| d.as_millis() as u64),
-                "title": t.title(),
-                "changes": wire::change_totals(t.entries()),
-            })
-            .to_string();
+            let msg = wire::state_message(&id, t, super::sessions::status_of(t));
             self.phone_send_watchers(&id, msg);
         }
     }

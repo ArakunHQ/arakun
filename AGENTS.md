@@ -94,6 +94,8 @@ Run what CI runs for the parts you changed, and fix every warning:
 tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
+# server/ changed, or a file src/server.rs builds on
+cargo clippy --locked -p arakun-server -- -D warnings
 # Cargo.toml, Cargo.lock or deny.toml changed
 cargo deny check
 # relay/ or phone/ changed

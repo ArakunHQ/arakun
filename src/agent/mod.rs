@@ -20,6 +20,7 @@ mod kind;
 mod knobs;
 mod launch;
 pub mod ledger;
+pub mod log;
 mod loops;
 pub mod markdown;
 pub mod marketplace;

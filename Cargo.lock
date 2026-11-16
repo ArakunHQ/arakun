@@ -313,6 +313,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "arakun-server"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "base64 0.23.1",
+ "dunce",
+ "futures",
+ "getrandom 0.4.3",
+ "gpui",
+ "gpui_platform",
+ "imagesize 0.15.0",
+ "libc",
+ "lyon_tessellation",
+ "pulldown-cmark",
+ "qrcode",
+ "ring",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "syntect",
+ "tungstenite",
+ "uds_windows",
+ "unicode-segmentation",
+ "ureq",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -29,6 +29,9 @@ concurrency:
 jobs:
   deploy:
     name: Deploy the relay
+    # A manual run can pick any branch, and the environment lets every protected
+    # branch through (cla-signatures too), so only main may deploy.
+    if: github.ref == 'refs/heads/main'
     runs-on: depot-ubuntu-24.04
     environment:
       name: production

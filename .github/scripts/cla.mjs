@@ -33,9 +33,16 @@ const ALLOWED = new Set(["karloaldrete"]);
 
 const normalize = (text) => text.toLowerCase().replace(/\s+/g, " ").trim();
 
-/** A comment signs if it has the sentence anywhere, in any case and spacing. */
+/**
+ * A comment signs if it has the sentence, in any case and spacing, outside a
+ * quote: someone who quotes the bot to ask a question has not agreed.
+ */
 export function signs(body) {
-  return normalize(body ?? "").includes(normalize(SENTENCE));
+  const own = (body ?? "")
+    .split("\n")
+    .filter((line) => !/^\s*>/.test(line))
+    .join("\n");
+  return normalize(own).includes(normalize(SENTENCE));
 }
 
 /** A comment asks for a new check if it has the word "recheck". */
@@ -61,7 +68,7 @@ export function signers(pr, commits) {
   add(pr.user);
   for (const c of commits) {
     if (c.author?.id) add(c.author);
-    else unknown.push({ sha: c.sha, name: c.commit.author?.name ?? "unknown" });
+    else unknown.push({ sha: c.sha });
   }
   return { users, unknown };
 }
@@ -89,7 +96,9 @@ export function commentBody({ missing, unknown, truncated = false, claUrl }) {
       SENTENCE,
       "```",
       "",
-      `Still to sign: ${missing.map((m) => `@${m.login}`).join(", ")}`,
+      // Code spans, not @mentions: a fork can write commits under anyone's
+      // email, and the bot must not ping them for it.
+      `Still to sign: ${missing.map((m) => `\`${m.login}\``).join(", ")}`,
       "",
     );
   }
@@ -97,7 +106,9 @@ export function commentBody({ missing, unknown, truncated = false, claUrl }) {
     lines.push(
       "These commits have an author email that is not linked to a GitHub account, so no one can sign for them:",
       "",
-      ...unknown.map((u) => `- ${u.sha.slice(0, 7)} (${u.name.replace(/[`@<>[\]]/g, "")})`),
+      // Only the hash: the author name is whatever the commit says, and the
+      // bot must not repeat it.
+      ...unknown.map((u) => `- ${u.sha}`),
       "",
       "Add the email to your GitHub account, or rewrite the commits with an email that is on it.",
       "",
@@ -105,7 +116,7 @@ export function commentBody({ missing, unknown, truncated = false, claUrl }) {
   }
   if (truncated) {
     lines.push(
-      "This pull request has more than 250 commits, and GitHub lists only the first 250, so the authors of the rest can't be checked. Squash it into fewer commits, or ask a maintainer to check them by hand.",
+      "GitHub didn't list every commit in this pull request, so the authors of the rest can't be checked. Squash it into fewer commits, or ask a maintainer to check them by hand.",
       "",
     );
   }
@@ -199,12 +210,26 @@ async function addSignature(user, comment, prNumber, repoId) {
   }
 }
 
-/** The commits GitHub lists for a pull request, and whether that is all of them. */
-async function review(pr) {
-  // GitHub lists at most 250 commits here. The rest can't be checked, so the
-  // check fails rather than pass on the commits it saw.
-  const commits = await paged(`/repos/${REPO}/pulls/${pr.number}/commits`);
-  return { pr, ...signers(pr, commits), truncated: commits.length < pr.commits };
+/**
+ * Who has to sign for pull request `pr` at commit `sha`. The commits come from
+ * comparing the base branch with `sha` itself, not from the pull request,
+ * whose head may have moved since: a status on `sha` must judge `sha`.
+ */
+async function review(pr, sha) {
+  const commits = [];
+  let total;
+  for (let page = 1; ; page++) {
+    const compare = await gh(
+      "GET",
+      `/repos/${REPO}/compare/${encodeURIComponent(pr.base.ref)}...${sha}?per_page=100&page=${page}`,
+    );
+    total = compare.total_commits;
+    commits.push(...compare.commits);
+    if (compare.commits.length < 100 || commits.length >= total) break;
+  }
+  // If GitHub didn't return every commit (or no count), the authors of the
+  // rest are unknown, so the check fails rather than pass on what it saw.
+  return { pr, ...signers(pr, commits), truncated: !(commits.length >= total) };
 }
 
 /**
@@ -222,7 +247,7 @@ export function verdict(results) {
     return { state: "failure", description: "Some commit authors have no GitHub account; see the comment." };
   }
   if (results.some((r) => r.truncated)) {
-    return { state: "failure", description: "Over 250 commits: GitHub doesn't list them all, so check the authors by hand." };
+    return { state: "failure", description: "Not every commit could be listed; check the authors by hand." };
   }
   return { state: "success", description: "Everyone has signed the CLA." };
 }
@@ -248,7 +273,7 @@ async function check(sha, open, claUrl) {
     console.log(`${sha}: the head of no open pull request, skipped.`);
     return;
   }
-  const reviews = await Promise.all(prs.map(review));
+  const reviews = await Promise.all(prs.map((pr) => review(pr, sha)));
   // Runs don't wait for each other, so another run may record a signature
   // while this one checks. After posting, look at the file again: if it
   // changed, check again, so the last status posted saw the newest file.
@@ -296,7 +321,7 @@ async function main() {
     if (signs(comment.body)) {
       // Only someone this pull request needs can sign here, so a comment
       // can't sign for someone else.
-      if ((await review(pr)).users.has(comment.user.id)) {
+      if ((await review(pr, pr.head.sha)).users.has(comment.user.id)) {
         if (await addSignature(comment.user, comment, pr.number, repo.id)) {
           console.log(`@${comment.user.login} signed the CLA.`);
           // Their other open pull requests were waiting for this too.
@@ -308,6 +333,10 @@ async function main() {
     } else if (!rechecks(comment.body)) {
       return;
     }
+  } else if (name === "push") {
+    // This workflow or its script changed on the default branch: judge every
+    // open pull request under the new rules, not the last run's.
+    shas = all();
   } else if (name === "workflow_dispatch") {
     const number = (process.env.PR ?? "").trim();
     if (number && !/^[0-9]+$/.test(number)) throw new Error(`Not a pull request number: ${number}`);

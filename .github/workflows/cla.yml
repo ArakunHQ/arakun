@@ -10,6 +10,8 @@ name: CLA
 #   may have new authors. After a push or a close, the old head commit may
 #   still be the head of another open pull request, so it is checked again.
 # - issue_comment: someone signed or asked for a "recheck".
+# - push: this file or the script changed on the default branch, so every
+#   open pull request is checked again under the new rules.
 # - workflow_dispatch: by hand, for one pull request or, with no number, for
 #   every open one.
 #
@@ -25,6 +27,9 @@ on:
     types: [opened, reopened, synchronize, closed]
   issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
+  push:
+    branches: [main]
+    paths: [.github/workflows/cla.yml, .github/scripts/cla.mjs]
   workflow_dispatch:
     inputs:
       pr:

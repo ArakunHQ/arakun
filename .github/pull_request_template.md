@@ -4,7 +4,7 @@
 
 <!-- First line: who is affected and what is wrong for them today. A fix says what breaks (and on which platform); a feature names the goal and what stands in the way; a chore says who is blocked. It should stay true under a different solution. The code path goes under Changes. -->
 
-<!-- Fixes an issue? Uncomment the line below so merging closes it. -->
+<!-- Fixes an issue? Uncomment the line below so merging closes it. Use "Refs #ISSUE_ID" instead when it only does part of the work. -->
 <!-- Closes #ISSUE_ID -->
 
 ## Changes
@@ -15,22 +15,29 @@
 
 <!-- New CLI commands or flags (`arakun mem`, `arakun page`, `arakun agent`...): show the usage line and one example. -->
 
+<!-- Breaking change (a CLI flag, a setting or a stored file format that no longer works as before): put `!` in the title, a `BREAKING CHANGE:` line in the commit message, and say here what people do instead. -->
+
+<!-- Stacked on another pull request? End this section with "Stacked on #NUMBER." -->
+
 ## How did you test this?
 
 <!-- Steps to reproduce and verify, and what you expected to see. Name the automated tests you added or changed and the regression each one catches; if none was needed, say what existing coverage applies or why a test would not help. -->
-<!-- Don't paste pass counts for suites CI already runs; link the run instead, and say what you did not check. Long output goes in a <details> block. -->
+<!-- Don't paste pass counts for suites CI already runs, and don't repeat the commands ticked under Checks; link the run instead, and say what you did not check. Long output goes in a <details> block. -->
 <!-- Agents: do NOT claim manual testing you haven't done. Say what you could not try, and list only the commands you actually ran. -->
 
-**Tested on:** <!-- Linux (Wayland / X11), Windows, macOS; with or without the `browser` feature. -->
+**Tested on:** <!-- Linux (Wayland / X11), Windows, macOS; with or without the `browser` feature. For CI-only changes: "GitHub Actions only". -->
 
 ## Checks
 
-<!-- Tick only what you ran; leave the rest unchecked. The commands are in CONTRIBUTING.md under "Checks". With CEF set up you can leave out `--no-default-features`. -->
+<!-- Tick only what you ran. Delete an item that does not apply to this diff, so an unticked box always means "not run". A change to docs, `iso/` or `tools/` alone skips the Rust jobs in CI, except `tools/rustfmt.sh`, `tools/install-cef.sh` and the layout audit (`tools/layout_audit.py`, `tools/layout-audit-fixtures/`). The commands are in CONTRIBUTING.md under "Checks". With CEF set up you can leave out `--no-default-features`. -->
 
 - [ ] `tools/rustfmt.sh --check` passes
 - [ ] `cargo clippy --locked --all-targets --no-default-features -- -D warnings` passes
 - [ ] `cargo test --locked --no-default-features` passes (includes `design_lint`: colors, text sizes and fonts come from `theme` and `ui`)
-- [ ] If `relay/` or `phone/` changed: the relay's `tsc` and `vitest`, and the phone tests pass
+- [ ] `Cargo.toml`, `Cargo.lock` or `deny.toml` changed: `cargo deny check` passes, `Cargo.lock` is committed, and each new dependency has a comment in `Cargo.toml` saying what uses it
+- [ ] `relay/` or `phone/` changed: the relay's `tsc` and `vitest`, and the phone tests pass
+- [ ] Code for one platform: it is behind `cfg(...)`, and clippy passes for another target too (for example `--target x86_64-pc-windows-gnu`)
+- [ ] UI changed: screenshots are under Changes, and `tools/layout-audit.sh` passes (Linux with `Xvfb`)
 - [ ] One fix or feature per pull request
 - [ ] The title follows [Conventional Commits](https://github.com/arakunhq/arakun/blob/main/CONTRIBUTING.md#pull-requests) (CI checks it; it becomes the commit message on `main`)
 - [ ] I have signed the [CLA](https://github.com/arakunhq/arakun/blob/main/CLA.md) (the bot asks on your first pull request; reply with the sentence it gives)

@@ -3,6 +3,8 @@
 //! how round, roomy and spread out the app is (the scales live in `ui`).
 
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -248,9 +250,40 @@ fn keep_aside(path: &std::path::Path, now: u64) -> bool {
     }
 }
 
-/// Returns whether it saved, so a failed save can be tried again later.
-pub fn store(saved: &Saved) -> bool {
-    store_at(&file(), saved)
+/// A number for a copy of the palettes about to be saved: a later copy gets
+/// a larger one.
+pub fn next_version() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The version on disk.
+static WRITTEN: Mutex<u64> = Mutex::new(0);
+
+/// Saves copy `version` of the palettes unless a later one is already on
+/// disk. Saves run off the UI thread and one may still be writing when
+/// Settings closes and saves its last edit, so without this an older copy
+/// could land after the newer one. Returns whether it saved, so a failed
+/// save can be tried again later.
+pub fn store_version(saved: &Saved, version: u64) -> bool {
+    store_version_at(&file(), &WRITTEN, saved, version)
+}
+
+fn store_version_at(
+    path: &std::path::Path,
+    written: &Mutex<u64>,
+    saved: &Saved,
+    version: u64,
+) -> bool {
+    let mut on_disk = written.lock().unwrap_or_else(|e| e.into_inner());
+    if version <= *on_disk {
+        return true;
+    }
+    let ok = store_at(path, saved);
+    if ok {
+        *on_disk = version;
+    }
+    ok
 }
 
 fn store_at(path: &std::path::Path, saved: &Saved) -> bool {
@@ -322,6 +355,22 @@ mod tests {
         // A file from before the scales existed keeps the default look.
         let old: Saved = serde_json::from_str(r#"{"current":"rose","custom":[]}"#).unwrap();
         assert_eq!((old.radius, old.space, old.window_gap), (1., 1., 8.));
+    }
+
+    #[test]
+    fn an_older_save_never_lands_after_a_newer_one() {
+        let path = scratch("versions").join("palettes.json");
+        let written = Mutex::new(0);
+        let with = |current: &str| Saved {
+            current: current.into(),
+            ..Saved::default()
+        };
+        assert!(store_version_at(&path, &written, &with("rose"), 2));
+        // The background save of an earlier edit finishes last.
+        assert!(store_version_at(&path, &written, &with("forest"), 1));
+        assert_eq!(load_from(&path, 0).current, "rose");
+        assert!(store_version_at(&path, &written, &with("forest"), 3));
+        assert_eq!(load_from(&path, 0).current, "forest");
     }
 
     fn scratch(name: &str) -> PathBuf {

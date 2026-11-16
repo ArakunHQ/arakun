@@ -261,6 +261,8 @@ pub struct SettingsDialog {
     palette_save: Option<Task<()>>,
     /// A palette edit is shown but not saved yet.
     palette_dirty: bool,
+    /// The save being written off the UI thread, if one is.
+    palette_writing: Option<Task<()>>,
     /// The settings pane's scroll, so a slider that moves the layout can stay
     /// under the pointer.
     pane_scroll: gpui::ScrollHandle,
@@ -409,6 +411,7 @@ impl SettingsDialog {
             show_import: false,
             palette_save: None,
             palette_dirty: false,
+            palette_writing: None,
             pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
                 sub,
@@ -1025,9 +1028,8 @@ impl SettingsDialog {
 
     fn apply_palette(&mut self, cx: &mut Context<Self>) {
         self.palette_save = None;
-        // Still dirty if the save failed, so closing Settings or quitting
-        // tries it again.
-        self.palette_dirty = !crate::palettes::store(&self.palettes);
+        self.palette_dirty = true;
+        self.write_palette(cx);
         self.show_palette(cx);
     }
 
@@ -1063,15 +1065,44 @@ impl SettingsDialog {
         self.palette_dirty = true;
         self.palette_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PALETTE_SAVE_DELAY).await;
-            let _ = this.update(cx, |this, _| this.flush_palette());
+            let _ = this.update(cx, |this, cx| this.write_palette(cx));
         }));
     }
 
-    /// Saves a palette edit that is still waiting, if there is one. A failed
-    /// save keeps it waiting, so closing Settings or quitting tries again.
+    /// Saves the palettes off the UI thread: each save is a synced write,
+    /// which can take long enough to stall typing and drawing. One save at a
+    /// time; an edit made while it writes is saved when it is done. A failed
+    /// save stays dirty, so closing Settings or quitting tries again.
+    fn write_palette(&mut self, cx: &mut Context<Self>) {
+        if !self.palette_dirty || self.palette_writing.is_some() {
+            return;
+        }
+        self.palette_dirty = false;
+        let (saved, version) = (self.palettes.clone(), crate::palettes::next_version());
+        self.palette_writing = Some(cx.spawn(async move |this, cx| {
+            let ok = cx
+                .background_executor()
+                .spawn(async move { crate::palettes::store_version(&saved, version) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.palette_writing = None;
+                if !ok {
+                    this.palette_dirty = true;
+                } else if this.palette_dirty {
+                    this.write_palette(cx);
+                }
+            });
+        }));
+    }
+
+    /// Saves a palette edit that is still waiting, if there is one, right
+    /// away: Settings is closing or the app is quitting, and a save left to
+    /// a task would be dropped with it.
     fn flush_palette(&mut self) {
-        if self.palette_dirty {
-            self.palette_dirty = !crate::palettes::store(&self.palettes);
+        // A save still writing may not finish once its task is dropped.
+        if self.palette_dirty || self.palette_writing.take().is_some() {
+            let version = crate::palettes::next_version();
+            self.palette_dirty = !crate::palettes::store_version(&self.palettes, version);
         }
     }
 

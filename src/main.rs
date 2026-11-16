@@ -112,7 +112,9 @@ fn bind<A: gpui::Action>(keys: &str, action: A, context: &str) -> KeyBinding {
 }
 
 /// The saved window and the display to open it on, while that display is
-/// connected and shows enough of it to grab the title bar.
+/// connected. Where it shows too little of the window to grab the title bar,
+/// the window keeps its size and mode, centred on that display: Wayland tells
+/// no window where it is, so its saved place can be anywhere.
 fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
     let saved = state::saved_window()?;
     let rect = saved.rect();
@@ -128,7 +130,8 @@ fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
                 .iter()
                 .find(|d| d.uuid().is_ok_and(|u| u.to_string() == *uuid))?;
             if !shows(d) {
-                return None;
+                let centred = Bounds::centered(Some(d.id()), rect.size, cx);
+                return Some((saved.bounds_at(centred), Some(d.id())));
             }
             Some(d.id())
         }

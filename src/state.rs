@@ -86,7 +86,9 @@ impl WindowState {
     /// The window as it is now, after `prev`. gpui on X11 reports neither full
     /// screen nor the bounds to go back to, and macOS reports a zoomed window as
     /// windowed, so the flags are read too. In either mode the bounds stay the
-    /// last ones of the plain window, which are the ones to go back to.
+    /// last ones of the plain window, which are the ones to go back to, as long
+    /// as it stays on the same display: bounds on one display are no place on
+    /// another, so after a move they are what gpui reports.
     pub fn next(
         prev: Option<&WindowState>,
         bounds: gpui::WindowBounds,
@@ -99,6 +101,7 @@ impl WindowState {
         now.maximized = (now.maximized || maximized) && !now.fullscreen;
         if (now.fullscreen || now.maximized)
             && let Some(prev) = prev
+            && prev.display == display
         {
             (now.x, now.y, now.w, now.h) = (prev.x, prev.y, prev.w, prev.h);
         }
@@ -124,7 +127,11 @@ impl WindowState {
     }
 
     pub fn to_bounds(&self) -> gpui::WindowBounds {
-        let b = self.rect();
+        self.bounds_at(self.rect())
+    }
+
+    /// This window's mode, with `b` as its bounds.
+    pub fn bounds_at(&self, b: gpui::Bounds<gpui::Pixels>) -> gpui::WindowBounds {
         if self.fullscreen {
             gpui::WindowBounds::Fullscreen(b)
         } else if self.maximized {
@@ -1054,6 +1061,44 @@ mod tests {
         assert!(!plain.contains("maximized") && !plain.contains("fullscreen"));
         let old: State = serde_json::from_str("{}").unwrap();
         assert!(old.window.is_none(), "older state files open centred");
+    }
+
+    #[test]
+    fn a_maximized_window_moved_to_another_display_takes_its_new_bounds() {
+        let rect = |x: f32| {
+            gpui::Bounds::new(
+                gpui::point(gpui::px(x), gpui::px(60.)),
+                gpui::size(gpui::px(1000.), gpui::px(700.)),
+            )
+        };
+        let on = |d: &str| Some(d.to_string());
+        // Maximized on display A, its plain bounds at x = 40.
+        let on_a = WindowState::next(
+            None,
+            gpui::WindowBounds::Maximized(rect(40.)),
+            true,
+            false,
+            on("a"),
+        );
+        // Windows moves it to display B at x = 1920 and reports its new place.
+        let on_b = WindowState::next(
+            Some(&on_a),
+            gpui::WindowBounds::Maximized(rect(1960.)),
+            true,
+            false,
+            on("b"),
+        );
+        assert_eq!(on_b.display, on("b"));
+        assert_eq!(on_b.to_bounds(), gpui::WindowBounds::Maximized(rect(1960.)));
+        // Still on B: those bounds stay.
+        let still = WindowState::next(
+            Some(&on_b),
+            gpui::WindowBounds::Maximized(rect(1920.)),
+            true,
+            false,
+            on("b"),
+        );
+        assert_eq!(still.rect(), rect(1960.));
     }
 
     #[test]

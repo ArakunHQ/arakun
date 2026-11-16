@@ -708,10 +708,12 @@ fn what_to_remember(text: &str) -> String {
             kept.drain(i..i + phrase.split_whitespace().count());
         }
     }
-    while kept
-        .first()
-        .is_some_and(|k| LEADS.contains(&words(k).concat().as_str()))
-    {
+    // A lone comma left where a time was cut ("remind me tomorrow, at 5pm,
+    // to stretch") would hide the "to" after it.
+    while kept.first().is_some_and(|k| {
+        let w = words(k).concat();
+        w.is_empty() || LEADS.contains(&w.as_str())
+    }) {
         kept.remove(0);
     }
     kept.join(" ")
@@ -869,15 +871,17 @@ fn clock_time(t: &str, clock: &Clock) -> Option<(u64, Vec<(usize, usize)>)> {
             }
             // "Tomorrow" sets the day only next to the time or to the asking
             // words: in "remind me at 5pm to plan tomorrow" it is the message.
+            // A comma between them ("at 5pm, tomorrow") still keeps them together.
+            let next_to = |gap: &str| gap.chars().all(|c| c.is_whitespace() || c == ',');
             let mut start = i;
             let mut end = i + head.len() + used;
             let mut extra = None;
             let mut tomorrow = false;
             for (j, len) in tomorrow_words(t) {
-                if j + len <= start && t[j + len..start].trim().is_empty() {
+                if j + len <= start && next_to(&t[j + len..start]) {
                     start = j;
                     tomorrow = true;
-                } else if j >= end && t[end..j].trim().is_empty() {
+                } else if j >= end && next_to(&t[end..j]) {
                     end = j + len;
                     tomorrow = true;
                 } else {
@@ -1486,6 +1490,12 @@ mod tests {
         let d = parse_reminder("recuérdame mañana llamar a Dani a las 5pm", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: tomorrow });
         assert_eq!(notice(&d), "llamar a Dani");
+        let d = parse_reminder("remind me to stretch at 5pm, tomorrow", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: tomorrow });
+        assert_eq!(notice(&d), "stretch");
+        let d = parse_reminder("remind me tomorrow, at 5pm, to stretch", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: tomorrow });
+        assert_eq!(notice(&d), "stretch");
     }
 
     #[test]

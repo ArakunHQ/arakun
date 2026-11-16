@@ -1334,7 +1334,7 @@ impl Shell {
     ) {
         match target {
             Target::Project(pi) if pi < self.projects.len() => self.select_project(pi, window, cx),
-            Target::Project(_) => {}
+            Target::Project(_) | Target::Todo(_) => {}
             Target::Env(pi, ei) => self.select_env(pi, ei, window, cx),
             Target::Session(pi, ei, id) => self.open_session_at(pi, ei, id, window, cx),
             Target::NewSession => self.new_session(window, cx),

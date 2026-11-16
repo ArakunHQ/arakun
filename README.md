@@ -295,9 +295,11 @@ out first.
   read it, again only on `Enter`.
   "recuérdame en 20 min revisar el PR", "remind me at 5pm to stretch" or
   "timer 10 min" sets a reminder that rings on the island. One that comes due while
-  Arakun is closed rings, marked as missed, the next time it opens. Pins are kept in
-  `pins.json`, rules (reminders too) in `rules.json` and what you open in
-  `palette-frecency.json`, next to the state file.
+  Arakun is closed rings, marked as missed, the next time it opens. "to-do: …" (or a
+  reminder with no time) adds a to-do, and typing "to-do" or "pendiente" lists them,
+  `Enter` ticking one off. Pins are kept in `pins.json`, rules (reminders too) in
+  `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
+  next to the state file.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them

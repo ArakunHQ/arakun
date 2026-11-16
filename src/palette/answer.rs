@@ -428,10 +428,12 @@ fn claude_code(request: &Value, schema: Option<&Value>) -> Result<std::process::
     if let Some(schema) = schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
+    crate::agent::claude_auth::one_shot(&mut cmd)
+        .map_err(|e| format!("could not hand Claude Code its key helper ({e})"))?;
+    // After the user's settings, so a cap of their own doesn't lift this one.
     if let Some(max) = request["max_tokens"].as_u64() {
         cmd.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max.to_string());
     }
-    crate::agent::claude_auth::one_shot(&mut cmd);
     // Away from any project, so no CLAUDE.md is read into a quick answer.
     cmd.current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::piped())

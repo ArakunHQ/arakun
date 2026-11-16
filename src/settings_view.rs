@@ -897,7 +897,14 @@ impl SettingsDialog {
                 )
                 .into_any_element()];
                 if let (true, Some(a)) = (signed_in, access) {
-                    rows.push(row(a.label(), ACCESS_HINT, div().into_any_element()).into_any_element());
+                    rows.push(
+                        row(
+                            a.label(),
+                            "Claude Code runs on this instead of the plan, from ~/.claude/settings.json or the environment.",
+                            div().into_any_element(),
+                        )
+                        .into_any_element(),
+                    );
                 }
                 if let Some(p) = &self.claude {
                     let windows = p.windows_summary();

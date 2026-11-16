@@ -140,18 +140,24 @@ fn custom_host(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let host = rest.split(['/', '?', '#']).next()?.trim();
     // Credentials in the URL stay out of the label.
-    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
-    (!host.is_empty() && host != "api.anthropic.com").then(|| host.to_string())
+    let host = host
+        .rsplit_once('@')
+        .map_or(host, |(_, h)| h)
+        .to_lowercase();
+    let name = host.strip_suffix(":443").unwrap_or(&host);
+    let anthropic = name.trim_end_matches('.') == "api.anthropic.com";
+    (!host.is_empty() && !anthropic).then_some(host)
 }
 
 /// Sets up `cmd`, a `claude -p --setting-sources ""` run, to reach the model
-/// the way the user's Claude Code does.
+/// the way the user's Claude Code does. Call it before setting any variable of
+/// the run's own: the settings' `env` would override it.
 ///
 /// A key in arakun's own environment is often there for other tools. With a
 /// claude.ai sign-in and no other endpoint, it is dropped so the run counts
 /// against the plan and doesn't bill the key. Keys and endpoints set in
 /// Claude Code's own settings always apply.
-pub fn one_shot(cmd: &mut Command) {
+pub fn one_shot(cmd: &mut Command) -> std::io::Result<()> {
     let settings = user_settings();
     let signed_in = super::plan::has_sign_in();
     let plan = drops_process_key(&settings, signed_in, |k| std::env::var(k).ok());
@@ -159,12 +165,30 @@ pub fn one_shot(cmd: &mut Command) {
         cmd.env_remove(API_KEY).env_remove(AUTH_TOKEN);
     }
     cmd.envs(&settings.env);
-    if let Some(helper) = &settings.api_key_helper {
-        // Only flag settings load next to `--setting-sources ""`. The helper is a
-        // command line, not a secret, so it can sit in the arguments.
-        cmd.arg("--settings")
-            .arg(serde_json::json!({ "apiKeyHelper": helper }).to_string());
+    let dir = crate::platform::app_dir();
+    match &settings.api_key_helper {
+        // Only flag settings load next to `--setting-sources ""`.
+        Some(helper) => {
+            cmd.arg("--settings").arg(helper_settings(&dir, helper)?);
+        }
+        None => {
+            let _ = std::fs::remove_file(dir.join(HELPER_SETTINGS));
+        }
     }
+    Ok(())
+}
+
+/// The file that hands a one-shot run the user's `apiKeyHelper`.
+const HELPER_SETTINGS: &str = "claude-key-helper.json";
+
+/// Writes `{"apiKeyHelper": helper}` to a file in `dir` only this user can
+/// read, and returns its path. A helper can hold a key (`echo sk-ant-…`), and
+/// other local users can read a process's arguments, so it never goes there.
+fn helper_settings(dir: &std::path::Path, helper: &str) -> std::io::Result<std::path::PathBuf> {
+    let path = dir.join(HELPER_SETTINGS);
+    let json = serde_json::json!({ "apiKeyHelper": helper }).to_string();
+    crate::durable::write_private(&path, json.as_bytes())?;
+    Ok(path)
 }
 
 /// Whether [`one_shot`] drops the key in arakun's environment: only with a
@@ -237,6 +261,33 @@ mod tests {
             Some("gw.example.com")
         );
         assert_eq!(custom_host("").as_deref(), None);
+        assert_eq!(
+            custom_host("https://API.Anthropic.com:443/").as_deref(),
+            None
+        );
+        assert_eq!(
+            custom_host("https://api.anthropic.com./v1").as_deref(),
+            None
+        );
+        assert_eq!(
+            custom_host("http://LocalHost:8317").as_deref(),
+            Some("localhost:8317")
+        );
+    }
+
+    #[test]
+    fn the_key_helper_goes_in_a_private_file() {
+        let dir = std::env::temp_dir().join(format!("arakun-helper-{}", std::process::id()));
+        let path = helper_settings(&dir, "echo sk-ant-x").unwrap();
+        let written: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written, json!({"apiKeyHelper": "echo sk-ant-x"}));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "other users must not read the helper");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

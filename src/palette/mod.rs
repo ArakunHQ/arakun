@@ -498,6 +498,18 @@ impl Palette {
     fn take_leads(&mut self, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).text().to_string();
         let mut changed = false;
+        if self.scope == Some(Scope::People)
+            && self.pages.is_empty()
+            && let Some((chip, rest)) = query::model_in_people(&text)
+        {
+            // `@opus ` typed key by key: the `@` set People before the word.
+            self.scope = None;
+            if !self.chips.contains(&chip) {
+                self.chips.push(chip);
+            }
+            text = rest;
+            changed = true;
+        }
         while let Some((lead, rest)) = query::take(
             &text,
             self.scope.is_some() || !self.pages.is_empty(),

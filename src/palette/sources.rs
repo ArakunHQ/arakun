@@ -447,6 +447,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "reads the real global memory store; env vars are process wide, so it is not redirected"]
     fn memory_stores_read_from_the_memory_dir() {
         // `ARAKUN_MEMORY_DIR` is read per call; a missing dir gives empty stores.
         let stores = memory_stores(Path::new("/nonexistent/arakun-test-dir"));

@@ -8,10 +8,10 @@
 # found and pulled within days, before it reaches a pull request here.
 version: 2
 updates:
-  # Only .github/workflows: the composite action in .github/actions uses no
-  # other actions.
+  # The workflows, and the composite actions in .github/actions, which pin
+  # actions of their own (gpui-libs).
   - package-ecosystem: github-actions
-    directory: /
+    directories: ["/", "/.github/actions/*"]
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     commit-message: { prefix: ci }

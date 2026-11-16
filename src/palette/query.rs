@@ -116,6 +116,16 @@ pub fn take(text: &str, has_scope: bool, branches: &[String]) -> Option<(Lead, S
     None
 }
 
+/// A finished model word typed in the People scope. Typing `@opus ` a key at
+/// a time sets that scope at the `@`, before the word exists, so the word is
+/// read here, the same way `take` reads a pasted `@opus `. A bare `@` still
+/// opens People right away.
+pub fn model_in_people(text: &str) -> Option<(Chip, String)> {
+    let (word, rest) = text.split_once(' ')?;
+    let chip = model_of(word)?;
+    Some((chip, rest.trim_start().to_string()))
+}
+
 /// A branch worth a chip: one the repository has, not the default one (which
 /// is where work goes anyway), and long enough not to be an everyday word.
 fn is_branch_word(word: &str, branches: &[String]) -> bool {
@@ -201,6 +211,63 @@ mod tests {
             Some((Lead::Chip(Chip::Model { .. }), _))
         ));
         assert_eq!(model_of("op"), None);
+    }
+
+    /// Replays typing one key at a time the way the palette does: `take`
+    /// first, then `model_in_people` while the scope is People.
+    fn type_keys(keys: &str) -> (Option<Scope>, Vec<Chip>, String) {
+        let (mut scope, mut chips, mut text) = (None, Vec::new(), String::new());
+        for c in keys.chars() {
+            text.push(c);
+            if scope == Some(Scope::People)
+                && let Some((chip, rest)) = model_in_people(&text)
+            {
+                scope = None;
+                chips.push(chip);
+                text = rest;
+            }
+            while let Some((lead, rest)) = take(&text, scope.is_some(), &[]) {
+                match lead {
+                    Lead::Scope(s) => scope = Some(s),
+                    Lead::Chip(c) => chips.push(c),
+                }
+                text = rest;
+            }
+        }
+        (scope, chips, text)
+    }
+
+    #[test]
+    fn a_model_word_typed_key_by_key_becomes_a_chip() {
+        let opus = Chip::Model {
+            id: "claude-opus-5-5".into(),
+            label: "Opus 5.5".into(),
+        };
+        // A bare `@` opens People at once.
+        assert_eq!(type_keys("@"), (Some(Scope::People), vec![], String::new()));
+        // The word stays a person search until it is finished.
+        assert_eq!(
+            type_keys("@opus"),
+            (Some(Scope::People), vec![], "opus".into())
+        );
+        assert_eq!(
+            type_keys("@opus "),
+            (None, vec![opus.clone()], String::new())
+        );
+        assert_eq!(
+            type_keys("@opus fix the build"),
+            (None, vec![opus], "fix the build".into())
+        );
+        // A person stays a person.
+        assert_eq!(
+            type_keys("@rik "),
+            (Some(Scope::People), vec![], "rik ".into())
+        );
+        assert_eq!(
+            type_keys("@rik van"),
+            (Some(Scope::People), vec![], "rik van".into())
+        );
+        assert_eq!(model_in_people("op x"), None);
     }
 
     #[test]

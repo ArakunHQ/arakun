@@ -1677,40 +1677,44 @@ fn tag_attr<'a>(attrs: &'a str, attr: &str) -> Option<&'a str> {
 }
 
 /// Where `close` (a lowercase closing tag) starts in `rest`, in any case.
-/// With `spans`, one in a code span is text and doesn't count; inside
-/// `<code>` a backtick is text, so there it does.
+/// With `spans`, one in a code span or in another tag's attributes is text
+/// and doesn't count; inside `<code>` a backtick is text, so there it does.
 fn find_close(rest: &str, close: &str, spans: bool) -> Option<usize> {
     let bytes = rest.as_bytes();
+    // `<code>` and `<kbd>` closing tags not found in what is left: once one
+    // is missing, it is missing later too, so each is looked for once.
+    let mut missing: Vec<&str> = Vec::new();
     let mut at = 0;
     while at + close.len() <= bytes.len() {
+        if bytes[at..at + close.len()].eq_ignore_ascii_case(close.as_bytes()) {
+            return Some(at);
+        }
         if spans && bytes[at] == b'`' {
             at += code_span_len(&rest[at..]);
-        } else if let Some(len) = (spans && bytes[at] == b'<')
-            .then(|| html_code_len(&rest[at..]))
+        } else if let Some((name, closing, _, len)) = (spans && bytes[at] == b'<')
+            .then(|| html_tag(&rest[at..]))
             .flatten()
         {
-            // Its backticks are text, so they can't start a code span.
             at += len;
-        } else if bytes[at..at + close.len()].eq_ignore_ascii_case(close.as_bytes()) {
-            return Some(at);
+            let inner = match (name.as_str(), closing) {
+                ("code", false) => "</code>",
+                ("kbd", false) => "</kbd>",
+                _ => continue,
+            };
+            if missing.contains(&inner) {
+                continue;
+            }
+            // The whole element: its backticks are text, so they can't
+            // start a code span.
+            match find_close(&rest[at..], inner, false) {
+                Some(end) => at += end + inner.len(),
+                None => missing.push(inner),
+            }
         } else {
             at += 1;
         }
     }
     None
-}
-
-/// How long the whole `<code>` or `<kbd>` element at the start of `rest`
-/// is, with its closing tag. `None` if it isn't one or doesn't close.
-fn html_code_len(rest: &str) -> Option<usize> {
-    let (name, closing, _, len) = html_tag(rest)?;
-    let close = match (name.as_str(), closing) {
-        ("code", false) => "</code>",
-        ("kbd", false) => "</kbd>",
-        _ => return None,
-    };
-    let end = find_close(&rest[len..], close, false)?;
-    Some(len + end + close.len())
 }
 
 /// An `<img>` someone put in the text (a screenshot) as a markdown image.
@@ -2529,6 +2533,22 @@ mod tests {
             without_html("<a href=\"x\"><code>`</code></a> <code>`</code>"),
             "[`` ` ``](<x>) `` ` ``"
         );
+    }
+
+    #[test]
+    fn code_in_an_attribute_is_text() {
+        let md =
+            without_html("<a href=\"x\"><span title=\"<code>\">docs</span></a><code>tail</code>");
+        assert_eq!(md, "[docs](<x>)`tail`");
+    }
+
+    #[test]
+    fn many_unclosed_code_tags_in_a_link_stay_fast() {
+        let body = format!("<a href=\"x\">see {}</a>", "<code>".repeat(10_000));
+        let start = std::time::Instant::now();
+        let md = without_html(&body);
+        assert!(md.starts_with("[see](<x>)"), "{md}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

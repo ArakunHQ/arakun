@@ -438,6 +438,8 @@ fn the_layout_audit_catches_what_it_should() {
         "src/rule.rs:8 [clip]",
         // A square bar frames its chips as much as a rounded one.
         "src/squarebar.rs:9 [inset]",
+        // One rounded corner is no pill: its corner still has to match.
+        "src/tab.rs:5 [radius]",
     ] {
         assert!(text.contains(kind), "missing {kind}:\n{text}");
     }

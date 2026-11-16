@@ -112,8 +112,9 @@ for _f in FILES:
             if vis(d[p]) and (not rounded or max(d[p]['r'])>0): return p
             p=d[p]['parent']
         return None
-    # a pill parent clips its stripes; circles and pills inside need no corner match
-    def pill(P): return max(P['r'])>=min(P['b'][2],P['b'][3])/2-0.5
+    # a pill parent clips its stripes; circles and pills inside need no corner match.
+    # All four corners: one rounded corner on a bar (a tab) is no pill.
+    def pill(P): return min(P['r'])>=min(P['b'][2],P['b'][3])/2-0.5
     def add(at,kind,msg):
         out.setdefault((at,kind),msg)
     def corner(c,P):

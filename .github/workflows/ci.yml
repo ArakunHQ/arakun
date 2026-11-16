@@ -115,6 +115,9 @@ jobs:
   #
   # The three Linux Rust jobs run on 4 CPUs. With a warm cache, 8 CPUs were only
   # 21-29% busy, and halving them cost 3-8% more time (runner sizing, #98).
+  # Not 2: the report estimated Clippy 8-12% slower there, but a cached cargo
+  # clippy took 32-35 s instead of 18-23 s, which saves almost no CPU-minutes
+  # (#137).
   clippy:
     name: Clippy (no warnings)
     needs: changes
@@ -239,14 +242,15 @@ jobs:
 
   # The cfg(windows) code and the Windows-only crates (windows, windows-sys,
   # uds_windows) compile nowhere else, so without this job a Windows break
-  # first showed up while building a release. Same runner as release.yml's
-  # Windows build. Clippy only, no tests: it compiles the tests too, and running
-  # them on Windows is a separate step.
+  # first showed up while building a release. Clippy only, no tests: it compiles
+  # the tests too, and running them on Windows is a separate step. 4 CPUs, not
+  # the release build's 8: with a warm cache 8 were 22% busy, and 4 cost about
+  # 2% more time (runner sizing, #132).
   clippy-windows:
     name: Clippy (Windows)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-windows-2025-8
+    runs-on: depot-windows-2025-4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

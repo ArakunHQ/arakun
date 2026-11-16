@@ -758,6 +758,14 @@ pub fn brand_ink() -> Hsla {
 pub fn brand_fur_on_light() -> Hsla {
     rgb(0x8a867d).into()
 }
+/// The raccoon's fur in this mode: paper on dark, `brand_fur_on_light` on white.
+pub fn brand_fur() -> Hsla {
+    if is_light() {
+        brand_fur_on_light()
+    } else {
+        brand_paper()
+    }
+}
 
 /// Text and icons drawn on an accent fill: the background in dark mode, the
 /// dark content in light mode, where the background would be white on amber.

@@ -597,7 +597,7 @@ pub struct Mascot {
     can_dance: bool,
     /// Moves even in a window that never takes focus (the island's layer).
     awake: bool,
-    /// Fur in this instead of the brand's paper.
+    /// Fur in this instead of the brand fur (`theme::brand_fur`).
     color: Option<Hsla>,
     dance_t0: Option<f64>,
 
@@ -716,7 +716,7 @@ impl Mascot {
         self
     }
 
-    /// Paints the fur in `color` instead of the brand's paper.
+    /// Paints the fur in `color` instead of the brand fur.
     #[allow(dead_code, reason = "only the island uses it")]
     pub fn color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
@@ -1776,7 +1776,7 @@ impl Render for Mascot {
         self.rendered = true;
         self.active = self.awake || window.is_window_active();
         let frame = self.step(now, dt);
-        let color = self.color.unwrap_or_else(theme::brand_paper);
+        let color = self.color.unwrap_or_else(theme::brand_fur);
         let (weak, click) = (cx.weak_entity(), cx.weak_entity());
         let bounds = self.bounds.clone();
         // Where it is drawn, not its box: it may sit higher, on the card over

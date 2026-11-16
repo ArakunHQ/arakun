@@ -206,7 +206,7 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets), `tools/pr-assets.sh
   <file>...` uploads it there instead and prints the Markdown to paste; agents do
   this, since GitHub has no API to upload images. That repository is public: no
-  real accounts, tokens or home-directory paths in the picture.
+  real accounts, tokens, email addresses or home-directory paths in the picture.
 
 ## Pull requests
 

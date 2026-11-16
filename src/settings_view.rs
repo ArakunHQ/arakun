@@ -261,6 +261,9 @@ pub struct SettingsDialog {
     palette_save: Option<Task<()>>,
     /// A palette edit is shown but not saved yet.
     palette_dirty: bool,
+    /// The settings pane's scroll, so a slider that moves the layout can stay
+    /// under the pointer.
+    pane_scroll: gpui::ScrollHandle,
     /// Who names the branch of a new environment after its first prompt.
     namer: env_name::Namer,
     namer_input: Entity<TextInput>,
@@ -406,6 +409,7 @@ impl SettingsDialog {
             show_import: false,
             palette_save: None,
             palette_dirty: false,
+            pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
                 sub,
                 key_sub,
@@ -1002,6 +1006,7 @@ impl SettingsDialog {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
+            .track_scroll(&self.pane_scroll)
             .p(crate::ui::sp(16.))
             .gap(crate::ui::sp(16.))
             .border_l_1()
@@ -1570,11 +1575,12 @@ impl SettingsDialog {
                     |s, v| s.radius = v,
                     cx,
                 ),
-                ui::slider(
+                ui::pinned_slider(
                     "shape-radius-slider",
                     s.radius / 2.,
                     track(),
                     theme::accent(),
+                    &self.pane_scroll,
                     setter(|s, t| s.radius = (t * 2. * 20.).round() / 20.),
                 ),
             ),
@@ -1589,11 +1595,12 @@ impl SettingsDialog {
                     |s, v| s.space = v,
                     cx,
                 ),
-                ui::slider(
+                ui::pinned_slider(
                     "shape-space-slider",
                     s.space - 0.6,
                     track(),
                     theme::accent(),
+                    &self.pane_scroll,
                     setter(|s, t| s.space = ((0.6 + t) * 20.).round() / 20.),
                 ),
             ),
@@ -1608,11 +1615,12 @@ impl SettingsDialog {
                     |s, v| s.window_gap = v,
                     cx,
                 ),
-                ui::slider(
+                ui::pinned_slider(
                     "shape-gap-slider",
                     s.window_gap / 20.,
                     track(),
                     theme::accent(),
+                    &self.pane_scroll,
                     setter(|s, t| s.window_gap = (t * 20.).round()),
                 ),
             ),

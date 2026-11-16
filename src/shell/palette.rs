@@ -287,7 +287,8 @@ impl Shell {
                 } else {
                     self.rules.add(draft.clone(), dir, now)
                 };
-                self.rules.save();
+                // Unsaved, it still waits here, but it can't run until it is saved.
+                let _ = self.save_rules(cx);
                 self.close_modal(window, cx);
                 self.modal = None;
                 self.notify_from(
@@ -1585,6 +1586,10 @@ impl Shell {
 
     /// Checks every waiting rule and runs those whose moment came.
     pub(super) fn check_rules(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A save that failed earlier (a cancel, a finish) is tried again here.
+        if self.rules.unsaved && self.save_rules(cx).is_ok() {
+            self.refresh_automations(cx);
+        }
         if self.rules.waiting().next().is_none() {
             return;
         }
@@ -1624,7 +1629,17 @@ impl Shell {
         }
         self.rules.tidy(now);
         if changed {
-            self.rules.save();
+            let ids: Vec<u64> = fire.iter().map(|(r, _)| r.id).collect();
+            let was_unsaved = self.rules.unsaved;
+            if let Err(why) = self.rules.save_fired(&ids) {
+                // Running is not on disk, so nothing runs: after a restart the
+                // file would say Waiting and run the steps a second time. The
+                // rules stay waiting and the next check tries again.
+                fire.clear();
+                if !was_unsaved {
+                    self.rules_not_saved(&why, cx);
+                }
+            }
             self.refresh_automations(cx);
         }
         for rule in failed {
@@ -1641,6 +1656,31 @@ impl Shell {
         for (rule, dir) in fire {
             self.run_rule(rule, dir, window, cx);
         }
+    }
+
+    /// Saves the rules, and says so the first time saving fails (the 15 s
+    /// checks retry it and would repeat the alert).
+    pub(super) fn save_rules(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let was_unsaved = self.rules.unsaved;
+        let done = self.rules.save();
+        if let Err(why) = &done
+            && !was_unsaved
+        {
+            self.rules_not_saved(why, cx);
+        }
+        done
+    }
+
+    fn rules_not_saved(&self, why: &str, cx: &mut Context<Self>) {
+        self.notify_from(
+            AlertKind::Failure,
+            "Automations not saved",
+            &format!("No automation runs until they are saved; Arakun keeps trying. {why}"),
+            None,
+            None,
+            "arakun",
+            cx,
+        );
     }
 
     /// The head commit GitHub last showed for a pull request, if it was read.
@@ -1739,7 +1779,9 @@ impl Shell {
                     );
                 }
                 if this.rules.finish(rule.id, result.map_err(|(why, _)| why)) {
-                    this.rules.save();
+                    // Unsaved, the file still says Running: after a restart the
+                    // rule shows as cut short and is not run again.
+                    let _ = this.save_rules(cx);
                     this.refresh_automations(cx);
                 }
             });

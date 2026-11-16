@@ -395,25 +395,23 @@ impl Book {
         self.untold.retain(|u| u != id);
     }
 
-    /// Takes in what a read brought: `items` gets the new ones and the
-    /// changes (by id), newest first. Returns those that pop the island:
+    /// Takes in a read of every item the Worker has open: `items` becomes
+    /// them, newest first, so what it closed on its own (the brief of an older
+    /// head, the items of a merged PR) goes. Returns those that pop the island:
     /// never seen, not handled, asking for the user. `quiet` (the first read
     /// ever) only learns what is there.
     pub fn absorb(&mut self, items: &mut Vec<Item>, read: Vec<Item>, quiet: bool) -> Vec<Item> {
         let mut pops = Vec::new();
-        for item in read {
+        for item in &read {
             if !self.seen.contains(&item.id) {
                 self.seen.push(item.id.clone());
                 if !quiet && !self.handled(&item.id) && item.pops() {
                     pops.push(item.clone());
                 }
             }
-            match items.iter_mut().find(|i| i.id == item.id) {
-                Some(old) => *old = item,
-                None => items.push(item),
-            }
         }
         trim(&mut self.seen);
+        *items = read;
         items.sort_by(|a, b| b.at.cmp(&a.at));
         pops
     }
@@ -515,13 +513,10 @@ fn post_json(
     }
 }
 
-/// The items after `since` (all the Worker keeps without it).
-pub fn fetch(cfg: &Config, since: Option<&str>) -> Result<Vec<Item>, String> {
-    let mut url = format!("{}/items", cfg.url);
-    if let Some(s) = since.filter(|s| !s.is_empty()) {
-        url.push_str("?since=");
-        url.push_str(&encode(s));
-    }
+/// Every item the Worker has open. It closes some on its own, so a read of
+/// only the newest would keep those on show.
+pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
+    let url = format!("{}/items", cfg.url);
     let mut res = agent()
         .get(&url)
         .header("Authorization", format!("Bearer {}", cfg.token))
@@ -645,8 +640,6 @@ pub struct Pilot {
     book: Book,
     /// No book on disk yet: the first read doesn't pop anything.
     fresh_book: bool,
-    /// The newest `at` read this run; the next read asks for what is after it.
-    since: Option<String>,
     busy: bool,
     problem: Option<String>,
     _poll: Task<()>,
@@ -670,7 +663,6 @@ impl Pilot {
             items: Vec::new(),
             fresh_book: book.is_none(),
             book: book.unwrap_or_default(),
-            since: None,
             busy: false,
             problem: None,
             _poll: poll,
@@ -715,14 +707,12 @@ impl Pilot {
         if config != self.config {
             // Another Worker (or none) knows other items.
             self.items.clear();
-            self.since = None;
             self.problem = None;
             self.config = config.clone();
             cx.notify();
         }
         let Some(cfg) = config else { return };
         self.busy = true;
-        let since = self.since.clone();
         let untold = self.book.untold.clone();
         cx.spawn(async move |this, cx| {
             let (told, read) = cx
@@ -731,7 +721,7 @@ impl Pilot {
                         .into_iter()
                         .filter(|id| tell_done(&cfg, id).is_ok())
                         .collect();
-                    (told, fetch(&cfg, since.as_deref()))
+                    (told, fetch(&cfg))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -742,11 +732,6 @@ impl Pilot {
                 match read {
                     Ok(read) => {
                         this.problem = None;
-                        if let Some(newest) = read.iter().map(|i| &i.at).max()
-                            && this.since.as_ref().is_none_or(|s| newest > s)
-                        {
-                            this.since = Some(newest.clone());
-                        }
                         let quiet = std::mem::take(&mut this.fresh_book);
                         let pops = this.book.absorb(&mut this.items, read, quiet);
                         store_book(&this.book);
@@ -953,14 +938,27 @@ mod tests {
             pops.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
             ["q", "i"]
         );
-        // Newest first.
+        // Newest first, and only what this read brought: "old" was closed.
         assert_eq!(
             items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
-            ["i", "q", "b", "old"]
+            ["i", "q", "b"]
         );
-        // Read again (a restart reads everything): nothing pops twice.
-        assert!(book.absorb(&mut items, read, false).is_empty());
-        assert_eq!(items.len(), 4);
+        // A read is everything still open: what the Worker closed ("old")
+        // goes, and nothing pops twice.
+        assert!(book.absorb(&mut items, read.clone(), false).is_empty());
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["i", "q", "b"]
+        );
+        // A newer brief of the same PR closed "b" there: it goes here too.
+        let mut newer = read;
+        newer.retain(|i| i.id != "b");
+        newer.push(item("b2", "2026-11-15T13:30:00Z", Kind::Brief, false));
+        assert!(book.absorb(&mut items, newer, false).is_empty());
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["b2", "i", "q"]
+        );
 
         // Handled: hidden, owed to the Worker until it is told.
         book.handle("q");

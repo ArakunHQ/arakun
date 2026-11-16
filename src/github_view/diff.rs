@@ -24,11 +24,11 @@ impl GitHubView {
         };
         let key = crate::github::queue::key_of(&item);
         let pad = |d: gpui::Div| d.px(crate::ui::sp(18.)).py(crate::ui::sp(14.));
-        // Files of an older head never show beside this head's checks.
+        // Files of an older head or base never show beside this head's checks.
         let diff = self
             .diffs
             .get(&key)
-            .filter(|d| super::diff_is_current(&d.head, &p.head_ref_oid))
+            .filter(|d| super::diff_is_current(&d.tip, &p.head_ref_oid, &p.base_ref_name))
             .map(|d| &d.state);
         let (files, cut) = match diff {
             None | Some(DiffState::Loading) => {

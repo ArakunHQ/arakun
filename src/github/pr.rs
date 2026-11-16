@@ -587,6 +587,56 @@ pub fn head_sha(item: &ItemRef) -> Result<String, Problem> {
     }
 }
 
+/// What a pull request's diff is taken between: its head commit and the
+/// branch it merges into. A push moves the first, a retarget the second.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tip {
+    pub head: String,
+    pub base: String,
+}
+
+/// The pull request's `Tip` now, read from GitHub.
+pub fn tip(item: &ItemRef) -> Result<Tip, Problem> {
+    let number = item.number.to_string();
+    let out = super::gh_out(&[
+        "pr",
+        "view",
+        &number,
+        "-R",
+        &item.repo,
+        "--json",
+        "headRefOid,baseRefName",
+    ])?;
+    let v: serde_json::Value = serde_json::from_slice(&out)
+        .map_err(|e| Problem::Other(format!("gh answered something unreadable: {e}")))?;
+    let tip = Tip {
+        head: v["headRefOid"].as_str().unwrap_or("").to_string(),
+        base: v["baseRefName"].as_str().unwrap_or("").to_string(),
+    };
+    if tip.head.is_empty() || tip.base.is_empty() {
+        return Err(Problem::Other(
+            "gh did not say the pull request's head commit and base".into(),
+        ));
+    }
+    Ok(tip)
+}
+
+/// The diff of a pull request together with the `Tip` it shows. `gh pr diff`
+/// reads whatever the pull request is at that moment, so the tip is read
+/// before and after it: when they differ (a push or a retarget landed
+/// meanwhile), the diff could be of either and is refused.
+pub fn fetch_diff_at(item: &ItemRef) -> Result<(Diff, Tip), Problem> {
+    let before = tip(item)?;
+    let diff = fetch_diff(item)?;
+    let after = tip(item)?;
+    if before != after {
+        return Err(Problem::Other(
+            "the pull request changed while its diff was read; try again".into(),
+        ));
+    }
+    Ok((diff, after))
+}
+
 pub fn fetch_issue(item: &ItemRef) -> Result<Issue, Problem> {
     let number = item.number.to_string();
     read(&super::gh_out(&[

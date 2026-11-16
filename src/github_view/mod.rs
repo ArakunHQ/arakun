@@ -116,18 +116,41 @@ enum DiffState {
     Ready { files: Rc<Vec<FileDiff>>, cut: bool },
 }
 
-/// A pull request's diff, for the head commit it was read at.
+/// A pull request's diff, for the head commit and base it was read at.
 struct Diff {
-    head: String,
+    /// While loading, what the details showed; once read, what GitHub said
+    /// the diff is of (`pr::fetch_diff_at`).
+    tip: pr::Tip,
     /// Which load this is: an older load that ends late is dropped.
     load: u64,
     state: DiffState,
 }
 
-/// Whether a diff read at `read_at` still shows the pull request at `head`.
-/// An unknown head (details not read yet) keeps what there is.
-fn diff_is_current(read_at: &str, head: &str) -> bool {
-    head.is_empty() || read_at == head
+/// Whether a diff read at `read_at` still shows the pull request whose
+/// details say `head` and `base`: a push or a retarget makes it stale.
+/// Unknown details (not read yet) keep what there is.
+fn diff_is_current(read_at: &pr::Tip, head: &str, base: &str) -> bool {
+    head.is_empty() || (read_at.head == head && read_at.base == base)
+}
+
+/// Keeps `typed` as the unsent comment of `from` (an empty one is dropped)
+/// and takes out the one kept for `to`: what the input shows next.
+fn swap_comment(
+    drafts: &mut HashMap<String, String>,
+    from: Option<&ItemRef>,
+    to: Option<&ItemRef>,
+    typed: String,
+) -> String {
+    if let Some(from) = from {
+        let key = crate::github::queue::key_of(from);
+        if typed.trim().is_empty() {
+            drafts.remove(&key);
+        } else {
+            drafts.insert(key, typed);
+        }
+    }
+    to.and_then(|to| drafts.remove(&crate::github::queue::key_of(to)))
+        .unwrap_or_default()
 }
 
 /// What the last action did, shown in the card.
@@ -176,6 +199,11 @@ pub struct GitHubView {
     /// that changed in between asks again.
     confirm_all: Option<BTreeSet<String>>,
     comment: Entity<TextInput>,
+    /// The item the comment input's text was typed for. Text is kept per
+    /// item, so a comment written for one is never sent to the next.
+    comment_for: Option<ItemRef>,
+    /// Unsent comments of the items not shown, by `queue::key_of`.
+    comment_drafts: HashMap<String, String>,
     /// The text of a review being confirmed, or of the draft being edited.
     body_input: Entity<TextInput>,
     confirm: Option<Confirm>,
@@ -255,6 +283,8 @@ impl GitHubView {
             watch_note: None,
             confirm_all: None,
             comment,
+            comment_for: None,
+            comment_drafts: HashMap::new(),
             body_input,
             confirm: None,
             confirm_head: String::new(),
@@ -315,6 +345,7 @@ impl GitHubView {
         if gone {
             self.picked = None;
             self.narrow_open = false;
+            self.switch_comment(cx);
         }
         self.on_github_changed(cx);
     }
@@ -419,8 +450,27 @@ impl GitHubView {
                 self.load_merge_methods(item.repo.clone(), cx);
             }
         }
+        self.switch_comment(cx);
         self.reload_draft();
         cx.notify();
+    }
+
+    /// Puts away the comment typed for the item shown before and brings
+    /// back the one of the item shown now.
+    fn switch_comment(&mut self, cx: &mut Context<Self>) {
+        let now = self.item();
+        if now == self.comment_for {
+            return;
+        }
+        let typed = self.comment.read(cx).text().to_string();
+        let next = swap_comment(
+            &mut self.comment_drafts,
+            self.comment_for.as_ref(),
+            now.as_ref(),
+            typed,
+        );
+        self.comment.update(cx, |i, cx| i.set_text(next, cx));
+        self.comment_for = now;
     }
 
     fn load_merge_methods(&mut self, repo: String, cx: &mut Context<Self>) {
@@ -445,14 +495,17 @@ impl GitHubView {
     /// Reads the diff unless the one there is for the current head (or on its way).
     fn load_diff(&mut self, item: ItemRef, cx: &mut Context<Self>) {
         let key = crate::github::queue::key_of(&item);
-        let head = match self.github.read(cx).details(&item) {
-            Some(Details::Pull(p)) => p.head_ref_oid.clone(),
-            _ => String::new(),
+        let tip = match self.github.read(cx).details(&item) {
+            Some(Details::Pull(p)) => pr::Tip {
+                head: p.head_ref_oid.clone(),
+                base: p.base_ref_name.clone(),
+            },
+            _ => pr::Tip::default(),
         };
         if self
             .diffs
             .get(&key)
-            .is_some_and(|d| diff_is_current(&d.head, &head))
+            .is_some_and(|d| diff_is_current(&d.tip, &tip.head, &tip.base))
         {
             return;
         }
@@ -461,30 +514,43 @@ impl GitHubView {
         self.diffs.insert(
             key.clone(),
             Diff {
-                head,
+                tip: tip.clone(),
                 load,
                 state: DiffState::Loading,
             },
         );
         cx.spawn(async move |this, cx| {
+            let it = item.clone();
             let read = cx
                 .background_spawn(async move {
-                    pr::fetch_diff(&item).map(|d| (pr::split_diff(&d.text), d.cut))
+                    pr::fetch_diff_at(&it).map(|(d, at)| (pr::split_diff(&d.text), d.cut, at))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                let state = match read {
-                    Ok((files, cut)) => DiffState::Ready {
-                        files: Rc::new(files),
-                        cut,
-                    },
-                    Err(p) => DiffState::Failed(p.text()),
-                };
                 // A newer load (a push, a refresh) replaced this one.
-                if let Some(d) = this.diffs.get_mut(&key).filter(|d| d.load == load) {
-                    d.state = state;
-                    cx.notify();
+                let Some(d) = this.diffs.get_mut(&key).filter(|d| d.load == load) else {
+                    return;
+                };
+                let mut behind = false;
+                match read {
+                    Ok((files, cut, at)) => {
+                        // Kept under what it was read at, so the files never
+                        // show beside another head or base.
+                        behind = !tip.head.is_empty() && at != tip;
+                        d.tip = at;
+                        d.state = DiffState::Ready {
+                            files: Rc::new(files),
+                            cut,
+                        };
+                    }
+                    Err(p) => d.state = DiffState::Failed(p.text()),
                 }
+                // The details are older than the diff: read them again so
+                // the two meet.
+                if behind {
+                    this.github.update(cx, |g, cx| g.fetch_item(item, cx));
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -720,6 +786,11 @@ impl GitHubView {
     }
 
     fn send_comment(&mut self, cx: &mut Context<Self>) {
+        // Text typed for another item is never sent to this one.
+        if self.comment_for != self.item() {
+            self.switch_comment(cx);
+            return;
+        }
         let text = self.comment.read(cx).text().to_string();
         if text.trim().is_empty() || self.item().is_none() {
             return;
@@ -739,6 +810,12 @@ impl GitHubView {
             move |this, cx| {
                 if this.item() == on && this.comment.read(cx).text() == text {
                     this.comment.update(cx, |i, cx| i.set_text("", cx))
+                } else if let Some(on) = &on {
+                    // Put away when another item was picked: it was sent.
+                    let key = crate::github::queue::key_of(on);
+                    if this.comment_drafts.get(&key) == Some(&text) {
+                        this.comment_drafts.remove(&key);
+                    }
                 }
             },
             cx,
@@ -1388,12 +1465,18 @@ mod tests {
 
     #[test]
     fn a_diff_follows_the_head() {
-        assert!(diff_is_current("aaa", "aaa"));
+        let at = |head: &str| pr::Tip {
+            head: head.into(),
+            base: "main".into(),
+        };
+        assert!(diff_is_current(&at("aaa"), "aaa", "main"));
+        // Retargeted with no new commit: the files compare to another base.
+        assert!(!diff_is_current(&at("aaa"), "aaa", "release"));
         // A push moved the head: the old files must not show.
-        assert!(!diff_is_current("aaa", "bbb"));
-        assert!(!diff_is_current("", "bbb"));
+        assert!(!diff_is_current(&at("aaa"), "bbb", "main"));
+        assert!(!diff_is_current(&at(""), "bbb", "main"));
         // Details not read yet: keep what there is.
-        assert!(diff_is_current("aaa", ""));
+        assert!(diff_is_current(&at("aaa"), "", ""));
     }
 
     #[test]
@@ -1459,5 +1542,30 @@ mod tests {
         );
         assert_eq!(without_html("plain"), "plain");
         assert_eq!(without_html("a <!-- never closed"), "a ");
+    }
+
+    #[test]
+    fn a_comment_stays_with_its_item() {
+        let item = |number| ItemRef {
+            repo: "o/r".into(),
+            number,
+            kind: ItemKind::Pull,
+        };
+        let (a, b) = (item(1), item(2));
+        let mut drafts = HashMap::new();
+        // Written for A, then B is picked: B starts empty.
+        assert_eq!(
+            swap_comment(&mut drafts, Some(&a), Some(&b), "for A".into()),
+            ""
+        );
+        // Back to A: its text comes back, and B's empty one isn't kept.
+        assert_eq!(
+            swap_comment(&mut drafts, Some(&b), Some(&a), " ".into()),
+            "for A"
+        );
+        assert!(drafts.is_empty());
+        // Nothing picked any more: A's text is kept for later.
+        assert_eq!(swap_comment(&mut drafts, Some(&a), None, "x".into()), "");
+        assert_eq!(drafts.len(), 1);
     }
 }

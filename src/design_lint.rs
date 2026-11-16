@@ -39,8 +39,9 @@ const SCALED: &[(&str, &str)] = &[
 ];
 
 /// Corners, padding or gaps given in raw pixels, which the Corners and
-/// Spacing settings would not reach.
-fn unscaled(line: &str) -> Vec<String> {
+/// Spacing settings would not reach. `next` is the next line with code on
+/// it, for an argument that starts there.
+fn unscaled(line: &str, next: &str) -> Vec<String> {
     let mut found = Vec::new();
     for (call, fix) in SCALED {
         let mut rest = line;
@@ -59,7 +60,12 @@ fn unscaled(line: &str) -> Vec<String> {
                 _ if call.ends_with('(') => rest,
                 _ => continue,
             };
-            if after.starts_with("px(") {
+            let mut arg = after.trim_start();
+            // `.gap(` or `.gap( // why`: the argument is on a later line.
+            if arg.is_empty() || arg.starts_with("//") {
+                arg = next.trim_start();
+            }
+            if arg.starts_with("px(") {
                 found.push(format!(
                     "{} in raw pixels: use {fix}(…)",
                     call.trim_end_matches('(')
@@ -68,6 +74,19 @@ fn unscaled(line: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// The first of `lines` with code on it: an argument on the line after its
+/// call can have a comment or a blank line before it.
+fn next_code<'a>(lines: &[&'a str]) -> &'a str {
+    lines
+        .iter()
+        .find(|l| {
+            let t = l.trim_start();
+            !t.is_empty() && !t.starts_with("//")
+        })
+        .copied()
+        .unwrap_or("")
 }
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -160,12 +179,13 @@ fn views_use_the_design_system() {
             continue;
         };
         let scaled = !SCALE_EXEMPT.iter().any(|d| rel.starts_with(d));
-        for (n, line) in text.lines().enumerate() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
             for p in problems(line) {
                 report.push(format!("{rel}:{}: {p}", n + 1));
             }
             if scaled {
-                for p in unscaled(line) {
+                for p in unscaled(line, next_code(&lines[n + 1..])) {
                     report.push(format!("{rel}:{}: {p}", n + 1));
                 }
             }
@@ -191,9 +211,15 @@ fn the_lint_catches_what_it_should() {
     assert_eq!(problems(".text_size(px(18.))").len(), 1);
     assert!(problems(".text_size(px(size * 0.4))").is_empty());
     assert!(problems(".text_color(theme::text_subtle())").is_empty());
-    assert_eq!(unscaled(".rounded(px(8.))").len(), 1);
-    assert_eq!(unscaled(".rounded_tl(px(4.)).gap_x(px(6.))").len(), 2);
-    assert_eq!(unscaled(".px(px(12.)).py(px(4.))").len(), 2);
-    assert!(unscaled(".rounded(crate::ui::rad(8.)).gap(ui::sp(6.))").is_empty());
-    assert!(unscaled(".rounded_full().h(px(20.)).mx(px(4.))").is_empty());
+    assert_eq!(unscaled(".rounded(px(8.))", "").len(), 1);
+    assert_eq!(unscaled(".rounded_tl(px(4.)).gap_x(px(6.))", "").len(), 2);
+    assert_eq!(unscaled(".px(px(12.)).py(px(4.))", "").len(), 2);
+    assert!(unscaled(".rounded(crate::ui::rad(8.)).gap(ui::sp(6.))", "").is_empty());
+    assert!(unscaled(".rounded_full().h(px(20.)).mx(px(4.))", "").is_empty());
+    // An argument on a later line, after a comment or a blank line.
+    assert_eq!(unscaled(".gap(", next_code(&["    px(8.)", ")"])).len(), 1);
+    let later = ["        // Why eight.", "", "        px(8.))"];
+    assert_eq!(unscaled(".gap(", next_code(&later)).len(), 1);
+    assert_eq!(unscaled(".gap( // why", next_code(&later)).len(), 1);
+    assert!(unscaled(".gap(", next_code(&["", "    crate::ui::sp(8.))"])).is_empty());
 }

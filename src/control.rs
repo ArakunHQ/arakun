@@ -221,6 +221,8 @@ Usage:
   arakun <dir> | add [dir]     add a project (or switch to it) and show it
   arakun browse [-s] <url>     open a browser tab (a path opens as file://)
   arakun open [-s] <file[:N]>  open a file tab, at line N
+  arakun palette               bring the window up with Ctrl+K open (bind it
+                             to a global key, such as Super+K)
   arakun run [--ready <text>] [--port <n>] [--timeout <secs>] <command…>
                              run a command in a new terminal of the dock; with
                              --ready, --port or both, wait until its output
@@ -240,6 +242,7 @@ Usage:
   arakun rename <branch>       rename this environment's branch (not yet
                              pushed); its folder stays where it is
   arakun notify <message…>     send a desktop notification
+  arakun notices [--unseen]    the notifications Arakun has shown, newest first
   arakun ls                    list projects, environments and their sessions
   arakun island [state]        show the Dynamic Island in a state, to try it:
                              sleeping, idle, working, speaking, listening;
@@ -295,6 +298,11 @@ Usage:
                              agent turns running go on by themselves after it
   arakun mem …                 memory agents keep across sessions: save, search,
                              get, context, list, forget (arakun mem help)
+  arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--head <sha>] [--agent <name>]
+                             save a review as a draft for the GitHub tab (v:
+                             approve, request-changes or comment; - reads stdin;
+                             --head is the commit read, which an approval needs);
+                             nothing is sent to GitHub until you post it there
   arakun dev …                 a test arakun on a virtual display, to screenshot
                              and click without touching this screen (arakun dev help)
 ";
@@ -365,6 +373,12 @@ fn cli(args: Vec<String>) -> Cli {
     #[cfg(feature = "team")]
     if first == "team" {
         return Cli::Exit(crate::team::cli(&args[1..]));
+    }
+    if first == "github" {
+        return Cli::Exit(crate::github::cli(&args[1..]));
+    }
+    if first == "notices" {
+        return Cli::Exit(crate::notices::cli(&args[1..]));
     }
     if first == "iso" {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -441,6 +455,8 @@ fn cli(args: Vec<String>) -> Cli {
             [target] => request("browse", vec![browse_target(&cwd, target)]),
             _ => return usage("arakun browse [-s] <url>"),
         },
+        "palette" if rest.is_empty() => request("palette", Vec::new()),
+        "palette" => return usage("arakun palette"),
         "open" => match rest.as_slice() {
             [file] => match resolve_file(&cwd, file) {
                 Ok((path, line)) => request(

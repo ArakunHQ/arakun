@@ -222,6 +222,9 @@ pub struct ThreadView {
     note: Option<NoteBox>,
     /// Annotated ranges per surface, from notes waiting in the composer.
     marks: HashMap<usize, Vec<Range<usize>>>,
+    /// The Spacing setting the list's turns were measured at: turn heights
+    /// follow it, and the list re-measures only on a width change.
+    spacing: f32,
     search: Option<Search>,
     /// Where the current match was laid out, to scroll it into view.
     spot: Spot,
@@ -278,6 +281,7 @@ impl ThreadView {
             menu_at: None,
             note: None,
             marks: HashMap::new(),
+            spacing: crate::ui::space_scale(),
             search: None,
             spot: Rc::new(Cell::new(None)),
             settle_tries: 0,
@@ -681,19 +685,19 @@ impl ThreadView {
         let mut col = div()
             .flex()
             .flex_col()
-            .pl(px(14.))
-            .pt(px(2.))
+            .pl(crate::ui::sp(14.))
+            .pt(crate::ui::sp(2.))
             .text_size(px(crate::ui::TEXT_SM));
         for (k, place) in places.iter().take(NOTICE_PLACES).enumerate() {
             let target = self.resolve_file(&place.path, cx);
             let row = div()
                 .id(("notice-place", ix * 32 + k))
                 .flex()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .min_w_0()
-                .px(px(6.))
-                .py(px(1.))
-                .rounded(px(4.))
+                .px(crate::ui::sp(6.))
+                .py(crate::ui::sp(1.))
+                .rounded(crate::ui::rad(4.))
                 .child(
                     div()
                         .flex_none()
@@ -729,7 +733,7 @@ impl ThreadView {
             let more = places.len() - NOTICE_PLACES;
             col = col.child(
                 div()
-                    .px(px(6.))
+                    .px(crate::ui::sp(6.))
                     .text_color(theme::text_faint())
                     .child(format!("and {more} more")),
             );
@@ -958,8 +962,8 @@ impl ThreadView {
                 div()
                     .w_full()
                     .max_w(px(COLUMN_W))
-                    .px(px(6.))
-                    .when(ix == 0, |d| d.pt(px(20.)))
+                    .px(crate::ui::sp(6.))
+                    .when(ix == 0, |d| d.pt(crate::ui::sp(20.)))
                     .child(body),
             )
             .into_any_element()
@@ -983,7 +987,7 @@ impl ThreadView {
             .group(SharedString::from(format!("turn-{ix}")))
             .flex()
             .flex_col()
-            .pb(px(8.));
+            .pb(crate::ui::sp(8.));
 
         let TurnParts {
             body_start,
@@ -1044,10 +1048,10 @@ impl ThreadView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .h(px(24.))
-                    .px(px(6.))
-                    .rounded(px(8.))
+                    .px(crate::ui::sp(6.))
+                    .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
                     .when(changes_shown, |d| d.bg(theme::fill_selected()))
                     .hover(|s| s.bg(theme::fill_selected()))
@@ -1074,9 +1078,9 @@ impl ThreadView {
                     .group(group.clone())
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .px(px(16.))
-                    .py(px(4.))
+                    .gap(crate::ui::sp(6.))
+                    .px(crate::ui::sp(16.))
+                    .py(crate::ui::sp(4.))
                     .cursor_pointer()
                     .child(div().relative().size(px(14.)).flex_none().map(|d| {
                         if show_work {
@@ -1128,8 +1132,8 @@ impl ThreadView {
         if live && content.is_empty() && status == ThreadStatus::Working && !cancelling {
             col = col.child(
                 div()
-                    .px(px(16.))
-                    .py(px(4.))
+                    .px(crate::ui::sp(16.))
+                    .py(crate::ui::sp(4.))
                     .text_size(px(crate::ui::TEXT_LG))
                     .child(shimmer("Thinking…", self.phase, 0.35, 0.8)),
             );
@@ -1140,12 +1144,12 @@ impl ThreadView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .mx(px(16.))
                     .my(px(4.))
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(12.))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(6.))
+                    .rounded(crate::ui::rad(12.))
                     .bg(amber().opacity(0.08))
                     .text_size(px(crate::ui::TEXT_MD))
                     .text_color(theme::text_muted())
@@ -1157,7 +1161,12 @@ impl ThreadView {
         if show_work && !work.is_empty() {
             let phases = phases_of(content, &work);
             let last = phases.len() - 1;
-            let mut trail = div().flex().flex_col().min_w_0().px(px(16.)).py(px(2.));
+            let mut trail = div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .px(crate::ui::sp(16.))
+                .py(crate::ui::sp(2.));
             for (pi, phase) in phases.iter().enumerate() {
                 trail = trail.child(self.render_phase(
                     phase,
@@ -1177,7 +1186,12 @@ impl ThreadView {
         if let Some(p) = plan
             && let Entry::Plan { entries: plan } = &content[p]
         {
-            col = col.child(div().px(px(16.)).py(px(4.)).child(plan_card(plan)));
+            col = col.child(
+                div()
+                    .px(crate::ui::sp(16.))
+                    .py(crate::ui::sp(4.))
+                    .child(plan_card(plan)),
+            );
         }
 
         for (k, e) in content[reply.clone()].iter().enumerate() {
@@ -1186,9 +1200,9 @@ impl ThreadView {
                 col = col.child(
                     div()
                         .min_w_0()
-                        .px(px(16.))
-                        .pt(px(12.))
-                        .pb(px(4.))
+                        .px(crate::ui::sp(16.))
+                        .pt(crate::ui::sp(12.))
+                        .pb(crate::ui::sp(4.))
                         .child(self.surface(entry_ix, text, MdStyle::reply(), cx)),
                 );
             }
@@ -1220,13 +1234,17 @@ impl ThreadView {
         {
             col = col.child(
                 div()
-                    .px(px(16.))
+                    .px(crate::ui::sp(16.))
                     .child(self.permission_card(p, None, &cwd, window, cx)),
             );
         }
 
         if live && let Some(q) = &question {
-            col = col.child(div().px(px(16.)).child(self.question_card(q, cx)));
+            col = col.child(
+                div()
+                    .px(crate::ui::sp(16.))
+                    .child(self.question_card(q, cx)),
+            );
         }
 
         let notices_from = body.len() - trailing_notices;
@@ -1250,7 +1268,12 @@ impl ThreadView {
                     let ix = base + notices_from + k;
                     col = col.child(notice_row(ix, text, *error, *mark));
                     if let Some(places) = self.notice_places(ix, places, cx) {
-                        col = col.child(div().px(px(16.)).pb(px(4.)).child(places));
+                        col = col.child(
+                            div()
+                                .px(crate::ui::sp(16.))
+                                .pb(crate::ui::sp(4.))
+                                .child(places),
+                        );
                     }
                 }
                 Entry::Compacted {
@@ -1302,10 +1325,10 @@ impl ThreadView {
             .flex()
             .flex_col()
             .items_end()
-            .pl(px(56.))
-            .pr(px(16.))
-            .pt(px(6.))
-            .pb(px(20.))
+            .pl(crate::ui::sp(56.))
+            .pr(crate::ui::sp(16.))
+            .pt(crate::ui::sp(6.))
+            .pb(crate::ui::sp(20.))
             .child(
                 div()
                     .relative()
@@ -1316,9 +1339,9 @@ impl ThreadView {
                     .child(
                         div()
                             .max_w(px(576.))
-                            .px(px(12.))
-                            .py(px(8.))
-                            .rounded(px(if single { 18. } else { 12. }))
+                            .px(crate::ui::sp(12.))
+                            .py(crate::ui::sp(8.))
+                            .rounded(crate::ui::rad(if single { 18. } else { 12. }))
                             .bg(theme::fill_selected())
                             .text_size(px(crate::ui::TEXT_LG))
                             .line_height(px(20.))
@@ -1330,7 +1353,7 @@ impl ThreadView {
                                         .flex()
                                         .flex_wrap()
                                         .justify_end()
-                                        .gap(px(6.))
+                                        .gap(crate::ui::sp(6.))
                                         .when(!text.is_empty(), |d| d.mt(px(8.)))
                                         .children(images.into_iter().enumerate().map(
                                             |(n, path)| {
@@ -1344,7 +1367,7 @@ impl ThreadView {
                                                         200.
                                                     }))
                                                     .min_w(px(48.))
-                                                    .rounded(px(12.))
+                                                    .rounded(crate::ui::rad(12.))
                                                     .overflow_hidden()
                                                     .border_1()
                                                     .border_color(theme::border_strong())
@@ -1357,7 +1380,7 @@ impl ThreadView {
                                                             .max_w_full()
                                                             .with_fallback(|| {
                                                                 div()
-                                                                .p(px(8.))
+                                                                .p(crate::ui::sp(8.))
                                                                 .text_size(px(crate::ui::TEXT_SM))
                                                                 .text_color(theme::text_subtle())
                                                                 .child("Image not found")
@@ -1380,7 +1403,7 @@ impl ThreadView {
                                         .flex()
                                         .flex_wrap()
                                         .justify_end()
-                                        .gap(px(6.))
+                                        .gap(crate::ui::sp(6.))
                                         .when(!text.is_empty(), |d| d.mt(px(6.)))
                                         .children(pastes.into_iter().enumerate().map(|(n, p)| {
                                             let copied = markdown::was_copied(&p);
@@ -1389,10 +1412,10 @@ impl ThreadView {
                                                 .id(("user-paste", ix * 64 + n))
                                                 .flex()
                                                 .items_center()
-                                                .gap(px(6.))
+                                                .gap(crate::ui::sp(6.))
                                                 .h(px(24.))
-                                                .px(px(8.))
-                                                .rounded(px(8.))
+                                                .px(crate::ui::sp(8.))
+                                                .rounded(crate::ui::rad(8.))
                                                 .bg(theme::fill_selected())
                                                 .text_size(px(crate::ui::TEXT_SM))
                                                 .cursor_pointer()
@@ -1429,9 +1452,9 @@ impl ThreadView {
                                     div()
                                         .id(("user-more", ix))
                                         .mt(px(4.))
-                                        .px(px(4.))
-                                        .py(px(2.))
-                                        .rounded(px(4.))
+                                        .px(crate::ui::sp(4.))
+                                        .py(crate::ui::sp(2.))
+                                        .rounded(crate::ui::rad(4.))
                                         .text_size(px(crate::ui::TEXT_SM))
                                         .text_color(theme::text_subtle())
                                         .cursor_pointer()
@@ -1453,9 +1476,9 @@ impl ThreadView {
                             .right_0()
                             .flex()
                             .items_center()
-                            .gap(px(4.))
-                            .px(px(4.))
-                            .pt(px(2.))
+                            .gap(crate::ui::sp(4.))
+                            .px(crate::ui::sp(4.))
+                            .pt(crate::ui::sp(2.))
                             .opacity(0.)
                             .group_hover(group, |s| s.opacity(1.))
                             .child(markdown::copy_button_sized(
@@ -1472,7 +1495,7 @@ impl ThreadView {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .rounded(px(4.))
+                                        .rounded(crate::ui::rad(4.))
                                         .cursor_pointer()
                                         .hover(|s| s.bg(theme::fill_selected()))
                                         .child(icon("undo", 12.).text_color(theme::text_subtle()))
@@ -1519,9 +1542,9 @@ impl ThreadView {
         div()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .px(px(16.))
-            .py(px(4.))
+            .gap(crate::ui::sp(6.))
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(4.))
             .text_size(px(crate::ui::TEXT_LG))
             .text_color(theme::text_subtle())
             .child(div().flex_none().child(kind.label()))
@@ -1570,12 +1593,13 @@ impl ThreadView {
         if let Some(h) = phase.head
             && let Entry::Agent { text } = &content[h]
         {
-            col = col.child(div().min_w_0().pt(px(8.)).pb(px(4.)).child(self.surface(
-                base + h,
-                text,
-                MdStyle::reply(),
-                cx,
-            )));
+            col = col.child(
+                div()
+                    .min_w_0()
+                    .pt(crate::ui::sp(8.))
+                    .pb(crate::ui::sp(4.))
+                    .child(self.surface(base + h, text, MdStyle::reply(), cx)),
+            );
         }
         if phase.steps.is_empty() {
             return col.into_any_element();
@@ -1614,8 +1638,8 @@ impl ThreadView {
                 .group(group.clone())
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .py(px(4.))
+                .gap(crate::ui::sp(6.))
+                .py(crate::ui::sp(4.))
                 .min_w_0()
                 .cursor_pointer()
                 .child(icon(glyph, 14.).text_color(theme::text_subtle()))
@@ -1738,7 +1762,7 @@ impl ThreadView {
             return row;
         }
         let n = calls.len();
-        let mut rail = div().flex().flex_col().min_w_0().pl(px(4.));
+        let mut rail = div().flex().flex_col().min_w_0().pl(crate::ui::sp(4.));
         for (k, &c) in calls.iter().enumerate() {
             let child = self.activity_row(base + c, &content[c], cwd, live, permission, window, cx);
             rail = rail.child(rail_step(k + 1 == n, child));
@@ -2015,9 +2039,9 @@ fn turn_footer(
     div()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(crate::ui::sp(6.))
         .h(px(28.))
-        .px(px(10.))
+        .px(crate::ui::sp(10.))
         .when(!latest, |d| {
             d.opacity(0.)
                 .group_hover(SharedString::from(format!("turn-{ix}")), |s| s.opacity(1.))
@@ -2056,16 +2080,16 @@ fn compaction_divider(removed: u64, before: Option<u64>, after: Option<u64>) -> 
     div()
         .flex()
         .items_center()
-        .gap(px(10.))
-        .px(px(16.))
-        .py(px(12.))
+        .gap(crate::ui::sp(10.))
+        .px(crate::ui::sp(16.))
+        .py(crate::ui::sp(12.))
         .child(rule())
         .child(
             div()
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .text_size(px(crate::ui::TEXT_SM))
                 .text_color(theme::text_subtle())
                 .child(icon("archive02", 13.).text_color(theme::text_subtle()))
@@ -2093,9 +2117,9 @@ fn notice_row(ix: usize, text: &str, error: bool, mark: Option<NoticeMark>) -> A
     div()
         .flex()
         .items_center()
-        .gap(px(6.))
-        .px(px(16.))
-        .py(px(6.))
+        .gap(crate::ui::sp(6.))
+        .px(crate::ui::sp(16.))
+        .py(crate::ui::sp(6.))
         .text_size(px(crate::ui::TEXT_MD))
         .text_color(if error {
             red().opacity(0.85)
@@ -2120,6 +2144,11 @@ impl Focusable for ThreadView {
 
 impl Render for ThreadView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let spacing = crate::ui::space_scale();
+        if spacing != self.spacing {
+            self.spacing = spacing;
+            self.list.remeasure();
+        }
         self.refresh_search(cx);
         let search_bar = self.render_search_bar(cx);
         let scrolled_away = !self.following && self.list.is_scrolled_to_end() == Some(false);
@@ -2177,7 +2206,7 @@ impl Render for ThreadView {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .rounded(px(8.))
+                                        .rounded(crate::ui::rad(8.))
                                         .border_1()
                                         .border_color(theme::border_strong())
                                         .bg(theme::fill_selected())

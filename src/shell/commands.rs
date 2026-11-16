@@ -69,6 +69,13 @@ impl Shell {
         if req.cmd == "ls" {
             return Reply::ok(self.listing());
         }
+        if req.cmd == "palette" {
+            window.activate_window();
+            if !matches!(self.modal, Some((super::Modal::Palette(_), _))) {
+                self.open_palette(window, cx);
+            }
+            return Reply::ok("palette open");
+        }
         if req.cmd == "agent" {
             return self.agent_command(&req, window, cx);
         }
@@ -194,7 +201,13 @@ impl Shell {
                 )),
             },
             "notify" => {
-                self.notify(AlertKind::Info, &format!("Arakun · {place}"), &arg, None);
+                self.notify(
+                    AlertKind::Info,
+                    &format!("Arakun · {place}"),
+                    &arg,
+                    None,
+                    cx,
+                );
                 Reply::ok("")
             }
             other => Reply::err(format!("unknown command `{other}` (see arakun help)")),

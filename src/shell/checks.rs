@@ -364,6 +364,7 @@ impl Shell {
                 &title,
                 &body,
                 Some(Open::Session(id.clone())),
+                cx,
             );
         } else if waiting {
             // The turn's own notice waited for the check.

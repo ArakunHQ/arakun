@@ -186,6 +186,18 @@ fn bundled_claude_candidates() -> Option<Vec<PathBuf>> {
     Some(pkgs.into_iter().map(|p| base.join(p).join(exe)).collect())
 }
 
+/// The Claude Code binary to run directly: `CLAUDE_CODE_EXECUTABLE`, the one
+/// bundled with the adapter, or one on the PATH. It signs in with the user's
+/// Claude account (OAuth), so calls through it count against their plan.
+pub fn claude_code_binary() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("CLAUDE_CODE_EXECUTABLE") {
+        return Some(PathBuf::from(p));
+    }
+    bundled_claude_candidates()
+        .and_then(|c| c.into_iter().find(|p| is_executable(p)))
+        .or_else(|| which("claude"))
+}
+
 /// Whether the adapter will find a Claude Code binary to run. npm skips optional
 /// dependencies under `omit=optional`, and antivirus software sometimes removes
 /// the `.exe`; the adapter then fails every session with "native binary not found".

@@ -208,7 +208,13 @@ impl Shell {
 
     /// Starts Droid on a failed run, with the failure as its first prompt, in the
     /// environment of the run's branch. A branch with no environment gets one.
-    fn fix_run(&mut self, root: &Path, run_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn fix_run(
+        &mut self,
+        root: &Path,
+        run_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(pi) = self.projects.iter().position(|p| p.path == root) else {
             return;
         };
@@ -279,6 +285,7 @@ impl Shell {
                         &format!("Couldn't check out {branch}"),
                         &format!("{e}"),
                         Some(open),
+                        cx,
                     );
                 }
             });
@@ -488,6 +495,7 @@ impl Shell {
                     &format!("CI passes on {branch} · #{}", run.number),
                     "Droid's fix is green.",
                     open(),
+                    cx,
                 );
                 self.runs_view.update(cx, |v, cx| {
                     v.set_notice(format!("CI passes on {branch}. Fixed."), false, cx)
@@ -515,6 +523,7 @@ impl Shell {
                     &format!("CI still fails on {branch} · #{}", run.number),
                     &format!("Sent back to Droid (try {round} of {FIX_ROUNDS})."),
                     open(),
+                    cx,
                 );
             }
             State::Failed => {
@@ -524,6 +533,7 @@ impl Shell {
                     &format!("CI still fails on {branch} · #{}", run.number),
                     &format!("Droid tried {FIX_ROUNDS} times; it needs you now."),
                     open(),
+                    cx,
                 );
             }
             _ => return false,
@@ -661,6 +671,7 @@ impl Shell {
                 root: root.clone(),
                 run: Some(run.id),
             }),
+            cx,
         );
     }
 }

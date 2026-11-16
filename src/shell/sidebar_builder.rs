@@ -83,9 +83,9 @@ fn drag_pill(title: SharedString, offset: Point<Pixels>, icon_name: &str) -> gpu
         .h(px(30.))
         .flex()
         .items_center()
-        .gap(px(8.))
-        .px(px(10.))
-        .rounded(px(8.))
+        .gap(crate::ui::sp(8.))
+        .px(crate::ui::sp(10.))
+        .rounded(crate::ui::rad(8.))
         .border_1()
         .border_color(theme::accent().opacity(0.6))
         .bg(theme::dialog())
@@ -114,9 +114,9 @@ const UNDO_KEEP: usize = 100;
 /// A titled block of the side columns.
 fn panel_title(text: &str) -> gpui::Div {
     div()
-        .pt(px(14.))
-        .pb(px(6.))
-        .px(px(4.))
+        .pt(crate::ui::sp(14.))
+        .pb(crate::ui::sp(6.))
+        .px(crate::ui::sp(4.))
         .text_size(px(ui::TEXT_XS))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::text_faint())
@@ -125,8 +125,8 @@ fn panel_title(text: &str) -> gpui::Div {
 
 fn field_label(text: &str) -> gpui::Div {
     div()
-        .pt(px(10.))
-        .pb(px(4.))
+        .pt(crate::ui::sp(10.))
+        .pb(crate::ui::sp(4.))
         .text_size(px(ui::TEXT_SM))
         .text_color(theme::text_subtle())
         .child(text.to_string())
@@ -461,9 +461,9 @@ impl Shell {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .h(px(48.))
-            .px(px(16.))
+            .px(crate::ui::sp(16.))
             .border_b_1()
             .border_color(theme::stroke())
             .child(
@@ -552,11 +552,11 @@ impl Shell {
                 .id(id.clone())
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .h(px(32.))
-                .px(px(10.))
+                .px(crate::ui::sp(10.))
                 .mb(px(4.))
-                .rounded(px(8.))
+                .rounded(crate::ui::rad(8.))
                 .border_1()
                 .border_color(theme::stroke())
                 .bg(theme::fill_hover())
@@ -577,8 +577,8 @@ impl Shell {
                 .when_some(note, |d, n| {
                     d.child(
                         div()
-                            .px(px(5.))
-                            .rounded(px(4.))
+                            .px(crate::ui::sp(5.))
+                            .rounded(crate::ui::rad(4.))
                             .bg(theme::accent().opacity(0.18))
                             .text_size(px(ui::TEXT_XS))
                             .text_color(theme::accent())
@@ -619,27 +619,26 @@ impl Shell {
             .w(px(220.))
             .h_full()
             .overflow_y_scroll()
-            .px(px(12.))
-            .pb(px(16.))
+            .px(crate::ui::sp(12.))
+            .pb(crate::ui::sp(16.))
             .border_r_1()
             .border_color(theme::stroke());
-        col = col.child(panel_title("Templates")).child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(4.))
-                .children(Preset::ALL.into_iter().map(|p| {
-                    ui::chip(
-                        SharedString::from(format!("sb-preset-{}", p.label())),
-                        p.label(),
-                        self.sidebar.sections == p.layout().sections,
-                    )
-                    .tooltip(ui::tip(p.blurb()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.change_sidebar(cx, |s| *s = p.layout())
-                    }))
-                })),
-        );
+        col =
+            col.child(panel_title("Templates")).child(
+                div().flex().flex_wrap().gap(crate::ui::sp(4.)).children(
+                    Preset::ALL.into_iter().map(|p| {
+                        ui::chip(
+                            SharedString::from(format!("sb-preset-{}", p.label())),
+                            p.label(),
+                            self.sidebar.sections == p.layout().sections,
+                        )
+                        .tooltip(ui::tip(p.blurb()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.change_sidebar(cx, |s| *s = p.layout())
+                        }))
+                    }),
+                ),
+            );
         col = col
             .child(panel_title("Navigation"))
             .child(piece_row(
@@ -781,18 +780,18 @@ impl Shell {
             .flex_col()
             // Its own height, or the canvas has nothing to scroll.
             .flex_none()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .w(px(self.rail_w.max(220.) + 24.))
             .min_h(px(560.))
-            .p(px(10.))
+            .p(crate::ui::sp(10.))
             .when(style.variant != Variant::Flush, |d| {
-                d.rounded(px(14.))
+                d.rounded(crate::ui::rad(14.))
                     .border_1()
                     .border_color(theme::stroke())
                     .bg(theme::sidebar())
             })
             .when(style.variant == Variant::Floating, |d| {
-                d.shadow_lg().rounded(px(18.))
+                d.shadow_lg().rounded(crate::ui::rad(18.))
             });
         for (si, section) in self.sidebar.sections.iter().enumerate() {
             rail = rail.child(self.render_builder_section(si, section, cx));
@@ -803,9 +802,9 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .h(px(34.))
-                .rounded(px(10.))
+                .rounded(crate::ui::rad(10.))
                 .border_1()
                 .border_dashed()
                 .border_color(theme::border())
@@ -838,8 +837,8 @@ impl Shell {
             .h_full()
             .overflow_y_scroll()
             .items_center()
-            .py(px(24.))
-            .px(px(16.))
+            .py(crate::ui::sp(24.))
+            .px(crate::ui::sp(16.))
             .bg(theme::window_bg())
             .on_click(cx.listener(|this, _, _, cx| {
                 this.builder.sel = None;
@@ -849,7 +848,7 @@ impl Shell {
             .child(
                 div()
                     .flex_none()
-                    .pb(px(10.))
+                    .pb(crate::ui::sp(10.))
                     .text_size(px(ui::TEXT_SM))
                     .text_color(theme::text_faint())
                     .child("Drag pieces in · drag ⋮⋮ to move segments · click anything to edit it"),
@@ -875,7 +874,7 @@ impl Shell {
             .id(("sb-sec-head", si))
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .h(px(24.))
             .text_size(px(ui::TEXT_XS))
             .text_color(theme::text_faint())
@@ -916,9 +915,9 @@ impl Shell {
             .child(
                 div()
                     .id(("sb-sec-mode", si))
-                    .px(px(6.))
-                    .py(px(1.))
-                    .rounded(px(6.))
+                    .px(crate::ui::sp(6.))
+                    .py(crate::ui::sp(1.))
+                    .rounded(crate::ui::rad(6.))
                     .border_1()
                     .border_color(if scroll {
                         theme::accent().opacity(0.5)
@@ -955,7 +954,7 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .size(px(18.))
-                    .rounded(px(5.))
+                    .rounded(crate::ui::rad(5.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::fill_selected()))
                     .tooltip(ui::tip("Remove segment"))
@@ -967,7 +966,7 @@ impl Shell {
                         })
                     })),
             );
-        let mut body = div().flex().flex_col().gap(px(1.));
+        let mut body = div().flex().flex_col().gap(crate::ui::sp(1.));
         for (ii, item) in section.items.iter().enumerate() {
             body = body.child(self.render_builder_item((si, ii), item, cx));
         }
@@ -979,7 +978,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(8.))
+                .rounded(crate::ui::rad(8.))
                 .when(section.items.is_empty(), |d| {
                     d.border_1()
                         .border_dashed()
@@ -997,9 +996,9 @@ impl Shell {
             .id(("sb-sec", si))
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .p(px(8.))
-            .rounded(px(10.))
+            .gap(crate::ui::sp(4.))
+            .p(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(10.))
             .border_1()
             .when(selected, |d| d.border_color(theme::accent()))
             .when(!selected, |d| {
@@ -1092,11 +1091,11 @@ impl Shell {
                 .border_1()
                 .border_dashed()
                 .border_color(theme::stroke())
-                .rounded(px(6.))
+                .rounded(crate::ui::rad(6.))
                 .into_any_element(),
             Piece::Title { text } => div()
-                .px(px(8.))
-                .pt(px(4.))
+                .px(crate::ui::sp(8.))
+                .pt(crate::ui::sp(4.))
                 .text_size(px(ui::TEXT_XS))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::text_faint())
@@ -1118,9 +1117,9 @@ impl Shell {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .py(px(4.))
-                    .px(px(6.))
+                    .gap(crate::ui::sp(8.))
+                    .py(crate::ui::sp(4.))
+                    .px(crate::ui::sp(6.))
                     .child(avatar(&shown, 26.))
                     .child(
                         div()
@@ -1141,9 +1140,9 @@ impl Shell {
             Piece::Usage => div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .p(px(8.))
-                .rounded(px(8.))
+                .gap(crate::ui::sp(6.))
+                .p(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
                 .border_1()
                 .border_color(theme::stroke())
                 .bg(theme::fill_hover())
@@ -1151,13 +1150,13 @@ impl Shell {
                 .child(
                     div()
                         .h(px(5.))
-                        .rounded(px(3.))
+                        .rounded(crate::ui::rad(3.))
                         .bg(theme::fill_selected())
                         .child(
                             div()
                                 .w(px(90.))
                                 .h_full()
-                                .rounded(px(3.))
+                                .rounded(crate::ui::rad(3.))
                                 .bg(theme::accent()),
                         ),
                 )
@@ -1165,7 +1164,7 @@ impl Shell {
             Piece::Projects {
                 envs, only_open, ..
             } => {
-                let mut list = div().flex().flex_col().gap(px(1.));
+                let mut list = div().flex().flex_col().gap(crate::ui::sp(1.));
                 for (pi, p) in self
                     .projects
                     .iter()
@@ -1177,10 +1176,10 @@ impl Shell {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .h(px(28.))
-                            .px(px(8.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(8.))
+                            .rounded(crate::ui::rad(8.))
                             .when(pi == self.active_project, |d| d.bg(theme::selection()))
                             .child(ui::pixel_art(
                                 ui::project_art(p.art),
@@ -1205,9 +1204,9 @@ impl Shell {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
+                                    .gap(crate::ui::sp(6.))
                                     .h(px(24.))
-                                    .pl(px(28.))
+                                    .pl(crate::ui::sp(28.))
                                     .text_size(px(ui::TEXT_SM))
                                     .text_color(theme::text_subtle())
                                     .child(icon("git-branch", 12.).text_color(theme::text_faint()))
@@ -1221,21 +1220,23 @@ impl Shell {
             _ => div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(crate::ui::sp(8.))
                 .h(px(style.density.row_h()))
-                .px(px(8.))
+                .px(crate::ui::sp(8.))
                 .text_size(px(ui::TEXT_LG))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::text_subtle())
                 .when(matches!(item.piece, Piece::Search), |d| {
-                    d.border_1().border_color(theme::border()).rounded(px(8.))
+                    d.border_1()
+                        .border_color(theme::border())
+                        .rounded(crate::ui::rad(8.))
                 })
                 .child(lead)
                 .child(div().flex_1().min_w_0().truncate().child(item.name()))
                 .when_some(badge, |d, b| {
                     d.child(
                         div()
-                            .px(px(6.))
+                            .px(crate::ui::sp(6.))
                             .rounded_full()
                             .bg(theme::fill_selected())
                             .text_size(px(ui::TEXT_XS))
@@ -1255,7 +1256,7 @@ impl Shell {
             .id(SharedString::from(format!("sb-item-{}-{}", path.0, path.1)))
             .group("sb-item")
             .relative()
-            .rounded(px(8.))
+            .rounded(crate::ui::rad(8.))
             .cursor_grab()
             .border_1()
             .border_color(if selected {
@@ -1279,7 +1280,7 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .size(px(20.))
-                    .rounded(px(6.))
+                    .rounded(crate::ui::rad(6.))
                     .invisible()
                     .group_hover("sb-item", |s| s.visible())
                     .bg(theme::dialog())
@@ -1326,8 +1327,8 @@ impl Shell {
             .w(px(280.))
             .h_full()
             .overflow_y_scroll()
-            .px(px(14.))
-            .pb(px(20.))
+            .px(crate::ui::sp(14.))
+            .pb(crate::ui::sp(20.))
             .border_l_1()
             .border_color(theme::stroke());
         col = match (self.builder.sel, &self.builder.inputs) {
@@ -1474,7 +1475,7 @@ impl Shell {
                 );
         }
         out.child(
-            div().pt(px(12.)).child(
+            div().pt(crate::ui::sp(12.)).child(
                 ui::button_with(
                     "sb-item-remove",
                     Some("view-off"),
@@ -1590,7 +1591,7 @@ impl Shell {
             .child(field_label("Button on its title"))
             .child(action)
             .child(
-                div().pt(px(12.)).child(
+                div().pt(crate::ui::sp(12.)).child(
                     ui::button_with(
                         "sb-sec-remove",
                         Some("cancel01"),
@@ -1632,7 +1633,7 @@ impl Shell {
             .flex()
             .flex_col()
             .mt(px(10.))
-            .pt(px(4.))
+            .pt(crate::ui::sp(4.))
             .border_t_1()
             .border_color(theme::stroke())
             .child(panel_title("Whole sidebar"))
@@ -1718,7 +1719,7 @@ impl Shell {
             )
             .child(
                 div()
-                    .pt(px(8.))
+                    .pt(crate::ui::sp(8.))
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_faint())
                     .child("Changes apply to your sidebar as you make them."),

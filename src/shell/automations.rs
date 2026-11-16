@@ -8,6 +8,7 @@ use gpui::{AppContext as _, Context, SharedString, Window};
 
 use super::{Modal, Shell};
 use crate::automations_view::{AutomationsDialog, AutomationsEvent};
+use crate::island::AlertKind;
 use crate::model::{self, Automation, GRACE_SECS, unix_now};
 
 /// How often the schedules are checked; runs start at most this late.
@@ -143,6 +144,8 @@ impl Shell {
         );
         let (name, items) = (project.name.clone(), project.automations.clone());
         let dialog = cx.new(|cx| AutomationsDialog::new(name, items, envs, create, window, cx));
+        let rules = self.rules.items.clone();
+        dialog.update(cx, |d, cx| d.set_rules(rules, cx));
         let sub = cx.subscribe_in(
             &dialog,
             window,
@@ -192,6 +195,30 @@ impl Shell {
                         }
                         return;
                     }
+                    AutomationsEvent::CancelRule(id) => {
+                        if this.rules.cancel(*id)
+                            && let Err(why) = this.rules.save()
+                        {
+                            // It stays cancelled here, so it never runs in this
+                            // session, but the file still says Waiting: say so
+                            // rather than pretend it is gone for good. The next
+                            // rule check saves again.
+                            this.notify_from(
+                                AlertKind::Failure,
+                                "Cancel not saved yet",
+                                &format!(
+                                    "The automation won't run now, but if Arakun closes before it saves, it comes back. Arakun keeps trying. {why}"
+                                ),
+                                None,
+                                None,
+                                "arakun",
+                                cx,
+                            );
+                        }
+                        this.refresh_automations(cx);
+                        cx.notify();
+                        return;
+                    }
                     AutomationsEvent::Dismissed => return this.close_modal(window, cx),
                 }
                 this.save(cx);
@@ -204,7 +231,7 @@ impl Shell {
     }
 
     /// Hands the open Automations dialog the current list (last runs, edits).
-    fn refresh_automations(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_automations(&mut self, cx: &mut Context<Self>) {
         let Some((Modal::Automations(dialog), _)) = &self.modal else {
             return;
         };
@@ -216,7 +243,11 @@ impl Shell {
         else {
             return;
         };
-        dialog.update(cx, |d, cx| d.set_items(items, cx));
+        let rules = self.rules.items.clone();
+        dialog.update(cx, |d, cx| {
+            d.set_items(items, cx);
+            d.set_rules(rules, cx);
+        });
     }
 }
 

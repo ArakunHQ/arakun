@@ -1,0 +1,148 @@
+//! What the person pinned from the palette (Ctrl+P): shown at the top of the
+//! palette and of the sidebar, opened with Ctrl+1..9. Kept in `pins.json`
+//! next to the state.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+/// One pinned thing: what kind it is, its id within that kind, and how it reads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pin {
+    pub kind: String,
+    pub id: String,
+    pub label: String,
+}
+
+impl Pin {
+    pub fn key(&self) -> String {
+        format!("{}:{}", self.kind, self.id)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pins {
+    #[serde(default)]
+    pub items: Vec<Pin>,
+}
+
+/// Ctrl+1..9 reach this many.
+pub const MAX: usize = 9;
+
+impl Pins {
+    pub fn has(&self, key: &str) -> bool {
+        self.items.iter().any(|p| p.key() == key)
+    }
+
+    /// Pins it at the end, or unpins it when already pinned. Returns whether
+    /// it is pinned now. Past `MAX` nothing new is added.
+    pub fn toggle(&mut self, pin: Pin) -> bool {
+        let key = pin.key();
+        if let Some(i) = self.items.iter().position(|p| p.key() == key) {
+            self.items.remove(i);
+            return false;
+        }
+        if self.items.len() >= MAX {
+            return false;
+        }
+        self.items.push(pin);
+        true
+    }
+
+    /// Moves the pin at `from` one step (`-1` up, `1` down).
+    pub fn nudge(&mut self, key: &str, delta: isize) -> bool {
+        let Some(i) = self.items.iter().position(|p| p.key() == key) else {
+            return false;
+        };
+        let j = i as isize + delta;
+        if j < 0 || j as usize >= self.items.len() {
+            return false;
+        }
+        self.items.swap(i, j as usize);
+        true
+    }
+
+    pub fn load() -> Self {
+        Self::read(&file())
+    }
+
+    pub fn save(&self) {
+        self.write(&file());
+    }
+
+    fn read(path: &std::path::Path) -> Self {
+        std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn write(&self, path: &std::path::Path) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
+            let _ = crate::durable::write(path, &bytes);
+        }
+    }
+}
+
+fn file() -> PathBuf {
+    super::store_path("pins.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pin(id: &str) -> Pin {
+        Pin {
+            kind: "view".into(),
+            id: id.into(),
+            label: id.into(),
+        }
+    }
+
+    #[test]
+    fn toggling_pins_and_unpins() {
+        let mut p = Pins::default();
+        assert!(p.toggle(pin("github")));
+        assert!(p.has("view:github"));
+        assert!(!p.toggle(pin("github")));
+        assert!(!p.has("view:github"));
+    }
+
+    #[test]
+    fn no_more_than_nine() {
+        let mut p = Pins::default();
+        for i in 0..12 {
+            p.toggle(pin(&i.to_string()));
+        }
+        assert_eq!(p.items.len(), MAX);
+    }
+
+    #[test]
+    fn reordering() {
+        let mut p = Pins::default();
+        for id in ["a", "b", "c"] {
+            p.toggle(pin(id));
+        }
+        assert!(p.nudge("view:c", -1));
+        assert_eq!(
+            p.items.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            ["a", "c", "b"]
+        );
+        assert!(!p.nudge("view:a", -1));
+    }
+
+    #[test]
+    fn pins_persist() {
+        let dir = std::env::temp_dir().join(format!("arakun-pins-{}", std::process::id()));
+        let path = dir.join("pins.json");
+        let mut p = Pins::default();
+        p.toggle(pin("notes"));
+        p.write(&path);
+        assert_eq!(Pins::read(&path), p);
+        // A missing or broken file reads as no pins.
+        std::fs::write(&path, b"{nope").unwrap();
+        assert_eq!(Pins::read(&path), Pins::default());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

@@ -395,7 +395,7 @@ fn square_button(id: &'static str, icon: &str) -> gpui::Stateful<gpui::Div> {
         .items_center()
         .justify_center()
         .size(px(ui::BUTTON_H))
-        .rounded(px(ui::RADIUS))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .border_1()
         .border_color(theme::border())
         .cursor_pointer()
@@ -469,7 +469,9 @@ fn paint(
             image
         }
     };
-    let corners = gpui::Corners::all(px(ui::RADIUS_LG - 1.));
+    // Inside the stage's 1 px border, following the radius setting like the
+    // stage does, so the picture's corners stay on its border.
+    let corners = gpui::Corners::all(ui::nested(ui::RADIUS_LG, 1.));
     let _ = window.paint_image(bounds, bounds, corners, image, 0, false);
 }
 
@@ -569,7 +571,7 @@ impl Render for IsoView {
             .items_center()
             .justify_center()
             .size(px(ui::BUTTON_H))
-            .rounded(px(ui::RADIUS))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .border_1()
             .border_color(theme::border())
             .cursor_pointer()
@@ -691,7 +693,7 @@ impl Render for IsoView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .child(
                         square_button("iso-prev", "arrow-left01").on_click(cx.listener(
                             |this, _, _, cx| {
@@ -723,7 +725,7 @@ impl Render for IsoView {
             _ => div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(crate::ui::sp(12.))
                 .child(play)
                 .child(track)
                 .child(clock),
@@ -741,7 +743,7 @@ impl Render for IsoView {
         let stage = div()
             .flex_1()
             .min_h(px(240.))
-            .rounded(px(ui::RADIUS_LG))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border_subtle())
             .bg(hsla(palette.ground, 1.))
@@ -786,13 +788,13 @@ impl Render for IsoView {
             .size_full()
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(24.))
+            .gap(crate::ui::sp(16.))
+            .p(crate::ui::sp(24.))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(crate::ui::sp(4.))
                     .child(ui::text(Type::Title, theme::text(), name))
                     .when(!about.is_empty(), |d| {
                         d.child(ui::text(Type::Body, theme::text_subtle(), about))
@@ -806,14 +808,14 @@ impl Render for IsoView {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .child(scenes_seg)
                     .child(div().flex_1())
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(crate::ui::sp(10.))
                             .when(steps.is_some(), |d| d.child(modes))
                             .child(looks)
                             .child(copy),
@@ -822,8 +824,8 @@ impl Render for IsoView {
             .when_some(error, |d, e| {
                 d.child(
                     div()
-                        .p(px(12.))
-                        .rounded(px(ui::RADIUS))
+                        .p(crate::ui::sp(12.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .border_1()
                         .border_color(theme::error())
                         .child(ui::text(Type::Mono, theme::error().into(), e)),

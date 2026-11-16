@@ -26,6 +26,8 @@ pub enum AutomationsEvent {
     SetEnabled(usize, bool),
     /// Show the session the last run of this agent automation started.
     OpenSession(usize),
+    /// Stop a rule made in the palette from waiting.
+    CancelRule(u64),
     Dismissed,
 }
 
@@ -87,6 +89,8 @@ const TEMPLATES: &[Template] = &[
 pub struct AutomationsDialog {
     project: SharedString,
     items: Vec<Automation>,
+    /// Rules made from a sentence in the palette: they wait for something to happen.
+    rules: Vec<crate::palette::rules::Rule>,
     /// Environments it can run in, the main checkout first.
     envs: Vec<(PathBuf, SharedString)>,
     /// `None` shows the list; `Some(None)` a new automation, `Some(Some(i))` editing one.
@@ -137,6 +141,7 @@ impl AutomationsDialog {
         let mut this = Self {
             project,
             items,
+            rules: Vec::new(),
             envs,
             editing: None,
             name,
@@ -161,6 +166,95 @@ impl AutomationsDialog {
     pub fn set_items(&mut self, items: Vec<Automation>, cx: &mut Context<Self>) {
         self.items = items;
         cx.notify();
+    }
+
+    /// The palette's rules: waiting ones first, then the last finished.
+    pub fn set_rules(&mut self, rules: Vec<crate::palette::rules::Rule>, cx: &mut Context<Self>) {
+        self.rules = shown_rules(rules);
+        cx.notify();
+    }
+
+    fn render_rule(
+        &self,
+        r: &crate::palette::rules::Rule,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::palette::rules::State;
+        let id = r.id;
+        let waiting = r.state == State::Waiting;
+        let steps: Vec<String> = r.steps.iter().map(|s| s.describe()).collect();
+        let mut facts = vec![format!(
+            "When {} · {}",
+            r.trigger.describe(),
+            steps.join(", then ")
+        )];
+        match &r.state {
+            State::Waiting => {
+                if !r.note.is_empty() {
+                    facts.push(r.note.clone());
+                }
+                facts.push(format!("expires {}", schedule::when(r.expires, now)));
+            }
+            State::Running => facts.push("running".into()),
+            State::Done => facts.push("done".into()),
+            State::Expired => facts.push("expired".into()),
+            State::Cancelled => facts.push("cancelled".into()),
+            State::Failed(why) => facts.push(format!("failed: {why}")),
+        }
+        div()
+            .id(("auto-rule", id as usize))
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(10.))
+            .px(crate::ui::sp(10.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .hover(|s| s.bg(theme::hover()))
+            .when(!waiting, |d| d.opacity(0.55))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(18.))
+                    .flex()
+                    .justify_center()
+                    .child(icon(r.trigger.icon(), 16.).text_color(theme::text_subtle())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(crate::ui::sp(2.))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_MD))
+                            .truncate()
+                            .child(r.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .truncate()
+                            .child(facts.join(" · ")),
+                    ),
+            )
+            .when(waiting, |d| {
+                d.child(
+                    ui::button(
+                        ("auto-cancel", id as usize),
+                        "Cancel",
+                        ButtonKind::Ghost,
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::CancelRule(id))),
+                    ),
+                )
+            })
+            .into_any_element()
     }
 
     fn edit(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
@@ -344,10 +438,10 @@ impl AutomationsDialog {
             .id(("auto-row", i))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(10.))
-            .py(px(8.))
-            .rounded(px(ui::RADIUS))
+            .gap(crate::ui::sp(10.))
+            .px(crate::ui::sp(10.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
             .hover(|s| s.bg(theme::hover()))
             .child(
                 div()
@@ -363,7 +457,7 @@ impl AutomationsDialog {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(crate::ui::sp(2.))
                     .child(
                         div()
                             .text_size(px(ui::TEXT_MD))
@@ -419,11 +513,36 @@ impl AutomationsDialog {
             .id("auto-list")
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .p(px(8.))
+            .gap(crate::ui::sp(2.))
+            .p(crate::ui::sp(8.))
             .min_h_0()
             .overflow_y_scroll();
-        if self.items.is_empty() {
+        if !self.rules.is_empty() {
+            list = list.child(
+                div()
+                    .px(crate::ui::sp(10.))
+                    .pt(crate::ui::sp(4.))
+                    .pb(crate::ui::sp(2.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child("Waiting for something · made in the palette"),
+            );
+            for r in &self.rules {
+                list = list.child(self.render_rule(r, now, cx));
+            }
+            if !self.items.is_empty() {
+                list = list.child(
+                    div()
+                        .px(crate::ui::sp(10.))
+                        .pt(crate::ui::sp(10.))
+                        .pb(crate::ui::sp(2.))
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child("Saved"),
+                );
+            }
+        }
+        if self.items.is_empty() && self.rules.is_empty() {
             list = list.child(
                 ui::empty_state(
                     "flash",
@@ -445,12 +564,12 @@ impl AutomationsDialog {
             .id("auto-editor")
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(16.))
+            .gap(crate::ui::sp(16.))
+            .p(crate::ui::sp(16.))
             .min_h_0()
             .overflow_y_scroll();
         if creating {
-            let mut chips = div().flex().flex_wrap().gap(px(6.));
+            let mut chips = div().flex().flex_wrap().gap(crate::ui::sp(6.));
             for (ti, t) in TEMPLATES.iter().enumerate() {
                 chips = chips.child(
                     div()
@@ -458,10 +577,10 @@ impl AutomationsDialog {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(crate::ui::sp(6.))
                         .h(px(ui::CONTROL_H))
-                        .px(px(10.))
-                        .rounded(px(ui::RADIUS))
+                        .px(crate::ui::sp(10.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
                         .border_1()
                         .border_color(theme::border())
                         .text_size(px(ui::TEXT_SM))
@@ -534,7 +653,7 @@ impl AutomationsDialog {
                 .enumerate()
                 .map(|(i, (p, n))| (if i == 0 { None } else { Some(p.clone()) }, n.clone()))
                 .collect();
-            let mut row = div().flex().flex_wrap().gap(px(4.));
+            let mut row = div().flex().flex_wrap().gap(crate::ui::sp(4.));
             for (oi, (value, label)) in options.into_iter().enumerate() {
                 let selected = value == self.env;
                 row = row.child(
@@ -565,7 +684,7 @@ impl AutomationsDialog {
             ),
         ));
         if self.every == Every::Weekly {
-            let mut days = div().flex().flex_wrap().gap(px(4.));
+            let mut days = div().flex().flex_wrap().gap(crate::ui::sp(4.));
             for d in [1u8, 2, 3, 4, 5, 6, 0] {
                 days = days.child(
                     ui::chip(
@@ -598,7 +717,7 @@ impl AutomationsDialog {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(crate::ui::sp(12.))
                     .child(field_box().w(px(96.)).child(self.time.clone()))
                     .child(
                         div()
@@ -633,7 +752,7 @@ fn field(label: &str, content: impl IntoElement) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(crate::ui::sp(6.))
         .child(
             div()
                 .text_size(px(ui::TEXT_SM))
@@ -691,9 +810,9 @@ impl Render for AutomationsDialog {
             .flex()
             .flex_none()
             .justify_end()
-            .gap(px(8.))
-            .px(px(16.))
-            .py(px(12.))
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(12.))
             .border_t_1()
             .border_color(theme::border_subtle())
             .when(editing, |d| {
@@ -728,5 +847,69 @@ impl Render for AutomationsDialog {
             ))
             .child(body.flex_1().max_h(px(520.)))
             .child(footer)
+    }
+}
+
+/// How many rules the dialog lists when some are finished.
+const RULES_SHOWN: usize = 8;
+
+/// Waiting rules first, newest first, then the last finished ones. Every
+/// waiting or running rule stays, with its Cancel: only finished ones are
+/// cut to fit.
+fn shown_rules(mut rules: Vec<crate::palette::rules::Rule>) -> Vec<crate::palette::rules::Rule> {
+    use crate::palette::rules::State;
+    rules.sort_by_key(|r| (r.state != State::Waiting, std::cmp::Reverse(r.created)));
+    let live = rules
+        .iter()
+        .filter(|r| matches!(r.state, State::Waiting | State::Running))
+        .count();
+    let mut finished = RULES_SHOWN.saturating_sub(live);
+    rules.retain(|r| {
+        if matches!(r.state, State::Waiting | State::Running) {
+            return true;
+        }
+        let keep = finished > 0;
+        finished = finished.saturating_sub(1);
+        keep
+    });
+    rules
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::palette::rules::{Rule, State, Trigger};
+
+    fn rule(id: u64, state: State) -> Rule {
+        Rule {
+            id,
+            title: String::new(),
+            trigger: Trigger::CiFailed {
+                branch: "main".into(),
+                project: None,
+            },
+            steps: Vec::new(),
+            dir: None,
+            created: id,
+            expires: 0,
+            state,
+            note: String::new(),
+            seen_busy: false,
+        }
+    }
+
+    #[test]
+    fn every_waiting_rule_is_listed() {
+        let mut rules: Vec<Rule> = (0..10).map(|i| rule(i, State::Done)).collect();
+        rules.extend((10..20).map(|i| rule(i, State::Waiting)));
+        rules.push(rule(20, State::Running));
+        let shown = shown_rules(rules);
+        assert_eq!(shown.len(), 11);
+        assert!(shown.iter().all(|r| r.state != State::Done));
+        // With few waiting, the newest finished fill the rest.
+        let mut rules: Vec<Rule> = (0..10).map(|i| rule(i, State::Done)).collect();
+        rules.push(rule(10, State::Waiting));
+        let ids: Vec<u64> = shown_rules(rules).iter().map(|r| r.id).collect();
+        assert_eq!(ids, [10, 9, 8, 7, 6, 5, 4, 3]);
     }
 }

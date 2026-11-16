@@ -70,6 +70,7 @@ impl Shell {
                     "Could not name the branch",
                     &format!("{e:#}. It stays {old}; `arakun rename <name>` renames it."),
                     None,
+                    cx,
                 ),
             });
         })

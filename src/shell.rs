@@ -31,14 +31,17 @@ mod documents;
 mod drag;
 mod extensions;
 mod git_actions;
+mod github;
 mod headless;
 mod home;
+mod inbox;
 mod island;
 mod limits;
 mod menus;
 mod naming;
 mod notes;
 pub(crate) mod pages;
+mod palette;
 mod panel;
 mod panes;
 mod paste;
@@ -78,6 +81,8 @@ use crate::explorer;
 use crate::extensions_view::ExtensionsView;
 use crate::gallery_view::GalleryView;
 use crate::git;
+use crate::github::GitHub;
+use crate::github_view::GitHubView;
 use crate::highlight;
 use crate::input::{InputEvent, TextInput};
 use crate::memory_view::{MemoryEvent, MemoryView};
@@ -91,7 +96,6 @@ use crate::settings_view::{SettingsDialog, SettingsEvent};
 #[cfg(feature = "coderlabs")]
 use crate::site_view::SiteView;
 use crate::state;
-use crate::switcher::{self, Switcher, SwitcherEvent};
 #[cfg(feature = "coderlabs")]
 use crate::tasks_view::TasksView;
 #[cfg(feature = "team")]
@@ -161,7 +165,7 @@ enum Modal {
     Account(Entity<AccountDialog>),
     Commit(Entity<crate::git_dialogs::CommitDialog>),
     GitConfirm(Entity<crate::git_dialogs::ConfirmDialog>),
-    Switcher(Entity<Switcher>),
+    Palette(Entity<crate::palette::Palette>),
     Settings(Entity<SettingsDialog>),
     Automations(Entity<crate::automations_view::AutomationsDialog>),
     /// Rename, remove or import sessions (`session_actions`).
@@ -181,7 +185,7 @@ enum MenuTarget {
     AgentMenu,
     /// Which providers the rail's usage card shows.
     RailUsage,
-    /// Sessions across all projects that want attention.
+    /// Sessions across all projects that want attention, and past notices.
     Inbox,
     /// A session of the visible environment, by index, from its row or tab.
     Session(usize),
@@ -271,6 +275,14 @@ pub struct Shell {
     _caret_focus: Subscription,
     _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
+    /// Refreshes the open palette when GitHub brings in more.
+    palette_watch: Option<Subscription>,
+    /// Each project's `owner/name` on GitHub (None when it has none), by
+    /// directory. Read in the background: finding it runs `git`, and the
+    /// palette asks for it on every GitHub update.
+    repo_slugs: std::collections::HashMap<std::path::PathBuf, Option<String>>,
+    /// The background read of `repo_slugs`; a new one replaces it.
+    repo_slugs_read: Option<Task<()>>,
     menu: Option<ContextMenu>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
@@ -331,6 +343,10 @@ pub struct Shell {
     /// What the chrome showed (rail, panel) before Ctrl+B hid it all.
     left_before_hide: Option<(bool, bool)>,
     arcade: bool,
+    /// What the person pinned from the palette (`pins.json`).
+    pins: crate::palette::pins::Pins,
+    /// Automations made from a sentence in the palette (`rules.json`).
+    rules: crate::palette::rules::Rules,
     session_query: Entity<TextInput>,
     session_filter: Option<Agent>,
     _session_query: Subscription,
@@ -363,6 +379,9 @@ pub struct Shell {
     posthog_view: Entity<PostHogView>,
     _posthog_view: Subscription,
     branches_view: Entity<BranchesView>,
+    github: Entity<GitHub>,
+    github_view: Entity<GitHubView>,
+    _github: [Subscription; 3],
     extensions_view: Entity<ExtensionsView>,
     _extensions_view: Subscription,
     _branches_view: Subscription,
@@ -414,6 +433,17 @@ pub struct Shell {
     island: Option<island::IslandLink>,
     #[cfg(feature = "team")]
     team: Option<team::TeamLink>,
+    /// Every notice shown, for the Inbox. A cell: notices go out from `&self`.
+    notices: RefCell<crate::notices::History>,
+    /// The Inbox was open at the last frame: when it closes, what it showed counts as seen.
+    inbox_open: bool,
+    /// The GitHub tab shown with no project added: the queue reads GitHub,
+    /// not a project, so it doesn't need one. It takes the welcome's place.
+    github_alone: bool,
+    /// `History::arrived` when the Inbox last drew: what it showed.
+    inbox_shown: Cell<u64>,
+    /// "Clear" was clicked once; the second click empties the history.
+    clear_armed: bool,
 }
 
 struct InboxItem {
@@ -431,10 +461,27 @@ const DOCK_MIN_H: f32 = 120.;
 const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
 const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
 const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
-/// Air around and between the window's floating cards.
-const GAP: f32 = 8.;
-/// The dock card's collapsed height: the status chips live in its header.
-const DOCK_BAR_H: f32 = 32.;
+/// Air around and between the window's floating cards, set in Settings ›
+/// Appearance. The window's edges, the room above the dock and the resize
+/// handles between side cards all use this one value, so they stay equal.
+/// It is its own setting, so Spacing does not scale it.
+fn gap() -> f32 {
+    crate::ui::window_gap()
+}
+
+/// How wide a side handle can be grabbed, whatever the window gap: with no
+/// gap there would be nothing to grab between the cards.
+const SIDE_HANDLE_MIN_W: f32 = 6.;
+
+/// `gap()` as a length, for the root's padding and the side handles.
+fn gap_px() -> gpui::Pixels {
+    crate::ui::window_gap_px()
+}
+
+/// The dock's terminal tabs are all one width.
+const DOCK_TAB_W: f32 = 224.;
+/// Where a dock tab's 20 px close button sits, centered on the tab.
+const DOCK_TAB_CLOSE_TOP: f32 = (ui::DOCK_TAB_H - 20.) / 2.;
 
 /// Which side card its gap handle is resizing.
 #[derive(Clone, Copy, PartialEq)]
@@ -462,6 +509,8 @@ impl Shell {
                 .update(cx, |cs, cx| cs.set_window_active(active, cx));
             this.ci
                 .update(cx, |ci, cx| ci.set_window_active(active, cx));
+            this.github
+                .update(cx, |g, cx| g.set_window_active(active, cx));
         });
         let focus = cx.focus_handle();
         let composer_focus = cx.focus_handle();
@@ -476,6 +525,7 @@ impl Shell {
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
         theme::set_grays(layout.grays);
+        crate::palettes::apply_saved();
         account_view::set_rail_shows(crate::agent::AgentKind::Claude, layout.rail_usage[0]);
         account_view::set_rail_shows(crate::agent::AgentKind::Droid, layout.rail_usage[1]);
         account_view::set_rail_shows(crate::agent::AgentKind::OpenCode, layout.rail_usage[2]);
@@ -611,6 +661,18 @@ impl Shell {
         let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
             this.on_branches_event(ev, window, cx)
         });
+        let github = cx.new(GitHub::new);
+        let github_view = cx.new(|cx| GitHubView::new(github.clone(), cx));
+        let github_subs = [
+            // The rail badge counts what the model holds.
+            cx.observe(&github, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&github_view, window, |this, _, ev, window, cx| {
+                this.on_github_view_event(ev, window, cx)
+            }),
+            cx.subscribe_in(&github, window, |this, _, ev, window, cx| {
+                this.on_github_event(ev, window, cx)
+            }),
+        ];
         let phone_view = cx.new(crate::phone_view::PhoneView::new);
         let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
             this.on_phone_event(ev, window, cx)
@@ -658,6 +720,9 @@ impl Shell {
             _caret_focus: caret_focus,
             _composer_blur: composer_blur,
             modal: None,
+            palette_watch: None,
+            repo_slugs: Default::default(),
+            repo_slugs_read: None,
             menu: None,
             poll: None,
             last_fetch: None,
@@ -700,6 +765,8 @@ impl Shell {
             subagent_tick: None,
             left_before_hide: None,
             arcade: layout.arcade,
+            pins: crate::palette::pins::Pins::load(),
+            rules: crate::palette::rules::Rules::load(),
             session_query,
             session_filter: None,
             _session_query: session_query_sub,
@@ -731,6 +798,9 @@ impl Shell {
             _posthog_view: posthog_sub,
             branches_view,
             _branches_view: branches_sub,
+            github,
+            github_view,
+            _github: github_subs,
             extensions_view,
             _extensions_view: extensions_sub,
             phone: None,
@@ -764,6 +834,11 @@ impl Shell {
             island: None,
             #[cfg(feature = "team")]
             team: None,
+            notices: RefCell::new(crate::notices::load()),
+            inbox_open: false,
+            github_alone: false,
+            inbox_shown: Cell::new(0),
+            clear_armed: false,
             restarting: false,
             _runs: runs_subs,
             _quit: [
@@ -773,6 +848,8 @@ impl Shell {
                         eprintln!("arakun: could not save state: {e}");
                     }
                     this.save_transcripts(cx);
+                    // Notices are saved off the UI thread: let the last one land.
+                    crate::notices::flush();
                     crate::control::cleanup();
                     if this.restarting
                         && let Err(e) = crate::platform::relaunch()
@@ -796,6 +873,7 @@ impl Shell {
         this.listen_for_commands(window, cx);
         this.watch_headless(window, cx);
         this.start_scheduler(window, cx);
+        this.start_rule_ticker(window, cx);
         this.restore_phone(window, cx);
         this
     }
@@ -1672,28 +1750,38 @@ impl Shell {
             } else {
                 self.rail_w
             };
-            GAP + w + GAP
+            gap() + w + gap()
         } else {
-            GAP
+            gap()
         }
     }
 
     /// The gap between two cards doubles as the resize handle for the side card.
     fn side_handle(&self, side: SideDrag, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id(("side-handle", side as usize))
-            .flex_none()
-            .w(px(GAP))
-            .h_full()
-            .cursor_col_resize()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.side_drag = Some(side);
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
+        let w = gap();
+        let grab = w.max(SIDE_HANDLE_MIN_W);
+        div().flex_none().w(gap_px()).h_full().relative().child(
+            // Drawn over the cards, so a narrow or zero gap can still be
+            // grabbed across the cards' edges.
+            gpui::deferred(
+                div()
+                    .id(("side-handle", side as usize))
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px((w - grab) / 2.))
+                    .w(px(grab))
+                    .cursor_col_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.side_drag = Some(side);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            ),
+        )
     }
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {
@@ -1707,239 +1795,7 @@ impl Shell {
     }
 
     fn open_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.menu = None;
-        self.env_menu_open = false;
-        let items = self.switcher_items(cx);
-        let switcher = cx.new(|cx| Switcher::new(items, window, cx));
-        let sub = cx.subscribe_in(
-            &switcher,
-            window,
-            |this, _, ev: &SwitcherEvent, window, cx| match ev {
-                SwitcherEvent::Picked(target) => {
-                    let target = target.clone();
-                    this.close_modal(window, cx);
-                    this.switch_to(target, window, cx);
-                }
-                SwitcherEvent::Dismissed => this.close_modal(window, cx),
-            },
-        );
-        self.modal = Some((Modal::Switcher(switcher), sub));
-        cx.notify();
-    }
-
-    /// Sessions of the visible environment first, then everything else, then commands.
-    fn switcher_items(&self, cx: &App) -> Vec<switcher::Item> {
-        use switcher::{Item, Target};
-        let mut here = Vec::new();
-        let mut envs = Vec::new();
-        let mut elsewhere = Vec::new();
-        for (pi, p) in self.projects.iter().enumerate() {
-            envs.push(Item {
-                icon: "folder01",
-                label: p.name.clone(),
-                detail: "Project".into(),
-                target: Target::Project(pi),
-            });
-            for (ei, e) in p.environments.iter().enumerate() {
-                let visible = pi == self.active_project && ei == p.active_env;
-                envs.push(Item {
-                    icon: if e.is_checkout {
-                        "folder01"
-                    } else {
-                        "git-branch"
-                    },
-                    label: format!("{} / {}", p.name, e.name).into(),
-                    detail: "Environment".into(),
-                    target: Target::Env(pi, ei),
-                });
-                for sess in &e.sessions {
-                    let item = Item {
-                        icon: "message01",
-                        label: sess.title.clone(),
-                        detail: format!(
-                            "{} · {}/{} · {}",
-                            sess.agent.label(),
-                            p.name,
-                            e.name,
-                            model::age(sess.updated)
-                        )
-                        .into(),
-                        target: Target::Session(pi, ei, sess.id.clone()),
-                    };
-                    if visible {
-                        here.push(item)
-                    } else {
-                        elsewhere.push(item)
-                    }
-                }
-            }
-        }
-        let command = |icon, label: &str, target| Item {
-            icon,
-            label: label.to_string().into(),
-            detail: "Command".into(),
-            target,
-        };
-        let mut items = here;
-        items.extend(envs);
-        items.extend(elsewhere);
-        if self.has_projects() {
-            items.push(command("comment-add01", "New session", Target::NewSession));
-            items.push(command(
-                "git-branch",
-                "New environment",
-                Target::NewEnvironment,
-            ));
-            items.push(command(
-                "computer-terminal01",
-                "New terminal",
-                Target::NewTerminal,
-            ));
-            items.push(command("globe", "New browser tab", Target::NewBrowserTab));
-            items.push(command(
-                "layout-bottom",
-                "Toggle terminal dock",
-                Target::ToggleDock,
-            ));
-            items.push(command(
-                "sidebar-left",
-                "Toggle sidebar",
-                Target::ToggleSidebar,
-            ));
-            items.push(command(
-                "layout-align-right",
-                "Toggle workspace panel",
-                Target::TogglePanel,
-            ));
-            items.push(command(
-                "bot",
-                "Toggle subagents panel",
-                Target::ToggleSubagents,
-            ));
-        }
-        items.push(command("folder-add", "Add project", Target::AddProject));
-        #[cfg(feature = "coderlabs")]
-        items.push(command(
-            "checkmark-circle02",
-            "CoderSpace tasks",
-            Target::Tasks,
-        ));
-        if self.has_projects() {
-            items.push(command("activity01", "Runs: CI and deploys", Target::Runs));
-            items.push(command(
-                "git-branch",
-                "Branches: map of branches and PRs",
-                Target::Branches,
-            ));
-            #[cfg(feature = "coderlabs")]
-            items.push(command(
-                "artboard",
-                "Canvas: design frames, drawn natively",
-                Target::Canvas,
-            ));
-            // The branches the Branches tab last read, with their PR, by name or number.
-            for (name, pr) in self.branches_view.read(cx).branch_list() {
-                items.push(Item {
-                    icon: if pr.is_some() {
-                        "git-pull-request"
-                    } else {
-                        "git-branch"
-                    },
-                    label: match &pr {
-                        Some((n, title)) => format!("#{n} {title}").into(),
-                        None => name.clone().into(),
-                    },
-                    detail: match &pr {
-                        Some(_) => format!("Pull request · {name}").into(),
-                        None => "Branch".into(),
-                    },
-                    target: Target::Branch(name),
-                });
-            }
-        }
-        #[cfg(feature = "coderlabs")]
-        if self.has_projects() {
-            let cs = self.coderspace.read(cx);
-            for t in cs.pending() {
-                items.push(Item {
-                    icon: "checkmark-circle02",
-                    label: format!("{} {}", t.key, t.title).trim().to_string().into(),
-                    detail: format!(
-                        "Task · {} · {}",
-                        cs.project_name(&t.project).unwrap_or("CoderSpace"),
-                        t.status.label()
-                    )
-                    .into(),
-                    target: Target::Task(t.id.clone()),
-                });
-            }
-        }
-        items.push(command(
-            "gauge",
-            "Factory account and usage",
-            Target::Account,
-        ));
-        items.push(command("settings01", "Settings", Target::Settings));
-        items.push(command(
-            "sparkles",
-            "Extensions: plugins, skills & MCP",
-            Target::Extensions,
-        ));
-        items.push(command(
-            "square-lock02",
-            "Sign in to Claude Code",
-            Target::SignIn(crate::agent::AgentKind::Claude),
-        ));
-        items.push(command(
-            "square-lock02",
-            "Sign in to Droid",
-            Target::SignIn(crate::agent::AgentKind::Droid),
-        ));
-        items.push(command(
-            "square-lock02",
-            "Sign in to OpenCode",
-            Target::SignIn(crate::agent::AgentKind::OpenCode),
-        ));
-        items
-    }
-
-    fn switch_to(&mut self, target: switcher::Target, window: &mut Window, cx: &mut Context<Self>) {
-        use switcher::Target;
-        match target {
-            Target::Project(pi) if pi < self.projects.len() => self.select_project(pi, window, cx),
-            Target::Env(pi, ei) => self.select_env(pi, ei, window, cx),
-            Target::Session(pi, ei, id) => self.open_session_at(pi, ei, id, window, cx),
-            Target::NewSession => self.new_session(window, cx),
-            Target::NewEnvironment => self.open_create_env(self.active_project, window, cx),
-            Target::NewTerminal => self.new_terminal(window, cx),
-            Target::NewBrowserTab => self.open_browser_tab(String::new(), window, cx),
-            Target::AddProject => self.open_picker(window, cx),
-            Target::ToggleDock => self.toggle_dock(window, cx),
-            Target::ToggleSidebar => self.toggle_sidebar(cx),
-            Target::TogglePanel => self.toggle_panel(cx),
-            Target::ToggleSubagents => self.toggle_subagents(cx),
-            Target::Account => self.open_account(window, cx),
-            Target::Settings => self.open_settings(window, cx),
-            Target::Extensions => self.open_extensions_tab(window, cx),
-            #[cfg(feature = "coderlabs")]
-            Target::Tasks => self.open_tasks_tab(window, cx),
-            Target::Runs => self.open_runs_tab(None, window, cx),
-            Target::Branches => self.open_branches_tab(window, cx),
-            #[cfg(feature = "coderlabs")]
-            Target::Canvas => self.open_canvas_tab(None, window, cx),
-            Target::Branch(name) => self.reveal_branch(name, window, cx),
-            #[cfg(feature = "coderlabs")]
-            Target::Task(id) => {
-                self.open_tasks_tab(window, cx);
-                self.tasks_view.update(cx, |v, cx| v.select_task(&id, cx));
-            }
-            Target::SignIn(kind) => {
-                if let Some(cmd) = crate::agent::login_command(kind) {
-                    self.spawn_terminal_command(Some(cmd), true, window, cx);
-                }
-            }
-            Target::Project(_) => {}
-        }
+        self.open_palette(window, cx);
     }
 
     fn open_session_at(
@@ -1960,120 +1816,6 @@ impl Shell {
         }
         self.select_env(pi, ei, window, cx);
         self.open_session(id, window, cx);
-    }
-
-    /// Sessions that are running, waiting for an answer, or failed, newest first.
-    fn inbox_items(&self) -> Vec<InboxItem> {
-        let mut items = Vec::new();
-        for (pi, p) in self.projects.iter().enumerate() {
-            for (ei, e) in p.environments.iter().enumerate() {
-                for sess in &e.sessions {
-                    if sess.status != Status::Idle {
-                        items.push(InboxItem {
-                            project: pi,
-                            env: ei,
-                            id: sess.id.clone(),
-                            status: sess.status,
-                            title: sess.title.clone(),
-                            place: format!("{}/{}", p.name, e.name).into(),
-                            updated: sess.updated,
-                        });
-                    }
-                }
-            }
-        }
-        // Waiting first, then errors, then running.
-        let rank = |s: Status| match s {
-            Status::NeedsInput => 0,
-            Status::Error => 1,
-            _ => 2,
-        };
-        items.sort_by(|a, b| {
-            rank(a.status)
-                .cmp(&rank(b.status))
-                .then(b.updated.cmp(&a.updated))
-        });
-        items
-    }
-
-    fn render_inbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = self.inbox_items();
-        let mut panel = ui::menu_panel("inbox-menu", 300.)
-            .max_h(px(420.))
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .px(px(8.))
-                    .pt(px(4.))
-                    .pb(px(2.))
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(theme::text_subtle())
-                    .child("Inbox"),
-            );
-        if items.is_empty() {
-            panel = panel.child(
-                div()
-                    .px(px(8.))
-                    .py(px(12.))
-                    .text_size(px(ui::TEXT_SM))
-                    .text_color(theme::text_subtle())
-                    .child("Nothing needs you. Sessions that wait for an answer, fail or are running show up here."),
-            );
-        }
-        for (i, item) in items.into_iter().enumerate() {
-            let label = match item.status {
-                Status::NeedsInput => "Needs you",
-                Status::Error => "Failed",
-                _ => "Running",
-            };
-            let (pi, ei, id) = (item.project, item.env, item.id.clone());
-            panel = panel.child(
-                div()
-                    .id(("inbox-item", i))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .px(px(8.))
-                    .py(px(6.))
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::selection_hover()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(status_dot(item.status))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(ui::TEXT_MD))
-                                    .child(item.title),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(ui::TEXT_XS))
-                                    .text_color(theme::text_subtle())
-                                    .child(label),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .pl(px(14.))
-                            .text_size(px(ui::TEXT_XS))
-                            .text_color(theme::text_faint())
-                            .child(format!("{} · {}", item.place, model::age(item.updated))),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.menu = None;
-                        this.open_session_at(pi, ei, id.clone(), window, cx);
-                    })),
-            );
-        }
-        panel
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2334,7 +2076,7 @@ impl Shell {
                                 .mx_auto()
                                 .w_full()
                                 .max_w(px(896.))
-                                .p(px(6.))
+                                .p(crate::ui::sp(6.))
                                 .pt_0()
                                 // Before the composer, so the bar hides its chin. It moves
                                 // itself on top of the card above the composer when one shows.
@@ -2390,6 +2132,7 @@ impl Shell {
                 self.sync_branches_view(cx);
                 self.branches_view.clone().into_any_element()
             }
+            Some(TabKind::GitHub) => self.github_view.clone().into_any_element(),
             Some(TabKind::Extensions) => {
                 // Follows the visible environment, also when it changes under an open tab.
                 let dir = env.path.clone();
@@ -2422,7 +2165,7 @@ impl Shell {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
+                .gap(crate::ui::sp(10.))
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
                 .child(agent_icon(env.agent, 22.))
@@ -2440,6 +2183,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_inbox_seen();
         // When what had the keyboard leaves the screen (the composer when a page opens
         // over it), keys reach no element and every shortcut stops until a click.
         if !self.refocus_queued && self.has_projects() && !self.focus.contains_focused(window, cx) {
@@ -2452,6 +2196,11 @@ impl Render for Shell {
             });
         }
         let has_projects = self.has_projects();
+        if has_projects {
+            // With a project the GitHub tab is a tab again; without one later,
+            // the welcome comes back first.
+            self.github_alone = false;
+        }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
         if has_projects {
             if self.browsers_out_of_date() {
@@ -2492,10 +2241,13 @@ impl Render for Shell {
                         .when_some(self.render_image_drop_zone(cx), |d, zone| d.child(zone)),
                 )
                 .into_any_element()
+        } else if self.github_alone {
+            self.render_github_alone(window, cx).into_any_element()
         } else {
             self.render_welcome(window, cx).into_any_element()
         };
 
+        let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
         let modal: Option<AnyElement> = self.modal.as_ref().map(|(m, _)| match m {
             Modal::Picker(e) => e.clone().into_any_element(),
             Modal::Attach(e) => e.clone().into_any_element(),
@@ -2505,7 +2257,7 @@ impl Render for Shell {
             Modal::Account(e) => e.clone().into_any_element(),
             Modal::Commit(e) => e.clone().into_any_element(),
             Modal::GitConfirm(e) => e.clone().into_any_element(),
-            Modal::Switcher(e) => e.clone().into_any_element(),
+            Modal::Palette(e) => e.clone().into_any_element(),
             Modal::Settings(e) => e.clone().into_any_element(),
             Modal::Automations(e) => e.clone().into_any_element(),
             Modal::Session(v) => v.clone().into_any_element(),
@@ -2540,8 +2292,8 @@ impl Render for Shell {
             .when(self.dock_drag, |d| {
                 d.cursor_row_resize()
                     .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
-                        // The dock card's bottom edge is one GAP above the window's edge.
-                        let bottom = window.viewport_size().height.as_f32() - GAP;
+                        // The dock card's bottom edge is one gap above the window's edge.
+                        let bottom = window.viewport_size().height.as_f32() - gap();
                         let max = (bottom - 160.).max(DOCK_MIN_H);
                         this.dock_height = (bottom - ev.position.y.as_f32())
                             .clamp(DOCK_MIN_H, max)
@@ -2565,14 +2317,14 @@ impl Render for Shell {
                             Some(SideDrag::Rail) => {
                                 let x = ev.position.x.as_f32();
                                 let w = if this.sidebar.style.side == crate::sidebar::Side::Right {
-                                    window_w - GAP - x
+                                    window_w - gap() - x
                                 } else {
-                                    x - GAP
+                                    x - gap()
                                 };
                                 this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
-                                this.panel_w = ((window_w - GAP) - ev.position.x.as_f32())
+                                this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())
                                     .clamp(PANEL_W_RANGE.start, PANEL_W_RANGE.end)
                             }
                             Some(SideDrag::Subagents) => {
@@ -2585,13 +2337,13 @@ impl Render for Shell {
                                     this.rail_w
                                 };
                                 let right = window_w
-                                    - GAP
+                                    - gap()
                                     - if this.panel_open {
-                                        this.panel_w + GAP
+                                        this.panel_w + gap()
                                     } else {
                                         0.
                                     }
-                                    - if rail { rail_w + GAP } else { 0. };
+                                    - if rail { rail_w + gap() } else { 0. };
                                 this.subagents_w = (right - ev.position.x.as_f32())
                                     .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end)
                             }
@@ -2642,6 +2394,33 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &AddProject, window, cx| this.open_picker(window, cx)))
             .on_action(
                 cx.listener(|this, _: &QuickSwitch, window, cx| this.open_switcher(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned1, w, cx| this.open_pinned(0, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned2, w, cx| this.open_pinned(1, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned3, w, cx| this.open_pinned(2, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned4, w, cx| this.open_pinned(3, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned5, w, cx| this.open_pinned(4, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned6, w, cx| this.open_pinned(5, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned7, w, cx| this.open_pinned(6, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned8, w, cx| this.open_pinned(7, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::palette::Pinned9, w, cx| this.open_pinned(8, w, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, _, cx| this.toggle_panel(cx)))
@@ -2717,8 +2496,8 @@ impl Render for Shell {
             .flex_col()
             .size_full()
             .bg(theme::window_bg())
-            .p(px(GAP))
-            .gap(px(GAP))
+            .p(crate::ui::window_gap_px())
+            .gap(crate::ui::window_gap_px())
             .text_color(theme::content())
             .font_family(theme::FONT_SANS)
             .child(
@@ -2795,9 +2574,10 @@ impl Render for Shell {
                         .flex_col()
                         .items_center()
                         .pt(relative(0.10))
-                        .pb(px(12.))
-                        .px(px(12.))
-                        .bg(gpui::black().opacity(0.4))
+                        .pb(crate::ui::sp(12.))
+                        .px(crate::ui::sp(12.))
+                        // The palette dims the app further: gpui has no backdrop blur.
+                        .bg(gpui::black().opacity(if palette_open { 0.62 } else { 0.4 }))
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -2862,8 +2642,8 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .p(px(16.))
-            .gap(px(6.));
+            .p(crate::ui::sp(16.))
+            .gap(crate::ui::sp(6.));
         if notes.is_empty() {
             list = list.child(ui::empty_state(
                 "note01",
@@ -2878,10 +2658,10 @@ impl Shell {
                 div()
                     .group(group.clone())
                     .flex()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(8.))
+                    .gap(crate::ui::sp(8.))
+                    .px(crate::ui::sp(10.))
+                    .py(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
                     .bg(theme::fill_raised())
                     .child(
                         div()
@@ -2919,9 +2699,9 @@ impl Shell {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .h(px(36.))
-                    .px(px(14.))
+                    .px(crate::ui::sp(14.))
                     .border_b_1()
                     .border_color(theme::stroke())
                     .text_size(px(ui::TEXT_SM))
@@ -2938,7 +2718,7 @@ impl Shell {
             .child(
                 div()
                     .flex_none()
-                    .p(px(10.))
+                    .p(crate::ui::sp(10.))
                     .border_b_1()
                     .border_color(theme::stroke())
                     .child(
@@ -2946,8 +2726,8 @@ impl Shell {
                             .flex()
                             .items_center()
                             .h(px(34.))
-                            .px(px(10.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(8.))
                             .border_1()
                             .border_color(theme::border())
                             .bg(theme::background())
@@ -2974,10 +2754,10 @@ fn chip(
         .min_w_0()
         .max_w(px(260.))
         .items_center()
-        .gap(px(5.))
+        .gap(crate::ui::sp(5.))
         .h(px(ui::CONTROL_H))
-        .px(px(7.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(7.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .text_size(px(ui::TEXT_SM))
         .text_color(theme::text_muted())
         .when(enabled, |d| {
@@ -3008,7 +2788,36 @@ fn chip(
 
 #[cfg(test)]
 mod tests {
-    use super::hunk_start;
+    use super::*;
+
+    /// The dock's sizes before corners and spacing became settings. At the
+    /// default scales it must look exactly as it did.
+    #[test]
+    fn dock_keeps_its_default_sizes() {
+        assert_eq!(ui::DOCK_BAR_H, 32.);
+        assert_eq!(
+            (DOCK_TAB_W, ui::DOCK_TAB_H, DOCK_TAB_CLOSE_TOP),
+            (224., 24., 2.)
+        );
+        // Chips and icon buttons as tall as the tabs, framed evenly.
+        assert_eq!(ui::ICON_BUTTON, ui::DOCK_TAB_H);
+        assert_eq!(ui::DOCK_INSET, 4.);
+        // Tab padding, gap and corner; chip padding and corner; body padding.
+        for n in [8., 28., 6., 2., 12., 10.] {
+            assert_eq!(ui::sp(n), px(n));
+        }
+        for r in [4., ui::RADIUS] {
+            assert_eq!(ui::rad(r), px(r));
+        }
+        assert_eq!(ui::RADIUS, 8.);
+    }
+
+    /// The window's edges and the room between its cards are one value.
+    #[test]
+    fn window_gap_is_one_value() {
+        assert_eq!(gap_px(), px(8.));
+        assert_eq!(gap_px(), px(crate::ui::window_gap()));
+    }
 
     #[test]
     fn hunk_lines() {

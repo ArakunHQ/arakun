@@ -288,7 +288,7 @@ impl Render for AreaChart {
                 .iter()
                 .map(|s| s.values.get(d).copied().unwrap_or(0.))
                 .sum();
-            let mut rows = div().flex().flex_col().gap(px(5.));
+            let mut rows = div().flex().flex_col().gap(crate::ui::sp(5.));
             if self.series.len() > 1 {
                 for s in &self.series {
                     let v = s.values.get(d).copied().unwrap_or(0.);
@@ -296,7 +296,7 @@ impl Render for AreaChart {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(div().size(px(7.)).rounded_full().bg(s.color))
                             .child(
                                 div()
@@ -315,9 +315,9 @@ impl Render for AreaChart {
                 .w(px(210.))
                 .flex()
                 .flex_col()
-                .gap(px(8.))
-                .p(px(10.))
-                .rounded(px(RADIUS))
+                .gap(crate::ui::sp(8.))
+                .p(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(RADIUS))
                 .bg(theme::dialog())
                 .border_1()
                 .border_color(theme::border())
@@ -370,10 +370,11 @@ impl Render for AreaChart {
                     .child((self.axis_format)(step * (ticks - k) as f64)),
             );
         }
+        // Starts where the plot does, after the fixed-width y axis column.
         let mut x_row = div()
             .flex()
             .justify_between()
-            .pl(px(AXIS_W))
+            .ml(px(AXIS_W))
             .ty(Type::Caption)
             .text_color(theme::text_faint());
         for t in &self.ticks {
@@ -398,7 +399,7 @@ impl Render for AreaChart {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(div().flex().child(axis).child(area))
             .child(x_row)
     }

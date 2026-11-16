@@ -124,15 +124,15 @@ fn section(title: &str, about: &str, body: impl IntoElement) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
-        .pt(px(28.))
+        .gap(crate::ui::sp(16.))
+        .pt(crate::ui::sp(28.))
         .border_t_1()
         .border_color(theme::border_subtle())
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.))
+                .gap(crate::ui::sp(4.))
                 .child(ui::text(Type::Title, theme::text(), title.to_string()))
                 .child(ui::text(
                     Type::Body,
@@ -149,13 +149,17 @@ fn specimen(label: &str, body: impl IntoElement) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(crate::ui::sp(10.))
         .child(ui::overline(label))
         .child(body)
 }
 
 fn row() -> gpui::Div {
-    div().flex().flex_wrap().items_center().gap(px(10.))
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(crate::ui::sp(10.))
 }
 
 /// A color chip with its role name and where it comes from.
@@ -164,15 +168,20 @@ fn swatch(name: &str, note: &str, color: Hsla) -> AnyElement {
         .w(px(132.))
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(crate::ui::sp(6.))
         .child(
             div()
                 .h(px(48.))
-                .rounded(px(ui::RADIUS))
+                .rounded(crate::ui::rad(ui::RADIUS))
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::background())
-                .child(div().size_full().rounded(px(ui::RADIUS)).bg(color)),
+                .child(
+                    div()
+                        .size_full()
+                        .rounded(crate::ui::rad(ui::RADIUS))
+                        .bg(color),
+                ),
         )
         .child(ui::text(Type::Label, theme::text(), name.to_string()))
         .child(ui::text(
@@ -187,14 +196,14 @@ fn swatch(name: &str, note: &str, color: Hsla) -> AnyElement {
 fn panel(width: f32) -> gpui::Div {
     div()
         .w(px(width))
-        .p(px(4.))
+        .p(crate::ui::sp(4.))
         .flex()
         .flex_col()
-        .gap(px(1.))
+        .gap(crate::ui::sp(1.))
         .bg(theme::dialog())
         .border_1()
         .border_color(theme::border())
-        .rounded(px(ui::RADIUS_LG))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
         .shadow_xl()
 }
 
@@ -235,10 +244,10 @@ impl Render for GalleryView {
             .flex_wrap()
             .items_end()
             .justify_between()
-            .gap(px(16.))
-            .px(px(ui::PAGE_PAD))
-            .pt(px(ui::PAGE_PAD))
-            .pb(px(20.))
+            .gap(crate::ui::sp(16.))
+            .px(crate::ui::sp(ui::PAGE_PAD))
+            .pt(crate::ui::sp(ui::PAGE_PAD))
+            .pb(crate::ui::sp(20.))
             .child(ui::page_title(
                 "Design system",
                 Some("The tokens and components every view builds from. The choices on the right change the whole app, live.".into_any_element()),
@@ -247,16 +256,16 @@ impl Render for GalleryView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(16.))
-                    .child(div().flex().items_center().gap(px(8.)).child(ui::overline("Grays")).child(grays))
-                    .child(div().flex().items_center().gap(px(8.)).child(ui::overline("Type")).child(scale)),
+                    .gap(crate::ui::sp(16.))
+                    .child(div().flex().items_center().gap(crate::ui::sp(8.)).child(ui::overline("Grays")).child(grays))
+                    .child(div().flex().items_center().gap(crate::ui::sp(8.)).child(ui::overline("Type")).child(scale)),
             );
 
         // ---- color -------------------------------------------------------------
         let text_roles = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(ui::text(
                 Type::Heading,
                 theme::text(),
@@ -297,7 +306,7 @@ impl Render for GalleryView {
             .child(swatch("Hover", "fill_hover", theme::fill_hover()))
             .child(swatch("Selected", "fill_selected", theme::fill_selected()))
             .child(swatch("Dialog", "theme::dialog", theme::dialog()));
-        let borders = row().gap(px(16.)).children(
+        let borders = row().gap(crate::ui::sp(16.)).children(
             [
                 ("Subtle", "rules between rows", theme::border_subtle()),
                 ("Default", "cards and controls", theme::border()),
@@ -307,8 +316,8 @@ impl Render for GalleryView {
                 div()
                     .w(px(180.))
                     .h(px(56.))
-                    .p(px(10.))
-                    .rounded(px(ui::RADIUS_LG))
+                    .p(crate::ui::sp(10.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_1()
                     .border_color(c)
                     .flex()
@@ -321,16 +330,18 @@ impl Render for GalleryView {
         let tones = row()
             .items_start()
             .children(Tone::ALL.map(|t| swatch(t.name(), "ui::Tone", t.color())));
-        let category = row().gap(px(6.)).children(theme::CATEGORY.map(|c| {
-            div()
-                .size(px(28.))
-                .rounded(px(ui::RADIUS_SM))
-                .bg(gpui::rgb(c))
-        }));
+        let category = row()
+            .gap(crate::ui::sp(6.))
+            .children(theme::CATEGORY.map(|c| {
+                div()
+                    .size(px(28.))
+                    .rounded(crate::ui::rad(ui::RADIUS_SM))
+                    .bg(gpui::rgb(c))
+            }));
         let color = div()
             .flex()
             .flex_col()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .child(specimen("Text", text_roles))
             .child(specimen("Surfaces", surfaces))
             .child(specimen("Borders", borders))
@@ -359,8 +370,8 @@ impl Render for GalleryView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(16.))
-                    .py(px(10.))
+                    .gap(crate::ui::sp(16.))
+                    .py(crate::ui::sp(10.))
                     .border_b_1()
                     .border_color(theme::border_subtle())
                     .child(
@@ -389,29 +400,27 @@ impl Render for GalleryView {
         }
 
         // ---- space & shape -----------------------------------------------------------
-        let spacing =
-            row()
-                .items_end()
-                .gap(px(14.))
-                .children([2., 4., 8., 12., 16., 24., 32.].map(|s| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(
-                            div()
-                                .size(px(s))
-                                .bg(theme::accent().opacity(0.7))
-                                .rounded(px(1.)),
-                        )
-                        .child(ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            format!("{s:.0}"),
-                        ))
-                }));
-        let radii = row().gap(px(14.)).children(
+        let spacing = row().items_end().gap(crate::ui::sp(14.)).children(
+            [2., 4., 8., 12., 16., 24., 32.].map(|s| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .child(
+                        div()
+                            .size(px(s))
+                            .bg(theme::accent().opacity(0.7))
+                            .rounded(crate::ui::rad(1.)),
+                    )
+                    .child(ui::text(
+                        Type::Caption,
+                        theme::text_faint(),
+                        format!("{s:.0}"),
+                    ))
+            }),
+        );
+        let radii = row().gap(crate::ui::sp(14.)).children(
             [
                 (ui::RADIUS_SM, "4 · chips, badges"),
                 (ui::RADIUS, "8 · controls"),
@@ -422,12 +431,12 @@ impl Render for GalleryView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(
                         div()
                             .w(px(110.))
                             .h(px(64.))
-                            .rounded(px(r))
+                            .rounded(crate::ui::rad(r))
                             .border_1()
                             .border_color(theme::border_strong())
                             .bg(theme::fill_raised()),
@@ -435,7 +444,7 @@ impl Render for GalleryView {
                     .child(ui::text(Type::Caption, theme::text_faint(), note))
             }),
         );
-        let heights = row().items_end().gap(px(14.)).children(
+        let heights = row().items_end().gap(crate::ui::sp(14.)).children(
             [
                 (20., "Badge, kbd"),
                 (ui::ICON_BUTTON, "Icon button"),
@@ -448,12 +457,12 @@ impl Render for GalleryView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(
                         div()
                             .w(px(84.))
                             .h(px(h))
-                            .rounded(px(ui::RADIUS))
+                            .rounded(crate::ui::rad(ui::RADIUS))
                             .border_1()
                             .border_color(theme::border())
                             .flex()
@@ -483,7 +492,7 @@ impl Render for GalleryView {
                 true,
             ))
             .child(ui::button("ds-b6", "Disabled", ButtonKind::Primary, false));
-        let icon_buttons = row().gap(px(4.)).children(
+        let icon_buttons = row().gap(crate::ui::sp(4.)).children(
             [
                 "add01",
                 "refresh01",
@@ -519,7 +528,7 @@ impl Render for GalleryView {
                 }))
             },
         );
-        let chips = row().gap(px(6.)).children(
+        let chips = row().gap(crate::ui::sp(6.)).children(
             ["Claude Code", "Droid", "This week", "Failed"]
                 .into_iter()
                 .enumerate()
@@ -532,30 +541,27 @@ impl Render for GalleryView {
                     ))
                 }),
         );
-        let switches =
-            row()
-                .gap(px(20.))
-                .children(
-                    ["Glass", "Read aloud"]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, label)| {
-                            div()
-                                .id(("ds-switch", i))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .cursor_pointer()
-                                .child(ui::switch(self.switches[i]))
-                                .child(ui::text(Type::Body, theme::text_muted(), label))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.switches[i] = !this.switches[i];
-                                    cx.notify();
-                                }))
-                        }),
-                );
+        let switches = row().gap(crate::ui::sp(20.)).children(
+            ["Glass", "Read aloud"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    div()
+                        .id(("ds-switch", i))
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .cursor_pointer()
+                        .child(ui::switch(self.switches[i]))
+                        .child(ui::text(Type::Body, theme::text_muted(), label))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.switches[i] = !this.switches[i];
+                            cx.notify();
+                        }))
+                }),
+        );
         let badges = row()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .children(Tone::ALL.map(|t| ui::badge(t.name(), t)))
             .child(ui::tag("DNS", gpui::rgb(theme::CATEGORY[3])))
             .child(div().w(px(12.)))
@@ -569,7 +575,7 @@ impl Render for GalleryView {
                 .map(|(l, t)| ui::status_dot(l, t)),
             );
         let keys = row()
-            .gap(px(16.))
+            .gap(crate::ui::sp(16.))
             .child(ui::shortcut(&["Ctrl", "K"]))
             .child(ui::shortcut(&["Shift", "Tab"]))
             .child(ui::shortcut(&["Esc"]));
@@ -618,7 +624,7 @@ impl Render for GalleryView {
             ));
         let menus = row()
             .items_start()
-            .gap(px(24.))
+            .gap(crate::ui::sp(24.))
             .child(model_menu)
             .child(mode_menu);
 
@@ -639,9 +645,9 @@ impl Render for GalleryView {
                 .flex()
                 .items_end()
                 .justify_between()
-                .gap(px(8.))
-                .px(px(16.))
-                .py(px(14.))
+                .gap(crate::ui::sp(8.))
+                .px(crate::ui::sp(16.))
+                .py(crate::ui::sp(14.))
                 .when(!last, |d| {
                     d.border_r_1().border_color(theme::border_subtle())
                 })
@@ -686,7 +692,7 @@ impl Render for GalleryView {
             .w(px(340.))
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(crate::ui::sp(8.))
             .child(ui::limit_line(
                 "5-hour limit",
                 12.,
@@ -717,12 +723,12 @@ impl Render for GalleryView {
         let chart = div()
             .flex()
             .flex_col()
-            .gap(px(14.))
+            .gap(crate::ui::sp(14.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(crate::ui::sp(10.))
                     .child(ui::heading("Daily cost").flex_1())
                     .child(ui::legend("Droid", theme::mix(0.72)))
                     .child(ui::legend("Claude Code", gpui::rgb(0xd97757).into())),
@@ -731,9 +737,9 @@ impl Render for GalleryView {
 
         // ---- feedback ---------------------------------------------------------------------------
         let tooltip = div()
-            .px(px(8.))
-            .py(px(4.))
-            .rounded(px(ui::RADIUS_SM))
+            .px(crate::ui::sp(8.))
+            .py(crate::ui::sp(4.))
+            .rounded(crate::ui::rad(ui::RADIUS_SM))
             .bg(theme::dialog())
             .border_1()
             .border_color(theme::border())
@@ -743,7 +749,7 @@ impl Render for GalleryView {
             .child("Read the logs again");
         let empty = div()
             .w(px(380.))
-            .rounded(px(ui::RADIUS_LG))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
             .border_color(theme::border())
             .child(ui::empty_state(
@@ -753,16 +759,120 @@ impl Render for GalleryView {
                 Some(ui::button("ds-empty", "Show 90 days", ButtonKind::Outline, true).into_any_element()),
             ));
 
+        // ---- work surfaces --------------------------------------------------------------------
+        let amber = theme::accent();
+        let green: Hsla = theme::success().into();
+        let blue: Hsla = theme::link().into();
+        let surfaces = ui::surface_card()
+            .w(px(440.))
+            .child(
+                row()
+                    .gap(crate::ui::sp(11.))
+                    .px(crate::ui::sp(16.))
+                    .pt(crate::ui::sp(14.))
+                    .pb(crate::ui::sp(12.))
+                    .child(ui::icon_chip("github", 34., None))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .child(ui::text(Type::Heading, theme::text(), "Review queue"))
+                            .child(ui::text(
+                                Type::Label,
+                                theme::text_subtle(),
+                                "ArakunHQ · 11 tracked",
+                            )),
+                    )
+                    .child(ui::pill("4 waiting on you", amber)),
+            )
+            .child(div().px(crate::ui::sp(16.)).child(ui::segment_bar(
+                &[
+                    (4., amber),
+                    (2., blue),
+                    (1., green),
+                    (4., theme::border_strong()),
+                ],
+                7.,
+            )))
+            .child(
+                ui::inset_panel().m(px(10.)).child(
+                    row()
+                        .gap(crate::ui::sp(11.))
+                        .px(crate::ui::sp(14.))
+                        .py(crate::ui::sp(8.))
+                        .child(ui::icon_chip("git-pull-request", 28., Some(amber)))
+                        .child(div().flex_1().child(ui::text(
+                            Type::Body,
+                            theme::text(),
+                            "ci: add a weekly report on runner sizing",
+                        )))
+                        .child(ui::mini_squares(&[green, green, green, amber], 9.)),
+                ),
+            );
+        let pills = row()
+            .gap(crate::ui::sp(8.))
+            .child(ui::key_pill(
+                "ds-kp-1",
+                None,
+                "Comment",
+                Some("C"),
+                ui::PillKind::Normal,
+                true,
+            ))
+            .child(ui::key_pill(
+                "ds-kp-2",
+                None,
+                "Discard",
+                None,
+                ui::PillKind::Quiet,
+                true,
+            ))
+            .child(ui::key_pill(
+                "ds-kp-3",
+                Some(("tick02", None)),
+                "Approve",
+                Some("A"),
+                ui::PillKind::Primary,
+                true,
+            ))
+            .child(ui::outline_tab("ds-ot-1", "Timeline", None, true))
+            .child(ui::outline_tab("ds-ot-2", "Files", Some("8".into()), false))
+            .child(ui::key_hint("Next", "J"))
+            .child(ui::icon_tile("git-pull-request", 26., green))
+            .child(ui::avatar("rikvisser-dev", 24.))
+            .child(ui::avatar("karlo", 24.))
+            // Pictures come from GitHub; with none on disk they show initials.
+            .child(ui::avatar_image("ana", None, 24.))
+            .child(ui::state_pill("tick02", "Approved", green))
+            .child(ui::avatar_badge(
+                "rikvisser-dev",
+                None,
+                32.,
+                "git-pull-request",
+                amber,
+                theme::background(),
+            ))
+            .child(ui::avatar_stack(
+                &[
+                    ("rikvisser-dev".into(), None),
+                    ("karlo".into(), None),
+                    ("ana".into(), None),
+                ],
+                24.,
+                theme::fill_raised(),
+            ));
+
         let body = div()
             .flex()
             .flex_col()
-            .gap(px(36.))
+            .gap(crate::ui::sp(36.))
             .child(section("Color", "Roles, not numbers: views pick what a gray is for. The ramp behind them is the Grays choice above.", color))
             .child(section("Type", "Each style is a size, a line height and a weight together. `.ty(Type::Body)` on any element.", type_rows))
             .child(section(
                 "Space and shape",
                 "Spacing in steps of 4 (2 for hairlines). Radii follow the rule of 4. Controls of a kind share a height.",
-                div().flex().flex_col().gap(px(24.)).child(specimen("Spacing", spacing)).child(specimen("Radius", radii)).child(specimen("Heights", heights)),
+                div().flex().flex_col().gap(crate::ui::sp(24.)).child(specimen("Spacing", spacing)).child(specimen("Radius", radii)).child(specimen("Heights", heights)),
             ))
             .child(section(
                 "Controls",
@@ -770,10 +880,10 @@ impl Render for GalleryView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(24.))
+                    .gap(crate::ui::sp(24.))
                     .child(specimen("Buttons", buttons))
                     .child(specimen("Icon buttons", icon_buttons))
-                    .child(specimen("Segmented and toggle group", row().gap(px(16.)).child(seg).child(toggle)))
+                    .child(specimen("Segmented and toggle group", row().gap(crate::ui::sp(16.)).child(seg).child(toggle)))
                     .child(specimen("Chips", chips))
                     .child(specimen("Switches", switches))
                     .child(specimen("Badges and status", badges))
@@ -787,15 +897,20 @@ impl Render for GalleryView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(28.))
+                    .gap(crate::ui::sp(28.))
                     .child(specimen("Stats", stats))
-                    .child(row().items_start().gap(px(40.)).child(specimen("Limits", limits)).child(specimen("Key and value", kvs)))
+                    .child(row().items_start().gap(crate::ui::sp(40.)).child(specimen("Limits", limits)).child(specimen("Key and value", kvs)))
                     .child(specimen("Area chart", chart)),
+            ))
+            .child(section(
+                "Work surfaces",
+                "A card of its own inside a view, the darker panel nested in it, round status chips, pills with their key, outlined tabs.",
+                div().flex().flex_col().gap(crate::ui::sp(20.)).child(specimen("Card and inset", surfaces)).child(specimen("Pills, tabs and people", pills)),
             ))
             .child(section(
                 "Feedback",
                 "Tooltips name icon-only buttons; empty states say what a place is for and the one thing to do.",
-                row().items_start().gap(px(40.)).child(specimen("Tooltip", tooltip)).child(specimen("Empty state", empty)),
+                row().items_start().gap(crate::ui::sp(40.)).child(specimen("Tooltip", tooltip)).child(specimen("Empty state", empty)),
             ));
 
         div()
@@ -814,8 +929,8 @@ impl Render for GalleryView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(ui::PAGE_PAD))
-                    .pb(px(48.))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .pb(crate::ui::sp(48.))
                     .child(body),
             )
     }

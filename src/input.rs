@@ -102,6 +102,8 @@ pub struct TextInput {
     mono: bool,
     /// Draws every character as `*` and keeps the text off the clipboard.
     secret: bool,
+    /// A caret of its own color, drawn 2 px wide (the palette's accent caret).
+    caret: Option<gpui::Hsla>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -122,6 +124,7 @@ impl TextInput {
             placeholder: placeholder.into(),
             mono: false,
             secret: false,
+            caret: None,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -144,6 +147,43 @@ impl TextInput {
 
     pub fn text(&self) -> &str {
         &self.content
+    }
+
+    /// What shows while it is empty.
+    pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let text = text.into();
+        if self.placeholder != text {
+            self.placeholder = text;
+            cx.notify();
+        }
+    }
+
+    /// A 2 px caret in `color` instead of the thin one in the text color.
+    pub fn caret_color(mut self, color: gpui::Hsla) -> Self {
+        self.caret = Some(color);
+        self
+    }
+
+    /// Whether the caret sits after the last character with nothing selected.
+    pub fn caret_at_end(&self) -> bool {
+        self.selected_range.is_empty() && self.cursor_offset() == self.content.len()
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.selected_range.is_empty()
+    }
+
+    /// Types `text` at the caret, over any selection.
+    pub fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
+        let range = self.selected_range.clone();
+        self.content =
+            (self.content[..range.start].to_owned() + text + &self.content[range.end..]).into();
+        let at = range.start + text.len();
+        self.selected_range = at..at;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.emit(InputEvent::Changed);
+        cx.notify();
     }
 
     /// Replaces the content and puts the caret at the end.
@@ -579,6 +619,7 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
+        let caret = input.caret;
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
@@ -650,13 +691,23 @@ impl Element for TextElement {
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
-                Some(fill(
-                    Bounds::new(
-                        point(left + cursor_x, bounds.top() + px(2.)),
-                        size(px(1.5), bounds.size.height - px(4.)),
+                Some(match caret {
+                    Some(color) => fill(
+                        Bounds::new(
+                            point(left + cursor_x, bounds.top() + px(1.)),
+                            size(px(2.), bounds.size.height - px(2.)),
+                        ),
+                        color,
+                    )
+                    .corner_radii(px(1.)),
+                    None => fill(
+                        Bounds::new(
+                            point(left + cursor_x, bounds.top() + px(2.)),
+                            size(px(1.5), bounds.size.height - px(4.)),
+                        ),
+                        theme::content(),
                     ),
-                    theme::content(),
-                )),
+                }),
             )
         } else {
             (

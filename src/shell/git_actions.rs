@@ -361,7 +361,11 @@ impl Shell {
         let busy = env.git_busy;
         let idle = busy.is_none();
 
-        let mut chips = div().flex().flex_none().items_center().gap(px(2.));
+        let mut chips = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(2.));
         if s.upstream.is_some() {
             let label = (s.behind > 0).then(|| format!("{}", s.behind));
             chips = chips.child(
@@ -433,10 +437,10 @@ impl Shell {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
+            .gap(crate::ui::sp(6.))
             .h(px(36.))
-            .pl(px(14.))
-            .pr(px(8.))
+            .pl(crate::ui::sp(14.))
+            .pr(crate::ui::sp(8.))
             .border_b_1()
             .border_color(theme::stroke())
             .child(icon("git-branch", 13.).text_color(theme::text_subtle()))
@@ -457,11 +461,11 @@ impl Shell {
                 .flex()
                 .flex_none()
                 .items_start()
-                .gap(px(6.))
+                .gap(crate::ui::sp(6.))
                 .mx(px(8.))
                 .mt(px(8.))
-                .p(px(8.))
-                .rounded(px(8.))
+                .p(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
                 .bg(gpui::rgba(0xef44441a))
                 .child(
                     div()
@@ -494,8 +498,8 @@ impl Shell {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
-            .p(px(8.))
+            .gap(crate::ui::sp(6.))
+            .p(crate::ui::sp(8.))
             .border_t_1()
             .border_color(theme::stroke())
             .child(
@@ -551,10 +555,10 @@ impl Shell {
         let summary = div()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .px(px(14.))
-            .pt(px(10.))
-            .pb(px(4.))
+            .gap(crate::ui::sp(6.))
+            .px(crate::ui::sp(14.))
+            .pt(crate::ui::sp(10.))
+            .pb(crate::ui::sp(4.))
             .text_size(px(ui::TEXT_XS))
             .text_color(theme::text_subtle())
             .child(div().flex_1().child(if staged > 0 {
@@ -580,191 +584,185 @@ impl Shell {
             .min_h_0()
             .overflow_y_scroll()
             .child(summary)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .p(px(6.))
-                    .children(env.changes.iter().enumerate().map(|(i, c)| {
-                        let (dir, file) = c.path.rsplit_once('/').unwrap_or(("", &c.path));
-                        let (letter, color): (&str, Hsla) = match c.kind {
-                            ChangeKind::Modified => ("M", theme::warn().into()),
-                            ChangeKind::Added => ("A", theme::diff_add().into()),
-                            ChangeKind::Untracked => ("U", theme::diff_add().into()),
-                            ChangeKind::Deleted => ("D", theme::diff_del().into()),
-                            ChangeKind::Renamed => ("R", theme::accent()),
-                        };
-                        let (stage_icon, stage_color): (&str, Hsla) = if c.fully_staged() {
-                            ("checkmark-circle02", theme::diff_add().into())
-                        } else if c.staged {
-                            ("circle-dot", theme::accent())
-                        } else {
-                            // Unstaged files show what they are, as in the Explorer.
-                            super::documents::file_icon(file)
-                        };
-                        let group: SharedString = format!("change-row-{i}").into();
-                        let path = c.path.clone();
-                        let untracked = c.kind == ChangeKind::Untracked;
-                        let (toggle, toggle2, discard) = (c.clone(), c.clone(), c.clone());
-                        let action = |id: (&'static str, usize), name: &'static str| {
+            .child(div().flex().flex_col().p(crate::ui::sp(6.)).children(
+                env.changes.iter().enumerate().map(|(i, c)| {
+                    let (dir, file) = c.path.rsplit_once('/').unwrap_or(("", &c.path));
+                    let (letter, color): (&str, Hsla) = match c.kind {
+                        ChangeKind::Modified => ("M", theme::warn().into()),
+                        ChangeKind::Added => ("A", theme::diff_add().into()),
+                        ChangeKind::Untracked => ("U", theme::diff_add().into()),
+                        ChangeKind::Deleted => ("D", theme::diff_del().into()),
+                        ChangeKind::Renamed => ("R", theme::accent()),
+                    };
+                    let (stage_icon, stage_color): (&str, Hsla) = if c.fully_staged() {
+                        ("checkmark-circle02", theme::diff_add().into())
+                    } else if c.staged {
+                        ("circle-dot", theme::accent())
+                    } else {
+                        // Unstaged files show what they are, as in the Explorer.
+                        super::documents::file_icon(file)
+                    };
+                    let group: SharedString = format!("change-row-{i}").into();
+                    let path = c.path.clone();
+                    let untracked = c.kind == ChangeKind::Untracked;
+                    let (toggle, toggle2, discard) = (c.clone(), c.clone(), c.clone());
+                    let action = |id: (&'static str, usize), name: &'static str| {
+                        div()
+                            .id(id)
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(20.))
+                            .rounded(crate::ui::rad(4.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::fill_selected()))
+                            .child(icon(name, 13.).text_color(theme::text_subtle()))
+                    };
+                    div()
+                        .id(("change", i))
+                        .group(group.clone())
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .h(px(26.))
+                        .px(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(4.))
+                        .text_size(px(ui::TEXT_MD))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::hover()))
+                        .child(
                             div()
-                                .id(id)
+                                .id(("change-stage", i))
                                 .flex()
                                 .flex_none()
                                 .items_center()
                                 .justify_center()
-                                .size(px(20.))
-                                .rounded(px(4.))
-                                .cursor_pointer()
+                                .size(px(18.))
+                                .ml(px(-2.))
+                                .rounded(crate::ui::rad(4.))
                                 .hover(|s| s.bg(theme::fill_selected()))
-                                .child(icon(name, 13.).text_color(theme::text_subtle()))
-                        };
-                        div()
-                            .id(("change", i))
-                            .group(group.clone())
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .h(px(26.))
-                            .px(px(8.))
-                            .rounded(px(4.))
-                            .text_size(px(ui::TEXT_MD))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover()))
-                            .child(
-                                div()
-                                    .id(("change-stage", i))
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(px(18.))
-                                    .ml(px(-2.))
-                                    .rounded(px(4.))
-                                    .hover(|s| s.bg(theme::fill_selected()))
-                                    .child(icon(stage_icon, 14.).text_color(stage_color))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.toggle_stage(toggle.clone(), cx);
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(px(150.))
-                                    .truncate()
-                                    .when(c.kind == ChangeKind::Deleted, |d| d.line_through())
-                                    .child(file.to_string()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(ui::TEXT_XS))
-                                    .text_color(theme::text_faint())
-                                    .child(dir.to_string()),
-                            )
-                            .child(
-                                // Hover swaps counts for actions by visibility only: changing
-                                // `display` on hover shifts layout between prepaint and paint.
-                                div()
-                                    .relative()
-                                    .flex()
-                                    .flex_none()
-                                    .justify_end()
-                                    .items_center()
-                                    .h(px(20.))
-                                    .min_w(px(44.))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .gap(px(4.))
-                                            .text_size(px(ui::TEXT_XS))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .group_hover(group.clone(), |s| s.invisible())
-                                            .when(c.added > 0, |d| {
-                                                d.child(
-                                                    div()
-                                                        .text_color(theme::diff_add())
-                                                        .child(format!("+{}", c.added)),
-                                                )
-                                            })
-                                            .when(c.removed > 0, |d| {
-                                                d.child(
-                                                    div()
-                                                        .text_color(theme::diff_del())
-                                                        .child(format!("-{}", c.removed)),
-                                                )
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .right_0()
-                                            .flex()
-                                            .invisible()
-                                            .group_hover(group, |s| s.visible())
-                                            .items_center()
-                                            .gap(px(2.))
-                                            .child(
-                                                action(
-                                                    ("change-toggle", i),
-                                                    if c.fully_staged() {
-                                                        "minus-sign"
-                                                    } else {
-                                                        "add01"
-                                                    },
-                                                )
-                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .child(icon(stage_icon, 14.).text_color(stage_color))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_stage(toggle.clone(), cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .max_w(px(150.))
+                                .truncate()
+                                .when(c.kind == ChangeKind::Deleted, |d| d.line_through())
+                                .child(file.to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_faint())
+                                .child(dir.to_string()),
+                        )
+                        .child(
+                            // Hover swaps counts for actions by visibility only: changing
+                            // `display` on hover shifts layout between prepaint and paint.
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_none()
+                                .justify_end()
+                                .items_center()
+                                .h(px(20.))
+                                .min_w(px(44.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(crate::ui::sp(4.))
+                                        .text_size(px(ui::TEXT_XS))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .group_hover(group.clone(), |s| s.invisible())
+                                        .when(c.added > 0, |d| {
+                                            d.child(
+                                                div()
+                                                    .text_color(theme::diff_add())
+                                                    .child(format!("+{}", c.added)),
+                                            )
+                                        })
+                                        .when(c.removed > 0, |d| {
+                                            d.child(
+                                                div()
+                                                    .text_color(theme::diff_del())
+                                                    .child(format!("-{}", c.removed)),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .right_0()
+                                        .flex()
+                                        .invisible()
+                                        .group_hover(group, |s| s.visible())
+                                        .items_center()
+                                        .gap(crate::ui::sp(2.))
+                                        .child(
+                                            action(
+                                                ("change-toggle", i),
+                                                if c.fully_staged() {
+                                                    "minus-sign"
+                                                } else {
+                                                    "add01"
+                                                },
+                                            )
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
                                                     cx.stop_propagation();
                                                     this.toggle_stage(toggle2.clone(), cx);
-                                                })),
-                                            )
-                                            .child(action(("change-discard", i), "undo").on_click(
-                                                cx.listener(move |this, _, window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.confirm_discard(
-                                                        discard.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
                                                 }),
-                                            )),
-                                    ),
+                                            ),
+                                        )
+                                        .child(action(("change-discard", i), "undo").on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.confirm_discard(discard.clone(), window, cx);
+                                            }),
+                                        )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w(px(12.))
+                                .text_size(px(ui::TEXT_XS))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(color)
+                                .child(letter),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.menu = Some(ContextMenu {
+                                    target: MenuTarget::Change(i),
+                                    at: ev.position,
+                                });
+                                cx.notify();
+                            }),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_doc_tab(
+                                TabKind::Diff {
+                                    path: path.clone(),
+                                    untracked,
+                                },
+                                window,
+                                cx,
                             )
-                            .child(
-                                div()
-                                    .w(px(12.))
-                                    .text_size(px(ui::TEXT_XS))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(color)
-                                    .child(letter),
-                            )
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    this.menu = Some(ContextMenu {
-                                        target: MenuTarget::Change(i),
-                                        at: ev.position,
-                                    });
-                                    cx.notify();
-                                }),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_doc_tab(
-                                    TabKind::Diff {
-                                        path: path.clone(),
-                                        untracked,
-                                    },
-                                    window,
-                                    cx,
-                                )
-                            }))
-                    })),
-            )
+                        }))
+                }),
+            ))
     }
 }
 
@@ -782,10 +780,10 @@ fn sync_chip(
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(4.))
+        .gap(crate::ui::sp(4.))
         .h(px(ui::ICON_BUTTON))
-        .px(px(6.))
-        .rounded(px(ui::RADIUS))
+        .px(crate::ui::sp(6.))
+        .rounded(crate::ui::rad(ui::RADIUS))
         .text_size(px(ui::TEXT_SM))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme::text_muted())

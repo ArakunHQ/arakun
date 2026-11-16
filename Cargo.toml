@@ -128,28 +128,28 @@ opt-level = 2
 # Chromium's DMA-BUF frames copied into it on the GPU) and wgpu-hal (enables
 # VK_EXT_image_drm_format_modifier to import those frames).
 [patch."https://github.com/zed-industries/zed"]
-collections = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-derive_refineable = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5", version = "=0.2.2" }
-gpui_apple = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_linux = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_macos = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_macros = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_platform = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_shared_string = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5", version = "=0.1.0" }
-gpui_util = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_web = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_wgpu = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-gpui_windows = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-http_client = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-perf = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-refineable = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-scheduler = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-sum_tree = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-util_macros = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-zlog = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-ztracing = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
-ztracing_macro = { git = "https://github.com/arakunhq/zed", rev = "6c2b1b963c2f6d0c6765b48552d27b13c47666f5" }
+collections = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+derive_refineable = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16", version = "=0.2.2" }
+gpui_apple = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_linux = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_macos = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_macros = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_platform = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_shared_string = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16", version = "=0.1.0" }
+gpui_util = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_web = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_wgpu = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+gpui_windows = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+http_client = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+perf = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+refineable = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+scheduler = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+sum_tree = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+util_macros = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+zlog = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+ztracing = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
+ztracing_macro = { git = "https://github.com/arakunhq/zed", rev = "7b4ae7f50f745ec3f63b8bb4fcd9d5e10d778b16" }
 
 [patch.crates-io]
 wgpu-hal = { git = "https://github.com/arakunhq/wgpu-hal-fork", rev = "97c3ab65c0b663b91c370a16ee5f3462aa01f0aa" }

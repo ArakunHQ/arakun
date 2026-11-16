@@ -42,10 +42,36 @@ window, and exposes the same workspace to the agents through a command line.
   `arakun page` (screenshot, console, click, type, eval).
 - **GitHub CI and checks.** GitHub Actions runs for each project, with jobs, annotations
   and the failing log, read through the `gh` CLI.
+- **GitHub review queue.** The GitHub tab is a work queue of what waits on you: pull
+  requests whose review is asked of you, mentions and assignments, your own open pull
+  requests, what is ready to merge and what was done today. It reads your notifications
+  and runs searches through the `gh` CLI and its session, so what you already read on
+  github.com still shows. It opens before you add a project too. Pick an item to see
+  its state, checks, what blocks the merge, its timeline, files and commits; comment,
+  approve, request changes or merge from there. A comment posts at once; approve, request changes and merge ask a second time,
+  and an approval or a merge stops if new commits came after you looked. An agent can
+  review a pull request for you
+  and leave a draft (`arakun github draft`) that you post, edit or discard. Posting a
+  draft asks a second time, and an approval goes out only for the commit the agent read:
+  after new commits the draft can only be posted as a comment. Review
+  requests, mentions and assignments raise an alert; so does anything new in the
+  organizations and repositories on your watch list. Click the line under "Review
+  queue" to show only some organizations or repositories; the rest doesn't show, count
+  or alert. "Mark all read" marks only what that choice shows. Arakun reads GitHub in
+  the background only after you open the tab once,
+  and stops while `gh` is missing or signed out. It keeps the watch list, that choice
+  and whether you opened the tab in `github.json` next to its state, the days your queue reached zero in
+  `github-streak.json`, drafts in `github/drafts/` beside them, and the profile
+  pictures it shows in `github/avatars/` (each downloaded again after a week).
 - **Dynamic Island** (Linux/Wayland only for now). A small overlay at the top of the
   screen that shows what the agents of every project are doing: a dot per busy session, a
   card when one finishes, fails or needs an answer. It runs as its own process
   (`arakun island-host`) and needs a compositor with the wlr-layer-shell protocol.
+- **Notification history.** Every notice Arakun shows (on the island or as a desktop
+  notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
+  grouped by day. Click one to open what it is about. The Inbox's badge counts the
+  unread ones; they count as read when you close it. Arakun keeps the last 300 in
+  `notices.json` next to its state. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
   prompts and answer the agent. Phones reach the computer over the local network (the
   default), over Tailscale, or through an end-to-end encrypted relay. The relay defaults
@@ -62,6 +88,18 @@ window, and exposes the same workspace to the agents through a command line.
   cost from Claude Code's and Droid's own logs), Extensions (MCP servers, plugins, skills
   and permission rules of the agents), Automations (scheduled shell commands or agent
   prompts per project), and an Inbox.
+- **Color palettes.** Settings › Appearance has built-in palettes (Arakun Night,
+  Graphite, Midnight, Forest, Rosé). Customize one to change its tint, background and
+  accent; Arakun warns when text or the accent gets hard to read. A palette fits in one
+  line (`arakun:palette/v1:…`) that anyone can paste there to get it. The choice and your
+  palettes are kept in `palettes.json` next to the state.
+- **Corners and spacing.** Settings › Appearance also sets the shape of the whole app,
+  live. Corners makes cards, buttons and fields sharper or rounder (0 to 200%; presets
+  Sharp, Default, Round). Spacing makes the room inside and between things tighter or
+  roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space around and
+  between the sidebar, the main area, the panel and the dock (0 to 20 px; None, Default,
+  Wide). The defaults (100%, 100%, 8 px) look as before. These are kept in
+  `palettes.json` too.
 
 ## Platform status
 
@@ -133,9 +171,9 @@ Arakun does not bundle the agents. Install the ones you want to use:
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
-Optional tools: `git` (Changes, worktrees, branches), `gh` (CI), `bwrap` (headless
-agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale` (phone over
-Tailscale), `cf` (Cloudflare tab).
+Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
+(headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
+(phone over Tailscale), `cf` (Cloudflare tab).
 
 ## Build from source
 
@@ -223,11 +261,22 @@ arakun check                      # run the project check here
 arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
+arakun notices --unseen           # notifications you haven't read yet
 arakun ls                         # projects, environments and sessions
+arakun palette                    # bring the window up with Ctrl+K open
 arakun mem search <words>         # search what agents remember about this project
+arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md
+                                  # save a review draft for the GitHub tab; sends nothing.
+                                  # --body-file takes a file or - (stdin); an agent's file
+                                  # asks the user first if it is outside its workspace or
+                                  # the command shares its line with others. --head is
+                                  # the commit the agent read; an approval needs it
 arakun agent run <prompt>         # start a headless agent
 arakun --version                  # print the version (needs no running Arakun)
 ```
+
+To open the palette from any app, bind `arakun palette` to a global key in your
+desktop. On Hyprland, for example: `bind = SUPER, K, exec, arakun palette`.
 
 `arakun run` and `arakun logs` take `--ready <text>`, `--port <n>` and `--timeout <s>`
 before the command, and fail with the tail of the output if the command exits or times
@@ -239,9 +288,36 @@ out first.
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs; `Alt+Up` / `Alt+Down` switch environments
 - `Ctrl+F` search the conversation
+- `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
+  symbols, views, commands, settings and memory in one search. Start with `>` for
+  commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.
+  `#` lists every open pull request of your projects' repositories, not only yours;
+  `#86` finds that one even when it is closed or merged, and a first word that names a
+  repository or project narrows to it (`#arakun 86`, `#frameshi`).
+  In it: `→` opens a row's actions or goes into it (a project, a person, Branches), `←`
+  goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
+  a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
+  (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
+  agent. A question offers a short answer from Claude Haiku through Claude Code, on
+  your Claude account (no API key): `Enter` on the offer asks, and nothing is sent
+  before. A sentence such as "merge #64 when the checks pass and tell me" becomes an
+  automation once you confirm it; one Arakun cannot read itself offers to have Claude
+  read it, again only on `Enter`.
+  "recuérdame en 20 min revisar el PR", "remind me at 5pm to stretch" or
+  "timer 10 min" sets a reminder that rings on the island. One that comes due while
+  Arakun is closed rings, marked as missed, the next time it opens. "to-do: …" (or a
+  reminder with no time) adds a to-do, and typing "to-do" or "pendiente" lists them,
+  `Enter` ticking one off. Pins are kept in `pins.json`, rules (reminders too) in
+  `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
+  next to the state file.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them
+- In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
+  `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
+  GitHub; `Ctrl+Enter` sends a comment, `/` in the comment box lists the actions. In
+  a narrow window the keys move through the list and `Enter` opens the item; `Esc`
+  goes back to the list
 
 ## Contributing
 

@@ -16,6 +16,9 @@ pub enum View {
     Tasks,
     Runs,
     Branches,
+    /// snake_case would write `git_hub`.
+    #[serde(rename = "github")]
+    GitHub,
     Notes,
     Memory,
     Usage,
@@ -42,6 +45,7 @@ impl View {
         View::Tasks,
         View::Runs,
         View::Branches,
+        View::GitHub,
         View::Notes,
         View::Memory,
         View::Usage,
@@ -66,6 +70,7 @@ impl View {
             View::Tasks => "Tasks",
             View::Runs => "Runs",
             View::Branches => "Branches",
+            View::GitHub => "GitHub",
             View::Notes => "Notes",
             View::Memory => "Memory",
             View::Usage => "Usage",
@@ -91,6 +96,7 @@ impl View {
             View::Tasks => "checkmark-circle02",
             View::Runs => "activity01",
             View::Branches => "git-branch",
+            View::GitHub => "github",
             View::Notes => "file01",
             View::Memory => "ai-idea",
             View::Usage => "dashboard-square01",
@@ -113,11 +119,12 @@ impl View {
     #[allow(dead_code)] // the builder does not list views with a blurb yet
     pub fn blurb(self) -> &'static str {
         match self {
-            View::Inbox => "Sessions waiting for you",
+            View::Inbox => "Sessions waiting for you, and past notifications",
             #[cfg(feature = "coderlabs")]
             View::Tasks => "Your task list",
             View::Runs => "CI runs and their logs",
             View::Branches => "Every branch and its PR",
+            View::GitHub => "Your review queue on GitHub",
             View::Notes => "Project notes",
             View::Memory => "What agents remember here",
             View::Usage => "Plan limits and spend",
@@ -590,6 +597,7 @@ impl Preset {
                                 View::Tasks,
                                 View::Runs,
                                 View::Branches,
+                                View::GitHub,
                             ][..],
                             &more,
                         ]
@@ -611,7 +619,12 @@ impl Preset {
                     ],
                 ),
                 projects,
-                Section::new("Git", Mode::Scroll, views(&[View::Runs, View::Branches])).titled(),
+                Section::new(
+                    "Git",
+                    Mode::Scroll,
+                    views(&[View::Runs, View::Branches, View::GitHub]),
+                )
+                .titled(),
                 Section::new("More", Mode::Scroll, views(&more)).folding(true),
                 account(vec![Piece::Usage, Piece::User, Piece::Settings]),
             ],
@@ -635,7 +648,7 @@ impl Preset {
                 Section::new(
                     "More",
                     Mode::Scroll,
-                    views(&[&[View::Runs, View::Branches][..], &more[1..]].concat()),
+                    views(&[&[View::Runs, View::Branches, View::GitHub][..], &more[1..]].concat()),
                 )
                 .folding(true),
                 Section::new("Bottom", Mode::Fixed, vec![Piece::Settings]),
@@ -657,6 +670,7 @@ impl Preset {
                             View::Tasks,
                             View::Runs,
                             View::Branches,
+                            View::GitHub,
                             View::Notes,
                         ]),
                     ),
@@ -995,6 +1009,8 @@ mod tests {
         assert_eq!(s.style.side, Side::Right);
         assert!(s.style.badges);
         assert!(s.is_new(View::Phone));
+        // One word in the file, where snake_case would split it.
+        assert_eq!(serde_json::to_string(&View::GitHub).unwrap(), "\"github\"");
     }
 
     #[test]

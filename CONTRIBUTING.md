@@ -84,9 +84,9 @@ off, and do not add code behind them.
 ## Checks
 
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
-`tools/` (apart from `tools/rustfmt.sh`) alone skips the Rust jobs, the relay job runs
-only when `relay/`, `phone/` or CI itself changes, and cargo-deny runs only when
-`Cargo.toml`, `Cargo.lock` or `deny.toml` changes. Run the ones that match what you
+`tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
+jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, and
+cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes. Run the ones that match what you
 changed before you push:
 
 ```sh
@@ -190,6 +190,17 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   ```
 
   `arakun dev` with no arguments lists every subcommand.
+- **Check the drawn layout.** `tools/layout-audit.sh` opens the main screens in a test
+  Arakun (as above, so Linux with `Xvfb`) with `GPUI_LAYOUT_AUDIT` set, and
+  `tools/layout_audit.py` checks the boxes GPUI drew: corners that don't nest, uneven
+  insets, children cut by a border. It fails on a problem and on a screen it could not
+  read, so an empty or stale dump never passes. CI does not run it, since it needs the
+  app on a display; a test in `src/design_lint.rs` checks the script itself.
+
+  ```sh
+  cargo build --locked --no-default-features
+  tools/layout-audit.sh
+  ```
 - **Add a screenshot** to the pull request, before and after if something changed.
 
 ## Pull requests

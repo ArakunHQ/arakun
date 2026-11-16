@@ -16,10 +16,10 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla, IntoElement,
-    MouseButton, MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder, PathStyle,
-    Pixels, Point, Render, SharedString, StrokeOptions, Styled as _, TextRun, TruncateFrom, Window,
-    canvas, div, hsla, point, prelude::*, px, rgb, size,
+    AnimationExt as _, App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla,
+    IntoElement, MouseButton, MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder,
+    PathStyle, Pixels, Point, Render, SharedString, StrokeOptions, Styled as _, TextRun,
+    TruncateFrom, Window, canvas, div, hsla, point, prelude::*, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin};
 
@@ -36,6 +36,27 @@ const WIN_H: f32 = 300.;
 /// The concave fillets where the shape melts into the top edge.
 const SHOULDER: f32 = 10.;
 const SMALL_W: f32 = 30.;
+/// The small raccoon's inset from the island's left edge, and the gap to
+/// whatever shows right of it.
+const FACE_X: f32 = 12.;
+const FACE_GAP: f32 = 10.;
+/// Where a compact island's content starts, past the raccoon.
+const CONTENT_X: f32 = FACE_X + SMALL_W + FACE_GAP;
+/// A compact island's inner padding on the right.
+const PAD_R: f32 = 16.;
+/// The working state's dots, and the "+n" after them for the rest.
+const DOT: f32 = 7.;
+const DOT_GAP: f32 = 6.;
+const MORE_SIZE: f32 = 11.;
+/// A monospace glyph's advance, in ems (Geist Mono and JetBrains Mono both).
+const MONO_ADVANCE: f32 = 0.6;
+/// Audio bars: each bar's width, the gap between them, their box's height,
+/// and how many the recording wave has.
+const BAR_W: f32 = 3.;
+const BAR_GAP: f32 = 2.;
+const BARS_H: f32 = 22.;
+const REC_BARS: usize = 9;
+const COMPACT_H: f32 = 32.;
 const BIG_W: f32 = 46.;
 const ROW_H: f32 = 34.;
 /// A row's gap to the island's sides and, for the last, its bottom.
@@ -59,6 +80,10 @@ const CARD_W: f32 = 440.;
 const PILL_W: f32 = 330.;
 const PILL_H: f32 = 54.;
 const BADGE: f32 = 26.;
+/// How long a new card ignores the pointer, which may be resting where it drops.
+const CARD_SETTLE: Duration = Duration::from_millis(400);
+/// A card's buttons' height.
+const BUTTON_H: f32 = 28.;
 /// A notice's picture, where the badge goes.
 const AVATAR: f32 = 32.;
 const TITLE_SIZE: f32 = 14.5;
@@ -234,6 +259,11 @@ impl Phase {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
     Compact(Phase),
+    /// Agents at work: the raccoon, this many dots and a "+n" this many
+    /// characters long (0 for none).
+    Busy(usize, usize),
+    /// Recording at rest or at work: the raccoon and the green bars.
+    Recording,
     /// With this many rows.
     List(usize),
     /// A voice call: its phase and live captions.
@@ -243,8 +273,13 @@ enum View {
 impl View {
     fn size(self) -> (f32, f32) {
         match self {
-            View::Compact(Phase::Sleeping | Phase::Idle) => (170., 30.),
-            View::Compact(Phase::Working) => (240., 32.),
+            // At rest only the raccoon shows, so the island stays clear of the
+            // window's tabs under it.
+            View::Compact(Phase::Sleeping | Phase::Idle) => (FACE_X + SMALL_W + FACE_X, 30.),
+            // Just wide enough for the raccoon and its dots.
+            View::Busy(dots, more) => (CONTENT_X + dots_w(dots, more) + PAD_R, COMPACT_H),
+            View::Recording => (CONTENT_X + bars_w(REC_BARS) + PAD_R, COMPACT_H),
+            View::Compact(Phase::Working) => (150., COMPACT_H),
             View::Compact(_) => (330., 36.),
             View::List(n) => (480., HEAD_H + n as f32 * ROW_H + ROW_INSET),
             View::Call => (440., 104.),
@@ -321,6 +356,44 @@ pub fn sort_rows(rows: &mut [Row]) {
             .cmp(&b.status.rank())
             .then(b.updated.cmp(&a.updated))
     });
+}
+
+/// How wide `dots` dots and a "+n" `more` characters long lay out.
+fn dots_w(dots: usize, more: usize) -> f32 {
+    let label = more as f32 * MORE_SIZE * MONO_ADVANCE;
+    let items = dots + usize::from(more > 0);
+    dots as f32 * DOT + label + items.saturating_sub(1) as f32 * DOT_GAP
+}
+
+/// How wide `n` audio bars lay out.
+fn bars_w(n: usize) -> f32 {
+    n as f32 * BAR_W + n.saturating_sub(1) as f32 * BAR_GAP
+}
+
+/// The working state's view for these rows.
+fn busy(rows: &[Row]) -> View {
+    let (dots, more) = dots(rows);
+    let label = if more > 0 {
+        format!("+{more}").len()
+    } else {
+        0
+    };
+    View::Busy(dots.len(), label)
+}
+
+/// Whether `view`'s content, drawn from `rows` now, still has the size the
+/// view was made for. The dots and the list read the live feed, so a view kept
+/// from before the feed changed would draw the new dots or rows in the old
+/// room and spill out of it. Recording swaps the dots for its bars, which
+/// need the recording view's width.
+fn drawn_as(view: View, rows: &[Row], recording: bool) -> bool {
+    let bars_fit = || view.size().0 >= View::Recording.size().0;
+    match view {
+        View::Busy(..) => busy(rows) == view && (!recording || bars_fit()),
+        View::Compact(_) if recording => bars_fit(),
+        View::List(n) => rows.len().min(MAX_ROWS) == n,
+        _ => true,
+    }
 }
 
 /// The working state's dots, at most `MAX_DOTS`, and how many more there are.
@@ -424,6 +497,10 @@ pub struct Alert {
     /// A picture for a notice's badge (a sender's avatar): a file, empty for none.
     #[serde(default)]
     pub image: SharedString,
+    /// The service a notice comes from (`github`): its logo marks the picture's
+    /// corner, or takes the badge's place when there is no picture.
+    #[serde(default)]
+    pub brand: SharedString,
 }
 
 impl Alert {
@@ -597,6 +674,49 @@ impl Spring {
     }
 }
 
+/// Whether the pointer is really on a card. A card can drop under a pointer
+/// that rests on the window below (its tabs), and that must not hold the card
+/// or catch the next click: it only counts once the pointer moves on the card
+/// after the card settled. Any change of card or island starts it over, since
+/// gpui sends no leave for a card that is gone.
+#[derive(Default)]
+struct CardHover {
+    /// The card (by its seq) the pointer is on.
+    hot: Option<u64>,
+    /// Where the pointer was on that card when it settled.
+    anchor: Option<(u64, Point<Pixels>)>,
+}
+
+impl CardHover {
+    /// The pointer moved to `at` on card `seq`; returns whether that made it hot.
+    fn moved(&mut self, seq: u64, at: Point<Pixels>, settled: bool) -> bool {
+        if self.hot == Some(seq) {
+            return false;
+        }
+        match self.anchor {
+            // Moves before the card settled don't count: the anchor follows them.
+            Some((s, from)) if s == seq && settled => {
+                if (at.x - from.x).abs() + (at.y - from.y).abs() > px(4.) {
+                    self.hot = Some(seq);
+                    return true;
+                }
+            }
+            _ => self.anchor = Some((seq, at)),
+        }
+        false
+    }
+
+    fn is_hot(&self, seq: u64) -> bool {
+        self.hot == Some(seq)
+    }
+
+    /// Starts over; returns whether a card was hot.
+    fn reset(&mut self) -> bool {
+        self.anchor = None;
+        self.hot.take().is_some()
+    }
+}
+
 /// An alert's card: a shape of its own that drips out of the island, hangs
 /// under it and melts back in when the alert goes.
 struct Card {
@@ -632,7 +752,7 @@ impl CardLayout {
 
     /// The badge's or picture's side, on a notice.
     fn face(alert: &Alert) -> f32 {
-        if alert.image.is_empty() {
+        if alert.image.is_empty() && alert.brand.is_empty() {
             BADGE
         } else {
             AVATAR
@@ -643,7 +763,9 @@ impl CardLayout {
         let flat = |s: &str| SharedString::from(s.split_whitespace().collect::<Vec<_>>().join(" "));
         let (title, body) = (flat(&alert.title), flat(&alert.subtitle));
         let session = alert.kind.session();
-        let buttons = alert.buttons();
+        // Only a confirmation keeps its buttons on the card; the others show
+        // theirs over it on hover, so they take no room.
+        let buttons = alert.kind == AlertKind::Confirm;
         let bold = gpui::Font {
             weight: FontWeight::SEMIBOLD,
             ..gpui::font(theme::FONT_SANS)
@@ -692,7 +814,7 @@ impl CardLayout {
         } else {
             Self::face(alert)
         };
-        let foot = if buttons { 10. + 26. + 14. } else { 14. };
+        let foot = if buttons { 12. + BUTTON_H + 14. } else { 14. };
         CardLayout {
             title,
             body,
@@ -963,6 +1085,9 @@ pub struct Island {
     /// When an agent was last busy.
     busy_at: Option<Instant>,
     hovered: bool,
+    /// Whether the pointer is really on the card: its buttons show only then,
+    /// the way a phone shows a notification's actions on a swipe.
+    card_hover: CardHover,
     /// Bumped on every pointer change, so a delayed leave knows if it still holds.
     leaving: u64,
     /// Off after a click, so the next state shows under the pointer.
@@ -993,7 +1118,10 @@ impl Island {
                     .timer(Duration::from_millis(500))
                     .await;
                 let alive = this.update(cx, |island, cx| {
-                    if island.alerts.tick(Instant::now(), island.hovered) {
+                    // A card waits while it is really hovered; one that just
+                    // sits under a resting pointer times out as usual.
+                    let hold = island.hovered && (island.card.is_none() || island.card_is_hot());
+                    if island.alerts.tick(Instant::now(), hold) {
                         cx.emit(IslandEvent::Dismissed);
                     }
                     island.refresh(cx);
@@ -1020,6 +1148,7 @@ impl Island {
             armed: None,
             busy_at: None,
             hovered: false,
+            card_hover: CardHover::default(),
             leaving: 0,
             peek: true,
             pinned: false,
@@ -1186,6 +1315,7 @@ impl Island {
                 if card.gone.is_none() && want.as_ref().map(|w| w.0) != Some(card.seq) {
                     card.gone = Some(now);
                     self.melted = Some(now);
+                    self.card_hover.reset();
                     cx.notify();
                 }
             }
@@ -1208,6 +1338,7 @@ impl Island {
                         gone: None,
                         layout: None,
                     });
+                    self.card_hover.reset();
                     cx.notify();
                 }
             }
@@ -1248,6 +1379,13 @@ impl Island {
         }
         cx.emit(IslandEvent::Dismissed);
         self.refresh(cx);
+    }
+
+    /// Whether the pointer is really on the card out, which still shows.
+    fn card_is_hot(&self) -> bool {
+        self.card
+            .as_ref()
+            .is_some_and(|c| c.gone.is_none() && self.card_hover.is_hot(c.seq))
     }
 
     /// Whether `seq` is the card out and its alert still the one in front:
@@ -1349,6 +1487,12 @@ impl Island {
             _ if self.card.is_none() && ((self.hovered && self.peek) || self.pinned) && n > 0 => {
                 View::List(n)
             }
+            // The bars take the dots' place and need more room than the raccoon
+            // alone; a call or a voice phase keeps its own wave.
+            Phase::Sleeping | Phase::Idle | Phase::Working if self.recording.is_some() => {
+                View::Recording
+            }
+            Phase::Working => busy(&self.feed.rows),
             p => View::Compact(p),
         }
     }
@@ -1379,7 +1523,7 @@ impl Island {
     fn prev_alpha(&self) -> Option<(View, f32)> {
         let (v, at) = self.prev?;
         let a = 1. - at.elapsed().as_secs_f32() / 0.12;
-        (a > 0.).then_some((v, a))
+        (a > 0. && drawn_as(v, &self.feed.rows, self.recording.is_some())).then_some((v, a))
     }
 
     /// The pointer came or went. Leaving waits `LEAVE_GRACE` first: a screenshot
@@ -1407,6 +1551,10 @@ impl Island {
     }
 
     fn set_hover(&mut self, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            // Leaving the window sends no leave to the card under the pointer.
+            self.card_hover.reset();
+        }
         if self.hovered != on {
             self.hovered = on;
             self.peek = true;
@@ -1419,7 +1567,8 @@ impl Island {
 
     fn compact(&self, phase: Phase, t: f32) -> gpui::AnyElement {
         let right = match phase {
-            Phase::Sleeping | Phase::Idle | Phase::Alert => div()
+            Phase::Sleeping | Phase::Idle => div().into_any_element(),
+            Phase::Alert => div()
                 .size(px(5.))
                 .rounded_full()
                 .bg(hsla(0., 0., 1., 0.22))
@@ -1429,14 +1578,14 @@ impl Island {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(DOT_GAP))
                     .children(dots.into_iter().enumerate().map(|(i, s)| {
                         let pulse = match s {
                             Status::Working => 0.75 + 0.25 * (t * TAU / 1.6 + i as f32).sin(),
                             _ => 1.,
                         };
                         div()
-                            .size(px(7.))
+                            .size(px(DOT))
                             .rounded_full()
                             .bg(s.color().opacity(pulse))
                     }))
@@ -1444,7 +1593,7 @@ impl Island {
                         d.child(
                             div()
                                 .font_family(theme::FONT_MONO)
-                                .text_size(px(11.))
+                                .text_size(px(MORE_SIZE))
                                 .text_color(hsla(0., 0., 1., 0.5))
                                 .child(format!("+{more}")),
                         )
@@ -1457,7 +1606,7 @@ impl Island {
         // Recording shows over whatever the agents do; a call keeps its own wave.
         let right = match &self.recording {
             Some((_, shown)) if !matches!(phase, Phase::Speaking | Phase::Listening) => {
-                bars(t, REC_GREEN, 1., Some(*shown), 9)
+                bars(t, REC_GREEN, 1., Some(*shown), REC_BARS)
             }
             _ => right,
         };
@@ -1471,8 +1620,8 @@ impl Island {
             .flex()
             .items_center()
             .justify_between()
-            .pl(px(12. + SMALL_W + 10.))
-            .pr(px(16.))
+            .pl(px(CONTENT_X))
+            .pr(px(PAD_R))
             .child(div().when_some(label, |d, (text, color)| {
                 d.text_size(px(12.5))
                     .font_weight(FontWeight::MEDIUM)
@@ -1499,24 +1648,43 @@ impl Island {
         let session = a.kind.session();
         let confirm = a.kind == AlertKind::Confirm;
         let seq = card.seq;
-        let (no, yes) = if confirm {
-            ("Rechazar", "Aprobar")
-        } else {
-            ("Luego", "Ver")
-        };
-        let pill = |label: &'static str, strong: bool| {
+        // The action is a white pill with an arrow, the way out a quiet word
+        // beside it: the eye lands on what the card is for.
+        let primary = |label: &'static str| {
             div()
                 .id(label)
-                .h(px(26.))
-                .px(px(16.))
+                .h(px(BUTTON_H))
+                .pl(px(13.))
+                .pr(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .rounded_full()
+                .bg(gpui::white())
+                .hover(|s| s.bg(hsla(0., 0., 0.86, 1.)))
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(gpui::black())
+                .child(label)
+                .child(
+                    gpui::svg()
+                        .path("icons/arrow-right01.svg")
+                        .size(px(13.))
+                        .text_color(gpui::black()),
+                )
+        };
+        let quiet = |label: &'static str| {
+            div()
+                .id(label)
+                .h(px(BUTTON_H))
+                .px(px(11.))
                 .flex()
                 .items_center()
                 .rounded_full()
-                .bg(hsla(0., 0., if strong { 0.24 } else { 0.15 }, 1.))
-                .hover(|s| s.bg(hsla(0., 0., if strong { 0.3 } else { 0.2 }, 1.)))
+                .hover(|s| s.bg(hsla(0., 0., 1., 0.1)))
                 .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(gpui::white())
+                .text_color(hsla(0., 0., 1., 0.62))
                 .child(label)
         };
         let face = if session {
@@ -1527,6 +1695,8 @@ impl Island {
                 .into_any_element()
         } else if !a.image.is_empty() {
             avatar(a).into_any_element()
+        } else if !a.brand.is_empty() {
+            brand_face(&a.brand).into_any_element()
         } else {
             badge(a.kind).into_any_element()
         };
@@ -1554,37 +1724,32 @@ impl Island {
             .when(!layout.pill && layout.body_lines > 0, |d| d.gap(px(3.)))
             .child(title)
             .when(layout.body_lines > 0, |d| d.child(body));
-        let buttons = a.buttons().then(|| {
+        // Under the text, not in the far corner, so the card has no empty
+        // stretch at the bottom left.
+        let indent = CardLayout::text_x(a) - if session { 18. } else { 14. };
+        let hot = self.card_hover.is_hot(seq);
+        let buttons = (a.buttons() && (confirm || hot)).then(|| {
             div()
                 .flex()
-                .justify_end()
-                .gap(px(8.))
-                .child(pill(no, false).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.showing(seq) {
-                            if confirm {
-                                this.answer(false, cx)
-                            } else {
-                                this.later(cx)
+                .items_center()
+                .when(confirm, |d| d.pl(px(indent)))
+                .gap(px(4.))
+                .children(card_buttons(confirm).map(|(label, action)| {
+                    let pill = if action { primary(label) } else { quiet(label) };
+                    pill.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if this.showing(seq) {
+                                match (confirm, action) {
+                                    (true, approve) => this.answer(approve, cx),
+                                    (false, true) => this.see(cx),
+                                    (false, false) => this.later(cx),
+                                }
                             }
-                        }
-                    }),
-                ))
-                .child(pill(yes, true).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.showing(seq) {
-                            if confirm {
-                                this.answer(true, cx)
-                            } else {
-                                this.see(cx)
-                            }
-                        }
-                    }),
-                ))
+                        }),
+                    )
+                }))
         });
         div()
             .absolute()
@@ -1600,15 +1765,83 @@ impl Island {
             })
             .pl(px(if session { 18. } else { 14. }))
             .pr(px(18.))
+            .id(("card", seq as usize))
+            .on_hover(cx.listener(move |this, on: &bool, _, cx| {
+                if !*on && this.card_hover.reset() {
+                    cx.notify();
+                }
+            }))
+            // Hot only after the pointer moves on the card, and not in the
+            // card's first moments, when it may have just dropped under it.
+            .on_mouse_move(cx.listener(move |this, ev: &gpui::MouseMoveEvent, _, cx| {
+                let settled = this.card.as_ref().is_some_and(|c| {
+                    c.seq == seq && c.gone.is_none() && c.born.elapsed() > CARD_SETTLE
+                });
+                if this.card_hover.moved(seq, ev.position, settled) {
+                    cx.notify();
+                }
+            }))
+            // A click anywhere on a notice opens what it is about, like "Ver".
+            .when(a.buttons() && !confirm, |d| {
+                d.cursor_pointer().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        // Only a pointer that came to the card opens it; a
+                        // click meant for the window below does nothing.
+                        if this.showing(seq) && this.card_hover.is_hot(seq) {
+                            this.see(cx)
+                        }
+                    }),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .gap(px(12.))
-                    .when(layout.pill, |d| d.items_center())
+                    // A notice's picture sits centered on its text; the raccoon
+                    // of a session card stays at the top.
+                    .when(layout.pill || !session, |d| d.items_center())
                     .child(face)
                     .child(text),
             )
-            .children(buttons)
+            .map(|d| match buttons {
+                Some(row) if confirm => d.child(row),
+                // Over the end of the text, which fades into the card's black.
+                Some(row) => d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .pl(px(44.))
+                        .pr(px(14.))
+                        .rounded_r(px(layout.h.min(28.)))
+                        .bg(gpui::linear_gradient(
+                            90.,
+                            gpui::linear_color_stop(gpui::black().opacity(0.), 0.),
+                            gpui::linear_color_stop(gpui::black(), 0.3),
+                        ))
+                        // The buttons slide in from the right edge as they fade
+                        // in, like a phone notification's actions on a swipe.
+                        .child(
+                            row.with_animation(
+                                ("card-actions", seq as usize),
+                                gpui::Animation::new(Duration::from_millis(280))
+                                    .with_easing(gpui::ease_out_quint()),
+                                |el, t| el.opacity(t).mr(px(-(1. - t) * 22.)),
+                            ),
+                        )
+                        .with_animation(
+                            ("card-actions-fade", seq as usize),
+                            gpui::Animation::new(Duration::from_millis(180)),
+                            |el, t| el.opacity(t),
+                        ),
+                ),
+                None => d,
+            })
             .into_any_element()
     }
 
@@ -1800,6 +2033,9 @@ impl Island {
     fn content(&self, view: View, t: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         match view {
             View::Compact(p) => self.compact(p, t),
+            View::Busy(..) => self.compact(Phase::Working, t),
+            // Any phase but a voice one shows the bars while recording.
+            View::Recording => self.compact(Phase::Idle, t),
             View::List(_) => self.list(t, cx),
             View::Call => self.call_card(t),
         }
@@ -1829,10 +2065,10 @@ fn wave(t: f32, listening: bool, level: Option<f32>) -> gpui::AnyElement {
 /// `n` bars moving like a voice; with `level`, as loud as it.
 fn bars(t: f32, color: gpui::Hsla, speed: f32, level: Option<f32>, n: usize) -> gpui::AnyElement {
     div()
-        .h(px(22.))
+        .h(px(BARS_H))
         .flex()
         .items_center()
-        .gap(px(2.))
+        .gap(px(BAR_GAP))
         .children((0..n).map(|i| {
             let x = i as f32 / (n - 1) as f32;
             let s = t * speed;
@@ -1846,7 +2082,7 @@ fn bars(t: f32, color: gpui::Hsla, speed: f32, level: Option<f32>, n: usize) -> 
             // nobody talks. Without one (a phase shown, not measured) it just moves.
             let gain = level.map_or(1.25, |l| if l < 0.03 { 0. } else { 1.6 * l });
             let h = 3. + 17. * (v * env * gain).clamp(0., 1.);
-            div().w(px(3.)).h(px(h)).rounded_full().bg(color)
+            div().w(px(BAR_W)).h(px(h)).rounded_full().bg(color)
         }))
         .into_any_element()
 }
@@ -2027,12 +2263,16 @@ fn avatar(alert: &Alert) -> impl IntoElement {
         kind,
         AlertKind::Success | AlertKind::Warning | AlertKind::Failure
     );
-    let color = kind.badge();
+    // A notice from a service (GitHub) gets a white ring instead: the user
+    // knows what it is, and the picture stays whole and centered.
+    let branded = !tinted && !alert.brand.is_empty();
+    let ringed = tinted || branded;
+    let color = if branded { gpui::white() } else { kind.badge() };
     // A black gap between ring and picture, so the ring reads on any photo.
     let pic = gpui::img(std::path::PathBuf::from(alert.image.as_ref()))
         .size_full()
         .rounded_full()
-        .when(tinted, |i| i.border_2().border_color(gpui::black()));
+        .when(ringed, |i| i.border_2().border_color(gpui::black()));
     let mark = canvas(
         |_, _, _| {},
         move |b, _, window, _| {
@@ -2063,7 +2303,7 @@ fn avatar(alert: &Alert) -> impl IntoElement {
         .relative()
         .size(px(AVATAR))
         .rounded_full()
-        .when(tinted, |d| d.border_2().border_color(color))
+        .when(ringed, |d| d.border_2().border_color(color))
         .child(pic)
         .when(tinted, |d| {
             // Deferred: painted after the ring and the picture, always on top.
@@ -2081,6 +2321,47 @@ fn avatar(alert: &Alert) -> impl IntoElement {
                         .child(mark.size_full()),
                 )
                 .with_priority(1),
+            )
+        })
+}
+
+/// A card's buttons, left to right, and whether each is the action. The
+/// action stays on the right, where "Aprobar" has always been: swapping it
+/// with "Rechazar" would turn a habit into the wrong answer. On hover the row
+/// sits at the card's right edge, so "Ver" lands under the thumb too.
+fn card_buttons(confirm: bool) -> [(&'static str, bool); 2] {
+    if confirm {
+        [("Rechazar", false), ("Aprobar", true)]
+    } else {
+        [("Luego", false), ("Ver", true)]
+    }
+}
+
+/// The service's logo file under `icons/`, for a notice's `brand`.
+fn brand_icon(brand: &str) -> Option<&'static str> {
+    match brand {
+        "github" => Some("icons/github.svg"),
+        _ => None,
+    }
+}
+
+/// A notice from a service with no picture of who sent it: the service's
+/// logo, white on black like the island, so it reads at a glance.
+fn brand_face(brand: &str) -> impl IntoElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(AVATAR))
+        .rounded_full()
+        .bg(gpui::white())
+        .when_some(brand_icon(brand), |d, path| {
+            d.child(
+                gpui::svg()
+                    .path(path)
+                    .size(px(20.))
+                    .text_color(gpui::black()),
             )
         })
 }
@@ -2233,6 +2514,7 @@ impl Render for Island {
             .is_some_and(|at| at.elapsed().as_secs_f32() >= MELT_FOR)
         {
             self.card = None;
+            self.card_hover.reset();
             self.sync_card(cx);
         }
         let card = self.card.as_ref().and_then(|c| {
@@ -2308,8 +2590,8 @@ impl Render for Island {
         let pulsing = self.feed.rows.iter().any(|r| r.status == Status::Working);
         let animated = match self.view {
             View::Compact(Phase::Speaking | Phase::Listening) | View::Call => true,
-            View::Compact(_) if self.recording.is_some() => true,
-            View::Compact(Phase::Working) | View::List(_) => pulsing,
+            View::Compact(_) | View::Recording if self.recording.is_some() => true,
+            View::Compact(Phase::Working) | View::Busy(..) | View::List(_) => pulsing,
             _ => false,
         };
         let card_moving = self
@@ -2356,7 +2638,7 @@ impl Render for Island {
         let mh = SMALL_W * 166. / 212.;
         let face = div()
             .absolute()
-            .left(px(x0 + 12.))
+            .left(px(x0 + FACE_X))
             .top(px(((h.min(HEAD_H) - mh) / 2.).max(0.)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -2438,6 +2720,7 @@ mod tests {
             subtitle: "s".into(),
             req: SharedString::default(),
             image: SharedString::default(),
+            brand: SharedString::default(),
         }
     }
 
@@ -2470,6 +2753,97 @@ mod tests {
         sort_rows(&mut rows);
         let keys: Vec<&str> = rows.iter().map(|r| r.key.as_ref()).collect();
         assert_eq!(keys, ["ask", "err", "work", "old-work", "done"]);
+    }
+
+    /// The content plus the island's inner padding must fit the island, so
+    /// nothing spills past its edge in a state that shows dots or bars.
+    #[test]
+    fn dots_and_bars_fit_the_island() {
+        // Content is centered up and down; this keeps it off the edges.
+        const PAD_Y: f32 = 4.;
+        let fits = |view: View, content_w: f32, content_h: f32| {
+            let (w, h) = view.size();
+            assert!(
+                CONTENT_X + content_w + PAD_R <= w,
+                "{view:?}: {content_w} wide needs {} but the island is {w}",
+                CONTENT_X + content_w + PAD_R,
+            );
+            assert!(
+                content_h + 2. * PAD_Y <= h,
+                "{view:?}: {content_h} high needs {} but the island is {h}",
+                content_h + 2. * PAD_Y,
+            );
+        };
+        for active in 1..=40 {
+            let rows: Vec<Row> = (0..active)
+                .map(|i| row(&i.to_string(), Status::Working, 0))
+                .collect();
+            let (shown, more) = dots(&rows);
+            let label = if more > 0 {
+                format!("+{more}")
+            } else {
+                String::new()
+            };
+            let gaps = (shown.len() + usize::from(more > 0) - 1) as f32 * DOT_GAP;
+            let w = shown.len() as f32 * DOT + label.len() as f32 * MORE_SIZE * MONO_ADVANCE + gaps;
+            fits(busy(&rows), w, DOT.max(MORE_SIZE));
+        }
+        let w = REC_BARS as f32 * BAR_W + (REC_BARS - 1) as f32 * BAR_GAP;
+        fits(View::Recording, w, BARS_H);
+    }
+
+    /// One agent becoming seven: the old view's layer would draw six dots
+    /// and a "+1" in the room of one, so it doesn't fade out at all.
+    #[test]
+    fn an_old_view_fades_out_only_while_its_content_still_fits() {
+        let working = |n: usize| -> Vec<Row> {
+            (0..n)
+                .map(|i| row(&i.to_string(), Status::Working, 0))
+                .collect()
+        };
+        let one = busy(&working(1));
+        let seven = working(7);
+        assert_eq!(one, View::Busy(1, 0));
+        assert!(drawn_as(one, &working(1), false));
+        assert!(!drawn_as(one, &seven, false));
+        assert!(drawn_as(busy(&seven), &seven, false));
+        assert!(drawn_as(View::List(3), &working(3), false));
+        assert!(!drawn_as(View::List(3), &seven, false));
+        // Views whose content doesn't come from the rows always fit.
+        assert!(drawn_as(View::Recording, &seven, true));
+        assert!(drawn_as(View::Compact(Phase::Idle), &seven, false));
+        // Recording starts while the island sleeps: the sleeping view would
+        // draw the bars in the raccoon's room, so it doesn't fade out.
+        let sleeping = View::Compact(Phase::Sleeping);
+        assert!(drawn_as(sleeping, &[], false));
+        assert!(!drawn_as(sleeping, &[], true));
+        assert!(!drawn_as(one, &working(1), true));
+        assert!(drawn_as(View::Compact(Phase::Working), &[], true));
+    }
+
+    #[test]
+    fn a_card_is_hot_only_after_a_move_once_settled_and_until_it_changes() {
+        let at = |x: f32, y: f32| point(px(x), px(y));
+        let mut h = CardHover::default();
+        // Moves while the card drops don't count, however far.
+        assert!(!h.moved(1, at(0., 0.), false));
+        assert!(!h.moved(1, at(50., 0.), false));
+        // Once settled, a jitter isn't a move, a real one is.
+        assert!(!h.moved(1, at(52., 0.), true));
+        assert!(h.moved(1, at(60., 0.), true));
+        assert!(h.is_hot(1) && !h.is_hot(2));
+        // A new card under the same resting pointer starts cold.
+        assert!(h.reset());
+        assert!(!h.is_hot(1));
+        assert!(!h.moved(2, at(60., 0.), true));
+        assert!(!h.is_hot(2));
+        assert!(h.moved(2, at(70., 0.), true));
+        // A position seen on another card is no anchor for this one.
+        h.reset();
+        assert!(!h.moved(1, at(0., 0.), true));
+        assert!(!h.moved(2, at(90., 0.), true));
+        assert!(!h.is_hot(2));
+        assert!(!h.reset());
     }
 
     #[test]
@@ -2557,6 +2931,18 @@ mod tests {
         let c = rearm(b, Some(9), true, late);
         assert!(!may_approve(c, Some(9), late + Duration::from_secs(5)));
         assert_eq!(rearm(c, None, false, late), None);
+    }
+
+    #[test]
+    fn approve_stays_right_of_reject() {
+        assert_eq!(
+            super::card_buttons(true),
+            [("Rechazar", false), ("Aprobar", true)]
+        );
+        assert_eq!(
+            super::card_buttons(false),
+            [("Luego", false), ("Ver", true)]
+        );
     }
 
     #[test]

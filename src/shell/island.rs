@@ -61,6 +61,8 @@ pub(super) enum Open {
     Branches {
         root: PathBuf,
     },
+    /// A GitHub notification, by thread id; the inbox when a notice was about several.
+    GitHub(Option<String>),
     /// A CoderSpace task, by id.
     #[cfg(feature = "coderlabs")]
     Task(String),
@@ -84,6 +86,8 @@ impl Open {
                 run: Some(run),
             } => format!("open:run:{run}:{}", root.display()).into(),
             Open::Branches { root } => format!("open:branches:{}", root.display()).into(),
+            Open::GitHub(None) => "open:github".into(),
+            Open::GitHub(Some(thread)) => format!("open:github:{thread}").into(),
             #[cfg(feature = "coderlabs")]
             Open::Task(id) => format!("open:task:{id}").into(),
             Open::Cloudflare => "open:cloudflare".into(),
@@ -114,6 +118,8 @@ impl Open {
                 })
             }
             ("branches", root) if !root.is_empty() => Some(Open::Branches { root: root.into() }),
+            ("github", "") => Some(Open::GitHub(None)),
+            ("github", thread) => Some(Open::GitHub(Some(thread.to_string()))),
             #[cfg(feature = "coderlabs")]
             ("task", id) if !id.is_empty() => Some(Open::Task(id.to_string())),
             ("cloudflare", "") => Some(Open::Cloudflare),
@@ -199,7 +205,12 @@ impl Shell {
     }
 
     /// "Ver" or a row: the window in front, at the session or what the notice is about.
-    fn open_from_island(&mut self, key: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_from_island(
+        &mut self,
+        key: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.activate_window();
         match Open::parse(&key) {
             Some(Open::Session(id)) => {
@@ -223,6 +234,7 @@ impl Shell {
                     self.open_branches_tab(window, cx);
                 }
             }
+            Some(Open::GitHub(thread)) => self.open_github_notice(thread, window, cx),
             #[cfg(feature = "coderlabs")]
             Some(Open::Task(id)) => {
                 self.open_tasks_tab(window, cx);
@@ -253,20 +265,42 @@ impl Shell {
     /// task…): a card on the island when it is there, else a desktop
     /// notification. `open`: what the card's "Ver" shows; without it the card
     /// has no buttons and leaves by itself.
-    pub(super) fn notify(&self, kind: AlertKind, title: &str, body: &str, open: Option<Open>) {
+    pub(super) fn notify(
+        &self,
+        kind: AlertKind,
+        title: &str,
+        body: &str,
+        open: Option<Open>,
+        cx: &mut Context<Self>,
+    ) {
+        self.notify_from(kind, title, body, open, None, "", cx);
+    }
+
+    /// A notice with a picture (a file on disk) and the logo of the service it
+    /// comes from (`github`), either of them optional.
+    pub(super) fn notify_from(
+        &self,
+        kind: AlertKind,
+        title: &str,
+        body: &str,
+        open: Option<Open>,
+        image: Option<&std::path::Path>,
+        brand: &str,
+        cx: &mut Context<Self>,
+    ) {
         let alert = isl::Alert {
             key: open.map(|o| o.key()).unwrap_or_default(),
             kind,
             title: title.to_string().into(),
             subtitle: brief(body).into(),
             req: SharedString::default(),
-            image: SharedString::default(),
+            image: image
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+                .into(),
+            brand: brand.to_string().into(),
         };
-        let shown = self
-            .island
-            .as_ref()
-            .is_some_and(|link| send_alert(&link.tx, &link.up, alert));
-        if !shown {
+        if !self.show_alert(alert, cx) {
             super::sessions::send_notification(title, body, kind == AlertKind::Failure);
         }
     }
@@ -278,6 +312,25 @@ impl Shell {
         self.island
             .as_ref()
             .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
+    }
+
+    /// Keeps `alert` in the history, then shows it on the island when it is
+    /// connected; `false` and the caller tells it some other way. Every notice
+    /// the shell shows goes through here, so the Inbox misses none.
+    pub(super) fn show_alert(&self, alert: isl::Alert, cx: &mut Context<Self>) -> bool {
+        self.record(&alert, cx);
+        self.island
+            .as_ref()
+            .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
+    }
+
+    fn record(&self, alert: &isl::Alert, cx: &mut Context<Self>) {
+        let notice = crate::notices::Notice::from_alert(alert, model::unix_now());
+        let mut history = self.notices.borrow_mut();
+        if history.push(notice) {
+            crate::notices::store(&mut history);
+            cx.notify();
+        }
     }
 
     /// Hands the island what every session is up to, when that changed.
@@ -350,17 +403,14 @@ impl Shell {
     }
 
     /// The card for a turn that ended, a question, or a failure.
-    pub(super) fn island_alert(
-        &mut self,
+    pub(super) fn session_alert(
+        &self,
         id: &SharedString,
         thread: &Entity<Thread>,
         notice: Notice,
         title: &str,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(link) = &self.island else {
-            return false;
-        };
+        cx: &App,
+    ) -> isl::Alert {
         let t = thread.read(cx);
         let model = model_label(t, None);
         let (kind, head, line) = match notice {
@@ -379,15 +429,15 @@ impl Shell {
                 error_line(t, brief),
             ),
         };
-        let alert = isl::Alert {
+        isl::Alert {
             key: id.clone(),
             kind,
             title: head.into(),
             subtitle: line.unwrap_or_else(|| one_line(title)).into(),
             req: SharedString::default(),
             image: SharedString::default(),
-        };
-        send_alert(&link.tx, &link.up, alert)
+            brand: SharedString::default(),
+        }
     }
 }
 
@@ -627,6 +677,8 @@ mod tests {
             Open::Branches {
                 root: "/home/k/app".into(),
             },
+            Open::GitHub(None),
+            Open::GitHub(Some("27219075342".into())),
             #[cfg(feature = "coderlabs")]
             Open::Task("tsk_9".into()),
             Open::Cloudflare,
@@ -675,6 +727,7 @@ mod tests {
             subtitle: "5-hour window is filling up".into(),
             req: SharedString::default(),
             image: SharedString::default(),
+            brand: SharedString::default(),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let up = AtomicBool::new(false);

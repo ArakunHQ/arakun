@@ -818,6 +818,7 @@ mod host {
                             subtitle: sub.into(),
                             req: SharedString::default(),
                             image: SharedString::default(),
+                            brand: SharedString::default(),
                         };
                         if let Err(e) = proto::request(&ToIsland::Alert { alert }) {
                             eprintln!("arakun: reunión: {e}");
@@ -926,6 +927,7 @@ mod host {
                                     subtitle: subtitle.into(),
                                     req: SharedString::default(),
                                     image: SharedString::default(),
+                                    brand: SharedString::default(),
                                 },
                                 cx,
                             );

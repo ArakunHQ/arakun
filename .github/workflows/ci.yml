@@ -96,6 +96,8 @@ jobs:
               tools/install-cef.sh) rust=true ;;
               # The Clippy job runs it to check the formatting.
               tools/rustfmt.sh) rust=true ;;
+              # A test in src/design_lint.rs checks the layout audit against its fixtures.
+              tools/layout_audit.py | tools/layout-audit-fixtures/*) rust=true ;;
               # Nothing the Rust build or its tests read. Anything not listed
               # here, such as a new top-level folder, runs the Rust jobs.
               docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml) ;;

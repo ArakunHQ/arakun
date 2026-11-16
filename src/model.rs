@@ -81,7 +81,7 @@ impl Agent {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Idle,
     Working,
@@ -117,6 +117,8 @@ pub enum TabKind {
     Runs,
     /// Every branch of the project against the default one, with its PR (`branches_view`).
     Branches,
+    /// The inbox of the user's GitHub notifications (`github_view`).
+    GitHub,
     /// What agents remember about the project and the user (`arakun mem`).
     Memory,
     /// The signed-in Cloudflare account: Workers, domains, activity.

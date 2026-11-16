@@ -38,8 +38,8 @@ impl ThreadView {
                 .flex()
                 .items_center()
                 .h(px(24.))
-                .px(px(10.))
-                .rounded(px(8.))
+                .px(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(8.))
                 .text_size(px(crate::ui::TEXT_SM))
                 .map(|d| {
                     if primary {
@@ -65,9 +65,9 @@ impl ThreadView {
             .mb(px(12.))
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .p(px(12.))
-            .rounded(px(crate::ui::RADIUS_LG))
+            .gap(crate::ui::sp(8.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
             .border_color(amber().opacity(0.45))
             .bg(theme::fill_raised())
@@ -75,7 +75,7 @@ impl ThreadView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(icon("undo", 14.).text_color(amber()))
                     .child(
                         div()
@@ -97,9 +97,9 @@ impl ThreadView {
                     div()
                         .flex()
                         .flex_col()
-                        .px(px(10.))
-                        .py(px(6.))
-                        .rounded(px(12.))
+                        .px(crate::ui::sp(10.))
+                        .py(crate::ui::sp(6.))
+                        .rounded(crate::ui::rad(12.))
                         .bg(theme::fill_hover())
                         .font_family(theme::FONT_MONO)
                         .text_size(px(crate::ui::TEXT_SM))
@@ -107,7 +107,7 @@ impl ThreadView {
                         .children(rows.into_iter().map(|(action, path)| {
                             div()
                                 .flex()
-                                .gap(px(8.))
+                                .gap(crate::ui::sp(8.))
                                 .child(
                                     div()
                                         .w(px(56.))
@@ -139,7 +139,7 @@ impl ThreadView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .child(
                         button("rewind-go", if plan.running { "Rewinding…" } else { "Rewind" }, true)
                             .when(!busy, |d| {
@@ -198,9 +198,9 @@ impl ThreadView {
                     div()
                         .max_h(px(128.))
                         .overflow_hidden()
-                        .px(px(10.))
-                        .py(px(8.))
-                        .rounded(px(12.))
+                        .px(crate::ui::sp(10.))
+                        .py(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(12.))
                         .bg(theme::fill_hover())
                         .font_family(theme::FONT_MONO)
                         .text_size(px(crate::ui::TEXT_SM))
@@ -222,9 +222,9 @@ impl ThreadView {
             .mb(px(6.))
             .flex()
             .flex_col()
-            .gap(px(10.))
-            .p(px(12.))
-            .rounded(px(crate::ui::RADIUS_LG))
+            .gap(crate::ui::sp(10.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
             .border_color(if focused {
                 amber().opacity(0.45)
@@ -237,7 +237,7 @@ impl ThreadView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(icon("shield-alert", 14.).text_color(amber()))
                     .child(
                         div()
@@ -254,7 +254,7 @@ impl ThreadView {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(crate::ui::sp(6.))
                     .children(p.options.iter().enumerate().map(|(i, o)| {
                         let primary = Some(i) == first_allow;
                         let id = o.id.clone();
@@ -262,10 +262,10 @@ impl ThreadView {
                             .id(("perm-opt", i))
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(crate::ui::sp(6.))
                             .h(px(24.))
-                            .px(px(10.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(8.))
                             .text_size(px(crate::ui::TEXT_SM))
                             .cursor_pointer()
                             .map(|d| {
@@ -342,7 +342,7 @@ impl ThreadView {
             .mb(px(6.))
             .flex()
             .flex_col()
-            .rounded(px(crate::ui::RADIUS_LG))
+            .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
             .border_color(if focused {
                 amber().opacity(0.45)
@@ -356,9 +356,9 @@ impl ThreadView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
-                    .py(px(8.))
+                    .gap(crate::ui::sp(8.))
+                    .px(crate::ui::sp(12.))
+                    .py(crate::ui::sp(8.))
                     .border_b_1()
                     .border_color(theme::stroke())
                     .child(icon("note01", 14.).text_color(amber()))
@@ -390,8 +390,8 @@ impl ThreadView {
                     .id("spec-plan-body")
                     .max_h(px(360.))
                     .overflow_y_scroll()
-                    .px(px(12.))
-                    .py(px(4.))
+                    .px(crate::ui::sp(12.))
+                    .py(crate::ui::sp(4.))
                     .child(self.surface_of(PLAN_SURFACE, &blocks, MdStyle::reply(), cx)),
             )
             .child(
@@ -399,9 +399,9 @@ impl ThreadView {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(6.))
-                    .px(px(12.))
-                    .py(px(10.))
+                    .gap(crate::ui::sp(6.))
+                    .px(crate::ui::sp(12.))
+                    .py(crate::ui::sp(10.))
                     .border_t_1()
                     .border_color(theme::stroke())
                     .children(p.options.iter().enumerate().map(|(i, o)| {
@@ -412,10 +412,10 @@ impl ThreadView {
                             .id(("plan-opt", i))
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(crate::ui::sp(6.))
                             .h(px(24.))
-                            .px(px(10.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(8.))
                             .text_size(px(crate::ui::TEXT_SM))
                             .cursor_pointer()
                             .map(|d| {
@@ -475,9 +475,9 @@ impl ThreadView {
             .mb(px(6.))
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(12.))
-            .rounded(px(crate::ui::RADIUS_LG))
+            .gap(crate::ui::sp(12.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
             .border_1()
             .border_color(amber().opacity(0.35))
             .bg(theme::fill_raised())
@@ -489,19 +489,19 @@ impl ThreadView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(crate::ui::sp(8.))
                             .child(icon("help-circle", 14.).text_color(amber()))
                             .when(!q.topic.is_empty(), |d| {
                                 d.child(
                                     div()
                                         .flex_none()
-                                        .px(px(6.))
-                                        .rounded(px(4.))
+                                        .px(crate::ui::sp(6.))
+                                        .rounded(crate::ui::rad(4.))
                                         .bg(theme::fill_hover())
                                         .text_size(px(crate::ui::TEXT_XS))
                                         .text_color(theme::text_subtle())
@@ -527,40 +527,47 @@ impl ThreadView {
                             }),
                     )
                     .when(!q.options.is_empty(), |d| {
-                        d.child(div().flex().flex_wrap().gap(px(6.)).pl(px(22.)).children(
-                            q.options.iter().enumerate().map(|(oi, label)| {
-                                let on = picked.contains(&oi);
-                                let multi = q.multi;
-                                div()
-                                    .id(("ask-opt", qi * 100 + oi))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .h(px(24.))
-                                    .px(px(10.))
-                                    .rounded(px(8.))
-                                    .text_size(px(crate::ui::TEXT_SM))
-                                    .cursor_pointer()
-                                    .map(|d| {
-                                        if on {
-                                            d.bg(theme::content())
-                                                .text_color(theme::background())
-                                                .hover(|s| s.bg(theme::mix(0.8)))
-                                        } else {
-                                            d.bg(theme::fill_selected())
-                                                .text_color(theme::text_muted())
-                                                .hover(|s| s.bg(theme::mix(0.18)))
-                                        }
-                                    })
-                                    .when(on, |d| {
-                                        d.child(icon("tick02", 12.).text_color(theme::background()))
-                                    })
-                                    .child(label.clone())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_pick(qi, oi, multi, cx)
-                                    }))
-                            }),
-                        ))
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(crate::ui::sp(6.))
+                                .pl(crate::ui::sp(22.))
+                                .children(q.options.iter().enumerate().map(|(oi, label)| {
+                                    let on = picked.contains(&oi);
+                                    let multi = q.multi;
+                                    div()
+                                        .id(("ask-opt", qi * 100 + oi))
+                                        .flex()
+                                        .items_center()
+                                        .gap(crate::ui::sp(6.))
+                                        .h(px(24.))
+                                        .px(crate::ui::sp(10.))
+                                        .rounded(crate::ui::rad(8.))
+                                        .text_size(px(crate::ui::TEXT_SM))
+                                        .cursor_pointer()
+                                        .map(|d| {
+                                            if on {
+                                                d.bg(theme::content())
+                                                    .text_color(theme::background())
+                                                    .hover(|s| s.bg(theme::mix(0.8)))
+                                            } else {
+                                                d.bg(theme::fill_selected())
+                                                    .text_color(theme::text_muted())
+                                                    .hover(|s| s.bg(theme::mix(0.18)))
+                                            }
+                                        })
+                                        .when(on, |d| {
+                                            d.child(
+                                                icon("tick02", 12.).text_color(theme::background()),
+                                            )
+                                        })
+                                        .child(label.clone())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.toggle_pick(qi, oi, multi, cx)
+                                        }))
+                                })),
+                        )
                     })
                     .when_some(ask.and_then(|a| a.inputs.get(qi)).cloned(), |d, input| {
                         d.child(
@@ -569,8 +576,8 @@ impl ThreadView {
                                 .h(px(28.))
                                 .flex()
                                 .items_center()
-                                .px(px(8.))
-                                .rounded(px(8.))
+                                .px(crate::ui::sp(8.))
+                                .rounded(crate::ui::rad(8.))
                                 .border_1()
                                 .border_color(theme::border_strong())
                                 .bg(theme::fill_raised())
@@ -583,16 +590,16 @@ impl ThreadView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .pl(px(22.))
+                    .gap(crate::ui::sp(6.))
+                    .pl(crate::ui::sp(22.))
                     .child(
                         div()
                             .id("ask-submit")
                             .flex()
                             .items_center()
                             .h(px(24.))
-                            .px(px(10.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(8.))
                             .text_size(px(crate::ui::TEXT_SM))
                             .bg(theme::content())
                             .text_color(theme::background())
@@ -611,8 +618,8 @@ impl ThreadView {
                             .flex()
                             .items_center()
                             .h(px(24.))
-                            .px(px(10.))
-                            .rounded(px(8.))
+                            .px(crate::ui::sp(10.))
+                            .rounded(crate::ui::rad(8.))
                             .text_size(px(crate::ui::TEXT_SM))
                             .cursor_pointer()
                             .bg(theme::fill_selected())
@@ -644,7 +651,7 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .rounded(px(crate::ui::RADIUS_LG))
+        .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::fill_raised())
@@ -653,9 +660,9 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(10.))
-                .py(px(8.))
+                .gap(crate::ui::sp(8.))
+                .px(crate::ui::sp(10.))
+                .py(crate::ui::sp(8.))
                 .border_b_1()
                 .border_color(theme::stroke())
                 .child(icon("list-end", 16.).text_color(theme::text_subtle()))
@@ -670,8 +677,8 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
                 )
                 .child(
                     div()
-                        .px(px(8.))
-                        .py(px(1.))
+                        .px(crate::ui::sp(8.))
+                        .py(crate::ui::sp(1.))
                         .rounded_full()
                         .bg(theme::fill_hover())
                         .font_family(theme::FONT_MONO)
@@ -684,7 +691,7 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
             div()
                 .flex()
                 .flex_col()
-                .py(px(4.))
+                .py(crate::ui::sp(4.))
                 .children(entries.iter().map(|e| {
                     let (color, strike) = match e.status.as_str() {
                         "completed" => (theme::mix(0.4), true),
@@ -714,10 +721,10 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
                     div()
                         .flex()
                         .items_start()
-                        .gap(px(10.))
-                        .px(px(10.))
-                        .py(px(6.))
-                        .child(div().flex_none().pt(px(1.)).child(state))
+                        .gap(crate::ui::sp(10.))
+                        .px(crate::ui::sp(10.))
+                        .py(crate::ui::sp(6.))
+                        .child(div().flex_none().pt(crate::ui::sp(1.)).child(state))
                         .child(
                             div()
                                 .flex_1()

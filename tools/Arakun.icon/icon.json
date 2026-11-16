@@ -6,6 +6,13 @@
     {
       "layers": [
         {
+          "name": "eyes",
+          "image-name": "eyes.svg",
+          "fill": {
+            "solid": "srgb:1.00000,0.70980,0.27843,1.00000"
+          }
+        },
+        {
           "name": "raccoon",
           "image-name": "raccoon.svg",
           "fill": {

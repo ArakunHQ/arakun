@@ -1020,7 +1020,7 @@ pub fn avatar(login: &str, size: f32) -> gpui::Div {
         .bg(color)
         .ty(Type::Caption)
         .font_weight(FontWeight::BOLD)
-        .text_color(theme::background())
+        .text_color(theme::on_accent())
         .child(initial.to_string())
 }
 
@@ -1587,7 +1587,7 @@ pub fn check_box(on: bool) -> gpui::Div {
         .when(on, |d| {
             d.bg(theme::accent())
                 .border_color(theme::accent())
-                .child(icon("tick02", 11.).text_color(theme::background()))
+                .child(icon("tick02", 11.).text_color(theme::on_accent()))
         })
         .when(!on, |d| d.border_color(theme::border_strong()))
 }

@@ -800,7 +800,7 @@ impl Shell {
     }
 
     /// The chat the composer writes to; its raccoon sits on the composer.
-    fn composer_chat(&self) -> Option<Entity<crate::agent::ThreadView>> {
+    pub(super) fn composer_chat(&self) -> Option<Entity<crate::agent::ThreadView>> {
         let env = self.env();
         let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind)
         else {

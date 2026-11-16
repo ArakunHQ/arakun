@@ -32,6 +32,8 @@ const FACE_W: f32 = 372.;
 /// with the face.
 const PROTO_K: f32 = 1.75;
 const RAMP: [char; 10] = [' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
+/// Light mode: below this brightness a cell is the mask, an ear or the nose.
+const LIGHT_SPLIT: f32 = 0.35;
 const DOT: char = '·';
 const CHARS: &str = " .:-=+*#%@·░▓█";
 
@@ -71,6 +73,9 @@ struct Img {
     h: usize,
     /// Premultiplied RGB, 0-255.
     px: Vec<[f32; 3]>,
+    /// Coverage, 0-1: tells the black mask (opaque) from the empty around
+    /// the head (clear), which premultiplied both read as black.
+    alpha: Vec<f32>,
 }
 
 fn img() -> &'static Img {
@@ -90,7 +95,8 @@ fn img() -> &'static Img {
                 [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a]
             })
             .collect();
-        Img { w, h, px }
+        let alpha = png.pixels().map(|p| p[3] as f32 / 255.).collect();
+        Img { w, h, px, alpha }
     })
 }
 
@@ -100,6 +106,15 @@ impl Img {
             return [0.; 3];
         }
         self.px[y as usize * self.w + x as usize]
+    }
+
+    /// Coverage at a pixel, the nearest one: only compared against a half.
+    fn alpha_at(&self, u: f32, v: f32) -> f32 {
+        let (x, y) = (u.floor() as isize, v.floor() as isize);
+        if x < 0 || y < 0 || x as usize >= self.w || y as usize >= self.h {
+            return 0.;
+        }
+        self.alpha[y as usize * self.w + x as usize]
     }
 
     /// Bilinear, so characters don't flicker as the head moves a fraction of a pixel.
@@ -180,6 +195,16 @@ impl Pose {
         self.forward((EYES[0][0] + EYES[1][0]) / 2., EYES[0][1])
     }
 
+    /// How much of the head covers canvas point `x`, `y`.
+    fn coverage(&self, x: f32, y: f32) -> f32 {
+        let img = img();
+        let (dx, dy) = (x - self.at[0], y - self.at[1]);
+        let (s, c) = self.turn.sin_cos();
+        let u = (c * dx + s * dy) / self.k + img.w as f32 / 2.;
+        let v = (-s * dx + c * dy) / (self.k * self.stretch) + img.h as f32 / 2.;
+        img.alpha_at(u, v)
+    }
+
     /// The colour at canvas point `x`, `y`: the image with the eyes on top.
     fn color(&self, x: f32, y: f32) -> [f32; 3] {
         let img = img();
@@ -238,6 +263,19 @@ struct FaceCell {
     row: usize,
     ch: char,
     rgb: [f32; 3],
+    part: Part,
+}
+
+/// What a character draws, so it takes the mascot's color for that part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    /// Paper in dark mode, a warm gray in light (paper would vanish on white).
+    Fur,
+    /// The mask, ear insides and nose: drawn in ink on white only; on black
+    /// the ground shows through, the way the logo's holes do.
+    Ink,
+    /// Amber.
+    Eye,
 }
 
 /// The characters of the face: only cells near the head are looked at, and
@@ -280,6 +318,33 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
                 };
             }
             let l = (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255. * k;
+            // On white the face is drawn the way the mascot looks: the dark
+            // half of the drawing (mask, ear insides, nose; under 0.35 of
+            // full brightness, where the image splits in two) as dense ink,
+            // the fur as lighter, sparser characters.
+            if theme::is_light() && !amber {
+                if k < 0.05 || pose.coverage(x + CELL_W / 2., y + CELL_H / 2.) < 0.5 {
+                    continue;
+                }
+                let raw = l / k;
+                let (density, part) = if raw < LIGHT_SPLIT {
+                    (0.55 + 0.45 * (1. - raw / LIGHT_SPLIT), Part::Ink)
+                } else {
+                    (0.15 + 0.4 * (1. - raw), Part::Fur)
+                };
+                let i = (density * k * RAMP.len() as f32) as usize;
+                if i == 0 {
+                    continue;
+                }
+                out.push(FaceCell {
+                    col,
+                    row,
+                    ch: RAMP[i.min(RAMP.len() - 1)],
+                    rgb: [0.; 3],
+                    part,
+                });
+                continue;
+            }
             if l < 0.07 {
                 continue;
             }
@@ -300,6 +365,7 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
                 row,
                 ch,
                 rgb: c.map(|v| (v * gain).min(255.)),
+                part: if amber { Part::Eye } else { Part::Fur },
             });
         }
     }
@@ -649,7 +715,19 @@ fn paint(frame: &Frame, b: Bounds<Pixels>, window: &mut Window) {
     for c in &frame.cells {
         taken[c.row * grid.cols + c.col] = true;
         if let Some(&(font, id)) = g.ids.get(&c.ch) {
-            let _ = window.paint_glyph(at(c.col, c.row), font, id, size, rgb(c.rgb, 1.));
+            // The mascot's colors: paper fur, ink mask, amber eyes. The fur
+            // keeps the drawing's shading through how bright it is.
+            let color = match (theme::is_light(), c.part) {
+                (false, Part::Eye) => rgb(c.rgb, 1.),
+                (true, Part::Eye) => theme::accent(),
+                (false, Part::Fur) => {
+                    let shade = (0.299 * c.rgb[0] + 0.587 * c.rgb[1] + 0.114 * c.rgb[2]) / 255.;
+                    theme::brand_paper().opacity(shade.clamp(0.35, 1.))
+                }
+                (true, Part::Fur) => theme::brand_fur_on_light(),
+                (_, Part::Ink) => theme::brand_ink(),
+            };
+            let _ = window.paint_glyph(at(c.col, c.row), font, id, size, color);
         }
     }
     if frame.dots <= 0. {

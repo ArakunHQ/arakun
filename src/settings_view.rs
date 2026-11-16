@@ -1822,6 +1822,23 @@ impl SettingsDialog {
                 .into_any_element(),
                 {
                     let mut seg = ui::segmented();
+                    for (i, m) in crate::theme::Mode::ALL.into_iter().enumerate() {
+                        seg = seg.child(
+                            ui::segment(("set-mode", i), None, m.label(), crate::theme::mode() == m)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_shape(|s| s.light = m == crate::theme::Mode::Light, cx);
+                                })),
+                        );
+                    }
+                    row(
+                        "Mode",
+                        "Dark draws the palette on black; Light on white with dark text.",
+                        seg.into_any_element(),
+                    )
+                    .into_any_element()
+                },
+                {
+                    let mut seg = ui::segmented();
                     for (i, g) in crate::theme::Grays::ALL.into_iter().enumerate() {
                         seg = seg.child(
                             ui::segment(("set-grays", i), None, g.label(), crate::theme::grays() == g)

@@ -297,12 +297,11 @@ pub struct Shell {
     file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
     file_index_loading: bool,
     /// The ASCII face over the start and welcome screens (redraws the shell
-    /// while its intro fades the screen in), the small raccoon atop the rail,
-    /// and the one asleep in an empty session list.
+    /// while its intro fades the screen in) and the small raccoon atop the
+    /// rail, which steps aside while a raccoon shows in the main view.
     home_face: Entity<crate::ascii_face::AsciiFace>,
     _home_face: Subscription,
     rail_mascot: Entity<crate::mascot::Mascot>,
-    panel_mascot: Entity<crate::mascot::Mascot>,
     explorer_scroll: UniformListScrollHandle,
     focus: FocusHandle,
     composer_focus: FocusHandle,
@@ -745,11 +744,6 @@ impl Shell {
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
-            panel_mascot: cx.new(|cx| {
-                let mut m = crate::mascot::Mascot::new(56., cx);
-                m.set_mood(crate::mascot::Mood::Sleeping);
-                m
-            }),
             explorer_scroll: UniformListScrollHandle::new(),
             focus,
             composer_focus,
@@ -2041,6 +2035,36 @@ impl Focusable for Shell {
 }
 
 impl Shell {
+    /// Whether a pane in view already shows a raccoon: the start screen's
+    /// ASCII face in the focused pane, or the raccoon on the composer of a
+    /// live session. Same conditions as `render_pane_body`, so a session that
+    /// is still connecting leaves the rail's raccoon in place.
+    fn main_shows_raccoon(&self) -> bool {
+        let env = self.env();
+        let home = matches!(
+            env.tabs.get(env.active_tab).map(|t| &t.kind),
+            None | Some(TabKind::NewSession)
+        );
+        home || self.composer_chat().is_some()
+    }
+
+    /// Whether the rail shows its raccoon. It steps aside while the main view
+    /// shows one, so only one raccoon is in view, but comes back when a session
+    /// out of view needs input: its mood is the only cue across sessions.
+    fn rail_shows_raccoon(&self, inbox: &[InboxItem]) -> bool {
+        if !self.main_shows_raccoon() {
+            return true;
+        }
+        let env = self.env();
+        let in_view = match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+            Some(TabKind::Session { id, .. }) => Some(id),
+            _ => None,
+        };
+        inbox
+            .iter()
+            .any(|i| i.status == Status::NeedsInput && Some(&i.id) != in_view)
+    }
+
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let env = self.env();
         match env.split_other() {

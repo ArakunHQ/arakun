@@ -171,11 +171,13 @@ it shows in `github/avatars/` (each downloaded again after a week).
 
 ### Make it yours
 
-- **Color palettes.** Settings › Appearance has built-in palettes (Arakun Night,
-  Graphite, Midnight, Forest, Rosé). Customize one to change its tint, background and
-  accent; Arakun warns when text or the accent gets hard to read. A palette fits in one
-  line (`arakun:palette/v1:…`) that anyone can paste there to get it. The choice and your
-  palettes are kept in `palettes.json` next to the state.
+- **Color palettes.** Settings › Appearance has built-in palettes (Arakun Black, the
+  default, then Arakun Night, Graphite, Midnight, Forest, Rosé). Customize one to change
+  its tint, background and accent; Arakun warns when text or the accent gets hard to
+  read. A palette fits in one line (`arakun:palette/v1:…`) that anyone can paste there to
+  get it. The choice and your palettes are kept in `palettes.json` next to the state.
+- **Dark and light.** Settings › Appearance › Mode draws the palette on black or on a
+  white background with dark text. The choice is kept in `palettes.json`.
 - **Corners and spacing.** Settings › Appearance also sets the shape of the whole app,
   live. Corners makes cards, buttons and fields sharper or rounder (0 to 200%; presets
   Sharp, Default, Round). Spacing makes the room inside and between things tighter or

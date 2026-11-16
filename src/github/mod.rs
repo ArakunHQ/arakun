@@ -5,9 +5,14 @@
 //! of those deserve a notice.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::pin;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt as _;
+use futures::channel::mpsc;
+use futures::future::{Either, select};
 use gpui::{AppContext as _, Context, EventEmitter, Task};
 use serde::{Deserialize, Serialize};
 
@@ -613,6 +618,46 @@ fn poll_wait(since_start: Option<Duration>, gap: Duration) -> Duration {
     }
 }
 
+/// Whether an automatic read may start: none is running, and the last one
+/// started at least `gap` ago.
+fn read_due(busy: bool, since_start: Option<Duration>, gap: Duration) -> bool {
+    !busy && since_start.is_none_or(|e| e >= gap)
+}
+
+/// Sleeps until `sleep` ends or `wake` says the poll gap changed, so a wait
+/// counted with the old gap is computed again. False once `wake` is closed.
+async fn sleep_or_wake(sleep: impl Future, wake: &mut mpsc::UnboundedReceiver<()>) -> bool {
+    match select(pin!(sleep), wake.next()).await {
+        Either::Left(_) => true,
+        Either::Right((woke, _)) => woke.is_some(),
+    }
+}
+
+/// Puts back as unread the threads in `marked` whose mark didn't reach
+/// GitHub. One a read brought back meanwhile (with new activity) isn't doubled.
+fn restore_unread(
+    unread: &mut Vec<Notification>,
+    all: &mut [Notification],
+    read_marks: &mut HashMap<String, String>,
+    marked: Vec<Notification>,
+) {
+    for n in marked {
+        if read_marks.get(&n.id) == Some(&n.updated_at) {
+            read_marks.remove(&n.id);
+        }
+        for a in all.iter_mut() {
+            if a.id == n.id && a.updated_at == n.updated_at {
+                a.unread = true;
+            }
+        }
+        if !unread.iter().any(|u| u.id == n.id) {
+            unread.push(n);
+        }
+    }
+    // GitHub lists the newest first; ISO 8601 dates sort as text.
+    unread.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+}
+
 pub fn mark_thread_read(id: &str) -> Result<(), Problem> {
     // A test build shares the person's real gh session, and GitHub's API cannot
     // mark a thread unread again: there the change stays in memory.
@@ -822,6 +867,8 @@ pub struct GitHub {
     /// Profile pictures by lower-case login.
     avatars: HashMap<String, Avatar>,
     avatars_busy: bool,
+    /// Tells the poll the gap changed (the window's activity, `X-Poll-Interval`).
+    poll_wake: mpsc::UnboundedSender<()>,
     _poll: Task<()>,
 }
 
@@ -839,6 +886,7 @@ impl EventEmitter<GitHubEvent> for GitHub {}
 
 impl GitHub {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let (poll_wake, mut woken) = mpsc::unbounded();
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 let polled = this.update(cx, |this, cx| {
@@ -850,13 +898,17 @@ impl GitHub {
                     break;
                 }
                 // Sleeps until the next read is due, counted from the last
-                // one, so a Refresh in between doesn't make a tick miss.
+                // one, so a Refresh in between doesn't make a tick miss. A
+                // shorter gap (the window comes back) wakes it to count again.
                 let Ok(wait) = this.read_with(cx, |this, _| {
                     poll_wait(this.last_start.map(|t| t.elapsed()), this.poll_gap())
                 }) else {
                     break;
                 };
-                cx.background_executor().timer(wait).await;
+                let timer = cx.background_executor().timer(wait);
+                if !sleep_or_wake(timer, &mut woken).await {
+                    break;
+                }
             }
         });
         Self {
@@ -895,6 +947,7 @@ impl GitHub {
             zero_days: queue::load_zero_days(),
             avatars: HashMap::new(),
             avatars_busy: false,
+            poll_wake,
             _poll: poll,
         }
     }
@@ -915,6 +968,11 @@ impl GitHub {
 
     fn poll_gap(&self) -> Duration {
         poll_gap(self.poll_interval, self.window_active)
+    }
+
+    /// The poll gap changed: the pending wait is counted again.
+    fn wake_poll(&self) {
+        let _ = self.poll_wake.unbounded_send(());
     }
 
     /// `ARAKUN_GITHUB=off`: nothing is read (tests, screenshots of a dev build).
@@ -986,6 +1044,9 @@ impl GitHub {
     pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
         let was = self.window_active;
         self.window_active = active;
+        if active != was {
+            self.wake_poll();
+        }
         if active && !was && self.polls() {
             self.refresh_if_stale(cx);
             // Views read what may have changed on disk meanwhile (a review draft).
@@ -997,10 +1058,11 @@ impl GitHub {
     /// least the poll gap ago (GitHub's `X-Poll-Interval`), and not while one
     /// runs, since that one is fresh.
     fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
-        // Counted with the active gap: coming back to the window may read
-        // sooner than the idle poll would.
-        let gap = poll_gap(self.poll_interval, true);
-        if !self.busy && self.last_start.is_none_or(|t| t.elapsed() >= gap) {
+        // The gap for the window's state now: coming back to it is already
+        // active, and a poll counted while active waits the idle gap once
+        // the window is left.
+        let since_start = self.last_start.map(|t| t.elapsed());
+        if read_due(self.busy, since_start, self.poll_gap()) {
             self.refresh(cx);
         }
     }
@@ -1053,8 +1115,9 @@ impl GitHub {
                 match unread {
                     Ok((raw, interval)) => {
                         this.problem = None;
-                        if interval.is_some() {
+                        if interval.is_some() && interval != this.poll_interval {
                             this.poll_interval = interval;
+                            this.wake_poll();
                         }
                         this.loaded = true;
                         let fresh = this.take_unread(raw);
@@ -1552,16 +1615,17 @@ impl GitHub {
         }
     }
 
-    /// Takes the threads out of the unread list now; GitHub is told after.
-    fn mark_locally(&mut self, ids: &[String]) -> Vec<String> {
+    /// Takes the threads out of the unread list now and returns them; GitHub
+    /// is told after.
+    fn mark_locally(&mut self, ids: &[String]) -> Vec<Notification> {
         let mut marked = Vec::new();
         for id in ids {
             if let Some(n) = self.unread.iter().find(|n| &n.id == id) {
                 self.read_marks.insert(n.id.clone(), n.updated_at.clone());
-                marked.push(id.clone());
+                marked.push(n.clone());
             }
         }
-        self.unread.retain(|n| !marked.contains(&n.id));
+        self.unread.retain(|n| !marked.iter().any(|m| m.id == n.id));
         self.settle_all();
         self.rebuild();
         marked
@@ -1574,10 +1638,11 @@ impl GitHub {
     /// Marks each of `ids` read here and on GitHub. The inbox is read again
     /// only if the poll gap allows; the marks already show.
     pub fn mark_all_read(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
-        let ids = self.mark_locally(&ids);
-        if ids.is_empty() {
+        let marked = self.mark_locally(&ids);
+        if marked.is_empty() {
             return;
         }
+        let ids: Vec<String> = marked.iter().map(|n| n.id.clone()).collect();
         self.mark_problem = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -1589,9 +1654,15 @@ impl GitHub {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                for (id, _) in &failed {
-                    // Not read after all: the next read shows it again.
-                    this.read_marks.remove(id);
+                // Not read after all: shown again now, since the next inbox
+                // read may be a poll gap away.
+                let back: Vec<Notification> = marked
+                    .into_iter()
+                    .filter(|n| failed.iter().any(|(id, _)| *id == n.id))
+                    .collect();
+                if !back.is_empty() {
+                    restore_unread(&mut this.unread, &mut this.all, &mut this.read_marks, back);
+                    this.rebuild();
                 }
                 this.mark_problem = failed.into_iter().next().map(|(_, p)| p);
                 this.refresh_if_stale(cx);
@@ -1639,6 +1710,78 @@ mod tests {
         assert_eq!(poll_wait(Some(s(60)), s(60)), s(60));
         assert_eq!(poll_wait(Some(s(90)), s(60)), s(60));
         assert_eq!(poll_wait(None, s(60)), s(60));
+    }
+
+    #[test]
+    fn a_pending_poll_wakes_when_the_gap_changes() {
+        let (tx, mut rx) = mpsc::unbounded();
+        // A long idle wait that hasn't ended: the wake ends it.
+        tx.unbounded_send(()).unwrap();
+        assert!(futures::executor::block_on(sleep_or_wake(
+            futures::future::pending::<()>(),
+            &mut rx
+        )));
+        // Counted again with the active gap, the read is due at 60 s, not
+        // at the end of the 300 s idle wait it was in.
+        let s = Duration::from_secs;
+        assert_eq!(poll_wait(Some(s(45)), poll_gap(None, false)), s(255));
+        assert_eq!(poll_wait(Some(s(45)), poll_gap(None, true)), s(15));
+        // The timer ending still ends the wait.
+        assert!(futures::executor::block_on(sleep_or_wake(
+            futures::future::ready(()),
+            &mut rx
+        )));
+        drop(tx);
+        assert!(!futures::executor::block_on(sleep_or_wake(
+            futures::future::pending::<()>(),
+            &mut rx
+        )));
+    }
+
+    #[test]
+    fn a_poll_counted_while_active_waits_the_idle_gap_once_left() {
+        let s = Duration::from_secs;
+        // Started 70 s ago while active; the window was left since.
+        assert!(!read_due(false, Some(s(70)), poll_gap(None, false)));
+        assert!(read_due(false, Some(s(300)), poll_gap(None, false)));
+        assert!(read_due(false, Some(s(70)), poll_gap(None, true)));
+        assert!(read_due(false, None, poll_gap(None, false)));
+        assert!(!read_due(true, None, poll_gap(None, true)));
+    }
+
+    #[test]
+    fn a_failed_mark_shows_the_thread_unread_again() {
+        let a = note(
+            "1",
+            "PullRequest",
+            "review_requested",
+            None,
+            "o/r",
+            "2025-01-03T00:00:00Z",
+        );
+        let b = note("2", "Issue", "mention", None, "o/r", "2025-01-02T00:00:00Z");
+        let c = note("3", "Issue", "mention", None, "o/r", "2025-01-01T00:00:00Z");
+        // `b` and `c` were marked read here; only `b`'s mark failed.
+        let mut unread = vec![a.clone()];
+        let mut all = [a.clone(), b.clone(), c.clone()];
+        for n in &mut all[1..] {
+            n.unread = false;
+        }
+        let mut marks = HashMap::from([
+            (b.id.clone(), b.updated_at.clone()),
+            (c.id.clone(), c.updated_at.clone()),
+        ]);
+        restore_unread(&mut unread, &mut all, &mut marks, vec![b.clone()]);
+        assert_eq!(unread, vec![a.clone(), b.clone()]);
+        assert!(all[1].unread && !all[2].unread);
+        assert_eq!(marks.keys().collect::<Vec<_>>(), vec![&c.id]);
+
+        // A read brought it back with new activity meanwhile: not doubled.
+        let newer = note("2", "Issue", "mention", None, "o/r", "2025-01-04T00:00:00Z");
+        let mut unread = vec![newer.clone(), a.clone()];
+        let mut marks = HashMap::new();
+        restore_unread(&mut unread, &mut [], &mut marks, vec![b]);
+        assert_eq!(unread, vec![newer, a]);
     }
 
     #[test]

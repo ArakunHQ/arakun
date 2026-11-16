@@ -1457,9 +1457,19 @@ impl Shell {
                     .join(format!("{}.md", earlier.id)),
             );
         }
+        // A headless session lives in its own folder, which the app scans every
+        // second; it has to go too or the session comes back.
+        let headless = crate::headless::shown(id).then(|| id.to_string());
+        if headless.is_some() {
+            crate::headless::begin_discard(id);
+            crate::headless::set_shown(id, false);
+        }
         cx.background_spawn(async move {
             for path in paths {
                 let _ = std::fs::remove_file(path);
+            }
+            if let Some(id) = headless {
+                crate::headless::discard(&id);
             }
         })
         .detach();

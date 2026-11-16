@@ -15,11 +15,24 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// gets its own temp file, so two saves of the same file can't interleave.
 /// Creates the parent directory.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_in(path, bytes, true)
+}
+
+/// `write` into a directory that must already be there: when it is gone,
+/// this fails instead of making it again.
+#[allow(dead_code)] // The examples include this file and don't use it.
+pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_in(path, bytes, false)
+}
+
+fn write_in(path: &Path, bytes: &[u8], make_dir: bool) -> io::Result<()> {
     let dir = path
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
+    if make_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::other(format!("{} has no file name", path.display())))?;

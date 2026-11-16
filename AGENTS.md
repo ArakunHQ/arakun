@@ -58,8 +58,8 @@ Every commit message and pull request title follows
   approving or with a review thread still open, so don't do it before then.
 - Answer every CodeRabbit comment: fix it and push, or reply with the reason you
   won't. Don't resolve its threads or post `@coderabbitai resolve` or `approve`
-  yourself; the reviewer resolves what is left. If the author resolves one, a
-  workflow dismisses CodeRabbit's approval. If you change a rule here or in
+  yourself; the reviewer resolves what is left and approves. A workflow dismisses
+  CodeRabbit's approval when the author resolved one of its threads or one is open. If you change a rule here or in
   CONTRIBUTING.md, check the instructions in `.coderabbit.yaml` too.
 
 ### Stacked pull requests

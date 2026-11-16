@@ -5,9 +5,11 @@ name: Reviewers
 # change from the team, so nobody is asked then, unless a review thread is
 # still open: the main ruleset requires every thread resolved, and authors
 # leave CodeRabbit's threads to a person (CONTRIBUTING.md), so someone has to
-# be asked or the pull request sits blocked. If the author resolved one of
-# CodeRabbit's threads, its approval is dismissed and a person asked, so an
-# author can't clear its findings to get approved. It replaces CODEOWNERS, so
+# be asked or the pull request sits blocked. CodeRabbit's approval is
+# dismissed then, and when the author resolved one of its threads, so an
+# author can't clear its findings to get approved. Nothing runs this again
+# when a thread is resolved, which is why an open thread dismisses it too.
+# It replaces CODEOWNERS, so
 # the main ruleset no longer has to require a code owner's approval: any
 # approval from someone with write access counts.
 #
@@ -152,10 +154,14 @@ jobs:
 
           # Every CodeRabbit approval, older commits' too: one of those can
           # still count toward the ruleset.
+          coderabbit_approvals() {
+            gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
+              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'
+          }
+
           dismiss_approvals() {
             local id
-            for id in $(gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
-              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'); do
+            for id in $(coderabbit_approvals "$1"); do
               gh api -X PUT "repos/$GH_REPO/pulls/$1/reviews/$id/dismissals" --silent \
                 -f event=DISMISS -f message="$2"
               echo "Dismissed CodeRabbit's approval: $2"
@@ -199,27 +205,32 @@ jobs:
             if ! in_team "$author"; then
               dismiss_approvals "$pr" \
                 "A pull request from outside the team needs a person's approval. CodeRabbit's comments still apply."
-            elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
+            elif [ -n "$(coderabbit_approvals "$pr")" ]; then
+              # Any approval, not only the head's: a newer head may get no
+              # verdict at all (CodeRabbit rate limited), and an older
+              # approval can still count. Dismissing is always the safe side.
               local threads open self
               threads=$(thread_states "$pr" "$author")
               open=$(grep -cx open <<<"$threads" || true)
               self=$(grep -cx self <<<"$threads" || true)
-              if [ "$self" -gt 0 ] &&
-                [ "$(gh api "repos/$GH_REPO/pulls/$pr" --jq .head.sha)" != "$HEAD" ]; then
-                # A newer head's approval is its own run's to judge. The
-                # threads stay resolved by the author, so that run dismisses it.
-                echo "The head moved on from $HEAD; its own review will run this again."
-                echo "::endgroup::"
-                return
-              elif [ "$self" -gt 0 ]; then
+              # Open threads dismiss it too: nothing runs this again when a
+              # thread is resolved, so the author could resolve them
+              # afterwards and merge on CodeRabbit's approval.
+              if [ "$self" -gt 0 ]; then
                 dismiss_approvals "$pr" \
                   "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply."
               elif [ "$open" -gt 0 ]; then
-                echo "CodeRabbit approved $HEAD, but $open review threads are open; a person has to resolve them."
-              else
+                echo "$open review threads are open."
+                dismiss_approvals "$pr" \
+                  "Review threads are still open; a person resolves them and approves. CodeRabbit's comments still apply."
+              elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
                 echo "CodeRabbit approved $HEAD and every thread is resolved; no reviewer needed."
                 echo "::endgroup::"
                 return
+              else
+                # Only an older commit's approval: it would still count.
+                dismiss_approvals "$pr" \
+                  "CodeRabbit has not approved the latest commit, so a person has to approve. CodeRabbit's comments still apply."
               fi
             fi
 

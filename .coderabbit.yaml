@@ -22,8 +22,8 @@ reviews:
   # The Reviewers workflow dismisses an approval of a pull request from
   # outside the team, because overrides can only match members of a team. It
   # also dismisses one when the author resolved CodeRabbit's threads in the
-  # GitHub UI, which no setting here can stop, and asks a person when
-  # CodeRabbit approves with threads still open.
+  # GitHub UI, which no setting here can stop, or when CodeRabbit approves
+  # with threads still open, and asks a person.
   auto_approvals:
     enabled: true
     max_merge_risk: minimal

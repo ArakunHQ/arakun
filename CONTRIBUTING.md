@@ -246,8 +246,9 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
 - **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
   won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
   approves only once its blocking comments are resolved. Don't resolve its comments
-  yourself: if you do, a workflow dismisses its approval and asks a person. The
-  reviewer resolves the comments that are left, and `@coderabbitai resolve` and
+  yourself: if you do, a workflow dismisses its approval and asks a person. It does
+  the same when CodeRabbit approves with comments still open: the reviewer resolves
+  them and approves. `@coderabbitai resolve` and
   `@coderabbitai approve` don't work on your own pull request. Its review rules are in
   [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
   instructions there too.

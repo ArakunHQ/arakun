@@ -111,7 +111,9 @@ pub fn install(cx: &mut App) {
 
 /// Runs `f` on the front window once the current update is over. A key press
 /// or menu click reaches these actions while gpui is still updating that
-/// window, and updating it again from here would fail without a word.
+/// window, and updating it again from here would fail without a word. If the
+/// window closes before the deferred update runs, there is nothing left to do,
+/// so that error is ignored.
 fn on_active_window(cx: &mut App, f: fn(&Window)) {
     if let Some(handle) = cx.active_window() {
         cx.defer(move |cx| {

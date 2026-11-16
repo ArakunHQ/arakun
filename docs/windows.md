@@ -147,9 +147,11 @@ Manager (Windows Credentials, Generic Credentials).
   removes only inherited entries, and `/grant:r` changes only the accounts it names, so
   an entry set directly on the folder or a file for any other account (Administrators
   included) stays. Run the first command again: if it lists an account you don't want,
-  remove it with `icacls "<path>" /remove "<account>"`, on the folder and on each file
-  that lists it. When only inherited entries gave it, the second command also drops the
-  Administrators' access, which some backup tools need.
+  remove what it grants with `icacls "<path>" /remove:g "<account>"`, on the folder and
+  on each subfolder (such as `github\drafts`) and file that lists it. `/remove:g` keeps
+  a `(DENY)` entry; a plain `/remove` would drop it too, and the account could then read
+  through a group it is in. When only inherited entries gave it, the second command also
+  drops the Administrators' access, which some backup tools need.
 - **Command line (`arakun browse`, `arakun run`, ...):** the same as on Linux. Arakun's
   terminals and agents have `%LOCALAPPDATA%\arakun\bin` on their `PATH`, with a hard link
   to `arakun.exe` (or a copy if the disk does not support hard links). The socket is

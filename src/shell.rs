@@ -451,6 +451,10 @@ fn gap() -> f32 {
     crate::ui::window_gap()
 }
 
+/// How wide a side handle can be grabbed, whatever the window gap: with no
+/// gap there would be nothing to grab between the cards.
+const SIDE_HANDLE_MIN_W: f32 = 6.;
+
 /// `gap()` as a length, for the root's padding and the side handles.
 fn gap_px() -> gpui::Pixels {
     px(gap())
@@ -1714,20 +1718,30 @@ impl Shell {
 
     /// The gap between two cards doubles as the resize handle for the side card.
     fn side_handle(&self, side: SideDrag, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id(("side-handle", side as usize))
-            .flex_none()
-            .w(gap_px())
-            .h_full()
-            .cursor_col_resize()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.side_drag = Some(side);
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
+        let w = gap();
+        let grab = w.max(SIDE_HANDLE_MIN_W);
+        div().flex_none().w(gap_px()).h_full().relative().child(
+            // Drawn over the cards, so a narrow or zero gap can still be
+            // grabbed across the cards' edges.
+            gpui::deferred(
+                div()
+                    .id(("side-handle", side as usize))
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px((w - grab) / 2.))
+                    .w(px(grab))
+                    .cursor_col_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.side_drag = Some(side);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            ),
+        )
     }
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {

@@ -418,7 +418,9 @@ impl Lexer {
             self.i += 1;
             if self.peek(0) == Some('(') {
                 self.i += 1;
-                let _ = self.balanced();
+                // `$(( $(cmd) ))` still runs cmd.
+                let inner = self.balanced();
+                self.script.nested.extend(parse(&inner).nested);
                 if self.peek(0) == Some(')') {
                     self.i += 1;
                 }
@@ -1129,6 +1131,8 @@ thread_local! {
     static WRITTEN: std::cell::RefCell<Vec<(PathBuf, String)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The line touches `IFS`, so the shell may split `$X` on any character.
     static IFS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Names the line sets one way or another.
+    static SET_ON_LINE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The line runs `arakun github draft` on a file that passed as the agent's own.
     static DRAFT_FILE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -1153,6 +1157,7 @@ fn script_text(path: &Path, cx: &Ctx) -> Option<String> {
 fn judge_command(src: &str, cx: &Ctx, out: &mut Vec<Finding>) {
     WRITTEN.with(|w| w.borrow_mut().clear());
     IFS.set(src.contains("IFS"));
+    SET_ON_LINE.with(|s| s.borrow_mut().clear());
     DRAFT_FILE.set(false);
     let mut cwd = Some(cx.workspace.clone());
     script(src, &mut cwd, cx, out, 0);
@@ -1186,6 +1191,9 @@ fn script(src: &str, cwd: &mut Option<PathBuf>, cx: &Ctx, out: &mut Vec<Finding>
         return;
     }
     let parsed = parse(src);
+    // Before the nested scripts, which see what the line sets (`X=git; echo $($X push)`).
+    let (unsure, sets) = changed_elsewhere(&parsed.commands);
+    SET_ON_LINE.with(|s| s.borrow_mut().extend(sets));
     for nested in &parsed.nested {
         let mut c = cwd.clone();
         script(nested, &mut c, cx, out, depth + 1);
@@ -1198,7 +1206,6 @@ fn script(src: &str, cwd: &mut Option<PathBuf>, cx: &Ctx, out: &mut Vec<Finding>
         .collect();
     // `X=/path/tool && $X …`: a variable set to a plain value earlier on the line stands for that value.
     let mut vars: Vec<(String, String)> = Vec::new();
-    let unsure = changed_elsewhere(&parsed.commands);
     for cmd in &parsed.commands {
         if let Some(body) = &cmd.heredoc {
             for t in &cmd.writes {
@@ -1237,7 +1244,25 @@ fn script(src: &str, cwd: &mut Option<PathBuf>, cx: &Ctx, out: &mut Vec<Finding>
 /// Names a plain `X=v` can't pin down: also set some other way on the line
 /// (`export X=…`, `read X`, `for X in`, `eval X=…`, `X+=…`), or to two values,
 /// which a loop may run in either order. A `source`d file can set any of them.
-fn changed_elsewhere(commands: &[Simple]) -> Vec<String> {
+/// Then every name the line may set, `@` for `set -- …`.
+fn changed_elsewhere(commands: &[Simple]) -> (Vec<String>, Vec<String>) {
+    const WRITERS: &[&str] = &[
+        "export",
+        "declare",
+        "typeset",
+        "local",
+        "readonly",
+        "read",
+        "unset",
+        "for",
+        "select",
+        "getopts",
+        "printf",
+        "mapfile",
+        "readarray",
+        "eval",
+        "let",
+    ];
     let name = |w: &str| {
         !w.is_empty()
             && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -1245,31 +1270,52 @@ fn changed_elsewhere(commands: &[Simple]) -> Vec<String> {
     };
     let mut set: Vec<(&str, &str)> = Vec::new();
     let mut unsure: Vec<String> = Vec::new();
+    let mut sources = false;
+    let mut sets: Vec<String> = Vec::new();
     for c in commands {
-        if c.words.first().is_some_and(|w| w == "source" || w == ".") {
-            unsure.push("*".into());
+        if c.words.iter().any(|w| w == "source" || w == ".") {
+            sources = true;
+        }
+        if c.words.iter().any(|w| w == "set") {
+            sets.push("@".into());
         }
         if !c.words.is_empty() && c.words.iter().all(|w| is_assignment(w)) {
             set.extend(c.words.iter().filter_map(|w| w.split_once('=')));
             continue;
         }
+        let writes = c.words.iter().any(|w| WRITERS.contains(&w.as_str()));
         for w in &c.words {
-            let target = w.split_once('=').map_or(w.as_str(), |(n, _)| n);
-            let target = target.strip_suffix('+').unwrap_or(target);
+            let target = match w.split_once('=') {
+                Some((n, _)) => n.strip_suffix('+').unwrap_or(n),
+                None if writes => w.as_str(),
+                None => continue,
+            };
             if name(target) {
                 unsure.push(target.to_string());
             }
         }
     }
     for (n, v) in &set {
-        if set.iter().any(|(m, u)| m == n && u != v) {
+        if sources || set.iter().any(|(m, u)| m == n && u != v) {
             unsure.push(n.to_string());
         }
     }
-    if unsure.iter().any(|n| n == "*") {
-        unsure.extend(set.iter().map(|(n, _)| n.to_string()));
+    sets.extend(unsure.iter().cloned());
+    sets.extend(set.iter().map(|(n, _)| n.to_string()));
+    (unsure, sets)
+}
+
+/// `$X`, `${X}`, `${X:-…}`, `$1`, `$@`: the variable a word starts with.
+fn var_name(w: &str) -> &str {
+    let rest = w.trim_start_matches('$').trim_start_matches('{');
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    match end {
+        0 => rest.get(..1).unwrap_or(""),
+        _ if rest.starts_with(|c: char| c.is_ascii_digit()) => "@",
+        _ => &rest[..end],
     }
-    unsure
 }
 
 /// A value with nothing left to expand. Whitespace too: the shell splits an
@@ -1443,6 +1489,20 @@ fn simple(
                     script(body, &mut c, cx, out, depth + 1);
                 }
             }
+        }
+        // One the line set itself but we couldn't pin down may stand for anything
+        // on the always-ask list (`X=git; read X; $X push`).
+        p if p.starts_with('$')
+            && SET_ON_LINE.with(|s| {
+                let n = var_name(p);
+                s.borrow().iter().any(|m| m == n || (n == "*" && m == "@"))
+            }) =>
+        {
+            out.push(always(
+                "el nombre del comando sale de una variable que cambia la propia línea",
+                format!("Ejecutar: {line}"),
+                "confirmo: ejecutar",
+            ))
         }
         p if p.starts_with('$') => out.push(finding(
             Kind::External,
@@ -3140,6 +3200,26 @@ mod tests {
             "X=docs; for i in 1 2; do rm -rf $X; X=/home/u/notes; done",
             [X, X, X],
         );
+        // Naming it isn't setting it.
+        all("X=docs; echo X; rm -rf $X", [C, A, A]);
+        all("X=git; echo X; $X push", [X, X, X]);
+        // A command name the line sets but we can't pin down asks, even under Full.
+        all("X=git; read X; $X push", [X, X, X]);
+        all("IFS=:; x=git; $x push", [X, X, X]);
+        all("set -- git push; \"$@\"", [X, X, X]);
+        all("X=git; echo $($X push)", [X, X, X]);
+        // One from the environment is just unknown.
+        all("$EDITOR notes.md", [C, C, A]);
+    }
+
+    #[test]
+    fn arithmetic_still_runs_its_command_substitutions() {
+        all("echo $(( $(git push; echo 0) + 1 ))", [X, X, X]);
+        all(
+            "arakun github draft o/r#7 --verdict comment --body-file review.md --agent \"$(( $(ln -sf /home/u/.netrc review.md; printf 0) ))\"",
+            [X, X, X],
+        );
+        all("echo $(( 1 + 2 ))", [A, A, A]);
     }
 
     #[cfg(unix)]

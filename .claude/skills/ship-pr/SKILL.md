@@ -96,7 +96,9 @@ EOF
 - No "I" in the body. No @mention you have not checked this session. No
   secrets, private logs or home-directory paths: the repository is public.
 - UI change: before and after screenshots (see the `ui-change` skill). GitHub has
-  no API to upload them; leave them for the user to drag in and say so.
+  no API to upload them: `tools/pr-assets.sh <file>...` pushes them to
+  `ArakunHQ/pr-assets` and prints the Markdown, or, without push access there,
+  leave them for the user to drag in and say so.
 
 ## 5. Wait for CI, then mark it ready
 

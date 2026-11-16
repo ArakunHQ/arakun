@@ -70,7 +70,8 @@ first edit, and save it as `before.png` the same way.
   upload gets a new folder named after the branch, its commit, the time and the
   shell's process ID, so two branches never share one, a retake on the same commit
   gets its own (even in the same second), and a later upload never replaces images
-  a pull request shows.
+  a pull request shows. Any character but letters, digits, `.`, `_` and `-` becomes
+  `-`, so the name is safe in a URL (Git allows `#` and `%` in branch names).
   Copy each file by name, never with a glob: an old capture left in
   `${TMPDIR:-/tmp}` would be published with it.
 
@@ -79,7 +80,7 @@ first edit, and save it as `before.png` the same way.
   too.
 
   ```sh
-  folder="$(git branch --show-current | tr / -)-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)-$$" &&
+  folder="$(git branch --show-current | tr -c 'A-Za-z0-9._\n' -)-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)-$$" &&
     dir=$(mktemp -d) &&
     gh repo clone ArakunHQ/pr-assets "$dir" -- -q &&
     mkdir "$dir/$folder" &&

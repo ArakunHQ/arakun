@@ -67,8 +67,9 @@ first edit, and save it as `before.png` the same way.
 - The pull request needs before and after screenshots (a short GIF for an
   interaction). GitHub has no API to upload images, so they go in the public
   repository [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets). Each
-  upload gets a new folder named after the branch and its commit, so two branches
-  never share one and a later upload never replaces images a pull request shows.
+  upload gets a new folder named after the branch, its commit and the time, so
+  two branches never share one, a retake on the same commit gets its own, and a
+  later upload never replaces images a pull request shows.
   Copy each file by name, never with a glob: an old capture left in
   `${TMPDIR:-/tmp}` would be published with it.
 
@@ -77,7 +78,7 @@ first edit, and save it as `before.png` the same way.
   too.
 
   ```sh
-  folder="$(git branch --show-current | tr / -)-$(git rev-parse --short=12 HEAD)" &&
+  folder="$(git branch --show-current | tr / -)-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)" &&
     dir=$(mktemp -d) &&
     gh repo clone ArakunHQ/pr-assets "$dir" -- -q &&
     mkdir "$dir/$folder" &&

@@ -163,6 +163,8 @@ for _f in FILES:
         P=d[p]; bt,_,bb,_=P['border']
         if bt+bb<=0: continue
         x,y,w,h=c['b']; px_,py,pw,ph=P['b']
+        # The border can only cut a child that sits beside it, not one off to the side.
+        if x>=px_+pw or x+w<=px_: continue
         if h>=ph-0.5 and h>8 and ((y+h)>(py+ph-bb+0.5) or y<(py+bt-0.5)):
             add(c['at'],'clip',f"h={h:g} fills a {ph:g}px parent with a border ({P['at']}): its edge is cut")
 for (at,kind),msg in out.items(): print(f"{at} [{kind}] {msg}")

@@ -938,7 +938,7 @@ fn branch_token(raw: &str) -> Option<String> {
         .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'', '»', '”']);
     (!w.is_empty()
         && w.chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | '_' | '.' | '+')))
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | '_' | '.' | '+' | '@')))
     .then(|| w.to_string())
 }
 
@@ -2130,6 +2130,10 @@ mod tests {
         assert_eq!(branch("tell me when CI fails on (develop)."), "develop");
         // A word a branch can't be is none, not a piece of it.
         assert_eq!(branch("tell me when CI fails on feat/x*y"), "main");
+        assert_eq!(
+            branch("tell me when CI fails on feature/user@domain"),
+            "feature/user@domain"
+        );
         // "on Slack" comes before the CI: it isn't a branch.
         assert_eq!(branch("notify me on Slack when CI fails"), "main");
         assert_eq!(

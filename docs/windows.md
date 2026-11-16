@@ -134,16 +134,22 @@ Manager (Windows Credentials, Generic Credentials).
   modes, so there it gets the default access rules of `%LOCALAPPDATA%\arakun\`.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
-  `SYSTEM` and the Administrators can read it. To check who can read the folder, or to
-  keep it to your account and `SYSTEM` only, run in PowerShell:
+  `SYSTEM` and the Administrators can read it. To check who can read the folder and the
+  files in it, or to take away the access it inherits and give full access to your
+  account and `SYSTEM`, run in PowerShell:
 
   ```powershell
-  icacls "$env:LOCALAPPDATA\arakun"
+  icacls "$env:LOCALAPPDATA\arakun" /T
   icacls "$env:LOCALAPPDATA\arakun" /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
   ```
 
-  The second command also drops the Administrators' access, which some backup tools
-  need.
+  The second command does not make the folder private by itself. `/inheritance:r`
+  removes only inherited entries, and `/grant:r` changes only the accounts it names, so
+  an entry set directly on the folder or a file for any other account (Administrators
+  included) stays. Run the first command again: if it lists an account you don't want,
+  remove it with `icacls "<path>" /remove "<account>"`, on the folder and on each file
+  that lists it. When only inherited entries gave it, the second command also drops the
+  Administrators' access, which some backup tools need.
 - **Command line (`arakun browse`, `arakun run`, ...):** the same as on Linux. Arakun's
   terminals and agents have `%LOCALAPPDATA%\arakun\bin` on their `PATH`, with a hard link
   to `arakun.exe` (or a copy if the disk does not support hard links). The socket is

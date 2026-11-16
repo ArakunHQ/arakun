@@ -709,10 +709,11 @@ fn what_to_remember(text: &str) -> String {
         }
     }
     // A lone comma left where a time was cut ("remind me tomorrow, at 5pm,
-    // to stretch") would hide the "to" after it.
+    // to stretch") would hide the "to" after it. Only such separators go: an
+    // emoji has no letters either, but it can be the whole message.
     while kept.first().is_some_and(|k| {
-        let w = words(k).concat();
-        w.is_empty() || LEADS.contains(&w.as_str())
+        k.chars().all(|c| matches!(c, ',' | ';' | ':' | '.'))
+            || LEADS.contains(&words(k).concat().as_str())
     }) {
         kept.remove(0);
     }
@@ -1496,6 +1497,10 @@ mod tests {
         let d = parse_reminder("remind me tomorrow, at 5pm, to stretch", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: tomorrow });
         assert_eq!(notice(&d), "stretch");
+        let d = parse_reminder("remind me in 5 minutes 🔑", &c).unwrap();
+        assert_eq!(notice(&d), "🔑");
+        let d = parse_reminder("remind me in 5 minutes 🔑 keys", &c).unwrap();
+        assert_eq!(notice(&d), "🔑 keys");
     }
 
     #[test]

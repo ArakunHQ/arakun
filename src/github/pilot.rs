@@ -4,7 +4,9 @@
 //! minute, shows them at the top of the GitHub tab and tells the Worker
 //! (`POST /items/<id>/done`) when the user dealt with one.
 //!
-//! Off unless `client.json` (`{"url": "...", "token": "..."}`) exists.
+//! Off unless `client.json` (`{"url": "...", "token": "..."}`) exists. With
+//! `admin_token` in it too, the palette can hand the agent new work
+//! (`POST /tasks`).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -16,6 +18,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::pr::{ItemKind, ItemRef};
 
 const POLL: Duration = Duration::from_secs(60);
+/// The only repository the Worker works on (SPEC.md): a task's `pr` is a
+/// number in it.
+pub const REPO: &str = "ArakunHQ/arakun";
+/// The most ready answers a card shows; the Worker sends 2 to 4.
+const OPCIONES_MAX: usize = 4;
 /// Ids kept in the book: far more than the Worker ever has open.
 const BOOK_MAX: usize = 1000;
 
@@ -56,14 +63,21 @@ fn book_file() -> PathBuf {
 pub struct Config {
     pub url: String,
     pub token: String,
+    /// Only `POST /tasks` takes it: reading items never needs it.
+    #[serde(default)]
+    pub admin_token: Option<String>,
 }
 
-// The token never reaches a log, not even through `{:?}`.
+// The tokens never reach a log, not even through `{:?}`.
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
             .field("url", &self.url)
             .field("token", &"<hidden>")
+            .field(
+                "admin_token",
+                &self.admin_token.as_ref().map(|_| "<hidden>"),
+            )
             .finish()
     }
 }
@@ -73,8 +87,16 @@ pub fn parse_config(bytes: &[u8]) -> Option<Config> {
     let c: Config = serde_json::from_slice(bytes).ok()?;
     let url = c.url.trim().trim_end_matches('/').to_string();
     let token = c.token.trim().to_string();
+    let admin_token = c
+        .admin_token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
     let web = url.starts_with("https://") || url.starts_with("http://");
-    (web && !token.is_empty()).then_some(Config { url, token })
+    (web && !token.is_empty()).then_some(Config {
+        url,
+        token,
+        admin_token,
+    })
 }
 
 pub fn load_config() -> Option<Config> {
@@ -155,6 +177,23 @@ impl Punto {
     }
 }
 
+/// A ready answer to the agent's question: a button on the card.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Opcion {
+    #[serde(default, deserialize_with = "or_default")]
+    pub id: String,
+    #[serde(default, deserialize_with = "or_default")]
+    pub texto: String,
+}
+
+impl Opcion {
+    /// "Lo veo yo": the agent stops and leaves it to the user, so it is
+    /// never the button that looks like the answer.
+    pub fn quiet(&self) -> bool {
+        self.id == "skip"
+    }
+}
+
 /// One thing the agent wants the user to see. Every field but `id` may be
 /// missing or null; fields a newer Worker adds are ignored.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -200,6 +239,10 @@ pub struct Item {
     pub commits: Vec<String>,
     #[serde(default, deserialize_with = "or_default")]
     pub pregunta: String,
+    /// For needs_you: ready answers to `pregunta`. Cleaned on read: none
+    /// without an id or a text, at most `OPCIONES_MAX`.
+    #[serde(default, deserialize_with = "or_default")]
+    pub opciones: Vec<Opcion>,
 }
 
 /// A null reads as the field's default, like a missing one.
@@ -295,7 +338,16 @@ pub fn parse_items(bytes: &[u8]) -> Result<Vec<Item>, String> {
     let items = match answer {
         Answer::List(l) | Answer::Wrapped { items: l } => l,
     };
-    Ok(items.into_iter().filter(|i| !i.id.is_empty()).collect())
+    Ok(items
+        .into_iter()
+        .filter(|i| !i.id.is_empty())
+        .map(|mut i| {
+            i.opciones
+                .retain(|o| !o.id.trim().is_empty() && !o.texto.trim().is_empty());
+            i.opciones.truncate(OPCIONES_MAX);
+            i
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +378,15 @@ impl Book {
         }
         if !self.untold.iter().any(|u| u == id) {
             self.untold.push(id.to_string());
+        }
+        trim(&mut self.handled);
+    }
+
+    /// Hides `id` without telling the Worker it is done: an answer already
+    /// moved it on there.
+    pub fn hide(&mut self, id: &str) {
+        if !self.handled(id) {
+            self.handled.push(id.to_string());
         }
         trim(&mut self.handled);
     }
@@ -409,6 +470,51 @@ fn status_problem(status: u16) -> String {
     }
 }
 
+/// A refused write, with the Worker's own reason (`{"error": "..."}`) when
+/// it gave one: "la rama ya existe" helps more than a bare 409.
+fn write_problem(status: u16, body: &[u8], admin: bool) -> String {
+    if admin && matches!(status, 401 | 403) {
+        return "el Worker rechazó la llave de admin (revisa admin_token en client.json)".into();
+    }
+    let reason = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .map(|e| e.trim().chars().take(200).collect::<String>())
+        .filter(|e| !e.is_empty());
+    match reason {
+        Some(r) => format!("{} ({r})", status_problem(status)),
+        None => status_problem(status),
+    }
+}
+
+/// Sends `body` as JSON to `path` with `token`; Ok with what came back on a 2xx.
+fn post_json(
+    base: &str,
+    path: &str,
+    token: &str,
+    body: &serde_json::Value,
+    admin: bool,
+) -> Result<Vec<u8>, String> {
+    let mut res = agent()
+        .post(format!("{base}{path}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .map_err(|e| format!("no pude llegar a {base}: {e}"))?;
+    let status = res.status().as_u16();
+    let bytes = res
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024)
+        .read_to_vec()
+        .unwrap_or_default();
+    if (200..300).contains(&status) {
+        Ok(bytes)
+    } else {
+        Err(write_problem(status, &bytes, admin))
+    }
+}
+
 /// The items after `since` (all the Worker keeps without it).
 pub fn fetch(cfg: &Config, since: Option<&str>) -> Result<Vec<Item>, String> {
     let mut url = format!("{}/items", cfg.url);
@@ -445,6 +551,84 @@ pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
         200..=299 | 404 => Ok(()),
         s => Err(status_problem(s)),
     }
+}
+
+/// What the user answers a needs_you card with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Answer {
+    /// One of the item's `opciones`, by id.
+    Opcion(String),
+    /// "Otra respuesta…": their own words.
+    Texto(String),
+}
+
+/// The body of `POST /items/<id>/answer`.
+pub fn answer_body(a: &Answer) -> serde_json::Value {
+    match a {
+        Answer::Opcion(id) => serde_json::json!({ "opcion": id }),
+        Answer::Texto(t) => serde_json::json!({ "texto": t.trim() }),
+    }
+}
+
+/// Hands the user's answer to the agent, which picks the job up again.
+pub fn send_answer(cfg: &Config, id: &str, a: &Answer) -> Result<(), String> {
+    let path = format!("/items/{}/answer", encode(id));
+    post_json(&cfg.url, &path, &cfg.token, &answer_body(a), false).map(|_| ())
+}
+
+/// Where a task from the palette lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskTarget {
+    /// One of the user's open pull requests in `REPO`, by number.
+    Pull(u64),
+    /// A new branch off `base`.
+    Branch { name: String, base: String },
+}
+
+/// Work handed to the cloud agent from the palette.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskRequest {
+    pub title: String,
+    pub prompt: String,
+    pub target: TaskTarget,
+}
+
+/// The body of `POST /tasks`.
+pub fn task_body(t: &TaskRequest) -> serde_json::Value {
+    match &t.target {
+        TaskTarget::Pull(n) => serde_json::json!({
+            "title": t.title, "prompt": t.prompt, "pr": n,
+        }),
+        TaskTarget::Branch { name, base } => serde_json::json!({
+            "title": t.title, "prompt": t.prompt, "branch": name, "base": base,
+        }),
+    }
+}
+
+/// The task's id in what `POST /tasks` answered: `{"id": ...}`, or the same
+/// inside `{"task": ...}`. A number reads as its digits.
+pub fn parse_task_id(bytes: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let id = v
+        .get("id")
+        .or_else(|| v.get("task").and_then(|t| t.get("id")))?;
+    let id = match id {
+        serde_json::Value::String(s) => s.trim().to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    (!id.is_empty()).then_some(id)
+}
+
+/// Why a task can't go with these settings: tasks take the admin token.
+pub const NO_ADMIN: &str = "Mandar tareas necesita \"admin_token\" en client.json de arakun-pilot.";
+
+/// Hands the agent new work. Ok with the task's id ("" when the Worker
+/// named none); its result comes back later as an item.
+pub fn send_task(cfg: &Config, t: &TaskRequest) -> Result<String, String> {
+    let admin = cfg.admin_token.as_deref().ok_or(NO_ADMIN)?;
+    let bytes = post_json(&cfg.url, "/tasks", admin, &task_body(t), true)?;
+    Ok(parse_task_id(&bytes).unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +675,11 @@ impl Pilot {
             problem: None,
             _poll: poll,
         }
+    }
+
+    /// The settings of the last read.
+    pub fn config(&self) -> Option<&Config> {
+        self.config.as_ref()
     }
 
     /// Why the last read failed.
@@ -601,6 +790,14 @@ impl Pilot {
             }
         })
         .detach();
+    }
+
+    /// The user answered `id`: its card goes. The answer route already told
+    /// the Worker, so `done` isn't sent.
+    pub fn answered(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.book.hide(id);
+        store_book(&self.book);
+        cx.notify();
     }
 
     /// Every login a card shows, for their pictures.
@@ -822,6 +1019,15 @@ mod tests {
             ("https://pilot.example.dev", "t0k")
         );
         assert!(!format!("{c:?}").contains("t0k"));
+        assert_eq!(c.admin_token, None);
+        let a =
+            parse_config(br#"{"url": "https://p.dev", "token": "t", "admin_token": " s3cr3t "}"#)
+                .unwrap();
+        assert_eq!(a.admin_token.as_deref(), Some("s3cr3t"));
+        assert!(!format!("{a:?}").contains("s3cr3t"));
+        // An empty one is none.
+        let e = parse_config(br#"{"url": "https://p.dev", "token": "t", "admin_token": ""}"#);
+        assert_eq!(e.unwrap().admin_token, None);
         assert!(parse_config(br#"{"url": "https://p.dev", "token": ""}"#).is_none());
         assert!(parse_config(br#"{"url": "file:///etc", "token": "t"}"#).is_none());
         assert!(parse_config(b"nope").is_none());
@@ -835,6 +1041,107 @@ mod tests {
         assert!(!same_commit("40a1b2", full));
         assert!(!same_commit("", ""));
         assert!(!same_commit("50a1b2c3", full));
+    }
+
+    #[test]
+    fn reads_ready_answers() {
+        let items = parse_items(
+            r#"[{"id": "q", "kind": "needs_you", "pregunta": "¿Migro?",
+                  "opciones": [{"id": "migrar", "texto": "Sí, con migración"},
+                               {"id": "", "texto": "sin id"},
+                               {"id": "x", "texto": "  "},
+                               {"id": "quedan", "texto": "No, se quedan"},
+                               {"id": "a", "texto": "A"}, {"id": "b", "texto": "B"},
+                               {"id": "skip", "texto": "Lo veo yo"}]},
+                 {"id": "n", "kind": "needs_you", "opciones": null},
+                 {"id": "m", "kind": "needs_you"}]"#
+                .as_bytes(),
+        )
+        .unwrap();
+        // The broken ones go, and at most four stay.
+        let ids: Vec<&str> = items[0].opciones.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["migrar", "quedan", "a", "b"]);
+        assert_eq!(items[0].opciones[0].texto, "Sí, con migración");
+        assert!(items[1].opciones.is_empty() && items[2].opciones.is_empty());
+        assert!(
+            Opcion {
+                id: "skip".into(),
+                texto: "Lo veo yo".into()
+            }
+            .quiet()
+        );
+    }
+
+    #[test]
+    fn answer_and_task_bodies() {
+        assert_eq!(
+            answer_body(&Answer::Opcion("migrar".into())),
+            serde_json::json!({"opcion": "migrar"})
+        );
+        assert_eq!(
+            answer_body(&Answer::Texto("  que se queden \n".into())),
+            serde_json::json!({"texto": "que se queden"})
+        );
+        let to_pull = TaskRequest {
+            title: "arregla el tab".into(),
+            prompt: "arregla el tab y su prueba".into(),
+            target: TaskTarget::Pull(112),
+        };
+        assert_eq!(
+            task_body(&to_pull),
+            serde_json::json!({"title": "arregla el tab", "prompt": "arregla el tab y su prueba", "pr": 112})
+        );
+        let to_branch = TaskRequest {
+            target: TaskTarget::Branch {
+                name: "pilot/arregla-el-tab".into(),
+                base: "main".into(),
+            },
+            ..to_pull
+        };
+        assert_eq!(
+            task_body(&to_branch),
+            serde_json::json!({"title": "arregla el tab", "prompt": "arregla el tab y su prueba",
+                               "branch": "pilot/arregla-el-tab", "base": "main"})
+        );
+        assert_eq!(
+            parse_task_id(br#"{"id": "t_9", "ok": true}"#).as_deref(),
+            Some("t_9")
+        );
+        assert_eq!(
+            parse_task_id(br#"{"task": {"id": 42}}"#).as_deref(),
+            Some("42")
+        );
+        assert_eq!(parse_task_id(br#"{"ok": true}"#), None);
+        assert_eq!(parse_task_id(b"queued"), None);
+    }
+
+    #[test]
+    fn refused_writes_say_why_without_the_token() {
+        assert_eq!(
+            write_problem(409, br#"{"error": "la rama ya existe"}"#, true),
+            "el Worker contestó 409 (la rama ya existe)"
+        );
+        assert!(write_problem(403, b"", true).contains("admin_token"));
+        assert!(write_problem(401, b"", false).contains("token de client.json"));
+        assert_eq!(
+            write_problem(500, b"<html>", false),
+            "el Worker contestó 500"
+        );
+        // A task without the admin token never leaves.
+        let cfg = parse_config(br#"{"url": "http://127.0.0.1:9", "token": "t"}"#).unwrap();
+        let t = TaskRequest {
+            title: "x".into(),
+            prompt: "x".into(),
+            target: TaskTarget::Pull(1),
+        };
+        assert_eq!(send_task(&cfg, &t).unwrap_err(), NO_ADMIN);
+    }
+
+    #[test]
+    fn an_answered_item_is_hidden_but_not_owed() {
+        let mut book = Book::default();
+        book.hide("q");
+        assert!(book.handled("q") && book.untold.is_empty());
     }
 
     #[test]

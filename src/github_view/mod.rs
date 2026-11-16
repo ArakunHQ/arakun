@@ -350,6 +350,13 @@ pub struct GitHubView {
     pilot_act: Option<pilot::PilotAct>,
     /// Why a card's action didn't go, by item id.
     pilot_notes: HashMap<String, String>,
+    /// The card whose "Otra respuesta…" line is open.
+    pilot_other: Option<String>,
+    pilot_input: Entity<TextInput>,
+    /// Cards whose answer is on its way.
+    pilot_sending: HashSet<String>,
+    /// "Enviado…" after an answer went, until its timer clears it.
+    pilot_sent: Option<(String, gpui::Task<()>)>,
     _pilot_sub: Subscription,
     _subs: Vec<Subscription>,
 }
@@ -403,7 +410,16 @@ impl GitHubView {
         let watch_input = cx.new(|cx| TextInput::new("organization or owner/repo", cx));
         let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
+        let pilot_input = cx.new(|cx| TextInput::new("Tu respuesta para el agente", cx));
         let subs = vec![
+            cx.subscribe(&pilot_input, |this, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Submit => this.pilot_send_other(cx),
+                InputEvent::Cancel => {
+                    this.pilot_other = None;
+                    cx.notify();
+                }
+                _ => {}
+            }),
             cx.observe(&github, |this, _, cx| this.on_github_changed(cx)),
             cx.subscribe(&watch_input, |this, _, ev: &InputEvent, cx| match ev {
                 InputEvent::Submit => this.add_watch(cx),
@@ -455,6 +471,13 @@ impl GitHubView {
             };
             this.pilot_open.retain(|id| shown.contains(id));
             this.pilot_notes.retain(|id, _| shown.contains(id));
+            if this
+                .pilot_other
+                .as_ref()
+                .is_some_and(|id| !shown.contains(id))
+            {
+                this.pilot_other = None;
+            }
             this.github.update(cx, |g, cx| g.want_people(people, cx));
             cx.notify();
         });
@@ -508,6 +531,10 @@ impl GitHubView {
             pilot_focus: None,
             pilot_act: None,
             pilot_notes: HashMap::new(),
+            pilot_other: None,
+            pilot_input,
+            pilot_sending: HashSet::new(),
+            pilot_sent: None,
             _pilot_sub: pilot_sub,
             _subs: subs,
         };
@@ -1411,6 +1438,26 @@ impl GitHubView {
                 .as_ref()
                 .is_some_and(|e| !me.is_empty() && e.author.eq_ignore_ascii_case(me)),
         }
+    }
+
+    /// The pull request picked, when it is the user's own, still open, and in
+    /// the repository arakun-pilot works on: (number, title). The palette
+    /// offers it as where a task for the cloud agent goes.
+    pub fn own_open_pull(&self, cx: &App) -> Option<(u64, String)> {
+        let item = self.item().filter(|i| {
+            i.kind == ItemKind::Pull && i.repo.eq_ignore_ascii_case(crate::github::pilot::REPO)
+        })?;
+        if !self.is_mine(cx) {
+            return None;
+        }
+        let (title, state) = match self.github.read(cx).details(&item) {
+            Some(Details::Pull(p)) => (p.title.clone(), p.state.clone()),
+            _ => {
+                let e = self.picked.as_ref()?;
+                (e.title.clone(), e.state.clone())
+            }
+        };
+        still_open(&state).then_some((item.number, title))
     }
 
     /// Markdown parsed once per text.
@@ -2440,6 +2487,13 @@ fn ago_iso(at: &str) -> String {
     ago(crate::ci::parse_time(at).unwrap_or(0))
 }
 
+/// Whether a pull request's state (`OPEN` from gh, `open` from a search) is
+/// open. Unknown (a notification only) counts as open: GitHub refuses a task
+/// on a closed one anyway.
+fn still_open(state: &str) -> bool {
+    state.is_empty() || state.eq_ignore_ascii_case("open")
+}
+
 /// A line in mono at a role color.
 fn mono(content: impl Into<gpui::SharedString>, color: gpui::Hsla) -> gpui::Div {
     div().ty(Type::Mono).text_color(color).child(content.into())
@@ -2639,6 +2693,12 @@ mod tests {
         assert_eq!(verb, "Post anyway");
         let (q, _) = draft_question(&changes, false, Verdict::RequestChanges);
         assert_eq!(q, "Post Claude's draft as a change request?");
+    }
+
+    #[test]
+    fn only_an_open_pull_takes_a_task() {
+        assert!(still_open("OPEN") && still_open("open") && still_open(""));
+        assert!(!still_open("MERGED") && !still_open("closed"));
     }
 
     #[test]

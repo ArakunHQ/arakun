@@ -162,8 +162,13 @@ terminal-only. The status line and keybindings from your settings don't apply in
   `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set;
   `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/items` every
   minute. Approve and request changes go through the same second click, with your own
-  `gh`; an approval only goes to the commit the agent read. What you saw and dealt with
-  is kept in `pilot.json` next to the state.
+  `gh`; an approval only goes to the commit the agent read. When the agent asks you
+  something with ready answers, they show as buttons on its card, with "Otra respuesta…"
+  for your own words (`POST <url>/items/<id>/answer`). What you saw and dealt with is
+  kept in `pilot.json` next to the state. Ctrl+K "Mandar al agente de la nube…" (or type
+  `nube: <task>`) hands it new work, on the open pull request of yours picked in the tab
+  or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
+  too.
 
 <details>
 <summary>When the GitHub tab reads GitHub, and what it stores</summary>

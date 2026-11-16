@@ -11,7 +11,7 @@ use gpui::{
 
 use super::{Confirm, GitHubView, NEWLINE, Note, Tab};
 use crate::github::Problem;
-use crate::github::pilot::{self, Item, Kind, Riesgo};
+use crate::github::pilot::{self, Answer, Item, Kind, Opcion, Riesgo};
 use crate::github::pr::{self, ItemRef, Verdict};
 use crate::theme;
 use crate::ui::{self, PillKind, Tone, Type, Typography as _, icon};
@@ -42,6 +42,28 @@ fn riesgo_tone(r: Riesgo) -> Tone {
         Riesgo::Alto => Tone::Danger,
         Riesgo::Otro => Tone::Neutral,
     }
+}
+
+/// How long "Enviado" stays after an answer went.
+const SENT_SHOWS: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// How each ready answer looks: the first real answer is the primary
+/// button; "Lo veo yo" (`skip`) stays quiet wherever it is.
+fn opcion_kinds(opciones: &[Opcion]) -> Vec<PillKind> {
+    let primary = opciones.iter().position(|o| !o.quiet());
+    opciones
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            if o.quiet() {
+                PillKind::Quiet
+            } else if Some(i) == primary {
+                PillKind::Primary
+            } else {
+                PillKind::Normal
+            }
+        })
+        .collect()
 }
 
 /// Why an approval from a card is refused: the pull request moved on.
@@ -90,10 +112,32 @@ impl GitHubView {
         let p = self.pilot.read(cx);
         let items: Vec<Item> = p.shown().cloned().collect();
         let problem = p.problem().map(str::to_string);
-        if items.is_empty() && problem.is_none() {
+        let sent = self.pilot_sent.as_ref().map(|(t, _)| t.clone());
+        if items.is_empty() && problem.is_none() && sent.is_none() {
             return Vec::new();
         }
         let mut out = vec![super::queue::group_header("Tu agente", items.len()).into_any_element()];
+        // The answered card is gone; this says where the answer went.
+        if let Some(text) = sent {
+            out.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .px(crate::ui::sp(16.))
+                    .pb(crate::ui::sp(6.))
+                    .child(icon("tick02", 12.).text_color(theme::success()))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .ty(Type::Caption)
+                            .text_color(theme::text_muted())
+                            .child(text),
+                    )
+                    .into_any_element(),
+            );
+        }
         // A Worker that can't be read says so, or its cards would just stop coming.
         if let Some(e) = problem {
             out.push(
@@ -428,6 +472,46 @@ impl GitHubView {
             Kind::Fixed => {
                 buttons = buttons.child(done("Ok", true, cx)).child(see);
             }
+            Kind::NeedsYou if !item.opciones.is_empty() => {
+                let sending = self.pilot_sending.contains(&id);
+                for ((oi, o), kind) in item
+                    .opciones
+                    .iter()
+                    .enumerate()
+                    .zip(opcion_kinds(&item.opciones))
+                {
+                    let (aid, answer) = (id.clone(), Answer::Opcion(o.id.clone()));
+                    buttons = buttons.child(
+                        ui::key_pill(
+                            ("gh-pilot-opcion", ix * 10 + oi),
+                            None,
+                            o.texto.clone(),
+                            None,
+                            kind,
+                            !sending,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.pilot_answer(&aid, answer.clone(), cx);
+                        })),
+                    );
+                }
+                let other_id = id.clone();
+                buttons = buttons.child(see).child(
+                    div()
+                        .id(("gh-pilot-other", ix))
+                        .cursor_pointer()
+                        .ty(Type::Label)
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme::text_subtle())
+                        .hover(|s| s.text_color(theme::text()))
+                        .child("Otra respuesta…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.pilot_open_other(&other_id, window, cx);
+                        })),
+                );
+            }
             Kind::NeedsYou | Kind::Failed | Kind::Other => {
                 buttons = buttons.child(see).child(done("Listo", false, cx));
             }
@@ -437,6 +521,47 @@ impl GitHubView {
             .flex_col()
             .gap(crate::ui::sp(8.))
             .child(buttons);
+        if self.pilot_other.as_deref() == Some(id.as_str()) {
+            let sending = self.pilot_sending.contains(&id);
+            foot = foot.child(
+                div()
+                    .id(("gh-pilot-other-row", ix))
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    // A click in the line stays in it: picking the card
+                    // would take the focus from the input.
+                    .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                    .child(
+                        ui::field()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(30.))
+                            .child(self.pilot_input.clone()),
+                    )
+                    .child(
+                        ui::key_pill(
+                            ("gh-pilot-other-send", ix),
+                            None,
+                            "Enviar",
+                            Some("↵"),
+                            PillKind::Normal,
+                            !sending,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.pilot_send_other(cx);
+                        })),
+                    ),
+            );
+        }
+        if self.pilot_sending.contains(&id) {
+            foot = foot.child(ui::text(
+                Type::Caption,
+                theme::text_subtle(),
+                "Enviando tu respuesta…",
+            ));
+        }
         if let Some(note) = self.pilot_notes.get(&id) {
             foot = foot.child(
                 div()
@@ -510,6 +635,80 @@ impl GitHubView {
             self.reveal(&r, cx);
         }
         cx.notify();
+    }
+
+    /// "Otra respuesta…": a line under the card for the user's own words.
+    fn pilot_open_other(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pilot_other.as_deref() != Some(id) {
+            self.pilot_other = Some(id.to_string());
+            self.pilot_input.update(cx, |i, cx| i.set_text("", cx));
+        }
+        window.focus(&self.pilot_input.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// Enter on the "Otra respuesta…" line.
+    pub(super) fn pilot_send_other(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.pilot_other.clone() else {
+            return;
+        };
+        let text = self.pilot_input.read(cx).text().trim().to_string();
+        if text.is_empty() {
+            self.pilot_notes
+                .insert(id, "Escribe tu respuesta primero.".into());
+            cx.notify();
+            return;
+        }
+        self.pilot_answer(&id, Answer::Texto(text), cx);
+    }
+
+    /// Hands the answer to the agent. The card goes once the Worker took it;
+    /// on an error it stays, saying why.
+    fn pilot_answer(&mut self, id: &str, answer: Answer, cx: &mut Context<Self>) {
+        let Some(cfg) = self.pilot.read(cx).config().cloned() else {
+            return;
+        };
+        if !self.pilot_sending.insert(id.to_string()) {
+            return;
+        }
+        self.pilot_notes.remove(id);
+        cx.notify();
+        let id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let (i, a) = (id.clone(), answer.clone());
+            let sent = cx
+                .background_spawn(async move { pilot::send_answer(&cfg, &i, &a) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.pilot_sending.remove(&id);
+                match sent {
+                    Ok(()) => {
+                        if this.pilot_other.as_deref() == Some(id.as_str()) {
+                            this.pilot_other = None;
+                        }
+                        if this.pilot_focus.as_deref() == Some(id.as_str()) {
+                            this.pilot_focus = None;
+                        }
+                        this.pilot_open.remove(&id);
+                        let clear = cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(SENT_SHOWS).await;
+                            let _ = this.update(cx, |this, cx| {
+                                this.pilot_sent = None;
+                                cx.notify();
+                            });
+                        });
+                        this.pilot_sent = Some(("Enviado: el agente sigue con eso.".into(), clear));
+                        this.pilot.update(cx, |p, cx| p.answered(&id, cx));
+                    }
+                    Err(e) => {
+                        this.pilot_notes
+                            .insert(id.clone(), format!("No se envió tu respuesta: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// "Visto bueno": the confirm strip for an approval of the commit the
@@ -664,6 +863,25 @@ impl GitHubView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opcion(id: &str) -> Opcion {
+        Opcion {
+            id: id.into(),
+            texto: id.to_uppercase(),
+        }
+    }
+
+    #[test]
+    fn the_first_real_answer_is_the_primary_one() {
+        let kinds = opcion_kinds(&[opcion("migrar"), opcion("quedan"), opcion("skip")]);
+        assert_eq!(
+            kinds,
+            [PillKind::Primary, PillKind::Normal, PillKind::Quiet]
+        );
+        // "Lo veo yo" first doesn't take the primary look.
+        let kinds = opcion_kinds(&[opcion("skip"), opcion("migrar")]);
+        assert_eq!(kinds, [PillKind::Quiet, PillKind::Primary]);
+    }
 
     #[test]
     fn a_moved_head_says_both_commits() {

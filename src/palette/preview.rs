@@ -668,6 +668,27 @@ impl Palette {
                 kit::preview_title(text.clone()).into_any_element(),
                 kit::preview_text("Kept in your to-dos. Type “to-do” or “pendiente” here to see them.").into_any_element(),
             ],
+            Card::Cloud(task) => {
+                let pilot = self.seed.pilot.clone().unwrap_or_default();
+                let place = match pilot.pull.as_ref().filter(|_| self.cloud_to_pull) {
+                    Some((n, t)) => format!("Trabaja en tu PR #{n} ({t}) y sube commits ahí."),
+                    None => "Abre una rama nueva desde main y deja un PR con el trabajo.".into(),
+                };
+                vec![
+                    kit::preview_eyebrow("cloud-upload", "arakun-pilot · tarea").into_any_element(),
+                    kit::preview_title(if task.is_empty() {
+                        "Mandar al agente de la nube".to_string()
+                    } else {
+                        cloud::title(task)
+                    })
+                    .into_any_element(),
+                    kit::preview_text(place).into_any_element(),
+                    kit::preview_text(
+                        "Corre en la nube, no en esta máquina. Cuando termine, el resultado llega como tarjeta en la pestaña GitHub.",
+                    )
+                    .into_any_element(),
+                ]
+            }
             Card::Confirm(item, title, head) => vec![
                 kit::preview_eyebrow("git-merge", format!("{} · #{} · {}", item.repo, item.number, super::short_head(head))).into_any_element(),
                 kit::preview_title(title.clone()).into_any_element(),

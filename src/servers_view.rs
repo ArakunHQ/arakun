@@ -170,7 +170,8 @@ pub struct ServersView {
     /// The folder and agent picked for the new session, when not the first offered.
     place: Option<String>,
     agent: Option<String>,
-    /// Answers given so far to the questions under this id.
+    /// Answers given so far to the questions under this key: the server, the
+    /// session and the id of the call that asked.
     answers: (String, Vec<String>),
     /// "Forget" was pressed once on this server; the next press counts.
     confirm_forget: Option<String>,
@@ -248,15 +249,17 @@ impl ServersView {
         {
             self.pane = Pane::Session;
         }
-        // Another question: the answers so far were to the last one.
+        // Another question, or the same id asked in another session: the
+        // answers so far, and what is typed in the field, were to the last one.
         let asked = state
             .open
             .as_ref()
-            .and_then(|o| o.questions.as_ref())
-            .map(|(id, _)| id.as_str())
-            .unwrap_or("");
+            .and_then(|o| Some((o, o.questions.as_ref()?)))
+            .map(|(o, (id, _))| format!("{}\n{}\n{id}", o.server, o.session))
+            .unwrap_or_default();
         if self.answers.0 != asked {
-            self.answers = (asked.to_string(), Vec::new());
+            self.answers = (asked, Vec::new());
+            self.answer.update(cx, |i, cx| i.set_text("", cx));
         }
         // Another session on show: what was typed stays with the one it was for.
         let key =

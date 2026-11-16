@@ -38,7 +38,8 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
 
 impl LastRead {
     /// Runs `f` over the entries and the directory saved at `path`. A file
-    /// that is missing or cannot be read has no entries.
+    /// that is missing or cannot be read has no entries, and is read again
+    /// the next time: only a read that worked is kept.
     pub fn with<R>(&self, path: &Path, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
         // Taken before the read: a save that lands in between leaves an old
         // stamp on new entries, and the next call reads again.
@@ -53,13 +54,14 @@ impl LastRead {
             None => {
                 #[cfg(test)]
                 self.reads.set(self.reads.get() + 1);
-                let (entries, cwd) = Thread::read_transcript(path)
-                    .map(|t| (t.entries, t.meta.cwd))
-                    .unwrap_or_default();
-                let Some(stamp) = stamp else {
+                // A read that failed is not kept: the file may be readable
+                // again with the same time and length (its folder was, for a
+                // moment, not), and the empty answer would stay for good.
+                let (Ok(read), Some(stamp)) = (Thread::read_transcript(path), stamp) else {
                     *self.kept.borrow_mut() = None;
-                    return f(&entries, &cwd);
+                    return f(&[], Path::new(""));
                 };
+                let (entries, cwd) = (read.entries, read.meta.cwd);
                 let kept = Rc::new(Kept {
                     path: path.to_path_buf(),
                     stamp,
@@ -129,6 +131,13 @@ mod tests {
         // A file that is gone has nothing, and nothing stale is kept for it.
         std::fs::remove_file(&a).unwrap();
         assert_eq!(count(&a), (0, PathBuf::new()));
+        // A file that cannot be read has nothing either, and is tried again
+        // each time: it may be whole the next time with the same stamp.
+        std::fs::write(&a, "{ not a transcript").unwrap();
+        let before = last.reads.get();
+        assert_eq!(count(&a), (0, PathBuf::new()));
+        assert_eq!(count(&a), (0, PathBuf::new()));
+        assert_eq!(last.reads.get(), before + 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

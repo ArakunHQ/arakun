@@ -313,9 +313,11 @@ out first.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them
-- In the GitHub tab: `J` / `K` next and previous item, `A` approve, `C` comment, `R`
-  review with an agent, `U` catch me up, `S` summarize, `O` open on GitHub;
-  `Ctrl+Enter` sends a comment, `/` in the comment box lists the actions
+- In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
+  `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
+  GitHub; `Ctrl+Enter` sends a comment, `/` in the comment box lists the actions. In
+  a narrow window the keys move through the list and `Enter` opens the item; `Esc`
+  goes back to the list
 
 ## Contributing
 

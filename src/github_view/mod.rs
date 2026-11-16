@@ -590,7 +590,8 @@ impl GitHubView {
             Some(i) => (i as isize + by).clamp(0, rows.len() as isize - 1) as usize,
             None => 0,
         };
-        self.select(rows[next].clone(), true, cx);
+        let open = opens_on_step(self.narrow(), self.narrow_open);
+        self.select(rows[next].clone(), open, cx);
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -1358,6 +1359,13 @@ fn strip_comments(line: &str, in_comment: &mut bool) -> String {
     }
 }
 
+/// Whether J/K (↓/↑) open the item they move to. The narrow layout shows
+/// the list or one item: in the list they only move the pick, and Enter
+/// opens it; in an item they go to the next one, still open.
+fn opens_on_step(narrow: bool, narrow_open: bool) -> bool {
+    !narrow || narrow_open
+}
+
 /// The result of a write, naming its item when another one is picked now.
 fn about(here: bool, item: &ItemRef, text: String) -> String {
     if here {
@@ -1683,6 +1691,14 @@ mod tests {
         assert_eq!(without_html("``a ` <!-- b``<!-- c -->d"), "``a ` <!-- b``d");
         // A lone backtick is text, and a comment after it still goes.
         assert_eq!(without_html("it` <!-- c -->x"), "it` x");
+    }
+
+    #[test]
+    fn keys_in_the_narrow_list_move_without_opening() {
+        assert!(!opens_on_step(true, false));
+        assert!(opens_on_step(true, true));
+        // Wide: the card is always there; it stays open if the window narrows.
+        assert!(opens_on_step(false, false));
     }
 
     #[test]

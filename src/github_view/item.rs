@@ -1419,7 +1419,7 @@ impl GitHubView {
                         .child(
                             div()
                                 .id("gh-hint-j")
-                                .child(ui::key_hint("Next", "J"))
+                                .child(ui::key_hint("Next", "J/↓"))
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
                         ),

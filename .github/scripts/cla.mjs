@@ -266,20 +266,28 @@ async function updateComment(result, claUrl) {
   }
 }
 
+const openPulls = () => paged(`/repos/${REPO}/pulls?state=open`);
+// What a review depends on: the same pull request can change its base.
+const key = (pr) => `${pr.number}:${pr.base.ref}`;
+
 /** Sets the status of `sha` from the open pull requests that have it as their head. */
-async function check(sha, open, claUrl) {
-  const prs = open.filter((p) => p.head.sha === sha);
+async function check(sha, claUrl) {
+  const headsOf = async () => (await openPulls()).filter((p) => p.head.sha === sha);
+  let prs = await headsOf();
   if (prs.length === 0) {
     console.log(`${sha}: the head of no open pull request, skipped.`);
     return;
   }
-  const reviews = await Promise.all(prs.map((pr) => review(pr, sha)));
-  // Runs don't wait for each other, so another run may record a signature
-  // while this one checks. After posting, look at the file again: if it
-  // changed, check again, so the last status posted saw the newest file.
+  // The commits behind `sha` don't change, so a review is reused across tries.
+  const reviews = new Map();
+  // Runs don't wait for each other: another run may record a signature, or a
+  // pull request may open with this head, while this one checks. After
+  // posting, look at both again, and check again if either changed, so the
+  // last status posted for `sha` saw the newest of both.
   let before = await readSignatures();
   for (let attempt = 1; ; attempt++) {
-    const results = reviews.map((r) => ({ ...r, missing: unsigned(r.users, before.data) }));
+    for (const pr of prs) if (!reviews.has(key(pr))) reviews.set(key(pr), await review(pr, sha));
+    const results = prs.map((pr) => ({ ...reviews.get(key(pr)), missing: unsigned(reviews.get(key(pr)).users, before.data) }));
     const { state, description } = verdict(results);
     await gh("POST", `/repos/${REPO}/statuses/${sha}`, {
       state,
@@ -290,10 +298,13 @@ async function check(sha, open, claUrl) {
     console.log(`${sha} (${prs.map((p) => `#${p.number}`).join(", ")}): ${state}, ${description}`);
     for (const result of results) await updateComment(result, claUrl);
 
-    const after = await readSignatures();
-    if (after.sha === before.sha) return;
-    if (attempt === 5) throw new Error(`${sha}: the signatures kept changing; run the check again.`);
+    const [after, now] = await Promise.all([readSignatures(), headsOf()]);
+    const same = (a, b) => a.map(key).sort().join() === b.map(key).sort().join();
+    // No open pull request has this head any more, so its status no longer matters.
+    if (now.length === 0 || (after.sha === before.sha && same(now, prs))) return;
+    if (attempt === 5) throw new Error(`${sha}: the signatures or pull requests kept changing; run the check again.`);
     before = after;
+    prs = now;
   }
 }
 
@@ -304,8 +315,7 @@ async function main() {
   const server = process.env.GITHUB_SERVER_URL || "https://github.com";
   const repo = event.repository ?? (await gh("GET", `/repos/${REPO}`));
   const claUrl = `${server}/${REPO}/blob/${repo.default_branch}/CLA.md`;
-  const open = await paged(`/repos/${REPO}/pulls?state=open`);
-  const all = () => open.map((p) => p.head.sha);
+  const all = async () => (await openPulls()).map((p) => p.head.sha);
 
   // The commits whose status may change.
   let shas;
@@ -324,9 +334,13 @@ async function main() {
       if ((await review(pr, pr.head.sha)).users.has(comment.user.id)) {
         if (await addSignature(comment.user, comment, pr.number, repo.id)) {
           console.log(`@${comment.user.login} signed the CLA.`);
-          // Their other open pull requests were waiting for this too.
-          shas = all();
+        } else {
+          console.log(`@${comment.user.login} had signed already.`);
         }
+        // Their other open pull requests were waiting for this too. Also when
+        // the signature was there already: a rerun of a run that saved it but
+        // failed on some pull request must reach those again.
+        shas = await all();
       } else {
         console.log(`@${comment.user.login} doesn't need to sign for #${pr.number}; ignored.`);
       }
@@ -336,11 +350,11 @@ async function main() {
   } else if (name === "push") {
     // This workflow or its script changed on the default branch: judge every
     // open pull request under the new rules, not the last run's.
-    shas = all();
+    shas = await all();
   } else if (name === "workflow_dispatch") {
     const number = (process.env.PR ?? "").trim();
     if (number && !/^[0-9]+$/.test(number)) throw new Error(`Not a pull request number: ${number}`);
-    shas = number ? [(await gh("GET", `/repos/${REPO}/pulls/${number}`)).head.sha] : all();
+    shas = number ? [(await gh("GET", `/repos/${REPO}/pulls/${number}`)).head.sha] : await all();
   } else {
     throw new Error(`Unexpected event: ${name}`);
   }
@@ -348,7 +362,7 @@ async function main() {
   let failed = false;
   for (const sha of new Set(shas.filter((s) => /^[0-9a-f]{40}$/.test(s ?? "") && !/^0+$/.test(s)))) {
     try {
-      await check(sha, open, claUrl);
+      await check(sha, claUrl);
     } catch (e) {
       // One broken pull request must not leave the others unchecked.
       console.log(`::error::${sha}: ${e.message}`);

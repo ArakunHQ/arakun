@@ -1359,7 +1359,9 @@ fn without_html(text: &str) -> String {
                 fence = None;
             } else {
                 let t = inner.trim_start();
-                if t.len() - t.trim_start_matches(ch).len() >= len
+                // Four spaces before it make the marker code, not a close.
+                if inner.len() - t.len() <= 3
+                    && t.len() - t.trim_start_matches(ch).len() >= len
                     && t.trim_start_matches(ch).trim().is_empty()
                 {
                     fence = None;
@@ -1399,18 +1401,7 @@ fn without_html(text: &str) -> String {
             .position(breaks)
             .map_or(lines.len(), |n| i + n);
         let para: Vec<&str> = lines[i..end].iter().map(|(l, _)| l.as_str()).collect();
-        for (line, keep) in para.iter().zip(multiline_spans(&para)) {
-            if !line.contains('<') {
-                out.push(line.to_string());
-                continue;
-            }
-            // A line that held only tags is gone, not a blank line: a blank
-            // line would end a list or a table around it.
-            let md = html_line(line, &keep);
-            if !md.trim().is_empty() {
-                out.push(md);
-            }
-        }
+        out.extend(html_paragraph(&para));
         i = end;
     }
     out.join("\n")
@@ -1429,6 +1420,60 @@ fn unquote(line: &str, max: usize) -> (&str, usize) {
         n += 1;
     }
     (t, n)
+}
+
+/// A paragraph with its HTML as markdown, read as one text so a link or
+/// bold that runs over lines keeps its meaning. When a tag took a line
+/// break with it (a `<picture>` over lines), the lines no longer match
+/// those in, so each line is read on its own instead.
+fn html_paragraph(para: &[&str]) -> Vec<String> {
+    // A line that held only tags is gone, not a blank line: a blank line
+    // would end a list or a table around it.
+    let keep = |md: String| (!md.trim().is_empty()).then_some(md);
+    let spans = multiline_spans(para);
+    if para.len() > 1 && para.iter().any(|l| l.contains('<')) {
+        let joined = para.join("\n");
+        let mut at = 0;
+        let mut start = 0;
+        let mut ranges = Vec::new();
+        for (line, keep) in para.iter().zip(&spans) {
+            ranges.extend(keep.iter().map(|&(a, b)| (start + a, start + b)));
+            start += line.len() + 1;
+        }
+        // Spans over lines come back one piece per line: join them again.
+        ranges.dedup_by(|b, a| {
+            let joins = a.1 + 1 == b.0;
+            if joins {
+                a.1 = b.1;
+            }
+            joins
+        });
+        let mut md = String::with_capacity(joined.len());
+        for (from, to) in ranges {
+            md.push_str(&html_inline(&joined[at..from], false, 0));
+            md.push_str(&joined[from..to]);
+            at = to;
+        }
+        md.push_str(&html_inline(&joined[at..], false, 0));
+        let pieces: Vec<&str> = md.split('\n').collect();
+        if pieces.len() == para.len() {
+            return para
+                .iter()
+                .zip(pieces)
+                .filter_map(|(line, md)| keep(line_end(line, md)))
+                .collect();
+        }
+    }
+    para.iter()
+        .zip(spans)
+        .filter_map(|(line, spans)| {
+            if line.contains('<') {
+                keep(html_line(line, &spans))
+            } else {
+                Some(line.to_string())
+            }
+        })
+        .collect()
 }
 
 /// The parts of each line of a paragraph that are in a code span running
@@ -1747,8 +1792,18 @@ fn html_line(line: &str, keep: &[(usize, usize)]) -> String {
         at = to;
     }
     md.push_str(&html_inline(&line[at..], false, 0));
-    // A tag taken from the start leaves no indent the line didn't have:
-    // indented text reads as code. Line breaks (from `<hr>`) stay.
+    line_end(line, &md)
+}
+
+/// Stands for `<hr>` until the lines are split: its own line breaks would
+/// shift the lines of a paragraph.
+const RULE: char = '\0';
+
+/// The markdown `md` made from `line`, with the rule written out. A tag
+/// taken from the start leaves no indent the line didn't have: indented
+/// text reads as code. Line breaks (from `<hr>`) stay.
+fn line_end(line: &str, md: &str) -> String {
+    let md = md.replace(RULE, "\n\n---\n\n");
     if line.starts_with(char::is_whitespace) {
         md
     } else {
@@ -1846,14 +1901,19 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
             ("a", false) if attrs.trim().is_empty() => out.push_str(tag),
             ("a", false) => match close_in("</a>").filter(|_| depth < MAX_DEPTH) {
                 Some(end) => {
-                    let text = html_inline(&rest[..end], plain, depth + 1);
-                    let text = text.trim();
+                    let inner = html_inline(&rest[..end], plain, depth + 1);
+                    let text = inner.trim();
+                    // Line breaks around the text stay outside the link, so
+                    // the lines of a paragraph stay where they were.
+                    let breaks = |s: &str| "\n".repeat(s.matches('\n').count());
+                    out.push_str(&breaks(&inner[..inner.len() - inner.trim_start().len()]));
                     match tag_attr(attrs, "href") {
                         Some(href) if !text.is_empty() && !plain => {
                             out.push_str(&format!("[{text}]({})", link_dest(href)))
                         }
                         _ => out.push_str(text),
                     }
+                    out.push_str(&breaks(&inner[inner.trim_end().len()..]));
                     rest = &rest[end + "</a>".len()..];
                 }
                 None => gap(&mut out),
@@ -1891,7 +1951,7 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
             ("sup" | "sub", _) => {}
             // Blank lines around it: after a line of text, `---` would make
             // that line a heading.
-            ("hr", _) => out.push_str("\n\n---\n\n"),
+            ("hr", _) => out.push(RULE),
             _ => gap(&mut out),
         }
     }
@@ -2411,6 +2471,33 @@ mod tests {
         assert_eq!(
             without_html("> ```\n> <b>x</b>\n<b>y</b>"),
             "> ```\n> <b>x</b>\n**y**"
+        );
+    }
+
+    #[test]
+    fn a_fence_indented_four_spaces_does_not_close() {
+        let body = "```html\n    ```\n<b>x</b>\n```";
+        assert_eq!(without_html(body), body);
+    }
+
+    #[test]
+    fn tags_over_lines_keep_their_meaning() {
+        assert_eq!(
+            without_html("<a href=\"https://example.com\">\ndocs\n</a>"),
+            "[docs](<https://example.com>)"
+        );
+        assert_eq!(
+            without_html("<strong>first\nsecond</strong>"),
+            "**first\nsecond**"
+        );
+        assert_eq!(
+            without_html("- a <a href=\"x\">two\n  lines</a>\n- b<hr>c"),
+            "- a [two\n  lines](<x>)\n- b\n\n---\n\nc"
+        );
+        // A picture over lines: each line is read on its own.
+        assert_eq!(
+            without_html("<picture>\n<img src=\"l.png\" width=\"600\">\n</picture> <b>x</b>"),
+            "![](<l.png>)\n**x**"
         );
     }
 

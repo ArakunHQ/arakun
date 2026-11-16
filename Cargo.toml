@@ -102,6 +102,13 @@ windows-sys = { version = "0.61", features = [
 name = "arakun-helper"
 required-features = ["browser"]
 
+# `arakun-server` is the server (src/server.rs) for a machine with no display. A
+# package of its own, because it takes GPUI without Wayland and X11, and features
+# are per package. Cargo commands run here leave it out; name it with
+# `-p arakun-server` (see server/Cargo.toml).
+[workspace]
+members = ["server"]
+
 [features]
 default = ["browser"]
 browser = ["dep:cef"]

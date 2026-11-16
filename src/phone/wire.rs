@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use crate::account::{self, Limits, UsageMode};
 use crate::agent::plan::PlanUsage;
 use crate::agent::{
-    AskUserRequest, Entry, PermissionRequest, ToolContent, ToolStatus, Usage, attach, diff,
-    fmt_cost,
+    AskUserRequest, Entry, PermissionRequest, Setting, SettingOption, Thread, ToolContent,
+    ToolStatus, Usage, attach, diff, fmt_cost,
 };
 use crate::model::Status;
 
@@ -643,6 +643,137 @@ fn diff_counts(old: Option<&str>, new: &str) -> (usize, usize) {
             }
         }
     }
+}
+
+// ---- whole messages --------------------------------------------------------
+// Built here so the app and `arakun server` send the very same ones.
+
+/// `entries`: a watched session's entries from `from` on, and how many it has now.
+pub fn entries_message(id: &str, all: &[Entry], from: usize, scope: &Scope) -> String {
+    json!({
+        "type": "entries", "id": id, "from": from.min(all.len()), "count": all.len(),
+        "entries": entries(all, from, scope),
+    })
+    .to_string()
+}
+
+/// `state`: what changed around a watched session's entries.
+pub fn state_message(id: &str, t: &Thread, status: Status) -> String {
+    json!({
+        "type": "state", "id": id, "status": self::status(status),
+        "permission": t.pending_permission().map(permission),
+        "question": t.pending_question().map(question),
+        "usage": usage(t.usage()),
+        "elapsed_ms": t.turn_elapsed().map(|d| d.as_millis() as u64),
+        "title": t.title(),
+        "changes": change_totals(t.entries()),
+    })
+    .to_string()
+}
+
+/// What the list a session is in says about it, for a `session` message.
+pub struct SessionHead<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    /// The agent's name, as shown.
+    pub agent: &'a str,
+    pub status: Status,
+    pub place: &'a str,
+}
+
+fn session_head(head: &SessionHead, all: &[Entry], scope: &Scope) -> Value {
+    let from = all.len().saturating_sub(TAIL);
+    json!({
+        "type": "session", "id": head.id, "title": head.title, "agent": head.agent,
+        "status": status(head.status), "place": head.place,
+        "permission": null, "question": null, "usage": null, "elapsed_ms": null,
+        "count": all.len(), "from": from, "entries": entries(all, from, scope),
+        "changes": change_totals(all),
+    })
+}
+
+/// `session`: a session that is running, as a phone opens it. `status` is the
+/// thread's own, which is fresher than the list's.
+pub fn session_live(head: &SessionHead, t: &Thread, status: Status, scope: &Scope) -> String {
+    let mut msg = session_head(head, t.entries(), scope);
+    msg["permission"] = t.pending_permission().map_or(Value::Null, permission);
+    msg["question"] = t.pending_question().map_or(Value::Null, question);
+    msg["usage"] = usage(t.usage());
+    msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
+    msg["status"] = json!(self::status(status));
+    if !t.title().is_empty() {
+        msg["title"] = json!(t.title());
+    }
+    msg.to_string()
+}
+
+/// `session`: one that is not running, from its transcript's entries.
+pub fn session_saved(head: &SessionHead, all: &[Entry], scope: &Scope) -> String {
+    session_head(head, all, scope).to_string()
+}
+
+/// What a waiting session asks, for its line in the inbox.
+pub fn asks(t: &Thread) -> Option<Value> {
+    t.pending_permission()
+        .map(|p| json!({ "kind": "permission", "text": p.title }))
+        .or_else(|| {
+            let q = t.pending_question()?;
+            Some(json!({ "kind": "question", "text": q.questions.first()?.question }))
+        })
+}
+
+/// A session's line in the inbox.
+pub struct InboxSession<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    /// The agent's name, as shown.
+    pub agent: &'a str,
+    pub status: Status,
+    pub updated: u64,
+    pub added: u32,
+    pub removed: u32,
+    pub project: &'a str,
+    pub env: &'a str,
+    pub pr: Option<&'a str>,
+    pub asks: Option<Value>,
+}
+
+pub fn inbox_session(s: InboxSession) -> Value {
+    json!({
+        "id": s.id, "title": s.title, "agent": s.agent, "status": status(s.status),
+        "updated": s.updated, "added": s.added, "removed": s.removed,
+        "project": s.project, "env": s.env, "pr": s.pr, "asks": s.asks,
+    })
+}
+
+/// Where a phone can start a session, with the agent that place picks (its key).
+pub fn inbox_place(
+    path: &Path,
+    project: &str,
+    env: &str,
+    branch: Option<&str>,
+    agent: &str,
+) -> Value {
+    json!({ "path": path, "project": project, "env": env, "branch": branch, "agent": agent })
+}
+
+/// `inbox`: every session, newest first, and the places.
+pub fn inbox(host: &str, mut sessions: Vec<Value>, places: Vec<Value>) -> String {
+    sessions.sort_by_key(|s| std::cmp::Reverse(s["updated"].as_u64().unwrap_or(0)));
+    json!({ "type": "inbox", "host": host, "sessions": sessions, "places": places }).to_string()
+}
+
+/// Settings with their value and choices, as the phone shows them.
+pub fn settings(list: Vec<(Setting, (String, Vec<SettingOption>))>) -> Value {
+    let list = list.into_iter().map(|(s, (current, options))| {
+        json!({
+            "key": s.key(),
+            "label": s.label(),
+            "current": current,
+            "options": options.iter().map(|o| json!({ "id": o.id, "name": o.name, "detail": o.detail, "disabled": o.disabled })).collect::<Vec<_>>(),
+        })
+    });
+    Value::Array(list.collect())
 }
 
 #[cfg(test)]

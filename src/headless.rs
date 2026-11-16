@@ -1130,7 +1130,7 @@ pub fn log(m: &Meta, lines: usize) -> String {
     let entries = Thread::read_transcript(&transcript_path(&m.id))
         .map(|t| t.entries)
         .unwrap_or_default();
-    let log = crate::shell::agent_cli::render_log(&entries, lines);
+    let log = agent::log::render_log(&entries, lines);
     out.push_str("\n\n");
     out.push_str(if log.is_empty() {
         "(nothing yet)"

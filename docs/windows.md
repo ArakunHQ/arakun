@@ -104,6 +104,7 @@ build with the browser.
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
 | Branch naming agent and model (Settings › General) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
+| `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |

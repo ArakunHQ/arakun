@@ -96,6 +96,8 @@ jobs:
               tools/install-cef.sh) rust=true ;;
               # The Clippy job runs it to check the formatting.
               tools/rustfmt.sh) rust=true ;;
+              # The Server job runs it on the binary it builds.
+              tools/check-server-libs.sh) rust=true ;;
               # A test in src/design_lint.rs checks the layout audit against its fixtures.
               tools/layout_audit.py | tools/layout-audit-fixtures/*) rust=true ;;
               # Nothing the Rust build or its tests read. Anything not listed
@@ -239,6 +241,50 @@ jobs:
 
       - name: cargo test
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
+
+  # arakun-server (server/) is the app's server for a machine with no display:
+  # the same source files, against GPUI without Wayland and X11. It is a package
+  # of its own, which the jobs above leave out, and it is only worth having if it
+  # really needs no desktop library. So this job installs none of them, builds it
+  # alone, as someone setting up a server would, and reads what the binary needs.
+  # Built together with the app it would get the app's GPUI, display code and all.
+  server:
+    name: Server (Linux, no display libraries)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    runs-on: depot-ubuntu-24.04-4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: $/.github/actions/runner-usage
+
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      # Only main saves; pull requests restore main's entry. Depot Cache does not
+      # keep branches apart, so a pull request's save would reach main's builds.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Its own main.rs and the stand-ins in it; the modules it shares with the
+      # app are linted there, tests included.
+      - name: cargo clippy
+        run: cargo clippy --locked -p arakun-server --config "$CI_CARGO_CONFIG" -- -D warnings
+
+      - name: cargo build
+        run: cargo build --locked -p arakun-server --config "$CI_CARGO_CONFIG"
+
+      - name: Starts without a display
+        run: target/debug/arakun-server --version
+
+      - name: Needs no desktop library
+        run: tools/check-server-libs.sh target/debug/arakun-server
 
   # The cfg(windows) code and the Windows-only crates (windows, windows-sys,
   # uds_windows) compile nowhere else, so without this job a Windows break

@@ -97,6 +97,13 @@ Windows and other options: see [Install](#install).
   policy (`--policy readonly|workspace|full`) decides which tool calls need your approval
   (`arakun agent approve|deny`). Linux only (needs `bwrap`); headless runs use Workers AI
   models for now.
+- **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
+  sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
+  agent signed in on that machine and keeps them going while nothing is connected.
+  Paired devices reach it the way phones reach the app, with the same page, pairing
+  and notifications; agents ask for permission as they do in the app, and you answer
+  from wherever you are. `arakun-server` is the same server as a program of its own
+  that needs no display library. See [Server](#server).
 
 ### GitHub
 
@@ -304,6 +311,21 @@ The default `browser` feature needs CEF at build time and at run time.
   also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
   [docs/windows.md](docs/windows.md).
 
+### The server alone (no display)
+
+`arakun-server` is the [server](#server) built without the window. It needs none of the
+system libraries above, only a C compiler, and the binary runs on a machine that has
+no desktop installed:
+
+```sh
+cargo build --release --locked -p arakun-server
+./target/release/arakun-server help
+```
+
+Build it on its own, as above. Built in the same command as the app, Cargo gives both
+the same GPUI, with the display code in it. Releases do not carry it yet: build it on
+the machine, or copy the binary from one with the same glibc.
+
 ### Install for your user (Linux)
 
 `tools/install.sh` builds a release binary and installs it to `~/.local/bin`, with a
@@ -343,6 +365,7 @@ arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent 
                                   # the command shares its line with others. --head is
                                   # the commit the agent read; an approval needs it
 arakun agent run <prompt>         # start a headless agent
+arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)
 ```
 
@@ -352,6 +375,92 @@ desktop. On Hyprland, for example: `bind = SUPER, K, exec, arakun palette`.
 `arakun run` and `arakun logs` take `--ready <text>`, `--port <n>` and `--timeout <s>`
 before the command, and fail with the tail of the output if the command exits or times
 out first.
+
+## Server
+
+To run sessions on another machine, start a server there and pair a device with it.
+Where the app is installed, `arakun server` is the command; `arakun-server` is the
+same command for a machine with no display (see
+[The server alone](#the-server-alone-no-display)).
+
+```sh
+arakun-server serve          # runs until Ctrl+C, a signal or `arakun-server quit`
+arakun-server pair           # in another terminal: a link and its QR code
+```
+
+Open the link on a phone or in any browser within two minutes. It pairs that one
+device, which then sees the server's sessions, starts new ones, reads them live,
+answers the agents and gets a notification when one finishes or needs you. It is the
+page the Phone tab pairs phones with. The app does not connect to a server yet.
+
+```sh
+arakun-server add ~/code/app      # a folder sessions can start in; the page lists them
+arakun-server new --agent claude "fix the failing test"   # start one here; prints its id
+arakun-server ls                  # folders and sessions
+arakun-server log <id>            # a session's status and last entries
+arakun-server wait <id>           # until it stops working; prints its answer or what it asks
+arakun-server send <id> <text>    # a follow-up
+arakun-server approve <id>        # or deny: answer the permission it asks for
+arakun-server stop <id>           # stop its turn; follow-ups waiting behind it are dropped
+arakun-server devices             # paired devices; `unpair <device>` forgets one
+arakun-server status
+```
+
+`arakun-server help` lists them all.
+
+- **Agents.** Claude Code, Droid, OpenCode and Workers AI, as in the app. Sign in to
+  each one on that machine first: the server uses its logins and its permission
+  settings. An agent set to allow everything there asks for nothing here either.
+- **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
+  so it works behind a firewall, and everything between the device and the server is
+  end to end encrypted; `--relay <url>` names a relay of your own. `--reach tailscale`
+  serves it at the machine's tailnet name over HTTPS; that takes the machine's HTTPS
+  port on the tailnet, as the app's Phone tab on Tailscale does, so only one of the two
+  can use it on a machine. `--reach lan` listens on every
+  interface over plain HTTP (`--port`, 7474 unless told): use it only on a network you
+  trust. What `serve` is started with is kept for the next run.
+- **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
+  `phone.json` (how it is reached, its relay identity, the paired devices),
+  `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
+  work) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
+  folder, for a second server on the machine. The app's own files are not touched: the
+  app and a server can run side by side.
+- **The local socket.** The commands above reach the server over `server.sock` in
+  that folder, which only your user can open. It is also what keeps a second server
+  off the same folder.
+- **A turn that is running when the server stops** is cut off. Its session is still
+  there after a restart, and the next message picks it up. Follow-ups that were
+  waiting behind that turn run first, then the new message.
+
+To keep it running on Linux, put the binary where the unit below looks for it, and a
+systemd user unit is enough:
+
+```sh
+install -Dm755 target/release/arakun-server ~/.local/bin/arakun-server
+```
+
+```ini
+# ~/.config/systemd/user/arakun-server.service
+[Unit]
+Description=Arakun server
+
+[Service]
+ExecStart=%h/.local/bin/arakun-server serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now arakun-server
+loginctl enable-linger "$USER"     # keep it running while you are logged out
+```
+
+If a session says its agent was not found, give the unit the `PATH` your shell has
+(`Environment=PATH=...`).
+
+Tried on Linux and macOS.
 
 ## Keyboard shortcuts
 

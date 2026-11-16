@@ -96,6 +96,9 @@ tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
 
+# server/ changed, or a file src/server.rs builds on (see the list in server/src/main.rs)
+cargo clippy --locked -p arakun-server -- -D warnings
+
 # Cargo.toml, Cargo.lock or deny.toml changed (cargo install --locked cargo-deny)
 cargo deny check
 
@@ -108,6 +111,13 @@ zizmor .github
 ```
 
 Some notes:
+
+- `arakun-server` (in `server/`) is the app's server built for a machine with no
+  display: a package of its own that includes the app's source files, against GPUI
+  without Wayland and X11. Its tests are the app's (`src/server/`), so `cargo test`
+  covers them. CI also builds it alone and fails if the binary needs a desktop library
+  (`tools/check-server-libs.sh`). A dependency it needs is listed in both `Cargo.toml`
+  files, with the same version.
 
 - The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
   it; it runs `cargo fmt`, which on its own stops at the private modules this

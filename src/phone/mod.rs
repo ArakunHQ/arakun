@@ -18,7 +18,12 @@ pub mod identity;
 pub mod push;
 pub mod relay;
 pub mod tailscale;
+mod transport;
+mod upload;
 pub mod wire;
+
+pub use transport::Transport;
+pub use upload::Uploads;
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -29,14 +34,11 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
-use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tungstenite::{Message, WebSocket};
 
-#[derive(RustEmbed)]
-#[folder = "phone"]
-struct Page;
+use crate::phone_page::Page;
 
 pub const DEFAULT_PORT: u16 = 7474;
 /// How long a pairing code is good for.
@@ -383,10 +385,17 @@ impl Access {
         }
     }
 
-    /// The push subscriptions that stopped working, dropped.
-    pub fn drop_subscriptions(&mut self, devices: &[String]) {
-        for d in self.devices.iter_mut().filter(|d| devices.contains(&d.id)) {
-            d.push = None;
+    /// The push subscriptions that stopped working, dropped. Each comes as
+    /// the device and the subscription the push went to: a phone that
+    /// subscribed again while that push was on its way keeps its new one.
+    pub fn drop_subscriptions(&mut self, gone: &[(String, push::Subscription)]) {
+        for d in &mut self.devices {
+            if gone
+                .iter()
+                .any(|(id, sub)| *id == d.id && d.push.as_ref() == Some(sub))
+            {
+                d.push = None;
+            }
         }
     }
 
@@ -599,7 +608,20 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Where `arakun server` keeps its settings; the app's own file when unset.
+static SETTINGS_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Makes this process keep its phones, its relay identity and its push keys in
+/// `path`. `arakun server` calls it before anything loads the settings: with
+/// the app's file it would take the app's place at the relay.
+pub fn use_settings_file(path: PathBuf) {
+    let _ = SETTINGS_FILE.set(path);
+}
+
 fn settings_file() -> PathBuf {
+    if let Some(path) = SETTINGS_FILE.get() {
+        return path.clone();
+    }
     // A test instance with its own state file keeps its own phone, on its own port.
     if let Some(state) = std::env::var_os("ARAKUN_STATE") {
         return PathBuf::from(state).with_file_name("phone.json");
@@ -609,20 +631,44 @@ fn settings_file() -> PathBuf {
 
 impl Settings {
     pub fn load() -> Self {
-        std::fs::read(settings_file())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        Self::read().ok().flatten().unwrap_or_default()
     }
 
+    /// What the file holds; `None` when there is none yet. A file that is
+    /// there but cannot be read, or does not hold settings, is an error. The
+    /// app takes the defaults then (`load`). `arakun server` must not: the
+    /// defaults would put it on the plain network, and its next save would
+    /// write them over the relay identity and every paired device.
+    pub fn read() -> Result<Option<Settings>, String> {
+        Self::read_from(&settings_file())
+    }
+
+    fn read_from(path: &Path) -> Result<Option<Settings>, String> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+                format!(
+                    "{} is not what Arakun wrote ({e}); move it aside to start over",
+                    path.display()
+                )
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// Whole or not at all, and for this user only: the file holds the relay
+    /// identity, and it is rewritten each time a device connects. A plain
+    /// write cut short (a full disk) would leave it empty.
     pub fn save(&self) {
         let path = settings_file();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        if let Err(e) = self.save_to(&path) {
+            eprintln!("arakun: could not save {}: {e}", path.display());
         }
-        if let Ok(json) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(path, json);
-        }
+    }
+
+    fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        let json = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        crate::durable::write_private(path, &json)
     }
 }
 
@@ -1316,6 +1362,69 @@ pub fn host_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_that_cannot_be_read_are_an_error_not_the_defaults() {
+        let dir = std::env::temp_dir().join(format!("arakun-phone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("phone.json");
+        // Nothing there yet: a first run.
+        assert_eq!(Settings::read_from(&file).map(|s| s.is_some()), Ok(false));
+        let settings = Settings {
+            enabled: true,
+            reach: Reach::Relay,
+            ..Settings::default()
+        };
+        settings.save_to(&file).unwrap();
+        let back = Settings::read_from(&file).unwrap().unwrap();
+        assert_eq!((back.enabled, back.reach), (true, Reach::Relay));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            // It holds the relay identity: this user only.
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // Cut short, as a write on a full disk leaves it: an error that names
+        // the file, and never the defaults (which are the plain network).
+        std::fs::write(&file, b"{ \"enabled\": tr").unwrap();
+        let e = Settings::read_from(&file).unwrap_err();
+        assert!(
+            e.contains("phone.json") && e.contains("move it aside"),
+            "{e}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_subscription_that_is_gone_takes_only_itself() {
+        let sub = |endpoint: &str| push::Subscription {
+            endpoint: endpoint.into(),
+            p256dh: "k".into(),
+            auth: "a".into(),
+        };
+        let access = Access::new(Vec::new(), String::new());
+        let mut access = access.lock().unwrap();
+        let (one, _, _) = access.admit("One", 1, false);
+        let (two, _, _) = access.admit("Two", 1, false);
+        access.subscribe(&one.id, Some(sub("https://push.example/old")));
+        access.subscribe(&two.id, Some(sub("https://push.example/two")));
+        // The first phone subscribed again while a push to its old address was out.
+        access.subscribe(&one.id, Some(sub("https://push.example/new")));
+        access.drop_subscriptions(&[
+            (one.id.clone(), sub("https://push.example/old")),
+            (two.id.clone(), sub("https://push.example/two")),
+        ]);
+        let push_of = |id: &str| {
+            let d = access.devices.iter().find(|d| d.id == id).unwrap();
+            d.push.as_ref().map(|s| s.endpoint.clone())
+        };
+        assert_eq!(
+            push_of(&one.id).as_deref(),
+            Some("https://push.example/new")
+        );
+        assert_eq!(push_of(&two.id), None);
+    }
 
     #[test]
     fn start_reads_with_and_without_an_agent() {

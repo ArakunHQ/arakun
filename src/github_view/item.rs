@@ -476,7 +476,7 @@ impl GitHubView {
                     format!(
                         "{} {} into {base}?",
                         super::merge_label(m),
-                        super::short_sha(&self.confirm_head)
+                        crate::github::pr::short_sha(&self.confirm_head)
                     ),
                     super::merge_label(m).to_string(),
                     false,

@@ -632,7 +632,7 @@ fn save_draft_cli(args: &[String]) -> Result<String, String> {
         "Saved a draft {} for {} (written for {}). Nothing was sent to GitHub: the user posts it from the GitHub tab.",
         parsed.verdict.name(),
         parsed.item.label(),
-        &draft.head_sha[..draft.head_sha.len().min(7)],
+        pr::short_sha(&draft.head_sha),
     ))
 }
 

@@ -402,6 +402,15 @@ impl Issue {
     }
 }
 
+/// A commit as people quote it: its first seven characters. A draft's SHA
+/// comes from a file on disk, so it is cut on a character boundary: a byte cut
+/// would panic on a damaged file.
+pub fn short_sha(sha: &str) -> &str {
+    sha.char_indices()
+        .nth(7)
+        .map_or(sha, |(end, _)| &sha[..end])
+}
+
 fn secs(time: &str) -> u64 {
     crate::ci::parse_time(time).unwrap_or(0)
 }
@@ -1894,7 +1903,7 @@ fn merge_problem(p: Problem, head: &str) -> Problem {
         Problem::Other(text) if text.to_lowercase().contains("head branch was modified") => {
             Problem::Other(format!(
                 "New commits were pushed after {}: nothing was merged. Look at them, then merge again.",
-                &head[..head.len().min(7)]
+                short_sha(head)
             ))
         }
         _ => p,
@@ -2214,7 +2223,7 @@ pub fn post_draft(item: &ItemRef, draft: &Draft, verdict: Verdict) -> Result<(),
         if now != draft.head_sha {
             return Err(invalid(&format!(
                 "New commits were pushed after {}: nothing was approved. Read the draft against them, or post it as a comment.",
-                &draft.head_sha[..draft.head_sha.len().min(7)]
+                short_sha(&draft.head_sha)
             )));
         }
     }
@@ -2442,6 +2451,17 @@ mod tests {
     use super::*;
 
     const ME: &str = "karlo";
+
+    #[test]
+    fn short_sha_cuts_on_characters() {
+        assert_eq!(short_sha("0123456789abcdef"), "0123456");
+        assert_eq!(short_sha("abc"), "abc");
+        assert_eq!(short_sha(""), "");
+        // A damaged draft file: byte 7 falls inside a character.
+        assert_eq!(short_sha("abcdeféz"), "abcdefé");
+        assert_eq!(short_sha("İİİİİİİİ"), "İİİİİİİ");
+        assert_eq!(short_sha("🦀🦀🦀🦀🦀🦀🦀🦀🦀"), "🦀🦀🦀🦀🦀🦀🦀");
+    }
 
     /// A pull request as `gh pr view --json` gives it: open, two commits, one
     /// review asking for changes, checks of both kinds, and a few nulls.

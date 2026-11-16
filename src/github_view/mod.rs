@@ -1381,7 +1381,7 @@ fn draft_question(draft: &Draft, stale: bool, posts_as: Verdict) -> (String, Str
     } else {
         draft.author.as_str()
     };
-    let sha = short_sha(&draft.head_sha);
+    let sha = pr::short_sha(&draft.head_sha);
     let word = timeline::verdict_word(posts_as);
     if draft.verdict == Verdict::Approve && posts_as != Verdict::Approve {
         let when = if sha.is_empty() {
@@ -1407,11 +1407,6 @@ fn draft_question(draft: &Draft, stale: bool, posts_as: Verdict) -> (String, Str
         _ => format!("Post {who}'s draft as a {word}?"),
     };
     (what, format!("Post as {word}"))
-}
-
-/// A commit as people quote it: its first seven characters.
-fn short_sha(sha: &str) -> &str {
-    &sha[..sha.len().min(7)]
 }
 
 fn merge_label(m: MergeMethod) -> &'static str {

@@ -1131,7 +1131,7 @@ impl Shell {
                     for (device, sub) in targets {
                         match push::send(&vapid, &sub, payload.as_bytes(), now) {
                             Ok(()) => {}
-                            Err(push::Fail::Gone) => gone.push(device),
+                            Err(push::Fail::Gone) => gone.push((device, sub)),
                             Err(e) => eprintln!("arakun: could not notify a phone: {e}"),
                         }
                     }

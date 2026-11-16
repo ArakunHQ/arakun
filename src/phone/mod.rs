@@ -385,10 +385,17 @@ impl Access {
         }
     }
 
-    /// The push subscriptions that stopped working, dropped.
-    pub fn drop_subscriptions(&mut self, devices: &[String]) {
-        for d in self.devices.iter_mut().filter(|d| devices.contains(&d.id)) {
-            d.push = None;
+    /// The push subscriptions that stopped working, dropped. Each comes as
+    /// the device and the subscription the push went to: a phone that
+    /// subscribed again while that push was on its way keeps its new one.
+    pub fn drop_subscriptions(&mut self, gone: &[(String, push::Subscription)]) {
+        for d in &mut self.devices {
+            if gone
+                .iter()
+                .any(|(id, sub)| *id == d.id && d.push.as_ref() == Some(sub))
+            {
+                d.push = None;
+            }
         }
     }
 
@@ -1331,6 +1338,36 @@ pub fn host_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_subscription_that_is_gone_takes_only_itself() {
+        let sub = |endpoint: &str| push::Subscription {
+            endpoint: endpoint.into(),
+            p256dh: "k".into(),
+            auth: "a".into(),
+        };
+        let access = Access::new(Vec::new(), String::new());
+        let mut access = access.lock().unwrap();
+        let (one, _, _) = access.admit("One", 1, false);
+        let (two, _, _) = access.admit("Two", 1, false);
+        access.subscribe(&one.id, Some(sub("https://push.example/old")));
+        access.subscribe(&two.id, Some(sub("https://push.example/two")));
+        // The first phone subscribed again while a push to its old address was out.
+        access.subscribe(&one.id, Some(sub("https://push.example/new")));
+        access.drop_subscriptions(&[
+            (one.id.clone(), sub("https://push.example/old")),
+            (two.id.clone(), sub("https://push.example/two")),
+        ]);
+        let push_of = |id: &str| {
+            let d = access.devices.iter().find(|d| d.id == id).unwrap();
+            d.push.as_ref().map(|s| s.endpoint.clone())
+        };
+        assert_eq!(
+            push_of(&one.id).as_deref(),
+            Some("https://push.example/new")
+        );
+        assert_eq!(push_of(&two.id), None);
+    }
 
     #[test]
     fn start_reads_with_and_without_an_agent() {

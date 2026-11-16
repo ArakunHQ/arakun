@@ -636,8 +636,14 @@ pub fn parse_reminder(text: &str, clock: &Clock) -> Option<Draft> {
     let t = text.to_lowercase();
     let bare = has_phrase(&w, TIMER_WORDS);
     let (at, span) = relative_time(&t, clock.now, bare).or_else(|| clock_time(&t, clock))?;
-    // Lower case can change a letter's length; then cut the lower-case text instead.
-    let src = if t.len() == text.len() { text } else { &t };
+    // The span's offsets are in `t`. They fit `text` only when no letter changed
+    // its length when lowered (equal total lengths can hide `İ` and `K` cancelling
+    // out); else cut the lower-case text instead.
+    let src = if super::rank::lower_keeps_offsets(text) {
+        text
+    } else {
+        &t
+    };
     let what = what_to_remember(&format!("{} {}", &src[..span.0], &src[span.1..]));
     let text = if what.is_empty() {
         "Time's up".to_string()
@@ -1287,6 +1293,22 @@ mod tests {
         assert!(parse_reminder("en 20 min revisa el PR", &c).is_none());
         assert!(sounds_like_rule("créame un recordatorio de algo"));
         assert!(title_for(&d.trigger, &d.steps).starts_with("Reminder: "));
+    }
+
+    #[test]
+    fn reminders_with_letters_that_change_length_do_not_panic() {
+        let now = local(2026, 1, 15, 10, 0);
+        let c = zone(now);
+        // `İ` grows and the Kelvin sign shrinks when lowered: the totals match,
+        // but the span's end falls inside `é` in the typed text.
+        let d = parse_reminder("İİ reminder in 5 min é\u{212A}", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 300 });
+        assert!(notice(&d).contains('é'));
+        // Letters that keep their length keep their case too.
+        let d = parse_reminder("recuérdame en 5 min llamar a José 🦀", &c).unwrap();
+        assert_eq!(notice(&d), "llamar a José 🦀");
+        let d = parse_reminder("İstanbul: remind me in 10 min", &c).unwrap();
+        assert_eq!(d.trigger, Trigger::At { at: now + 600 });
     }
 
     #[test]

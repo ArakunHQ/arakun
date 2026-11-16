@@ -15,6 +15,17 @@ pub struct Hit {
     pub ranges: Vec<Range<usize>>,
 }
 
+/// Whether every character of `s` keeps its byte length when lower-cased, so
+/// byte offsets found in `s.to_lowercase()` land on the same characters in `s`.
+/// Equal total lengths are not enough: the Kelvin sign (3 bytes) lowers to `k`
+/// (1 byte) and `İ` (2 bytes) to `i̇` (3 bytes), which can cancel out and leave
+/// an offset inside a character, where slicing panics.
+pub fn lower_keeps_offsets(s: &str) -> bool {
+    s.is_ascii()
+        || s.chars()
+            .all(|c| c.to_lowercase().map(char::len_utf8).sum::<usize>() == c.len_utf8())
+}
+
 fn is_boundary(prev: Option<char>, c: char) -> bool {
     match prev {
         None => true,
@@ -32,18 +43,22 @@ fn substring(hay: &str, needle: &str) -> Option<Hit> {
     if needle.is_empty() {
         return word(hay, needle);
     }
-    let lower = hay.to_lowercase();
-    if lower.len() == hay.len() {
-        return exact(hay, &lower, &needle.to_lowercase());
+    if lower_keeps_offsets(hay) {
+        return exact(hay, &hay.to_lowercase(), &needle.to_lowercase());
     }
     // Lowercasing moved byte offsets: the general path handles that.
     word(hay, needle).filter(|h| h.ranges.len() == 1)
 }
 
-/// The best place `needle_l` sits in `lower` (`hay` lowercased, same byte length).
+/// The best place `needle_l` sits in `lower` (`hay` lowercased, with
+/// `lower_keeps_offsets(hay)`, so its offsets are offsets in `hay` too).
 fn exact(hay: &str, lower: &str, needle_l: &str) -> Option<Hit> {
     let mut best: Option<Hit> = None;
     for (at, _) in lower.match_indices(needle_l) {
+        // A letter that lowers to several can still put a match inside one.
+        if !hay.is_char_boundary(at) || !hay.is_char_boundary(at + needle_l.len()) {
+            continue;
+        }
         let prev = hay[..at].chars().next_back();
         let c = hay[at..].chars().next().unwrap_or(' ');
         let mut score = 100 + 4 * needle_l.chars().count() as i32;
@@ -70,12 +85,11 @@ fn word(hay: &str, needle: &str) -> Option<Hit> {
             ranges: Vec::new(),
         });
     }
-    let lower = hay.to_lowercase();
     let needle_l = needle.to_lowercase();
     // Lowercasing can change byte lengths (rare outside ASCII): only use the
     // substring path when it did not.
-    if lower.len() == hay.len()
-        && let Some(h) = exact(hay, &lower, &needle_l)
+    if lower_keeps_offsets(hay)
+        && let Some(h) = exact(hay, &hay.to_lowercase(), &needle_l)
     {
         return Some(h);
     }
@@ -276,6 +290,30 @@ mod tests {
         assert!(a.score > b.score);
         assert_eq!(a.ranges, vec![0..4]);
         assert_eq!(b.ranges, vec![15..19]);
+    }
+
+    #[test]
+    fn letters_that_change_length_when_lowered_do_not_panic() {
+        // Kelvin sign and `İ`: same total length lowered, other boundaries.
+        let hay = "\u{212A}\u{130}\u{130}";
+        assert_eq!(hay.len(), hay.to_lowercase().len());
+        for q in ["i", "k", "ki", "İ"] {
+            for h in [fuzzy(hay, q), score_row(hay, hay, q)]
+                .into_iter()
+                .flatten()
+            {
+                assert!(h.ranges.iter().all(|r| hay.get(r.clone()).is_some()));
+            }
+        }
+        for hay in ["Café İstanbul 🦀", "🦀 crab ÉTÉ", "\u{212A}elvin é"] {
+            for q in ["caf", "é", "ist", "crab", "été", "elvin", "🦀"] {
+                for h in [fuzzy(hay, q), score_row(hay, "", q)].into_iter().flatten() {
+                    assert!(h.ranges.iter().all(|r| hay.get(r.clone()).is_some()));
+                }
+            }
+        }
+        let h = fuzzy("🦀 crab ÉTÉ", "été").unwrap();
+        assert_eq!(&"🦀 crab ÉTÉ"[h.ranges[0].clone()], "ÉTÉ");
     }
 
     #[test]

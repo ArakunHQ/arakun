@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
       # The base branch's copy, so a pull request can't loosen the check it is
       # checked with. Taken from the branch's current tip: the event's base.sha

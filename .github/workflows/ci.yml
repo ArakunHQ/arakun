@@ -124,11 +124,13 @@ jobs:
     runs-on: depot-ubuntu-24.04-4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
-      - uses: ./.github/actions/gpui-libs
+      - uses: $/.github/actions/gpui-libs
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain
@@ -141,7 +143,7 @@ jobs:
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: clippy
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -164,11 +166,13 @@ jobs:
       CEF_SHA1: 09235427222e026a4f34399742df27c5d98a4f8a
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
-      - uses: ./.github/actions/gpui-libs
+      - uses: $/.github/actions/gpui-libs
 
       # 330 MB that never changes for a given version.
       - name: Cache the CEF archive
@@ -196,7 +200,7 @@ jobs:
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: clippy-browser
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -211,11 +215,13 @@ jobs:
     runs-on: depot-ubuntu-24.04-4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
-      - uses: ./.github/actions/gpui-libs
+      - uses: $/.github/actions/gpui-libs
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain
@@ -223,7 +229,7 @@ jobs:
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -243,17 +249,19 @@ jobs:
     runs-on: depot-windows-2025-8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version and components in rust-toolchain.toml. Runner images ship rustup.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
 
       # Only main saves; pull requests restore main's entry. Depot Cache does not
       # keep branches apart, so a pull request's save would reach main's builds.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: clippy-windows
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -275,12 +283,14 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: clippy-macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -297,12 +307,14 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test-macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -322,9 +334,11 @@ jobs:
         working-directory: relay
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

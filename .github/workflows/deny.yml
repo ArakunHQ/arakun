@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       # CPU and memory use for the weekly runner-sizing report.
-      - uses: ./.github/actions/runner-usage
+      - uses: $/.github/actions/runner-usage
 
       # Only advisories change on their own; the other checks need a change to
       # Cargo.toml, Cargo.lock or deny.toml, and that runs them all.

@@ -48,7 +48,8 @@ name: Reviewers
 on:
   check_run:
     types: [completed]
-  issue_comment:
+  # Safe as the comment above says; zizmor can't see that no job checks out.
+  issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created, edited]
   workflow_dispatch:
     inputs:

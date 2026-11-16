@@ -99,6 +99,8 @@ cargo deny check
 # relay/ or phone/ changed
 (cd relay && npm ci && npx tsc --noEmit && npx vitest run)
 (cd phone && node --test "test/*.test.mjs")
+# .github/ changed: pin actions by SHA, see "Checks" in CONTRIBUTING.md
+zizmor .github
 ```
 
 If you add or update a dependency, commit `Cargo.lock` too. Its license must be on the

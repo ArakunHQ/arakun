@@ -93,6 +93,18 @@ impl GitHubView {
                         ),
                 );
             }
+            // The read failed and none is running: a spinner would wait forever.
+            None if let Some(problem) = g.pulse_problem() => {
+                let why = format!("Couldn't read the review pulse: {}", problem.text());
+                row = row.child(div().flex_1()).child(
+                    ui::icon_button("gh-pulse-strip-retry", "refresh01", 13.)
+                        .tooltip(ui::tip_text(format!("{why} Click to try again.")))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.github.update(cx, |g, cx| g.refresh_pulse(true, cx));
+                        })),
+                );
+            }
             None => {
                 row = row.child(div().flex_1()).child(ui::spinner(
                     "gh-pulse-strip-busy",
@@ -199,10 +211,29 @@ impl GitHubView {
             });
 
         let Some(p) = p else {
+            // The read failed and none is running: say why rather than load forever.
+            let body = match g.pulse_problem() {
+                Some(problem) => ui::empty_state(
+                    "alert-circle",
+                    "Couldn't read the review pulse",
+                    &problem.text(),
+                    Some(
+                        ui::button("gh-pulse-retry", "Try again", ui::ButtonKind::Outline, true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.github.update(cx, |g, cx| g.refresh_pulse(true, cx));
+                            }))
+                            .into_any_element(),
+                    ),
+                )
+                .py(crate::ui::sp(20.)),
+                None => {
+                    ui::loading("gh-pulse-loading", "Reading this week…").py(crate::ui::sp(20.))
+                }
+            };
             return ui::surface_card()
                 .flex_none()
                 .child(header)
-                .child(ui::loading("gh-pulse-loading", "Reading this week…").py(crate::ui::sp(20.)))
+                .child(body)
                 .into_any_element();
         };
 

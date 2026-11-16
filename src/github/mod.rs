@@ -750,6 +750,8 @@ pub struct GitHub {
     failed_at: HashMap<String, Instant>,
     queue: queue::Queue,
     activity: Option<Vec<pulse::Activity>>,
+    /// Why the last pulse read failed; cleared by one that works.
+    pulse_problem: Option<Problem>,
     pulse_at: Option<Instant>,
     pulse_busy: bool,
     zero_days: Vec<String>,
@@ -817,6 +819,7 @@ impl GitHub {
             failed_at: HashMap::new(),
             queue: queue::Queue::default(),
             activity: None,
+            pulse_problem: None,
             pulse_at: None,
             pulse_busy: false,
             zero_days: queue::load_zero_days(),
@@ -1111,6 +1114,11 @@ impl GitHub {
 
     pub fn fetching(&self, item: &pr::ItemRef) -> bool {
         self.fetching.contains(&queue::key_of(item))
+    }
+
+    /// Why the last pulse read failed, once no read is running.
+    pub fn pulse_problem(&self) -> Option<&Problem> {
+        self.pulse_problem.as_ref().filter(|_| !self.pulse_busy)
     }
 
     /// The review activity inside the focus.
@@ -1425,8 +1433,12 @@ impl GitHub {
             let _ = this.update(cx, |this, cx| {
                 this.pulse_busy = false;
                 this.pulse_at = Some(Instant::now());
-                if let Ok(acts) = read {
-                    this.activity = Some(acts);
+                match read {
+                    Ok(acts) => {
+                        this.activity = Some(acts);
+                        this.pulse_problem = None;
+                    }
+                    Err(p) => this.pulse_problem = Some(p),
                 }
                 this.fetch_avatars(cx);
                 cx.notify();

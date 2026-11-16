@@ -109,12 +109,14 @@ reviews:
         mode: warning
         instructions: >-
           Fail if the diff changes the encryption, keys, nonces, framing or
-          message format in src/phone/e2e.rs or src/phone/identity.rs, and
-          neither phone/*.js nor phone/test/vectors/ changes in the same pull
-          request. Fail the same way the other way round: phone/*.js changes the
-          format and src/phone does not. Pass when the change is a refactor with
-          no change to bytes on the wire and the description says so, or when
-          neither side changes the format.
+          the messages the desktop sends or reads (field names, envelopes such
+          as `res`, message kinds) anywhere in src/phone/ (e2e.rs, identity.rs,
+          wire.rs, relay.rs and the rest), and neither phone/*.js nor
+          phone/test/vectors/ changes in the same pull request. Fail the same
+          way the other way round: phone/*.js changes the format and src/phone
+          does not. Pass when the change is a refactor with no change to bytes
+          on the wire and the description says so, or when neither side
+          changes the format.
       - name: Setup scripts stay in step
         mode: warning
         instructions: >-

@@ -111,39 +111,21 @@ fn bind<A: gpui::Action>(keys: &str, action: A, context: &str) -> KeyBinding {
     KeyBinding::new(&keys, action, Some(&context))
 }
 
-/// The saved window and the display to open it on, while that display is
-/// connected. Where it shows too little of the window to grab the title bar,
-/// the window keeps its size and mode, centred on that display: Wayland tells
-/// no window where it is, so its saved place can be anywhere.
+/// The saved window and the display to open it on; see `WindowState::place`.
 fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
     let saved = state::saved_window()?;
-    let rect = saved.rect();
-    let min = size(px(100.), px(40.));
-    let shows = |d: &std::rc::Rc<dyn gpui::PlatformDisplay>| {
-        let shown = d.bounds().intersect(&rect);
-        shown.size.width >= min.width && shown.size.height >= min.height
-    };
-    let displays = cx.displays();
-    let display = match &saved.display {
-        Some(uuid) => {
-            let d = displays
-                .iter()
-                .find(|d| d.uuid().is_ok_and(|u| u.to_string() == *uuid))?;
-            if !shows(d) {
-                let centred = Bounds::centered(Some(d.id()), rect.size, cx);
-                return Some((saved.bounds_at(centred), Some(d.id())));
-            }
-            Some(d.id())
+    let displays: Vec<_> = cx
+        .displays()
+        .iter()
+        .map(|d| (d.id(), d.uuid().ok().map(|u| u.to_string()), d.bounds()))
+        .collect();
+    Some(match saved.place(&displays)? {
+        state::Place::At(id) => (saved.to_bounds(), Some(id)),
+        state::Place::Centred(id) => {
+            let centred = Bounds::centered(Some(id), saved.rect().size, cx);
+            (saved.bounds_at(centred), Some(id))
         }
-        // Saved without its display: wherever it shows.
-        None => {
-            if !displays.iter().any(shows) {
-                return None;
-            }
-            None
-        }
-    };
-    Some((saved.to_bounds(), display))
+    })
 }
 
 fn main() {

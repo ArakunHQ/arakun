@@ -149,6 +149,54 @@ impl WindowState {
     }
 }
 
+/// Where a saved window opens.
+#[derive(Debug, PartialEq)]
+pub enum Place {
+    /// At its saved bounds, on this display.
+    At(gpui::DisplayId),
+    /// With its size and mode, centred on this display.
+    Centred(gpui::DisplayId),
+}
+
+impl WindowState {
+    /// Where the window opens, given each connected display's id, uuid and
+    /// bounds, or `None` to open at the default size. Bounds count as shown
+    /// when 100×40 points of them, enough to grab the title bar, are on the
+    /// display. On the saved display but not shown there, the window is
+    /// centred on it: Wayland tells no window where it is, so the saved place
+    /// can be anywhere.
+    pub fn place(
+        &self,
+        displays: &[(gpui::DisplayId, Option<String>, gpui::Bounds<gpui::Pixels>)],
+    ) -> Option<Place> {
+        let rect = self.rect();
+        let shows = |b: &gpui::Bounds<gpui::Pixels>| {
+            let shown = b.intersect(&rect);
+            shown.size.width >= gpui::px(100.) && shown.size.height >= gpui::px(40.)
+        };
+        match &self.display {
+            Some(uuid) => {
+                let (id, _, b) = displays.iter().find(|(_, u, _)| u.as_ref() == Some(uuid))?;
+                Some(if shows(b) {
+                    Place::At(*id)
+                } else {
+                    Place::Centred(*id)
+                })
+            }
+            // Saved without its display: the one holding its centre, else any
+            // it shows on. Windows opens on the primary display without one.
+            None => {
+                let centre = rect.center();
+                displays
+                    .iter()
+                    .find(|(_, _, b)| b.contains(&centre) && shows(b))
+                    .or_else(|| displays.iter().find(|(_, _, b)| shows(b)))
+                    .map(|(id, _, _)| Place::At(*id))
+            }
+        }
+    }
+}
+
 /// The saved window, read without the rest of the state, which the shell
 /// loads later. Only the `window` field is kept.
 pub fn saved_window() -> Option<WindowState> {
@@ -1061,6 +1109,45 @@ mod tests {
         assert!(!plain.contains("maximized") && !plain.contains("fullscreen"));
         let old: State = serde_json::from_str("{}").unwrap();
         assert!(old.window.is_none(), "older state files open centred");
+    }
+
+    #[test]
+    fn the_window_opens_on_the_display_it_was_saved_on() {
+        let px = gpui::px;
+        let rect = |x: f32, y: f32, w: f32, h: f32| {
+            gpui::Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(w), px(h)))
+        };
+        let (a, b) = (gpui::DisplayId::new(1), gpui::DisplayId::new(2));
+        // Two 1920×1080 displays side by side, as Windows and X11 give them.
+        let displays = [
+            (a, Some("uuid-a".to_string()), rect(0., 0., 1920., 1080.)),
+            (b, Some("uuid-b".to_string()), rect(1920., 0., 1920., 1080.)),
+        ];
+        let saved = |x: f32, display: Option<&str>| WindowState {
+            x,
+            y: 100.,
+            w: 1000.,
+            h: 640.,
+            maximized: false,
+            fullscreen: false,
+            display: display.map(str::to_string),
+        };
+        assert_eq!(
+            saved(2100., Some("uuid-b")).place(&displays),
+            Some(Place::At(b))
+        );
+        // Shown nowhere on its display (Wayland's kept origin): centred there.
+        assert_eq!(
+            saved(0., Some("uuid-b")).place(&displays),
+            Some(Place::Centred(b))
+        );
+        // Its display is gone: the default.
+        assert_eq!(saved(2100., Some("uuid-c")).place(&displays), None);
+        // No uuid: the display holding its centre, not the first one it touches.
+        assert_eq!(saved(1500., None).place(&displays), Some(Place::At(b)));
+        assert_eq!(saved(2100., None).place(&displays), Some(Place::At(b)));
+        assert_eq!(saved(100., None).place(&displays), Some(Place::At(a)));
+        assert_eq!(saved(9000., None).place(&displays), None);
     }
 
     #[test]

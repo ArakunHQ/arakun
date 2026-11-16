@@ -21,9 +21,11 @@ on:
 
 permissions: {}
 
-# One deploy at a time, and never one cancelled half way.
+# One deploy at a time, and never one cancelled half way. The group carries the
+# ref, so a manual run from another branch (skipped below) can't take the place
+# of a main deploy waiting in the queue.
 concurrency:
-  group: relay-deploy
+  group: relay-deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

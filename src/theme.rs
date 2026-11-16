@@ -868,6 +868,19 @@ pub const CATEGORY: [u32; 8] = [
 pub const FONT_SANS: &str = "Geist";
 pub const FONT_MONO: &str = "Geist Mono";
 
+/// Where the terminal finds what Geist Mono lacks: the Nerd Font and powerline
+/// symbols that prompts like starship draw. Patched families only, the ones
+/// people install for those prompts: GPUI drops a font without an 'm', so a
+/// symbols-only font can't serve. A family that isn't installed is skipped.
+pub const MONO_SYMBOL_FALLBACKS: [&str; 6] = [
+    "JetBrainsMono NFM",
+    "JetBrainsMono Nerd Font Mono",
+    "MesloLGS NF",
+    "MesloLGS Nerd Font Mono",
+    "FiraCode Nerd Font Mono",
+    "Hack Nerd Font Mono",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

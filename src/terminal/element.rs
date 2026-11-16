@@ -265,7 +265,9 @@ fn fonts() -> [Font; 4] {
     let base = Font {
         family: theme::FONT_MONO.into(),
         features: FontFeatures::disable_ligatures(),
-        fallbacks: None,
+        fallbacks: Some(gpui::FontFallbacks::from_fonts(
+            theme::MONO_SYMBOL_FALLBACKS.map(String::from).to_vec(),
+        )),
         weight: FontWeight::NORMAL,
         style: FontStyle::Normal,
     };

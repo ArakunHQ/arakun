@@ -2374,9 +2374,56 @@ pub const DRAFT_USAGE: &str = "usage: arakun github draft <owner/repo>#<n> --ver
 /// The host `gh` reads `-R owner/name` on, chosen as `gh` chooses it:
 /// `GH_HOST` when set, else the only host `gh` is signed in to, else GitHub.
 /// Signed in to GitHub Enterprise alone, `gh` reads there with no `GH_HOST`.
+///
+/// It never waits on the disk: the palette asks while it draws. `gh`'s
+/// sign-ins are read on another thread and kept, and read again when the
+/// kept answer is old, so signing in to a new host shows up a moment later.
 pub fn gh_host() -> String {
-    let hosts = gh_config_dir().and_then(|d| std::fs::read_to_string(d.join("hosts.yml")).ok());
-    default_host(std::env::var("GH_HOST").ok(), hosts.as_deref())
+    env_host().unwrap_or_else(signed_in_host)
+}
+
+/// `gh_host` read now, for the command line, which asks once and exits
+/// before a read on another thread would be back.
+fn gh_host_now() -> String {
+    env_host().unwrap_or_else(|| default_host(None, read_hosts_yml().as_deref()))
+}
+
+fn env_host() -> Option<String> {
+    std::env::var("GH_HOST")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+}
+
+/// The host from `gh`'s sign-ins as last read, GitHub until a read is back.
+fn signed_in_host() -> String {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    // The answer, when it was asked for, and whether a read is running.
+    static KEPT: Mutex<(Option<String>, Option<Instant>, bool)> = Mutex::new((None, None, false));
+    const FRESH: Duration = Duration::from_secs(30);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let stale = kept.1.is_none_or(|at| at.elapsed() > FRESH);
+    if stale && !kept.2 {
+        kept.1 = Some(Instant::now());
+        kept.2 = true;
+        std::thread::spawn(|| {
+            let host = default_host(None, read_hosts_yml().as_deref());
+            let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+            kept.0 = Some(host);
+            kept.2 = false;
+        });
+    }
+    kept.0.clone().unwrap_or_else(|| "github.com".into())
+}
+
+/// `gh`'s sign-ins. Tests never read the real ones: what they check would
+/// change with who runs them.
+fn read_hosts_yml() -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+    std::fs::read_to_string(gh_config_dir()?.join("hosts.yml")).ok()
 }
 
 /// The folder `gh` keeps its settings in, found in the same order `gh` looks.
@@ -2429,7 +2476,7 @@ fn without_comment(l: &str) -> &str {
 /// The arguments after `arakun github draft`. The pull request may also be
 /// given as its address.
 pub fn parse_draft_args(args: &[String]) -> Result<DraftArgs, String> {
-    parse_draft_args_on(args, &gh_host())
+    parse_draft_args_on(args, &gh_host_now())
 }
 
 /// `parse_draft_args` for URLs on `host`: tests name it instead of reading

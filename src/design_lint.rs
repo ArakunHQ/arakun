@@ -25,34 +25,40 @@ const EXEMPT: &[&str] = &[
 /// fixed HUD that the app's scales must not move.
 const SCALE_EXEMPT: &[&str] = &["src/island_host"];
 
-/// The calls whose pixel argument has to go through a scale: corners through
-/// `ui::rad` or `ui::nested`, padding and gaps through `ui::sp`.
-const SCALED: &[(&str, &str)] = &[
-    (".rounded", "ui::rad"),
-    (".gap", "ui::sp"),
-    (".p(", "ui::sp"),
-    (".px(", "ui::sp"),
-    (".py(", "ui::sp"),
-    (".pt(", "ui::sp"),
-    (".pb(", "ui::sp"),
-    (".pl(", "ui::sp"),
-    (".pr(", "ui::sp"),
+/// The calls whose pixel argument has to go through a scale, what to use,
+/// and what the argument may start with: corners through the Corners
+/// setting, padding and gaps through Spacing. Not the other way round:
+/// `.rounded(ui::sp(8.))` would follow the wrong setting.
+const SCALED: &[(&str, &str, &[&str])] = &[
+    (".rounded", "ui::rad", CORNER_ARGS),
+    (".gap", "ui::sp", SPACE_ARGS),
+    (".p(", "ui::sp", SPACE_ARGS),
+    (".px(", "ui::sp", SPACE_ARGS),
+    (".py(", "ui::sp", SPACE_ARGS),
+    (".pt(", "ui::sp", SPACE_ARGS),
+    (".pb(", "ui::sp", SPACE_ARGS),
+    (".pl(", "ui::sp", SPACE_ARGS),
+    (".pr(", "ui::sp", SPACE_ARGS),
 ];
 
-/// What the argument of a `SCALED` call may start with. Only this list, so a
-/// wrapper around a raw size (a variable, `ui::fixed(px(6.))`) fails too.
+/// What a corner may start with. Only this list, so a wrapper around a raw
+/// size (a variable, `corner(8.)`) fails too.
+const CORNER_ARGS: &[&str] = &[
+    "ui::rad(",
+    "ui::nested(",
+    // Built from `nested`, so it follows the Corners setting.
+    "ui::menu_row_radius()",
+];
+
+/// What padding or a gap may start with, for the same reason.
 /// `bar_inset`, `icon_inset` and `dock_inset` take no number: they are the
 /// insets that must match a fixed bar height, and nothing else can pass
 /// through them.
-const SCALED_ARGS: &[&str] = &[
+const SPACE_ARGS: &[&str] = &[
     "ui::sp(",
-    "ui::rad(",
-    "ui::nested(",
     "ui::bar_inset()",
     "ui::icon_inset()",
     "ui::dock_inset()",
-    // Built from `nested`, so it follows the Corners setting.
-    "ui::menu_row_radius()",
     // Its own setting (Window gap), which Spacing leaves alone on purpose.
     "ui::window_gap_px()",
     "relative(",
@@ -62,8 +68,10 @@ const SCALED_ARGS: &[&str] = &[
 /// and Spacing settings would not reach them. `next` is the next line with
 /// code on it, for an argument that starts there.
 fn unscaled(line: &str, next: &str) -> Vec<String> {
+    let line = &code_only(line);
+    let next = &code_only(next);
     let mut found = Vec::new();
-    for (call, fix) in SCALED {
+    for (call, fix, allowed) in SCALED {
         let mut at = 0;
         while let Some(i) = line[at..].find(call) {
             let before = &line[..at + i];
@@ -91,7 +99,7 @@ fn unscaled(line: &str, next: &str) -> Vec<String> {
             };
             let mut arg = after.trim_start();
             // `.gap(` or `.gap( // why`: the argument is on a later line.
-            if arg.is_empty() || arg.starts_with("//") {
+            if arg.is_empty() {
                 arg = next.trim_start();
             }
             // `.rounded_full()` has no argument to check.
@@ -99,7 +107,7 @@ fn unscaled(line: &str, next: &str) -> Vec<String> {
                 continue;
             }
             let arg = arg.strip_prefix("crate::").unwrap_or(arg);
-            if !SCALED_ARGS.iter().any(|ok| arg.starts_with(ok)) {
+            if !allowed.iter().any(|ok| arg.starts_with(ok)) {
                 found.push(format!(
                     "{} not through a scale: use {fix}(…)",
                     call.trim_end_matches('(')
@@ -108,6 +116,85 @@ fn unscaled(line: &str, next: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// `line` without its comment, and with the inside of its string and char
+/// literals blanked: `".gap(gap)"` is text, not a style call. A string that
+/// runs on from an earlier line is not seen; none does in a style chain.
+fn code_only(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => break,
+            // `r"…"`, `r#"…"#` or `br"…"`: no escapes, ends at a quote and
+            // as many #.
+            'r' if matches!(chars.peek(), Some('"' | '#'))
+                && !out
+                    .strip_suffix('b')
+                    .unwrap_or(&out)
+                    .ends_with(|p: char| p.is_alphanumeric() || p == '_') =>
+            {
+                let mut hashes = 0;
+                while chars.peek() == Some(&'#') {
+                    chars.next();
+                    hashes += 1;
+                }
+                if chars.next() != Some('"') {
+                    // `r#ident`, a raw identifier.
+                    out.push('r');
+                    continue;
+                }
+                out.push_str("\"\"");
+                'raw: while let Some(c) = chars.next() {
+                    if c == '"' {
+                        let mut n = 0;
+                        while n < hashes && chars.peek() == Some(&'#') {
+                            chars.next();
+                            n += 1;
+                        }
+                        if n == hashes {
+                            break 'raw;
+                        }
+                    }
+                }
+            }
+            '"' => {
+                out.push_str("\"\"");
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            // A char literal (`'"'`, `'\''`), not a lifetime (`'a`).
+            '\'' => {
+                let rest: String = chars.clone().take(3).collect();
+                let len = if rest.starts_with('\\') {
+                    rest.chars().skip(2).position(|c| c == '\'').map(|_| 3)
+                } else if rest.chars().nth(1) == Some('\'') {
+                    Some(2)
+                } else {
+                    None
+                };
+                match len {
+                    Some(n) => {
+                        out.push_str("' '");
+                        for _ in 0..n {
+                            chars.next();
+                        }
+                    }
+                    None => out.push(c),
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// The first of `lines` with code on it: an argument on the line after its
@@ -274,6 +361,29 @@ fn the_lint_catches_what_it_should() {
     assert_eq!(unscaled(".pl(", next_code(&["", "    px(6.))"])).len(), 1);
     assert!(unscaled("..pr(\"OPEN\")", "").is_empty());
     assert!(unscaled("let p = self.p(x, y);", "").is_empty());
+    // Text about a style call is not one.
+    assert!(unscaled(r#"let example = ".gap(gap)";"#, "").is_empty());
+    assert!(unscaled(r##"let example = r#".pl(px(6.))"#;"##, "").is_empty());
+    assert!(unscaled(r##"let example = br".gap(gap)";"##, "").is_empty());
+    assert!(unscaled("let q = '\"'; // .gap(gap)", "").is_empty());
+    assert_eq!(unscaled(r#".child("a").gap(gap).child("b")"#, "").len(), 1);
+    assert_eq!(unscaled("let c = '\\''; x.gap(gap)", "").len(), 1);
+    assert_eq!(
+        unscaled("fn f<'a>(x: &'a D) -> D { x.gap(gap) }", "").len(),
+        1
+    );
+    // Each setting's own helper: corners don't follow Spacing, nor gaps Corners.
+    assert_eq!(unscaled(".rounded(ui::sp(8.))", "").len(), 1);
+    assert_eq!(unscaled(".gap(ui::rad(8.))", "").len(), 1);
+    assert_eq!(unscaled(".pl(ui::menu_row_radius())", "").len(), 1);
+    assert_eq!(unscaled(".rounded(ui::bar_inset())", "").len(), 1);
+    assert!(
+        unscaled(
+            ".rounded(ui::menu_row_radius()).gap(ui::window_gap_px())",
+            ""
+        )
+        .is_empty()
+    );
 }
 
 /// Runs `tools/layout_audit.py` with `args` from the repository root and

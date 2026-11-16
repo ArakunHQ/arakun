@@ -1266,6 +1266,14 @@ impl Shell {
             "Opens a terminal with OpenCode's login.",
             Target::SignIn(crate::agent::AgentKind::OpenCode),
         );
+        add(
+            "signin-codex",
+            "square-lock02",
+            "Sign in to Codex",
+            &[],
+            "Opens a terminal with Codex's ChatGPT login.",
+            Target::SignIn(crate::agent::AgentKind::Codex),
+        );
     }
 
     fn palette_settings(&self, items: &mut Vec<Item>) {

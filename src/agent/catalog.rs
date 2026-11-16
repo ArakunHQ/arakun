@@ -323,16 +323,6 @@ fn fetch_options(kind: AgentKind) -> Result<(String, Value)> {
         .with_context(|| format!("starting {}", spec.display()))?;
     let mut stdin = child.stdin.take().context("adapter stdin")?;
     let stdout = child.stdout.take().context("adapter stdout")?;
-    let requests = [
-        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-               "params": {"protocolVersion": 1, "clientCapabilities": {}}}),
-        json!({"jsonrpc": "2.0", "id": 2, "method": "session/new",
-               "params": {"cwd": cwd, "mcpServers": []}}),
-    ];
-    let wrote = requests
-        .iter()
-        .try_for_each(|r| writeln!(stdin, "{r}"))
-        .and_then(|_| stdin.flush());
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
@@ -340,15 +330,26 @@ fn fetch_options(kind: AgentKind) -> Result<(String, Value)> {
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
-            if v["id"].as_u64() == Some(2) {
-                let _ = tx.send(v);
-                break;
+            let id = v["id"].as_u64();
+            if matches!(id, Some(1 | 2)) {
+                let last = id == Some(2);
+                if tx.send(v).is_err() || last {
+                    break;
+                }
             }
         }
     });
-    let reply = wrote.map_err(anyhow::Error::from).and_then(|_| {
+    let mut send = |r: Value| -> Result<Value> {
+        writeln!(stdin, "{r}").and_then(|_| stdin.flush())?;
         rx.recv_timeout(Duration::from_secs(60))
             .map_err(|_| anyhow!("no answer"))
+    };
+    // The Codex adapter refuses `session/new` before `initialize` has answered.
+    let reply = send(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                            "params": {"protocolVersion": 1, "clientCapabilities": {}}}))
+    .and_then(|_| {
+        send(json!({"jsonrpc": "2.0", "id": 2, "method": "session/new",
+                    "params": {"cwd": cwd, "mcpServers": []}}))
     });
     let _ = child.kill();
     let _ = child.wait();
@@ -486,6 +487,69 @@ pub fn refresh_opencode() {
             }
         }
         Err(e) => eprintln!("arakun: opencode options: {e:#}"),
+    }
+}
+
+// ---- Codex's options --------------------------------------------------------
+
+/// Codex's config options (mode, model, reasoning effort, fast mode) as a fresh
+/// session starts with them: what `~/.codex/config.toml` sets, kept as raw JSON
+/// and parsed.
+static CODEX: Mutex<Option<(Value, Arc<Vec<ConfigOption>>)>> = Mutex::new(None);
+
+fn codex_cache_path() -> PathBuf {
+    cache_path().with_file_name("codex-options.json")
+}
+
+fn with_codex<T>(f: impl FnOnce(&mut (Value, Arc<Vec<ConfigOption>>)) -> T) -> T {
+    let mut slot = CODEX.lock().unwrap();
+    let cache = slot.get_or_insert_with(|| {
+        let raw = std::fs::read(codex_cache_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .map(|v| v["options"].clone())
+            .unwrap_or_default();
+        let options = Arc::new(parse_config(&raw));
+        (raw, options)
+    });
+    f(cache)
+}
+
+/// The options a fresh Codex session starts with; empty until one has run.
+pub fn codex_options() -> Arc<Vec<ConfigOption>> {
+    with_codex(|c| c.1.clone())
+}
+
+/// Keeps what a fresh Codex session reported, when it changed.
+pub fn remember_codex_options(raw: &Value) {
+    let options = parse_config(raw);
+    if options.is_empty() {
+        return;
+    }
+    with_codex(|c| {
+        if c.0 == *raw {
+            return;
+        }
+        let _ = crate::durable::write(
+            &codex_cache_path(),
+            json!({"fetched": unix_now(), "options": raw})
+                .to_string()
+                .as_bytes(),
+        );
+        *c = (raw.clone(), Arc::new(options));
+    });
+}
+
+/// Asks Codex for its options when none are cached and it is installed: a
+/// session that never gets a prompt, so it costs no tokens. Blocking; run it
+/// off the main thread.
+pub fn refresh_codex() {
+    if !codex_options().is_empty() || launch::codex_cli().is_none() {
+        return;
+    }
+    match fetch_options(AgentKind::Codex) {
+        Ok((_, raw)) => remember_codex_options(&raw),
+        Err(e) => eprintln!("arakun: codex options: {e:#}"),
     }
 }
 

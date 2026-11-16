@@ -148,6 +148,14 @@ impl Shell {
             model::Agent::OpenCode => self
                 .setting_value_label(Setting::Mode, cx)
                 .map(|l| (l, false)),
+            // Codex's sandbox and approval preset; full access never asks.
+            model::Agent::Codex => {
+                let label = self.setting_value_label(Setting::Mode, cx)?;
+                Some((
+                    label,
+                    current(Setting::Mode).as_deref() == Some("agent-full-access"),
+                ))
+            }
             // It asks before commands and edits; `arakun agent new` sessions don't.
             model::Agent::WorkersAi => None,
             model::Agent::Droid => {
@@ -354,7 +362,9 @@ impl Shell {
     fn permission_sections(&self, cx: &App) -> Vec<crate::agent::Setting> {
         use crate::agent::Setting;
         match self.composer_agent() {
-            model::Agent::Claude | model::Agent::OpenCode => vec![Setting::Mode],
+            model::Agent::Claude | model::Agent::OpenCode | model::Agent::Codex => {
+                vec![Setting::Mode]
+            }
             model::Agent::WorkersAi => Vec::new(),
             model::Agent::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()

@@ -175,6 +175,7 @@ impl Render for RemoveDialog {
             Agent::Droid => "Droid keeps its own copy, so it can be imported again later.",
             Agent::Claude => "Claude Code keeps its own copy of the conversation.",
             Agent::OpenCode => "OpenCode keeps its own copy of the conversation.",
+            Agent::Codex => "Codex keeps its own copy of the conversation.",
             Agent::WorkersAi => "arakun keeps the conversation the model saw until then.",
         };
         ui::modal_panel("remove-session", 420.)

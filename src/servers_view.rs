@@ -144,10 +144,11 @@ enum Pane {
 }
 
 /// The agents a session can start with, by key.
-const AGENTS: [(&str, &str); 4] = [
+const AGENTS: [(&str, &str); 5] = [
     ("claude", "Claude Code"),
     ("droid", "Droid"),
     ("opencode", "OpenCode"),
+    ("codex", "Codex"),
     ("workers-ai", "Workers AI"),
 ];
 

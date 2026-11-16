@@ -37,7 +37,7 @@ irm https://arakun.dev/install.ps1 | iex
   SDK: gpui compiles its HLSL shaders with it. If it is not found automatically, point
   `GPUI_FXC_PATH` at `C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64\fxc.exe`.
 - **Git for Windows**: the Changes panel, worktrees and the CI graph use `git`.
-- For the agents: **Node.js** (with `npm`) for the Claude Code adapter, and Factory's
+- For the agents: **Node.js** (with `npm`) for the Claude Code and Codex adapters, and Factory's
   `droid` CLI for Droid. `gh` if you want the CI panel.
 - For browser tabs: **CMake** and **Ninja**. They come with the *C++ CMake tools for
   Windows* component of Visual Studio Build Tools (selected by default in *Desktop

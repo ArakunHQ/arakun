@@ -18,6 +18,7 @@ pub enum Agent {
     Claude,
     Droid,
     OpenCode,
+    Codex,
     WorkersAi,
 }
 
@@ -36,10 +37,11 @@ pub fn set_default_agent(agent: Agent) {
 }
 
 impl Agent {
-    pub const ALL: [Agent; 4] = [
+    pub const ALL: [Agent; 5] = [
         Agent::Claude,
         Agent::Droid,
         Agent::OpenCode,
+        Agent::Codex,
         Agent::WorkersAi,
     ];
 
@@ -48,6 +50,7 @@ impl Agent {
             Agent::Claude => "Claude Code",
             Agent::Droid => "Droid",
             Agent::OpenCode => "OpenCode",
+            Agent::Codex => "Codex",
             Agent::WorkersAi => "Workers AI",
         }
     }
@@ -57,6 +60,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Droid => "droid",
             Agent::OpenCode => "opencode",
+            Agent::Codex => "codex",
             Agent::WorkersAi => "workers-ai",
         }
     }
@@ -66,6 +70,7 @@ impl Agent {
             Agent::Claude => AgentKind::Claude,
             Agent::Droid => AgentKind::Droid,
             Agent::OpenCode => AgentKind::OpenCode,
+            Agent::Codex => AgentKind::Codex,
             Agent::WorkersAi => AgentKind::WorkersAi,
         }
     }
@@ -75,6 +80,7 @@ impl Agent {
         match key {
             "claude" => Agent::Claude,
             "opencode" => Agent::OpenCode,
+            "codex" => Agent::Codex,
             "workers-ai" => Agent::WorkersAi,
             _ => Agent::Droid,
         }
@@ -441,6 +447,8 @@ pub struct Environment {
     pub claude_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for OpenCode.
     pub opencode_settings: Vec<(crate::agent::Setting, String)>,
+    /// The same for Codex.
+    pub codex_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Workers AI.
     pub workers_ai_settings: Vec<(crate::agent::Setting, String)>,
     pub explorer: Explorer,
@@ -497,6 +505,7 @@ impl Environment {
             draft_settings: Vec::new(),
             claude_settings: Vec::new(),
             opencode_settings: Vec::new(),
+            codex_settings: Vec::new(),
             workers_ai_settings: Vec::new(),
             sync: git::Sync::default(),
             pr: None,

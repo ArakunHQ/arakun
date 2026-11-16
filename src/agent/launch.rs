@@ -1,6 +1,6 @@
-//! Finding (and, for Claude, installing) the entry point of each agent: ACP for
-//! Claude, Factory's native `stream-jsonrpc` for Droid unless `ARAKUN_DROID_ACP=1`,
-//! and OpenCode's own ACP server (`opencode acp`).
+//! Finding (and, for Claude and Codex, installing) the entry point of each agent:
+//! ACP adapters for Claude and Codex, Factory's native `stream-jsonrpc` for Droid
+//! unless `ARAKUN_DROID_ACP=1`, and OpenCode's own ACP server (`opencode acp`).
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -15,6 +15,9 @@ use super::AgentKind;
 
 /// Pinned so an adapter release can't change the protocol under us; bump deliberately.
 pub const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.102.0";
+/// The Codex adapter brings a matching `@openai/codex`, so the user's own `codex`
+/// can be another version without breaking the protocol between them.
+pub const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@2.6.0";
 
 pub struct LaunchSpec {
     pub program: PathBuf,
@@ -105,8 +108,9 @@ fn is_executable(path: &Path) -> bool {
 
 /// The interactive sign-in for `kind`, to run in a terminal: Claude Code's
 /// `/login` (the user's `claude`, else the binary bundled with the adapter's
-/// SDK; both share `~/.claude`), plain `droid`, which asks to sign in, or
-/// `opencode auth login`, which asks for a provider and its key.
+/// SDK; both share `~/.claude`), plain `droid`, which asks to sign in,
+/// `opencode auth login`, which asks for a provider and its key, or
+/// `codex login`, which signs in with ChatGPT in the browser.
 pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
@@ -125,12 +129,16 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
                 "login".into(),
             ])
         }
+        AgentKind::Codex => {
+            let bin = codex_cli()?;
+            Some(vec![bin.display().to_string(), "login".into()])
+        }
     }
 }
 
 /// The interactive sign-out for `kind`, to run in a terminal: Claude's `/logout`,
-/// or `opencode auth logout`, which asks which provider. Droid's CLI is signed
-/// out from Factory's side.
+/// `opencode auth logout`, which asks which provider, or `codex logout`. Droid's
+/// CLI is signed out from Factory's side.
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
@@ -146,6 +154,10 @@ pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
                 "logout".into(),
             ])
         }
+        AgentKind::Codex => {
+            let bin = codex_cli()?;
+            Some(vec![bin.display().to_string(), "logout".into()])
+        }
     }
 }
 
@@ -156,6 +168,84 @@ pub fn claude_cli() -> Option<PathBuf> {
             .into_iter()
             .find(|p| is_executable(p))
     })
+}
+
+/// The user's `codex`, else the one installed with the adapter. Both keep the
+/// sign-in in `~/.codex` (or `CODEX_HOME`), so either one signs the adapter in.
+pub fn codex_cli() -> Option<PathBuf> {
+    which("codex").or_else(|| Some(codex_bundled_cli()).filter(|p| is_executable(p)))
+}
+
+fn codex_dir() -> PathBuf {
+    agents_dir().join("codex")
+}
+
+/// npm writes a `.cmd` launcher for every bin on Windows; the bare name there is a sh script.
+fn npm_bin(dir: &Path, name: &str) -> PathBuf {
+    let name = if cfg!(windows) {
+        format!("{name}.cmd")
+    } else {
+        name.to_string()
+    };
+    dir.join("node_modules").join(".bin").join(name)
+}
+
+fn codex_adapter_bin() -> PathBuf {
+    npm_bin(&codex_dir(), "codex-acp")
+}
+
+fn codex_bundled_cli() -> PathBuf {
+    npm_bin(&codex_dir(), "codex")
+}
+
+/// How Codex is signed in, from the `auth_mode` of its `auth.json`: "ChatGPT"
+/// or "API key". Reads that one key, never the tokens.
+pub fn codex_sign_in() -> Option<&'static str> {
+    let dir = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home().join(".codex"));
+    let v: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("auth.json")).ok()?).ok()?;
+    codex_auth_label(&v)
+}
+
+fn codex_auth_label(auth: &serde_json::Value) -> Option<&'static str> {
+    match auth["auth_mode"].as_str() {
+        Some(m) if m.eq_ignore_ascii_case("chatgpt") => Some("ChatGPT"),
+        Some(m) if m.eq_ignore_ascii_case("apikey") => Some("API key"),
+        Some(_) => Some("Signed in"),
+        // Older files have no mode: tokens mean ChatGPT, a key means a key.
+        None if auth["tokens"].is_object() => Some("ChatGPT"),
+        None if auth["OPENAI_API_KEY"].is_string() => Some("API key"),
+        None => None,
+    }
+}
+
+/// Codex takes the arakun hint as `developer_instructions`, which the adapter
+/// reads from the JSON in `CODEX_CONFIG`. A value the user set keeps its keys;
+/// instructions of their own come first.
+fn codex_hint_env(cwd: Option<&Path>) -> Option<(String, OsString)> {
+    const VAR: &str = "CODEX_CONFIG";
+    let hint = agent_hint(cwd)?;
+    let config = codex_config(std::env::var(VAR).ok().as_deref(), &hint)?;
+    Some((VAR.to_string(), config.to_string().into()))
+}
+
+/// `None` when the user's `CODEX_CONFIG` is not a JSON object: theirs wins over the hint.
+fn codex_config(theirs: Option<&str>, hint: &str) -> Option<serde_json::Value> {
+    let mut config = match theirs {
+        Some(raw) => serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .filter(serde_json::Value::is_object)?,
+        None => serde_json::json!({}),
+    };
+    let text = match config["developer_instructions"].as_str() {
+        Some(own) if !own.trim().is_empty() => format!("{own}\n\n{hint}"),
+        _ => hint.to_string(),
+    };
+    config["developer_instructions"] = text.into();
+    Some(config)
 }
 
 /// Where the adapter's SDK keeps the Claude Code binary for this platform: one
@@ -477,18 +567,13 @@ fn pin_models(config: &mut serde_json::Value, pins: &[(&str, &[&str])]) {
 }
 
 fn claude_adapter_bin() -> PathBuf {
-    // npm writes a `.cmd` launcher for every bin on Windows; the bare name there is a sh script.
-    let name = if cfg!(windows) {
-        "claude-agent-acp.cmd"
-    } else {
-        "claude-agent-acp"
-    };
-    agents_dir().join("node_modules/.bin").join(name)
+    npm_bin(&agents_dir(), "claude-agent-acp")
 }
 
 /// Resolves how to start `kind` in ACP mode. Blocking: on the first Claude launch
 /// this runs `npm install` into [`agents_dir`]. `progress` gets a short status line.
-/// `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP` and `ARAKUN_OPENCODE_ACP` replace the command.
+/// `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP` and `ARAKUN_CODEX_ACP`
+/// replace the command.
 pub fn resolve(
     kind: AgentKind,
     cwd: Option<&Path>,
@@ -562,6 +647,49 @@ pub fn resolve(
             spec.env.extend(opencode_hint_env(cwd));
             spec
         }
+        AgentKind::Codex => {
+            let mut spec = match from_override("ARAKUN_CODEX_ACP") {
+                Some(spec) => spec?,
+                None => {
+                    let bin = codex_adapter_bin();
+                    if !is_executable(&bin) {
+                        progress("Installing the Codex ACP adapter…".into());
+                        install_codex_adapter()?;
+                    } else if !adapter_current(&codex_dir(), CODEX_ACP_PACKAGE)
+                        && !CODEX_UPGRADE_TRIED.swap(true, Ordering::Relaxed)
+                    {
+                        progress("Updating the Codex ACP adapter…".into());
+                        if let Err(e) = install_codex_adapter()
+                            && let Some(mut log) = open_log(AgentKind::Codex)
+                        {
+                            let _ = writeln!(
+                                log,
+                                "=== updating to {CODEX_ACP_PACKAGE} failed, keeping the old one: {e:#}"
+                            );
+                        }
+                    }
+                    LaunchSpec {
+                        program: bin,
+                        args: Vec::new(),
+                        env: Vec::new(),
+                    }
+                }
+            };
+            spec.env.extend(codex_hint_env(cwd));
+            // arakun does not call `authenticate`, so a key that is only in the
+            // environment needs this. The adapter uses it only when Codex has no
+            // sign-in, so a ChatGPT login still comes first.
+            let has_key = ["CODEX_API_KEY", "OPENAI_API_KEY"]
+                .iter()
+                .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
+            if has_key && std::env::var_os("DEFAULT_AUTH_REQUEST").is_none() {
+                spec.env.push((
+                    "DEFAULT_AUTH_REQUEST".into(),
+                    r#"{"methodId":"api-key"}"#.into(),
+                ));
+            }
+            spec
+        }
         // Nothing to start: it runs in arakun (`Connection::in_process`).
         AgentKind::WorkersAi => LaunchSpec {
             program: PathBuf::from("arakun"),
@@ -576,6 +704,7 @@ pub fn resolve(
 static INSTALL: Mutex<()> = Mutex::new(());
 static REPAIR_TRIED: AtomicBool = AtomicBool::new(false);
 static UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
+static CODEX_UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
 
 /// A model Claude Code can run but doesn't list yet, offered as its one custom
 /// option (the adapter refuses any value outside the list). Drop it once the
@@ -599,18 +728,16 @@ fn claude_extra_model_env() -> Vec<(String, OsString)> {
 
 /// Whether the installed adapter is the pinned [`CLAUDE_ACP_PACKAGE`] version.
 fn claude_adapter_current() -> bool {
-    let (name, want) = CLAUDE_ACP_PACKAGE
-        .rsplit_once('@')
-        .unwrap_or((CLAUDE_ACP_PACKAGE, ""));
-    std::fs::read_to_string(
-        agents_dir()
-            .join("node_modules")
-            .join(name)
-            .join("package.json"),
-    )
-    .ok()
-    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-    .is_some_and(|j| j["version"] == want)
+    adapter_current(&agents_dir(), CLAUDE_ACP_PACKAGE)
+}
+
+/// Whether `package` (`name@version`) is installed under `dir` at that version.
+fn adapter_current(dir: &Path, package: &str) -> bool {
+    let (name, want) = package.rsplit_once('@').unwrap_or((package, ""));
+    std::fs::read_to_string(dir.join("node_modules").join(name).join("package.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some_and(|j| j["version"] == want)
 }
 
 fn missing_claude_binary() -> String {
@@ -637,7 +764,7 @@ fn install_claude_adapter() -> Result<()> {
     })?;
     let dir = agents_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    npm_install(&npm, &dir)?;
+    npm_install(&npm, &dir, CLAUDE_ACP_PACKAGE, AgentKind::Claude)?;
     if !claude_binary_ok() {
         // A lockfile written without this platform's package keeps npm from ever
         // adding it (npm/cli#4828), so start over from nothing once.
@@ -649,7 +776,7 @@ fn install_claude_adapter() -> Result<()> {
         }
         let _ = std::fs::remove_file(dir.join("package-lock.json"));
         let _ = std::fs::remove_dir_all(dir.join("node_modules"));
-        npm_install(&npm, &dir)?;
+        npm_install(&npm, &dir, CLAUDE_ACP_PACKAGE, AgentKind::Claude)?;
     }
     if !is_executable(&claude_adapter_bin()) {
         bail!(
@@ -660,9 +787,31 @@ fn install_claude_adapter() -> Result<()> {
     Ok(())
 }
 
+/// The Codex adapter goes in a folder of its own, so starting the Claude adapter
+/// over from nothing leaves it alone.
+fn install_codex_adapter() -> Result<()> {
+    let _guard = INSTALL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = codex_dir();
+    if is_executable(&codex_adapter_bin()) && adapter_current(&dir, CODEX_ACP_PACKAGE) {
+        return Ok(());
+    }
+    let npm = which("npm").ok_or_else(|| {
+        anyhow!("npm was not found; it is needed once to install {CODEX_ACP_PACKAGE}. Install nodejs and npm, or set ARAKUN_CODEX_ACP.")
+    })?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    npm_install(&npm, &dir, CODEX_ACP_PACKAGE, AgentKind::Codex)?;
+    if !is_executable(&codex_adapter_bin()) {
+        bail!(
+            "npm finished but {} is missing",
+            codex_adapter_bin().display()
+        );
+    }
+    Ok(())
+}
+
 /// `--include=optional` beats an `omit=optional` in the user's npm config: the
-/// Claude Code binary is an optional dependency.
-fn npm_install(npm: &Path, dir: &Path) -> Result<()> {
+/// Claude Code and Codex binaries are optional dependencies.
+fn npm_install(npm: &Path, dir: &Path, package: &str, kind: AgentKind) -> Result<()> {
     let out = crate::platform::command(npm)
         .args(["install", "--prefix"])
         .arg(dir)
@@ -671,14 +820,14 @@ fn npm_install(npm: &Path, dir: &Path) -> Result<()> {
             "--no-audit",
             "--no-fund",
             "--loglevel=error",
-            CLAUDE_ACP_PACKAGE,
+            package,
         ])
         .env("PATH", child_path_env())
         .stdin(Stdio::null())
         .output()
         .context("running npm install")?;
-    if let Some(mut log) = open_log(AgentKind::Claude) {
-        let _ = writeln!(log, "=== npm install {CLAUDE_ACP_PACKAGE} ({})", out.status);
+    if let Some(mut log) = open_log(kind) {
+        let _ = writeln!(log, "=== npm install {package} ({})", out.status);
         let _ = log.write_all(&out.stdout);
         let _ = log.write_all(&out.stderr);
     }
@@ -687,7 +836,7 @@ fn npm_install(npm: &Path, dir: &Path) -> Result<()> {
         let tail: Vec<&str> = err.lines().rev().take(6).collect();
         let tail: Vec<&str> = tail.into_iter().rev().collect();
         bail!(
-            "Installing {CLAUDE_ACP_PACKAGE} failed ({}):\n{}",
+            "Installing {package} failed ({}):\n{}",
             out.status,
             tail.join("\n")
         );
@@ -698,6 +847,42 @@ fn npm_install(npm: &Path, dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_auth_reads_only_the_mode() {
+        let label = |v| codex_auth_label(&v);
+        assert_eq!(
+            label(serde_json::json!({"auth_mode": "chatgpt"})),
+            Some("ChatGPT")
+        );
+        assert_eq!(
+            label(serde_json::json!({"auth_mode": "apikey"})),
+            Some("API key")
+        );
+        assert_eq!(label(serde_json::json!({"tokens": {}})), Some("ChatGPT"));
+        assert_eq!(
+            label(serde_json::json!({"OPENAI_API_KEY": "k"})),
+            Some("API key")
+        );
+        assert_eq!(label(serde_json::json!({"OPENAI_API_KEY": null})), None);
+    }
+
+    #[test]
+    fn codex_config_adds_the_hint_after_the_users_own() {
+        assert_eq!(
+            codex_config(None, "hint"),
+            Some(serde_json::json!({"developer_instructions": "hint"}))
+        );
+        let theirs = r#"{"model": "gpt-x", "developer_instructions": "be brief"}"#;
+        assert_eq!(
+            codex_config(Some(theirs), "hint"),
+            Some(
+                serde_json::json!({"model": "gpt-x", "developer_instructions": "be brief\n\nhint"})
+            )
+        );
+        assert_eq!(codex_config(Some("not json"), "hint"), None);
+        assert_eq!(codex_config(Some("[1]"), "hint"), None);
+    }
 
     #[test]
     fn pinned_models_fill_only_what_the_user_left_out() {

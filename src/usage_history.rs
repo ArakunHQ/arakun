@@ -326,7 +326,9 @@ pub fn scan() -> Vec<Record> {
             AgentKind::Droid => droid_transcript(file)
                 .and_then(|t| std::fs::metadata(t).ok()?.modified().ok())
                 .or(modified),
-            AgentKind::Claude | AgentKind::OpenCode | AgentKind::WorkersAi => modified,
+            AgentKind::Claude | AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => {
+                modified
+            }
         };
         if cache
             .get(file)
@@ -337,8 +339,11 @@ pub fn scan() -> Vec<Record> {
         let (records, keys) = match agent {
             AgentKind::Claude => read_claude(file),
             AgentKind::Droid => (read_droid(file, stamp).into_iter().collect(), Vec::new()),
-            // OpenCode keeps its history in a database arakun does not read.
-            AgentKind::OpenCode | AgentKind::WorkersAi => (Vec::new(), Vec::new()),
+            // OpenCode keeps its history in a database arakun does not read, and
+            // Codex's rollouts are not read yet.
+            AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => {
+                (Vec::new(), Vec::new())
+            }
         };
         cache.insert(
             file.clone(),

@@ -165,6 +165,9 @@ pub struct EnvState {
     /// OpenCode settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opencode_settings: Vec<(String, String)>,
+    /// Codex settings for the next session, as (key, value).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub codex_settings: Vec<(String, String)>,
     /// Workers AI settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers_ai_settings: Vec<(String, String)>,
@@ -372,6 +375,11 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                             .iter()
                             .map(|(s, v)| (s.key().to_string(), v.clone()))
                             .collect(),
+                        codex_settings: e
+                            .codex_settings
+                            .iter()
+                            .map(|(s, v)| (s.key().to_string(), v.clone()))
+                            .collect(),
                         workers_ai_settings: e
                             .workers_ai_settings
                             .iter()
@@ -485,6 +493,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                         .collect();
                     env.opencode_settings = e
                         .opencode_settings
+                        .into_iter()
+                        .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
+                        .collect();
+                    env.codex_settings = e
+                        .codex_settings
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();

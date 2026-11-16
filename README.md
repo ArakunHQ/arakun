@@ -32,8 +32,8 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 
 ## Why Arakun
 
-- **Many agents, one place.** Claude Code, Droid, OpenCode and Workers AI sessions
-  side by side. Give each task its own git worktree so the agents don't step on each
+- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex and Workers AI
+  sessions side by side. Give each task its own git worktree so the agents don't step on each
   other.
 - **The agents can use the app.** The `arakun` command line lets an agent open pages,
   read terminals, run the project check and leave you GitHub review drafts.
@@ -77,6 +77,7 @@ Windows and other options: see [Install](#install).
 | Claude Code | Through the ACP adapter `@agentclientprotocol/claude-agent-acp` |
 | Droid | Factory's `droid` CLI |
 | OpenCode | The `opencode` CLI |
+| Codex | Through the ACP adapter `@agentclientprotocol/codex-acp`, which brings its own `codex` |
 | Cloudflare Workers AI | A tool loop Arakun runs itself against the Workers AI API |
 
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
@@ -254,6 +255,11 @@ Arakun does not bundle the agents. Install the ones you want to use:
   such as a gateway or CLIProxyAPI) in `~/.claude/settings.json` or the environment.
 - Droid: Factory's `droid` CLI.
 - OpenCode: the `opencode` CLI, signed in with `opencode auth login`.
+- Codex: Node.js with `npm` (Arakun installs the ACP adapter in
+  `~/.local/share/arakun/agents/codex`, or `%LOCALAPPDATA%\arakun\agents\codex` on
+  Windows) and a Codex sign-in: `codex login` with your ChatGPT plan (Settings › Codex
+  runs it for you), or `CODEX_API_KEY` or `OPENAI_API_KEY` in the environment.
+  `ARAKUN_CODEX_ACP` runs another adapter command instead.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
@@ -424,7 +430,7 @@ arakun-server status
 
 `arakun-server help` lists them all.
 
-- **Agents.** Claude Code, Droid, OpenCode and Workers AI, as in the app. Sign in to
+- **Agents.** Claude Code, Droid, OpenCode, Codex and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,

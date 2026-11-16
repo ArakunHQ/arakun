@@ -19,6 +19,10 @@ read-only all worked, with no console windows. Real writes (comment, approve, me
 close) and error states (no `gh`, signed out) were not tested, and neither were the rest
 of `Ctrl+K`, the palettes and the notices.
 
+Browser tabs were verified once on Windows 11 with a release build with the `browser`
+feature: `arakun browse` opened a page, and `arakun page text` and `arakun page
+screenshot` read and showed it. Typing, clicking, downloads and DevTools were not tested.
+
 Release builds for Windows (from GitHub Releases) contain only `arakun.exe`, built
 without the `browser` feature. For browser tabs, build from source as described here.
 To install the latest release, run this in PowerShell; it puts `arakun.exe` in
@@ -187,8 +191,8 @@ Manager (Windows Credentials, Generic Credentials).
 
 ## Known issues
 
-- **Browser tabs are untested on real Windows.** They use the same off-screen CEF as on
-  Linux. `libcef.dll` is delay-loaded (`/DELAYLOAD`, see `build.rs`) and only loaded when
+- **Browser tabs are barely tested on real Windows** (see the top of this page). They use
+  the same off-screen CEF as on Linux. `libcef.dll` is delay-loaded (`/DELAYLOAD`, see `build.rs`) and only loaded when
   the first tab opens, so Arakun starts without it and the copy of `arakun.exe` in
   `%LOCALAPPDATA%\arakun\bin` does not need it. If the tab says it cannot find the
   runtime, `libcef.dll` is missing next to `arakun.exe` (build again) or `ARAKUN_CEF_DIR`

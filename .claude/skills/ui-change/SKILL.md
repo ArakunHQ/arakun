@@ -65,8 +65,26 @@ first edit.
 - Keep screenshots outside the repository (`${TMPDIR:-/tmp}`), not in
   `docs/screenshots/`, which holds the README's images.
 - The pull request needs before and after screenshots (a short GIF for an
-  interaction). GitHub has no API to upload images, so give the user the paths
-  and say they need to be dragged into the pull request.
+  interaction). GitHub has no API to upload images, so they go in the public
+  repository [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets), one
+  folder per branch (`/` becomes `-`), named `before-<what>.png` and
+  `after-<what>.png`. Push them to its `main` and embed each one by its raw URL:
+
+  ```sh
+  dir=$(mktemp -d) && gh repo clone ArakunHQ/pr-assets "$dir" -- -q
+  mkdir -p "$dir/<branch>" && cp "${TMPDIR:-/tmp}"/after-*.png "$dir/<branch>/"
+  git -C "$dir" add -A && git -C "$dir" commit -m "docs: add <branch> screenshots"
+  git -C "$dir" push origin main
+  ```
+
+  ```markdown
+  ![After](https://raw.githubusercontent.com/ArakunHQ/pr-assets/main/<branch>/after-<what>.png)
+  ```
+
+  Anything there is public at once: use made-up data, and check the shot shows no
+  real account, token, email or home-directory path. Without push access
+  (`gh api repos/ArakunHQ/pr-assets --jq .permissions.push`), give the user the
+  paths and say they need to be dragged into the pull request.
 - Changed a shortcut, a setting or a command? Update the README, and
   `docs/windows.md` if Windows differs.
 - Code for one platform goes behind `cfg(...)`. Say in the pull request which

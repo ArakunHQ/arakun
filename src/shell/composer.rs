@@ -1161,15 +1161,17 @@ impl Shell {
             .flex()
             .flex_col()
             .w_full()
-            // As round as the window's cards; its buttons sit 8 px in.
+            // As round as the window's cards; its buttons sit 8 px in. Raised
+            // off the sheet by its tone; the border only shows while typing
+            // (and lights up when something is dragged over).
             .rounded(crate::ui::rad(ui::RADIUS_XL))
             .border_1()
             .border_color(if focused {
-                theme::mix(0.20)
+                theme::border()
             } else {
-                theme::mix(0.10)
+                gpui::transparent_black()
             })
-            .bg(theme::fill_raised())
+            .bg(theme::raised())
             .when_some(comp_popup, |d, p| d.child(p))
             .when_some(image_row, |d, p| d.child(p))
             .when_some(paste_row, |d, p| d.child(p))

@@ -21,8 +21,6 @@ impl Shell {
             .pl(ui::icon_inset())
             .pr(ui::icon_inset())
             .gap(crate::ui::sp(4.))
-            .border_b_1()
-            .border_color(theme::stroke())
             .child(
                 div()
                     .id("env-switcher")
@@ -82,8 +80,6 @@ impl Shell {
             .items_center()
             .h(px(40.))
             .px(crate::ui::sp(8.))
-            .border_b_1()
-            .border_color(theme::stroke())
             .child(
                 div()
                     .flex()
@@ -166,7 +162,7 @@ impl Shell {
             PanelTab::Changes => self.render_changes(cx).into_any_element(),
         };
 
-        ui::card()
+        self.side_card()
             .id("panel-card")
             .map(ui::stop_window_move)
             .flex()
@@ -174,7 +170,6 @@ impl Shell {
             .flex_none()
             .w(px(self.panel_w))
             .h_full()
-            .bg(theme::sidebar())
             .child(header)
             .child(tabs)
             .child(body)
@@ -192,8 +187,6 @@ impl Shell {
             .h(px(36.))
             .px(crate::ui::sp(8.))
             .gap(crate::ui::sp(4.))
-            .border_b_1()
-            .border_color(theme::stroke())
             .child(
                 div()
                     .flex()

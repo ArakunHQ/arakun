@@ -415,15 +415,13 @@ pub const DOCK_TAB_H: f32 = 24.;
 /// Room around a full-page view (Tasks, Runs, Memory…).
 pub const PAGE_PAD: f32 = 24.;
 
-/// A window-level floating card: the rail, the main area and the workspace
-/// panel. Rounds and clips its contents; menus and popovers render deferred
-/// at the root, so the clip never cuts them. The caller adds size and `bg`.
+/// A window-level card: the sheet in the middle, the terminal, and the rail
+/// or panel when they are set to sit in a card. Rounds and clips its
+/// contents, with no border: it stands apart from the window by its tone.
+/// Menus and popovers render deferred at the root, so the clip never cuts
+/// them. The caller adds size and `bg`.
 pub fn card() -> gpui::Div {
-    div()
-        .rounded(rad(RADIUS_XL))
-        .border_1()
-        .border_color(theme::stroke())
-        .overflow_hidden()
+    div().rounded(rad(RADIUS_XL)).overflow_hidden()
 }
 
 /// Keeps a press inside a card from reaching the window root, whose handler

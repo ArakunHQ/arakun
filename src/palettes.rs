@@ -61,7 +61,7 @@ impl Saved {
 
     /// The palette in use; the default when the saved one is gone.
     pub fn active(&self) -> Palette {
-        self.find(&self.current).unwrap_or_else(Palette::night)
+        self.find(&self.current).unwrap_or_else(Palette::calma)
     }
 
     pub fn is_custom(&self, id: &str) -> bool {
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn the_users_palettes_get_their_own_ids_and_names() {
         let mut s = Saved::default();
-        assert_eq!(s.active().id, "night");
+        assert_eq!(s.active().id, "calma");
         let night = Palette::night();
         let a = s.add(&night);
         assert_eq!((a.as_str(), s.current.as_str()), ("custom-1", "custom-1"));
@@ -266,7 +266,7 @@ mod tests {
         s.update(edited);
         assert_eq!(s.find("custom-1").unwrap().hue, 10.);
         s.remove("custom-2");
-        assert_eq!(s.active().id, "night");
+        assert_eq!(s.active().id, "calma");
         s.remove("custom-1");
         assert!(s.add(&night) == "custom-1", "a freed id is used again");
     }
@@ -277,7 +277,7 @@ mod tests {
             current: "gone".into(),
             ..Saved::default()
         };
-        assert_eq!(s.active().id, "night");
+        assert_eq!(s.active().id, "calma");
         let s = Saved {
             current: "forest".into(),
             ..Saved::default()

@@ -1,7 +1,8 @@
 //! Arakun's colors. Every surface comes from one [`Palette`] (a tint, how
 //! dark the background is, and an accent) plus alpha mixes of the content
-//! color. The default is night blue (hue 226) with an amber accent; users
-//! pick another palette or make their own in Settings › Appearance.
+//! color. The default is Calma, a near-neutral dark gray with an amber
+//! accent; users pick another palette or make their own in Settings ›
+//! Appearance.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
@@ -105,7 +106,7 @@ const CONTENT_S_MAX: f32 = 0.22;
 /// What a palette is made of. Everything else is derived from these four.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Palette {
-    /// Stable id: `night` for a built-in, `custom-…` for the user's.
+    /// Stable id: `calma` for a built-in, `custom-…` for the user's.
     pub id: String,
     pub name: String,
     /// Hue of the tint, in degrees.
@@ -117,6 +118,9 @@ pub struct Palette {
     /// The accent, `0xRRGGBB`.
     pub accent: u32,
 }
+
+/// How dark the default palette's ground is.
+const CALMA_BG: f32 = 0.06;
 
 /// The accent the brand started with, `#ffb547`.
 pub const AMBER: u32 = 0xffb547;
@@ -136,6 +140,7 @@ impl Palette {
     /// The palettes Arakun ships, the default first.
     pub fn built_in() -> Vec<Palette> {
         vec![
+            Palette::new("calma", "Calma", 240., 0.06, CALMA_BG, AMBER),
             Palette::new("night", "Arakun Night", 226., 0.28, 0.085, AMBER),
             Palette::new("graphite", "Graphite", 230., 0.06, 0.075, AMBER),
             Palette::new("midnight", "Midnight", 250., 0.45, 0.07, 0x8b9dff),
@@ -144,8 +149,15 @@ impl Palette {
         ]
     }
 
-    pub fn night() -> Palette {
+    /// The default: a near-neutral gray, so the only color on screen is
+    /// the one that means something.
+    pub fn calma() -> Palette {
         Palette::built_in().remove(0)
+    }
+
+    #[cfg(test)]
+    pub fn night() -> Palette {
+        Palette::built_in().remove(1)
     }
 
     /// Kept inside what the rest of the theme was tuned for, so a typed or
@@ -362,11 +374,11 @@ pub fn contrast(a: impl Into<Rgba>, b: impl Into<Rgba>) -> f32 {
 
 // The palette in use, as plain numbers so every color call stays a few
 // loads. Background and accent are stored already made readable.
-static HUE_X100: AtomicU32 = AtomicU32::new(22_600);
-static TINT_X1000: AtomicU32 = AtomicU32::new(280);
+static HUE_X100: AtomicU32 = AtomicU32::new(24_000);
+static TINT_X1000: AtomicU32 = AtomicU32::new(60);
 // These two are f32 bits, stored exact so the colors drawn are the ones
 // checked.
-static BG: AtomicU32 = AtomicU32::new(BASE_L.to_bits());
+static BG: AtomicU32 = AtomicU32::new(CALMA_BG.to_bits());
 static CONTENT_LIGHT: AtomicU32 = AtomicU32::new(CONTENT_L.to_bits());
 static ACCENT: AtomicU32 = AtomicU32::new(AMBER);
 
@@ -421,10 +433,10 @@ pub fn window_bg() -> Hsla {
     background().opacity(if glass() { 0.78 } else { 1. })
 }
 
-/// The same tone as the content area: the floating cards separate by gap
-/// and border, not by a darker sidebar.
+/// A rail or panel in a card of its own (the Card and Floating rail
+/// styles): the sheet's tone, since the ground around it is the window.
 pub fn sidebar() -> Hsla {
-    background().opacity(if glass() { 0.62 } else { 1. })
+    sheet()
 }
 
 /// `#e6e8ef` in the default palette.
@@ -612,6 +624,35 @@ pub fn dialog() -> Hsla {
     current_surface(BASE_L + DIALOG_LIFT)
 }
 
+// Four surfaces, each with one job. The window is the ground: the rail, the
+// workspace panel and the status line sit on it without a card of their own.
+// The sheet is where you work, a step lighter, so the eye lands there. Raised
+// asks something of you (the composer, a question from the agent). Sunk holds
+// code and terminal output inside a sheet.
+
+/// How much lighter than the ground the sheet is.
+const SHEET_LIFT: f32 = 0.03;
+/// How much lighter than the ground raised things are.
+const RAISED_LIFT: f32 = 0.06;
+/// How much lighter than the ground sunk wells are: darker than the sheet
+/// they sit in.
+const SUNK_LIFT: f32 = 0.012;
+
+/// Where you work: the center of the window.
+pub fn sheet() -> Hsla {
+    current_surface(BASE_L + SHEET_LIFT).opacity(if glass() { 0.9 } else { 1. })
+}
+
+/// Something on the sheet that asks for you: the composer, a question.
+pub fn raised() -> Hsla {
+    current_surface(BASE_L + RAISED_LIFT)
+}
+
+/// Code, diffs and terminal output inside a sheet.
+pub fn sunk() -> Hsla {
+    current_surface(BASE_L + SUNK_LIFT)
+}
+
 /// Lemon yellow, apart from the amber accent. Always shown with an icon.
 pub fn warn() -> Rgba {
     rgb(0xfde047)
@@ -745,6 +786,23 @@ mod tests {
         );
         assert!(near(p.accent(), 0xffb547), "accent {:06x}", hex(p.accent()));
         assert_eq!(hex(warn()), 0xfde047);
+    }
+
+    #[test]
+    fn calma_is_a_quiet_ground_with_a_lighter_sheet() {
+        let p = Palette::calma();
+        assert!(
+            near(p.background(), 0x0f0f10),
+            "ground {:06x}",
+            hex(p.background())
+        );
+        let (ground, sheet) = (p.background(), p.surface(BASE_L + SHEET_LIFT));
+        let (raised, sunk) = (
+            p.surface(BASE_L + RAISED_LIFT),
+            p.surface(BASE_L + SUNK_LIFT),
+        );
+        assert!(ground.l < sunk.l && sunk.l < sheet.l && sheet.l < raised.l);
+        assert!(near(p.accent(), AMBER), "accent {:06x}", hex(p.accent()));
     }
 
     #[test]

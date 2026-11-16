@@ -337,8 +337,6 @@ impl Shell {
             .flex_none()
             .items_center()
             .h(px(40.))
-            .border_b_1()
-            .border_color(theme::stroke())
             // Windows moves the window through the native hit test (HTCAPTION):
             // `start_window_move` does nothing there. Whatever in the bar takes a
             // click stops the mousedown, or the press would start a move instead.

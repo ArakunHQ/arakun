@@ -702,7 +702,8 @@ fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
 enum Named {
     /// `<label>.<relay>`: the address itself names the server's key.
     Label(String),
-    /// An IP address or localhost: a relay run by hand, which has no names to give.
+    /// Localhost or an address on a private network: a relay run by hand,
+    /// which has no names to give.
     Local,
     /// A name that starts with no label.
     Nothing,
@@ -716,12 +717,39 @@ fn named(origin: &str) -> Named {
         _ => host,
     };
     let name = name.trim_matches(['[', ']']);
-    if name == "localhost" || name.parse::<std::net::IpAddr>().is_ok() {
+    if name == "localhost" {
         return Named::Local;
+    }
+    if let Ok(ip) = name.parse::<std::net::IpAddr>() {
+        // Across the internet whoever sits on the way could answer for the
+        // relay and name a key of their own. A public address needs a name.
+        return if near(ip) {
+            Named::Local
+        } else {
+            Named::Nothing
+        };
     }
     match name.split('.').next() {
         Some(first) if is_label(first) => Named::Label(first.to_string()),
         _ => Named::Nothing,
+    }
+}
+
+/// An address on this machine or a network of one's own: loopback, the
+/// private ranges, link-local, and the range Tailscale gives out.
+fn near(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || (a == 100 && (64..128).contains(&b))
+        }
+        std::net::IpAddr::V6(ip) => {
+            let first = ip.segments()[0];
+            ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+        }
     }
 }
 
@@ -732,14 +760,14 @@ fn named(origin: &str) -> Named {
 /// terminal. The relay is not asked. A relay that could say which key to
 /// trust could name one of its own, answer the pairing in the server's place,
 /// and read the secret that is there to keep it out. Only a relay run by hand
-/// at an IP address or on localhost says which label it serves: it has no
-/// names, and whoever runs it is the one pairing.
+/// on localhost or at an address of a private network says which label it
+/// serves: it has no names, and whoever runs it is the one pairing.
 fn relay_label(origin: &str) -> Result<String, Ended> {
     match named(origin) {
         Named::Label(label) => return Ok(label),
         Named::Nothing => {
             return Err(Ended::Refused(
-                "That address names no server: a relay link starts with the server's label.".into(),
+                "That address names no server: a relay link starts with the server's label. A relay at a public address needs a name.".into(),
             ));
         }
         Named::Local => {}
@@ -1262,8 +1290,20 @@ mod tests {
             "http://localhost:8787",
             "http://[::1]:8787",
             "http://10.0.0.5",
+            "http://192.168.1.20:8787",
+            "http://100.101.102.103:8787",
+            "http://[fd7a:115c:a1e0::1]:8787",
         ] {
             assert_eq!(named(local), Named::Local, "{local}");
+        }
+        // At a public address the answer would cross the internet in the
+        // clear, and whoever is on the way could give a key of their own.
+        for public in [
+            "http://203.0.113.9:8787",
+            "http://[2001:db8::1]:8787",
+            "http://100.200.0.1",
+        ] {
+            assert_eq!(named(public), Named::Nothing, "{public}");
         }
         assert_eq!(percent("a-b_c.d~e f/+="), "a-b_c.d~e%20f%2F%2B%3D");
     }

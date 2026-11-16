@@ -75,8 +75,9 @@ struct Showing {
     refill: Option<Vec<Entry>>,
     /// Everything the server had when the session was opened is here.
     loaded: bool,
-    /// The server's entries could not be read: nothing more is asked for.
-    broken: bool,
+    /// Why the session could not be read in full, when it could not. Nothing
+    /// more is asked for until it is opened again.
+    broken: Option<String>,
 }
 
 pub(super) struct ServersLink {
@@ -208,17 +209,21 @@ enum Next {
     /// The server answered with nothing new where more was due. Asking again
     /// would get the same answer, forever and as fast as the network goes.
     Stuck,
+    /// An answer to a question no longer asked: the one that is out comes yet.
+    Stale,
 }
 
 /// Puts a page into the entries so far. `asked` is the index it was asked from.
 fn merge(entries: &mut Vec<Entry>, page: Page, asked: usize) -> Next {
+    // The server answers from where it was asked, or from its last entry when
+    // it has fewer. A page from further on answers an earlier question: one
+    // sent before the session was opened again, or before a reconnect.
+    if page.from > asked {
+        return Next::Stale;
+    }
     if page.from > entries.len() {
-        // A gap: what is missing comes first, unless that was just asked for.
-        return if asked == entries.len() {
-            Next::Stuck
-        } else {
-            Next::Ask(entries.len())
-        };
+        // A gap: what is missing comes first.
+        return Next::Ask(entries.len());
     }
     let brought = !page.entries.is_empty();
     entries.truncate(page.from);
@@ -326,6 +331,7 @@ impl Shell {
             questions: s.questions.clone(),
             view: s.view.clone(),
             loading: !s.loaded,
+            problem: s.broken.clone(),
         });
         let state = ServersState {
             servers,
@@ -481,10 +487,11 @@ impl Shell {
         let Some(link) = &mut self.servers else {
             return;
         };
+        // A session that could not be read is read again when asked for again.
         if link
             .showing
             .as_ref()
-            .is_some_and(|s| s.server == server && s.session == session)
+            .is_some_and(|s| s.server == server && s.session == session && s.broken.is_none())
         {
             return;
         }
@@ -532,7 +539,7 @@ impl Shell {
             again: None,
             refill: Some(Vec::new()),
             loaded: false,
-            broken: false,
+            broken: None,
         };
         conn.client
             .send(&json!({ "type": "open", "session": session }));
@@ -605,7 +612,7 @@ impl Shell {
                     if back && let Some(showing) = link.showing.as_mut().filter(|s| s.server == id)
                     {
                         (showing.asking, showing.asked, showing.again) = (true, 0, None);
-                        (showing.refill, showing.broken) = (Some(Vec::new()), false);
+                        (showing.refill, showing.broken) = (Some(Vec::new()), None);
                         conn.client
                             .send(&json!({ "type": "open", "session": showing.session }));
                         conn.client.send(
@@ -684,7 +691,7 @@ impl Shell {
             // Entries changed, cut down for a phone: the whole ones are asked for.
             "entries" => {
                 let Some(showing) = showing else { return };
-                if msg["older"] == true || showing.broken {
+                if msg["older"] == true || showing.broken.is_some() {
                     return;
                 }
                 let from = msg["from"].as_u64().unwrap_or(0) as usize;
@@ -699,7 +706,7 @@ impl Shell {
             }
             "transcript" => {
                 let Some(showing) = showing else { return };
-                if showing.broken {
+                if showing.broken.is_some() {
                     return;
                 }
                 if let Some(agent) = AgentKind::parse(msg["agent"].as_str().unwrap_or("")) {
@@ -712,6 +719,8 @@ impl Shell {
                     None => merge(&mut showing.entries, page, asked),
                 });
                 let ask = match next {
+                    // Not what was asked for: that answer is still on its way.
+                    Ok(Next::Stale) => return,
                     Ok(Next::Ask(from)) => Some(from),
                     Ok(Next::Done) => {
                         // Read whole: now it takes the place of what was shown.
@@ -723,17 +732,18 @@ impl Shell {
                         showing.again.take()
                     }
                     // Asking again would bring the same answer. What is here
-                    // stays on show, and the user is told why it stops there.
+                    // stays on show, and the session says why it stops there
+                    // for as long as it does: any click clears `link.error`.
                     failed => {
-                        (showing.broken, showing.asking, showing.again) = (true, false, None);
+                        (showing.asking, showing.again) = (false, None);
                         (showing.refill, showing.loaded) = (None, true);
-                        link.error = Some(match failed {
+                        showing.broken = Some(match failed {
                             // The reason without serde's list of every kind it knows.
                             Err(e) => format!(
                                 "A newer server? This session holds something this app cannot read ({}). Update this app to follow it.",
                                 e.split(", expected").next().unwrap_or(&e)
                             ),
-                            _ => "The server stopped sending this session part way; open it again to retry.".into(),
+                            _ => "The server stopped sending this session part way.".into(),
                         });
                         None
                     }
@@ -836,6 +846,8 @@ mod tests {
             Next::Ask(6)
         );
         assert_eq!(entries.len(), 6);
+        // The server had fewer than asked for and answers from its end.
+        assert_eq!(merge(&mut entries, page(6, 6, 6, &[]), 9), Next::Done);
         // The session was rewound on the server: fewer entries than before.
         assert_eq!(merge(&mut entries, page(1, 2, 2, &["b2"]), 1), Next::Done);
         assert_eq!(texts(&entries), ["a", "b2"]);
@@ -846,9 +858,28 @@ mod tests {
         let mut entries = vec![said("a"), said("b")];
         // More is due, and the page is empty: the same question would get it again.
         assert_eq!(merge(&mut entries, page(2, 2, 5, &[]), 2), Next::Stuck);
-        // The gap was asked for, and the answer still starts past it.
-        assert_eq!(merge(&mut entries, page(4, 5, 5, &["e"]), 2), Next::Stuck);
         assert_eq!(texts(&entries), ["a", "b"]);
+    }
+
+    #[test]
+    fn an_answer_to_an_earlier_question_is_left_alone() {
+        // The session was opened again while page two of the last reading was
+        // still out: it arrives first, for a reading that starts over.
+        let mut fresh = Vec::new();
+        assert_eq!(
+            merge(&mut fresh, page(2, 4, 5, &["c", "d"]), 0),
+            Next::Stale
+        );
+        assert!(fresh.is_empty());
+        // The answer that was asked for follows, and is taken.
+        assert_eq!(
+            merge(&mut fresh, page(0, 2, 5, &["a", "b"]), 0),
+            Next::Ask(2)
+        );
+        assert_eq!(texts(&fresh), ["a", "b"]);
+        // The late one again, now past what was asked: still not this answer.
+        assert_eq!(merge(&mut fresh, page(4, 5, 5, &["e"]), 2), Next::Stale);
+        assert_eq!(texts(&fresh), ["a", "b"]);
     }
 
     #[test]

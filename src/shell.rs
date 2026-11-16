@@ -2230,7 +2230,12 @@ impl Render for Shell {
             // With a project the GitHub tab is a tab again; without one later,
             // the welcome comes back first. The Servers tab too.
             self.github_alone = false;
-            self.servers_alone = false;
+            // The Servers tab in the welcome's place goes with the welcome, and
+            // the server is told nobody is looking. After this frame: telling
+            // it updates the view, which cannot happen while this one draws.
+            if std::mem::take(&mut self.servers_alone) {
+                cx.defer_in(window, |this, _, cx| this.servers_tab_closed(cx));
+            }
         }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
         if has_projects {

@@ -118,6 +118,8 @@ pub struct Open {
     pub view: Entity<ThreadView>,
     /// Its entries are still on their way.
     pub loading: bool,
+    /// Why the session could not be read in full, when it could not.
+    pub problem: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Default)]
@@ -870,6 +872,39 @@ impl ServersView {
                     ),
                 )
             });
+        // Stays for as long as the session is short of what the server has.
+        let problem = open.problem.clone().map(|why| {
+            let (server, session) = (open.server.clone(), open.session.clone());
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(ui::sp(8.))
+                .px(ui::sp(12.))
+                .py(ui::sp(6.))
+                .border_b_1()
+                .border_color(theme::border_subtle())
+                .child(icon("alert-circle", 14.).text_color(theme::attention()))
+                .child(
+                    ui::text(Type::Label, theme::attention().into(), why)
+                        .flex_1()
+                        .min_w_0(),
+                )
+                .child(
+                    ui::button(
+                        "servers-read-again",
+                        "Read again",
+                        ButtonKind::Outline,
+                        connected,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(ServersEvent::Open {
+                            server: server.clone(),
+                            session: session.clone(),
+                        })
+                    })),
+                )
+        });
         let body = if open.loading {
             ui::loading("servers-loading", "Reading the session…").into_any_element()
         } else {
@@ -880,6 +915,7 @@ impl ServersView {
             .flex_col()
             .size_full()
             .child(head)
+            .children(problem)
             .child(div().flex().flex_col().flex_1().min_h_0().child(body))
             .children(self.render_asks(open, cx))
             .child(

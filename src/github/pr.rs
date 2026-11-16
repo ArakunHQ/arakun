@@ -4043,25 +4043,21 @@ mod tests {
 
     #[test]
     fn the_review_prompt_asks_for_a_draft_and_nothing_else() {
+        // The address follows GH_HOST, so a run on GitHub Enterprise passes too.
+        let url = item(ItemKind::Pull).url();
         let p = review_prompt(
             &item(ItemKind::Pull),
             "fix(terminal): keep the tab name on resize",
         );
         assert!(p.starts_with("Review the pull request \"fix(terminal): keep the tab name on resize\" (ArakunHQ/arakun#41)"), "{p}");
-        assert!(
-            p.contains("URL: https://github.com/ArakunHQ/arakun/pull/41\n"),
-            "{p}"
-        );
+        assert!(p.contains(&format!("URL: {url}\n")), "{p}");
         assert!(
             p.contains(
                 "the description, the full diff, the existing reviews and comments, and the checks"
             ),
             "{p}"
         );
-        assert!(
-            p.contains("`gh pr diff https://github.com/ArakunHQ/arakun/pull/41`"),
-            "{p}"
-        );
+        assert!(p.contains(&format!("`gh pr diff {url}`")), "{p}");
         assert!(
             p.contains("`gh api repos/ArakunHQ/arakun/pulls/41/comments`"),
             "{p}"
@@ -4075,7 +4071,7 @@ mod tests {
             "{p}"
         );
         assert!(
-            p.contains("First note the commit you are reviewing: `gh pr view https://github.com/ArakunHQ/arakun/pull/41 --json headRefOid --jq .headRefOid`."),
+            p.contains(&format!("First note the commit you are reviewing: `gh pr view {url} --json headRefOid --jq .headRefOid`.")),
             "{p}"
         );
         assert!(p.ends_with("Never post a comment or a review, approve, request changes, merge or close anything on GitHub yourself."), "{p}");
@@ -4090,7 +4086,7 @@ mod tests {
         assert!(text.starts_with("Catch me up on the pull request \"fix(terminal): keep the tab name on resize\" (ArakunHQ/arakun#41)"), "{text}");
         assert!(text.contains("I last reviewed it 2h ago. These commits arrived after my review:\n- bbbbbbb test the resize\n"), "{text}");
         assert!(
-            text.contains("`gh pr diff https://github.com/ArakunHQ/arakun/pull/41`"),
+            text.contains(&format!("`gh pr diff {}`", it.url())),
             "{text}"
         );
         assert!(text.ends_with(HANDS_OFF), "{text}");
@@ -4111,9 +4107,10 @@ mod tests {
         let issue = summarize_prompt(&item(ItemKind::Issue), "Windows build stuck");
         assert!(
             issue.contains("the issue \"Windows build stuck\"")
-                && issue.contains(
-                    "`gh issue view https://github.com/ArakunHQ/arakun/issues/41 --comments`"
-                ),
+                && issue.contains(&format!(
+                    "`gh issue view {} --comments`",
+                    item(ItemKind::Issue).url()
+                )),
             "{issue}"
         );
         assert!(HANDS_OFF.contains(

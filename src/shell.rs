@@ -268,6 +268,14 @@ pub struct Shell {
     _caret_focus: Subscription,
     _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
+    /// Refreshes the open palette when GitHub brings in more.
+    palette_watch: Option<Subscription>,
+    /// Each project's `owner/name` on GitHub (None when it has none), by
+    /// directory. Read in the background: finding it runs `git`, and the
+    /// palette asks for it on every GitHub update.
+    repo_slugs: std::collections::HashMap<std::path::PathBuf, Option<String>>,
+    /// The background read of `repo_slugs`; a new one replaces it.
+    repo_slugs_read: Option<Task<()>>,
     menu: Option<ContextMenu>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
@@ -700,6 +708,9 @@ impl Shell {
             _caret_focus: caret_focus,
             _composer_blur: composer_blur,
             modal: None,
+            palette_watch: None,
+            repo_slugs: Default::default(),
+            repo_slugs_read: None,
             menu: None,
             poll: None,
             last_fetch: None,

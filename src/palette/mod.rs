@@ -90,6 +90,9 @@ pub struct Seed {
     pub branch: String,
     /// `owner/name` of the visible project on GitHub.
     pub repo: Option<String>,
+    /// (project name, `owner/name`) of every project on GitHub: where `#86`
+    /// is looked for, and what `#arakun 86` narrows to.
+    pub repos: Vec<(String, String)>,
     pub branches: Vec<String>,
     /// (id, title) of every session, for "when X finishes".
     pub sessions: Vec<(String, String)>,
@@ -136,6 +139,11 @@ pub enum PaletteEvent {
     /// A confirmed merge from the palette.
     Merge(crate::github::pr::ItemRef),
     PinsChanged,
+    /// `#86` with no such pull request listed: look it up in these repositories.
+    FindPull {
+        number: u64,
+        repos: Vec<String>,
+    },
     Dismissed,
 }
 
@@ -219,6 +227,8 @@ pub struct Menu {
 }
 
 pub struct Palette {
+    /// (`owner/name`, number) already looked up for `#86`, so each is asked once.
+    asked_pulls: HashSet<(String, u64)>,
     input: Entity<TextInput>,
     seed: Seed,
     files: Option<Arc<Vec<String>>>,
@@ -279,6 +289,7 @@ impl Palette {
         window.focus(&input.focus_handle(cx), cx);
         let clip = seed.clipboard.as_deref().and_then(clip::classify);
         let mut this = Self {
+            asked_pulls: HashSet::new(),
             input,
             seed,
             files: None,
@@ -331,6 +342,19 @@ impl Palette {
             self.selected = i;
         }
         cx.notify();
+    }
+
+    /// The projects' repositories, once the shell has read them.
+    pub fn set_repos(
+        &mut self,
+        repo: Option<String>,
+        repos: Vec<(String, String)>,
+        items: Vec<Item>,
+        cx: &mut Context<Self>,
+    ) {
+        self.seed.repo = repo;
+        self.seed.repos = repos;
+        self.set_items(items, cx);
     }
 
     /// Shown under the list: what happened after a write.
@@ -1244,6 +1268,34 @@ impl Palette {
             let key = format!("memory:{}", m.id());
             cands.retain(|i| i.key != key);
         }
+        // `#arakun 86` / `#app`: a first word that names a repository or a
+        // project narrows the pull requests to it; the rest is the search.
+        let mut q = q;
+        let mut narrowed: Option<String> = None;
+        if self.scope == Some(Scope::Pulls)
+            && self.pages.is_empty()
+            && let Some((word, rest)) = narrow_word(&q, &cands, &self.seed.repos)
+        {
+            cands.retain(|i| i.kind != Kind::Pull || i.tags.contains(&word));
+            narrowed = Some(word);
+            q = rest;
+        }
+        // `#86` names one pull request; look for it when it isn't listed, and
+        // only in the repositories the narrowing names.
+        if self.scope == Some(Scope::Pulls)
+            && let Ok(n) = q.trim().trim_start_matches('#').parse::<u64>()
+            && !cands
+                .iter()
+                .any(|i| i.kind == Kind::Pull && i.meta.as_ref() == format!("#{n}"))
+        {
+            let repos: Vec<String> = lookup_repos(&cands, &self.seed.repos, narrowed.as_deref())
+                .into_iter()
+                .filter(|r| self.asked_pulls.insert((r.clone(), n)))
+                .collect();
+            if !repos.is_empty() {
+                cx.emit(PaletteEvent::FindPull { number: n, repos });
+            }
+        }
         // Filter by page, scope and the person's tab.
         cands.retain(|i| {
             if let Some(p) = self.pages.last() {
@@ -2104,9 +2156,118 @@ fn kind_groups(
         .collect()
 }
 
+/// Whether `word` (lower case) names this repository, its owner or its
+/// project: the same words `Item::repo_tags` puts on its pull requests.
+fn names_repo(word: &str, project: &str, repo: &str) -> bool {
+    let repo = repo.to_ascii_lowercase();
+    let (owner, name) = repo.split_once('/').unwrap_or(("", repo.as_str()));
+    word == repo || word == owner || word == name || project.eq_ignore_ascii_case(word)
+}
+
+/// `#arakun 86`: the first word (lower case) when it names a listed pull
+/// request's repository or a project's, and the rest of the query. A project
+/// counts before its pull requests arrive, so `#arakun 86` still narrows.
+fn narrow_word(q: &str, items: &[Item], repos: &[(String, String)]) -> Option<(String, String)> {
+    let mut words = q.split_whitespace();
+    let first = words.next()?.trim_start_matches('#').to_ascii_lowercase();
+    if first.is_empty() {
+        return None;
+    }
+    let known = items
+        .iter()
+        .any(|i| i.kind == Kind::Pull && i.tags.contains(&first))
+        || repos.iter().any(|(p, r)| names_repo(&first, p, r));
+    known.then(|| (first, words.collect::<Vec<_>>().join(" ")))
+}
+
+/// The repositories (`owner/name`, lower case) to look `#86` up in: those of
+/// the listed pull requests and the projects, or only the ones `narrowed` names.
+fn lookup_repos(items: &[Item], repos: &[(String, String)], narrowed: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = items
+        .iter()
+        .filter(|i| i.kind == Kind::Pull)
+        .filter(|i| narrowed.is_none_or(|w| i.tags.iter().any(|t| t == w)))
+        .filter_map(|i| i.tags.iter().find(|t| t.contains('/')).cloned())
+        .collect();
+    out.extend(
+        repos
+            .iter()
+            .filter(|(p, r)| narrowed.is_none_or(|w| names_repo(w, p, r)))
+            .map(|(_, r)| r.to_ascii_lowercase()),
+    );
+    out.sort();
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pull(repo: &str, project: Option<&str>, n: u64) -> Item {
+        Item::new(
+            format!("pull:{repo}#{n}"),
+            Kind::Pull,
+            "title",
+            Target::Nothing,
+        )
+        .repo_tags(repo, project)
+        .meta(format!("#{n}"))
+    }
+
+    #[test]
+    fn a_first_word_naming_a_repository_or_project_narrows() {
+        let repos = vec![
+            ("app".to_string(), "ArakunHQ/arakun".to_string()),
+            ("site".to_string(), "ArakunHQ/web".to_string()),
+        ];
+        let items = vec![pull("ArakunHQ/web", Some("site"), 3)];
+        // By name, before any of its pull requests is listed.
+        assert_eq!(
+            narrow_word("#arakun 86", &items, &repos),
+            Some(("arakun".into(), "86".into()))
+        );
+        // By project name, and by `owner/name`.
+        assert_eq!(
+            narrow_word("app", &items, &repos),
+            Some(("app".into(), String::new()))
+        );
+        assert_eq!(
+            narrow_word("arakunhq/web fix", &items, &repos),
+            Some(("arakunhq/web".into(), "fix".into()))
+        );
+        // Any other first word is the search.
+        assert_eq!(narrow_word("fix palette", &items, &repos), None);
+        assert_eq!(narrow_word("86", &items, &repos), None);
+    }
+
+    #[test]
+    fn a_narrowed_lookup_asks_only_the_named_repository() {
+        let repos = vec![
+            ("app".to_string(), "ArakunHQ/arakun".to_string()),
+            ("site".to_string(), "ArakunHQ/web".to_string()),
+        ];
+        let items = vec![
+            pull("ArakunHQ/web", Some("site"), 3),
+            pull("other/lib", None, 9),
+        ];
+        assert_eq!(
+            lookup_repos(&items, &repos, Some("app")),
+            vec!["arakunhq/arakun".to_string()]
+        );
+        assert_eq!(
+            lookup_repos(&items, &repos, Some("site")),
+            vec!["arakunhq/web".to_string()]
+        );
+        assert_eq!(
+            lookup_repos(&items, &repos, None),
+            vec![
+                "arakunhq/arakun".to_string(),
+                "arakunhq/web".to_string(),
+                "other/lib".to_string()
+            ]
+        );
+    }
 
     fn item(key: &str, kind: Kind, section: &'static str) -> Item {
         Item::new(key, kind, key, Target::Nothing).section(section)

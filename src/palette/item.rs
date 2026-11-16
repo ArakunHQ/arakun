@@ -280,6 +280,9 @@ pub struct Item {
     pub dim: bool,
     /// Added to its score: what needs the person comes first.
     pub boost: i32,
+    /// Names a `#` search can narrow to, lowercase: the pull request's
+    /// repository (`arakunhq/arakun`, `arakun`), its owner and its project.
+    pub tags: Vec<String>,
 }
 
 impl Item {
@@ -305,7 +308,20 @@ impl Item {
             toggle: None,
             dim: false,
             boost: 0,
+            tags: Vec::new(),
         }
+    }
+
+    /// The repository (`owner/name`) and project a pull request belongs to, so
+    /// `#arakun 86` or `#app` narrows to them.
+    pub fn repo_tags(mut self, repo: &str, project: Option<&str>) -> Self {
+        let repo = repo.to_ascii_lowercase();
+        if let Some((owner, name)) = repo.split_once('/') {
+            self.tags.extend([owner.to_string(), name.to_string()]);
+        }
+        self.tags.push(repo);
+        self.tags.extend(project.map(str::to_ascii_lowercase));
+        self
     }
 
     pub fn sub(mut self, s: impl Into<SharedString>) -> Self {

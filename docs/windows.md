@@ -150,8 +150,12 @@ Manager (Windows Credentials, Generic Credentials).
   remove what it grants with `icacls "<path>" /remove:g "<account>"`, on the folder and
   on each subfolder (such as `github\drafts`) and file that lists it. `/remove:g` keeps
   a `(DENY)` entry; a plain `/remove` would drop it too, and the account could then read
-  through a group it is in. When only inherited entries gave it, the second command also
-  drops the Administrators' access, which some backup tools need.
+  through a group it is in. A subfolder or file that shows no `(I)` entry for your
+  account does not inherit from the folder, so the second command gave you nothing
+  there: before you take a group such as `Users` off it, give your account access with
+  `icacls "<path>" /grant "${env:USERNAME}:F"`, or you lose it too. When only inherited
+  entries gave it, the second command also drops the Administrators' access, which some
+  backup tools need.
 - **Command line (`arakun browse`, `arakun run`, ...):** the same as on Linux. Arakun's
   terminals and agents have `%LOCALAPPDATA%\arakun\bin` on their `PATH`, with a hard link
   to `arakun.exe` (or a copy if the disk does not support hard links). The socket is

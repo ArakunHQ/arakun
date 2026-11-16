@@ -579,7 +579,7 @@ impl Shell {
                         div()
                             .px(crate::ui::sp(5.))
                             .rounded(crate::ui::rad(4.))
-                            .bg(theme::fill_hover().opacity(0.18))
+                            .bg(theme::fill_hover())
                             .text_size(px(ui::TEXT_XS))
                             .text_color(theme::text_muted())
                             .child(n),

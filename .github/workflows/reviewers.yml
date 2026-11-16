@@ -150,10 +150,14 @@ jobs:
                 else empty end'
           }
 
+          # CodeRabbit's approvals: all of them, or with a third argument
+          # only those of that commit, so a run that checked an older head
+          # leaves a newer head's approval alone.
           dismiss_approvals() {
             local id
-            for id in $(gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
-              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'); do
+            for id in $(ONLY=${3:-} gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
+              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED" and
+                (env.ONLY == "" or .commit_id == env.ONLY)) | .id'); do
               gh api -X PUT "repos/$GH_REPO/pulls/$1/reviews/$id/dismissals" --silent \
                 -f event=DISMISS -f message="$2"
               echo "Dismissed CodeRabbit's approval: $2"
@@ -204,7 +208,8 @@ jobs:
               self=$(grep -cx self <<<"$threads" || true)
               if [ "$self" -gt 0 ]; then
                 dismiss_approvals "$pr" \
-                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply."
+                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply." \
+                  "$HEAD"
               elif [ "$open" -gt 0 ]; then
                 echo "CodeRabbit approved $HEAD, but $open review threads are open; a person has to resolve them."
               else

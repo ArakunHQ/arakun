@@ -203,11 +203,10 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   ```
 - **Add a screenshot** to the pull request, before and after if something changed.
   Drag it into the description. With write access to
-  [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets) you can push it
-  there instead (a new folder per upload, named after the branch, its commit and
-  the time) and embed its raw URL; agents do this, since GitHub has no API to upload
-  images. That repository is public: no real accounts, tokens or home-directory
-  paths in the picture.
+  [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets), `tools/pr-assets.sh
+  <file>...` uploads it there instead and prints the Markdown to paste; agents do
+  this, since GitHub has no API to upload images. That repository is public: no
+  real accounts, tokens or home-directory paths in the picture.
 
 ## Pull requests
 

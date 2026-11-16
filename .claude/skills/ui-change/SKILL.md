@@ -65,42 +65,22 @@ first edit, and save it as `before.png` the same way.
 - Keep screenshots outside the repository (`${TMPDIR:-/tmp}`), not in
   `docs/screenshots/`, which holds the README's images.
 - The pull request needs before and after screenshots (a short GIF for an
-  interaction). GitHub has no API to upload images, so they go in the public
-  repository [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets). Each
-  upload gets a new folder named after the branch, its commit, the time and the
-  shell's process ID, so two branches never share one, a retake on the same commit
-  gets its own (even in the same second), and a later upload never replaces images
-  a pull request shows. Any character but letters, digits, `.`, `_` and `-` becomes
-  `-`, so the name is safe in a URL (Git allows `#` and `%` in branch names).
-  Copy each file by name, never with a glob: an old capture left in
-  `${TMPDIR:-/tmp}` would be published with it.
-
-  `mkdir` without `-p` fails when the folder exists, and the `&&` chain then
-  stops before a `cp` can overwrite an earlier upload. Add one `cp` per file, a GIF
-  too.
+  interaction). GitHub has no API to upload images, so `tools/pr-assets.sh`
+  pushes them to the public [ArakunHQ/pr-assets](https://github.com/ArakunHQ/pr-assets)
+  repository and prints the Markdown to paste under Changes. Name each file; never pass a glob,
+  which could publish an old capture:
 
   ```sh
-  folder="$(git branch --show-current | tr -c 'A-Za-z0-9._\n' -)-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)-$$" &&
-    dir=$(mktemp -d) &&
-    gh repo clone ArakunHQ/pr-assets "$dir" -- -q &&
-    mkdir "$dir/$folder" &&
-    cp "${TMPDIR:-/tmp}/before.png" "$dir/$folder/before-<what>.png" &&
-    cp "${TMPDIR:-/tmp}/after.png" "$dir/$folder/after-<what>.png" &&
-    git -C "$dir" add "$folder" &&
-    git -C "$dir" commit -m "docs: add $folder screenshots" &&
-    git -C "$dir" push origin main
+  tools/pr-assets.sh "${TMPDIR:-/tmp}/before.png" "${TMPDIR:-/tmp}/after.png"
   ```
 
-  Embed each one by its raw URL:
+  Each run gets a new folder (the script's header says how it is named), so a
+  retake never replaces images a pull request already shows.
 
-  ```markdown
-  ![After](https://raw.githubusercontent.com/ArakunHQ/pr-assets/main/<folder>/after-<what>.png)
-  ```
-
-  Anything there is public at once: use made-up data, and look at every file you
-  copy for a real account, token, email or home-directory path (the status bar
-  shows the project's path; the test Arakun can show your GitHub notifications). Without push access
-  (`gh api repos/ArakunHQ/pr-assets --jq .permissions.push`), give the user the
+  Anything there is public at once: use made-up data, and look at every file
+  you upload for a real account, token, email or home-directory path (the status
+  bar shows the project's path; the test Arakun can show your GitHub
+  notifications). Without push access the script says so: give the user the
   paths and say they need to be dragged into the pull request.
 - Changed a shortcut, a setting or a command? Update the README, and
   `docs/windows.md` if Windows differs.

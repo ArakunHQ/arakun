@@ -469,7 +469,9 @@ fn paint(
             image
         }
     };
-    let corners = gpui::Corners::all(px(ui::RADIUS_LG - 1.));
+    // Inside the stage's 1 px border, following the radius setting like the
+    // stage does, so the picture's corners stay on its border.
+    let corners = gpui::Corners::all(ui::nested(ui::RADIUS_LG, 1.));
     let _ = window.paint_image(bounds, bounds, corners, image, 0, false);
 }
 

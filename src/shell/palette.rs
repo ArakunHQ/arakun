@@ -269,6 +269,13 @@ impl Shell {
             }
             PaletteEvent::AddRule(draft) => {
                 let dir = self.has_projects().then(|| self.env().path.clone());
+                // A CI rule watches the project it was made in, the same one
+                // its commands run in.
+                let mut draft = draft.clone();
+                if let palette::rules::Trigger::CiFailed { project, .. } = &mut draft.trigger {
+                    *project = self.has_projects().then(|| self.project().path.clone());
+                }
+                let draft = &draft;
                 let now = crate::memory::now();
                 // The same rule twice would act twice: keep the one already waiting.
                 let twin = self
@@ -1536,10 +1543,12 @@ impl Shell {
             if let Some(repo) = ci.repo(&p.path) {
                 for run in &repo.runs {
                     if run.state() == crate::ci::State::Failed {
-                        let at = crate::ci::parse_time(&run.updated_at).unwrap_or(0);
-                        facts
-                            .failed_runs
-                            .push((run.head_branch.clone(), run.id, at));
+                        facts.failed_runs.push(palette::rules::FailedRun {
+                            project: p.path.clone(),
+                            branch: run.head_branch.clone(),
+                            id: run.id,
+                            at: crate::ci::parse_time(&run.updated_at).unwrap_or(0),
+                        });
                     }
                 }
             }
@@ -1594,7 +1603,9 @@ impl Shell {
                     changed = true;
                     match palette::rules::workdir(rule, |d| d.exists()) {
                         Ok(dir) => {
-                            rule.state = palette::rules::State::Done;
+                            // Done or Failed once its steps ended (`run_rule`);
+                            // running, it isn't checked again.
+                            rule.state = palette::rules::State::Running;
                             fire.push((rule.clone(), dir));
                         }
                         Err(why) => {
@@ -1642,6 +1653,10 @@ impl Shell {
         }
     }
 
+    /// Runs a fired rule's steps in order. A merge is awaited before the
+    /// next step starts, and a step that fails stops the rest: a command
+    /// after a merge must not run when the merge didn't happen. The rule is
+    /// marked done or failed from how the steps went.
     fn run_rule(
         &mut self,
         rule: palette::rules::Rule,
@@ -1659,111 +1674,188 @@ impl Shell {
             }),
             _ => None,
         };
-        let mut notes: Vec<String> = Vec::new();
-        for step in &rule.steps {
-            match step {
-                palette::rules::Step::Merge { method } => {
-                    let Some(item) = pull.clone() else { continue };
-                    // The head whose checks just passed: a push after that is not merged.
-                    let Some(head) = self.pull_head(&item, cx) else {
-                        notes.push("not merged: its latest commit isn't loaded".into());
-                        continue;
-                    };
-                    let method = match method.as_str() {
-                        "merge" => pr::MergeMethod::Merge,
-                        "rebase" => pr::MergeMethod::Rebase,
-                        _ => pr::MergeMethod::Squash,
-                    };
-                    let title = rule.title.clone();
-                    let notify = rule
-                        .steps
-                        .iter()
-                        .any(|s| matches!(s, palette::rules::Step::Notify { .. }));
-                    cx.spawn(async move |this, cx| {
-                        let it = item.clone();
-                        let result = cx
-                            .background_spawn(async move { pr::merge(&it, method, &head) })
-                            .await;
-                        let _ = this.update(cx, |this, cx| {
-                            let (kind, text) = match result {
-                                Ok(()) => (AlertKind::Success, format!("Merged #{}", item.number)),
-                                Err(p) if pr::refused_read_only(&p) => (
-                                    AlertKind::Warning,
-                                    "Read-only here: did not merge".to_string(),
-                                ),
-                                Err(p) => (
-                                    AlertKind::Failure,
-                                    format!("Could not merge #{}: {}", item.number, p.text()),
-                                ),
-                            };
-                            if notify || kind != AlertKind::Success {
-                                this.notify_from(
-                                    kind,
-                                    &title,
-                                    &text,
-                                    Some(Open::GitHub(None)),
-                                    None,
-                                    "github",
-                                    cx,
-                                );
+        // The head whose checks just passed, read in the same moment as the
+        // check: a push after that is not merged.
+        let head = pull.as_ref().and_then(|p| self.pull_head(p, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            // Err holds why it stopped, and whether that was already told.
+            let mut result: Result<(), (String, bool)> = Ok(());
+            for step in &rule.steps {
+                let done = match step {
+                    palette::rules::Step::Merge { method } => {
+                        match (pull.clone(), head.clone()) {
+                            (None, _) => Err(("there is no pull request to merge".into(), false)),
+                            (Some(_), None) => {
+                                Err(("not merged: its latest commit isn't loaded".into(), false))
                             }
-                            this.github
-                                .update(cx, |g, cx| g.fetch_item(item.clone(), cx));
-                        });
-                    })
-                    .detach();
-                    notes.push("merging".into());
-                }
-                palette::rules::Step::Notify { text } => {
-                    // A merge says how it went itself.
-                    if !rule
-                        .steps
-                        .iter()
-                        .any(|s| matches!(s, palette::rules::Step::Merge { .. }))
-                    {
-                        // A reminder's title already holds its text.
-                        let title = match rule.trigger {
-                            palette::rules::Trigger::At { at } => {
-                                palette::rules::reminder_title(at, crate::memory::now())
+                            (Some(item), Some(head)) => {
+                                let method = match method.as_str() {
+                                    "merge" => pr::MergeMethod::Merge,
+                                    "rebase" => pr::MergeMethod::Rebase,
+                                    _ => pr::MergeMethod::Squash,
+                                };
+                                let it = item.clone();
+                                let sent = cx
+                                    .background_spawn(async move { pr::merge(&it, method, &head) })
+                                    .await;
+                                // A merge that GitHub refused was already told.
+                                this.update(cx, |this, cx| {
+                                    this.merged_by_rule(&rule, &item, sent, cx)
+                                })
+                                .unwrap_or_else(|_| Err("Arakun closed".into()))
+                                .map_err(|why| (why, true))
                             }
-                            _ => rule.title.clone(),
-                        };
-                        self.notify_from(
-                            AlertKind::Info,
-                            &title,
-                            text,
-                            pull.as_ref().map(|_| Open::GitHub(None)),
-                            None,
-                            "arakun",
-                            cx,
-                        );
+                        }
                     }
-                }
-                palette::rules::Step::Run { command } => {
-                    if let Some(d) = &dir {
-                        self.run_in_terminal(d, command, false, window, cx);
-                    }
-                }
-                palette::rules::Step::Agent { prompt } => {
-                    if let Some(d) = dir.clone() {
-                        let agent = self
-                            .find_env(&d)
-                            .map(|e| e.agent)
-                            .unwrap_or(model::Agent::Claude);
-                        self.start_session_in(
-                            &d,
-                            agent,
-                            head(prompt, 60).into(),
-                            prompt.clone(),
-                            false,
-                            window,
-                            cx,
-                        );
-                    }
+                    step => this
+                        .update_in(cx, |this, window, cx| {
+                            this.run_rule_step(
+                                &rule,
+                                step,
+                                dir.as_deref(),
+                                pull.is_some(),
+                                window,
+                                cx,
+                            )
+                        })
+                        .unwrap_or_else(|_| Err("Arakun closed".into()))
+                        .map_err(|why| (why, false)),
+                };
+                if let Err(stop) = done {
+                    result = Err(stop);
+                    break;
                 }
             }
+            let _ = this.update(cx, |this, cx| {
+                if let Err((why, false)) = &result {
+                    this.notify_from(
+                        AlertKind::Failure,
+                        &rule.title,
+                        &format!("Stopped: {why}"),
+                        pull.as_ref().map(|_| Open::GitHub(None)),
+                        None,
+                        "arakun",
+                        cx,
+                    );
+                }
+                if this.rules.finish(rule.id, result.map_err(|(why, _)| why)) {
+                    this.rules.save();
+                    this.refresh_automations(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Says how a rule's merge went and reads the pull request again.
+    /// Ok only when GitHub merged it; Err says why it didn't.
+    fn merged_by_rule(
+        &mut self,
+        rule: &palette::rules::Rule,
+        item: &ItemRef,
+        sent: Result<(), crate::github::Problem>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let notify = rule
+            .steps
+            .iter()
+            .any(|s| matches!(s, palette::rules::Step::Notify { .. }));
+        let (kind, text, done) = match sent {
+            Ok(()) => (
+                AlertKind::Success,
+                format!("Merged #{}", item.number),
+                Ok(()),
+            ),
+            Err(p) if pr::refused_read_only(&p) => (
+                AlertKind::Warning,
+                "Read-only here: did not merge".to_string(),
+                Err("read-only here: did not merge".to_string()),
+            ),
+            Err(p) => {
+                let text = format!("Could not merge #{}: {}", item.number, p.text());
+                (AlertKind::Failure, text.clone(), Err(text))
+            }
+        };
+        // A merge says how it went itself.
+        if notify || kind != AlertKind::Success {
+            self.notify_from(
+                kind,
+                &rule.title,
+                &text,
+                Some(Open::GitHub(None)),
+                None,
+                "github",
+                cx,
+            );
         }
-        let _ = notes;
+        self.github
+            .update(cx, |g, cx| g.fetch_item(item.clone(), cx));
+        done
+    }
+
+    /// One step of a rule other than a merge. Err when it could not start.
+    fn run_rule_step(
+        &mut self,
+        rule: &palette::rules::Rule,
+        step: &palette::rules::Step,
+        dir: Option<&Path>,
+        has_pull: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        match step {
+            palette::rules::Step::Merge { .. } => Ok(()),
+            palette::rules::Step::Notify { text } => {
+                // A merge says how it went itself.
+                if !rule
+                    .steps
+                    .iter()
+                    .any(|s| matches!(s, palette::rules::Step::Merge { .. }))
+                {
+                    // A reminder's title already holds its text.
+                    let title = match rule.trigger {
+                        palette::rules::Trigger::At { at } => {
+                            palette::rules::reminder_title(at, crate::memory::now())
+                        }
+                        _ => rule.title.clone(),
+                    };
+                    self.notify_from(
+                        AlertKind::Info,
+                        &title,
+                        text,
+                        has_pull.then_some(Open::GitHub(None)),
+                        None,
+                        "arakun",
+                        cx,
+                    );
+                }
+                Ok(())
+            }
+            palette::rules::Step::Run { command } => {
+                let d = dir.ok_or("no folder to run in")?;
+                self.run_in_terminal(d, command, false, window, cx)
+                    .map(|_| ())
+                    .ok_or_else(|| format!("could not open a terminal for `{command}`"))
+            }
+            palette::rules::Step::Agent { prompt } => {
+                let d = dir.ok_or("no folder to start an agent in")?;
+                let agent = self
+                    .find_env(d)
+                    .map(|e| e.agent)
+                    .unwrap_or(model::Agent::Claude);
+                self.start_session_in(
+                    d,
+                    agent,
+                    head(prompt, 60).into(),
+                    prompt.clone(),
+                    false,
+                    window,
+                    cx,
+                )
+                .map(|_| ())
+                .ok_or_else(|| "could not start the agent".to_string())
+            }
+        }
     }
 
     /// The rule ticker: rules wait on GitHub and CI, which poll on their own;

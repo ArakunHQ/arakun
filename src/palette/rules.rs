@@ -24,6 +24,11 @@ pub enum Trigger {
     },
     CiFailed {
         branch: String,
+        /// The project whose CI it watches, filled in when the rule is
+        /// added. A failure on the same branch of another project must not
+        /// fire it. Rules saved before this was kept have none and never fire.
+        #[serde(default)]
+        project: Option<PathBuf>,
     },
     SessionFinished {
         id: String,
@@ -40,7 +45,7 @@ impl Trigger {
         match self {
             Trigger::PrChecksPass { number, .. } => format!("#{number} checks pass"),
             Trigger::PrMerged { number, .. } => format!("#{number} is merged"),
-            Trigger::CiFailed { branch } => format!("CI fails on {branch}"),
+            Trigger::CiFailed { branch, .. } => format!("CI fails on {branch}"),
             Trigger::SessionFinished { title, .. } => format!("“{title}” finishes"),
             Trigger::At { at } => format!("At {}", clock(*at)),
         }
@@ -114,6 +119,8 @@ impl Step {
 #[serde(tag = "state", content = "why", rename_all = "snake_case")]
 pub enum State {
     Waiting,
+    /// Fired and running its steps; `Done` or `Failed` once they ended.
+    Running,
     Done,
     Expired,
     Cancelled,
@@ -161,12 +168,22 @@ pub struct PullFacts {
     pub reviewers: Vec<String>,
 }
 
+/// A failed CI run as a rule sees it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FailedRun {
+    /// The project whose CI ran it.
+    pub project: PathBuf,
+    pub branch: String,
+    pub id: u64,
+    /// Unix seconds it finished.
+    pub at: u64,
+}
+
 /// What the app knows right now, gathered by the shell each check.
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub pulls: Vec<PullFacts>,
-    /// Failed runs: (branch, run id, unix seconds it finished).
-    pub failed_runs: Vec<(String, u64, u64)>,
+    pub failed_runs: Vec<FailedRun>,
     /// Sessions: (id, working).
     pub sessions: Vec<(String, bool)>,
 }
@@ -217,11 +234,20 @@ pub fn check(rule: &mut Rule, facts: &Facts, now: u64) -> Outcome {
             Some(p) if p.merged => Outcome::Fire,
             _ => Outcome::Wait(format!("Waiting for #{number} to merge")),
         },
-        Trigger::CiFailed { branch } => {
+        Trigger::CiFailed {
+            project: None,
+            branch,
+        } => Outcome::Wait(format!(
+            "No project was saved with it; add it again to watch {branch}"
+        )),
+        Trigger::CiFailed {
+            project: Some(project),
+            branch,
+        } => {
             let failed = facts
                 .failed_runs
                 .iter()
-                .any(|(b, _, at)| b == branch && *at >= rule.created);
+                .any(|r| &r.project == project && &r.branch == branch && r.at >= rule.created);
             if failed {
                 Outcome::Fire
             } else {
@@ -334,7 +360,10 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
         && has_any(&t, &["ci", "build", "checks"])
     {
         let branch = word_after(text, &["de ", "on ", "en "]).unwrap_or_else(|| "main".into());
-        Trigger::CiFailed { branch }
+        Trigger::CiFailed {
+            branch,
+            project: None,
+        }
     } else if has_any(&t, &["termine", "acabe", "finishes", "is done", "finish"]) {
         let (id, title) = sessions
             .iter()
@@ -462,7 +491,7 @@ fn notice_text(trigger: &Trigger) -> String {
     match trigger {
         Trigger::PrChecksPass { number, .. } => format!("#{number}: checks passed"),
         Trigger::PrMerged { number, .. } => format!("#{number} was merged"),
-        Trigger::CiFailed { branch } => format!("CI failed on {branch}"),
+        Trigger::CiFailed { branch, .. } => format!("CI failed on {branch}"),
         Trigger::SessionFinished { title, .. } => format!("“{title}” finished"),
         Trigger::At { .. } => "Reminder".into(),
     }
@@ -475,7 +504,7 @@ pub fn title_for(trigger: &Trigger, steps: &[Step]) -> String {
         Trigger::PrChecksPass { number, .. } if merges => format!("Merge #{number} when green"),
         Trigger::PrChecksPass { number, .. } => format!("When #{number} is green"),
         Trigger::PrMerged { number, .. } => format!("When #{number} merges"),
-        Trigger::CiFailed { branch } => format!("When CI fails on {branch}"),
+        Trigger::CiFailed { branch, .. } => format!("When CI fails on {branch}"),
         Trigger::SessionFinished { title, .. } => format!("When “{title}” finishes"),
         Trigger::At { .. } => match steps.first() {
             Some(Step::Notify { text }) => format!("Reminder: {text}"),
@@ -973,6 +1002,7 @@ pub fn from_json(
             }
             Trigger::CiFailed {
                 branch: b.to_string(),
+                project: None,
             }
         }
         "session_finished" => {
@@ -1088,6 +1118,24 @@ impl Rules {
         }
     }
 
+    /// Ends a running rule from how its steps went: `Done` only when they
+    /// all ran, `Failed` with why otherwise.
+    pub fn finish(&mut self, id: u64, result: Result<(), String>) -> bool {
+        match self.items.iter_mut().find(|r| r.id == id) {
+            Some(r) if r.state == State::Running => {
+                match result {
+                    Ok(()) => r.state = State::Done,
+                    Err(why) => {
+                        r.note = why.clone();
+                        r.state = State::Failed(why);
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn waiting(&self) -> impl Iterator<Item = &Rule> {
         self.items.iter().filter(|r| r.state == State::Waiting)
     }
@@ -1099,10 +1147,25 @@ impl Rules {
     }
 
     pub fn load() -> Self {
-        std::fs::read(file())
+        let mut rules: Self = std::fs::read(file())
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        rules.interrupted();
+        rules
+    }
+
+    /// A rule still running when the app last closed may have done only some
+    /// of its steps. It is not run again (a command could run twice); it
+    /// says it was cut short.
+    fn interrupted(&mut self) {
+        for r in &mut self.items {
+            if r.state == State::Running {
+                let why = "Arakun closed before its steps finished".to_string();
+                r.note = why.clone();
+                r.state = State::Failed(why);
+            }
+        }
     }
 
     pub fn save(&self) {
@@ -1409,7 +1472,8 @@ mod tests {
         assert_eq!(
             d.trigger,
             Trigger::CiFailed {
-                branch: "phone-local".into()
+                branch: "phone-local".into(),
+                project: None,
             }
         );
         let sessions = vec![("s1".to_string(), "Sidebar redesign".to_string())];
@@ -1510,19 +1574,106 @@ mod tests {
         assert_eq!(check(&mut r, &Facts::default(), at), Outcome::Expired);
     }
 
+    fn failed(project: &str, branch: &str, id: u64, at: u64) -> FailedRun {
+        FailedRun {
+            project: project.into(),
+            branch: branch.into(),
+            id,
+            at,
+        }
+    }
+
     #[test]
     fn ci_failures_count_only_after_the_rule() {
         let mut r = rule(
             Trigger::CiFailed {
                 branch: "phone-local".into(),
+                project: Some("/work/app".into()),
             },
             vec![],
         );
         let mut facts = Facts::default();
-        facts.failed_runs.push(("phone-local".into(), 1, 900));
+        facts
+            .failed_runs
+            .push(failed("/work/app", "phone-local", 1, 900));
         assert!(matches!(check(&mut r, &facts, 1001), Outcome::Wait(_)));
-        facts.failed_runs.push(("phone-local".into(), 2, 1100));
+        facts
+            .failed_runs
+            .push(failed("/work/app", "phone-local", 2, 1100));
         assert_eq!(check(&mut r, &facts, 1101), Outcome::Fire);
+    }
+
+    #[test]
+    fn ci_failures_of_another_project_dont_fire() {
+        let mut r = rule(
+            Trigger::CiFailed {
+                branch: "main".into(),
+                project: Some("/work/app".into()),
+            },
+            vec![Step::Run {
+                command: "make deploy".into(),
+            }],
+        );
+        let mut facts = Facts::default();
+        facts
+            .failed_runs
+            .push(failed("/work/other", "main", 1, 1100));
+        assert!(matches!(check(&mut r, &facts, 1101), Outcome::Wait(_)));
+        // One saved without its project never fires, whatever fails.
+        let mut old = r.clone();
+        old.trigger = Trigger::CiFailed {
+            branch: "main".into(),
+            project: None,
+        };
+        facts.failed_runs.push(failed("/work/app", "main", 2, 1100));
+        assert!(matches!(check(&mut old, &facts, 1101), Outcome::Wait(_)));
+        assert_eq!(check(&mut r, &facts, 1101), Outcome::Fire);
+        // A rule saved before the project was kept still loads.
+        let json = r#"{"type":"ci_failed","branch":"main"}"#;
+        assert_eq!(
+            serde_json::from_str::<Trigger>(json).unwrap(),
+            Trigger::CiFailed {
+                branch: "main".into(),
+                project: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_rule_is_done_only_once_its_steps_ran() {
+        let mut rules = Rules::default();
+        let draft = |n| Draft {
+            title: "t".into(),
+            trigger: Trigger::PrChecksPass {
+                repo: REPO.into(),
+                number: n,
+            },
+            steps: vec![Step::Merge {
+                method: "squash".into(),
+            }],
+            hours: 1,
+        };
+        let ok = rules.add(draft(1), None, 5);
+        let bad = rules.add(draft(2), None, 5);
+        let cut = rules.add(draft(3), None, 5);
+        // Only a running rule is finished.
+        assert!(!rules.finish(ok, Ok(())));
+        for r in &mut rules.items {
+            r.state = State::Running;
+        }
+        assert!(rules.finish(ok, Ok(())));
+        assert!(rules.finish(bad, Err("Could not merge #2: conflict".into())));
+        assert_eq!(rules.items[0].state, State::Done);
+        assert_eq!(
+            rules.items[1].state,
+            State::Failed("Could not merge #2: conflict".into())
+        );
+        assert!(!rules.finish(ok, Err("late".into())));
+        // Still running when the app closed: failed, not run again.
+        rules.interrupted();
+        assert!(matches!(rules.items[2].state, State::Failed(_)));
+        assert_eq!(rules.items[2].id, cut);
+        assert_eq!(rules.waiting().count(), 0);
     }
 
     #[test]
@@ -1632,6 +1783,7 @@ mod tests {
             let mut r = rule(
                 Trigger::CiFailed {
                     branch: "main".into(),
+                    project: None,
                 },
                 vec![Step::Run {
                     command: "make deploy".into(),
@@ -1688,7 +1840,8 @@ mod tests {
         assert_eq!(
             d.trigger,
             Trigger::CiFailed {
-                branch: "é-main".into()
+                branch: "é-main".into(),
+                project: None,
             }
         );
         assert_eq!(

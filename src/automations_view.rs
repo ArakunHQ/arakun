@@ -203,6 +203,7 @@ impl AutomationsDialog {
                 }
                 facts.push(format!("expires {}", schedule::when(r.expires, now)));
             }
+            State::Running => facts.push("running".into()),
             State::Done => facts.push("done".into()),
             State::Expired => facts.push("expired".into()),
             State::Cancelled => facts.push("cancelled".into()),

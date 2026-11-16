@@ -159,12 +159,19 @@ jobs:
               --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'
           }
 
+          # The pull request, the message, then the approvals to dismiss
+          # (by default every one there is now).
           dismiss_approvals() {
-            local id
-            for id in $(coderabbit_approvals "$1"); do
-              gh api -X PUT "repos/$GH_REPO/pulls/$1/reviews/$id/dismissals" --silent \
-                -f event=DISMISS -f message="$2"
-              echo "Dismissed CodeRabbit's approval: $2"
+            local pr=$1 message=$2 id
+            shift 2
+            local ids=("$@")
+            if [ ${#ids[@]} -eq 0 ]; then
+              mapfile -t ids < <(coderabbit_approvals "$pr")
+            fi
+            for id in "${ids[@]}"; do
+              gh api -X PUT "repos/$GH_REPO/pulls/$pr/reviews/$id/dismissals" --silent \
+                -f event=DISMISS -f message="$message"
+              echo "Dismissed CodeRabbit's approval $id: $message"
             done
           }
 
@@ -205,10 +212,17 @@ jobs:
             if ! in_team "$author"; then
               dismiss_approvals "$pr" \
                 "A pull request from outside the team needs a person's approval. CodeRabbit's comments still apply."
-            elif [ -n "$(coderabbit_approvals "$pr")" ]; then
-              # Any approval, not only the head's: a newer head may get no
-              # verdict at all (CodeRabbit rate limited), and an older
-              # approval can still count. Dismissing is always the safe side.
+            fi
+            # Any approval, not only the head's: a newer head may get no
+            # verdict at all (CodeRabbit rate limited), and an older approval
+            # can still count. Taken before the threads are read, so only
+            # these are dismissed: an approval that comes later starts a run
+            # of its own, which judges it.
+            local approvals=()
+            if in_team "$author"; then
+              mapfile -t approvals < <(coderabbit_approvals "$pr")
+            fi
+            if [ ${#approvals[@]} -gt 0 ]; then
               local threads open self
               threads=$(thread_states "$pr" "$author")
               open=$(grep -cx open <<<"$threads" || true)
@@ -218,11 +232,13 @@ jobs:
               # afterwards and merge on CodeRabbit's approval.
               if [ "$self" -gt 0 ]; then
                 dismiss_approvals "$pr" \
-                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply."
+                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply." \
+                  "${approvals[@]}"
               elif [ "$open" -gt 0 ]; then
                 echo "$open review threads are open."
                 dismiss_approvals "$pr" \
-                  "Review threads are still open; a person resolves them and approves. CodeRabbit's comments still apply."
+                  "Review threads are still open; a person resolves them and approves. CodeRabbit's comments still apply." \
+                  "${approvals[@]}"
               elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
                 echo "CodeRabbit approved $HEAD and every thread is resolved; no reviewer needed."
                 echo "::endgroup::"
@@ -230,7 +246,8 @@ jobs:
               else
                 # Only an older commit's approval: it would still count.
                 dismiss_approvals "$pr" \
-                  "CodeRabbit has not approved the latest commit, so a person has to approve. CodeRabbit's comments still apply."
+                  "CodeRabbit has not approved the latest commit, so a person has to approve. CodeRabbit's comments still apply." \
+                  "${approvals[@]}"
               fi
             fi
 

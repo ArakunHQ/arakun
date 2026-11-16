@@ -150,14 +150,12 @@ jobs:
                 else empty end'
           }
 
-          # CodeRabbit's approvals: all of them, or with a third argument
-          # only those of that commit, so a run that checked an older head
-          # leaves a newer head's approval alone.
+          # Every CodeRabbit approval, older commits' too: one of those can
+          # still count toward the ruleset.
           dismiss_approvals() {
             local id
-            for id in $(ONLY=${3:-} gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
-              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED" and
-                (env.ONLY == "" or .commit_id == env.ONLY)) | .id'); do
+            for id in $(gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
+              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'); do
               gh api -X PUT "repos/$GH_REPO/pulls/$1/reviews/$id/dismissals" --silent \
                 -f event=DISMISS -f message="$2"
               echo "Dismissed CodeRabbit's approval: $2"
@@ -206,10 +204,16 @@ jobs:
               threads=$(thread_states "$pr" "$author")
               open=$(grep -cx open <<<"$threads" || true)
               self=$(grep -cx self <<<"$threads" || true)
-              if [ "$self" -gt 0 ]; then
+              if [ "$self" -gt 0 ] &&
+                [ "$(gh api "repos/$GH_REPO/pulls/$pr" --jq .head.sha)" != "$HEAD" ]; then
+                # A newer head's approval is its own run's to judge. The
+                # threads stay resolved by the author, so that run dismisses it.
+                echo "The head moved on from $HEAD; its own review will run this again."
+                echo "::endgroup::"
+                return
+              elif [ "$self" -gt 0 ]; then
                 dismiss_approvals "$pr" \
-                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply." \
-                  "$HEAD"
+                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply."
               elif [ "$open" -gt 0 ]; then
                 echo "CodeRabbit approved $HEAD, but $open review threads are open; a person has to resolve them."
               else

@@ -913,10 +913,13 @@ fn render_sheet(
     };
     let digits = (sheet.rows.len().max(1) as f32).log10().floor() as usize + 1;
     let gutter_w = digits as f32 * 7.8 + 20.;
+    // `sheet::column_width` sizes a column for its text plus the default
+    // 8 px padding on each side; the padding follows Spacing, so widen by
+    // what it grew.
     let cell = |w: f32| {
         div()
             .flex_none()
-            .w(px(w))
+            .w(px(w - 16.) + crate::ui::sp(8.) * 2.)
             .h_full()
             .flex()
             .items_center()

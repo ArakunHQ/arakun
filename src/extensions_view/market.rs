@@ -395,7 +395,9 @@ impl ExtensionsView {
         if width <= 0. {
             return 3;
         }
-        (((width + GAP) / (MIN_CARD + GAP)).floor() as usize).clamp(1, 4)
+        // The row's gap follows the Spacing setting, so count with it.
+        let gap = f32::from(crate::ui::sp(GAP));
+        (((width + gap) / (MIN_CARD + gap)).floor() as usize).clamp(1, 4)
     }
 
     fn installed(&self, item: &Item) -> bool {
@@ -874,7 +876,8 @@ impl ExtensionsView {
             .id(SharedString::from(format!("ext-card-{}", item.key())))
             .flex()
             .flex_col()
-            .h(px(ROW_H - GAP))
+            // The row's bottom padding scales, so the card takes what is left.
+            .h(px(ROW_H) - crate::ui::sp(GAP))
             .min_w_0()
             .overflow_hidden()
             .gap(crate::ui::sp(10.))
@@ -967,7 +970,7 @@ impl ExtensionsView {
         div()
             .id(SharedString::from(format!("ext-feat-{}", item.key())))
             .flex()
-            .h(px(FEATURED_H - GAP))
+            .h(px(FEATURED_H) - crate::ui::sp(GAP))
             .min_w_0()
             .overflow_hidden()
             .items_center()

@@ -222,6 +222,9 @@ pub struct ThreadView {
     note: Option<NoteBox>,
     /// Annotated ranges per surface, from notes waiting in the composer.
     marks: HashMap<usize, Vec<Range<usize>>>,
+    /// The Spacing setting the list's turns were measured at: turn heights
+    /// follow it, and the list re-measures only on a width change.
+    spacing: f32,
     search: Option<Search>,
     /// Where the current match was laid out, to scroll it into view.
     spot: Spot,
@@ -278,6 +281,7 @@ impl ThreadView {
             menu_at: None,
             note: None,
             marks: HashMap::new(),
+            spacing: crate::ui::space_scale(),
             search: None,
             spot: Rc::new(Cell::new(None)),
             settle_tries: 0,
@@ -2140,6 +2144,11 @@ impl Focusable for ThreadView {
 
 impl Render for ThreadView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let spacing = crate::ui::space_scale();
+        if spacing != self.spacing {
+            self.spacing = spacing;
+            self.list.remeasure();
+        }
         self.refresh_search(cx);
         let search_bar = self.render_search_bar(cx);
         let scrolled_away = !self.following && self.list.is_scrolled_to_end() == Some(false);

@@ -57,13 +57,15 @@ struct Layout {
 }
 
 fn layout(w: f32, h: f32) -> Layout {
+    // The gutters `render` draws follow the Spacing setting.
+    let gap = f32::from(crate::ui::sp(GAP));
     if w < NARROW {
         return Layout {
             narrow: true,
             left_w: w,
             pulse_full: false,
-            side_props: w - 2. * GAP >= SIDE_PROPS,
-            item_w: w - 2. * GAP,
+            side_props: w - 2. * gap >= SIDE_PROPS,
+            item_w: w - 2. * gap,
         };
     }
     let wide = w >= WIDE;
@@ -72,7 +74,7 @@ fn layout(w: f32, h: f32) -> Layout {
     } else {
         (w * 0.34).clamp(340., 400.)
     };
-    let item_w = w - left_w - 3. * GAP;
+    let item_w = w - left_w - 3. * gap;
     Layout {
         narrow: false,
         left_w,

@@ -1455,6 +1455,8 @@ impl Ctx<'_> {
                     .clamp(4, 48) as f32
             })
             .collect();
+        // The cells pad by the Spacing setting, so their minimums must too.
+        let pad = f32::from(crate::ui::sp(TABLE_CELL_PAD));
         let mins: Vec<f32> = (0..cols)
             .map(|c| {
                 rows.iter()
@@ -1462,7 +1464,7 @@ impl Ctx<'_> {
                     .map(longest_word_px)
                     .fold(0., f32::max)
                     .min(TABLE_WORD_MAX)
-                    + TABLE_CELL_PAD * 2.
+                    + pad * 2.
             })
             .collect();
         let min_total: f32 = mins.iter().sum();

@@ -20,6 +20,7 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use super::{Invite, Saved, Way, socket_origin};
 use crate::phone::e2e::{Handshake, Session};
+use crate::phone::identity::is_label;
 use crate::phone::relay::{CONTROL, DATA, HELLO};
 use crate::phone::wire;
 
@@ -691,14 +692,58 @@ fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
     }
 }
 
-/// The label of the server behind a relay address: the relay says which key
-/// the address stands for, and every connection is then checked against it.
+/// What a relay address says about whose it is.
+#[derive(Debug, PartialEq)]
+enum Named {
+    /// `<label>.<relay>`: the address itself names the server's key.
+    Label(String),
+    /// An IP address or localhost: a relay run by hand, which has no names to give.
+    Local,
+    /// A name that starts with no label.
+    Nothing,
+}
+
+fn named(origin: &str) -> Named {
+    let host = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+    let host = host.split(['/', '?', '#']).next().unwrap_or("");
+    let name = match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    };
+    let name = name.trim_matches(['[', ']']);
+    if name == "localhost" || name.parse::<std::net::IpAddr>().is_ok() {
+        return Named::Local;
+    }
+    match name.split('.').next() {
+        Some(first) if is_label(first) => Named::Label(first.to_string()),
+        _ => Named::Nothing,
+    }
+}
+
+/// The label of the server a relay address stands for: the key every hello
+/// from that address is checked against.
+///
+/// It is read off the address, which came in the link from the server's own
+/// terminal. The relay is not asked. A relay that could say which key to
+/// trust could name one of its own, answer the pairing in the server's place,
+/// and read the secret that is there to keep it out. Only a relay run by hand
+/// at an IP address or on localhost says which label it serves: it has no
+/// names, and whoever runs it is the one pairing.
 fn relay_label(origin: &str) -> Result<String, Ended> {
+    match named(origin) {
+        Named::Label(label) => return Ok(label),
+        Named::Nothing => {
+            return Err(Ended::Refused(
+                "That address names no server: a relay link starts with the server's label.".into(),
+            ));
+        }
+        Named::Local => {}
+    }
     let (status, answer) = fetch("GET", &format!("{origin}/_relay"), None, None)
         .map_err(|e| Ended::Refused(format!("Could not reach {origin}: {e}")))?;
     let label = answer["label"].as_str().unwrap_or("");
     match status {
-        200 if !label.is_empty() => Ok(label.to_string()),
+        200 if is_label(label) => Ok(label.to_string()),
         403 => Err(Ended::Refused("The relay has blocked this address.".into())),
         503 => Err(Ended::Refused(
             answer["disabled"]
@@ -1152,6 +1197,34 @@ mod tests {
             Some(("127.0.0.1".into(), 8787))
         );
         assert_eq!(host_port("https://a.arakun.dev"), None);
+    }
+
+    #[test]
+    fn the_key_to_trust_is_read_off_the_address_not_asked_of_the_relay() {
+        assert_eq!(
+            named("https://abcdefghij234567.arakun.dev"),
+            Named::Label("abcdefghij234567".into())
+        );
+        assert_eq!(
+            named("https://abcdefghij234567.me.workers.dev/"),
+            Named::Label("abcdefghij234567".into())
+        );
+        // A name with no label in front is no server's: nothing is asked of it.
+        assert_eq!(named("https://arakun.dev"), Named::Nothing);
+        assert_eq!(named("https://relay.example.com"), Named::Nothing);
+        assert!(matches!(
+            relay_label("https://relay.example.com"),
+            Err(Ended::Refused(why)) if why.contains("names no server")
+        ));
+        // A relay run by hand has no names; it alone says which label it serves.
+        for local in [
+            "http://127.0.0.1:8787",
+            "http://localhost:8787",
+            "http://[::1]:8787",
+            "http://10.0.0.5",
+        ] {
+            assert_eq!(named(local), Named::Local, "{local}");
+        }
         assert_eq!(percent("a-b_c.d~e f/+="), "a-b_c.d~e%20f%2F%2B%3D");
     }
 }

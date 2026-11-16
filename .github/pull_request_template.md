@@ -29,7 +29,7 @@
 
 ## Checks
 
-<!-- Tick only what you ran. Delete an item that does not apply to this diff, so an unticked box always means "not run". A change to docs, `iso/` or `tools/` alone skips the Rust jobs in CI. The commands are in CONTRIBUTING.md under "Checks". With CEF set up you can leave out `--no-default-features`. -->
+<!-- Tick only what you ran. Delete an item that does not apply to this diff, so an unticked box always means "not run". A change to docs, `iso/` or `tools/` alone skips the Rust jobs in CI, except `tools/rustfmt.sh`, `tools/install-cef.sh` and the layout audit (`tools/layout_audit.py`, `tools/layout-audit-fixtures/`). The commands are in CONTRIBUTING.md under "Checks". With CEF set up you can leave out `--no-default-features`. -->
 
 - [ ] `tools/rustfmt.sh --check` passes
 - [ ] `cargo clippy --locked --all-targets --no-default-features -- -D warnings` passes

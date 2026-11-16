@@ -284,7 +284,8 @@ pub fn start(ctx: Context) -> (Answer, mpsc::Receiver<Event>, Job) {
 
 const RULE_SYSTEM: &str = "You turn one sentence into an automation rule for Arakun, a desktop app for coding agents. \
 Triggers: pr_checks_pass (a pull request's checks pass; needs its number), pr_merged (needs its number), \
-ci_failed (CI fails on a branch; needs the branch), session_finished (an agent session finishes; give its title as session). \
+ci_failed (CI fails on a branch; needs the branch), session_finished (an agent session finishes; give its title as session), \
+at (a reminder or timer: minutes is how many minutes from now, counted from the local time given; its step is notify with what to remember). \
 Steps, in order: merge (only after pr_checks_pass; text is squash, merge or rebase), notify (text is the notice), \
 run (text is a shell command), agent (text is the prompt for a new agent session). \
 hours is how long the rule waits, 24 unless the sentence says. If the sentence is not a rule, set understood to false. \
@@ -329,8 +330,30 @@ pub fn rule_body(sentence: &str, sessions: &[String]) -> Value {
         },
         "thinking": {"type": "disabled"},
         "system": RULE_SYSTEM,
-        "messages": [{"role": "user", "content": format!("{sentence}{known}")}],
+        "messages": [{"role": "user", "content": format!("{sentence}{known}\n\nLocal time now: {}", local_now())}],
     })
+}
+
+/// `Saturday 14:05` in local time, so "at 5pm" becomes minutes from now.
+fn local_now() -> String {
+    const DAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    match crate::platform::local_time(crate::memory::now()) {
+        Some(l) => format!(
+            "{} {:02}:{:02}",
+            DAYS[l.wday.rem_euclid(7) as usize],
+            l.hour,
+            l.minute
+        ),
+        None => String::new(),
+    }
 }
 
 fn read_rule(sentence: &str, sessions: &[String], job: &Watch) -> Result<Value, String> {

@@ -805,6 +805,13 @@ pub fn accent() -> Hsla {
     rgb(a.load(Ordering::Relaxed)).into()
 }
 
+/// The accent as it shows on a dark ground, in both modes: for what sits on
+/// the brand's ink, like the raccoon's eyes in its mask. Light mode's darker
+/// accent would sink into the ink.
+pub fn accent_on_ink() -> Hsla {
+    rgb(ACCENT.load(Ordering::Relaxed)).into()
+}
+
 /// The logo's own colors, the same in every palette and mode: the raccoon's
 /// paper fur and the ink of its tile, mask and nose.
 pub fn brand_paper() -> Hsla {
@@ -813,18 +820,11 @@ pub fn brand_paper() -> Hsla {
 pub fn brand_ink() -> Hsla {
     rgb(0x151515).into()
 }
-/// The fur where paper would vanish, on white: the paper toward ink, dark
-/// enough to read (3.6:1) and still the light part of the face.
+/// The ASCII face's fur on white, where paper characters would vanish: the
+/// paper toward ink, dark enough to read (3.6:1). The drawn raccoon keeps
+/// its paper fur on white, as the brand book shows it.
 pub fn brand_fur_on_light() -> Hsla {
     rgb(0x8a867d).into()
-}
-/// The raccoon's fur in this mode: paper on dark, `brand_fur_on_light` on white.
-pub fn brand_fur() -> Hsla {
-    if is_light() {
-        brand_fur_on_light()
-    } else {
-        brand_paper()
-    }
 }
 
 /// Text and icons drawn on an accent fill: the background in dark mode, the
@@ -920,18 +920,26 @@ pub const CATEGORY: [u32; 8] = [
     0xd9c27e, // sand
 ];
 
-/// What WebKitGTK resolves `system-ui` to here (GTK 4 default).
-#[cfg(target_os = "linux")]
-pub const FONT_SANS: &str = "Adwaita Sans";
-#[cfg(target_os = "linux")]
-pub const FONT_MONO: &str = "JetBrainsMono NFM";
-/// Elsewhere neither Linux font is installed, and the fallback is proportional:
-/// terminal cells (sized from 'm') spread its letters apart, and the no-break
-/// spaces that make room for a file chip's icon get too narrow. Geist ships in assets/fonts.
-#[cfg(not(target_os = "linux"))]
+/// The brand's two faces, on every platform: Geist for what people read, Geist
+/// Mono for what a machine reads (code, terminals, paths). Both ship in
+/// assets/fonts, since few systems have them. The brand uses Geist at 400, 500
+/// and 600 and Geist Mono at 400 and 500, so only those weights are bundled; a
+/// heavier weight resolves to the nearest one.
 pub const FONT_SANS: &str = "Geist";
-#[cfg(not(target_os = "linux"))]
 pub const FONT_MONO: &str = "Geist Mono";
+
+/// Where the terminal finds what Geist Mono lacks: the Nerd Font and powerline
+/// symbols that prompts like starship draw. Patched families only, the ones
+/// people install for those prompts: GPUI drops a font without an 'm', so a
+/// symbols-only font can't serve. A family that isn't installed is skipped.
+pub const MONO_SYMBOL_FALLBACKS: [&str; 6] = [
+    "JetBrainsMono NFM",
+    "JetBrainsMono Nerd Font Mono",
+    "MesloLGS NF",
+    "MesloLGS Nerd Font Mono",
+    "FiraCode Nerd Font Mono",
+    "Hack Nerd Font Mono",
+];
 
 #[cfg(test)]
 mod tests {

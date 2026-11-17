@@ -74,7 +74,6 @@ const TITLE_SMALL: f32 = 30.;
 const LEDE: f32 = 15.;
 const LEDE_SMALL: f32 = 14.;
 const FIELD: f32 = 15.;
-const HAND: f32 = 20.;
 const CHIP: f32 = 12.5;
 const HINT: f32 = 11.5;
 
@@ -288,8 +287,7 @@ fn content(
                     .child("$ arakun run --port 5173 npm run dev")
             } else {
                 div()
-                    .font_family("Caveat")
-                    .text_size(px(HAND))
+                    .text_size(px(LEDE))
                     .text_color(theme::accent().opacity(0.8))
                     .child("Works on localhost. Works on staging. Works at 3am.")
             })

@@ -2,6 +2,15 @@
    ground, white (black in light) for the one main action on a screen and
    amber only for what waits on you. The light set of the same roles is under
    [data-theme="light"]. */
+/* The brand's type: Geist for what people read, Geist Mono for what a machine
+   reads. Served with the page, since phones rarely have them installed. Only
+   the weights the brand uses (400, 500, 600; mono stops at 500). */
+@font-face { font-family: "Geist"; font-weight: 400; font-display: swap; src: url("fonts/Geist-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 500; font-display: swap; src: url("fonts/Geist-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 600; font-display: swap; src: url("fonts/Geist-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 400; font-display: swap; src: url("fonts/GeistMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 500; font-display: swap; src: url("fonts/GeistMono-Medium.woff2") format("woff2"); }
+
 :root {
   --bg: #0b0b0b;
   --card: #161616;
@@ -32,8 +41,8 @@
   --claude: #e8875f;
   --claude-soft: #2a1d17;
   --rail: #2b2b2b;
-  --mono: ui-monospace, "Geist Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, system-ui, "Geist", Segoe UI, Roboto, sans-serif;
+  --mono: "Geist Mono", ui-monospace, monospace;
+  --sans: "Geist", system-ui, sans-serif;
   --r: 8px;
   --r-lg: 14px;
   --r-xl: 20px;
@@ -89,7 +98,10 @@ body {
   color: var(--text);
   font: 15px/1.45 var(--sans);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
+b, strong { font-weight: 600; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 a { color: var(--link); }
 #app { height: 100%; display: flex; flex-direction: column; }
@@ -108,7 +120,7 @@ a { color: var(--link); }
 .statusbar.off .dot { background: var(--error); }
 .statusbar .spacer { flex: 1; }
 .hdr { display: flex; align-items: center; gap: 10px; padding: 4px var(--gr) 12px var(--gl); }
-.hdr h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.hdr h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.03em; }
 .hdr .sub { font-size: 12px; color: var(--subtle); margin-top: 1px; }
 .hdr .grow { flex: 1; min-width: 0; }
 .hdr .title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -158,12 +170,12 @@ a { color: var(--link); }
   gap: 10px; text-align: center; padding: calc(var(--top) + 32px) max(24px, var(--gl)) calc(var(--bot) + 40px) max(24px, var(--gr));
 }
 .pair .big { font-size: 44px; }
-.pair h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.pair h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.03em; }
 .pair p { margin: 0; color: var(--subtle); font-size: 14px; max-width: 300px; }
 .pair form { display: flex; gap: 8px; margin-top: 12px; }
 .pair input {
   width: 150px; height: 44px; border-radius: var(--r-lg); text-align: center;
-  font: 600 22px/1 var(--mono); letter-spacing: 0.25em; color: var(--text);
+  font: 500 22px/1 var(--mono); letter-spacing: 0.25em; color: var(--text);
   background: var(--card); border: 1px solid var(--border-strong); outline: none;
 }
 .pair input:focus { border-color: rgba(255, 181, 71, 0.5); }
@@ -177,7 +189,7 @@ a { color: var(--link); }
 /* The computer on top: its mark, its name, whether it answers. */
 .ihead { display: flex; align-items: center; gap: 10px; padding: 6px var(--gr) 12px var(--gl); }
 .ihead .mark { width: 34px; height: 34px; border-radius: 10px; flex: none; }
-.ihead .host { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ihead .host { font-size: 19px; font-weight: 600; letter-spacing: -0.03em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ihead .iconbtn { margin-left: auto; }
 .pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; flex: none; }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -280,7 +292,7 @@ a { color: var(--link); }
 .tab svg { width: 22px; height: 22px; }
 .tab .tbadge {
   position: absolute; top: 0; left: calc(50% + 4px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
-  background: var(--accent); color: #1a1200; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+  background: var(--accent); color: #1a1200; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
 }
 .tab.on { color: var(--text); font-weight: 600; }
 .tplus { width: 68px; height: 40px; border-radius: 999px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; flex: none; }
@@ -290,7 +302,7 @@ a { color: var(--link); }
 /* ---- phone: grouped settings rows ---- */
 .settings { flex: 1; overflow-y: auto; padding: 0 var(--gr) 20px var(--gl); display: flex; flex-direction: column; gap: 18px; }
 .settings .group { margin-top: 0; background: none; padding: 0; border-radius: 0; }
-.glabel { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--subtle); padding: 0 4px 6px; }
+.glabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); padding: 0 4px 6px; }
 .gbox { background: var(--fill); border: 1px solid var(--border); border-radius: var(--r-xl); overflow: hidden; }
 .prow {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
@@ -389,7 +401,7 @@ button.prow:active { background: var(--fill-hover); }
 .dlines { min-width: 100%; width: max-content; padding: 4px 0; font: 11.5px/18px var(--mono); }
 .dl { display: flex; white-space: pre; }
 .dl .ln { flex: none; width: 36px; padding-right: 6px; text-align: right; color: var(--faint); user-select: none; }
-.dl .mk { flex: none; width: 14px; text-align: center; font-weight: 700; user-select: none; }
+.dl .mk { flex: none; width: 14px; text-align: center; font-weight: 500; user-select: none; }
 .dl .tx { padding-right: 12px; color: var(--muted); }
 .dl.a { background: rgba(110, 231, 183, 0.1); box-shadow: inset 2px 0 0 var(--add); }
 .dl.a .mk, .dl.a .tx { color: var(--add); }
@@ -519,7 +531,7 @@ button.prow:active { background: var(--fill-hover); }
 .tool .ttitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .ttitle code { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
 .tool[open] .ttitle { white-space: normal; }
-.tool .st { width: 14px; height: 14px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 800; }
+.tool .st { width: 14px; height: 14px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 600; }
 .tool.completed .st, .tool.thought .st { display: none; }
 .tool.failed > summary { color: var(--error); }
 .tool.failed .st { background: var(--error-soft); color: var(--error); }
@@ -580,7 +592,7 @@ button.prow:active { background: var(--fill-hover); }
 }
 .perm .always .warn {
   width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid; place-items: center;
-  font-size: 12px; font-weight: 700; color: var(--bg); background: var(--attention);
+  font-size: 12px; font-weight: 600; color: var(--bg); background: var(--attention);
 }
 .perm .always .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .perm .always .t { font-size: 14px; font-weight: 500; }
@@ -595,7 +607,7 @@ button.prow:active { background: var(--fill-hover); }
 }
 .ask .ahead { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px 12px; text-align: left; flex: none; }
 .ask .ahead:active { background: var(--fill-hover); border-radius: var(--r-xl); }
-.ask .label { font-size: 11px; color: var(--link); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; flex: none; }
+.ask .label { font: 500 11px var(--mono); color: var(--link); text-transform: uppercase; letter-spacing: 0.08em; flex: none; }
 .ask .ahead .peek { flex: 1; min-width: 0; display: none; font-size: 13px; color: var(--subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ask .ahead .n { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--subtle); margin-left: auto; flex: none; }
 .ask .segs { display: flex; gap: 3px; }
@@ -607,7 +619,7 @@ button.prow:active { background: var(--fill-hover); }
 .ask.folded .ahead svg { transform: rotate(180deg); }
 .ask .body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px; }
 .ask.folded .body, .ask.folded .actions { display: none; }
-.ask .topic { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.ask .topic { font: 400 11px var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; }
 .ask .text { font-size: 15px; margin: 2px 0 8px; word-break: break-word; }
 .ask .multi { font-size: 12px; color: var(--subtle); margin: -4px 0 8px; }
 .ask .opts { display: flex; flex-direction: column; gap: 6px; }
@@ -703,7 +715,7 @@ button.prow:active { background: var(--fill-hover); }
 /* New session: project, agent and the first message. Fields at 16px (see the composer). */
 .newform { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px var(--gr) calc(var(--bot) + 16px) var(--gl); }
 .newform .chips { padding: 0; margin: 0; }
-.nlabel { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--subtle); margin-top: 8px; }
+.nlabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); margin-top: 8px; }
 .nfield {
   width: 100%; background: var(--card); color: var(--text); border: 1px solid var(--border-strong);
   border-radius: var(--r-lg); padding: 10px 12px; font: 16px/1.35 var(--sans); outline: none;
@@ -766,14 +778,14 @@ textarea.nfield { resize: none; min-height: 140px; }
 .qchip svg { width: 14px; height: 14px; opacity: 0.6; transition: transform 0.15s; }
 .qchip.open svg { transform: rotate(180deg); }
 .qlist { display: flex; flex-direction: column; background: var(--card); border-radius: var(--r-lg); box-shadow: 0 0 0 1px var(--border); margin-bottom: 10px; overflow-y: auto; max-height: 40vh; }
-.qhead { padding: 10px 14px 4px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); border-top: 1px solid var(--border); }
+.qhead { padding: 10px 14px 4px; font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); border-top: 1px solid var(--border); }
 .qhead:first-child { border-top: 0; }
 .qopt { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-height: 44px; padding: 11px 14px; text-align: left; font-size: 15px; }
 .qopt + .qopt { border-top: 1px solid var(--border); }
 .qopt small { font-size: 12px; color: var(--subtle); }
 .qopt.on { font-weight: 600; }
 .qopt small { margin-left: auto; }
-.qopt.on::after { content: "✓"; color: var(--success); font-weight: 700; margin-left: 10px; }
+.qopt.on::after { content: "✓"; color: var(--success); font-weight: 600; margin-left: 10px; }
 .qopt { align-items: center; }
 .qopt:disabled { opacity: 0.4; }
 #qtext { width: 100%; min-height: 72px; max-height: 30vh; resize: none; background: none; border: 0; outline: none; color: var(--text); font: 17px/1.4 var(--sans); padding: 4px 0; }
@@ -803,14 +815,14 @@ textarea.nfield { resize: none; min-height: 140px; }
 
 /* The project tiles the + opens first. */
 .ppmark { display: grid; place-items: center; overflow: hidden; border-radius: 11px; flex: none; }
-.ppmark img, .ppmark span { width: 100%; height: 100%; display: grid; place-items: center; font-weight: 700; font-size: 15px; }
+.ppmark img, .ppmark span { width: 100%; height: 100%; display: grid; place-items: center; font-weight: 600; font-size: 15px; }
 #projpick {
   position: fixed; inset: 0; z-index: 40; background: var(--bg); height: var(--vvh, 100%); overflow-y: auto;
   padding: var(--top) var(--gr) calc(var(--bot) + 16px) var(--gl); animation: ppin 0.18s ease-out;
 }
 @keyframes ppin { from { opacity: 0; transform: translateY(16px); } }
 .pphead { display: flex; align-items: center; justify-content: space-between; padding: 4px 0 2px; }
-.pphead b { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+.pphead b { font-size: 24px; font-weight: 600; letter-spacing: -0.03em; }
 .ppsub { font-size: 14px; color: var(--subtle); margin: 2px 0 16px; }
 .ppgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .pptile {

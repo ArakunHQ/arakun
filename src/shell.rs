@@ -2040,6 +2040,10 @@ impl Shell {
     /// live session. Same conditions as `render_pane_body`, so a session that
     /// is still connecting leaves the rail's raccoon in place.
     fn main_shows_raccoon(&self) -> bool {
+        // With no project, the welcome screen shows the ASCII face.
+        if !self.has_projects() {
+            return true;
+        }
         let env = self.env();
         let home = matches!(
             env.tabs.get(env.active_tab).map(|t| &t.kind),
@@ -2054,6 +2058,10 @@ impl Shell {
     fn rail_shows_raccoon(&self, inbox: &[InboxItem]) -> bool {
         if !self.main_shows_raccoon() {
             return true;
+        }
+        // No project, so no session to wait on input.
+        if !self.has_projects() {
+            return false;
         }
         let env = self.env();
         let in_view = match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {

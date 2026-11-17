@@ -668,7 +668,9 @@ impl Palette {
                     if self.files.is_none() && self.scope == Some(Scope::Files) {
                         "Reading the project's files…".to_string()
                     } else {
-                        "Nothing matches. Ctrl+Enter asks an agent instead.".to_string()
+                        crate::platform::shortcut_label(
+                            "Nothing matches. Ctrl+Enter asks an agent instead.",
+                        )
                     },
                 ))
             })

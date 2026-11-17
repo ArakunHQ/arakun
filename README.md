@@ -26,7 +26,10 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 [**Build from source**](#build-from-source) ·
 [**Contributing**](#contributing)
 
-<img src="docs/screenshots/composer.png" alt="Arakun's composer with the model menu open" width="860">
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/hero-light.png">
+  <img src="docs/screenshots/hero-dark.png" alt="Arakun with a finished Claude Code session in the main area and the files it changed in the Workspace panel" width="860">
+</picture>
 
 </div>
 
@@ -56,6 +59,8 @@ Windows and other options: see [Install](#install).
   checkout plus git worktrees). Every environment has its own tabs, sessions, terminals
   and draft prompt. The Workspace panel shows Sessions, an Explorer and the uncommitted
   Changes; the Branches tab draws every live branch against the default one.
+
+  <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
 - **Branch names from the task.** A new environment starts on a random branch name
   (`env/brave-otter`); after the first prompt, a small model names it after the task
   (`fix/terminal-tab-name`) and Arakun renames the branch. The folder keeps its name. By
@@ -178,6 +183,8 @@ it shows in `github/avatars/` (each downloaded again after a week).
   its tint, background and accent; Arakun warns when text or the accent gets hard to
   read. A palette fits in one line (`arakun:palette/v1:…`) that anyone can paste there to
   get it. The choice and your palettes are kept in `palettes.json` next to the state.
+
+  <img src="docs/screenshots/palettes.png" alt="The six built-in palettes in Settings › Appearance" width="520">
 - **Dark and light.** Settings › Appearance › Mode draws the palette on black or on a
   white background with dark text. The choice is kept in `palettes.json`.
 - **Corners and spacing.** Settings › Appearance also sets the shape of the whole app,

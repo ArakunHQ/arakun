@@ -254,7 +254,7 @@ pub fn tile(mark: Mark, size: f32) -> Div {
                     } else {
                         Type::Label
                     })
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(ink)
                     .child(ch.to_string()),
             ),

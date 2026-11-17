@@ -631,6 +631,8 @@ arakun-server service uninstall   # stop it and remove the service; the data sta
   restarts the server.
 - **Agents.** The service gets the `PATH` of the shell you install it from, so it finds
   the same agents. If you install an agent somewhere else later, run `install` again.
+  It also keeps `XDG_DATA_HOME` and `ARAKUN_SERVER_DIR` when they are set, so it uses
+  the folder the other commands look in.
 - **Logged out (Linux).** As a normal user it turns on lingering
   (`loginctl enable-linger`) before it starts the unit: systemd then starts your
   services at boot and keeps them running after you log out. If that needs root, it

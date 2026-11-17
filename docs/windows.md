@@ -99,6 +99,12 @@ and is a windowed application, so they open no consoles. If it is missing, CEF s
 `arakun.exe` again and every process flashes a console. Ship both when distributing a
 build with the browser.
 
+## The server
+
+`arakun server` (and `arakun-server`) run on Windows, but `service install`, `status`,
+`logs` and `uninstall` do not: they print an error and exit. To keep the server running,
+start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
+
 ## Where things are stored
 
 | What | Where |

@@ -9,6 +9,7 @@
 //! Both restart the server when it fails, but not after `quit`: `quit` exits
 //! cleanly, and stopping the server is what the user asked for.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -129,15 +130,50 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
         .unwrap_or_default();
     args.push("serve".into());
     args.extend(flags.iter().cloned());
+    let root = system_unit();
+    let env = service_env(|key| std::env::var_os(key), root);
+    if root && !only_root_writes(&exe) {
+        return Err(format!(
+            "a system service runs {} as root at every boot, so it must be owned by root, \
+             in folders only root can write to. Copy it there first:\n  \
+             install -m755 {} /usr/local/bin/arakun-server\n\
+             or install the service as a normal user, without sudo",
+            exe.display(),
+            exe.display()
+        ));
+    }
+    // What it keeps decides what a root server does: no one else may change it.
+    if root
+        && let Some(found) = dir().ancestors().find(|p| p.exists())
+        && !only_root_writes(found)
+    {
+        return Err(format!(
+            "a system service runs as root, and {} can be changed by other users; \
+             unset XDG_DATA_HOME and ARAKUN_SERVER_DIR, or point them at a folder only root can write to",
+            found.display()
+        ));
+    }
+    Ok(Spec {
+        name: service_name(),
+        exe,
+        args,
+        env,
+        log: dir().join("server.log"),
+    })
+}
+
+/// The variables the service gets from the installing shell (read with `get`):
+/// the `PATH` its agents are found on, and what `dir()` depends on, so the
+/// service uses the folder and socket the commands look for.
+fn service_env(get: impl Fn(&str) -> Option<OsString>, root: bool) -> Vec<(String, String)> {
     let mut env = Vec::new();
-    if let Some(path) = std::env::var_os("PATH") {
+    if let Some(path) = get("PATH") {
         // Shells that source their profile twice repeat entries.
         let mut seen = std::collections::HashSet::new();
         // A root service runs what it finds there as root at every boot: only
-        // folders no one else can write to.
-        let root = system_unit();
-        // A relative folder would resolve against wherever an agent runs, and a
-        // symlink's owner could repoint it: absolute, resolved paths only.
+        // folders no one else can write to. A relative folder would resolve
+        // against wherever an agent runs, and a symlink's owner could repoint
+        // it: absolute, resolved paths only.
         let dirs = std::env::split_paths(&path)
             .filter_map(|d| match root {
                 false => Some(d),
@@ -152,29 +188,13 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
             env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
         }
     }
-    // `dir()` ignores a relative one, and so does the service.
-    if let Some(d) = std::env::var_os("ARAKUN_SERVER_DIR")
-        && Path::new(&d).is_absolute()
-    {
-        env.push(("ARAKUN_SERVER_DIR".into(), d.to_string_lossy().into_owned()));
+    // `dir()` ignores a relative one of either, and so does the service.
+    for key in ["XDG_DATA_HOME", "ARAKUN_SERVER_DIR"] {
+        if let Some(value) = get(key).filter(|v| Path::new(v).is_absolute()) {
+            env.push((key.to_string(), value.to_string_lossy().into_owned()));
+        }
     }
-    if system_unit() && !only_root_writes(&exe) {
-        return Err(format!(
-            "a system service runs {} as root at every boot, so it must be owned by root, \
-             in folders only root can write to. Copy it there first:\n  \
-             install -m755 {} /usr/local/bin/arakun-server\n\
-             or install the service as a normal user, without sudo",
-            exe.display(),
-            exe.display()
-        ));
-    }
-    Ok(Spec {
-        name: service_name(),
-        exe,
-        args,
-        env,
-        log: dir().join("server.log"),
-    })
+    env
 }
 
 /// Whether this installs a system unit: Linux, as root.
@@ -253,8 +273,8 @@ fn install(spec: &Spec) -> i32 {
         linger();
     }
     // Reinstalling stops the running one first, so it starts again with the new file.
-    if reinstall {
-        stop(&spec.name);
+    if reinstall && let Err(e) = stop(&spec.name) {
+        return fail(&format!("could not stop the running service: {e}"));
     }
     if let Err(e) = std::fs::write(&file, file_text(spec)) {
         return fail(&format!("{}: {e}", file.display()));
@@ -313,11 +333,9 @@ fn file_path(name: &str) -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         Some(home.join(format!("Library/LaunchAgents/{name}.plist")))
     } else if cfg!(target_os = "linux") {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .unwrap_or_else(|| home.join(".config"));
-        Some(config.join(format!("systemd/user/{name}.service")))
+        // Not XDG_CONFIG_HOME: the user's systemd reads its own environment,
+        // not this shell's, and finds ~/.config either way.
+        Some(home.join(format!(".config/systemd/user/{name}.service")))
     } else {
         None
     }
@@ -333,8 +351,8 @@ fn file_text(spec: &Spec) -> String {
 
 /// The systemd unit: a user unit, or with `system` one for the whole machine.
 fn unit(spec: &Spec, system: bool) -> String {
-    let mut exec = vec![systemd_quote(&spec.exe.to_string_lossy())];
-    exec.extend(spec.args.iter().map(|a| systemd_quote(a)));
+    let mut exec = vec![exec_quote(&spec.exe.to_string_lossy())];
+    exec.extend(spec.args.iter().map(|a| exec_quote(a)));
     let env: String = spec
         .env
         .iter()
@@ -376,6 +394,12 @@ fn systemd_quote(word: &str) -> String {
         .replace('"', "\\\"")
         .replace('%', "%%");
     format!("\"{escaped}\"")
+}
+
+/// [`systemd_quote`] for an `ExecStart=` word, where systemd also expands
+/// `$VAR` and `${VAR}`, quoted or not.
+fn exec_quote(word: &str) -> String {
+    systemd_quote(word).replace('$', "$$")
 }
 
 /// The launchd agent.
@@ -498,25 +522,30 @@ fn start(name: &str, file: &Path) -> Result<(), String> {
     }
 }
 
-/// Stops the service and takes it out of the service manager, if it is there.
-fn stop(name: &str) {
+/// Stops the service and takes it out of the service manager, if it is there;
+/// why not, when it may still be running.
+fn stop(name: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     for domain in domains() {
         let target = format!("{domain}/{name}");
-        if manage("launchctl", &["bootout", &target]).is_err() {
+        let loaded = || manage("launchctl", &["print", &target]).is_ok();
+        if !loaded() {
             continue;
         }
+        manage("launchctl", &["bootout", &target])?;
         // bootout returns before the agent is gone, and a bootstrap until then
         // fails with "Input/output error".
         let asked = Instant::now();
-        while manage("launchctl", &["print", &target]).is_ok() && asked.elapsed() < START_WAIT {
+        while loaded() {
+            if asked.elapsed() > START_WAIT {
+                return Err(format!("launchd still has {target} loaded"));
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = systemctl(&["disable", "--now", name]);
-    }
+    systemctl(&["disable", "--now", name])?;
+    Ok(())
 }
 
 fn uninstall(name: &str) -> i32 {
@@ -529,7 +558,12 @@ fn uninstall(name: &str) -> i32 {
             file.display()
         ));
     }
-    stop(name);
+    // The file stays while the server may run: it is how `uninstall` finds it again.
+    if let Err(e) = stop(name) {
+        return fail(&format!(
+            "could not stop the service, so it is still installed: {e}"
+        ));
+    }
     if let Err(e) = std::fs::remove_file(&file) {
         return fail(&format!("{}: {e}", file.display()));
     }
@@ -743,6 +777,39 @@ mod tests {
         assert!(text.contains("WantedBy=default.target"));
         assert_eq!(systemd_quote(r#"a"b\c"#), r#""a\"b\\c""#);
         assert!(!text.contains("network-online"));
+        // systemd expands `$` on ExecStart= even in quotes; not on Environment=.
+        let mut spec = sample();
+        spec.args.push("$HOME/${X}".into());
+        spec.env.push(("A".into(), "$B".into()));
+        let text = unit(&spec, false);
+        assert!(text.contains(" \"$$HOME/$${X}\"\n"), "{text}");
+        assert!(text.contains("Environment=\"A=$B\"\n"), "{text}");
+    }
+
+    #[test]
+    fn the_service_gets_the_path_and_what_its_folder_depends_on() {
+        let shell = |key: &str| {
+            let value = match key {
+                "PATH" => "/usr/bin:/home/me/.local/bin:/usr/bin",
+                "XDG_DATA_HOME" => "/home/me/data",
+                "ARAKUN_SERVER_DIR" => "relative/dir",
+                "HOME" => "/home/me",
+                _ => return None,
+            };
+            Some(OsString::from(value))
+        };
+        assert_eq!(
+            service_env(shell, false),
+            vec![
+                ("PATH".into(), "/usr/bin:/home/me/.local/bin".into()),
+                ("XDG_DATA_HOME".into(), "/home/me/data".into()),
+            ]
+        );
+        let other = |key: &str| (key == "ARAKUN_SERVER_DIR").then(|| OsString::from("/srv/a"));
+        assert_eq!(
+            service_env(other, false),
+            vec![("ARAKUN_SERVER_DIR".into(), "/srv/a".into())]
+        );
     }
 
     #[test]

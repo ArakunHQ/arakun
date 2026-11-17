@@ -86,6 +86,84 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
         )
 }
 
+/// What a project's environments are doing, so a project you are not looking
+/// at can still say it needs you.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Activity {
+    pub needs_you: usize,
+    pub working: usize,
+}
+
+impl Activity {
+    /// From the state of each environment.
+    pub(super) fn of(statuses: impl IntoIterator<Item = Status>) -> Self {
+        statuses.into_iter().fold(Self::default(), |mut a, s| {
+            match s {
+                Status::NeedsInput => a.needs_you += 1,
+                Status::Working => a.working += 1,
+                _ => {}
+            }
+            a
+        })
+    }
+
+    pub(super) fn of_project(project: &Project) -> Self {
+        Self::of(project.environments.iter().map(|e| e.aggregate_status()))
+    }
+
+    /// The most urgent state, for a dot.
+    pub(super) fn status(self) -> Status {
+        if self.needs_you > 0 {
+            Status::NeedsInput
+        } else if self.working > 0 {
+            Status::Working
+        } else {
+            Status::Idle
+        }
+    }
+
+    /// "Needs you" beats a count of what runs; nothing when all is idle.
+    pub(super) fn label(self) -> Option<String> {
+        if self.needs_you > 0 {
+            Some("Needs you".into())
+        } else if self.working > 0 {
+            Some(format!("{} running", self.working))
+        } else {
+            None
+        }
+    }
+}
+
+/// Environments in the other projects that run or wait on the user, those
+/// waiting first, then in sidebar order. `statuses[p][e]` is each
+/// environment's state; the result is `(project, env, status)`.
+pub(super) fn away_envs(statuses: &[Vec<Status>], open: usize) -> Vec<(usize, usize, Status)> {
+    let mut away: Vec<_> = statuses
+        .iter()
+        .enumerate()
+        .filter(|(pi, _)| *pi != open)
+        .flat_map(|(pi, envs)| {
+            envs.iter()
+                .enumerate()
+                .filter(|(_, s)| matches!(s, Status::NeedsInput | Status::Working))
+                .map(move |(ei, s)| (pi, ei, *s))
+        })
+        .collect();
+    // Stable: the sidebar order holds within each group.
+    away.sort_by_key(|(_, _, s)| *s != Status::NeedsInput);
+    away
+}
+
+/// A worktree is often named after its project (`beta-fix-login`); next to
+/// the project's name that part only takes room.
+fn short_env_name(project: &str, env: &str) -> String {
+    env.strip_prefix(project)
+        .and_then(|rest| rest.strip_prefix(['-', '_', '/']))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(env)
+        .to_string()
+}
+
 pub(super) fn status_dot(status: Status) -> impl IntoElement {
     let color = match status {
         Status::Idle => theme::mix(0.25),
@@ -334,6 +412,10 @@ impl Shell {
                             .truncate()
                             .child(project.name.clone()),
                     )
+                    .when(!selected, |d| {
+                        let status = Activity::of_project(project).status();
+                        d.when(status != Status::Idle, |d| d.child(status_dot(status)))
+                    })
                     // The env rows below repeat these totals; keep them here
                     // only while they are hidden (project collapsed).
                     .when(show_changes && added + removed > 0 && !selected, |d| {
@@ -437,6 +519,9 @@ impl Shell {
                     );
                 }
                 projects = projects.child(envs);
+                if only_open {
+                    projects = projects.children(self.render_elsewhere(cx));
+                }
             }
         }
         if self.projects.is_empty() {
@@ -485,6 +570,9 @@ impl Shell {
                 .flat_map(|e| e.changes.iter())
                 .fold((0, 0), |(a, r), c| (a + c.added, r + c.removed));
             let logo: Hsla = gpui::rgb(project.logo).into();
+            let activity = (!selected).then(|| Activity::of_project(project));
+            let label = activity.and_then(Activity::label);
+            let label_none = label.is_none();
             panel = panel.child(
                 div()
                     .id(("project-switch", pi))
@@ -513,7 +601,24 @@ impl Shell {
                             .truncate()
                             .child(project.name.clone()),
                     )
-                    .when(added + removed > 0, |d| {
+                    .when_some(label.zip(activity), |d, (label, a)| {
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(crate::ui::sp(6.))
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(if a.needs_you > 0 {
+                                    theme::needs_you()
+                                } else {
+                                    theme::text_subtle()
+                                })
+                                .child(status_dot(a.status()))
+                                .child(label),
+                        )
+                    })
+                    // What waits or runs matters more than the diff.
+                    .when(label_none && added + removed > 0, |d| {
                         d.child(
                             div()
                                 .flex()
@@ -570,6 +675,119 @@ impl Shell {
         } else {
             self.quick_create_env(pi, window, cx)
         }
+    }
+
+    /// While the rail shows one project: the environments of the others that
+    /// wait on the user or run, so work there is not out of sight. Nothing
+    /// when all of them are idle.
+    fn render_elsewhere(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let statuses: Vec<Vec<Status>> = self
+            .projects
+            .iter()
+            .map(|p| {
+                p.environments
+                    .iter()
+                    .map(|e| e.aggregate_status())
+                    .collect()
+            })
+            .collect();
+        let away = away_envs(&statuses, self.active_project);
+        if away.is_empty() {
+            return None;
+        }
+        let mut list = div().flex().flex_col().gap(crate::ui::sp(ENV_GAP)).child(
+            div()
+                .flex()
+                .items_center()
+                .h(px(28.))
+                .mt(crate::ui::sp(6.))
+                .pl(crate::ui::sp(8.))
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child("Other projects"),
+        );
+        for (pi, ei, status) in away {
+            let project = &self.projects[pi];
+            let env = &project.environments[ei];
+            let needs_you = status == Status::NeedsInput;
+            let logo: Hsla = gpui::rgb(project.logo).into();
+            list = list.child(
+                div()
+                    .id(("env-away", pi * 1000 + ei))
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .h(px(ENV_ROW_H))
+                    .px(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
+                    .cursor_pointer()
+                    .text_size(px(ui::TEXT_MD))
+                    .text_color(if needs_you {
+                        theme::content()
+                    } else {
+                        theme::text_muted()
+                    })
+                    .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                    .tooltip(ui::tip_text(format!("{}/{}", project.name, env.name)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(14.))
+                            .child(ui::pixel_art(ui::project_art(project.art), 1., logo)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(crate::ui::sp(4.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .max_w(px(96.))
+                                    .truncate()
+                                    .text_color(theme::text_faint())
+                                    .child(project.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(short_env_name(&project.name, &env.name)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .when(needs_you, |d| {
+                                d.text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::needs_you())
+                                    .child("Needs you")
+                            })
+                            .when(!needs_you, |d| d.child(status_dot(status))),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.menu = Some(ContextMenu {
+                                target: MenuTarget::Env(pi, ei),
+                                at: ev.position,
+                            });
+                            cx.notify();
+                        }),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)),
+                    ),
+            );
+        }
+        Some(list.into_any_element())
     }
 
     /// "Environments", with the + that makes one, over the open project's list.
@@ -711,6 +929,45 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn other_projects_list_what_waits_first() {
+        use Status::*;
+        let statuses = vec![
+            vec![Working, NeedsInput],
+            vec![Idle, Working, Error],
+            vec![Working, NeedsInput, Idle],
+        ];
+        // The open project (0) is left out, and so are idle and failed rows.
+        assert_eq!(
+            away_envs(&statuses, 0),
+            vec![(2, 1, NeedsInput), (1, 1, Working), (2, 0, Working)]
+        );
+        assert!(away_envs(&[vec![Working]], 0).is_empty());
+    }
+
+    #[test]
+    fn the_project_name_is_not_said_twice() {
+        assert_eq!(short_env_name("beta", "beta-fix-login"), "fix-login");
+        assert_eq!(short_env_name("beta", "beta_new"), "new");
+        assert_eq!(
+            short_env_name("beta", "env-sleek-plover"),
+            "env-sleek-plover"
+        );
+        assert_eq!(short_env_name("beta", "betamax"), "betamax");
+        assert_eq!(short_env_name("beta", "beta-"), "beta-");
+    }
+
+    #[test]
+    fn a_project_says_needs_you_before_what_runs() {
+        use Status::*;
+        let a = Activity::of([Working, NeedsInput, Working, Idle]);
+        assert_eq!(a.status(), NeedsInput);
+        assert_eq!(a.label().as_deref(), Some("Needs you"));
+        let a = Activity::of([Working, Working, Idle]);
+        assert_eq!(a.label().as_deref(), Some("2 running"));
+        assert_eq!(Activity::of([Idle, Error]).label(), None);
+    }
 
     #[test]
     fn a_row_says_the_most_urgent_thing() {

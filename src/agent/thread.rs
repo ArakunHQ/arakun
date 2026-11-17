@@ -1361,8 +1361,9 @@ impl Thread {
         };
     }
 
+    /// Written so only the owner can read it: it holds the whole chat.
     pub fn save_transcript(&self, path: &Path, cx: &App) -> Result<()> {
-        crate::durable::write(path, &serde_json::to_vec(&self.transcript(cx))?)
+        crate::durable::write_private(path, &serde_json::to_vec(&self.transcript(cx))?)
             .with_context(|| format!("writing {}", path.display()))
     }
 

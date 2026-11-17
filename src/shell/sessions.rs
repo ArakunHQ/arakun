@@ -1683,8 +1683,10 @@ fn forget_alerts(id: &str) {
     }
 }
 
+/// Written so only the owner can read it: it holds the whole chat, tool
+/// output included.
 fn write_transcript(path: &Path, t: &crate::agent::Transcript) -> std::io::Result<()> {
-    crate::durable::write(path, &serde_json::to_vec(t)?)
+    crate::durable::write_private(path, &serde_json::to_vec(t)?)
 }
 
 /// The Codex settings an environment's next session starts with, the model first:

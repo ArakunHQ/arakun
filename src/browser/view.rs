@@ -33,6 +33,7 @@ use super::runtime;
 use super::text_field::{TextField, TextFieldEvent};
 use super::url;
 use super::{BrowserEvent, ConsoleLine, PageState};
+use crate::mascot::Mascot;
 use crate::theme;
 use crate::ui::icon;
 
@@ -76,6 +77,8 @@ pub struct BrowserView {
     address: Entity<TextField>,
     /// The big field of the new-tab page.
     home_field: Entity<TextField>,
+    /// The new-tab page's raccoon, made when the page shows and dropped after.
+    home_mascot: Option<Entity<Mascot>>,
     home: HomeInfo,
     page_focus: FocusHandle,
     dialog_focus: FocusHandle,
@@ -195,6 +198,7 @@ impl BrowserView {
             pending_url: Some(target.clone().unwrap_or_else(|| "about:blank".into())),
             address,
             home_field,
+            home_mascot: None,
             home: HomeInfo::default(),
             page_focus,
             dialog_focus: cx.focus_handle(),
@@ -268,6 +272,11 @@ impl BrowserView {
     /// first navigation replaces it for good (Back lands on the blank page, as in Chrome).
     pub fn is_home(&self) -> bool {
         !self.closed && self.error.is_none() && matches!(self.url.as_ref(), "" | "about:blank")
+    }
+
+    /// The tab shows a raccoon: the new-tab page's.
+    pub fn shows_raccoon(&self) -> bool {
+        self.is_home()
     }
 
     /// What the new-tab page says about the environment; the shell keeps it current.
@@ -1153,18 +1162,23 @@ impl BrowserView {
 
     // --- rendering -------------------------------------------------------------------------
 
-    fn render_home(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_home(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let view = cx.entity();
         let open: home::Open = Rc::new(move |text: &str, window: &mut Window, cx: &mut App| {
             view.update(cx, |this, cx| this.open_from_home(text, window, cx));
         });
         let field = self.home_field.clone();
         let focus = field.focus_handle(cx);
+        let mascot = self
+            .home_mascot
+            .get_or_insert_with(|| cx.new(|cx| Mascot::new(home::MASCOT_W, cx)))
+            .clone();
         home::render(home::Home {
             info: self.home.clone(),
             size: self.page_bounds.get().size,
             field_focused: field.read(cx).is_focused(window),
             field,
+            mascot,
             open,
             on_background: Box::new(move |window, cx| {
                 if !focus.is_focused(window) {
@@ -1590,6 +1604,9 @@ impl Render for BrowserView {
             self.cursor
         };
         let dragging = self.dragging.is_some();
+        if !home {
+            self.home_mascot = None;
+        }
         let home_page = home.then(|| self.render_home(window, cx));
 
         let page = div()

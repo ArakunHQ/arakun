@@ -2121,27 +2121,29 @@ impl Focusable for Shell {
 
 impl Shell {
     /// Whether a pane in view already shows a raccoon: the start screen's
-    /// ASCII face in the focused pane, or the raccoon on the composer of a
-    /// live session. Same conditions as `render_pane_body`, so a session that
-    /// is still connecting leaves the rail's raccoon in place.
-    fn main_shows_raccoon(&self) -> bool {
+    /// ASCII face in the focused pane, a browser tab's new-tab page, or the
+    /// raccoon on the composer of a live session. Same conditions as
+    /// `render_pane_body`, so a session that is still connecting leaves the
+    /// rail's raccoon in place.
+    fn main_shows_raccoon(&self, cx: &App) -> bool {
         // With no project, the welcome screen shows the ASCII face.
         if !self.has_projects() {
             return true;
         }
         let env = self.env();
-        let home = matches!(
-            env.tabs.get(env.active_tab).map(|t| &t.kind),
-            None | Some(TabKind::NewSession)
-        );
-        home || self.composer_chat().is_some()
+        let tab = env.tabs.get(env.active_tab);
+        let home = matches!(tab.map(|t| &t.kind), None | Some(TabKind::NewSession));
+        let browser_home = tab
+            .and_then(|t| t.browser.as_ref())
+            .is_some_and(|b| b.view.read(cx).shows_raccoon());
+        home || browser_home || self.composer_chat().is_some()
     }
 
     /// Whether the rail shows its raccoon. It steps aside while the main view
     /// shows one, so only one raccoon is in view, but comes back when a session
     /// out of view needs input: its mood is the only cue across sessions.
-    fn rail_shows_raccoon(&self, inbox: &[InboxItem]) -> bool {
-        if !self.main_shows_raccoon() {
+    fn rail_shows_raccoon(&self, inbox: &[InboxItem], cx: &App) -> bool {
+        if !self.main_shows_raccoon(cx) {
             return true;
         }
         // No project, so no session to wait on input.

@@ -1,9 +1,11 @@
-//! The raccoon's ink face drawn in ASCII, for the start and welcome screens.
+//! The raccoon's face drawn in ASCII, for the start and welcome screens.
 //!
-//! Each frame samples the head image through the head's inverse transform, nine
-//! points per character cell, with the amber eye capsules worked out in code;
-//! brightness picks a character, amber becomes block glyphs. The first face of a
-//! run plays an intro: eyes in the dark, then the face lit from the eyes out.
+//! The head image is the mascot's own drawing, made by `tools/brand-logo.py`.
+//! Each frame samples it through the head's inverse transform, nine points per
+//! character cell, with the amber eye capsules worked out in code; brightness
+//! picks a character, amber becomes block glyphs. The first face of a
+//! run plays an intro: eyes open in the dark and blink twice, then the light
+//! spreads from them and the face spells itself out at its edge.
 //! The browser prototype is `shots/arakun/intro/rig/welcome.html`.
 
 use std::cell::Cell;
@@ -37,17 +39,29 @@ const LIGHT_SPLIT: f32 = 0.35;
 const DOT: char = '·';
 const CHARS: &str = " .:-=+*#%@·░▓█";
 
-const INTRO_LEN: f32 = 4.8;
+// The intro, in seconds. Short enough that a returning user is not kept
+// waiting; the double blink and the scramble give it its character.
+const INTRO_LEN: f32 = 2.8;
+/// The eyes open from slits in the dark.
+const EYES_IN: (f32, f32) = (0.15, 0.45);
+/// A quick double blink, as if waking up: when each starts.
+const INTRO_BLINKS: [f32; 2] = [0.75, 0.98];
+/// The light spreads from the eyes over this span.
+const LIGHT: (f32, f32) = (0.85, 1.9);
+/// The head grows in, ending with a small overshoot.
+const GROW: (f32, f32) = (0.7, 1.6);
+/// How far behind the light's edge the characters still scramble, in px at
+/// the prototype's scale.
+const SCRAMBLE_BAND: f32 = 90.;
 const FADE_LEN: f32 = 0.6;
 /// Keys during the intro play the rest this much faster.
 const RUSH: f32 = 4.;
 
-/// The eyes in the image: centres, then width and height of the capsules.
-const EYES: [[f32; 2]; 2] = [[97.2, 124.5], [170.2, 124.5]];
-const EYE_SIZE: [f32; 2] = [12.5, 35.];
+/// The eyes in the image, which leaves them out: centres, then width and
+/// height of the capsules, as `assets/brand/raccoon.svg` has them.
+const EYES: [[f32; 2]; 2] = [[87.6, 111.7], [180.4, 111.7]];
+const EYE_SIZE: [f32; 2] = [18.1, 38.4];
 const AMBER: [f32; 3] = [255., 181., 71.];
-/// Over the eyes painted into the image, so a blink shows no old eye beneath.
-const EYE_CAP: [f32; 3] = [22., 22., 27.];
 const DOTS: [f32; 3] = [134., 166., 242.];
 
 static INTRO_SEEN: AtomicBool = AtomicBool::new(false);
@@ -64,6 +78,26 @@ fn smooth(t: f32) -> f32 {
 
 fn lerp(a: f32, b: f32, k: f32) -> f32 {
     a + (b - a) * k
+}
+
+/// How open the eyes are at `t` in the intro: slits that open, then two
+/// quick blinks.
+fn intro_blink(t: f32) -> f32 {
+    let mut open = lerp(0.06, 1., smooth(along(t, EYES_IN)));
+    for at in INTRO_BLINKS {
+        let q = (t - at) / 0.14;
+        if (0. ..1.).contains(&q) {
+            open = open.min(
+                if q < 0.45 {
+                    1. - q / 0.45
+                } else {
+                    (q - 0.45) / 0.55
+                }
+                .max(0.06),
+            );
+        }
+    }
+    open
 }
 
 // ---------- The image ----------
@@ -145,6 +179,38 @@ fn is_amber(c: [f32; 3]) -> bool {
     r > 70. && (r - b) / r > 0.55 && g > b * 1.3
 }
 
+/// A cell's random number for one scramble step.
+fn hash(col: usize, row: usize, tick: u32) -> u32 {
+    let mut h = (col as u32).wrapping_mul(0x9e37_79b1)
+        ^ (row as u32).wrapping_mul(0x85eb_ca77)
+        ^ tick.wrapping_mul(0xc2b2_ae3d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2c1b_3c6d);
+    h ^ (h >> 12)
+}
+
+/// A scrambling cell shows any visible character, its own about a third of
+/// the time, so the face flickers into place rather than snapping.
+fn scrambled(i: usize, h: u32) -> usize {
+    if h.is_multiple_of(3) {
+        i
+    } else {
+        1 + (h >> 2) as usize % (RAMP.len() - 1)
+    }
+}
+
+/// Eases to 1 past a small overshoot, for the head growing in.
+fn back_out(t: f32) -> f32 {
+    let t = t.clamp(0., 1.) - 1.;
+    const S: f32 = 1.6;
+    1. + t * t * ((S + 1.) * t + S)
+}
+
+/// Where `t` is between `span`'s ends, 0 to 1.
+fn along(t: f32, span: (f32, f32)) -> f32 {
+    ((t - span.0) / (span.1 - span.0)).clamp(0., 1.)
+}
+
 // ---------- One frame ----------
 
 /// Where the head is and what its eyes do, plus how lit the intro has it.
@@ -161,6 +227,9 @@ struct Pose {
     /// Intro: how lit the eyes are, how far the light has reached from them
     /// and how bright it is; `None` once the intro is over.
     reveal: Option<(f32, f32, f32)>,
+    /// Changes about 20 times a second during the intro, so the characters at
+    /// the light's edge scramble.
+    tick: u32,
     /// Everything at once, for the quick fade-in.
     fade: f32,
 }
@@ -176,6 +245,7 @@ impl Pose {
             blink: 1.,
             glow: 0.2,
             reveal: None,
+            tick: 0,
             fade: 1.,
         }
     }
@@ -214,11 +284,6 @@ impl Pose {
         let v = (-s * dx + c * dy) / (self.k * self.stretch) + img.h as f32 / 2.;
         let mut col = img.sample(u, v);
         let [ew, eh] = EYE_SIZE;
-        for e in EYES {
-            if in_capsule(u, v, e[0], e[1], ew + 5., eh + 5.) {
-                col = EYE_CAP;
-            }
-        }
         let h = (ew * 0.55).max(eh * self.blink);
         for e in EYES {
             let (cx, cy) = (e[0] + self.gaze[0], e[1] + self.gaze[1] + (eh - h) * 0.3);
@@ -309,12 +374,18 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
             let c = sum.map(|v| v / 9.);
             let amber = is_amber(c);
             let mut k = pose.fade;
+            // A character near the light's edge that is still settling.
+            let mut scramble = None;
             if let Some((eyes_k, radius, light)) = pose.reveal {
                 k *= if amber {
                     eyes_k
                 } else {
                     let d = (x + CELL_W / 2. - eyes[0]).hypot(y + CELL_H / 2. - eyes[1]);
-                    ((radius - d) / (200. * u)).clamp(0., 1.) * light
+                    let behind = radius - d;
+                    if behind > 0. && behind < SCRAMBLE_BAND * u {
+                        scramble = Some(hash(col, row, pose.tick));
+                    }
+                    (behind / (120. * u)).clamp(0., 1.) * light
                 };
             }
             let l = (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255. * k;
@@ -327,15 +398,20 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
                     continue;
                 }
                 let raw = l / k;
+                // The fur is paper, lit from the forehead: its shade (1 at
+                // the centre, about 0.45 at the rim) sets how dense it is, so
+                // it reads as light characters that thicken toward the edge.
                 let (density, part) = if raw < LIGHT_SPLIT {
                     (0.55 + 0.45 * (1. - raw / LIGHT_SPLIT), Part::Ink)
                 } else {
-                    (0.15 + 0.4 * (1. - raw), Part::Fur)
+                    let shade = ((1. - raw) / 0.55).clamp(0., 1.);
+                    (0.25 + 0.4 * shade, Part::Fur)
                 };
                 let i = (density * k * RAMP.len() as f32) as usize;
                 if i == 0 {
                     continue;
                 }
+                let i = scramble.map_or(i, |h| scrambled(i, h));
                 out.push(FaceCell {
                     col,
                     row,
@@ -357,7 +433,8 @@ fn face_cells(pose: &Pose, grid: Grid) -> Vec<FaceCell> {
                     '░'
                 }
             } else {
-                RAMP[((l.powf(0.75) * RAMP.len() as f32) as usize).min(RAMP.len() - 1)]
+                let i = (l.powf(0.75) * RAMP.len() as f32) as usize;
+                RAMP[scramble.map_or(i, |h| scrambled(i, h)).min(RAMP.len() - 1)]
             };
             let gain = (0.55 / l.max(0.12) + 0.9).min(2.2) * k;
             out.push(FaceCell {
@@ -553,7 +630,7 @@ impl AsciiFace {
 
     /// The title and composer under the face come in late in the intro.
     pub fn ui_alpha(&self) -> f32 {
-        self.intro.map_or(1., |t| smooth((t - 3.4) / 1.2))
+        self.intro.map_or(1., |t| smooth((t - 1.7) / 0.8))
     }
 
     fn now(&self) -> f64 {
@@ -675,14 +752,17 @@ impl AsciiFace {
         pose.gaze = [lx * 7., ly * 5.];
         pose.blink = self.blink_at();
         if let Some(t) = self.intro {
-            let lit = smooth((t - 2.) / 2.4);
-            pose.k *= lerp(0.84, 1., smooth((t - 1.8) / 2.8));
-            pose.glow = lerp(1., 0.2, smooth((t - 2.4) / 2.));
+            pose.blink = intro_blink(t);
+            let lit = smooth(along(t, LIGHT));
+            pose.k *= lerp(0.86, 1., back_out(along(t, GROW)));
+            pose.glow = lerp(1., 0.2, smooth(along(t, (1.2, 2.4))));
             pose.reveal = Some((
-                smooth((t - 0.5) / 0.9),
-                lerp(0., 700., lit) * u,
-                lerp(0.35, 1., lit),
+                smooth(along(t, EYES_IN)),
+                // Just past the farthest ear, so the sweep is seen all the way.
+                lerp(0., 440., lit) * u,
+                lerp(0.4, 1., lit),
             ));
+            pose.tick = (t * 20.) as u32;
         }
         pose.fade = self.fade.map_or(1., |t| smooth(t / FADE_LEN));
         pose
@@ -702,7 +782,7 @@ impl AsciiFace {
             .get_or_insert_with(|| Rc::new(glyphs(window)))
             .clone();
         let dots = match self.intro {
-            Some(t) => smooth((t - 3.) / 1.4),
+            Some(t) => smooth((t - 1.4) / 0.9),
             None => pose.fade,
         };
         Frame {
@@ -823,7 +903,6 @@ mod tests {
         assert!(is_amber(AMBER));
         assert!(is_amber(AMBER.map(|v| v * 0.5)));
         assert!(!is_amber([150., 150., 155.]));
-        assert!(!is_amber(EYE_CAP));
         assert!(!is_amber([0.; 3]));
     }
 
@@ -836,6 +915,57 @@ mod tests {
         let (eyes, fur) = lit(&pose);
         assert!(eyes > 10, "the eyes show as blocks: {eyes}");
         assert!(fur > 300, "and the fur as characters: {fur}");
+    }
+
+    #[test]
+    fn the_intro_opens_the_eyes_and_blinks_twice() {
+        assert!(intro_blink(0.) < 0.1, "slits in the dark");
+        assert!(intro_blink(0.6) > 0.99, "then open");
+        for at in INTRO_BLINKS {
+            assert!(intro_blink(at + 0.06) < 0.2, "and shut at {at}");
+            assert!(intro_blink(at + 0.15) > 0.99);
+        }
+        assert!(intro_blink(INTRO_LEN) > 0.99);
+    }
+
+    #[test]
+    fn the_head_overshoots_then_settles() {
+        assert!(back_out(0.).abs() < 1e-6);
+        assert!((back_out(1.) - 1.).abs() < 1e-6);
+        assert!(
+            (0..100)
+                .map(|i| back_out(i as f32 / 100.))
+                .any(|v| v > 1.02)
+        );
+    }
+
+    #[test]
+    fn only_the_lights_edge_scrambles() {
+        let mid = |tick| Pose {
+            reveal: Some((1., 260., 1.)),
+            tick,
+            ..Pose::still(W)
+        };
+        let (a, b) = (
+            face_cells(&mid(1), Grid::new(W)),
+            face_cells(&mid(2), Grid::new(W)),
+        );
+        let eyes = mid(1).eyes_at();
+        let mut changed = 0;
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!((x.col, x.row), (y.col, y.row));
+            if x.ch != y.ch {
+                changed += 1;
+                let d = (Grid::new(W).x0 + (x.col as f32 + 0.5) * CELL_W - eyes[0])
+                    .hypot((x.row as f32 + 0.5) * CELL_H - eyes[1]);
+                let u = mid(1).k / PROTO_K;
+                assert!(
+                    d > 260. - SCRAMBLE_BAND * u - 8.,
+                    "scrambled far behind the edge"
+                );
+            }
+        }
+        assert!(changed > 5, "the edge scrambles: {changed}");
     }
 
     #[test]

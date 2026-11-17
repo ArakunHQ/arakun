@@ -712,7 +712,7 @@ impl Shell {
                 .justify_center()
                 .h(px(40.))
                 // Keeps its place, empty while the main view shows a raccoon.
-                .when(self.rail_shows_raccoon(&self.inbox_items()), |d| {
+                .when(self.rail_shows_raccoon(&self.inbox_items(), cx), |d| {
                     d.child(self.rail_mascot.clone())
                 })
                 .into_any_element(),

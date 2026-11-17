@@ -1,9 +1,9 @@
 //! The shell's side of the Dynamic Island (`crate::island_host`): the link to
 //! it, what it shows of every project's sessions, its alerts, and "Ver".
 
-// The island runs only on Linux (Wayland): elsewhere this builds but does nothing.
+// The island runs on Linux (Wayland) and macOS: elsewhere this builds but does nothing.
 #![cfg_attr(
-    not(target_os = "linux"),
+    not(any(target_os = "linux", target_os = "macos")),
     allow(unused_variables, unused_imports, dead_code, clippy::needless_return)
 )]
 
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::sessions::Notice;
 use crate::agent::{Entry, Setting, Thread, ThreadStatus};
-use crate::island::{self as isl, AlertKind, one_line};
+use crate::island::{self as isl, AlertKind, one_line, say};
 use crate::island_host::brief;
 use crate::island_host::proto::{FromIsland, ToIsland};
 
@@ -163,7 +163,9 @@ impl Shell {
         let want = crate::island::enabled() && crate::island::supported(cx);
         if !want {
             if crate::island::enabled() {
-                log_once("arakun: no Dynamic Island: it needs Wayland with layer-shell");
+                log_once(
+                    "arakun: no Dynamic Island: it needs macOS, or Linux on Wayland with layer-shell",
+                );
             }
             self.island = None;
             return;
@@ -171,7 +173,7 @@ impl Shell {
         if self.island.is_some() {
             return;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use futures::StreamExt as _;
             let (tx, mut presses, up) = crate::island_host::link::connect(true);
@@ -429,16 +431,23 @@ impl Shell {
         let (kind, head, line) = match notice {
             Notice::Finished => {
                 let reply = last_text(t.entries()).map(brief).filter(|b| !b.is_empty());
-                (AlertKind::Finished, format!("{model} terminó"), reply)
+                (
+                    AlertKind::Finished,
+                    format!("{model} {}", say("finished", "terminó")),
+                    reply,
+                )
             }
             Notice::Input => (
                 AlertKind::Input,
-                format!("{model} necesita tu decisión"),
+                format!(
+                    "{model} {}",
+                    say("needs your decision", "necesita tu decisión")
+                ),
                 waiting_on(t, brief),
             ),
             Notice::Error => (
                 AlertKind::Error,
-                format!("{model} falló"),
+                format!("{model} {}", say("failed", "falló")),
                 error_line(t, brief),
             ),
         };
@@ -556,7 +565,11 @@ fn last_reply(entries: &[Entry]) -> Option<String> {
 fn waiting_on(t: &Thread, shape: fn(&str) -> String) -> Option<String> {
     if let Some(p) = t.pending_permission() {
         return Some(if p.plan.is_some() {
-            "Tiene un plan listo para aprobar".into()
+            say(
+                "Has a plan ready to approve",
+                "Tiene un plan listo para aprobar",
+            )
+            .into()
         } else {
             shape(&p.title)
         });

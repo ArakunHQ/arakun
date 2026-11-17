@@ -1,6 +1,6 @@
 //! `arakun island-host`: the Dynamic Island (`crate::island`) as a program of
 //! its own, started with the session (Hyprland `exec-once`, a systemd user
-//! unit) or by the app. It has only the island's layer, so it paints at the
+//! unit) or by the app. It has only the island's window, so it paints at the
 //! display's rate whatever the app's window costs, and stays up with the app
 //! closed.
 //!
@@ -15,8 +15,11 @@
 //! it sends `Hold` (speaking, listening) and alerts through `apply`, and hears
 //! the presses next to the app.
 
-// The island needs a Wayland layer shell: elsewhere it builds but never runs.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+// The island needs a Wayland layer shell or macOS: elsewhere it builds but never runs.
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code, unused_imports)
+)]
 
 #[cfg(all(target_os = "linux", feature = "coderlabs"))]
 pub mod call;
@@ -91,9 +94,12 @@ fn send(msg: proto::ToIsland) -> i32 {
     #[cfg(not(unix))]
     {
         let _ = msg;
-        fail("the island needs Wayland with layer-shell")
+        fail(NEEDS)
     }
 }
+
+/// Why there is no island here.
+const NEEDS: &str = "the island needs macOS, or Linux on Wayland with layer-shell";
 
 fn fail(message: &str) -> i32 {
     eprintln!("arakun: {message}");
@@ -185,15 +191,15 @@ fn unlink(line: &str) -> String {
     out
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn main() -> i32 {
-    fail("the island needs Wayland with layer-shell")
+    fail(NEEDS)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use host::main;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod host {
     use std::collections::HashSet;
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -244,6 +250,8 @@ mod host {
         },
         #[cfg(feature = "coderlabs")]
         Wake(super::wake::Wake),
+        /// A desktop notification (`desktop.rs`), which only Linux passes on.
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         Notice(Alert),
     }
 
@@ -276,8 +284,11 @@ mod host {
             let woke = tx.clone();
             super::wake::start(move |w| drop(woke.unbounded_send(Msg::Wake(w))));
         }
-        let noticed = tx.clone();
-        super::desktop::start(move |a| drop(noticed.unbounded_send(Msg::Notice(a))));
+        #[cfg(target_os = "linux")]
+        {
+            let noticed = tx.clone();
+            super::desktop::start(move |a| drop(noticed.unbounded_send(Msg::Notice(a))));
+        }
         let accepted = std::thread::Builder::new()
             .name("arakun-island".into())
             .spawn(move || {
@@ -295,8 +306,9 @@ mod host {
             .run(move |cx: &mut App| {
                 crate::assets::load_fonts(cx);
                 crate::signals::quit_on_signals(cx);
+                island::hide_from_dock();
                 if !island::supported(cx) {
-                    eprintln!("arakun: the island needs Wayland with layer-shell");
+                    eprintln!("arakun: {}", super::NEEDS);
                     EXIT.store(1, Ordering::Relaxed);
                     cx.quit();
                     return;
@@ -322,7 +334,8 @@ mod host {
         EXIT.load(Ordering::Relaxed)
     }
 
-    /// The island's window on the landscape screen, and the host that feeds it.
+    /// The island's window, and the host that feeds it. On Linux it goes on
+    /// the landscape screen; on macOS `island::adopt` places it.
     fn open(cx: &mut App, rx: mpsc::UnboundedReceiver<Msg>) {
         let mut options = island::window_options(false);
         options.display_id = island::landscape_display(cx);
@@ -339,7 +352,10 @@ mod host {
         }
         eprintln!("arakun: island on {:?}", options.display_id);
         let opened = cx
-            .open_window(options, |_, cx| cx.new(Island::new))
+            .open_window(options, |window, cx| {
+                island::adopt(window);
+                cx.new(Island::new)
+            })
             .and_then(|handle| handle.update(cx, |_, _, cx| cx.entity()));
         let view = match opened {
             Ok(view) => view,
@@ -972,8 +988,10 @@ mod host {
         }
     }
 
-    /// The app can't take the focus from another process's click; Hyprland can give it.
+    /// The app can't take the focus from another process's click; Hyprland
+    /// can give it, and so can macOS.
     fn focus(pid: u32) {
+        island::activate_app(pid);
         if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
             return;
         }

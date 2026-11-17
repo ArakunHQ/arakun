@@ -109,7 +109,7 @@ impl Watch {
             match status {
                 Status::Idle if ended => seen.alerts.push(card(
                     AlertKind::Finished,
-                    format!("{model} terminó"),
+                    format!("{model} {}", isl::say("finished", "terminó")),
                     told(m),
                 )),
                 Status::Error if ended => {
@@ -119,8 +119,11 @@ impl Watch {
                         .map(brief)
                         .filter(|l| !l.is_empty())
                         .unwrap_or_else(|| told(m));
-                    seen.alerts
-                        .push(card(AlertKind::Error, format!("{model} falló"), why));
+                    seen.alerts.push(card(
+                        AlertKind::Error,
+                        format!("{model} {}", isl::say("failed", "falló")),
+                        why,
+                    ));
                 }
                 _ => {}
             }
@@ -328,12 +331,12 @@ mod tests {
             [
                 (
                     AlertKind::Finished,
-                    "GLM 5.3 terminó",
+                    isl::say("GLM 5.3 finished", "GLM 5.3 terminó"),
                     "cargo test: 3 passed"
                 ),
                 (
                     AlertKind::Error,
-                    "GLM 5.3 falló",
+                    isl::say("GLM 5.3 failed", "GLM 5.3 falló"),
                     "Workers AI: 429 too many requests retry in 20 s"
                 ),
             ]

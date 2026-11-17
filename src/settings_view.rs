@@ -832,7 +832,7 @@ impl SettingsDialog {
                     .into_any_element(),
                     row(
                         "Dynamic Island",
-                        "What every agent is doing, at the top of the screen, and a card when one finishes, needs you or fails. Wayland only.",
+                        "What every agent is doing, at the top of the screen, and a card when one finishes, needs you or fails. On Linux it needs Wayland.",
                         switch(crate::island::enabled()).into_any_element(),
                     )
                     .id("set-island")

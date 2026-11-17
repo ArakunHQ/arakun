@@ -156,10 +156,16 @@ it shows in `github/avatars/` (each downloaded again after a week).
 
 ### Stay in the loop
 
-- **Dynamic Island** (Linux/Wayland only for now). A small overlay at the top of the
+- **Dynamic Island** (Linux on Wayland, and macOS). A small overlay at the top of the
   screen that shows what the agents of every project are doing: a dot per busy session, a
   card when one finishes, fails or needs an answer. It runs as its own process
-  (`arakun island-host`) and needs a compositor with the wlr-layer-shell protocol.
+  (`arakun island-host`). On Linux it needs a compositor with the wlr-layer-shell
+  protocol. On a MacBook it grows out of the notch, or out of the screen's own Dynamic
+  Island on the models that have one, and sits on the built-in screen; on a Mac without
+  either it hangs from the top of the main screen. If it reads the cutout wrong, set
+  `ARAKUN_ISLAND_EDGE` to `flat`, `notch:<width>x<height>` or
+  `pill:<width>x<height>+<gap to the top>`, in points. It speaks English on macOS and
+  Spanish on Linux for now.
 - **Notification history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
   grouped by day. Click one to open what it is about. The Inbox is the button at the end
@@ -264,7 +270,7 @@ made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
 |---|---|---|
 | Linux (x86_64) | Supported | Main platform. Wayland and X11. The Dynamic Island needs Wayland with wlr-layer-shell. |
 | Windows 10/11 (x86_64) | Beta | No Dynamic Island yet. Release builds do not include the browser yet; build from source with the `browser` feature to get it. See [docs/windows.md](docs/windows.md). |
-| macOS | Experimental | Release builds for Apple silicon, without the browser. Little tested. |
+| macOS | Experimental | Release builds for Apple silicon, without the browser. Little tested. The Dynamic Island's shape around a notch and around the MacBook Pro's own Dynamic Island is not tested on those screens yet. |
 
 ## Install
 

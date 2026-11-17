@@ -132,6 +132,11 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
     args.extend(flags.iter().cloned());
     let root = system_unit();
     let env = service_env(|key| std::env::var_os(key), root)?;
+    text("this program's path", &exe)?;
+    text("the server's folder", &dir())?;
+    if let Some(file) = file_path(&service_name()) {
+        text("the service file's path", &file)?;
+    }
     if root && !only_root_writes(&exe) {
         return Err(format!(
             "a system service runs {} as root at every boot, so it must be owned by root, \
@@ -223,9 +228,15 @@ fn service_env(
                     .filter(|c| only_root_writes(c)),
                 true => None,
             })
+            // The unit file is text: a folder it cannot name exactly is left out,
+            // not written as some other folder.
+            .filter(|d| d.to_str().is_some())
             .filter(|d| seen.insert(d.clone()));
-        if let Ok(path) = std::env::join_paths(dirs) {
-            env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+        if let Some(path) = std::env::join_paths(dirs)
+            .ok()
+            .and_then(|p| p.into_string().ok())
+        {
+            env.push(("PATH".to_string(), path));
         }
     }
     // `dir()` ignores a relative one of either, and so does the service.
@@ -249,9 +260,20 @@ fn service_env(
         } else {
             value
         };
-        env.push((key.to_string(), value.to_string_lossy().into_owned()));
+        env.push((key.to_string(), text(key, &value)?.to_string()));
     }
     Ok(env)
+}
+
+/// `path` as the unit file must hold it: exactly, so not when it is not UTF-8.
+/// Written with its bad bytes replaced, it would name another folder.
+fn text<'a>(what: &str, path: &'a Path) -> Result<&'a str, String> {
+    path.to_str().ok_or_else(|| {
+        format!(
+            "{what} ({}) is not valid UTF-8, and the service file could not name it exactly",
+            path.display()
+        )
+    })
 }
 
 /// Whether this installs a system unit: Linux, as root.
@@ -950,6 +972,27 @@ mod tests {
         }
         let _ = std::fs::remove_dir(&mine);
         assert_eq!(changed_by_others(&[PathBuf::from("/")]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_the_unit_cannot_hold_exactly_is_refused_not_mangled() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bad = || OsString::from_vec(b"/srv/server-\xff".to_vec());
+        let dir = |key: &str| (key == "ARAKUN_SERVER_DIR").then(bad);
+        let e = service_env(dir, false).unwrap_err();
+        assert!(
+            e.contains("ARAKUN_SERVER_DIR") && e.contains("UTF-8"),
+            "{e}"
+        );
+        // On PATH such a folder is left out; the rest stays.
+        let path = |key: &str| {
+            (key == "PATH").then(|| OsString::from_vec(b"/usr/bin:/opt/\xff/bin:/bin".to_vec()))
+        };
+        assert_eq!(
+            service_env(path, false).unwrap(),
+            vec![("PATH".into(), "/usr/bin:/bin".into())]
+        );
     }
 
     #[cfg(unix)]

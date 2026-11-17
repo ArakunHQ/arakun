@@ -935,7 +935,7 @@ impl GitHubView {
                 self.note = Some(Note {
                     ok: false,
                     quiet: true,
-                    text: "Ctrl+Enter sends the comment.".into(),
+                    text: crate::platform::shortcut_label("Ctrl+Enter sends the comment."),
                 });
                 cx.notify();
             }

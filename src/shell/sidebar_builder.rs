@@ -1650,7 +1650,9 @@ impl Shell {
                 |s, v| s.variant = v,
                 cx,
             ))
-            .child(field_label("When hidden (Ctrl+B)"))
+            .child(field_label(&crate::platform::shortcut_label(
+                "When hidden (Ctrl+B)",
+            )))
             .child(choices(
                 self,
                 "sb-collapse",

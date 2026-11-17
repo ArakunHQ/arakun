@@ -331,11 +331,11 @@ pub fn kbd(key: impl Into<SharedString>) -> gpui::Div {
         .child(key.into())
 }
 
-/// A shortcut, keys joined: `shortcut(&["Ctrl", "K"])`.
+/// A shortcut, keys joined: `shortcut(&["Ctrl", "K"])`, ⌘ K on macOS.
 pub fn shortcut(keys: &[&str]) -> gpui::Div {
     let mut row = div().flex().items_center().gap(crate::ui::sp(3.));
-    for k in keys {
-        row = row.child(kbd(k.to_string()));
+    for k in crate::platform::keycaps(keys) {
+        row = row.child(kbd(k));
     }
     row
 }
@@ -1468,8 +1468,9 @@ pub fn keycaps(keys: &[&str]) -> gpui::Div {
         .flex_none()
         .items_center()
         .gap(crate::ui::sp(4.));
-    for k in keys {
-        row = row.child(keycap(k.to_string()));
+    // Given the Windows and Linux way; macOS shows its symbols.
+    for k in crate::platform::keycaps(keys) {
+        row = row.child(keycap(k));
     }
     row
 }

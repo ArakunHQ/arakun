@@ -1,8 +1,10 @@
 //! `arakun server service …`: keeps the server running after the shell closes and
-//! starts it again at login or boot. Linux gets a systemd user unit, and macOS
-//! gets a launchd agent. Both run this same binary with `serve`, the `PATH` of
-//! the shell that installed them (where the agents are) and `ARAKUN_SERVER_DIR`
-//! if it is set.
+//! starts it again at login or boot. On Linux it is a systemd user unit with
+//! lingering on, so it runs while nobody is logged in and starts at boot; as
+//! root (a VPS often has only root) it is a system unit instead. macOS gets a
+//! launchd agent. Each runs this same binary with `serve`, the `PATH` of the
+//! shell that installed it (where the agents are) and `ARAKUN_SERVER_DIR` if
+//! it is set.
 //!
 //! Both restart the server when it fails, but not after `quit`: `quit` exits
 //! cleanly, and stopping the server is what the user asked for.
@@ -196,6 +198,12 @@ fn install(spec: &Spec) -> i32 {
     {
         return fail(&format!("{}: {e}", parent.display()));
     }
+    // Before the unit starts: lingering is what starts the user's systemd when
+    // nobody is logged in, and keeps it (and the server) running after logout.
+    #[cfg(target_os = "linux")]
+    if !is_root() {
+        linger();
+    }
     // Reinstalling stops the running one first, so it starts again with the new file.
     if reinstall {
         stop(&spec.name);
@@ -221,12 +229,12 @@ fn install(spec: &Spec) -> i32 {
         "The server is running, and starts again {}.",
         if cfg!(target_os = "macos") {
             "when you log in"
+        } else if is_root() || lingers() {
+            "when the machine boots, whether or not anyone is logged in"
         } else {
-            "when the machine boots"
+            "when you log in"
         }
     );
-    #[cfg(target_os = "linux")]
-    linger();
     println!(
         "\nPair a device:   {n} pair\nLogs:            {n} service logs -f\nRemove it:       {n} service uninstall",
         n = name()
@@ -237,8 +245,22 @@ fn install(spec: &Spec) -> i32 {
 const UNSUPPORTED: &str = "a service needs systemd (Linux) or launchd (macOS); \
      on Windows, start `serve` from Task Scheduler at logon";
 
+/// Whether this runs as root, where Linux gets a system unit, not a user one.
+fn is_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid cannot fail.
+        unsafe { libc::getuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    false
+}
+
 /// The unit or agent file for `name`; None where there is no service manager.
 fn file_path(name: &str) -> Option<PathBuf> {
+    if cfg!(target_os = "linux") && is_root() {
+        return Some(PathBuf::from(format!("/etc/systemd/system/{name}.service")));
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     if cfg!(target_os = "macos") {
         Some(home.join(format!("Library/LaunchAgents/{name}.plist")))
@@ -257,12 +279,12 @@ fn file_text(spec: &Spec) -> String {
     if cfg!(target_os = "macos") {
         plist(spec)
     } else {
-        unit(spec)
+        unit(spec, is_root())
     }
 }
 
-/// The systemd user unit.
-fn unit(spec: &Spec) -> String {
+/// The systemd unit: a user unit, or with `system` one for the whole machine.
+fn unit(spec: &Spec, system: bool) -> String {
     let mut exec = vec![systemd_quote(&spec.exe.to_string_lossy())];
     exec.extend(spec.args.iter().map(|a| systemd_quote(a)));
     let env: String = spec
@@ -270,10 +292,20 @@ fn unit(spec: &Spec) -> String {
         .iter()
         .map(|(k, v)| format!("Environment={}\n", systemd_quote(&format!("{k}={v}"))))
         .collect();
+    // A user's systemd cannot wait for the network; the server retries the relay anyway.
+    let (after, wanted_by) = if system {
+        (
+            "After=network-online.target\nWants=network-online.target\n",
+            "multi-user.target",
+        )
+    } else {
+        ("", "default.target")
+    };
     format!(
         "# Written by `{n} service install`; `{n} service uninstall` removes it.\n\
          [Unit]\n\
          Description=Arakun server\n\
+         {after}\
          \n\
          [Service]\n\
          ExecStart={exec}\n\
@@ -282,7 +314,7 @@ fn unit(spec: &Spec) -> String {
          RestartSec=5\n\
          \n\
          [Install]\n\
-         WantedBy=default.target\n",
+         WantedBy={wanted_by}\n",
         n = name(),
         exec = exec.join(" "),
     )
@@ -360,6 +392,30 @@ fn manage(program: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// `systemctl`, for the user's systemd unless this is root.
+#[cfg(not(target_os = "macos"))]
+fn systemctl(args: &[&str]) -> Result<String, String> {
+    if is_root() {
+        return manage("systemctl", args);
+    }
+    #[cfg(target_os = "linux")]
+    find_user_systemd();
+    let mut all = vec!["--user"];
+    all.extend_from_slice(args);
+    manage("systemctl", &all).map_err(|e| {
+        if e.contains("bus") || e.contains("XDG_RUNTIME_DIR") {
+            format!(
+                "{e}\nThis user has no systemd of its own running. Log in as it over SSH \
+                 (not with su or sudo -u), or run `sudo loginctl enable-linger {user}` \
+                 first, then run this again. As root, this installs a system service instead.",
+                user = std::env::var("USER").unwrap_or_else(|_| "$USER".into())
+            )
+        } else {
+            e
+        }
+    })
+}
+
 /// The launchd domains an agent can be in: the login session's, then the
 /// user's, which is the one there is over SSH with nobody logged in.
 #[cfg(target_os = "macos")]
@@ -389,8 +445,8 @@ fn start(name: &str, file: &Path) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = file;
-        manage("systemctl", &["--user", "daemon-reload"])?;
-        manage("systemctl", &["--user", "enable", "--now", name]).map(|_| ())
+        systemctl(&["daemon-reload"])?;
+        systemctl(&["enable", "--now", name]).map(|_| ())
     }
 }
 
@@ -411,7 +467,7 @@ fn stop(name: &str) {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = manage("systemctl", &["--user", "disable", "--now", name]);
+        let _ = systemctl(&["disable", "--now", name]);
     }
 }
 
@@ -431,7 +487,7 @@ fn uninstall(name: &str) -> i32 {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = manage("systemctl", &["--user", "daemon-reload"]);
+        let _ = systemctl(&["daemon-reload"]);
     }
     println!(
         "Removed {}. The server is stopped; its sessions and devices are kept in {}.",
@@ -470,13 +526,34 @@ fn status(name: &str) -> i32 {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        #[cfg(target_os = "linux")]
+        if !is_root() {
+            find_user_systemd();
+        }
+        // The state is stdout either way; an error with none means systemd was not reached.
         let state = |verb: &str| {
-            manage("systemctl", &["--user", verb, name])
-                .unwrap_or_else(|e| e.rsplit(": ").next().unwrap_or("").to_string())
-                .trim()
-                .to_string()
+            let out = crate::platform::command("systemctl")
+                .args(if is_root() { &[][..] } else { &["--user"][..] })
+                .args([verb, name])
+                .output();
+            match out {
+                Ok(o) if !o.stdout.is_empty() => {
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
+                }
+                _ => "unknown".to_string(),
+            }
         };
         println!("systemd: {}, {}", state("is-enabled"), state("is-active"));
+        if !is_root() {
+            println!(
+                "lingering: {}",
+                if lingers() {
+                    "on (it runs while nobody is logged in, and starts at boot)"
+                } else {
+                    "off (it stops when your last login ends)"
+                }
+            );
+        }
     }
     match super::ask(&Request::new("status", &[])) {
         Ok(message) => {
@@ -501,7 +578,10 @@ fn logs(name: &str, follow: bool) -> i32 {
         cmd
     } else if cfg!(target_os = "linux") {
         let mut cmd = crate::platform::command("journalctl");
-        cmd.args(["--user", "-u", name, "-n", "200", "--no-pager"]);
+        if !is_root() {
+            cmd.arg("--user");
+        }
+        cmd.args(["-u", name, "-n", "200", "--no-pager"]);
         if follow {
             cmd.arg("-f");
         }
@@ -515,19 +595,47 @@ fn logs(name: &str, follow: bool) -> i32 {
     }
 }
 
-/// Without lingering, systemd stops a user's services when their last login
-/// ends, and starts them only when they log in again.
+/// Whether systemd keeps this user's services running without a login.
+fn lingers() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // The file systemd keeps for it; `loginctl show-user` needs a session to name the user.
+        let user = std::env::var("USER").unwrap_or_default();
+        !user.is_empty() && Path::new("/var/lib/systemd/linger").join(user).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+/// Turns lingering on: without it, systemd stops a user's services when their
+/// last login ends, and starts them only when they log in again.
 #[cfg(target_os = "linux")]
 fn linger() {
-    let on = manage("loginctl", &["show-user", "--property=Linger", "--value"])
-        .is_ok_and(|v| v.trim() == "yes");
-    if on || manage("loginctl", &["enable-linger"]).is_ok() {
-        return;
+    if !lingers() && manage("loginctl", &["enable-linger"]).is_err() {
+        println!(
+            "Could not turn on lingering, so the server stops when your last login ends. \
+             To keep it running and start it at boot, run:\n  sudo loginctl enable-linger {}\n",
+            std::env::var("USER").unwrap_or_else(|_| "\"$USER\"".into())
+        );
     }
-    println!(
-        "\nTo keep it running while you are logged out, and start it at boot, run:\n  \
-         sudo loginctl enable-linger \"$USER\""
-    );
+}
+
+/// After `su -` or `sudo -u` there is no XDG_RUNTIME_DIR, and `systemctl --user`
+/// cannot find the user's systemd, though it runs (lingering may have just started it).
+#[cfg(target_os = "linux")]
+fn find_user_systemd() {
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        // SAFETY: getuid cannot fail.
+        let run = PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }));
+        let asked = Instant::now();
+        while !run.join("systemd/private").exists() && asked.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if run.is_dir() {
+            // SAFETY: single-threaded here: the CLI starts no threads before this.
+            unsafe { std::env::set_var("XDG_RUNTIME_DIR", run) };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -577,7 +685,7 @@ mod tests {
 
     #[test]
     fn the_unit_quotes_what_systemd_would_read_otherwise() {
-        let text = unit(&sample());
+        let text = unit(&sample(), false);
         assert!(text.contains(
             "ExecStart=\"/home/me/my bin/arakun-server\" \"serve\" \"--reach\" \"lan\"\n"
         ));
@@ -586,6 +694,14 @@ mod tests {
         assert!(text.contains("Restart=on-failure"));
         assert!(text.contains("WantedBy=default.target"));
         assert_eq!(systemd_quote(r#"a"b\c"#), r#""a\"b\\c""#);
+        assert!(!text.contains("network-online"));
+    }
+
+    #[test]
+    fn as_root_the_unit_is_the_machines_and_waits_for_the_network() {
+        let text = unit(&sample(), true);
+        assert!(text.contains("WantedBy=multi-user.target"));
+        assert!(text.contains("After=network-online.target\nWants=network-online.target\n"));
     }
 
     #[test]

@@ -609,29 +609,38 @@ arakun-server service install   # keep it running; see Keep it running
 
 ### Keep it running
 
-`service install` runs `serve` as a service of your user: systemd on Linux, launchd on
-macOS. It starts the server now, again after a crash, and at boot (Linux) or login
-(macOS). `quit` stops it until the next boot or login. First put the binary somewhere
-that stays, not in `target/`:
+`service install` runs `serve` as a service: systemd on Linux, launchd on macOS. It
+starts the server now, again after a crash, and at boot (Linux) or login (macOS). On
+Linux it keeps running while nobody is logged in, so on a VPS you can install it over
+SSH and log out. `quit` stops it until the next boot or login. First put the binary
+somewhere that stays, not in `target/`:
 
 ```sh
 install -Dm755 target/release/arakun-server ~/.local/bin/arakun-server
 arakun-server service install     # takes serve's flags: --reach, --port, --relay
-arakun-server service status      # installed, running, and how it is reached
+arakun-server pair                # then pair a device, and log out if you like
+arakun-server service status      # installed, running, lingering, and how it is reached
 arakun-server service logs -f     # what it prints (journalctl, or server.log on macOS)
 arakun-server service uninstall   # stop it and remove the service; the data stays
 ```
 
-- **What it writes.** `~/.config/systemd/user/arakun-server.service` on Linux and
+- **What it writes.** `~/.config/systemd/user/arakun-server.service` on Linux,
+  `/etc/systemd/system/arakun-server.service` when you run it as root, and
   `~/Library/LaunchAgents/dev.arakun.server.plist` on macOS. `service install --print`
   shows the file and installs nothing. Running `install` again rewrites the file and
   restarts the server.
 - **Agents.** The service gets the `PATH` of the shell you install it from, so it finds
   the same agents. If you install an agent somewhere else later, run `install` again.
-- **Logged out.** On Linux it turns on lingering (`loginctl enable-linger`), so the
-  server runs while you are logged out and starts at boot. If that needs root, it
-  prints the command to run. On macOS a user's agent runs from login, so a Mac that
-  nobody sits at needs automatic login.
+- **Logged out (Linux).** As a normal user it turns on lingering
+  (`loginctl enable-linger`) before it starts the unit: systemd then starts your
+  services at boot and keeps them running after you log out. If that needs root, it
+  prints the `sudo` command to run. It also works after `su - user` or `sudo -u user`,
+  where `systemctl --user` usually cannot find the user's systemd.
+- **As root.** Many VPSs only have root. There it installs a system unit that runs as
+  root and starts once the network is up. To run the agents as another user, log in as
+  that user and install from there.
+- **Logged out (macOS).** A user's launchd agent runs from login to logout, so a Mac
+  that nobody sits at needs automatic login.
 - **A second server.** With `ARAKUN_SERVER_DIR` set, the service is named after that
   folder (`arakun-server-<folder>`) and keeps the variable.
 - **Windows** has no `service` command yet: start `arakun-server serve` from Task

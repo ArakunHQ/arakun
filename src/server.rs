@@ -125,9 +125,10 @@ Usage:
 
 Keep it running (systemd on Linux, launchd on macOS):
   {name} service install [--print] [serve flags]
-                             run `serve` as a service of your user: it starts
-                             now, after a failure, and at boot (Linux) or login
-                             (macOS). --print shows the file and installs nothing
+                             run `serve` as a service: it starts now, after a
+                             failure, and at boot (Linux, logged in or not; as
+                             root a system unit) or login (macOS). --print
+                             shows the file and installs nothing
   {name} service status      whether it is installed and running
   {name} service logs [-f]   what the server printed; -f follows it
   {name} service uninstall   stop it and remove the service; nothing else goes

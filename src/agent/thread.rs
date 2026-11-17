@@ -1992,7 +1992,13 @@ impl Thread {
                 .unwrap_or(true);
             if stopped {
                 let cancelled = Ok(json!({"stopReason": "cancelled"}));
-                let _ = this.update(cx, |t, cx| t.prompt_done(seq, cancelled, cx));
+                let _ = this.update(cx, |t, cx| {
+                    // The agent never got the handoff: the next prompt carries it.
+                    if first_here && t.prompt_seq == seq {
+                        t.handoff_sent = false;
+                    }
+                    t.prompt_done(seq, cancelled, cx)
+                });
                 return;
             }
             let request = conn.request(

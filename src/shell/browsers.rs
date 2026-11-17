@@ -72,6 +72,7 @@ impl Shell {
         };
         let visible = self.has_projects() && self.env().path == env_path;
         let env = self.find_env_mut(env_path)?;
+        crate::telemetry::capture(crate::telemetry::events::BROWSER_TAB_OPENED, &[]);
         let tab = Tab::new(title, TabKind::Browser { url: url.into() });
         let id = tab.id;
         env.tabs.push(tab);

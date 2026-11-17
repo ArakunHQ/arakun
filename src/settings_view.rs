@@ -129,11 +129,11 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone telemetry analytics usage crash reports privacy posthog"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts telemetry analytics usage crash reports privacy posthog"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
@@ -885,6 +885,18 @@ impl SettingsDialog {
                 .cursor_pointer()
                 .on_click(cx.listener(|_, _, _, cx| {
                     crate::shell::pages::set_drive_any_page(!crate::shell::pages::drive_any_page());
+                    cx.notify();
+                }))
+                .into_any_element(),
+                row(
+                    "Usage and crash reports",
+                    "Sends crashes, agent errors and counts such as sessions started to Arakun's PostHog, under a random id. Never prompts, replies, files or project names. DO_NOT_TRACK=1 also turns it off.",
+                    switch(crate::telemetry::switched_on()).into_any_element(),
+                )
+                .id("set-telemetry")
+                .cursor_pointer()
+                .on_click(cx.listener(|_, _, _, cx| {
+                    crate::telemetry::set_allowed(!crate::telemetry::switched_on());
                     cx.notify();
                 }))
                 .into_any_element(),

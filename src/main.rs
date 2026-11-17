@@ -81,6 +81,7 @@ mod tasks_view;
 mod team;
 #[cfg(feature = "team")]
 mod team_view;
+mod telemetry;
 mod terminal;
 mod theme;
 mod ui;
@@ -136,6 +137,12 @@ fn main() {
     platform::import_login_path();
     control::export_env();
     platform::detach_own_console();
+    // After the CLI: `arakun <command>` runs in agents' shells and reports nothing.
+    telemetry::init();
+    telemetry::capture(
+        telemetry::events::APP_LAUNCHED,
+        &[("os", std::env::consts::OS)],
+    );
     let started = std::time::Instant::now();
     gpui::Application::with_platform(ui_zoom::platform())
         .with_assets(assets::Assets)

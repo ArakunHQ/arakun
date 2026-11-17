@@ -194,6 +194,29 @@ it shows in `github/avatars/` (each downloaded again after a week).
   Wide). The defaults (100%, 100%, 8 px) look as before. These are kept in
   `palettes.json` too.
 
+### Usage and crash reports
+
+Release builds send crash reports and anonymous usage counts to Arakun's PostHog
+project, so we can see what breaks and what gets used:
+
+- **Crashes:** the panic message and its stack trace.
+- **Agent errors:** the first line of the error and the agent's name.
+- **Counts:** app launched, session started (with the agent), agent turn finished,
+  project added, environment created, a built-in view opened (with its name) and a
+  browser tab opened. Each carries Arakun's version, the OS and the CPU architecture.
+
+Arakun never sends prompts, replies, file contents, URLs, project names or paths. Your
+home folder is replaced with `~` in anything it sends. Every event carries a random id
+kept in `telemetry-id` in Arakun's data folder (`~/.local/share/arakun` on Linux and
+macOS, `%LOCALAPPDATA%\arakun` on Windows). It is not tied to any account; delete the
+file to get a new one.
+
+Turn it off in Settings › General › Usage and crash reports, which leaves a
+`telemetry-off` file in that folder. Setting `DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0`
+also turns it off. Debug builds send nothing unless `ARAKUN_TELEMETRY=1` is set, and
+the test Arakun of `arakun dev` never does. A build made with `ARAKUN_POSTHOG_KEY=`
+(empty) sends nothing at all.
+
 ## Platform status
 
 | Platform | Status | Notes |

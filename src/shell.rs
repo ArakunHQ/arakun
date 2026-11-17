@@ -866,6 +866,8 @@ impl Shell {
                     this.save_transcripts(cx);
                     // Notices are saved off the UI thread: let the last one land.
                     crate::notices::flush();
+                    // Up to 2 s for usage events still queued.
+                    crate::telemetry::flush();
                     crate::control::cleanup();
                     if this.restarting
                         && let Err(e) = crate::platform::relaunch()
@@ -1190,6 +1192,7 @@ impl Shell {
             Some(i) => i,
             None => {
                 self.projects.push(state::new_project(&path));
+                crate::telemetry::capture(crate::telemetry::events::PROJECT_ADDED, &[]);
                 self.projects.len() - 1
             }
         };
@@ -1265,6 +1268,10 @@ impl Shell {
         let Some(project) = self.projects.get_mut(pi) else {
             return;
         };
+        crate::telemetry::capture(
+            crate::telemetry::events::ENVIRONMENT_CREATED,
+            &[("auto_name", if auto_name { "true" } else { "false" })],
+        );
         if project.env_index(&path).is_none() {
             project
                 .environments
@@ -1349,6 +1356,10 @@ impl Shell {
         let index = match env.tabs.iter().position(|t| is(&t.kind)) {
             Some(i) => i,
             None => {
+                crate::telemetry::capture(
+                    crate::telemetry::events::VIEW_OPENED,
+                    &[("view", title)],
+                );
                 let mut tab = Tab::new(title, kind);
                 tab.preview = true;
                 let active = env.active_tab;

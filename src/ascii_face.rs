@@ -958,11 +958,11 @@ mod tests {
         let mid = |tick| Pose {
             reveal: Some((1., 260., 1.)),
             tick,
-            ..Pose::still(W)
+            ..Pose::still(W, HEIGHT)
         };
         let (a, b) = (
-            face_cells(&mid(1), Grid::new(W)),
-            face_cells(&mid(2), Grid::new(W)),
+            face_cells(&mid(1), Grid::new(W, HEIGHT)),
+            face_cells(&mid(2), Grid::new(W, HEIGHT)),
         );
         let eyes = mid(1).eyes_at();
         let mut changed = 0;
@@ -970,7 +970,7 @@ mod tests {
             assert_eq!((x.col, x.row), (y.col, y.row));
             if x.ch != y.ch {
                 changed += 1;
-                let d = (Grid::new(W).x0 + (x.col as f32 + 0.5) * CELL_W - eyes[0])
+                let d = (Grid::new(W, HEIGHT).x0 + (x.col as f32 + 0.5) * CELL_W - eyes[0])
                     .hypot((x.row as f32 + 0.5) * CELL_H - eyes[1]);
                 let u = mid(1).k / PROTO_K;
                 assert!(

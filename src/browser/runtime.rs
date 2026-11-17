@@ -259,7 +259,7 @@ fn userns_sandbox_works() -> bool {
         return false;
     };
     let mut cmd = Command::new(exe);
-    cmd.arg("--version")
+    cmd.arg(super::SANDBOX_PROBE)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

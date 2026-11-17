@@ -97,9 +97,22 @@ pub struct PageState {
     pub dialog: Option<String>,
 }
 
+/// The argument the Linux sandbox check (`runtime::userns_sandbox_works`) runs this
+/// binary with, in a child process, to see whether it starts in a nested user namespace.
+pub const SANDBOX_PROBE: &str = "--arakun-sandbox-probe";
+
+/// Whether this process is that check's child: it only has to start.
+fn is_sandbox_probe(mut args: impl Iterator<Item = std::ffi::OsString>) -> bool {
+    args.nth(1).is_some_and(|a| a == SANDBOX_PROBE)
+}
+
 /// Runs CEF's child processes (re-executions of this binary with `--type=...`) and exits;
 /// returns immediately for the app process. Call it first thing in `main`.
 pub fn handle_subprocess() {
+    // Before anything else: the browser demo would take the argument for a page to open.
+    if is_sandbox_probe(std::env::args_os()) {
+        std::process::exit(0);
+    }
     #[cfg(all(
         feature = "browser",
         any(target_os = "linux", target_os = "macos", windows)
@@ -203,7 +216,9 @@ fn parse_links_choice(text: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_links_choice;
+    use std::ffi::OsString;
+
+    use super::{SANDBOX_PROBE, is_sandbox_probe, parse_links_choice};
 
     #[test]
     fn reads_the_links_choice() {
@@ -212,5 +227,18 @@ mod tests {
         // Anything else falls back to what the build can do.
         assert_eq!(parse_links_choice(""), None);
         assert_eq!(parse_links_choice("chrome"), None);
+    }
+
+    #[test]
+    fn only_the_probe_argument_makes_a_probe() {
+        let args = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>().into_iter();
+        assert!(is_sandbox_probe(args(&["arakun", SANDBOX_PROBE])));
+        assert!(!is_sandbox_probe(args(&["arakun"])));
+        assert!(!is_sandbox_probe(args(&["arakun", "--version"])));
+        assert!(!is_sandbox_probe(args(&[
+            "arakun",
+            "https://example.com",
+            SANDBOX_PROBE
+        ])));
     }
 }

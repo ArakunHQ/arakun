@@ -35,7 +35,6 @@ impl Shell {
                         .mb(px(16.))
                         .px(crate::ui::sp(10.))
                         .ty(ui::Type::Title)
-                        .font_weight(gpui::FontWeight::NORMAL)
                         .opacity(alpha)
                         .child(format!("What should we work on in {project}?")),
                 )

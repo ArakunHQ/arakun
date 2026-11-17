@@ -860,18 +860,26 @@ pub const CATEGORY: [u32; 8] = [
     0xd9c27e, // sand
 ];
 
-/// What WebKitGTK resolves `system-ui` to here (GTK 4 default).
-#[cfg(target_os = "linux")]
-pub const FONT_SANS: &str = "Adwaita Sans";
-#[cfg(target_os = "linux")]
-pub const FONT_MONO: &str = "JetBrainsMono NFM";
-/// Elsewhere neither Linux font is installed, and the fallback is proportional:
-/// terminal cells (sized from 'm') spread its letters apart, and the no-break
-/// spaces that make room for a file chip's icon get too narrow. Geist ships in assets/fonts.
-#[cfg(not(target_os = "linux"))]
+/// The brand's two faces, on every platform: Geist for what people read, Geist
+/// Mono for what a machine reads (code, terminals, paths). Both ship in
+/// assets/fonts, since few systems have them. The brand uses Geist at 400, 500
+/// and 600 and Geist Mono at 400 and 500, so only those weights are bundled; a
+/// heavier weight resolves to the nearest one.
 pub const FONT_SANS: &str = "Geist";
-#[cfg(not(target_os = "linux"))]
 pub const FONT_MONO: &str = "Geist Mono";
+
+/// Where the terminal finds what Geist Mono lacks: the Nerd Font and powerline
+/// symbols that prompts like starship draw. Patched families only, the ones
+/// people install for those prompts: GPUI drops a font without an 'm', so a
+/// symbols-only font can't serve. A family that isn't installed is skipped.
+pub const MONO_SYMBOL_FALLBACKS: [&str; 6] = [
+    "JetBrainsMono NFM",
+    "JetBrainsMono Nerd Font Mono",
+    "MesloLGS NF",
+    "MesloLGS Nerd Font Mono",
+    "FiraCode Nerd Font Mono",
+    "Hack Nerd Font Mono",
+];
 
 #[cfg(test)]
 mod tests {

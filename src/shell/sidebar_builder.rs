@@ -1240,7 +1240,7 @@ impl Shell {
                             .rounded_full()
                             .bg(theme::fill_selected())
                             .text_size(px(ui::TEXT_XS))
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child(b),
                     )
                 })

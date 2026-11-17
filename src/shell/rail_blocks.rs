@@ -44,7 +44,7 @@ fn badge_pill(b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
                 .rounded_full()
                 .bg(b.bg)
                 .text_size(px(ui::TEXT_XS))
-                .font_weight(FontWeight::BOLD)
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(b.fg)
                 .child(b.count.to_string()),
         ),
@@ -126,7 +126,7 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
         .rounded_full()
         .bg(theme::accent())
         .text_size(px(size * 0.45))
-        .font_weight(FontWeight::BOLD)
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::on_accent())
         .child(letter)
 }

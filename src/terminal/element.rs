@@ -261,16 +261,26 @@ pub struct Prepaint {
     marked: Option<ShapedLine>,
 }
 
-fn fonts() -> [Font; 4] {
+/// Built once: the terminal paints every frame, and each build would allocate the
+/// feature and fallback lists again. Clones only bump their `Arc`s.
+fn fonts() -> &'static [Font; 4] {
+    static FONTS: std::sync::LazyLock<[Font; 4]> = std::sync::LazyLock::new(build_fonts);
+    &FONTS
+}
+
+fn build_fonts() -> [Font; 4] {
     let base = Font {
         family: theme::FONT_MONO.into(),
         features: FontFeatures::disable_ligatures(),
-        fallbacks: None,
+        fallbacks: Some(gpui::FontFallbacks::from_fonts(
+            theme::MONO_SYMBOL_FALLBACKS.map(String::from).to_vec(),
+        )),
         weight: FontWeight::NORMAL,
         style: FontStyle::Normal,
     };
+    // Geist Mono stops at Medium in the brand, so bold text is drawn in Medium.
     let bold = Font {
-        weight: FontWeight::BOLD,
+        weight: FontWeight::MEDIUM,
         ..base.clone()
     };
     let italic = Font {

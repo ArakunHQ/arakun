@@ -20,6 +20,8 @@ pub enum Target {
     NewTerminal,
     NewBrowserTab,
     AddProject,
+    /// The setup from first launch, again.
+    Onboarding,
     ToggleDock,
     ToggleSidebar,
     TogglePanel,

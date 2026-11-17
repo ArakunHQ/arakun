@@ -1199,6 +1199,14 @@ impl Shell {
             "Open a folder as a project.",
             Target::AddProject,
         );
+        add(
+            "onboarding",
+            "sparkles",
+            "Show onboarding",
+            &[],
+            "The setup from first launch: agents, look, connections and a project.",
+            Target::Onboarding,
+        );
         #[cfg(feature = "coderlabs")]
         add(
             "tasks",
@@ -1375,6 +1383,7 @@ impl Shell {
             Target::NewTerminal => self.new_terminal(window, cx),
             Target::NewBrowserTab => self.open_browser_tab(String::new(), window, cx),
             Target::AddProject => self.open_picker(window, cx),
+            Target::Onboarding => self.start_onboarding(window, cx),
             Target::ToggleDock => self.toggle_dock(window, cx),
             Target::ToggleSidebar => self.toggle_sidebar(cx),
             Target::TogglePanel => self.toggle_panel(cx),

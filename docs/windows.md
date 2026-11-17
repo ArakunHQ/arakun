@@ -104,6 +104,7 @@ build with the browser.
 | What | Where |
 |---|---|
 | State, sessions, transcripts | `%LOCALAPPDATA%\arakun\` |
+| That the first-launch setup was done | `%LOCALAPPDATA%\arakun\state.onboarding.json` |
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
 | Branch naming agent and model (Settings › General) | `%LOCALAPPDATA%\arakun\branch-namer.json` |

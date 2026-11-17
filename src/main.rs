@@ -50,6 +50,7 @@ mod memory;
 mod memory_view;
 mod model;
 mod notices;
+mod onboarding;
 mod palette;
 mod palettes;
 mod phone;
@@ -286,6 +287,8 @@ fn main() {
                 )
                 .unwrap();
             let _ = shell.update(cx, |shell, window, cx| {
+                // The setup asks about reports itself; the dialog is for everyone else.
+                shell.onboard_if_new(window, cx);
                 shell.ask_telemetry(window, cx);
                 shell.sync_island(window, cx);
                 #[cfg(feature = "team")]

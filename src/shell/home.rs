@@ -183,7 +183,7 @@ impl Shell {
 
 /// The welcome screen's top: room to drag the window, its buttons, and
 /// `lead` at the left, clear of the `lights` the traffic lights take.
-fn welcome_bar(maximized: bool, lead: Option<AnyElement>, lights: Pixels) -> gpui::Div {
+pub(super) fn welcome_bar(maximized: bool, lead: Option<AnyElement>, lights: Pixels) -> gpui::Div {
     div()
         .flex()
         .flex_none()

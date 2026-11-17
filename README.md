@@ -53,6 +53,15 @@ Windows and other options: see [Install](#install).
 
 ## Features
 
+### First launch
+
+Before you have a project, Arakun walks you through a short setup: which agents it
+found and the one to start with, dark or light and five shortcuts, GitHub and the phone
+remote, the question about crash reports, and your first project. Every step can be
+skipped, and "Skip setup" leaves it at once. Adding a project ends it. Open it again
+with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
+`state.onboarding.json`, next to `state.json` in Arakun's data folder.
+
 ### Workspace
 
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
@@ -200,7 +209,8 @@ it shows in `github/avatars/` (each downloaded again after a week).
 
 Arakun sends nothing until you say so. On first launch it asks whether to send crash
 reports and anonymous usage counts to Arakun's PostHog project, so we can see what
-breaks and what gets used. Settings › General has a switch for each:
+breaks and what gets used: as a step of the setup, or in a dialog when you skip the
+setup or already have a project. Settings › General has a switch for each:
 
 - **Crash reports:** a panic's message and stack trace, and when an agent stops with
   an error, the agent's name and a fixed category such as "rate limited" or "not

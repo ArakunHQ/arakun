@@ -66,6 +66,8 @@ pub struct FolderPicker {
     /// without being its root: the user picks between that repository and a new one.
     inside: Option<PathBuf>,
     error: Option<SharedString>,
+    /// Shown as a card inside a page (the setup's last step), not as a dialog.
+    inline: bool,
     _input_events: Subscription,
 }
 
@@ -89,6 +91,7 @@ impl FolderPicker {
             confirm_init: None,
             inside: None,
             error: None,
+            inline: false,
             _input_events: sub,
         };
         this.refilter(cx);
@@ -105,6 +108,32 @@ impl FolderPicker {
         })
         .detach();
         this
+    }
+
+    /// A card inside a page instead of a dialog: no title or close button,
+    /// and a shorter list, since the page around it has both and its own length.
+    pub fn inline(mut self) -> Self {
+        self.inline = true;
+        self
+    }
+
+    /// What Enter would add, for a button outside the picker: the
+    /// highlighted repository's name, or the folder being browsed.
+    pub fn target_name(&self) -> Option<SharedString> {
+        match (&self.browsing, self.rows.get(self.selected)) {
+            (Some(dir), _) => Some(crate::model::dir_name(dir).into()),
+            (None, Some(row)) => Some(row.name.clone()),
+            (None, None) => None,
+        }
+    }
+
+    /// Adds what `target_name` names, as Enter (or Ctrl+Enter on a folder) does.
+    pub fn add_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirm_init.is_none() && self.browsing.is_some() {
+            self.pick_current_folder(cx);
+        } else {
+            self.activate(self.selected, window, cx);
+        }
     }
 
     fn on_input(
@@ -485,7 +514,8 @@ impl Render for FolderPicker {
                 .child(msg)
                 .into_any_element()
         } else {
-            let height = (rows.len() as f32 * 44.).min(44. * 8.);
+            let most = if self.inline { 5. } else { 8. };
+            let height = (rows.len() as f32 * 44.).min(44. * most);
             uniform_list(
                 "picker-list",
                 rows.len(),
@@ -587,8 +617,10 @@ impl Render for FolderPicker {
                 .child(label.to_string())
         };
 
-        ui::modal_panel("folder-picker", 600.)
-            .child(ui::modal_header(
+        let panel = if self.inline {
+            ui::surface_card().id("folder-picker").w_full()
+        } else {
+            ui::modal_panel("folder-picker", 600.).child(ui::modal_header(
                 "Add project",
                 Some(
                     "Pick a git repository. Each branch you work on becomes its own environment."
@@ -597,6 +629,8 @@ impl Render for FolderPicker {
                 ui::close_button("picker-close")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::Dismissed))),
             ))
+        };
+        panel
             .child(
                 div()
                     .px(crate::ui::sp(16.))

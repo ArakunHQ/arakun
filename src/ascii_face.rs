@@ -440,6 +440,7 @@ struct Frame {
     cells: Vec<FaceCell>,
     dots: f32,
     glyphs: Rc<Glyphs>,
+    scale: f32,
 }
 
 // ---------- The live face ----------
@@ -474,6 +475,8 @@ pub struct AsciiFace {
     origin: Point<Pixels>,
     eyes: [f32; 2],
     glyphs: Option<Rc<Glyphs>>,
+    /// How large it is drawn, 1 for the start screen's size (`scaled`).
+    scale: f32,
 
     _tick: Task<()>,
     _keys: Subscription,
@@ -532,11 +535,20 @@ impl AsciiFace {
             origin: Point::default(),
             eyes: [0.; 2],
             glyphs: None,
+            scale: 1.,
             _tick: tick,
             _keys: keys,
         };
         face.blink.next = face.rnd(1., 3.);
         face
+    }
+
+    /// A smaller face beside something else, such as the setup's steps: the
+    /// same drawing with every size times `scale`. It skips the intro, which
+    /// is the start screen's.
+    pub fn scaled(mut self, scale: f32) -> Self {
+        self.scale = scale;
+        self
     }
 
     /// The title and composer under the face come in late in the intro.
@@ -591,9 +603,10 @@ impl AsciiFace {
     /// Where the eyes want to be, -1..1 each way.
     fn target(&self, now: f64) -> ([f32; 2], f32) {
         let toward = |p: Point<Pixels>, sx: f32, sy: f32| {
+            // Into the face's own units, where it has its usual size.
             let (x, y) = (
-                (p.x - self.origin.x).as_f32(),
-                (p.y - self.origin.y).as_f32(),
+                (p.x - self.origin.x).as_f32() / self.scale,
+                (p.y - self.origin.y).as_f32() / self.scale,
             );
             [
                 ((x - self.eyes[0]) / sx).clamp(-1., 1.),
@@ -679,7 +692,7 @@ impl AsciiFace {
         let now = self.now();
         let dt = self.last.map_or(1. / 60., |l| (now - l).min(0.05)) as f32;
         self.last = Some(now);
-        let w = bounds.size.width.as_f32();
+        let w = bounds.size.width.as_f32() / self.scale;
         self.origin = bounds.origin;
         let pose = self.pose(w, dt);
         self.eyes = pose.eyes_at();
@@ -697,6 +710,7 @@ impl AsciiFace {
             cells: face_cells(&pose, grid),
             dots,
             glyphs,
+            scale: self.scale,
         }
     }
 }
@@ -704,11 +718,12 @@ impl AsciiFace {
 fn paint(frame: &Frame, b: Bounds<Pixels>, window: &mut Window) {
     let g = &frame.glyphs;
     let grid = frame.grid;
-    let size = px(FONT_SIZE);
+    let k = frame.scale;
+    let size = px(FONT_SIZE * k);
     let at = |col: usize, row: usize| {
         point(
-            b.origin.x + px(grid.x0 + col as f32 * CELL_W + (CELL_W - g.advance) / 2.),
-            b.origin.y + px(row as f32 * CELL_H + g.baseline),
+            b.origin.x + px((grid.x0 + col as f32 * CELL_W + (CELL_W - g.advance) / 2.) * k),
+            b.origin.y + px((row as f32 * CELL_H + g.baseline) * k),
         )
     };
     let mut taken = vec![false; grid.cols * grid.rows];
@@ -750,7 +765,7 @@ impl Render for AsciiFace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.started {
             self.started = true;
-            if animated() && claim_intro() {
+            if self.scale == 1. && animated() && claim_intro() {
                 self.intro = Some(0.);
             }
         }
@@ -761,7 +776,7 @@ impl Render for AsciiFace {
         self.rendered = true;
         self.active = window.is_window_active();
         let (weak, moves) = (cx.weak_entity(), cx.weak_entity());
-        div().w_full().h(px(HEIGHT)).child(
+        div().w_full().h(px(HEIGHT * self.scale)).child(
             canvas(
                 move |b, window, cx| weak.update(cx, |f, _| f.frame(b, window)).ok(),
                 move |b, frame, window, _| {

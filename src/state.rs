@@ -449,6 +449,12 @@ pub fn resume_path() -> PathBuf {
     file().with_extension("resume.json")
 }
 
+/// Next to the state, so a second Arakun with its own state (`ARAKUN_STATE`)
+/// has its own first launch too.
+pub fn onboarding_path() -> PathBuf {
+    file().with_extension("onboarding.json")
+}
+
 pub fn data_dir() -> PathBuf {
     crate::platform::app_dir()
 }

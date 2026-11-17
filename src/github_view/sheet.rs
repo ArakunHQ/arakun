@@ -14,6 +14,13 @@ use gpui::{
 
 use super::bandeja::{Who, estado_color};
 use super::item::{Prop, prop_line, prop_row};
+use super::{Confirm, GitHubView, GitHubViewEvent, Note, Tab};
+use crate::github::board::{self, BoardPr, Estado, PasoTipo, Tipo};
+use crate::github::pilot::{self, Answer, Opcion, TaskRequest, TaskTarget};
+use crate::github::pr::{self, ItemKind, ItemRef};
+use crate::github::queue::Details;
+use crate::theme;
+use crate::ui::{self, PillKind, Type, Typography as _, icon};
 
 /// Below this height the sheet folds its details to their key line.
 const SHEET_TALL: f32 = 1000.;
@@ -29,13 +36,6 @@ fn prop_list(props: Vec<Prop>, folded: bool) -> gpui::Div {
     }
     list
 }
-use super::{Confirm, GitHubView, GitHubViewEvent, Note, Tab};
-use crate::github::board::{self, BoardPr, Estado, PasoTipo, Tipo};
-use crate::github::pilot::{self, Answer, Opcion, TaskRequest, TaskTarget};
-use crate::github::pr::{self, ItemKind, ItemRef};
-use crate::github::queue::Details;
-use crate::theme;
-use crate::ui::{self, PillKind, Type, Typography as _, icon};
 
 /// What the composer's "Ask pilot" does with `text` on pull request
 /// `number`, or why it can't: pilot takes tasks only on the user's own pull

@@ -846,7 +846,11 @@ impl ExtensionsView {
                                 .child("Open in Installed"),
                         )
                         .child(icon("arrow-right01", 12.).text_color(theme::text_subtle()))
-                        .on_click(cx.listener(|this, _, _, cx| this.set_kind(Kind::Servers, cx))),
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            // A search from Discover would filter out the server it names.
+                            this.query.update(cx, |q, cx| q.set_text("", cx));
+                            this.set_kind(Kind::Servers, cx);
+                        })),
                 )
             })
     }
@@ -886,6 +890,11 @@ impl ExtensionsView {
                     this.ms.category = None;
                     this.ms.rows.top();
                     this.open_market(cx);
+                    // Back on All, the last results may answer an older query;
+                    // an unchanged one is not asked again.
+                    if everything && this.market == Market::Registry && this.ms.registry.is_some() {
+                        this.search_registry(false, cx);
+                    }
                     cx.notify();
                 })),
             );

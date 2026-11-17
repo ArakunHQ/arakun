@@ -298,6 +298,13 @@ impl Item {
             })
     }
 
+    /// Whether the tab's focus keeps it: a card about no repository always
+    /// shows, as nothing could filter it.
+    pub fn in_focus(&self, focus: &[String]) -> bool {
+        let repo = self.repo.trim();
+        repo.is_empty() || super::in_focus(repo, focus)
+    }
+
     /// Whether it pops the island: the agent stopped for the user, or a
     /// pull request to review is important. The rest only waits in the tab.
     pub fn pops(&self) -> bool {
@@ -722,13 +729,19 @@ impl Pilot {
         self.shown().find(|i| i.id == id)
     }
 
-    pub fn count(&self) -> usize {
-        self.shown().count()
+    /// The cards inside the tab's focus (owners and repositories): what is
+    /// left out doesn't show, count or alert.
+    pub fn shown_in<'a>(&'a self, focus: &'a [String]) -> impl Iterator<Item = &'a Item> {
+        self.shown().filter(|i| i.in_focus(focus))
     }
 
-    /// Whether a card waits that would have popped the island.
-    pub fn urgent(&self) -> bool {
-        self.shown().any(Item::pops)
+    pub fn count(&self, focus: &[String]) -> usize {
+        self.shown_in(focus).count()
+    }
+
+    /// Whether a card in focus waits that would have popped the island.
+    pub fn urgent(&self, focus: &[String]) -> bool {
+        self.shown_in(focus).any(Item::pops)
     }
 
     /// Reads the settings again and, when there are some, the new items.
@@ -918,6 +931,20 @@ mod tests {
         let mixed = parse_items(br#"[{"id": "a", "number": "95"}, {"id": "b", "number": 95}]"#);
         let ids: Vec<String> = mixed.unwrap().into_iter().map(|i| i.id).collect();
         assert_eq!(ids, ["b"]);
+    }
+
+    #[test]
+    fn the_tabs_focus_filters_the_cards() {
+        let card = |repo: &str| Item {
+            repo: repo.into(),
+            ..Item::default()
+        };
+        let focus = vec!["other-org".to_string()];
+        assert!(!card("ArakunHQ/arakun").in_focus(&focus));
+        assert!(card("other-org/x").in_focus(&focus));
+        // No focus keeps everything; a card about no repository always shows.
+        assert!(card("ArakunHQ/arakun").in_focus(&[]));
+        assert!(card("").in_focus(&focus));
     }
 
     #[test]

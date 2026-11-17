@@ -359,6 +359,8 @@ pub struct GitHubView {
     pilot_sent: Option<(String, gpui::Task<()>)>,
     _pilot_sub: Subscription,
     _subs: Vec<Subscription>,
+    /// The body input's, replaced with the input.
+    _body_sub: Option<Subscription>,
 }
 
 /// A part of the tab drawn as a view of its own, from the tab's state. A
@@ -537,6 +539,7 @@ impl GitHubView {
             pilot_sent: None,
             _pilot_sub: pilot_sub,
             _subs: subs,
+            _body_sub: None,
         };
         this.resubscribe_body(cx);
         this
@@ -1206,9 +1209,9 @@ impl GitHubView {
             }
             _ => {}
         });
-        // The first three are fixed; the fourth is the body input's.
-        self._subs.truncate(3);
-        self._subs.push(sub);
+        // Its own slot: the fixed ones in `_subs` (comment submit among them)
+        // stay whatever their number.
+        self._body_sub = Some(sub);
     }
 
     fn run_confirm(&mut self, c: Confirm, cx: &mut Context<Self>) {

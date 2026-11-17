@@ -39,8 +39,8 @@ impl Shell {
     pub(super) fn github_badge(&self, cx: &App) -> Option<(usize, bool)> {
         let g = self.github.read(cx);
         let p = self.pilot.read(cx);
-        let on_you = g.on_you() + p.count();
-        (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent()))
+        let on_you = g.on_you() + p.count(g.focus());
+        (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent(g.focus())))
     }
 
     /// Whether the GitHub tab is what the user looks at right now.
@@ -66,6 +66,12 @@ impl Shell {
     ) {
         let PilotEvent::New(new) = ev;
         if self.watching_github(window) {
+            return;
+        }
+        // What the tab's focus leaves out doesn't alert.
+        let focus = self.github.read(cx).focus().to_vec();
+        let new: Vec<pilot::Item> = new.iter().filter(|i| i.in_focus(&focus)).cloned().collect();
+        if new.is_empty() {
             return;
         }
         if new.len() > NOTICES_AT_ONCE {

@@ -319,6 +319,9 @@ pub struct Palette {
     cloud_to_pull: bool,
     /// A task is on its way: Enter doesn't send it twice.
     cloud_sending: bool,
+    /// The task's text and branch as sent: only those are cleared once the
+    /// Worker took it, so a next task typed meanwhile stays.
+    cloud_sent_draft: Option<(String, String)>,
     _sub: Subscription,
     _cloud_sub: Subscription,
 }
@@ -342,6 +345,8 @@ impl Palette {
             |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Submit => this.send_cloud(cx),
                 InputEvent::Cancel => window.focus(&this.input.focus_handle(cx), cx),
+                // Tab: "PR or new branch", as from the main field.
+                InputEvent::Complete => this.tab_key(cx),
                 _ => {}
             },
         );
@@ -393,6 +398,7 @@ impl Palette {
             cloud_auto: String::new(),
             cloud_to_pull,
             cloud_sending: false,
+            cloud_sent_draft: None,
             _sub: sub,
             _cloud_sub: cloud_sub,
         };
@@ -655,7 +661,9 @@ impl Palette {
             cx.notify();
             return;
         }
-        if !self.marked.is_empty() {
+        // A cloud task (typed "cloud: …") goes before rows marked earlier.
+        let cloud = cloud::card_task(&self.query(cx), self.seed.pilot.as_ref()).is_some();
+        if !self.marked.is_empty() && !cloud {
             self.bulk(Bulk::Open, cx);
             return;
         }
@@ -2122,6 +2130,8 @@ impl Palette {
         self.pages.clear();
         self.menu = None;
         self.confirm = None;
+        // Marked rows would turn Enter into their bulk action.
+        self.marked.clear();
         self.input.update(cx, |i, cx| i.set_text("cloud: ", cx));
         cx.notify();
     }
@@ -2170,6 +2180,7 @@ impl Palette {
         match cloud::request(&task, &seed, self.cloud_to_pull, &branch) {
             Ok(req) => {
                 self.cloud_sending = true;
+                self.cloud_sent_draft = Some((self.query(cx), branch));
                 self.show_note("Sending to the cloud agent…", true, cx);
                 cx.emit(PaletteEvent::CloudTask(req));
             }
@@ -2185,14 +2196,21 @@ impl Palette {
         cx: &mut Context<Self>,
     ) {
         self.cloud_sending = false;
+        let sent = self.cloud_sent_draft.take();
         match result {
             Ok(id) => {
-                // Sent from the branch field, which goes with the card.
-                window.focus(&self.input.focus_handle(cx), cx);
-                self.keep_note = true;
-                self.input.update(cx, |i, cx| i.set_text("", cx));
-                self.cloud_auto.clear();
-                self.cloud_branch.update(cx, |i, cx| i.set_text("", cx));
+                let now = (
+                    self.query(cx),
+                    self.cloud_branch.read(cx).text().to_string(),
+                );
+                if sent.as_ref() == Some(&now) {
+                    // Sent from the branch field, which goes with the card.
+                    window.focus(&self.input.focus_handle(cx), cx);
+                    self.keep_note = true;
+                    self.input.update(cx, |i, cx| i.set_text("", cx));
+                    self.cloud_auto.clear();
+                    self.cloud_branch.update(cx, |i, cx| i.set_text("", cx));
+                }
                 self.show_note(cloud::sent_note(&id), true, cx);
             }
             Err(e) => self.show_note(format!("Not sent: {e}"), false, cx),

@@ -66,6 +66,13 @@ fn opcion_kinds(opciones: &[Opcion]) -> Vec<PillKind> {
         .collect()
 }
 
+/// Where the `card`th card sits among the queue's rows: after GitHub's
+/// problem line, the "Your agent" heading, the sent note and the Worker's
+/// problem, as `render_queue_body` and `pilot_section` lay them out.
+fn card_row(github_problem: bool, sent: bool, pilot_problem: bool, card: usize) -> usize {
+    usize::from(github_problem) + 1 + usize::from(sent) + usize::from(pilot_problem) + card
+}
+
 /// Why an approval from a card is refused: the pull request moved on.
 fn moved_text(number: u64, read: &str, now: &str) -> String {
     let short = |s: &str| s.chars().take(7).collect::<String>();
@@ -111,7 +118,9 @@ impl GitHubView {
     /// The section's heading and its cards; nothing when no card waits.
     pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = self.pilot.read(cx);
-        let items: Vec<Item> = p.shown().cloned().collect();
+        // The focus menu's promise: what it leaves out doesn't show.
+        let focus = self.github.read(cx).focus();
+        let items: Vec<Item> = p.shown_in(focus).cloned().collect();
         let problem = p.problem().map(str::to_string);
         let sent = self.pilot_sent.as_ref().map(|(t, _)| t.clone());
         if items.is_empty() && problem.is_none() && sent.is_none() {
@@ -480,7 +489,9 @@ impl GitHubView {
             Kind::Fixed => {
                 buttons = buttons.child(done("Ok", true, cx)).child(see);
             }
-            Kind::NeedsYou if !item.opciones.is_empty() => {
+            // A question: its ready answers when it has some, and always the
+            // user's own words.
+            Kind::NeedsYou => {
                 let sending = self.pilot_sending.contains(&id);
                 for ((oi, o), kind) in item
                     .opciones
@@ -520,7 +531,7 @@ impl GitHubView {
                         })),
                 );
             }
-            Kind::NeedsYou | Kind::Failed | Kind::Other => {
+            Kind::Failed | Kind::Other => {
                 buttons = buttons.child(see).child(done("Done", false, cx));
             }
         }
@@ -816,8 +827,15 @@ impl GitHubView {
         cx: &mut Context<Self>,
     ) {
         let id = act.id.clone();
+        let from = act.item.clone();
         let after = move |this: &mut Self, cx: &mut Context<Self>| {
-            this.confirm = None;
+            // Another card's or pull request's strip may be up now: only
+            // this card's goes.
+            if this.pilot_act.as_ref().is_some_and(|a| a.id == id)
+                && this.item().as_ref() == Some(&from)
+            {
+                this.confirm = None;
+            }
             this.pilot_finish(&id, cx);
         };
         let head = act.head;
@@ -849,8 +867,24 @@ impl GitHubView {
 
     /// From the island's "See": the card in view, its pull request picked.
     pub fn reveal_pilot(&mut self, id: &str, cx: &mut Context<Self>) {
-        let found = self.pilot.read(cx).find(id).cloned();
-        self.queue_scroll.set_offset(gpui::Point::default());
+        let g = self.github.read(cx);
+        let p = self.pilot.read(cx);
+        let found = p.find(id).cloned();
+        // The card itself in view, not just the top of the list: it may be
+        // below the first cards.
+        let at = p.shown_in(g.focus()).position(|i| i.id == id);
+        let row = at.map(|card| {
+            card_row(
+                g.problem().or(g.search_problem()).is_some(),
+                self.pilot_sent.is_some(),
+                p.problem().is_some(),
+                card,
+            )
+        });
+        match row {
+            Some(row) => self.queue_scroll.scroll_to_item(row),
+            None => self.queue_scroll.set_offset(gpui::Point::default()),
+        }
         if let Some(item) = found {
             self.pilot_see(&item, cx);
         }
@@ -889,6 +923,16 @@ mod tests {
         // "Lo veo yo" first doesn't take the primary look.
         let kinds = opcion_kinds(&[opcion("skip"), opcion("migrar")]);
         assert_eq!(kinds, [PillKind::Quiet, PillKind::Primary]);
+    }
+
+    #[test]
+    fn a_notice_scrolls_to_its_own_card() {
+        // Heading, then the cards.
+        assert_eq!(card_row(false, false, false, 0), 1);
+        assert_eq!(card_row(false, false, false, 4), 5);
+        // GitHub's problem line, the sent note and the Worker's problem
+        // come first when they show.
+        assert_eq!(card_row(true, true, true, 2), 6);
     }
 
     #[test]

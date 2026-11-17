@@ -475,10 +475,14 @@ impl Shell {
             failures: self.palette_failures(cx),
             clipboard: cx.read_from_clipboard().and_then(|c| c.text()),
             hour: local_hour(),
-            pilot: pilot::load_config().map(|c| palette::cloud::PilotSeed {
-                pull: self.github_view.read(cx).own_open_pull(cx),
-                admin: c.admin_token.is_some(),
-            }),
+            pilot: self
+                .pilot
+                .read(cx)
+                .config()
+                .map(|c| palette::cloud::PilotSeed {
+                    pull: self.github_view.read(cx).own_open_pull(cx),
+                    admin: c.admin_token.is_some(),
+                }),
         }
     }
 
@@ -539,7 +543,7 @@ impl Shell {
         self.palette_runs(cx, &mut items);
         self.palette_places(cx, &mut items);
         self.palette_views(&mut items);
-        self.palette_commands(&mut items);
+        self.palette_commands(&mut items, cx);
         self.palette_settings(&mut items);
         // CoderSpace tasks waiting on the person, as the old switcher listed them.
         #[cfg(feature = "coderlabs")]
@@ -1132,7 +1136,7 @@ impl Shell {
         }
     }
 
-    fn palette_commands(&self, items: &mut Vec<Item>) {
+    fn palette_commands(&self, items: &mut Vec<Item>, cx: &App) {
         let mut add = |key: &str,
                        icon: &'static str,
                        label: &str,
@@ -1314,8 +1318,9 @@ impl Shell {
             "Opens a terminal with Codex's ChatGPT login.",
             Target::SignIn(crate::agent::AgentKind::Codex),
         );
-        // Read from disk each time: the command shows as soon as client.json exists.
-        items.extend(cloud_command(pilot::load_config().as_ref()));
+        // The settings pilot read last (every minute, off this thread's
+        // drawing): the palette never waits on the disk.
+        items.extend(cloud_command(self.pilot.read(cx).config()));
     }
 
     fn palette_settings(&self, items: &mut Vec<Item>) {

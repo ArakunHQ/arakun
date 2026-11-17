@@ -361,12 +361,25 @@ impl FolderPicker {
     /// until it is done, then adds the clone like any other repository.
     fn clone_and_pick(&mut self, source: CloneSource, dest: PathBuf, cx: &mut Context<Self>) {
         if dest.exists() {
-            // Cloned before: add that copy rather than fail or clone it twice.
-            if dest.join(".git").exists() {
-                self.pick(dest, cx);
-            } else {
-                self.error = Some(format!("{} already exists", pretty_path(&dest)).into());
-                cx.notify();
+            // Cloned before: add that copy rather than fail or clone it twice. Only
+            // the same repository, though: `~/code/app` may hold another `app`.
+            let origin = dest
+                .join(".git")
+                .exists()
+                .then(|| crate::git::origin_url(&dest))
+                .flatten();
+            match origin.as_deref().and_then(parse_clone_source) {
+                Some(found) if found.same_repo(&source) => self.pick(dest, cx),
+                Some(found) => {
+                    self.error = Some(
+                        format!("{} already holds {}", pretty_path(&dest), found.label).into(),
+                    );
+                    cx.notify();
+                }
+                None => {
+                    self.error = Some(format!("{} already exists", pretty_path(&dest)).into());
+                    cx.notify();
+                }
             }
             return;
         }
@@ -628,7 +641,8 @@ impl Render for FolderPicker {
                     .text_size(px(ui::TEXT_SM))
                     .text_color(theme::text_muted())
                     .child(icon("download04", 14.).text_color(theme::text_subtle()))
-                    .child(format!("Cloning {label}…"))
+                    // Closing the picker lets the clone finish, but nothing adds it then.
+                    .child(format!("Cloning {label}… Keep this open until it's added."))
                     .into_any_element(),
             )
         } else if let Some(path) = &self.confirm_init {
@@ -855,15 +869,32 @@ fn parse_clone_source(query: &str) -> Option<CloneSource> {
             q = rest;
         }
     }
-    // The first argument: flags and a target folder after it are ignored.
-    let token = q.split_whitespace().find(|t| !t.starts_with('-'))?;
-    let token = token.trim_end_matches('/');
+    // The first argument: flags (and the values of those that take one) and a
+    // target folder after it are ignored.
+    let mut words = q.split_whitespace();
+    let token = loop {
+        let word = words.next()?;
+        if TAKES_VALUE.contains(&word) {
+            words.next();
+        } else if !word.starts_with('-') {
+            break word;
+        }
+    };
+    // A query string or fragment (`?tab=readme`, `#readme`) is not part of the repository.
+    let token = token.split(['?', '#']).next()?.trim_end_matches('/');
 
     let (host, path, url) = if let Some((scheme, rest)) = token.split_once("://") {
         if !matches!(scheme, "https" | "http" | "ssh" | "git" | "git+ssh") {
             return None;
         }
         let (authority, path) = rest.split_once('/')?;
+        // A password or token would end up in the row and in git's arguments,
+        // where other processes can read it. A plain ssh user (`ssh://git@host`) is fine.
+        if let Some((user, _)) = authority.rsplit_once('@')
+            && (user.contains(':') || scheme.starts_with("http"))
+        {
+            return None;
+        }
         let host = authority.rsplit('@').next()?.split(':').next()?;
         (host.to_string(), path.to_string(), token.to_string())
     } else if let Some((user_host, path)) = token.split_once(':')
@@ -930,6 +961,43 @@ fn parse_clone_source(query: &str) -> Option<CloneSource> {
         name,
         shorthand: false,
     })
+}
+
+/// Options of `git clone` and `gh repo clone` whose value is the next word.
+const TAKES_VALUE: &[&str] = &[
+    "-b",
+    "--branch",
+    "-o",
+    "--origin",
+    "-c",
+    "--config",
+    "--depth",
+    "--filter",
+    "-j",
+    "--jobs",
+    "--reference",
+    "--reference-if-able",
+    "--separate-git-dir",
+    "--shallow-exclude",
+    "--shallow-since",
+    "--template",
+    "-u",
+    "--upload-pack",
+    "--upstream-remote-name",
+    "--server-option",
+    "--bundle-uri",
+];
+
+impl CloneSource {
+    /// Whether both name one repository: on GitHub by `owner/repo` whatever the
+    /// protocol (GitHub ignores case there), elsewhere by URL.
+    fn same_repo(&self, other: &CloneSource) -> bool {
+        if self.on_github && other.on_github {
+            self.label.eq_ignore_ascii_case(&other.label)
+        } else {
+            self.label == other.label
+        }
+    }
 }
 
 fn is_github_name(s: &str) -> bool {
@@ -1271,6 +1339,37 @@ mod tests {
             )
         );
 
+        // Options that take a value don't hide the repository behind them.
+        assert_eq!(gh("git clone --depth 1 https://github.com/o/r"), https);
+        assert_eq!(
+            gh("git clone -b main --quiet https://github.com/o/r dir"),
+            https
+        );
+        assert_eq!(gh("gh repo clone o/r -- --depth 1").1, "o/r");
+        // Neither does a query string or a fragment.
+        assert_eq!(gh("https://github.com/o/r?tab=readme-ov-file"), https);
+        assert_eq!(gh("https://github.com/o/r#readme"), https);
+        assert_eq!(
+            parse_clone_source("https://gitlab.com/g/proj.git?x=1")
+                .unwrap()
+                .url,
+            "https://gitlab.com/g/proj.git"
+        );
+        // A plain ssh user is fine; a password or token is not taken in.
+        assert_eq!(
+            parse_clone_source("ssh://git@gitlab.com/g/proj.git")
+                .unwrap()
+                .name,
+            "proj"
+        );
+        for secret in [
+            "https://user:pass@gitlab.com/g/proj.git",
+            "https://ghp_token@github.com/o/r",
+            "ssh://git:pass@host/g/proj.git",
+        ] {
+            assert!(parse_clone_source(secret).is_none(), "{secret}");
+        }
+
         let other = parse_clone_source("https://gitlab.com/g/sub/proj.git").unwrap();
         assert!(!other.on_github);
         assert_eq!(other.name, "proj");
@@ -1297,6 +1396,17 @@ mod tests {
         ] {
             assert!(parse_clone_source(search).is_none(), "{search}");
         }
+    }
+
+    #[test]
+    fn a_clone_reuses_a_folder_only_for_the_same_repository() {
+        let source = |q: &str| parse_clone_source(q).unwrap();
+        let wanted = source("https://github.com/owner-b/app");
+        assert!(wanted.same_repo(&source("git@github.com:Owner-B/app.git")));
+        assert!(!wanted.same_repo(&source("https://github.com/owner-a/app")));
+        let gitlab = source("https://gitlab.com/g/app.git");
+        assert!(gitlab.same_repo(&source("https://gitlab.com/g/app")));
+        assert!(!gitlab.same_repo(&source("https://gitlab.com/h/app")));
     }
 
     #[test]

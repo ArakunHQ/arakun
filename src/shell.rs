@@ -1704,10 +1704,7 @@ impl Shell {
                 }
                 SettingsEvent::ClaudeSignOut => {
                     this.close_modal(window, cx);
-                    if let Some(cmd) = crate::agent::logout_command(crate::agent::AgentKind::Claude)
-                    {
-                        this.spawn_terminal_command(Some(cmd), true, window, cx);
-                    }
+                    this.sign_out(crate::agent::AgentKind::Claude, window, cx);
                 }
                 SettingsEvent::CodexSignIn => {
                     this.close_modal(window, cx);
@@ -1715,26 +1712,28 @@ impl Shell {
                 }
                 SettingsEvent::CodexSignOut => {
                     this.close_modal(window, cx);
-                    if let Some(cmd) = crate::agent::logout_command(crate::agent::AgentKind::Codex)
-                    {
-                        this.spawn_terminal_command(Some(cmd), true, window, cx);
-                    }
+                    this.sign_out(crate::agent::AgentKind::Codex, window, cx);
                 }
-                SettingsEvent::OpenCodeSignIn
-                | SettingsEvent::OpenCodeGoSignIn
-                | SettingsEvent::OpenCodeSignOut => {
+                SettingsEvent::OpenCodeSignIn => {
                     this.close_modal(window, cx);
+                    this.sign_in(crate::agent::AgentKind::OpenCode, window, cx);
+                }
+                SettingsEvent::OpenCodeGoSignIn => {
+                    this.close_modal(window, cx);
+                    let cmd = crate::agent::opencode_go_login_command();
                     let kind = crate::agent::AgentKind::OpenCode;
-                    let cmd = match ev {
-                        SettingsEvent::OpenCodeSignIn => crate::agent::login_command(kind),
-                        SettingsEvent::OpenCodeGoSignIn => {
-                            crate::agent::opencode_go_login_command()
-                        }
-                        _ => crate::agent::logout_command(kind),
-                    };
-                    if let Some(cmd) = cmd {
-                        this.spawn_terminal_command(Some(cmd), true, window, cx);
-                    }
+                    this.run_account_command(
+                        "Sign in to OpenCode Go",
+                        "sign-in",
+                        kind,
+                        cmd,
+                        window,
+                        cx,
+                    );
+                }
+                SettingsEvent::OpenCodeSignOut => {
+                    this.close_modal(window, cx);
+                    this.sign_out(crate::agent::AgentKind::OpenCode, window, cx);
                 }
                 #[cfg(feature = "coderlabs")]
                 SettingsEvent::DisconnectCoderSpace => {

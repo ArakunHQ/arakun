@@ -20,6 +20,21 @@ pub enum Mcp {
     Connected,
     /// Configured but failing, with what the agent said.
     Failing(String),
+    /// The agent's CLI isn't installed, so it can't add the server or sign in.
+    /// Only Codex says so: the other agents need their CLI to run at all.
+    NoCli,
+}
+
+/// What the agent's config alone says, without asking the agent: quick
+/// enough to show before `mcp_status` answers.
+pub fn mcp_configured(agent: Agent) -> Mcp {
+    if agent == Agent::Codex && crate::agent::codex_cli().is_none() {
+        Mcp::NoCli
+    } else if mcp_server(agent).is_some() {
+        Mcp::Added
+    } else {
+        Mcp::Missing
+    }
 }
 
 /// Whether `agent`'s config has Cloudflare's MCP server: Droid's
@@ -181,6 +196,9 @@ fn codex_list_status(json: &str, name: &str) -> Mcp {
 
 /// Asks the agent whether the Cloudflare server connects (it tries every server: 1-10 s).
 pub fn mcp_status(agent: Agent) -> Mcp {
+    if agent == Agent::Codex && crate::agent::codex_cli().is_none() {
+        return Mcp::NoCli;
+    }
     let Some(name) = mcp_server(agent) else {
         return Mcp::Missing;
     };

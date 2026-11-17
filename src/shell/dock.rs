@@ -80,23 +80,12 @@ impl Shell {
     ) {
         use crate::island::AlertKind;
         let title = format!("Sign in to {}", kind.label());
-        if !self.has_projects() {
-            self.notify(
-                AlertKind::Warning,
-                &title,
-                "Open a project first: the sign-in runs in one of its terminals.",
-                None,
-                cx,
-            );
+        let cmd = crate::agent::login_command(kind);
+        if cmd.is_some() || kind != crate::agent::AgentKind::Codex {
+            self.run_account_command(&title, "sign-in", kind, cmd, window, cx);
             return;
         }
-        if let Some(cmd) = crate::agent::login_command(kind) {
-            self.spawn_terminal_command(Some(cmd), true, window, cx);
-            return;
-        }
-        if kind != crate::agent::AgentKind::Codex {
-            let body = format!("{} was not found. Install it first.", kind.label());
-            self.notify(AlertKind::Failure, &title, &body, None, cx);
+        if !self.terminal_possible(&title, "sign-in", cx) {
             return;
         }
         self.notify(
@@ -111,6 +100,10 @@ impl Shell {
                 .background_spawn(async move { crate::agent::install_codex() })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                // The last project may have closed during the install.
+                if installed.is_ok() && !this.terminal_possible(&title, "sign-in", cx) {
+                    return;
+                }
                 let cmd = installed.and_then(|()| {
                     crate::agent::login_command(kind)
                         .ok_or_else(|| anyhow::anyhow!("the codex CLI is still missing"))
@@ -128,6 +121,53 @@ impl Shell {
             });
         })
         .detach();
+    }
+
+    /// Opens `kind`'s sign-out in a terminal, or says why it can't.
+    pub(super) fn sign_out(
+        &mut self,
+        kind: crate::agent::AgentKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = format!("Sign out of {}", kind.label());
+        let cmd = crate::agent::logout_command(kind);
+        self.run_account_command(&title, "sign-out", kind, cmd, window, cx);
+    }
+
+    /// Runs one of `kind`'s account commands in a terminal. `cmd` is `None`
+    /// when the agent's CLI wasn't found. `what` names the command in the
+    /// notice shown when it can't run.
+    pub(super) fn run_account_command(
+        &mut self,
+        title: &str,
+        what: &str,
+        kind: crate::agent::AgentKind,
+        cmd: Option<Vec<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.terminal_possible(title, what, cx) {
+            return;
+        }
+        match cmd {
+            Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
+            None => {
+                let body = format!("{} was not found. Install it first.", kind.label());
+                self.notify(crate::island::AlertKind::Failure, title, &body, None, cx);
+            }
+        }
+    }
+
+    /// Whether a terminal can open: they need a project. If not, a notice
+    /// titled `title` says so; `what` names what would have run.
+    fn terminal_possible(&mut self, title: &str, what: &str, cx: &mut Context<Self>) -> bool {
+        if self.has_projects() {
+            return true;
+        }
+        let body = format!("Open a project first: the {what} runs in one of its terminals.");
+        self.notify(crate::island::AlertKind::Warning, title, &body, None, cx);
+        false
     }
 
     /// Runs `command` in a new terminal of `env_path`; it prints `[exit N]`

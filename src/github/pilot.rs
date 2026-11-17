@@ -604,6 +604,25 @@ pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
     }
 }
 
+/// The most `done` calls in flight at once.
+const TELL_AT_ONCE: usize = 8;
+
+/// Tells the Worker every id in `ids`, a few at a time so one slow call
+/// doesn't hold up the rest. Returns those it took.
+fn tell_all(cfg: &Config, ids: Vec<String>) -> Vec<String> {
+    let mut told = Vec::new();
+    for batch in ids.chunks(TELL_AT_ONCE) {
+        std::thread::scope(|s| {
+            let calls: Vec<_> = batch
+                .iter()
+                .map(|id| s.spawn(move || tell_done(cfg, id).is_ok().then(|| id.clone())))
+                .collect();
+            told.extend(calls.into_iter().filter_map(|c| c.join().ok().flatten()));
+        });
+    }
+    told
+}
+
 /// What the user answers a needs_you card with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
@@ -812,16 +831,16 @@ impl Pilot {
                 .background_spawn(async move {
                     // The board and the items side by side: a slow one
                     // doesn't hold the other up.
+                    // The handled ids the Worker missed go out beside them:
+                    // the book hides those cards whatever the read says.
                     std::thread::scope(|s| {
                         let board = s.spawn(|| super::board::fetch(config.as_ref()));
                         let (told, read) = match &config {
                             None => (Vec::new(), Ok(Vec::new())),
                             Some(cfg) => {
-                                let told: Vec<String> = untold
-                                    .into_iter()
-                                    .filter(|id| tell_done(cfg, id).is_ok())
-                                    .collect();
-                                (told, fetch(cfg))
+                                let told = s.spawn(|| tell_all(cfg, untold));
+                                let read = fetch(cfg);
+                                (told.join().unwrap_or_default(), read)
                             }
                         };
                         let board = board.join().unwrap_or_else(|_| {
@@ -835,6 +854,7 @@ impl Pilot {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
+                let before = this.book.clone();
                 for id in &told {
                     this.book.told(id);
                 }
@@ -854,17 +874,16 @@ impl Pilot {
                         this.problem = None;
                         let quiet = std::mem::take(&mut this.fresh_book);
                         let pops = this.book.absorb(&mut this.items, read, quiet);
-                        store_book(&this.book);
                         if !pops.is_empty() {
                             cx.emit(PilotEvent::New(pops));
                         }
                     }
-                    Err(e) => {
-                        this.problem = Some(e);
-                        if !told.is_empty() {
-                            store_book(&this.book);
-                        }
-                    }
+                    Err(e) => this.problem = Some(e),
+                }
+                // Most reads change nothing: the file is written only when
+                // something new was seen or told.
+                if this.book != before {
+                    store_book(&this.book);
                 }
                 cx.notify();
                 if std::mem::take(&mut this.again) {
@@ -941,6 +960,35 @@ impl Pilot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_untold_id_is_told_past_one_batch() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let n = TELL_AT_ONCE + 3;
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(n) {
+                let mut stream = stream.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        let cfg = Config {
+            url: format!("http://127.0.0.1:{port}"),
+            token: "t".into(),
+            admin_token: None,
+        };
+        let ids: Vec<String> = (0..n).map(|i| format!("id{i}")).collect();
+        let mut told = tell_all(&cfg, ids.clone());
+        told.sort();
+        let mut want = ids;
+        want.sort();
+        assert_eq!(told, want);
+    }
 
     const FULL: &str = r#"{
         "id": "brief-95-40a1b2c",

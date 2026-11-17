@@ -78,6 +78,46 @@ pub fn init(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Clones `url` into `dest`, which must not exist yet. A GitHub repository goes
+/// through `gh` when it is installed, so a private one uses its sign-in instead of
+/// a password prompt git can't show; plain git is the fallback when `gh` is missing
+/// or fails. A failed attempt removes what it left in `dest`, so a retry starts clean.
+pub fn clone(url: &str, on_github: bool, dest: &Path) -> Result<()> {
+    if dest.exists() {
+        bail!("{} already exists", dest.display());
+    }
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent folder", dest.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("could not create {}", parent.display()))?;
+    // `dest` did not exist above, so anything in it now is this clone's.
+    let clean = || {
+        let _ = std::fs::remove_dir_all(dest);
+    };
+    if on_github && gh_available() {
+        let done = run_loud(
+            gh(parent)
+                .args(["repo", "clone", url])
+                .arg(dest)
+                .args(["--", "--quiet"]),
+        );
+        if done.is_ok() {
+            return Ok(());
+        }
+        clean();
+    }
+    run_loud(git(parent).args(["clone", "--quiet", "--", url]).arg(dest))
+        .inspect_err(|_| clean())?;
+    Ok(())
+}
+
+/// The URL of `dir`'s `origin` remote, if it has one.
+pub fn origin_url(dir: &Path) -> Option<String> {
+    let url = stdout(git(dir).args(["remote", "get-url", "origin"])).ok()?;
+    Some(url.trim().to_string()).filter(|u| !u.is_empty())
+}
+
 /// The branch checked out in `dir`; None on a detached HEAD.
 pub fn current_branch(dir: &Path) -> Option<String> {
     let out = stdout(git(dir).args(["symbolic-ref", "--short", "-q", "HEAD"])).ok()?;
@@ -953,6 +993,24 @@ mod tests {
             assert!(ok.success());
         }
         dir
+    }
+
+    #[test]
+    fn clones_once_and_leaves_nothing_when_it_fails() {
+        let source = repo();
+        let into = source.with_extension("clones");
+        let dest = into.join("copy");
+        super::clone(source.to_str().unwrap(), false, &dest).unwrap();
+        assert!(dest.join(".git").exists());
+        assert_eq!(super::origin_url(&dest).as_deref(), source.to_str());
+        // An existing folder is never cloned into.
+        assert!(super::clone(source.to_str().unwrap(), false, &dest).is_err());
+        assert!(dest.join(".git").exists());
+        let gone = into.join("gone");
+        assert!(super::clone(into.join("nothing").to_str().unwrap(), false, &gone).is_err());
+        assert!(!gone.exists());
+        let _ = std::fs::remove_dir_all(&into);
+        let _ = std::fs::remove_dir_all(&source);
     }
 
     #[test]

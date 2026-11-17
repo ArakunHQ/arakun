@@ -207,10 +207,7 @@ impl ThreadView {
                                 .px(crate::ui::sp(8.))
                                 .py(crate::ui::sp(4.))
                                 .rounded_t(crate::ui::rad(10.))
-                                .border_1()
-                                .border_b_0()
-                                .border_color(theme::border())
-                                .bg(theme::fill_raised())
+                                .bg(theme::raised())
                                 .text_size(px(crate::ui::TEXT_SM))
                                 .text_color(theme::text_subtle())
                                 .when_some(background, |d, n| {

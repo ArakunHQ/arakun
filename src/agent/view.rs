@@ -1343,7 +1343,7 @@ impl ThreadView {
                             .px(crate::ui::sp(12.))
                             .py(crate::ui::sp(8.))
                             .rounded(crate::ui::rad(if single { 18. } else { 12. }))
-                            .bg(theme::fill_selected())
+                            .bg(theme::raised())
                             .text_size(px(crate::ui::TEXT_LG))
                             .line_height(px(20.))
                             .text_color(theme::content())

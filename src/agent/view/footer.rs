@@ -158,31 +158,14 @@ impl ThreadView {
             ("Folder", plan.dir.display().to_string()),
             ("Command", command.clone()),
         ];
+        // The design system's buttons: one primary action, the rest outlined.
         let button = |id: &'static str, glyph: &'static str, label: &'static str, primary: bool| {
-            let (bg, fg, hover) = if primary {
-                (theme::content(), theme::background(), theme::mix(0.8))
+            let kind = if primary {
+                crate::ui::ButtonKind::Primary
             } else {
-                (
-                    theme::fill_selected(),
-                    theme::text_muted(),
-                    theme::mix(0.18),
-                )
+                crate::ui::ButtonKind::Outline
             };
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(6.))
-                .h(px(24.))
-                .px(crate::ui::sp(10.))
-                .rounded(crate::ui::rad(8.))
-                .bg(bg)
-                .text_color(fg)
-                .text_size(px(crate::ui::TEXT_SM))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .child(icon(glyph, 12.).text_color(fg))
-                .child(label)
+            crate::ui::button_with(id, Some(glyph), label, kind, true)
         };
         div()
             .px(crate::ui::sp(16.))

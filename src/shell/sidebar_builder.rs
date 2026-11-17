@@ -1240,7 +1240,7 @@ impl Shell {
                             .rounded_full()
                             .bg(theme::fill_selected())
                             .text_size(px(ui::TEXT_XS))
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child(b),
                     )
                 })
@@ -1650,7 +1650,9 @@ impl Shell {
                 |s, v| s.variant = v,
                 cx,
             ))
-            .child(field_label("When hidden (Ctrl+B)"))
+            .child(field_label(&crate::platform::shortcut_label(
+                "When hidden (Ctrl+B)",
+            )))
             .child(choices(
                 self,
                 "sb-collapse",

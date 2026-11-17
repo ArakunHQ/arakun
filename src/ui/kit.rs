@@ -37,7 +37,7 @@ pub enum Type {
     Label,
     /// Hints and meta under a value.
     Caption,
-    /// SMALL CAPS above a group; the caller upper-cases the text.
+    /// An eyebrow above a group, in mono; the caller upper-cases the text.
     Overline,
     /// Code, paths, ids.
     Mono,
@@ -141,7 +141,7 @@ pub fn set_type_scale(t: TypeScale) {
     TYPE_SCALE.store(ix as u8, Ordering::Relaxed);
 }
 
-/// `.ty(Type::Body)` on any element: size, line height and weight at once.
+/// `.ty(Type::Body)` on any element: size, line height, weight and face at once.
 pub trait Typography: Styled + Sized {
     fn ty(self, t: Type) -> Self {
         let (size, line, weight) = t.metrics();
@@ -149,10 +149,16 @@ pub trait Typography: Styled + Sized {
             .text_size(px(size))
             .line_height(px(line))
             .font_weight(weight);
-        if t == Type::Mono {
-            s.font_family(theme::FONT_MONO)
-        } else {
-            s
+        match t {
+            // The brand sets eyebrows in mono, like code: what a machine reads.
+            Type::Mono | Type::Overline => s.font_family(theme::FONT_MONO),
+            // A page's big number changes in place; tabular figures keep its
+            // digits from shifting as it does.
+            Type::Display => s.font_features(gpui::FontFeatures(std::sync::Arc::new(vec![(
+                "tnum".into(),
+                1,
+            )]))),
+            _ => s,
         }
     }
 }
@@ -331,11 +337,11 @@ pub fn kbd(key: impl Into<SharedString>) -> gpui::Div {
         .child(key.into())
 }
 
-/// A shortcut, keys joined: `shortcut(&["Ctrl", "K"])`.
+/// A shortcut, keys joined: `shortcut(&["Ctrl", "K"])`, ⌘ K on macOS.
 pub fn shortcut(keys: &[&str]) -> gpui::Div {
     let mut row = div().flex().items_center().gap(crate::ui::sp(3.));
-    for k in keys {
-        row = row.child(kbd(k.to_string()));
+    for k in crate::platform::keycaps(keys) {
+        row = row.child(kbd(k));
     }
     row
 }
@@ -1023,7 +1029,7 @@ pub fn avatar(login: &str, size: f32) -> gpui::Div {
         .rounded_full()
         .bg(color)
         .ty(Type::Caption)
-        .font_weight(FontWeight::BOLD)
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::on_accent())
         .child(initial.to_string())
 }
@@ -1472,8 +1478,9 @@ pub fn keycaps(keys: &[&str]) -> gpui::Div {
         .flex_none()
         .items_center()
         .gap(crate::ui::sp(4.));
-    for k in keys {
-        row = row.child(keycap(k.to_string()));
+    // Given the Windows and Linux way; macOS shows its symbols.
+    for k in crate::platform::keycaps(keys) {
+        row = row.child(keycap(k));
     }
     row
 }

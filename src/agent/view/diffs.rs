@@ -406,7 +406,7 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                                                             .justify_center()
                                                             .font_family(theme::FONT_MONO)
                                                             .text_size(px(crate::ui::TEXT_XS))
-                                                            .font_weight(FontWeight::BOLD)
+                                                            .font_weight(FontWeight::MEDIUM)
                                                             .text_color(mark_color)
                                                             .child(mark),
                                                     )

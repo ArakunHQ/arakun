@@ -2,7 +2,7 @@
 //! commands and the Window menu. macOS shows each item's shortcut from the
 //! bindings in main.rs, and Cmd+Q, Cmd+H and Cmd+M only exist through it.
 
-use gpui::{App, KeyBinding, Menu, MenuItem};
+use gpui::{App, KeyBinding, Menu, MenuItem, Window};
 
 use crate::shell;
 
@@ -22,16 +22,8 @@ pub fn install(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    cx.on_action(|_: &Minimize, cx| {
-        if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| window.minimize_window());
-        }
-    });
-    cx.on_action(|_: &Zoom, cx| {
-        if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| window.zoom_window());
-        }
-    });
+    cx.on_action(|_: &Minimize, cx| on_active_window(cx, Window::minimize_window));
+    cx.on_action(|_: &Zoom, cx| on_active_window(cx, Window::zoom_window));
     cx.set_menus([
         Menu {
             name: "Arakun".into(),
@@ -84,4 +76,15 @@ pub fn install(cx: &mut App) {
             disabled: false,
         },
     ]);
+}
+
+/// Runs `f` on the front window once the current update is over. A key press
+/// or menu click reaches these actions while gpui is still updating that
+/// window, and updating it again from here would fail without a word.
+fn on_active_window(cx: &mut App, f: fn(&Window)) {
+    if let Some(handle) = cx.active_window() {
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, _| f(window));
+        });
+    }
 }

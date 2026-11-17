@@ -1741,7 +1741,7 @@ impl SettingsDialog {
                         .w(px(20.))
                         .flex()
                         .justify_center()
-                        .font_weight(FontWeight::BOLD)
+                        .font_weight(FontWeight::SEMIBOLD)
                         .text_color(fg)
                         .child(mark),
                 )

@@ -979,10 +979,12 @@ impl Palette {
         self.pins.save();
         self.show_note(
             if pinned {
+                // The pins' chords are Ctrl+Alt+1...9, not Ctrl+1...9, which pick tabs.
+                let keys = format!("Ctrl+Alt+{}", self.pins.items.len());
                 format!(
-                    "Pinned “{}”: Ctrl+{} opens it",
+                    "Pinned “{}”: {} opens it",
                     item.title,
-                    self.pins.items.len()
+                    crate::platform::shortcut_label(&keys)
                 )
             } else if self.pins.items.len() >= pins::MAX && !self.pins.has(&item.key) {
                 "Nine pins at most: unpin one first".into()

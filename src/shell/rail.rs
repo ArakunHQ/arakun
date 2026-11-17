@@ -171,10 +171,7 @@ impl Shell {
         match self.sidebar.style.variant {
             crate::sidebar::Variant::Card => ui::card().bg(theme::sidebar()),
             crate::sidebar::Variant::Flush => div().overflow_hidden(),
-            crate::sidebar::Variant::Floating => ui::card()
-                .bg(theme::sidebar())
-                .shadow_lg()
-                .rounded(crate::ui::rad(16.)),
+            crate::sidebar::Variant::Floating => ui::card().bg(theme::sidebar()).shadow_lg(),
         }
     }
 

@@ -8,15 +8,14 @@ use gpui::Point;
 use super::*;
 use crate::sidebar::{BadgeMode, Collapse, Item, Mode, Piece, Pin, Section, TitleAction, View};
 
-/// A count on a rail row. Counts are plain gray numbers; only something
-/// waiting on the user gets the accent, with a dot.
+/// A count on a rail row. Most counts are plain gray numbers; a failure or
+/// something waiting on the user keeps its color, with a dot.
 #[derive(Clone, Copy)]
 pub(super) struct Badge {
     count: usize,
-    /// Waiting on the user: the only count drawn in the accent.
-    needs_you: bool,
-    /// A failure, or something waiting on the user: what the Urgent badge
-    /// mode keeps.
+    /// The color of a count that matters; `None` draws it gray.
+    color: Option<Hsla>,
+    /// A failure, or something waiting on the user.
     urgent: bool,
 }
 
@@ -26,11 +25,7 @@ impl Badge {
     }
 
     fn color(self) -> Hsla {
-        if self.needs_you {
-            theme::needs_you()
-        } else {
-            theme::text_faint()
-        }
+        self.color.unwrap_or_else(theme::text_faint)
     }
 }
 
@@ -49,7 +44,7 @@ fn badge_pill(b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
                 .flex_none()
                 .items_center()
                 .gap(crate::ui::sp(5.))
-                .when(b.needs_you, |d| d.child(dot()))
+                .when(b.color.is_some(), |d| d.child(dot()))
                 .font_family(theme::FONT_MONO)
                 .text_size(px(ui::TEXT_XS))
                 .text_color(b.color())
@@ -133,7 +128,7 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
         .rounded_full()
         .bg(theme::fill_selected())
         .text_size(px(size * 0.45))
-        .font_weight(FontWeight::BOLD)
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::text())
         .child(letter)
 }
@@ -147,18 +142,12 @@ impl Shell {
     pub(super) fn view_badge(&self, view: View, cx: &mut Context<Self>) -> Option<Badge> {
         let quiet = |count| Badge {
             count,
-            needs_you: false,
+            color: None,
             urgent: false,
         };
-        // Failing or broken: kept by the Urgent mode, but still a gray number.
-        let broken = |count| Badge {
+        let loud = |count, color: Hsla| Badge {
             count,
-            needs_you: false,
-            urgent: true,
-        };
-        let needs_you = |count| Badge {
-            count,
-            needs_you: true,
+            color: Some(color),
             urgent: true,
         };
         match view {
@@ -170,33 +159,45 @@ impl Shell {
                 // A failed one doesn't wait on the user, so it isn't amber.
                 let n = waiting + failed + self.unseen_notices();
                 if waiting > 0 {
-                    Some(needs_you(n))
+                    Some(loud(n, theme::needs_you()))
                 } else if failed > 0 {
-                    Some(broken(n))
+                    Some(loud(n, theme::error().into()))
                 } else {
                     (n > 0).then(|| quiet(n))
                 }
             }
             #[cfg(feature = "coderlabs")]
-            View::Tasks => self
-                .tasks_badge(cx)
-                .map(|(n, overdue)| if overdue { broken(n) } else { quiet(n) }),
-            View::Runs => self
-                .runs_badge(cx)
-                .map(|(n, failing)| if failing { broken(n) } else { quiet(n) }),
-            View::Branches => Some(self.branches_badge(cx)).filter(|n| *n > 0).map(broken),
-            View::GitHub => self.github_badge(cx).map(
-                |(n, wanted)| {
-                    if wanted { needs_you(n) } else { quiet(n) }
-                },
-            ),
+            View::Tasks => self.tasks_badge(cx).map(|(n, overdue)| {
+                if overdue {
+                    loud(n, theme::error().into())
+                } else {
+                    quiet(n)
+                }
+            }),
+            View::Runs => self.runs_badge(cx).map(|(n, failing)| {
+                if failing {
+                    loud(n, theme::error().into())
+                } else {
+                    quiet(n)
+                }
+            }),
+            View::Branches => Some(self.branches_badge(cx))
+                .filter(|n| *n > 0)
+                .map(|n| loud(n, theme::error().into())),
+            View::GitHub => self.github_badge(cx).map(|(n, wanted)| {
+                if wanted {
+                    loud(n, theme::needs_you())
+                } else {
+                    quiet(n)
+                }
+            }),
             View::Extensions => Some(self.extensions_view.read(cx).problems())
                 .filter(|n| *n > 0)
-                .map(broken),
+                .map(|n| loud(n, theme::attention().into())),
             #[cfg(feature = "team")]
             View::Team => Some(self.team_view.read(cx).unread())
                 .filter(|n| *n > 0)
-                .map(needs_you),
+                .map(|n| loud(n, theme::needs_you())),
             _ => None,
         }
     }
@@ -407,7 +408,7 @@ impl Shell {
                     d.children(badge_pill(
                         Badge {
                             count: urgent,
-                            needs_you: false,
+                            color: Some(theme::error().into()),
                             urgent: true,
                         },
                         BadgeMode::Count,

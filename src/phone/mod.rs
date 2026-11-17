@@ -1285,6 +1285,7 @@ fn content_type(file: &str) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("webp") => "image/webp",
+        Some("woff2") => "font/woff2",
         _ => "application/octet-stream",
     }
 }

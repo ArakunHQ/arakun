@@ -297,7 +297,10 @@ impl Palette {
     /// Those barely change with the background, since they carry some of it,
     /// so only lighter text helps them; some tints at full strength need it.
     pub fn readable_content_l(&self) -> f32 {
-        let back = tinted(self.hue, self.tint, self.readable_bg(), BASE_L);
+        // Checked on the ground and on the sheet, where most text sits: a
+        // gray that reads on one can fall short on the other.
+        let bg = self.readable_bg();
+        let backs = [BASE_L, BASE_L + SHEET_LIFT].map(|l| tinted(self.hue, self.tint, bg, l));
         let least = |role: fn(&Ramp) -> f32| {
             Grays::ALL
                 .iter()
@@ -311,8 +314,10 @@ impl Palette {
         );
         // Each only rises as the text gets lighter.
         let reads = |l: f32| {
-            let on = |alpha: f32| contrast(over(self.content_at(l).opacity(alpha), back), back);
-            on(muted) >= MIN_MUTED && on(subtle) >= MIN_SUBTLE && on(faint) >= MIN_FAINT
+            backs.iter().all(|&back| {
+                let on = |alpha: f32| contrast(over(self.content_at(l).opacity(alpha), back), back);
+                on(muted) >= MIN_MUTED && on(subtle) >= MIN_SUBTLE && on(faint) >= MIN_FAINT
+            })
         };
         if reads(CONTENT_L) {
             return CONTENT_L;
@@ -555,8 +560,14 @@ pub fn background() -> Hsla {
 
 /// The window itself: see-through with glass on. Everything painted with
 /// `background()` (text on accents, popovers, the terminal) stays opaque.
+/// In light mode the ground is a light gray, so the white sheet stands off it.
 pub fn window_bg() -> Hsla {
-    background().opacity(if glass() { 0.78 } else { 1. })
+    let ground = if is_light() {
+        current_surface(BASE_L - LIGHT_GROUND_DROP)
+    } else {
+        background()
+    };
+    ground.opacity(if glass() { 0.78 } else { 1. })
 }
 
 /// A rail or panel in a card of its own (the Card and Floating rail
@@ -767,6 +778,9 @@ const SUNK_LIFT: f32 = 0.012;
 /// things and wells down to a light gray instead, as far as the other wells.
 const LIGHT_RAISED_DROP: f32 = 0.025;
 const LIGHT_SUNK_DROP: f32 = 0.04;
+/// Light mode's window ground, under the white sheet: a step grayer than
+/// raised things so the rail and the sheet don't run together.
+const LIGHT_GROUND_DROP: f32 = 0.03;
 
 /// The lightness, as for the dark default, of a surface `lift` above the
 /// ground in dark mode, or `light_drop` below the white sheet in light mode.
@@ -805,6 +819,13 @@ pub fn accent() -> Hsla {
     rgb(a.load(Ordering::Relaxed)).into()
 }
 
+/// The accent as it shows on a dark ground, in both modes: for what sits on
+/// the brand's ink, like the raccoon's eyes in its mask. Light mode's darker
+/// accent would sink into the ink.
+pub fn accent_on_ink() -> Hsla {
+    rgb(ACCENT.load(Ordering::Relaxed)).into()
+}
+
 /// The logo's own colors, the same in every palette and mode: the raccoon's
 /// paper fur and the ink of its tile, mask and nose.
 pub fn brand_paper() -> Hsla {
@@ -813,18 +834,11 @@ pub fn brand_paper() -> Hsla {
 pub fn brand_ink() -> Hsla {
     rgb(0x151515).into()
 }
-/// The fur where paper would vanish, on white: the paper toward ink, dark
-/// enough to read (3.6:1) and still the light part of the face.
+/// The ASCII face's fur on white, where paper characters would vanish: the
+/// paper toward ink, dark enough to read (3.6:1). The drawn raccoon keeps
+/// its paper fur on white, as the brand book shows it.
 pub fn brand_fur_on_light() -> Hsla {
     rgb(0x8a867d).into()
-}
-/// The raccoon's fur in this mode: paper on dark, `brand_fur_on_light` on white.
-pub fn brand_fur() -> Hsla {
-    if is_light() {
-        brand_fur_on_light()
-    } else {
-        brand_paper()
-    }
 }
 
 /// Text and icons drawn on an accent fill: the background in dark mode, the
@@ -939,18 +953,26 @@ pub const CATEGORY: [u32; 8] = [
     0xd9c27e, // sand
 ];
 
-/// What WebKitGTK resolves `system-ui` to here (GTK 4 default).
-#[cfg(target_os = "linux")]
-pub const FONT_SANS: &str = "Adwaita Sans";
-#[cfg(target_os = "linux")]
-pub const FONT_MONO: &str = "JetBrainsMono NFM";
-/// Elsewhere neither Linux font is installed, and the fallback is proportional:
-/// terminal cells (sized from 'm') spread its letters apart, and the no-break
-/// spaces that make room for a file chip's icon get too narrow. Geist ships in assets/fonts.
-#[cfg(not(target_os = "linux"))]
+/// The brand's two faces, on every platform: Geist for what people read, Geist
+/// Mono for what a machine reads (code, terminals, paths). Both ship in
+/// assets/fonts, since few systems have them. The brand uses Geist at 400, 500
+/// and 600 and Geist Mono at 400 and 500, so only those weights are bundled; a
+/// heavier weight resolves to the nearest one.
 pub const FONT_SANS: &str = "Geist";
-#[cfg(not(target_os = "linux"))]
 pub const FONT_MONO: &str = "Geist Mono";
+
+/// Where the terminal finds what Geist Mono lacks: the Nerd Font and powerline
+/// symbols that prompts like starship draw. Patched families only, the ones
+/// people install for those prompts: GPUI drops a font without an 'm', so a
+/// symbols-only font can't serve. A family that isn't installed is skipped.
+pub const MONO_SYMBOL_FALLBACKS: [&str; 6] = [
+    "JetBrainsMono NFM",
+    "JetBrainsMono Nerd Font Mono",
+    "MesloLGS NF",
+    "MesloLGS Nerd Font Mono",
+    "FiraCode Nerd Font Mono",
+    "Hack Nerd Font Mono",
+];
 
 #[cfg(test)]
 mod tests {
@@ -1070,12 +1092,55 @@ mod tests {
                 at(RAISED_LIFT, LIGHT_RAISED_DROP),
                 at(SUNK_LIFT, LIGHT_SUNK_DROP),
             );
+            let ground = light_tinted(p.hue, p.tint, BASE_L - LIGHT_GROUND_DROP);
             assert_eq!(sheet, p.light_background(), "{} sheet is the white", p.name);
             assert!(
                 sunk.l < raised.l && raised.l < sheet.l,
                 "{} raised and sunk read on white",
                 p.name
             );
+            assert!(ground.l < sheet.l, "{} sheet stands off the ground", p.name);
+        }
+    }
+
+    #[test]
+    fn light_mode_gray_text_reads_on_the_gray_ground() {
+        for p in Palette::built_in() {
+            let ground = light_tinted(p.hue, p.tint, BASE_L - LIGHT_GROUND_DROP);
+            let text = hsla(
+                p.hue / 360.,
+                (p.tint * 0.8).min(CONTENT_S_MAX),
+                LIGHT_CONTENT_L,
+                1.,
+            );
+            for g in Grays::ALL {
+                let r = g.ramp();
+                let on = |alpha: f32| {
+                    let lifted = (alpha * LIGHT_TEXT_LIFT).min(1.);
+                    contrast(over(text.opacity(lifted), ground), ground)
+                };
+                assert!(on(r.text_muted) >= 7., "{} {g:?} muted", p.name);
+                assert!(on(r.text_subtle) >= 4.5, "{} {g:?} subtle", p.name);
+                assert!(on(r.text_faint) >= 2.5, "{} {g:?} faint", p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn gray_text_reads_on_the_sheet() {
+        // A light neutral custom palette: calibrating on the ground alone
+        // left subtle text under 4.5 on the lighter sheet.
+        let p = Palette::new("custom-test", "Test", 0., 0., 0.16, AMBER);
+        let bg = p.readable_bg();
+        let text = p.content_at(p.readable_content_l());
+        for lift in [0., SHEET_LIFT] {
+            let back = tinted(p.hue, p.tint, bg, BASE_L + lift);
+            for g in Grays::ALL {
+                let r = g.ramp();
+                let on = |alpha: f32| contrast(over(text.opacity(alpha), back), back);
+                assert!(on(r.text_subtle) >= 4.5, "{g:?} subtle at {lift}");
+                assert!(on(r.text_faint) >= 2.5, "{g:?} faint at {lift}");
+            }
         }
     }
 

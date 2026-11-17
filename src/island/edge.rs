@@ -136,6 +136,7 @@ impl Edge {
     /// macOS has no word for the cutout's kind; `floating` is the caller's
     /// (see `mac::spot`). It doesn't give a pill's height or gap either: the
     /// pill is taken to sit in the middle of the band, `PILL.2` from its ends.
+    #[cfg(any(target_os = "macos", test))]
     pub fn from_safe_area(
         safe_top: f32,
         screen_w: f32,

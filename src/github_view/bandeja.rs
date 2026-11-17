@@ -400,7 +400,8 @@ impl GitHubView {
             Some(b) => {
                 // What waits in "More on GitHub" and pilot's cards need the
                 // user too: the same count as the badge.
-                let need = board::waiting(b, g.queue(), self.pilot.read(cx).shown());
+                let cards = board::visible_cards(b, self.pilot.read(cx).shown(), g.focus());
+                let need = board::waiting(b, g.queue(), cards);
                 let lleva = b.verdict.pilot_lleva as usize;
                 let rest = match lleva {
                     0 => String::new(),
@@ -423,7 +424,11 @@ impl GitHubView {
                     n => format!("{n} on GitHub"),
                 };
                 // The badge counts pilot's cards too.
-                (q.on_you + self.pilot.read(cx).count(), rest, String::new())
+                (
+                    q.on_you + self.pilot.read(cx).count(g.focus()),
+                    rest,
+                    String::new(),
+                )
             }
         };
         let counted = match need {

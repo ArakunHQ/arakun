@@ -54,13 +54,16 @@ impl Shell {
         // user where pilot doesn't look, and the cards that aren't one of its
         // questions (those are in `te_necesita` already). The cards show in
         // the tab, so they make it urgent as they did before the board.
+        let focus = g.focus();
         if let Some(b) = p.board() {
-            let n = github::board::waiting(b, g.queue(), p.shown());
-            let urgent = b.verdict.te_necesita > 0 || g.wants_attention() || p.urgent();
+            let cards = || github::board::visible_cards(b, p.shown(), focus);
+            let n = github::board::waiting(b, g.queue(), cards());
+            let urgent =
+                b.verdict.te_necesita > 0 || g.wants_attention() || cards().any(pilot::Item::pops);
             return (n > 0).then_some((n, urgent));
         }
-        let on_you = g.on_you() + p.count();
-        (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent()))
+        let on_you = g.on_you() + p.count(focus);
+        (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent(focus)))
     }
 
     /// Whether the GitHub tab is what the user looks at right now.
@@ -90,6 +93,20 @@ impl Shell {
     ) {
         let PilotEvent::New(new) = ev;
         if self.watching_github(window) {
+            return;
+        }
+        // What the tab's focus leaves out doesn't alert; with a board, the
+        // cards in a followed pull request's sheet always show.
+        let new: Vec<pilot::Item> = {
+            let focus = self.github.read(cx).focus();
+            match self.pilot.read(cx).board() {
+                Some(b) => github::board::visible_cards(b, new.iter(), focus)
+                    .cloned()
+                    .collect(),
+                None => new.iter().filter(|i| i.in_focus(focus)).cloned().collect(),
+            }
+        };
+        if new.is_empty() {
             return;
         }
         if new.len() > NOTICES_AT_ONCE {

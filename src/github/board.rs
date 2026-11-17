@@ -448,6 +448,17 @@ pub fn waiting<'a>(
     needs_you(b, q) + extra_cards(b, cards)
 }
 
+/// The cards the tab shows with a board: those in a followed pull request's
+/// sheet always (the board is one repository and always shows), the rest
+/// only inside the tab's focus.
+pub fn visible_cards<'a>(
+    b: &'a Board,
+    cards: impl Iterator<Item = &'a super::pilot::Item> + 'a,
+    focus: &'a [String],
+) -> impl Iterator<Item = &'a super::pilot::Item> + 'a {
+    cards.filter(move |c| card_place(b, c) != CardPlace::Loose || c.in_focus(focus))
+}
+
 /// The cards that wait on top of what the board counts: every one but its
 /// questions, which `te_necesita` already has.
 pub fn extra_cards<'a>(b: &Board, cards: impl Iterator<Item = &'a super::pilot::Item>) -> usize {

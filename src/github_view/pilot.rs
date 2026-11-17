@@ -123,8 +123,10 @@ impl GitHubView {
     pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = self.pilot.read(cx);
         let board = p.board();
+        // The focus menu's promise: what it leaves out doesn't show.
+        let focus = self.github.read(cx).focus();
         let items: Vec<Item> = p
-            .shown()
+            .shown_in(focus)
             .filter(|c| board.is_none_or(|b| board::card_place(b, c) == CardPlace::Loose))
             .cloned()
             .collect();
@@ -901,8 +903,11 @@ impl GitHubView {
         let id = act.id.clone();
         let from = act.item.clone();
         let after = move |this: &mut Self, cx: &mut Context<Self>| {
-            // Another pull request may be picked now, with its own strip.
-            if this.item().as_ref() == Some(&from) {
+            // Another card's or pull request's strip may be up now: only
+            // this card's goes.
+            if this.pilot_act.as_ref().is_some_and(|a| a.id == id)
+                && this.item().as_ref() == Some(&from)
+            {
                 this.confirm = None;
             }
             this.pilot_finish(&id, cx);

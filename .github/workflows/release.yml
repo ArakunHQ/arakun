@@ -305,6 +305,8 @@ jobs:
           test -f "$mnt/.DS_Store"
           test -f "$mnt/.VolumeIcon.icns"
           ls "$mnt"/.background.*
+          # Extended attributes on the bundle, which codesign --strict refuses.
+          xattr -l "$app"
           codesign --verify --deep --strict "$app"
           test -f "$app/Contents/Resources/Assets.car"
           test -f "$app/Contents/Resources/LICENSE"

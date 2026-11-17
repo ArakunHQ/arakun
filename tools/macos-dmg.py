@@ -61,7 +61,8 @@ def main():
     settings = {
         "files": [app],
         "symlinks": {"Applications": "/Applications"},
-        "hide_extensions": [name],
+        # No hide_extensions: it sets Finder info on the bundle, which codesign --strict
+        # refuses, and Finder hides ".app" on its own.
         # The volume's icon, in the Finder sidebar and on the desktop.
         "icon": os.path.join(app, "Contents", "Resources", "arakun.icns"),
         # dmgbuild finds dmg-background@2x.png next to it.

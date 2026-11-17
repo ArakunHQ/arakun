@@ -918,7 +918,9 @@ fn parse_clone_source(query: &str) -> Option<CloneSource> {
         .next()?
         .trim_end_matches(".git")
         .to_string();
-    if name.is_empty() || name.starts_with('.') || host.is_empty() {
+    // The name becomes a folder: nothing that could step out of the clone folder
+    // (`..`, or `\` and `C:` on Windows).
+    if !is_github_name(&name) || host.is_empty() {
         return None;
     }
     Some(CloneSource {
@@ -1275,6 +1277,15 @@ mod tests {
         assert_eq!(other.url, "https://gitlab.com/g/sub/proj.git");
         let scp = parse_clone_source("git@gitlab.com:g/proj").unwrap();
         assert_eq!((scp.name.as_str(), scp.on_github), ("proj", false));
+
+        // A folder name that could leave the clone folder is refused.
+        for escape in [
+            r"https://host/a/..\..\x",
+            "https://host/C:x",
+            "git@host:a/..",
+        ] {
+            assert!(parse_clone_source(escape).is_none(), "{escape}");
+        }
 
         for search in [
             "arakun",

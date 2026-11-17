@@ -273,11 +273,8 @@ pub struct Shell {
     history_at: Option<usize>,
     /// Saves the state shortly after the draft stops changing.
     draft_save: Option<Task<()>>,
-    /// How much of the blinking caret shows (0 to 1), and the last input that
-    /// held it whole.
-    caret_scale: f32,
-    caret_held: Instant,
-    caret_blinking: bool,
+    /// The composer's caret, shared with the canvas that paints it.
+    caret: Rc<RefCell<crate::caret::Caret>>,
     _caret_focus: Subscription,
     _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
@@ -544,7 +541,6 @@ impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             this.sync_poll(window, cx);
-            this.sync_blink(window, cx);
             let active = window.is_window_active();
             if active {
                 this.refresh_visible(cx);
@@ -560,8 +556,7 @@ impl Shell {
         let focus = cx.focus_handle();
         let composer_focus = cx.focus_handle();
         let caret_focus = cx.on_focus(&composer_focus, window, |this, window, cx| {
-            this.claim_composer_tab(window, cx);
-            this.sync_blink(window, cx)
+            this.claim_composer_tab(window, cx)
         });
         let composer_blur = cx.on_blur(&composer_focus, window, |this, window, cx| {
             this.spy_from_composer(window, cx)
@@ -765,9 +760,7 @@ impl Shell {
             prompt_history: crate::history::History::load(),
             history_at: None,
             draft_save: None,
-            caret_scale: 1.,
-            caret_held: Instant::now(),
-            caret_blinking: false,
+            caret: Default::default(),
             _caret_focus: caret_focus,
             _composer_blur: composer_blur,
             modal: None,

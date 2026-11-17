@@ -41,6 +41,8 @@ mod memory {
 }
 #[path = "../src/assets.rs"]
 mod assets;
+#[path = "../src/caret.rs"]
+mod caret;
 #[allow(dead_code)]
 #[path = "../src/highlight.rs"]
 mod highlight;

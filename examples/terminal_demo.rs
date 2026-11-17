@@ -9,6 +9,8 @@
 
 #[path = "../src/assets.rs"]
 mod assets;
+#[path = "../src/caret.rs"]
+mod caret;
 #[path = "../src/input.rs"]
 #[allow(dead_code)]
 mod input;

@@ -13,6 +13,7 @@ mod browser;
 mod canvas;
 #[cfg(feature = "coderlabs")]
 mod canvas_view;
+mod caret;
 mod ci;
 mod cloudflare;
 mod cloudflare_view;

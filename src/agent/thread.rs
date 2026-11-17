@@ -1826,6 +1826,12 @@ impl Thread {
 
     // ---- prompting -------------------------------------------------------
 
+    /// Whether a prompt can go out now. Settings picked before the session existed
+    /// go out before the first prompt.
+    fn ready(&self) -> bool {
+        self.conn.is_some() && self.session_id.is_some() && !self.applying_config
+    }
+
     /// Sends a prompt, or queues it while the agent is busy or still starting.
     pub fn send(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
@@ -1836,8 +1842,7 @@ impl Thread {
             self.meta.title = summarize(&prompt);
             cx.emit(ThreadEvent::TitleChanged);
         }
-        // Settings picked before the session existed go out before the first prompt.
-        let ready = self.conn.is_some() && self.session_id.is_some() && !self.applying_config;
+        let ready = self.ready();
         // A turn the agent took by itself takes the prompt in (Claude's adapter queues it).
         let free = self.auto_turn && !self.cancelling && self.status == ThreadStatus::Working;
         match self.status {
@@ -1979,6 +1984,22 @@ impl Thread {
                         });
                     }
                 }
+            }
+            // Stopped while the attachments were read: a `session/cancel` sent
+            // before the prompt would not stop it, so it does not go out at all.
+            let stopped = this
+                .update(cx, |t, _| t.prompt_seq != seq || t.cancelling)
+                .unwrap_or(true);
+            if stopped {
+                let cancelled = Ok(json!({"stopReason": "cancelled"}));
+                let _ = this.update(cx, |t, cx| {
+                    // The agent never got the handoff: the next prompt carries it.
+                    if first_here && t.prompt_seq == seq {
+                        t.handoff_sent = false;
+                    }
+                    t.prompt_done(seq, cancelled, cx)
+                });
+                return;
             }
             let request = conn.request(
                 "session/prompt",
@@ -2493,6 +2514,12 @@ impl Thread {
             }
         } else if matches!(self.status, ThreadStatus::Error(_)) && self.conn.is_none() {
             self.connect(cx);
+        } else if matches!(self.status, ThreadStatus::Error(_)) && self.ready() {
+            // After a failed turn the queue waits, but a prompt sent now goes, as `send` would.
+            if let Some(next) = take_next(&mut self.queue, &mut self.urgent, true) {
+                self.meta_changed(cx);
+                self.start_turn(next, true, cx);
+            }
         } else {
             self.drain_queue(cx);
         }

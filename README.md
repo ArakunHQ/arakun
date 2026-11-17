@@ -83,6 +83,14 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   Settings › Branches can pick Claude Code or Droid for every environment, or turn naming
   off; it saves that in `~/.local/share/arakun/branch-namer.json`
   (`%LOCALAPPDATA%\arakun\branch-namer.json` on Windows).
+- **Settled after merge.** Once an environment's pull request is merged (Arakun asks
+  `gh` every few minutes), its open review threads are resolved on GitHub, its
+  notifications are marked read, and the environment's sessions from before the merge
+  stop asking for you; agents that are idle and not open in a tab stop. The GitHub tab
+  also marks read the notifications of every merged pull request it reads. Each merge is
+  settled once, within a week of it, and noted in `~/.local/share/arakun/settled.json`.
+  On by default; turn off Settings › Branches › Settle threads after merge (saved in
+  `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on
   Windows), numbered so agents and scripts can read them with `arakun logs`.
 - **Built-in browser.** Browser tabs based on CEF (Chromium Embedded Framework), behind

@@ -23,6 +23,7 @@ impl Shell {
                 if this
                     .update_in(cx, |this, window, cx| {
                         this.run_due_automations(window, cx);
+                        this.watch_merges(cx);
                         cx.notify();
                     })
                     .is_err()

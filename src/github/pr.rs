@@ -544,6 +544,66 @@ fn fetch_thread_states(item: &ItemRef) -> Result<HashMap<u64, ThreadState>, Prob
     ))
 }
 
+/// The id of every review thread still open, to resolve them. Only the first
+/// 100 threads are read: the merge counts as settled anyway, and a pull
+/// request with more is rare.
+const OPEN_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){\
+pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved}}}}}";
+
+const RESOLVE_THREAD: &str =
+    "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}";
+
+/// The ids of the threads in an answer to `OPEN_THREADS_QUERY` that aren't resolved.
+fn open_thread_ids(answer: &Value) -> Vec<String> {
+    answer
+        .pointer("/data/repository/pullRequest/reviewThreads/nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|t| {
+            !t.get("isResolved")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+/// Resolves every review thread still open on a pull request, for one that was
+/// merged. Returns how many it resolved; the first failure stops it.
+pub fn resolve_open_threads(item: &ItemRef) -> Result<usize, Problem> {
+    // A test build shares the person's real gh session: it must not change
+    // threads on GitHub.
+    if super::read_only() {
+        return Ok(0);
+    }
+    let (owner, name) = item.repo.split_once('/').unwrap_or((&item.repo, ""));
+    let out = super::gh_out(&[
+        "api",
+        "graphql",
+        "-f",
+        &format!("query={OPEN_THREADS_QUERY}"),
+        "-f",
+        &format!("owner={owner}"),
+        "-f",
+        &format!("name={name}"),
+        "-F",
+        &format!("number={}", item.number),
+    ])?;
+    let ids = open_thread_ids(&serde_json::from_slice(&out).map_err(unexpected)?);
+    for id in &ids {
+        super::gh_out(&[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={RESOLVE_THREAD}"),
+            "-f",
+            &format!("id={id}"),
+        ])?;
+    }
+    Ok(ids.len())
+}
+
 /// The pull request with its inline comments. Three reads run at once: the
 /// pull request, its inline comments, and which threads are resolved. The last
 /// one is a help, not a need: when it fails the comments keep `resolved`,
@@ -2994,6 +3054,20 @@ mod tests {
             events[0].at,
             crate::ci::parse_time("2026-11-14T21:05:57Z").unwrap()
         );
+    }
+
+    #[test]
+    fn only_open_threads_are_resolved() {
+        let answer: Value = serde_json::from_str(
+            r#"{"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+              {"id": "T1", "isResolved": true},
+              {"id": "T2", "isResolved": false},
+              {"id": "T3"}
+            ]}}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(open_thread_ids(&answer), ["T2", "T3"]);
+        assert!(open_thread_ids(&serde_json::json!({"data": null})).is_empty());
     }
 
     #[test]

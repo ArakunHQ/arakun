@@ -156,7 +156,7 @@ impl Section {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => "Colors and surfaces. Changes apply right away.",
             Section::Branches => {
-                "A new environment starts on a random branch name; an agent can rename it after the task."
+                "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request settles its threads."
             }
             Section::Voice => "Droid's questions, read aloud with an ElevenLabs voice.",
             Section::Privacy => {
@@ -186,7 +186,10 @@ impl Section {
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
             }
-            Section::Branches => "branch name naming environment worktree rename model haiku agent",
+            Section::Branches => {
+                "branch name naming environment worktree rename model haiku agent merge merged \
+                 settle resolve threads review notifications pull request"
+            }
             Section::Voice => {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
             }
@@ -944,6 +947,18 @@ impl SettingsDialog {
                             .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
                     );
                 }
+                let settle = row(
+                    "Settle threads after merge",
+                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you. The GitHub tab marks read the notifications of every merged pull request.",
+                    switch(crate::settle::on()).into_any_element(),
+                )
+                .id("set-settle-after-merge")
+                .cursor_pointer()
+                .on_click(cx.listener(|_, _, _, cx| {
+                    crate::settle::set(!crate::settle::on());
+                    cx.notify();
+                }))
+                .into_any_element();
                 stack(vec![titled(
                     "Naming",
                     vec![
@@ -970,7 +985,9 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                     ],
-                )])
+                ),
+                    titled("After merge", vec![settle]),
+                ])
             }
             Section::Privacy => {
                 let redacted = row(
@@ -2730,6 +2747,12 @@ mod tests {
     fn searching_for_links_finds_general() {
         assert!(Section::General.matches("open links"));
         assert!(Section::General.matches("external browser"));
+    }
+
+    #[test]
+    fn searching_for_merge_finds_branches() {
+        assert!(Section::Branches.matches("settle threads"));
+        assert!(Section::Branches.matches("after merge"));
     }
 
     #[test]

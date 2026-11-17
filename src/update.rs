@@ -5,8 +5,9 @@
 //! meanwhile run the same version as the window.
 //!
 //! Only builds made by the release workflow update themselves: it sets
-//! `ARAKUN_RELEASE_BUILD=1`. A build from source has features a release does
-//! not (the browser), and would lose them. The setting is in Settings ›
+//! `ARAKUN_RELEASE_BUILD=1`. A build from source is installed its own way
+//! (tools/install.sh), with the browser runtime it was built against, and an
+//! update would put a release's binary in it. The setting is in Settings ›
 //! General; `ARAKUN_UPDATES=0` turns the checks off for one run, and
 //! `arakun update` checks and installs from a terminal.
 //!
@@ -533,12 +534,146 @@ fn unpack(archive: &Path, work: &Path, name: &str, to: &Path) -> Result<(), Stri
     if !from.is_file() {
         return Err(format!("the download has no {bin}"));
     }
+    let exe_dir = to.parent().ok_or("the binary has no folder")?;
+    update_runtime(&x.join(name), exe_dir, &crate::platform::app_dir())?;
     std::fs::copy(&from, to).map_err(|e| format!("{}: {e}", to.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    Ok(())
+}
+
+/// The browser's runtime (CEF) of a release: a `cef` folder next to the binary
+/// on Linux, files next to arakun.exe on Windows. Its `archive.json` names the
+/// CEF build, which must be the one the binary was built against.
+///
+/// Only the binary is swapped when Arakun quits, so the runtime is handled
+/// here: installed when there is none yet (a release from before the browser),
+/// left alone when it is the same build, and refused when it is another one.
+/// Windows keeps the files of a running browser locked, and Arakun applies an
+/// update while it still runs, so a new runtime takes the install script.
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeStep {
+    Nothing,
+    Install,
+    Mismatch,
+}
+
+/// `new` and `installed` are the `archive.json` of the download's runtime and
+/// of the installed one, `None` where there is no runtime.
+fn runtime_step(new: Option<&str>, installed: Option<&str>) -> RuntimeStep {
+    match (new, installed) {
+        (None, _) => RuntimeStep::Nothing,
+        (Some(_), None) => RuntimeStep::Install,
+        (Some(a), Some(b)) if a.trim() == b.trim() => RuntimeStep::Nothing,
+        _ => RuntimeStep::Mismatch,
+    }
+}
+
+/// The library that makes a folder a runtime, and the file that names its build.
+const LIBCEF: &str = if cfg!(windows) {
+    "libcef.dll"
+} else {
+    "libcef.so"
+};
+
+/// Where this install's runtime is: on Linux a `cef` folder next to the binary,
+/// as in a release archive, else the data folder's (where src/browser/loader.rs
+/// looks, and tools/install.sh puts it); on Windows the binary's own folder.
+fn installed_runtime(exe_dir: &Path, app_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        return exe_dir.to_path_buf();
+    }
+    let next = exe_dir.join("cef");
+    if next.join(LIBCEF).is_file() {
+        next
+    } else {
+        app_dir.join("cef")
+    }
+}
+
+/// The `archive.json` of the runtime in `dir`, or `None` if `dir` has none. A
+/// runtime without one counts as another build.
+fn runtime_build(dir: &Path) -> Option<String> {
+    dir.join(LIBCEF)
+        .is_file()
+        .then(|| std::fs::read_to_string(dir.join("archive.json")).unwrap_or_default())
+}
+
+/// Brings the runtime of the unpacked release in `root` to this install; see
+/// [`RuntimeStep`].
+fn update_runtime(root: &Path, exe_dir: &Path, app_dir: &Path) -> Result<(), String> {
+    let new_dir = if cfg!(windows) {
+        root.to_path_buf()
+    } else {
+        root.join("cef")
+    };
+    let target = installed_runtime(exe_dir, app_dir);
+    let new = runtime_build(&new_dir);
+    let installed = runtime_build(&target);
+    match runtime_step(new.as_deref(), installed.as_deref()) {
+        RuntimeStep::Nothing => Ok(()),
+        RuntimeStep::Install => install_runtime(&new_dir, &target).map_err(|e| {
+            format!(
+                "could not install the browser runtime in {}: {e}",
+                target.display()
+            )
+        }),
+        RuntimeStep::Mismatch => Err(format!(
+            "this release comes with a new version of the browser, which an update can't \
+             install. Quit Arakun and install it again: {}",
+            if cfg!(windows) {
+                "irm https://arakun.dev/install.ps1 | iex"
+            } else {
+                "curl -fsSL https://arakun.dev/install | sh"
+            }
+        )),
+    }
+}
+
+/// Puts a runtime where there is none, so nothing in `to` is in use. Linux
+/// moves the folder in one rename. Windows copies the files next to arakun.exe,
+/// the library last, so a copy cut short is not taken for a runtime.
+fn install_runtime(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !cfg!(windows) {
+        remove_any(to)?;
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        return std::fs::rename(from, to).or_else(|_| copy_tree(from, to));
+    }
+    // The binary is swapped at quit, and the papers are not the runtime's.
+    let skip = ["arakun.exe", "LICENSE", "NOTICE", "README.md", LIBCEF];
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if skip.iter().any(|s| name == *s) {
+            continue;
+        }
+        let dest = to.join(&name);
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), dest)?;
+        }
+    }
+    std::fs::copy(from.join(LIBCEF), to.join(LIBCEF))?;
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), dest)?;
+        }
     }
     Ok(())
 }
@@ -860,6 +995,55 @@ def456 *arakun-v0.3.0-windows-x86_64.zip
         assert!(!install.staged_intact(&saved));
         saved.staged_sha256 = None;
         assert!(!install.staged_intact(&saved));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_runtime_is_installed_once_and_never_mixed() {
+        use RuntimeStep::*;
+        assert_eq!(runtime_step(None, None), Nothing);
+        assert_eq!(runtime_step(None, Some("a")), Nothing);
+        assert_eq!(runtime_step(Some("a"), None), Install);
+        assert_eq!(runtime_step(Some("a\n"), Some("a")), Nothing);
+        assert_eq!(runtime_step(Some("b"), Some("a")), Mismatch);
+        assert_eq!(runtime_step(Some("b"), Some("")), Mismatch);
+    }
+
+    /// A release with the browser, updating one from before it: the runtime
+    /// goes where the loader looks, and the next update leaves it alone.
+    #[test]
+    fn a_first_runtime_goes_where_the_loader_looks() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("arakun-update-runtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (root, exe_dir, app_dir) = (dir.join("x"), dir.join("bin"), dir.join("data"));
+        let new_dir = if cfg!(windows) {
+            root.clone()
+        } else {
+            root.join("cef")
+        };
+        std::fs::create_dir_all(new_dir.join("locales")).unwrap();
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::write(new_dir.join(LIBCEF), "lib").unwrap();
+        std::fs::write(new_dir.join("archive.json"), "{\"name\": \"cef_156\"}").unwrap();
+        std::fs::write(new_dir.join("locales").join("en-US.pak"), "pak").unwrap();
+        update_runtime(&root, &exe_dir, &app_dir).unwrap();
+        let installed = installed_runtime(&exe_dir, &app_dir);
+        assert!(installed.join(LIBCEF).is_file());
+        assert!(installed.join("locales").join("en-US.pak").is_file());
+        if !cfg!(windows) {
+            assert_eq!(installed, app_dir.join("cef"));
+            // Moved, so stage it again for the next update.
+            std::fs::create_dir_all(&new_dir).unwrap();
+            std::fs::write(new_dir.join(LIBCEF), "lib").unwrap();
+            std::fs::write(new_dir.join("archive.json"), "{\"name\": \"cef_156\"}").unwrap();
+        }
+        update_runtime(&root, &exe_dir, &app_dir).unwrap();
+        std::fs::write(new_dir.join("archive.json"), "{\"name\": \"cef_157\"}").unwrap();
+        assert!(update_runtime(&root, &exe_dir, &app_dir).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

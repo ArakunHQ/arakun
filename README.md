@@ -350,8 +350,14 @@ on Windows), unpacked first as `.arakun.incoming`.
 Arakun updates itself where it runs from, so that folder and the binary must be yours
 (the install scripts' folders are). A binary that belongs to another user, such as one a
 package manager installed, is left alone: update it the way it was installed. A build
-from source never updates itself: a release would take away the browser. Pull and build
-it again instead.
+from source never updates itself: it has its own way of installing and the browser
+runtime it was built against. Pull and build it again instead.
+
+An update replaces the binary (the whole `Arakun.app` on macOS). The browser runtime
+(CEF) comes along only when there is none yet, such as on a release from before the
+browser. A release with another version of CEF is not installed by the updater, since
+Windows keeps a running browser's files locked; it says so, and the install script
+installs it once Arakun is closed.
 
 What is checked: the download matches the checksum in the release's `SHA256SUMS`, and
 the new binary starts and says the version it should. This catches a broken or cut-short

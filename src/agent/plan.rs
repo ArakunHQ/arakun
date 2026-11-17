@@ -16,15 +16,14 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::{AgentKind, cli_login};
+
 /// Also read through CLIProxyAPI (`cliproxy`), with each account's own token.
 pub(crate) const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 /// A long-lived token can't read [`ENDPOINT`]; a one-token message can, from
 /// the `anthropic-ratelimit-unified-*` headers of its answer.
 const MESSAGES: &str = "https://api.anthropic.com/v1/messages";
 const PROBE_MODEL: &str = "claude-haiku-5-5";
-const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
-/// Claude Code's OAuth client, used to refresh an expired access token.
-const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /// Refetch at most this often; `refresh` serves the cache in between.
 const STALE: u64 = 5 * 60;
 /// The borrowed seat's windows cost a one-token message (a few dozen tokens of
@@ -335,12 +334,16 @@ fn remember_seats(s: Seats) -> Seats {
 
 /// One GET of the usage endpoint for the claude.ai sign-in.
 fn fetch_own() -> Result<Option<PlanUsage>> {
-    let Some(mut oauth) = credentials() else {
+    let Some(oauth) = credentials() else {
         return Ok(None);
     };
-    if oauth.expires_at <= now() + 300 {
-        oauth.access_token = refresh_token(&oauth.refresh_token)?;
+    // Claude Code renews its own sign-in when it runs. A renewal here could
+    // rotate the refresh token and sign Claude Code out, so an expired token
+    // waits for that and the cached windows stay on screen.
+    if oauth.expires_at <= now() + 60 {
+        bail!("Claude Code's sign-in has expired; it renews it the next time it runs");
     }
+    cli_login::check(AgentKind::Claude, ENDPOINT)?;
     let body = http(
         ENDPOINT,
         None,
@@ -361,21 +364,20 @@ fn fetch_own() -> Result<Option<PlanUsage>> {
 
 struct Oauth {
     access_token: String,
-    refresh_token: String,
     /// Unix seconds.
     expires_at: u64,
     subscription: String,
     tier: String,
 }
 
-/// Claude Code's sign-in, shared with every tool that reads ~/.claude.
+/// Claude Code's sign-in, shared with every tool that reads ~/.claude. Read
+/// only: see `cli_login`.
 fn credentials() -> Option<Oauth> {
     let json: Value =
         serde_json::from_str(&std::fs::read_to_string(credentials_path()).ok()?).ok()?;
     let o = json.get("claudeAiOauth")?;
     Some(Oauth {
         access_token: o["accessToken"].as_str()?.to_string(),
-        refresh_token: o["refreshToken"].as_str()?.to_string(),
         expires_at: (o["expiresAt"].as_f64().unwrap_or(0.) / 1000.) as u64,
         subscription: o["subscriptionType"]
             .as_str()
@@ -458,6 +460,7 @@ fn borrowed_token() -> Option<String> {
 /// The token's 5-hour and weekly windows, from the headers of a one-token
 /// Haiku message (about 35 tokens of the seat per fetch).
 fn fetch_borrowed(token: &str) -> Result<PlanUsage> {
+    cli_login::check(AgentKind::Claude, MESSAGES)?;
     let body = serde_json::json!({
         "model": PROBE_MODEL,
         "max_tokens": 1,
@@ -515,26 +518,6 @@ fn parse_headers(headers: &Value) -> PlanUsage {
         borrowed: true,
         ..PlanUsage::default()
     }
-}
-
-/// A fresh access token, in memory only: the file stays Claude Code's to write.
-fn refresh_token(refresh: &str) -> Result<String> {
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh,
-        "client_id": CLIENT_ID,
-    })
-    .to_string();
-    let out = http(
-        TOKEN_URL,
-        Some(&body),
-        &[("Content-Type", "application/json".into())],
-    )?;
-    let json: Value = serde_json::from_str(&out).context("token refresh did not answer JSON")?;
-    json["access_token"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| anyhow!("token refresh refused: {}", &out[..out.len().min(200)]))
 }
 
 /// curl with the flags and headers in a stdin config, so tokens never sit in
@@ -800,7 +783,6 @@ mod tests {
         });
         let oauth = Oauth {
             access_token: String::new(),
-            refresh_token: String::new(),
             expires_at: 0,
             subscription: "team".into(),
             tier: "default_claude_max_5x".into(),
@@ -828,7 +810,6 @@ mod tests {
         });
         let oauth = Oauth {
             access_token: String::new(),
-            refresh_token: String::new(),
             expires_at: 0,
             subscription: "max".into(),
             tier: String::new(),

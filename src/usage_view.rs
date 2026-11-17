@@ -1773,7 +1773,16 @@ impl UsageView {
                     .child(self.droid_limits(cx))
                     .when_some(self.opencode_limits(), |d, go| {
                         d.child(div().h(px(1.)).bg(theme::fill_hover())).child(go)
-                    }),
+                    })
+                    // Limits that show up without a sign-in prompt look
+                    // alarming; say where they come from.
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .line_height(px(15.))
+                            .text_color(theme::text_faint())
+                            .child(crate::agent::cli_login::USAGE_NOTE),
+                    ),
             )
             .child(
                 div()

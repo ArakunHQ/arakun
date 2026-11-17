@@ -11,6 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use super::plan::{self, PlanUsage, Window};
+use super::{AgentKind, cli_login};
 
 const ENDPOINT: &str = "https://opencode.ai/zen/go/v1/usage";
 /// Refetch at most this often; `refresh` serves the cache in between.
@@ -105,6 +106,7 @@ fn remember(p: Option<PlanUsage>) -> Option<PlanUsage> {
 
 /// One GET of the usage endpoint. A key without Go answers 403.
 fn fetch(key: &str) -> Result<PlanUsage> {
+    cli_login::check(AgentKind::OpenCode, ENDPOINT)?;
     let body = plan::http(
         ENDPOINT,
         None,

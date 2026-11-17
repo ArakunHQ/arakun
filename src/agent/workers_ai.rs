@@ -295,8 +295,10 @@ pub fn endpoint() -> Result<Endpoint, String> {
         });
     }
     let c = credentials()?;
+    let url = format!("{API}/accounts/{}/ai/v1/chat/completions", c.account);
+    super::cli_login::check(super::AgentKind::WorkersAi, &url).map_err(|e| e.to_string())?;
     Ok(Endpoint {
-        url: format!("{API}/accounts/{}/ai/v1/chat/completions", c.account),
+        url,
         token: Some(c.token),
         api: Api::Chat,
     })

@@ -894,8 +894,11 @@ impl GitHubView {
         let me = self.github.read(cx).me().unwrap_or_default().to_string();
         let new_since = pull.map_or(0, |p| pr::new_since_my_review(p, &me).len());
         let tab = self.tab;
+        // Five tabs and the new-commits note don't fit a narrow sheet: the
+        // note wraps under the tabs instead of running off the edge.
         let mut row = div()
             .flex()
+            .flex_wrap()
             .flex_none()
             .items_center()
             .gap(crate::ui::sp(4.))

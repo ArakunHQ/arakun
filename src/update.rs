@@ -317,7 +317,12 @@ fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
+            .timeout_resolve(Some(Duration::from_secs(20)))
             .timeout_connect(Some(Duration::from_secs(20)))
+            .timeout_send_request(Some(Duration::from_secs(30)))
+            // A server that takes the request and never answers would hold the
+            // update lock, and Check now, forever.
+            .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(Duration::from_secs(600)))
             .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
             .build()

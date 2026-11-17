@@ -177,11 +177,11 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone update updates version release upgrade"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts update updates version release upgrade"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
@@ -212,8 +212,15 @@ impl Section {
         if query.is_empty() {
             return true;
         }
+        // The Updates card is in General in every build, so its words are
+        // added here rather than to each build's keyword list.
+        let updates = if self == Section::General {
+            "update updates version release upgrade"
+        } else {
+            ""
+        };
         let text = format!(
-            "{} {} {}",
+            "{} {} {} {updates}",
             self.title(),
             self.description(),
             self.keywords()
@@ -2712,6 +2719,7 @@ mod tests {
         assert!(found("branch").contains(&Section::Branches));
         assert!(found("haiku").contains(&Section::Branches));
         assert!(found("crash").contains(&Section::Privacy));
+        assert!(found("update").contains(&Section::General));
         assert!(found("redacted").contains(&Section::Privacy));
         assert!(found("stream").contains(&Section::Privacy));
         assert!(!found("crash").contains(&Section::General));

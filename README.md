@@ -320,8 +320,17 @@ and on Linux and macOS **Restart now**. Turn **Update automatically** off there 
 the checks; `ARAKUN_UPDATES=0` turns them off for one run.
 
 From a terminal, `arakun update` downloads the latest release and installs it. If Arakun
-is running, it is installed when Arakun quits; `arakun restart` does that now.
-`arakun update --check` only says whether there is a newer release.
+is running, it is installed when Arakun quits: on Linux and macOS `arakun restart` does
+that now; on Windows, quit Arakun and open it again. `arakun update --check` only says
+whether there is a newer release.
+
+The updater keeps its files in Arakun's data folder (`~/.local/share/arakun` on Linux
+and macOS, `%LOCALAPPDATA%\arakun` on Windows): `update.json` (the version waiting to be
+installed, its checksum, and the last one you were told about), `update.lock` (held while
+one updater runs), `no-auto-update` (there while **Update automatically** is off) and
+`update-download/` (the download, removed when it is done). The new version waits next to
+the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
+on Windows), unpacked first as `.arakun.incoming`.
 
 Arakun updates itself where it runs from, so that folder and the binary must be yours
 (the install scripts' folders are). A binary that belongs to another user, such as one a

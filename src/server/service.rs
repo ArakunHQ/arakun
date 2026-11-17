@@ -136,9 +136,17 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
         // A root service runs what it finds there as root at every boot: only
         // folders no one else can write to.
         let root = system_unit();
+        // A relative folder would resolve against wherever an agent runs, and a
+        // symlink's owner could repoint it: absolute, resolved paths only.
         let dirs = std::env::split_paths(&path)
-            .filter(|d| seen.insert(d.clone()))
-            .filter(|d| !root || only_root_writes(d));
+            .filter_map(|d| match root {
+                false => Some(d),
+                true if d.is_absolute() && only_root_writes(&d) => {
+                    crate::platform::canonicalize(&d).ok()
+                }
+                true => None,
+            })
+            .filter(|d| seen.insert(d.clone()));
         if let Ok(path) = std::env::join_paths(dirs) {
             env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
         }

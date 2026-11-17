@@ -5,9 +5,9 @@
 #   curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0
 #
 # macOS (Apple silicon): ~/Applications/Arakun.app, and ~/.local/bin/arakun linking into it.
-# Linux (x86_64):        ~/.local/bin/arakun.
-# ARAKUN_VERSION pins a release, like --version. Release builds have no browser tabs; for
-# those, build from source (see README.md). Windows: tools/install-release.ps1.
+# Linux (x86_64):        ~/.local/bin/arakun, and the browser's CEF runtime in
+#                        ${XDG_DATA_HOME:-~/.local/share}/arakun/cef.
+# ARAKUN_VERSION pins a release, like --version. Windows: tools/install-release.ps1.
 #
 # Everything runs from main at the end, so a download cut short runs nothing.
 set -eu
@@ -251,9 +251,26 @@ main() {
     # A rename, so an Arakun that is running keeps its old binary.
     cp "$tmp/x/$name/arakun" "$bindir/.arakun.new"
     chmod 755 "$bindir/.arakun.new"
+    # Where src/browser/loader.rs and tools/install.sh keep it. Releases from before
+    # the browser have none. Swapped with renames, so a running Arakun keeps the
+    # libcef.so it loaded.
+    cef=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef
+    if [ -d "$tmp/x/$name/cef" ]; then
+      mkdir -p "${cef%/*}"
+      rm -rf "$cef.new" "$cef.old"
+      mv "$tmp/x/$name/cef" "$cef.new"
+      if [ -e "$cef" ]; then mv "$cef" "$cef.old"; fi
+      mv "$cef.new" "$cef"
+      rm -rf "$cef.old"
+    fi
     mv -f "$bindir/.arakun.new" "$bindir/arakun"
-    say "installed arakun in $bindir"
-    uninstall="rm ~/.local/bin/arakun"
+    if [ -d "$cef" ]; then
+      say "installed arakun in $bindir, and its browser in $cef"
+      uninstall="rm -rf ~/.local/bin/arakun $cef"
+    else
+      say "installed arakun in $bindir"
+      uninstall="rm ~/.local/bin/arakun"
+    fi
   fi
 
   case :$PATH: in
@@ -282,6 +299,11 @@ main() {
       ;;
   esac
 
+  # Ubuntu 23.10 and later: Chromium's sandbox needs an AppArmor profile (README.md).
+  if [ "$os" = Linux ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+    say "browser tabs need an AppArmor profile on this system; see"
+    say "https://github.com/$repo#browser-tabs-on-ubuntu"
+  fi
   say "done. Run 'arakun' to start it."
   say "to uninstall: $uninstall"
 }

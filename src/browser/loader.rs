@@ -28,10 +28,22 @@ pub use windows::load;
 /// Where the CEF runtime lives: `$ARAKUN_CEF_DIR`, else on Linux and macOS
 /// `${XDG_DATA_HOME:-~/.local/share}/arakun/cef` (filled by `tools/install-cef.sh`) and on
 /// Windows the folder of arakun.exe (where the build copies it). Inside Arakun.app the
-/// bundle's own `Contents/Frameworks` comes first (tools/install.sh puts CEF there).
+/// bundle's own `Contents/Frameworks` comes first (tools/install.sh puts CEF there). On
+/// Linux a `cef` folder next to the binary comes first: the release archive has one, so
+/// it runs where it was unpacked.
 pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("ARAKUN_CEF_DIR") {
         return dir.into();
+    }
+    #[cfg(target_os = "linux")]
+    // Canonical, so a link to the binary finds the folder next to the real one.
+    if let Some(dir) = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("cef")))
+        .filter(|dir| dir.join("libcef.so").is_file())
+    {
+        return dir;
     }
     #[cfg(target_os = "macos")]
     // Canonical: started through the `arakun` link in ~/.local/bin, current_exe is the link.

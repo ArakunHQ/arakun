@@ -299,8 +299,8 @@ made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
 | Platform | Status | Notes |
 |---|---|---|
 | Linux (x86_64) | Supported | Main platform. Wayland and X11. The Dynamic Island needs Wayland with wlr-layer-shell. |
-| Windows 10/11 (x86_64) | Beta | No Dynamic Island yet. Release builds do not include the browser yet; build from source with the `browser` feature to get it. See [docs/windows.md](docs/windows.md). |
-| macOS | Experimental | Release builds for Apple silicon, without the browser. Little tested. The Dynamic Island's shape around a notch and around the MacBook Pro's own Dynamic Island is not tested on those screens yet. |
+| Windows 10/11 (x86_64) | Beta | No Dynamic Island yet. Browser tabs are barely tested. See [docs/windows.md](docs/windows.md). |
+| macOS | Experimental | Release builds for Apple silicon. Little tested, browser tabs least of all. The Dynamic Island's shape around a notch and around the MacBook Pro's own Dynamic Island is not tested on those screens yet. |
 
 ## Install
 
@@ -386,9 +386,9 @@ with `--version` (`ARAKUN_VERSION` on Windows); an unsigned latest release is re
 
 Download the archive or disk image for your platform from
 [GitHub Releases](https://github.com/arakunhq/arakun/releases) and check it against
-`SHA256SUMS`. Release builds are built without the browser feature. To check that
-`SHA256SUMS` is signed with Arakun's release key (releases after v0.3.0), download
-`SHA256SUMS.minisig` next to it and run
+`SHA256SUMS`. Release builds include the browser: each carries CEF (Chromium), a few
+hundred MB unpacked. To check that `SHA256SUMS` is signed with Arakun's release key
+(releases after v0.3.0), download `SHA256SUMS.minisig` next to it and run
 [minisign](https://jedisct1.github.io/minisign/):
 
 ```sh
@@ -406,13 +406,17 @@ release workflow built it, and from which commit. Check it with the
 gh attestation verify arakun-<version>-linux-x86_64.tar.gz -R arakunhq/arakun
 ```
 
-**Linux:** extract `arakun-<version>-linux-x86_64.tar.gz` and put `arakun` somewhere on
-your `PATH`, for example `~/.local/bin`. It needs glibc 2.35 or newer (Ubuntu 22.04+,
+**Linux:** extract `arakun-<version>-linux-x86_64.tar.gz`. `arakun` runs from there, or
+put it somewhere on your `PATH`, for example `~/.local/bin`, with its `cef` folder next to
+it (or in `~/.local/share/arakun/cef`). Without that folder, everything but browser tabs
+works. It needs glibc 2.35 or newer (Ubuntu 22.04+,
 Debian 12+, Fedora 36+); on older systems, build from source. You also need a Vulkan
 driver and the usual desktop libraries (libxkbcommon, Wayland or X11, fontconfig,
-freetype).
+freetype). On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile in
+[Browser tabs on Ubuntu](#browser-tabs-on-ubuntu).
 
-**Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
+**Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`. Keep the
+files next to it together: `arakun-helper.exe` and the CEF runtime are for browser tabs.
 
 **macOS:** open `arakun-<version>-macos-arm64.dmg` and drag `Arakun.app` into
 `Applications`. The app and the disk image are signed with a Developer ID and notarized by

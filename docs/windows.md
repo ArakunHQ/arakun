@@ -23,11 +23,10 @@ Browser tabs were verified once on Windows 11 with a release build with the `bro
 feature: `arakun browse` opened a page, and `arakun page text` and `arakun page
 screenshot` read and showed it. Typing, clicking, downloads and DevTools were not tested.
 
-Release builds for Windows (from GitHub Releases) contain only `arakun.exe`, built
-without the `browser` feature. For browser tabs, build from source as described here.
-A build without them opens the links you click in your own browser. Settings ›
-General › Open links in Arakun decides where they open once a build has browser tabs.
-To install the latest release, run this in PowerShell; it puts `arakun.exe` in
+Release builds for Windows (from GitHub Releases) include the browser: `arakun.exe`,
+`arakun-helper.exe` and the CEF runtime next to them. Links you click open in a browser
+tab; Settings › General › Open links in Arakun sends them to your own browser instead.
+To install the latest release, run this in PowerShell; it puts them in
 `%LOCALAPPDATA%\Programs\Arakun` and adds that folder to your user `PATH`:
 
 ```powershell

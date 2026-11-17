@@ -197,7 +197,7 @@ impl Shell {
             #[cfg(feature = "team")]
             View::Team => Some(self.team_view.read(cx).unread())
                 .filter(|n| *n > 0)
-                .map(|n| loud(n, theme::needs_you())),
+                .map(|n| loud(n, theme::accent())),
             _ => None,
         }
     }

@@ -68,6 +68,8 @@ pub enum BrowserEvent {
     FaviconChanged,
     /// The page closed itself (`window.close()`); the view is now empty.
     CloseRequested,
+    /// Only the placeholder sends it: show the setting for where links open.
+    OpenLinkSettings,
 }
 
 /// A message the page logged (or an uncaught error), for `arakun page console`.
@@ -149,3 +151,51 @@ pub const ENABLED: bool = cfg!(all(
     feature = "browser",
     any(target_os = "linux", target_os = "macos", windows)
 ));
+
+/// Whether web links (from the chat, the GitHub view, pins…) open in an Arakun
+/// browser tab rather than the desktop's browser. Set in Settings → General.
+/// Without a choice, builds that can show pages keep links in Arakun, and the
+/// others send them out, where they can actually load.
+pub fn links_in_arakun() -> bool {
+    match std::fs::read_to_string(links_path()) {
+        Ok(choice) => parse_links_choice(&choice).unwrap_or(ENABLED),
+        Err(_) => ENABLED,
+    }
+}
+
+pub fn set_links_in_arakun(on: bool) {
+    let path = links_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let choice = if on { "arakun\n" } else { "system\n" };
+    if let Err(e) = std::fs::write(&path, choice) {
+        eprintln!("arakun: where links open will not last past a restart: {e}");
+    }
+}
+
+fn links_path() -> std::path::PathBuf {
+    crate::platform::app_dir().join("open-links")
+}
+
+fn parse_links_choice(text: &str) -> Option<bool> {
+    match text.trim() {
+        "arakun" => Some(true),
+        "system" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_links_choice;
+
+    #[test]
+    fn reads_the_links_choice() {
+        assert_eq!(parse_links_choice("arakun\n"), Some(true));
+        assert_eq!(parse_links_choice("system"), Some(false));
+        // Anything else falls back to what the build can do.
+        assert_eq!(parse_links_choice(""), None);
+        assert_eq!(parse_links_choice("chrome"), None);
+    }
+}

@@ -335,6 +335,10 @@ impl Shell {
                 }
                 cx.notify();
             }
+            BrowserEvent::OpenLinkSettings => {
+                crate::settings_view::start_on_general();
+                self.open_settings(window, cx);
+            }
             BrowserEvent::UrlChanged(_)
             | BrowserEvent::LoadingChanged(_)
             | BrowserEvent::FaviconChanged => cx.notify(),

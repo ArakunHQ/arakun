@@ -262,7 +262,7 @@ impl Shell {
             return;
         }
         match pin {
-            Pin::Url { url, .. } => self.open_browser_tab(url, window, cx),
+            Pin::Url { url, .. } => self.open_url(url, window, cx),
             Pin::File { path, .. } => self.open_doc_tab(TabKind::File { path }, window, cx),
             Pin::Command { command, .. } => self.spawn_terminal_command(
                 Some(crate::platform::run_then_shell(&command)),

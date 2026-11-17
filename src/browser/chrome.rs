@@ -240,6 +240,7 @@ pub fn notice(
         .children(detail.map(|d| {
             div()
                 .max_w(px(560.))
+                .text_center()
                 .text_size(px(crate::ui::TEXT_SM))
                 .text_color(theme::text_subtle())
                 .child(d)

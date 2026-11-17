@@ -181,7 +181,7 @@ impl Section {
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts links open system default external"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
@@ -236,6 +236,15 @@ impl Section {
 
 /// The section the last dialog was left on.
 static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
+
+/// Makes the next dialog open on General, where the link setting is.
+pub fn start_on_general() {
+    let ix = Section::ALL
+        .iter()
+        .position(|s| *s == Section::General)
+        .unwrap_or(0);
+    LAST_SECTION.store(ix as u8, Ordering::Relaxed);
+}
 
 /// (group, keys, description)
 type Shortcut = (&'static str, &'static str, &'static str);
@@ -892,6 +901,22 @@ impl SettingsDialog {
                     titled(
                         "Browser",
                         vec![
+                            row(
+                                "Open links in Arakun",
+                                if crate::browser::ENABLED {
+                                    "Links from chats, the GitHub view and pins open in a browser tab. Off, they open in your own browser."
+                                } else {
+                                    "This build has no browser tabs, so leave it off: links then open in your own browser."
+                                },
+                                switch(crate::browser::links_in_arakun()).into_any_element(),
+                            )
+                            .id("set-links-in-arakun")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                crate::browser::set_links_in_arakun(!crate::browser::links_in_arakun());
+                                cx.notify();
+                            }))
+                            .into_any_element(),
                             row(
                                 "Agents drive any web page",
                                 "Click, type and run scripts in any tab, with your signed-in accounts. Off, they drive local pages and only read the rest.",

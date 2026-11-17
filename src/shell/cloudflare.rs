@@ -50,6 +50,17 @@ impl Shell {
             }
             CloudflareEvent::Ask(ask) => self.start_ask(ask, window, cx),
             CloudflareEvent::ConnectMcp(agent, state) => {
+                // The button is off without Codex, but the state it showed can be old.
+                if *agent == model::Agent::Codex && crate::agent::codex_cli().is_none() {
+                    self.notify(
+                        AlertKind::Warning,
+                        "Connect Cloudflare to Codex",
+                        "Codex isn't installed yet. Sign in to Codex in Settings to install it.",
+                        Some(Open::Cloudflare),
+                        cx,
+                    );
+                    return;
+                }
                 self.run_in_terminal(
                     &env_path,
                     &cloudflare::mcp_connect_command(*agent, state),

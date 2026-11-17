@@ -222,7 +222,10 @@ impl CloudflareView {
                 let alive = this.update(cx, |this, cx| {
                     let watching =
                         this.mcp_watch > crate::model::unix_now() && this.mcp != Mcp::Connected;
-                    if configured != (this.mcp != Mcp::Missing)
+                    // Without its CLI the agent isn't asked anything, so the
+                    // check is cheap; it notices when one gets installed.
+                    if this.mcp == Mcp::NoCli
+                        || configured != (this.mcp != Mcp::Missing)
                         || (watching && tick.is_multiple_of(2))
                     {
                         this.check_mcp(cx);
@@ -275,11 +278,7 @@ impl CloudflareView {
             chart: cx.new(|_| overview::chart()),
             // Wide until measured, as most windows are.
             width: Rc::new(Cell::new(1200.)),
-            mcp: if cloudflare::mcp_server(Agent::Claude).is_some() {
-                Mcp::Added
-            } else {
-                Mcp::Missing
-            },
+            mcp: cloudflare::mcp_configured(Agent::Claude),
             mcp_watch: 0,
             mcp_task: None,
             cloudflared: crate::agent::which("cloudflared").is_some(),
@@ -317,11 +316,7 @@ impl CloudflareView {
     pub fn set_agent(&mut self, agent: Agent, cx: &mut Context<Self>) {
         if self.agent != agent {
             self.agent = agent;
-            self.mcp = if cloudflare::mcp_server(agent).is_some() {
-                Mcp::Added
-            } else {
-                Mcp::Missing
-            };
+            self.mcp = cloudflare::mcp_configured(agent);
             self.mcp_task = None;
             self.check_mcp(cx);
             cx.notify();
@@ -684,20 +679,29 @@ impl CloudflareView {
                     "Sign in again".into(),
                     format!("{name} can't reach it ({why})."),
                 ),
+                Mcp::NoCli => (
+                    format!("Connect to {name}").into(),
+                    format!(
+                        "{name} isn't installed yet. Sign in to {name} in Settings to install it."
+                    ),
+                ),
                 _ => ("Sign in".into(), format!("Checking with {name}…")),
             };
+            let installed = self.mcp != Mcp::NoCli;
             let (agent, state) = (self.agent, self.mcp.clone());
             d.child(
                 outline(ui::button(
                     "cf-mcp-connect",
                     label,
                     ButtonKind::Primary,
-                    true,
+                    installed,
                 ))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.watch_mcp();
-                    cx.emit(CloudflareEvent::ConnectMcp(agent, state.clone()))
-                })),
+                .when(installed, |b| {
+                    b.on_click(cx.listener(move |this, _, _, cx| {
+                        this.watch_mcp();
+                        cx.emit(CloudflareEvent::ConnectMcp(agent, state.clone()))
+                    }))
+                }),
             )
             .child(
                 div()

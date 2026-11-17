@@ -941,6 +941,7 @@ impl Shell {
                     .h(px(32.))
                     .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
+                    .relative()
                     .tooltip(ui::tip_text(project.name.clone()))
                     .when(selected, |d| d.bg(theme::selection_strong()))
                     .when(!selected, |d| {
@@ -951,6 +952,19 @@ impl Shell {
                         1.5,
                         gpui::rgb(project.logo).into(),
                     ))
+                    // Another project's work shows here, as the rail has no rows.
+                    .when(!selected, |d| {
+                        let status = super::rail::Activity::of_project(project).status();
+                        d.when(status != Status::Idle, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .top(px(4.))
+                                    .right(px(4.))
+                                    .child(super::rail::status_dot(status)),
+                            )
+                        })
+                    })
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_project(pi, window, cx)),
                     )

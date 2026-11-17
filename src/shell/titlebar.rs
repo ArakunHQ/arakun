@@ -232,6 +232,17 @@ impl Shell {
                             .text_color(theme::text_muted())
                     })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // A middle click closes the tab, as in a browser.
+                    .when(closable, |d| {
+                        d.on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_up(
+                                MouseButton::Middle,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(i, window, cx)
+                                }),
+                            )
+                    })
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -286,6 +297,11 @@ impl Shell {
                     .on_drag(dragged, move |d, offset, _, cx| {
                         shell.update(cx, |this, cx| this.start_tab_drag(d, offset, cx))
                     })
+                    // Dropping a tab on another moves it there.
+                    .drag_over::<drag::DraggedTab>(|s, _, _, _| s.bg(theme::fill_selected()))
+                    .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
+                        this.drop_tab_at(d.id, i, cx)
+                    }))
                     .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
             );
         }

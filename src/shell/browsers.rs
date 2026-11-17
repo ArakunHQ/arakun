@@ -317,7 +317,7 @@ impl Shell {
                 let visible = self.has_projects() && self.env().path == env_path;
                 if let Some((i, _)) = self.browser_tab_mut(env_path, id) {
                     if visible {
-                        self.close_tab(i, window, cx);
+                        self.discard_tab(i, window, cx);
                     } else if let Some(env) = self.find_env_mut(env_path) {
                         env.tabs.remove(i);
                         if env.tabs.is_empty() {

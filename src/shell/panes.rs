@@ -71,6 +71,11 @@ impl Shell {
             this.focus_other_pane(true, window, cx)
         }))
         .on_action(cx.listener(|this, _: &SwapPanes, _, cx| this.swap_panes(cx)))
+        .on_action(
+            cx.listener(|this, _: &ReopenClosedTab, window, cx| this.reopen_closed_tab(window, cx)),
+        )
+        .on_action(cx.listener(|this, _: &MoveTabLeft, _, cx| this.move_active_tab(-1, cx)))
+        .on_action(cx.listener(|this, _: &MoveTabRight, _, cx| this.move_active_tab(1, cx)))
     }
 
     fn cycle_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -400,19 +405,25 @@ impl Shell {
         cx.notify();
     }
 
-    /// Closes every tab but `keep`.
-    fn close_other_tabs(&mut self, keep: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.has_projects() || keep >= self.env().tabs.len() {
+    /// Closes the tabs at the indices `close` picks, never `anchor`; they can be
+    /// reopened in turn, leftmost first.
+    fn close_tabs(
+        &mut self,
+        anchor: usize,
+        close: impl Fn(usize) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.has_projects() || anchor >= self.env().tabs.len() {
             return;
         }
-        let env = self.env_mut();
-        let kept = env.tabs.remove(keep);
-        let closed = std::mem::replace(&mut env.tabs, vec![kept]);
-        env.active_tab = 0;
-        env.split = None;
-        let path = env.path.clone();
+        let closed = self.env_mut().remove_tabs(anchor, close);
+        let path = self.env().path.clone();
         let mut sessions = Vec::new();
-        for tab in closed {
+        for (index, tab) in closed.into_iter().rev() {
+            if let Some(kind) = reopenable(&tab, cx) {
+                self.env_mut().remember_closed(index, kind);
+            }
             if let Some(b) = &tab.browser {
                 b.view.update(cx, |v, cx| v.close(cx));
             }
@@ -428,6 +439,101 @@ impl Shell {
         self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
+        cx.notify();
+    }
+
+    /// Opens the tab closed last again, where it was. Tabs that can't come back
+    /// (a deleted session) are skipped.
+    pub(super) fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
+        }
+        while let Some((index, kind)) = self.env_mut().closed_tabs.pop() {
+            let before: Vec<u64> = self.env().tabs.iter().map(|t| t.id).collect();
+            if !self.reopen_kind(kind, window, cx) {
+                continue;
+            }
+            let env = self.env_mut();
+            let active = env.active_tab;
+            // Already open elsewhere: the opener only went to it, so it stays put.
+            if let Some(tab) = env.tabs.get_mut(active)
+                && !before.contains(&tab.id)
+            {
+                tab.preview = false;
+                env.move_tab(active, index);
+            }
+            self.note_active_tab(cx);
+            self.ensure_active_live(window, cx);
+            self.ensure_active_browser(false, window, cx);
+            self.focus_active_content(window, cx);
+            self.save(cx);
+            cx.notify();
+            return;
+        }
+    }
+
+    /// Opens a tab of `kind` the way the rest of the app does; false when it can't.
+    fn reopen_kind(&mut self, kind: TabKind, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match kind {
+            TabKind::Session { id, .. } => {
+                if self.env().session_index(&id).is_none() {
+                    return false;
+                }
+                self.open_session(id, window, cx);
+            }
+            TabKind::Browser { url } => self.open_browser_tab(url.to_string(), window, cx),
+            kind @ (TabKind::File { .. } | TabKind::Diff { .. }) => {
+                self.open_doc_tab(kind, window, cx)
+            }
+            TabKind::Notes => self.open_notes_tab(window, cx),
+            TabKind::Phone => self.open_phone_tab(window, cx),
+            TabKind::Servers => self.open_servers_tab(window, cx),
+            TabKind::Runs => self.open_runs_tab(None, window, cx),
+            TabKind::Branches => self.open_branches_tab(window, cx),
+            TabKind::GitHub => self.open_github_tab(window, cx),
+            TabKind::Memory => self.open_memory_tab(window, cx),
+            TabKind::Cloudflare => self.open_cloudflare_tab(window, cx),
+            TabKind::PostHog => self.open_posthog_tab(window, cx),
+            TabKind::Usage => self.open_usage_tab(window, cx),
+            TabKind::Gallery => self.open_gallery_tab(window, cx),
+            TabKind::SidebarBuilder => self.open_sidebar_builder(window, cx),
+            TabKind::Isometric => self.open_iso_tab(window, cx),
+            TabKind::Extensions => self.open_extensions_tab(window, cx),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Moves the active tab one place left (`-1`) or right (`1`).
+    fn move_active_tab(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
+        }
+        let env = self.env_mut();
+        let from = env.active_tab;
+        let Some(to) = from.checked_add_signed(delta) else {
+            return;
+        };
+        if env.move_tab(from, to) {
+            let at = env.active_tab;
+            self.tab_scroll.scroll_to_item(at);
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
+    /// A tab dragged onto another in the tab bar takes that tab's place.
+    pub(super) fn drop_tab_at(&mut self, id: u64, to: usize, cx: &mut Context<Self>) {
+        self.lifted_tab = None;
+        if !self.has_projects() {
+            return;
+        }
+        let env = self.env_mut();
+        if let Some(from) = env.tabs.iter().position(|t| t.id == id)
+            && env.move_tab(from, to)
+        {
+            self.save(cx);
+        }
         cx.notify();
     }
 
@@ -565,74 +671,101 @@ impl Shell {
         };
         let split_open = env.split_other().is_some();
         let several = env.tabs.len() > 1;
-        panel = panel
-            .child(
-                ui::menu_item(
-                    "tm-right",
-                    "layout-two-column",
-                    "Open to the right",
-                    false,
-                    true,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.menu = None;
-                    this.split_with(Some(index), SplitDir::Right, window, cx)
-                })),
-            )
-            .child(
-                ui::menu_item("tm-down", "layout-two-row", "Open below", false, true).on_click(
-                    cx.listener(move |this, _, window, cx| {
+        let any_right = index + 1 < env.tabs.len();
+        let can_reopen = !env.closed_tabs.is_empty();
+        panel =
+            panel
+                .child(
+                    ui::menu_item(
+                        "tm-right",
+                        "layout-two-column",
+                        "Open to the right",
+                        false,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.menu = None;
-                        this.split_with(Some(index), SplitDir::Down, window, cx)
-                    }),
-                ),
-            )
-            .when(split_open, |d| {
-                let icon = match env.split.map(|s| s.dir) {
-                    Some(SplitDir::Down) => "arrow-data-transfer-vertical",
-                    _ => "arrow-data-transfer-horizontal",
-                };
-                d.child(
-                    ui::menu_item("tm-swap", icon, "Swap sides", false, true).on_click(
-                        cx.listener(|this, _, _, cx| {
+                        this.split_with(Some(index), SplitDir::Right, window, cx)
+                    })),
+                )
+                .child(
+                    ui::menu_item("tm-down", "layout-two-row", "Open below", false, true).on_click(
+                        cx.listener(move |this, _, window, cx| {
                             this.menu = None;
-                            this.swap_panes(cx)
+                            this.split_with(Some(index), SplitDir::Down, window, cx)
+                        }),
+                    ),
+                )
+                .when(split_open, |d| {
+                    let icon = match env.split.map(|s| s.dir) {
+                        Some(SplitDir::Down) => "arrow-data-transfer-vertical",
+                        _ => "arrow-data-transfer-horizontal",
+                    };
+                    d.child(
+                        ui::menu_item("tm-swap", icon, "Swap sides", false, true).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.menu = None;
+                                this.swap_panes(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        ui::menu_item("tm-unsplit", "square", "Close split", false, true).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.menu = None;
+                                this.close_split(cx)
+                            }),
+                        ),
+                    )
+                })
+                .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
+                .child(
+                    ui::menu_item("tm-close", "cancel01", "Close tab", false, true).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.menu = None;
+                            this.close_tab(index, window, cx)
                         }),
                     ),
                 )
                 .child(
-                    ui::menu_item("tm-unsplit", "square", "Close split", false, true).on_click(
-                        cx.listener(|this, _, _, cx| {
+                    ui::menu_item(
+                        "tm-close-others",
+                        "cancel01",
+                        "Close other tabs",
+                        false,
+                        several,
+                    )
+                    .when(several, |d| {
+                        d.on_click(cx.listener(move |this, _, window, cx| {
                             this.menu = None;
-                            this.close_split(cx)
-                        }),
-                    ),
-                )
-            })
-            .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
-            .child(
-                ui::menu_item("tm-close", "cancel01", "Close tab", false, true).on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        this.menu = None;
-                        this.close_tab(index, window, cx)
+                            this.close_tabs(index, |_| true, window, cx)
+                        }))
                     }),
-                ),
-            )
-            .child(
-                ui::menu_item(
-                    "tm-close-others",
-                    "cancel01",
-                    "Close other tabs",
-                    false,
-                    several,
                 )
-                .when(several, |d| {
-                    d.on_click(cx.listener(move |this, _, window, cx| {
-                        this.menu = None;
-                        this.close_other_tabs(index, window, cx)
-                    }))
-                }),
-            );
+                .child(
+                    ui::menu_item(
+                        "tm-close-right",
+                        "cancel01",
+                        "Close tabs to the right",
+                        false,
+                        any_right,
+                    )
+                    .when(any_right, |d| {
+                        d.on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu = None;
+                            this.close_tabs(index, move |i| i > index, window, cx)
+                        }))
+                    }),
+                )
+                .child(
+                    ui::menu_item("tm-reopen", "undo", "Reopen closed tab", false, can_reopen)
+                        .when(can_reopen, |d| {
+                            d.on_click(cx.listener(|this, _, window, cx| {
+                                this.menu = None;
+                                this.reopen_closed_tab(window, cx)
+                            }))
+                        }),
+                );
         if let TabKind::Session { id, .. } = &tab.kind
             && let Some(si) = env.session_index(id)
         {

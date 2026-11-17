@@ -1499,7 +1499,7 @@ impl Shell {
                 |t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id),
             )
         {
-            self.close_tab(i, window, cx);
+            self.discard_tab(i, window, cx);
         }
         let env = self.env_mut();
         let removed = env.session_index(id).map(|i| env.sessions.remove(i));

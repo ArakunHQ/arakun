@@ -275,7 +275,7 @@ impl Shell {
                 return;
             }
             if let Some(i) = self.env().tabs.iter().position(&is_diff) {
-                self.close_tab(i, window, cx);
+                self.discard_tab(i, window, cx);
             }
             return;
         }

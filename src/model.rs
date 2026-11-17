@@ -429,6 +429,9 @@ pub struct Environment {
     pub tab_back: Vec<u64>,
     /// Tabs gone Back from, for Forward.
     pub tab_fwd: Vec<u64>,
+    /// Tabs closed here, newest last, with the place each had: Reopen closed tab
+    /// takes them back in turn.
+    pub closed_tabs: Vec<(usize, TabKind)>,
     pub split: Option<Split>,
     pub sessions: Vec<Session>,
     pub terminals: Vec<TermTab>,
@@ -493,6 +496,7 @@ impl Environment {
             active_tab: 0,
             tab_back: Vec::new(),
             tab_fwd: Vec::new(),
+            closed_tabs: Vec::new(),
             split: None,
             sessions: Vec::new(),
             terminals: Vec::new(),
@@ -614,6 +618,62 @@ impl Environment {
         } else if !self.tabs.iter().any(|t| t.id == split.other) {
             self.split = None;
         }
+    }
+
+    /// Remembers a closed tab for Reopen closed tab; the oldest go past a limit.
+    pub fn remember_closed(&mut self, index: usize, kind: TabKind) {
+        const KEEP: usize = 25;
+        self.closed_tabs.push((index, kind));
+        let excess = self.closed_tabs.len().saturating_sub(KEEP);
+        self.closed_tabs.drain(..excess);
+    }
+
+    /// Takes out the tabs at the indices `close` picks, keeping `anchor` and the
+    /// active tab when it stays. Returns the closed tabs with their old indices.
+    /// A split whose other tab went closes.
+    pub fn remove_tabs(
+        &mut self,
+        anchor: usize,
+        close: impl Fn(usize) -> bool,
+    ) -> Vec<(usize, Tab)> {
+        let active_id = self.tabs.get(self.active_tab).map(|t| t.id);
+        let anchor_id = self.tabs.get(anchor).map(|t| t.id);
+        let mut closed = Vec::new();
+        for (i, tab) in std::mem::take(&mut self.tabs).into_iter().enumerate() {
+            if i != anchor && close(i) {
+                closed.push((i, tab));
+            } else {
+                self.tabs.push(tab);
+            }
+        }
+        let at = |id: Option<u64>| self.tabs.iter().position(|t| Some(t.id) == id);
+        self.active_tab = at(active_id).or(at(anchor_id)).unwrap_or(0);
+        if self
+            .split
+            .is_some_and(|s| !self.tabs.iter().any(|t| t.id == s.other))
+        {
+            self.split = None;
+        }
+        closed
+    }
+
+    /// Moves the tab at `from` to `to` (clamped), keeping the same tab active.
+    /// False when nothing moved.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        let len = self.tabs.len();
+        let to = to.min(len.saturating_sub(1));
+        if from >= len || from == to {
+            return false;
+        }
+        let active_id = self.tabs[self.active_tab.min(len - 1)].id;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active_tab = self
+            .tabs
+            .iter()
+            .position(|t| t.id == active_id)
+            .unwrap_or(0);
+        true
     }
 
     pub fn session_index(&self, id: &str) -> Option<usize> {
@@ -942,5 +1002,69 @@ mod tests {
         env.active_tab = 0;
         env.settle_split(Some(ids[0]));
         assert!(env.split.is_none());
+    }
+
+    fn titles(env: &Environment) -> Vec<String> {
+        env.tabs.iter().map(|t| name(&t.kind)).collect()
+    }
+
+    fn name(kind: &TabKind) -> String {
+        match kind {
+            TabKind::Browser { url } => url.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn moving_a_tab_keeps_the_same_one_active() {
+        let mut env = env_with(vec![browser("a"), browser("b"), browser("c")]);
+        env.active_tab = 1;
+        assert!(env.move_tab(0, 2));
+        assert_eq!(titles(&env), ["b", "c", "a"]);
+        assert_eq!(env.active_tab, 0);
+        // Past the end lands last; the same place does nothing.
+        assert!(env.move_tab(0, 9));
+        assert_eq!(titles(&env), ["c", "a", "b"]);
+        assert!(!env.move_tab(2, 2));
+        assert!(!env.move_tab(5, 0));
+    }
+
+    #[test]
+    fn closing_tabs_to_the_right_keeps_the_anchor_active() {
+        let mut env = env_with(vec![browser("a"), browser("b"), browser("c"), browser("d")]);
+        env.active_tab = 3;
+        let other = env.tabs[2].id;
+        env.split = Some(Split {
+            other,
+            dir: SplitDir::Right,
+            ratio: 0.5,
+            focus_first: true,
+        });
+        let closed = env.remove_tabs(1, |i| i > 1);
+        let closed: Vec<(usize, String)> =
+            closed.iter().map(|(i, t)| (*i, name(&t.kind))).collect();
+        assert_eq!(closed, [(2, "c".into()), (3, "d".into())]);
+        assert_eq!(titles(&env), ["a", "b"]);
+        assert_eq!(env.active_tab, 1);
+        assert!(env.split.is_none(), "the other pane's tab went");
+    }
+
+    #[test]
+    fn closing_other_tabs_keeps_a_surviving_active_tab() {
+        let mut env = env_with(vec![browser("a"), browser("b"), browser("c")]);
+        env.active_tab = 2;
+        env.remove_tabs(0, |i| i == 1);
+        assert_eq!(titles(&env), ["a", "c"]);
+        assert_eq!(env.active_tab, 1);
+    }
+
+    #[test]
+    fn closed_tabs_are_capped() {
+        let mut env = env_with(vec![browser("a")]);
+        for i in 0..40 {
+            env.remember_closed(i, TabKind::Notes);
+        }
+        assert_eq!(env.closed_tabs.len(), 25);
+        assert_eq!(env.closed_tabs[0].0, 15, "the oldest went");
     }
 }

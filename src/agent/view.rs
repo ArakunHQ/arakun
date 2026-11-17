@@ -98,11 +98,71 @@ fn rel_path(path: &Path, cwd: &Path) -> String {
         .to_string()
 }
 
+/// Phase ticks in one turn of the spinner and one wave of the working dots:
+/// about a second at the 83 ms tick.
+const SPIN_TICKS: u32 = 12;
+
+/// A faint ring with an arc going round it. The arc moves a twelfth of a turn
+/// per tick, so the tick's steps read as even motion.
 fn spinner(phase: u32, size: f32, color: Hsla) -> AnyElement {
-    icon("circle-dashed", size)
-        .text_color(color)
-        .with_transformation(Transformation::rotate(radians(phase as f32 * 0.4)))
+    let angle = (phase % SPIN_TICKS) as f32 / SPIN_TICKS as f32 * std::f32::consts::TAU;
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .child(
+            icon("circle", size)
+                .absolute()
+                .top_0()
+                .left_0()
+                .text_color(color)
+                .opacity(0.25),
+        )
+        .child(
+            icon("spinner-arc", size)
+                .absolute()
+                .top_0()
+                .left_0()
+                .text_color(color)
+                .with_transformation(Transformation::rotate(radians(angle))),
+        )
         .into_any_element()
+}
+
+/// Three dots in a wave in front of the live header: the agent is working.
+/// Still while it waits for the user, since nothing is working then, and when
+/// the window is in the background, so nothing ticks there.
+fn working_dots(phase: u32, animate: bool, color: Hsla) -> AnyElement {
+    const DOT: f32 = 5.;
+    const LIFT: f32 = 2.;
+    let mut row = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(crate::ui::sp(3.))
+        .h(px(DOT + LIFT * 2.));
+    for i in 0..3u32 {
+        let k = if animate { dot_wave(phase, i) } else { 0.5 };
+        row = row.child(
+            div()
+                .relative()
+                .top(px(LIFT * (1. - 2. * k)))
+                .size(px(DOT))
+                .rounded_full()
+                .bg(color)
+                .opacity(0.3 + 0.7 * k),
+        );
+    }
+    row.into_any_element()
+}
+
+/// How far up dot `i` is in the wave, 0 to 1. Each dot trails the one before
+/// by a sixth of the wave.
+fn dot_wave(phase: u32, i: u32) -> f32 {
+    let t = (phase % SPIN_TICKS + SPIN_TICKS - i * 2) % SPIN_TICKS;
+    let x = t as f32 / SPIN_TICKS as f32 * std::f32::consts::TAU;
+    let k = 0.5 - 0.5 * x.cos();
+    k * k
 }
 
 fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
@@ -1549,6 +1609,17 @@ impl ThreadView {
             .py(crate::ui::sp(4.))
             .text_size(px(crate::ui::TEXT_LG))
             .text_color(theme::text_subtle())
+            .child(working_dots(
+                self.phase,
+                animate && !cancelling,
+                if *status == ThreadStatus::NeedsInput {
+                    amber()
+                } else if cancelling {
+                    theme::text_faint()
+                } else {
+                    theme::working()
+                },
+            ))
             .child(div().flex_none().child(kind.label()))
             .child(div().text_color(theme::text_faint()).child("·"))
             .child(
@@ -2239,6 +2310,17 @@ impl Render for ThreadView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_working_dots_rise_one_after_another() {
+        // Each dot peaks two ticks after the one before, and the wave repeats.
+        let peak = |i| (0..SPIN_TICKS).find(|&p| dot_wave(p, i) == 1.).unwrap();
+        assert_eq!([peak(0), peak(1), peak(2)], [6, 8, 10]);
+        assert_eq!(dot_wave(3, 1), dot_wave(3 + SPIN_TICKS, 1));
+        assert!((0..SPIN_TICKS).all(|p| (0. ..=1.).contains(&dot_wave(p, 2))));
+        // The tick counter wraps without a jump or an overflow.
+        assert!(dot_wave(u32::MAX, 2).is_finite());
+    }
 
     fn agent(text: &str) -> Entry {
         Entry::Agent { text: text.into() }

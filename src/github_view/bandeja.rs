@@ -762,6 +762,34 @@ impl GitHubView {
             .rounded(crate::ui::rad(ui::RADIUS))
             .cursor_pointer()
             .when(selected, |d| d.bg(theme::fill_selected()))
+            // After J or K: once the row is laid out, the list scrolls just
+            // enough to show it.
+            .when(selected, |d| {
+                let (flag, list) = (self.reveal_pick.clone(), self.queue_scroll.clone());
+                d.relative().child(
+                    gpui::canvas(
+                        move |row, window, _| {
+                            if !flag.replace(false) {
+                                return;
+                            }
+                            let view = list.bounds();
+                            let mut off = list.offset();
+                            if let Some(y) = reveal_offset(
+                                (row.top().as_f32(), row.bottom().as_f32()),
+                                (view.top().as_f32(), view.bottom().as_f32()),
+                                off.y.as_f32(),
+                            ) {
+                                off.y = px(y);
+                                list.set_offset(off);
+                                window.refresh();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
             .when(!selected, |d| d.hover(|st| st.bg(theme::fill_hover())))
             // A stacked pull request sits under its base; the columns stay put.
             .when(r.nested, |d| d.child(div().w(px(18.)).flex_none()))
@@ -878,6 +906,19 @@ fn verdict_parts(texto: &str, counted: String, rest: String) -> (String, String,
     }
 }
 
+/// The list's new vertical offset that brings a row (`top`, `bottom`) into
+/// the view (`top`, `bottom`), moving as little as it can; None when it
+/// already shows. Offsets grow negative as the list scrolls down.
+fn reveal_offset(row: (f32, f32), view: (f32, f32), off: f32) -> Option<f32> {
+    if row.0 < view.0 {
+        Some(off + (view.0 - row.0))
+    } else if row.1 > view.1 {
+        Some(off - (row.1 - view.1))
+    } else {
+        None
+    }
+}
+
 /// A share of the row's width.
 fn relative_w(f: f32) -> gpui::DefiniteLength {
     gpui::relative(f)
@@ -932,6 +973,16 @@ mod tests {
             s.iter().flat_map(|s| &s.rows).filter(|r| r.unread).count(),
             1
         );
+    }
+
+    #[test]
+    fn a_picked_row_scrolls_into_view() {
+        // View from 100 to 500, list at the top.
+        assert_eq!(reveal_offset((200., 240.), (100., 500.), 0.), None);
+        // Below: scroll down just enough.
+        assert_eq!(reveal_offset((480., 520.), (100., 500.), 0.), Some(-20.));
+        // Above: scroll back up just enough.
+        assert_eq!(reveal_offset((60., 100.), (100., 500.), -300.), Some(-260.));
     }
 
     #[test]

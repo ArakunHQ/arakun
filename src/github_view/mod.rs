@@ -330,6 +330,8 @@ pub struct GitHubView {
     /// Timeline bodies shown in full past their first lines, by key.
     expanded: HashSet<String>,
     queue_scroll: ScrollHandle,
+    /// J or K moved the pick: its row scrolls into view at the next paint.
+    reveal_pick: Rc<Cell<bool>>,
     body_scroll: ScrollHandle,
     /// The timeline of the picked item, and the list that shows it: only the
     /// rows on screen are built and laid out, so scrolling a long one stays
@@ -519,6 +521,7 @@ impl GitHubView {
             size: Rc::new(Cell::new((1200., 900.))),
             expanded: HashSet::new(),
             queue_scroll: ScrollHandle::new(),
+            reveal_pick: Rc::default(),
             body_scroll: ScrollHandle::new(),
             timeline: None,
             timeline_list: ListState::new(0, ListAlignment::Top, px(600.)),
@@ -820,6 +823,8 @@ impl GitHubView {
         let open = opens_on_step(self.sheet_open);
         if let Some(entry) = self.row_entry(&rows[next], cx) {
             self.select(entry, open, cx);
+            // The picked row may be out of view: the list follows it.
+            self.reveal_pick.set(true);
         }
     }
 

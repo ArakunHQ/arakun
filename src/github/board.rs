@@ -715,10 +715,13 @@ mod tests {
 
     #[test]
     fn an_entry_named_by_its_address_is_found_by_its_repository() {
-        let b = parse_board(
-            br#"{"prs": [{"number": 7, "url": "https://github.com/ArakunHQ/arakun/pull/7"}]}"#,
-        )
-        .unwrap();
+        // On the host gh talks to, whatever GH_HOST says on this machine.
+        let url = format!(
+            "https://{}/ArakunHQ/arakun/pull/7",
+            crate::github::pr::gh_host()
+        );
+        let json = serde_json::json!({"prs": [{"number": 7, "url": url}]});
+        let b = parse_board(json.to_string().as_bytes()).unwrap();
         assert_eq!(b.find("arakunhq/arakun", 7).map(|p| p.number), Some(7));
     }
 

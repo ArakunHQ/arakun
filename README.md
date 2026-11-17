@@ -323,9 +323,17 @@ From a terminal, `arakun update` downloads the latest release and installs it. I
 is running, it is installed when Arakun quits; `arakun restart` does that now.
 `arakun update --check` only says whether there is a newer release.
 
-Arakun updates itself where it runs from, so that folder must be writable by you (the
-install scripts' folders are). A build from source never updates itself: a release would
-take away the browser. Pull and build it again instead.
+Arakun updates itself where it runs from, so that folder and the binary must be yours
+(the install scripts' folders are). A binary that belongs to another user, such as one a
+package manager installed, is left alone: update it the way it was installed. A build
+from source never updates itself: a release would take away the browser. Pull and build
+it again instead.
+
+What is checked: the download matches the checksum in the release's `SHA256SUMS`, and
+the new binary starts and says the version it should. This catches a broken or cut-short
+download. It does not prove who made the release, since `SHA256SUMS` comes from the same
+place. The install scripts trust the same thing. To check where a release came from, use
+`gh attestation verify` (see [Manual download](#manual-download)).
 
 ### Manual download
 

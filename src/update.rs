@@ -139,6 +139,9 @@ impl Version {
 struct Saved {
     #[serde(default)]
     staged: Option<String>,
+    /// The staged binary's SHA-256, checked again before it is installed.
+    #[serde(default)]
+    staged_sha256: Option<String>,
     #[serde(default)]
     notified: Option<String>,
 }
@@ -177,11 +180,14 @@ fn platform() -> Result<(&'static str, &'static str), String> {
 
 /// What gets replaced: the binary on Linux and Windows, the whole
 /// `Arakun.app` on macOS. `staged` is where the new one waits, next to it so
-/// the swap is a rename on one disk.
+/// the swap is a rename on one disk. It is unpacked as `incoming` and renamed
+/// to `staged` once it is complete and starts, so nothing half-written ever
+/// sits at `staged`.
 #[derive(Clone, Debug, PartialEq)]
 struct Install {
     target: PathBuf,
     staged: PathBuf,
+    incoming: PathBuf,
     /// Where the old one goes for the swap (Windows and macOS).
     old: PathBuf,
 }
@@ -199,7 +205,23 @@ impl Install {
         );
         // ~/.local/bin/arakun links into Arakun.app on macOS.
         let exe = crate::platform::canonicalize(&exe).unwrap_or(exe);
-        Install::for_exe(&exe)
+        let install = Install::for_exe(&exe)?;
+        // A package manager installs as root: leave its files to it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let owner = std::fs::metadata(&install.target)
+                .map_err(|e| format!("{}: {e}", install.target.display()))?
+                .uid();
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if owner != unsafe { libc::geteuid() } {
+                return Err(format!(
+                    "{} belongs to another user or a package manager; update it the way it was installed",
+                    install.target.display()
+                ));
+            }
+        }
+        Ok(install)
     }
 
     fn for_exe(exe: &Path) -> Result<Install, String> {
@@ -217,6 +239,7 @@ impl Install {
             Ok(Install {
                 target: app.to_path_buf(),
                 staged: parent.join(".Arakun.app.update"),
+                incoming: parent.join(".Arakun.app.incoming"),
                 old: parent.join(".Arakun.app.old"),
             })
         } else {
@@ -225,18 +248,68 @@ impl Install {
             Ok(Install {
                 target: exe.to_path_buf(),
                 staged: dir.join(format!(".{name}.update")),
+                incoming: dir.join(format!(".{name}.incoming")),
                 old: dir.join(format!(".{name}.old")),
             })
         }
     }
 
-    /// The binary inside what is staged, which `--version` is asked of.
-    fn staged_binary(&self) -> PathBuf {
+    /// The binary inside `root` (`staged` or `incoming`).
+    fn binary_in(&self, root: &Path) -> PathBuf {
         if cfg!(target_os = "macos") {
-            self.staged.join("Contents/MacOS/arakun")
+            root.join("Contents/MacOS/arakun")
         } else {
-            self.staged.clone()
+            root.to_path_buf()
         }
+    }
+
+    /// Whether `staged` holds the binary `saved` recorded, whole and unchanged.
+    fn staged_intact(&self, saved: &Saved) -> bool {
+        saved.staged_sha256.as_deref().is_some_and(|want| {
+            hash_file(&self.binary_in(&self.staged)).is_ok_and(|have| have == want)
+        })
+    }
+}
+
+/// Held while one updater checks, downloads or installs, so `arakun update`,
+/// Check now and the app's own checks never remove each other's files.
+struct Lock {
+    _file: std::fs::File,
+}
+
+/// `None` while another updater holds it.
+fn lock() -> Result<Option<Lock>, String> {
+    let path = crate::platform::app_dir().join("update.lock");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(Lock { _file: file })),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hash_file(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = sha2::Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            return Ok(hex(&hash.finalize()));
+        }
+        hash.update(&buf[..n]);
     }
 }
 
@@ -290,7 +363,11 @@ pub enum Outcome {
 
 /// Looks for a newer release and stages it. Blocking: call it off the UI thread.
 pub fn check() -> Result<Outcome, String> {
-    let result = check_inner();
+    let result = match lock() {
+        Ok(Some(_lock)) => check_locked(),
+        Ok(None) => Err("another Arakun is updating already".into()),
+        Err(e) => Err(e),
+    };
     set_status(match &result {
         Ok(Outcome::UpToDate) => Status::UpToDate,
         Ok(Outcome::Staged(tag, _)) => Status::Ready(tag.clone()),
@@ -299,7 +376,7 @@ pub fn check() -> Result<Outcome, String> {
     result
 }
 
-fn check_inner() -> Result<Outcome, String> {
+fn check_locked() -> Result<Outcome, String> {
     if !release_build() {
         return Err("this build is not a release, so it does not update itself".into());
     }
@@ -313,11 +390,20 @@ fn check_inner() -> Result<Outcome, String> {
     }
     let mut saved = load();
     let install = Install::here()?;
-    let ready = saved.staged.as_deref() == Some(tag.as_str()) && install.staged.exists();
+    let ready = saved.staged.as_deref() == Some(tag.as_str()) && install.staged_intact(&saved);
     if !ready {
         set_status(Status::Downloading(tag.clone()));
         stage(&tag, &install)?;
+        // Forget the old update before its file goes, so a quit from here on
+        // finds nothing to install rather than something half-replaced.
+        saved.staged = None;
+        saved.staged_sha256 = None;
+        save(&saved).map_err(|e| format!("could not save the update's state: {e}"))?;
+        promote(&install).map_err(|e| format!("{}: {e}", install.staged.display()))?;
+        let hash = hash_file(&install.binary_in(&install.staged))
+            .map_err(|e| format!("{}: {e}", install.staged.display()))?;
         saved.staged = Some(tag.clone());
+        saved.staged_sha256 = Some(hash);
     }
     let first = saved.notified.as_deref() != Some(tag.as_str());
     saved.notified = Some(tag.clone());
@@ -325,7 +411,7 @@ fn check_inner() -> Result<Outcome, String> {
     Ok(Outcome::Staged(tag, first))
 }
 
-/// Downloads `tag`, checks it, and puts it at `install.staged`.
+/// Downloads `tag`, checks it, and puts it at `install.incoming`.
 fn stage(tag: &str, install: &Install) -> Result<(), String> {
     let (platform, ext) = platform()?;
     let name = format!("arakun-{tag}-{platform}");
@@ -350,15 +436,22 @@ fn stage(tag: &str, install: &Install) -> Result<(), String> {
                 "checksum mismatch for {file} (expected {want}, got {have})"
             ));
         }
-        remove_any(&install.staged).map_err(|e| format!("{}: {e}", install.staged.display()))?;
-        unpack(&archive, &work, &name, &install.staged)?;
-        verify(&install.staged_binary(), tag)
+        remove_any(&install.incoming)
+            .map_err(|e| format!("{}: {e}", install.incoming.display()))?;
+        unpack(&archive, &work, &name, &install.incoming)?;
+        verify(&install.binary_in(&install.incoming), tag)
     })();
     let _ = std::fs::remove_dir_all(&work);
     if result.is_err() {
-        let _ = remove_any(&install.staged);
+        let _ = remove_any(&install.incoming);
     }
     result
+}
+
+/// Moves a complete, checked `incoming` to `staged`.
+fn promote(install: &Install) -> std::io::Result<()> {
+    remove_any(&install.staged)?;
+    std::fs::rename(&install.incoming, &install.staged)
 }
 
 /// Saves `url` to `to` and returns its SHA-256 in hex.
@@ -388,7 +481,7 @@ fn download(url: &str, to: &Path) -> Result<String, String> {
     }
     out.sync_all()
         .map_err(|e| format!("{}: {e}", to.display()))?;
-    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hex(&hash.finalize()))
 }
 
 /// Takes the app out of `archive` and puts it at `to`.
@@ -425,11 +518,7 @@ fn unpack(archive: &Path, work: &Path, name: &str, to: &Path) -> Result<(), Stri
     let x = work.join("x");
     std::fs::create_dir_all(&x).map_err(|e| format!("{}: {e}", x.display()))?;
     let flags = if cfg!(windows) { "-xf" } else { "-xzf" };
-    run(crate::platform::command("tar")
-        .arg("-C")
-        .arg(&x)
-        .arg(flags)
-        .arg(archive))?;
+    run(tar().arg("-C").arg(&x).arg(flags).arg(archive))?;
     let bin = if cfg!(windows) {
         "arakun.exe"
     } else {
@@ -467,6 +556,17 @@ fn verify(bin: &Path, tag: &str) -> Result<(), String> {
     }
 }
 
+/// Windows' own bsdtar. Git for Windows' GNU tar may come first on `PATH`: it
+/// can't open a zip, and reads `C:\…` as a remote host.
+fn tar() -> std::process::Command {
+    if cfg!(windows)
+        && let Some(root) = std::env::var_os("SystemRoot")
+    {
+        return crate::platform::command(Path::new(&root).join("System32").join("tar.exe"));
+    }
+    crate::platform::command("tar")
+}
+
 fn run(cmd: &mut std::process::Command) -> Result<(), String> {
     let out = cmd
         .output()
@@ -500,20 +600,30 @@ pub fn apply_staged() -> Result<Option<String>, String> {
     if !release_build() {
         return Ok(None);
     }
+    match lock()? {
+        Some(_lock) => apply_locked(),
+        // Another updater is busy; what it stages is installed at the next quit.
+        None => Ok(None),
+    }
+}
+
+fn apply_locked() -> Result<Option<String>, String> {
     let mut saved = load();
     let Some(tag) = saved.staged.clone() else {
         return Ok(None);
     };
     let install = Install::here()?;
     let newer = Version::parse(&tag).is_some_and(|v| v > Version::current());
-    if newer && install.staged.exists() {
+    let intact = newer && install.staged_intact(&saved);
+    if intact {
         swap(&install).map_err(|e| format!("could not install Arakun {tag}: {e}"))?;
     } else {
         let _ = remove_any(&install.staged);
     }
     saved.staged = None;
+    saved.staged_sha256 = None;
     save(&saved).map_err(|e| format!("could not save the update's state: {e}"))?;
-    Ok(newer.then_some(tag))
+    Ok(intact.then_some(tag))
 }
 
 fn swap(install: &Install) -> std::io::Result<()> {
@@ -533,13 +643,15 @@ fn swap(install: &Install) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Removes what an earlier update left behind (Windows' old .exe).
+/// Removes what an earlier update left behind: Windows' old .exe, and a
+/// download a crash or a quit cut short. Not while another updater runs.
 pub fn clean_up() {
     if !release_build() {
         return;
     }
-    if let Ok(install) = Install::here() {
+    if let (Ok(Some(_lock)), Ok(install)) = (lock(), Install::here()) {
         let _ = remove_any(&install.old);
+        let _ = remove_any(&install.incoming);
     }
 }
 
@@ -587,20 +699,29 @@ pub fn cli(args: &[String]) -> i32 {
             }
         };
     }
+    let Ok(Some(_lock)) = lock() else {
+        eprintln!("arakun: another Arakun is updating already; try again in a moment");
+        return 1;
+    };
     println!("arakun: looking for a new release");
-    match check() {
+    match check_locked() {
         Ok(Outcome::UpToDate) => {
             println!("arakun: {current} is the latest release");
             0
         }
         Ok(Outcome::Staged(tag, _)) if crate::control::app_running() => {
+            // Only Linux and macOS can start Arakun again by themselves.
+            let now = if cfg!(unix) {
+                "arakun restart does that now"
+            } else {
+                "quit Arakun and open it again"
+            };
             println!(
-                "arakun: Arakun {tag} is downloaded; it is installed when Arakun quits \
-                 (arakun restart does that now)"
+                "arakun: Arakun {tag} is downloaded; it is installed when Arakun quits ({now})"
             );
             0
         }
-        Ok(Outcome::Staged(..)) => match apply_staged() {
+        Ok(Outcome::Staged(..)) => match apply_locked() {
             Ok(Some(tag)) => {
                 println!("arakun: installed Arakun {tag}");
                 0
@@ -686,7 +807,8 @@ def456 *arakun-v0.3.0-windows-x86_64.zip
             let i = Install::for_exe(&dir.join("arakun")).unwrap();
             assert_eq!(i.target, dir.join("arakun"));
             assert_eq!(i.staged, dir.join(".arakun.update"));
-            assert_eq!(i.staged_binary(), i.staged);
+            assert_eq!(i.incoming, dir.join(".arakun.incoming"));
+            assert_eq!(i.binary_in(&i.staged), i.staged);
         }
     }
 
@@ -698,6 +820,7 @@ def456 *arakun-v0.3.0-windows-x86_64.zip
         let install = Install {
             target: dir.join("arakun"),
             staged: dir.join(".arakun.update"),
+            incoming: dir.join(".arakun.incoming"),
             old: dir.join(".arakun.old"),
         };
         std::fs::write(&install.target, "old").unwrap();
@@ -706,6 +829,32 @@ def456 *arakun-v0.3.0-windows-x86_64.zip
         assert_eq!(std::fs::read_to_string(&install.target).unwrap(), "new");
         assert!(!install.staged.exists());
         assert!(!install.old.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_the_staged_file_that_was_recorded_is_trusted() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("arakun-update-intact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let install = Install::for_exe(&dir.join("arakun")).unwrap();
+        std::fs::write(&install.incoming, "whole new binary").unwrap();
+        promote(&install).unwrap();
+        assert!(!install.incoming.exists());
+        let mut saved = Saved {
+            staged: Some("v9.0.0".into()),
+            staged_sha256: Some(hash_file(&install.staged).unwrap()),
+            notified: None,
+        };
+        assert!(install.staged_intact(&saved));
+        // A newer download cut short, or a crash halfway through writing it.
+        std::fs::write(&install.staged, "whole new bin").unwrap();
+        assert!(!install.staged_intact(&saved));
+        saved.staged_sha256 = None;
+        assert!(!install.staged_intact(&saved));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

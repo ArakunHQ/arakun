@@ -44,6 +44,12 @@ jobs:
       run:
         working-directory: relay
     steps:
+      # The `if` above compares without case, so a branch named MAIN gets this
+      # far. The shell compares exactly, before anything is checked out.
+      - name: Only main deploys
+        working-directory: .
+        run: '[ "$GITHUB_REF" = "refs/heads/main" ] || { echo "::error::$GITHUB_REF is not refs/heads/main"; exit 1; }'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

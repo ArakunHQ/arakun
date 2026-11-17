@@ -157,6 +157,20 @@ terminal-only. The status line and keybindings from your settings don't apply in
   does anything new in the organizations and repositories on your watch list. Click the
   line under "Review queue" to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
+- **Pull request agent.** With a pull request agent on a server of your own
+  (arakun-pilot), its cards show at the top of the queue under "Your agent":
+  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
+  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/items` every
+  minute. Approve and request changes go through the same second click, with your own
+  `gh`; an approval only goes to the commit the agent read. When the agent asks you
+  something with ready answers, they show as buttons on its card, with "Other answer…"
+  for your own words (`POST <url>/items/<id>/answer`). What you saw and dealt with is
+  kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
+  Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
+  `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
+  or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
+  too. On that card `Tab` switches between your pull request and a new branch (see
+  [Keyboard shortcuts](#keyboard-shortcuts)).
 
 <details>
 <summary>When the GitHub tab reads GitHub, and what it stores</summary>
@@ -727,7 +741,9 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
   a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
   (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
-  agent. A question offers a short answer from Claude Haiku through Claude Code, on
+  agent. On a cloud task card (`cloud: <task>`), `Enter` sends it, `Tab` switches
+  between the open pull request and a new branch (only when there is a pull request),
+  and `Esc` cancels. A question offers a short answer from Claude Haiku through Claude Code, on
   your Claude account or the key or endpoint Claude Code is set up with: `Enter` on the offer asks, and nothing is sent
   before. A sentence such as "merge #64 when the checks pass and tell me" becomes an
   automation once you confirm it; one Arakun cannot read itself offers to have Claude

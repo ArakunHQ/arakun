@@ -8,6 +8,7 @@ use gpui::{App, ClipboardItem, Context, SharedString, Window};
 
 use super::island::Open;
 use super::*;
+use crate::github::pilot;
 use crate::github::pr::{self, ItemRef};
 use crate::github::queue::{Group, Lane};
 use crate::island::AlertKind;
@@ -349,6 +350,33 @@ impl Shell {
                 })
                 .detach();
             }
+            PaletteEvent::CloudTask(req) => {
+                let req = req.clone();
+                let weak = palette.downgrade();
+                cx.spawn_in(window, async move |this, cx| {
+                    // Read again: the admin token is only taken when a task goes.
+                    let result = cx
+                        .background_spawn(async move {
+                            let cfg = pilot::load_config()
+                                .ok_or("couldn't find arakun-pilot's client.json")?;
+                            pilot::send_task(&cfg, &req)
+                        })
+                        .await;
+                    let shown = weak
+                        .update_in(cx, |p, window, cx| p.cloud_sent(result.clone(), window, cx));
+                    // The palette closed meanwhile: the island says it instead.
+                    if shown.is_err() {
+                        let _ = this.update(cx, |this, cx| {
+                            let (kind, text) = match &result {
+                                Ok(id) => (AlertKind::Info, palette::cloud::sent_note(id)),
+                                Err(e) => (AlertKind::Warning, format!("Not sent: {e}")),
+                            };
+                            this.notify_from(kind, "Cloud agent", &text, None, None, "github", cx);
+                        });
+                    }
+                })
+                .detach();
+            }
             PaletteEvent::PinsChanged => {
                 self.pins = palette::pins::Pins::load();
                 cx.notify();
@@ -447,6 +475,14 @@ impl Shell {
             failures: self.palette_failures(cx),
             clipboard: cx.read_from_clipboard().and_then(|c| c.text()),
             hour: local_hour(),
+            pilot: self
+                .pilot
+                .read(cx)
+                .config()
+                .map(|c| palette::cloud::PilotSeed {
+                    pull: self.github_view.read(cx).own_open_pull(cx),
+                    admin: c.admin_token.is_some(),
+                }),
         }
     }
 
@@ -507,7 +543,7 @@ impl Shell {
         self.palette_runs(cx, &mut items);
         self.palette_places(cx, &mut items);
         self.palette_views(&mut items);
-        self.palette_commands(&mut items);
+        self.palette_commands(&mut items, cx);
         self.palette_settings(&mut items);
         // CoderSpace tasks waiting on the person, as the old switcher listed them.
         #[cfg(feature = "coderlabs")]
@@ -1100,7 +1136,7 @@ impl Shell {
         }
     }
 
-    fn palette_commands(&self, items: &mut Vec<Item>) {
+    fn palette_commands(&self, items: &mut Vec<Item>, cx: &App) {
         let mut add = |key: &str,
                        icon: &'static str,
                        label: &str,
@@ -1282,6 +1318,9 @@ impl Shell {
             "Opens a terminal with Codex's ChatGPT login.",
             Target::SignIn(crate::agent::AgentKind::Codex),
         );
+        // The settings pilot read last (every minute, off this thread's
+        // drawing): the palette never waits on the disk.
+        items.extend(cloud_command(self.pilot.read(cx).config()));
     }
 
     fn palette_settings(&self, items: &mut Vec<Item>) {
@@ -1455,6 +1494,13 @@ impl Shell {
                     prompt.push_str(&format!("\n\nIt points at {p}:{l}."));
                 }
                 self.palette_ask(prompt, None, None, window, cx);
+            }
+            // A pin of "Send to the cloud agent…": the palette, at its form.
+            Target::CloudTask => {
+                self.open_palette(window, cx);
+                if let Some((Modal::Palette(p), _)) = &self.modal {
+                    p.clone().update(cx, |p, cx| p.start_cloud(cx));
+                }
             }
             Target::Merge(_) | Target::Nothing => {}
         }
@@ -2036,9 +2082,53 @@ impl Shell {
     }
 }
 
+/// "Send to the cloud agent…", offered only when arakun-pilot is set up.
+fn cloud_command(config: Option<&pilot::Config>) -> Option<Item> {
+    let config = config?;
+    let blurb = if config.admin_token.is_some() {
+        "Hands a task to arakun-pilot: it works on your open pull request or on a new branch, and the result comes back as a card. Also: “cloud: <task>”."
+    } else {
+        "Hands a task to arakun-pilot. It needs \"admin_token\" in its client.json."
+    };
+    Some(
+        Item::new(
+            "command:cloud-task",
+            Kind::Command,
+            "Send to the cloud agent…",
+            Target::CloudTask,
+        )
+        .icon("cloud-upload", Tint::Violet)
+        .section("Commands")
+        .boost(-5)
+        .preview(Preview::Command {
+            blurb: blurb.to_string(),
+            keys: Vec::new(),
+            cli: None,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cloud_command_needs_pilot_set_up() {
+        assert!(cloud_command(None).is_none());
+        let cfg = pilot::parse_config(br#"{"url": "https://p.dev", "token": "t"}"#).unwrap();
+        let item = cloud_command(Some(&cfg)).unwrap();
+        assert_eq!(item.target, Target::CloudTask);
+        assert!(
+            matches!(&item.preview, Preview::Command { blurb, .. } if blurb.contains("admin_token"))
+        );
+        let admin =
+            pilot::parse_config(br#"{"url": "https://p.dev", "token": "t", "admin_token": "a"}"#)
+                .unwrap();
+        assert!(matches!(
+            &cloud_command(Some(&admin)).unwrap().preview,
+            Preview::Command { blurb, .. } if !blurb.contains("admin_token")
+        ));
+    }
 
     #[test]
     fn checks_fold_into_bars_keeping_failures() {

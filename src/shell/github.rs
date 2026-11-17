@@ -5,6 +5,7 @@ use gpui::{App, Context, SharedString, Window};
 
 use super::island::Open;
 use super::*;
+use crate::github::pilot::{self, PilotEvent};
 use crate::github::{self, GitHubEvent, Notification};
 use crate::github_view::GitHubViewEvent;
 use crate::island::AlertKind;
@@ -33,12 +34,90 @@ impl Shell {
         cx.notify();
     }
 
-    /// The rail badge: how many things wait on the user, and whether any
-    /// unread notification is one the alert rule cares about.
+    /// The rail badge: how many things wait on the user (the agent's cards
+    /// too), and whether any is one the alert rule cares about.
     pub(super) fn github_badge(&self, cx: &App) -> Option<(usize, bool)> {
         let g = self.github.read(cx);
-        let on_you = g.on_you();
-        (on_you > 0).then(|| (on_you, g.wants_attention()))
+        let p = self.pilot.read(cx);
+        let on_you = g.on_you() + p.count(g.focus());
+        (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent(g.focus())))
+    }
+
+    /// Whether the GitHub tab is what the user looks at right now.
+    fn watching_github(&self, window: &Window) -> bool {
+        window.is_window_active()
+            && if self.has_projects() {
+                matches!(
+                    self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
+                    Some(TabKind::GitHub)
+                )
+            } else {
+                self.github_alone
+            }
+    }
+
+    /// A notice for each new card that needs the user: the agent stopped for
+    /// them, or an important pull request waits. None while the tab is in front.
+    pub(super) fn on_pilot_event(
+        &mut self,
+        ev: &PilotEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let PilotEvent::New(new) = ev;
+        if self.watching_github(window) {
+            return;
+        }
+        // What the tab's focus leaves out doesn't alert.
+        let focus = self.github.read(cx).focus().to_vec();
+        let new: Vec<pilot::Item> = new.iter().filter(|i| i.in_focus(&focus)).cloned().collect();
+        if new.is_empty() {
+            return;
+        }
+        if new.len() > NOTICES_AT_ONCE {
+            self.notify_from(
+                AlertKind::Info,
+                "Your agent",
+                &format!("{} things wait for you on GitHub", new.len()),
+                Some(Open::GitHub(None)),
+                None,
+                "github",
+                cx,
+            );
+            return;
+        }
+        for item in new {
+            let (title, text) = item.notice();
+            let image = self
+                .github
+                .read(cx)
+                .avatar(&item.author)
+                .map(std::path::Path::to_path_buf);
+            self.notify_from(
+                if item.kind == pilot::Kind::NeedsYou {
+                    AlertKind::Warning
+                } else {
+                    AlertKind::Info
+                },
+                &title,
+                &text,
+                Some(Open::Pilot(item.id.clone())),
+                image.as_deref(),
+                "github",
+                cx,
+            );
+        }
+    }
+
+    /// "Ver" on an agent notice: the GitHub tab, at the card.
+    pub(super) fn open_pilot_notice(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_github_tab(window, cx);
+        self.github_view.update(cx, |v, cx| v.reveal_pilot(id, cx));
     }
 
     pub(super) fn on_github_view_event(
@@ -78,16 +157,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let GitHubEvent::New(new) = ev;
-        let watching = window.is_window_active()
-            && if self.has_projects() {
-                matches!(
-                    self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
-                    Some(TabKind::GitHub)
-                )
-            } else {
-                self.github_alone
-            };
-        if watching {
+        if self.watching_github(window) {
             return;
         }
         let watch = self.github.read(cx).watch().to_vec();

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::git;
 
 pub mod avatars;
+pub mod pilot;
 pub mod pr;
 pub mod pulse;
 pub mod queue;
@@ -873,6 +874,8 @@ pub struct GitHub {
     avatars_busy: bool,
     /// Tells the poll the gap changed (the window's activity, `X-Poll-Interval`).
     poll_wake: mpsc::UnboundedSender<()>,
+    /// People shown elsewhere in the tab (the agent's cards).
+    extra_people: Vec<String>,
     _poll: Task<()>,
 }
 
@@ -952,6 +955,7 @@ impl GitHub {
             avatars: HashMap::new(),
             avatars_busy: false,
             poll_wake,
+            extra_people: Vec::new(),
             _poll: poll,
         }
     }
@@ -1355,11 +1359,20 @@ impl GitHub {
         }
     }
 
+    /// Pictures for people the tab shows outside the queue.
+    pub fn want_people(&mut self, people: Vec<String>, cx: &mut Context<Self>) {
+        if people != self.extra_people {
+            self.extra_people = people;
+            self.fetch_avatars(cx);
+        }
+    }
+
     /// Everyone the tab can show: the user, the queue's authors, the people
-    /// of every item read, and who waits in the pulse.
+    /// of every item read, who waits in the pulse, and the agent's cards.
     fn shown_people(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         out.extend(self.me.clone());
+        out.extend(self.extra_people.iter().cloned());
         // Owners too: an island notice shows the organization's picture when
         // the author isn't known yet.
         out.extend(self.unread.iter().map(|n| n.repository.owner.login.clone()));

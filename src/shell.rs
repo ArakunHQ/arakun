@@ -393,7 +393,8 @@ pub struct Shell {
     branches_view: Entity<BranchesView>,
     github: Entity<GitHub>,
     github_view: Entity<GitHubView>,
-    _github: [Subscription; 3],
+    pilot: Entity<crate::github::pilot::Pilot>,
+    _github: [Subscription; 5],
     extensions_view: Entity<ExtensionsView>,
     _extensions_view: Subscription,
     _branches_view: Subscription,
@@ -709,8 +710,13 @@ impl Shell {
             this.on_branches_event(ev, window, cx)
         });
         let github = cx.new(GitHub::new);
-        let github_view = cx.new(|cx| GitHubView::new(github.clone(), cx));
+        let pilot = cx.new(crate::github::pilot::Pilot::new);
+        let github_view = cx.new(|cx| GitHubView::new(github.clone(), pilot.clone(), cx));
         let github_subs = [
+            cx.observe(&pilot, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&pilot, window, |this, _, ev, window, cx| {
+                this.on_pilot_event(ev, window, cx)
+            }),
             // The rail badge counts what the model holds.
             cx.observe(&github, |_, _, cx| cx.notify()),
             cx.subscribe_in(&github_view, window, |this, _, ev, window, cx| {
@@ -850,6 +856,7 @@ impl Shell {
             _branches_view: branches_sub,
             github,
             github_view,
+            pilot,
             _github: github_subs,
             extensions_view,
             _extensions_view: extensions_sub,

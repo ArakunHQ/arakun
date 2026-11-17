@@ -14,7 +14,7 @@ use super::*;
 use crate::input::{Backspace, Copy as CopyText, Left, Right, SelectAll};
 use crate::theme;
 use crate::ui::icon;
-use crate::ui::{self as kit, Tint};
+use crate::ui::{self as kit, Tint, Type, Typography as _};
 
 fn id_of(key: &str) -> u64 {
     key.bytes().fold(0xcbf29ce484222325u64, |h, b| {
@@ -34,6 +34,15 @@ pub(super) fn lead(lead: &Lead, key: &str) -> AnyElement {
         Lead::Idle => kit::lead_ring().into_any_element(),
         Lead::Dot(tint, halo) => kit::lead_dot(tint.color(), *halo).into_any_element(),
     }
+}
+
+/// A small line of text in a card.
+fn caption(text: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Div {
+    div()
+        .min_w_0()
+        .ty(Type::Caption)
+        .text_color(color)
+        .child(text.into())
 }
 
 /// The bar beside the selected row, growing in from its middle.
@@ -81,7 +90,13 @@ impl Palette {
         let leads = self.entries.first().is_some_and(|e| {
             matches!(
                 e.card,
-                Some(Card::Answer | Card::Rule(_) | Card::Todo(_) | Card::Confirm(..))
+                Some(
+                    Card::Answer
+                        | Card::Rule(_)
+                        | Card::Todo(_)
+                        | Card::Confirm(..)
+                        | Card::Cloud(_)
+                )
             )
         });
         if !self.pages.is_empty() || leads || self.tabs.len() <= 1 {
@@ -534,6 +549,7 @@ impl Palette {
                     .when(selected, |d| d.child(enter()))
                     .into_any_element(),
             ),
+            Card::Cloud(task) => (Tint::Violet, self.render_cloud_card(task, selected, cx)),
             Card::Confirm(item, title, head) => (
                 Tint::Amber,
                 div()
@@ -565,7 +581,10 @@ impl Palette {
             selected,
         )
         .when(
-            matches!(card, Card::Answer | Card::Rule(_) | Card::Remember(_)),
+            matches!(
+                card,
+                Card::Answer | Card::Rule(_) | Card::Remember(_) | Card::Cloud(_)
+            ),
             |d| d.items_start(),
         )
         .when(selected, |d| d.child(bar(&key)))
@@ -575,6 +594,104 @@ impl Palette {
             this.pick(i, cx);
         }))
         .into_any_element()
+    }
+
+    /// The cloud task's form: what the agent does, and where it lands (the
+    /// picked pull request or a new branch, whose name can be edited).
+    fn render_cloud_card(&self, task: &str, selected: bool, cx: &mut Context<Self>) -> AnyElement {
+        let pilot = self.seed.pilot.clone().unwrap_or_default();
+        let to_pull = self.cloud_to_pull && pilot.pull.is_some();
+        let (title, sub) = if task.is_empty() {
+            (
+                "Send to the cloud agent".to_string(),
+                "Write the task after “cloud:”.".to_string(),
+            )
+        } else {
+            (
+                cloud::title(task),
+                "For the cloud agent (arakun-pilot)".to_string(),
+            )
+        };
+        let mut targets = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(crate::ui::sp(6.))
+            .child(caption("Goes to", theme::text_subtle()));
+        if let Some((n, t)) = &pilot.pull {
+            targets = targets.child(
+                kit::chip(
+                    "palette-cloud-pull",
+                    format!("PR #{n} · {}", cloud::short(t, 44)),
+                    to_pull,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.set_cloud_target(true, cx);
+                })),
+            );
+        }
+        targets = targets.child(
+            kit::chip("palette-cloud-branch", "New branch", !to_pull).on_click(cx.listener(
+                |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.set_cloud_target(false, cx);
+                },
+            )),
+        );
+        let branch = (!to_pull).then(|| {
+            div()
+                .id("palette-cloud-branch-field")
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                // A click in the field edits the name; it doesn't send.
+                .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                .child(
+                    kit::field()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(30.))
+                        .child(icon("git-branch", 13.).text_color(theme::text_subtle()))
+                        .child(div().flex_1().min_w_0().child(self.cloud_branch.clone())),
+                )
+                .child(caption("from main", theme::text_subtle()))
+        });
+        div()
+            .flex()
+            .items_start()
+            .gap(crate::ui::sp(12.))
+            .w_full()
+            .child(kit::glow_tile("cloud-upload", Tint::Violet))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(crate::ui::sp(8.))
+                    .child(kit::card_text(
+                        title,
+                        Some(div().child(sub).into_any_element()),
+                    ))
+                    .child(targets)
+                    .children(branch)
+                    .when(!pilot.admin, |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(crate::ui::sp(6.))
+                                .child(icon("alert-circle", 13.).text_color(theme::attention()))
+                                .child(caption(
+                                    crate::github::pilot::NO_ADMIN,
+                                    theme::attention().into(),
+                                )),
+                        )
+                    }),
+            )
+            .when(selected, |d| d.child(kit::keycap("↵")))
+            .into_any_element()
     }
 
     fn render_pins(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -775,6 +892,16 @@ impl Palette {
                     .child(kit::footer_hint(&["↑", "↓"], "move"))
                     .child(kit::footer_hint(&["Ctrl", "↵"], "ask an agent"))
                     .child(right("Nothing is sent until you press Enter".into()))
+                    .into_any_element();
+            }
+            Some(Card::Cloud(_)) => {
+                return f
+                    .child(kit::footer_hint(&["↵"], "send"))
+                    .when(self.cloud_pull().is_some(), |d| {
+                        d.child(kit::footer_hint(&["Tab"], "PR or new branch"))
+                    })
+                    .child(kit::footer_hint(&["Esc"], "cancel"))
+                    .child(right("Nothing goes until you press Enter".into()))
                     .into_any_element();
             }
             Some(Card::Confirm(..)) => {

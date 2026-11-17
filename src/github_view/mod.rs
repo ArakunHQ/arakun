@@ -7,6 +7,7 @@
 
 mod diff;
 mod item;
+mod pilot;
 mod pulse;
 mod queue;
 mod timeline;
@@ -24,6 +25,7 @@ use gpui::{
 };
 
 use crate::agent::markdown::{self, Block, MdStyle};
+use crate::github::pilot::Pilot;
 use crate::github::pr::{self, Draft, FileDiff, ItemKind, ItemRef, MergeMethod, Verdict};
 use crate::github::queue::{Details, Entry, Group};
 use crate::github::{GitHub, Problem};
@@ -339,7 +341,26 @@ pub struct GitHubView {
     card_pane: Entity<Pane>,
     body_pane: Entity<Pane>,
     focus: FocusHandle,
+    pilot: Entity<Pilot>,
+    /// Cards whose points are open, by item id.
+    pilot_open: HashSet<String>,
+    /// The card picked, or shown from the island.
+    pilot_focus: Option<String>,
+    /// The confirm strip came from this card.
+    pilot_act: Option<pilot::PilotAct>,
+    /// Why a card's action didn't go, by item id.
+    pilot_notes: HashMap<String, String>,
+    /// The card whose "Other answer…" line is open.
+    pilot_other: Option<String>,
+    pilot_input: Entity<TextInput>,
+    /// Cards whose answer is on its way.
+    pilot_sending: HashSet<String>,
+    /// "Sent…" after an answer went, until its timer clears it.
+    pilot_sent: Option<(String, gpui::Task<()>)>,
+    _pilot_sub: Subscription,
     _subs: Vec<Subscription>,
+    /// The body input's, replaced with the input.
+    _body_sub: Option<Subscription>,
 }
 
 /// A part of the tab drawn as a view of its own, from the tab's state. A
@@ -387,11 +408,20 @@ impl EventEmitter<GitHubViewEvent> for GitHubView {}
 const NEWLINE: &str = "⏎";
 
 impl GitHubView {
-    pub fn new(github: Entity<GitHub>, cx: &mut Context<Self>) -> Self {
+    pub fn new(github: Entity<GitHub>, pilot: Entity<Pilot>, cx: &mut Context<Self>) -> Self {
         let watch_input = cx.new(|cx| TextInput::new("organization or owner/repo", cx));
         let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
+        let pilot_input = cx.new(|cx| TextInput::new("Your answer for the agent", cx));
         let subs = vec![
+            cx.subscribe(&pilot_input, |this, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Submit => this.pilot_send_other(cx),
+                InputEvent::Cancel => {
+                    this.pilot_other = None;
+                    cx.notify();
+                }
+                _ => {}
+            }),
             cx.observe(&github, |this, _, cx| this.on_github_changed(cx)),
             cx.subscribe(&watch_input, |this, _, ev: &InputEvent, cx| match ev {
                 InputEvent::Submit => this.add_watch(cx),
@@ -436,6 +466,23 @@ impl GitHubView {
             cx,
         );
         let body_pane = Pane::new(&me, |this, cx| this.render_body(cx), cx);
+        let pilot_sub = cx.observe(&pilot, |this, pilot, cx| {
+            let (people, shown) = {
+                let p = pilot.read(cx);
+                (p.people(), p.shown_ids())
+            };
+            this.pilot_open.retain(|id| shown.contains(id));
+            this.pilot_notes.retain(|id, _| shown.contains(id));
+            if this
+                .pilot_other
+                .as_ref()
+                .is_some_and(|id| !shown.contains(id))
+            {
+                this.pilot_other = None;
+            }
+            this.github.update(cx, |g, cx| g.want_people(people, cx));
+            cx.notify();
+        });
         let mut this = Self {
             github,
             picked: None,
@@ -481,7 +528,18 @@ impl GitHubView {
             queue_pane,
             card_pane,
             body_pane,
+            pilot,
+            pilot_open: HashSet::new(),
+            pilot_focus: None,
+            pilot_act: None,
+            pilot_notes: HashMap::new(),
+            pilot_other: None,
+            pilot_input,
+            pilot_sending: HashSet::new(),
+            pilot_sent: None,
+            _pilot_sub: pilot_sub,
             _subs: subs,
+            _body_sub: None,
         };
         this.resubscribe_body(cx);
         this
@@ -608,6 +666,7 @@ impl GitHubView {
         if !same {
             self.tab = Tab::Timeline;
             self.confirm = None;
+            self.pilot_act = None;
             self.editing_draft = false;
             self.note = None;
             self.folded.clear();
@@ -1093,6 +1152,8 @@ impl GitHubView {
         self.confirm_draft = self.draft.clone();
         self.editing_draft = false;
         self.note = None;
+        // A card sets its own after this.
+        self.pilot_act = None;
         let placeholder = match c {
             Confirm::RequestChanges => "What should change (required)",
             _ => "Say why (optional)",
@@ -1148,13 +1209,18 @@ impl GitHubView {
             }
             _ => {}
         });
-        // The first three are fixed; the fourth is the body input's.
-        self._subs.truncate(3);
-        self._subs.push(sub);
+        // Its own slot: the fixed ones in `_subs` (comment submit among them)
+        // stay whatever their number.
+        self._body_sub = Some(sub);
     }
 
     fn run_confirm(&mut self, c: Confirm, cx: &mut Context<Self>) {
-        let body = self.body_input.read(cx).text().to_string();
+        // A card's review comes in with its line breaks as ⏎.
+        let body = self.body_input.read(cx).text().replace(NEWLINE, "\n");
+        if let Some(act) = self.pilot_for(c) {
+            self.run_pilot_confirm(c, act, body, cx);
+            return;
+        }
         let base = match self
             .item()
             .and_then(|i| self.github.read(cx).details(&i).cloned())
@@ -1375,6 +1441,26 @@ impl GitHubView {
                 .as_ref()
                 .is_some_and(|e| !me.is_empty() && e.author.eq_ignore_ascii_case(me)),
         }
+    }
+
+    /// The pull request picked, when it is the user's own, still open, and in
+    /// the repository arakun-pilot works on: (number, title). The palette
+    /// offers it as where a task for the cloud agent goes.
+    pub fn own_open_pull(&self, cx: &App) -> Option<(u64, String)> {
+        let item = self.item().filter(|i| {
+            i.kind == ItemKind::Pull && i.repo.eq_ignore_ascii_case(crate::github::pilot::REPO)
+        })?;
+        if !self.is_mine(cx) {
+            return None;
+        }
+        let (title, state) = match self.github.read(cx).details(&item) {
+            Some(Details::Pull(p)) => (p.title.clone(), p.state.clone()),
+            _ => {
+                let e = self.picked.as_ref()?;
+                (e.title.clone(), e.state.clone())
+            }
+        };
+        still_open(&state).then_some((item.number, title))
     }
 
     /// Markdown parsed once per text.
@@ -2404,6 +2490,13 @@ fn ago_iso(at: &str) -> String {
     ago(crate::ci::parse_time(at).unwrap_or(0))
 }
 
+/// Whether a pull request's state (`OPEN` from gh, `open` from a search) is
+/// open. Unknown (a notification only) counts as open: GitHub refuses a task
+/// on a closed one anyway.
+fn still_open(state: &str) -> bool {
+    state.is_empty() || state.eq_ignore_ascii_case("open")
+}
+
 /// A line in mono at a role color.
 fn mono(content: impl Into<gpui::SharedString>, color: gpui::Hsla) -> gpui::Div {
     div().ty(Type::Mono).text_color(color).child(content.into())
@@ -2603,6 +2696,12 @@ mod tests {
         assert_eq!(verb, "Post anyway");
         let (q, _) = draft_question(&changes, false, Verdict::RequestChanges);
         assert_eq!(q, "Post Claude's draft as a change request?");
+    }
+
+    #[test]
+    fn only_an_open_pull_takes_a_task() {
+        assert!(still_open("OPEN") && still_open("open") && still_open(""));
+        assert!(!still_open("MERGED") && !still_open("closed"));
     }
 
     #[test]

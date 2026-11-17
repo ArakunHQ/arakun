@@ -7,11 +7,13 @@
 //! Pure parts live beside it with their tests: `rank` (fuzzy match,
 //! frecency), `query` (prefixes and chips), `clip` (clipboard), `pins`,
 //! `rules` (automations from a sentence), `sources` (files, symbols, memory),
-//! `actions` (what → offers), `answer` (quick answers).
+//! `actions` (what → offers), `answer` (quick answers), `cloud` (work for
+//! the cloud agent).
 
 pub mod actions;
 pub mod answer;
 pub mod clip;
+pub mod cloud;
 pub mod item;
 pub mod pins;
 pub mod preview;
@@ -108,6 +110,8 @@ pub struct Seed {
     pub clipboard: Option<String>,
     /// The local hour, for what the person opens at this time of day.
     pub hour: usize,
+    /// arakun-pilot, when its `client.json` exists: "cloud: …" sends it work.
+    pub pilot: Option<cloud::PilotSeed>,
 }
 
 /// A failed CI run the palette can offer as context.
@@ -146,6 +150,8 @@ pub enum PaletteEvent {
         item: crate::github::pr::ItemRef,
         head: String,
     },
+    /// Work for the cloud agent; the shell answers with `cloud_sent`.
+    CloudTask(crate::github::pilot::TaskRequest),
     PinsChanged,
     /// `#86` with no such pull request listed: look it up in these repositories.
     FindPull {
@@ -209,6 +215,8 @@ pub enum Card {
     /// A merge to confirm: the pull request, its title and the head commit
     /// that Enter merges.
     Confirm(crate::github::pr::ItemRef, String, String),
+    /// "cloud: …": the task for the cloud agent, and where it goes.
+    Cloud(String),
 }
 
 /// The head commit a merge from the palette is pinned to: the one read when
@@ -299,7 +307,24 @@ pub struct Palette {
     scroll: ScrollHandle,
     /// Re-entrancy guard: the input changes while leads are taken off it.
     taking: bool,
+    /// The next change of the input keeps the note: the palette cleared it
+    /// itself after something went.
+    keep_note: bool,
+    /// The branch a cloud task makes, under its card.
+    cloud_branch: Entity<TextInput>,
+    /// The branch name suggested last: while the field still holds it, it
+    /// follows the task's text.
+    cloud_auto: String,
+    /// The task goes to the picked pull request, not to a new branch.
+    cloud_to_pull: bool,
+    /// A task is on its way: Enter doesn't send it twice.
+    cloud_sending: bool,
+    /// The task's text, branch and destination as sent: only those are
+    /// cleared once the Worker took it, so a next task typed or pointed
+    /// elsewhere meanwhile stays.
+    cloud_sent_draft: Option<(String, String, bool)>,
     _sub: Subscription,
+    _cloud_sub: Subscription,
 }
 
 impl EventEmitter<PaletteEvent> for Palette {}
@@ -314,6 +339,19 @@ impl Palette {
             this.on_input(*ev, window, cx)
         });
         window.focus(&input.focus_handle(cx), cx);
+        let cloud_branch = cx.new(|cx| TextInput::new("pilot/branch-name", cx).mono());
+        let cloud_sub = cx.subscribe_in(
+            &cloud_branch,
+            window,
+            |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Submit => this.send_cloud(cx),
+                InputEvent::Cancel => window.focus(&this.input.focus_handle(cx), cx),
+                // Tab: "PR or new branch", as from the main field.
+                InputEvent::Complete => this.tab_key(cx),
+                _ => {}
+            },
+        );
+        let cloud_to_pull = seed.pilot.as_ref().is_some_and(|p| p.pull.is_some());
         let clip = seed.clipboard.as_deref().and_then(clip::classify);
         let mut this = Self {
             asked_pulls: HashSet::new(),
@@ -356,7 +394,14 @@ impl Palette {
             note: None,
             scroll: ScrollHandle::new(),
             taking: false,
+            keep_note: false,
+            cloud_branch,
+            cloud_auto: String::new(),
+            cloud_to_pull,
+            cloud_sending: false,
+            cloud_sent_draft: None,
             _sub: sub,
+            _cloud_sub: cloud_sub,
         };
         this.load_files(cx);
         this.load_memory(cx);
@@ -475,8 +520,11 @@ impl Palette {
                     return;
                 }
                 self.nav = false;
-                self.note = None;
+                if !std::mem::take(&mut self.keep_note) {
+                    self.note = None;
+                }
                 self.take_leads(cx);
+                self.follow_cloud_text(cx);
                 self.menu = None;
                 self.confirm = None;
                 self.refilter(cx);
@@ -578,6 +626,7 @@ impl Palette {
                     Card::Rule(_)
                         | Card::Todo(_)
                         | Card::Confirm(..)
+                        | Card::Cloud(_)
                         | Card::Clip(clip::Clip::Error(_))
                         | Card::OfferAnswer
                         | Card::OfferRule
@@ -613,7 +662,9 @@ impl Palette {
             cx.notify();
             return;
         }
-        if !self.marked.is_empty() {
+        // A cloud task (typed "cloud: …") goes before rows marked earlier.
+        let cloud = cloud::card_task(&self.query(cx), self.seed.pilot.as_ref()).is_some();
+        if !self.marked.is_empty() && !cloud {
             self.bulk(Bulk::Open, cx);
             return;
         }
@@ -666,9 +717,17 @@ impl Palette {
                 self.refilter(cx);
                 return;
             }
+            Some(Card::Cloud(_)) => {
+                self.send_cloud(cx);
+                return;
+            }
             _ => {}
         }
         match &entry.item.target {
+            Target::CloudTask => {
+                self.start_cloud(cx);
+                return;
+            }
             Target::Todo(id) => {
                 let done = self.todos.toggle(*id, crate::memory::now());
                 self.todos.save();
@@ -772,8 +831,13 @@ impl Palette {
         cx.notify();
     }
 
-    /// Tab: keep chatting from an answer, else the next filter tab.
+    /// Tab: keep chatting from an answer, switch where a cloud task goes,
+    /// else the next filter tab.
     fn tab_key(&mut self, cx: &mut Context<Self>) {
+        if self.cloud_card().is_some() {
+            self.toggle_cloud_target(cx);
+            return;
+        }
         if let Some(a) = &self.answer
             && !a.text.is_empty()
         {
@@ -1174,6 +1238,15 @@ impl Palette {
     /// CI logs to Anthropic.
     fn drop_stale_requests(&mut self, cx: &mut Context<Self>) {
         let q = self.query(cx);
+        // A task for the cloud agent is no question for the quick answer,
+        // nor a rule for the small model: it goes nowhere until Enter.
+        if cloud::card_task(&q, self.seed.pilot.as_ref()).is_some() {
+            self.answer = None;
+            self.answer_task = None;
+            self.reading_rule = None;
+            self.rule_task = None;
+            return;
+        }
         if self.answer.as_ref().is_some_and(|a| a.question != q) {
             // Dropping the task drops its job, which stops the process.
             self.answer = None;
@@ -1658,6 +1731,10 @@ impl Palette {
         if !self.pages.is_empty() {
             return out;
         }
+        if let Some(task) = cloud::card_task(q, self.seed.pilot.as_ref()) {
+            out.push(Card::Cloud(task.to_string()));
+            return out;
+        }
         let home =
             q.is_empty() && self.scope.is_none() && self.chips.is_empty() && self.tab == Tab::All;
         if home && let Some(c) = &self.clip {
@@ -2031,6 +2108,118 @@ impl Palette {
     }
 }
 
+// ---- cloud tasks ------------------------------------------------------------------------
+
+impl Palette {
+    /// The cloud card's task, while it leads.
+    fn cloud_card(&self) -> Option<&str> {
+        match self.entries.first().and_then(|e| e.card.as_ref()) {
+            Some(Card::Cloud(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The pull request a task can go to: (number, title).
+    fn cloud_pull(&self) -> Option<&(u64, String)> {
+        self.seed.pilot.as_ref()?.pull.as_ref()
+    }
+
+    /// "Send to the cloud agent…": the input becomes the task's line.
+    pub fn start_cloud(&mut self, cx: &mut Context<Self>) {
+        self.scope = None;
+        self.tab = Tab::All;
+        self.pages.clear();
+        self.menu = None;
+        self.confirm = None;
+        // Marked rows would turn Enter into their bulk action.
+        self.marked.clear();
+        self.input.update(cx, |i, cx| i.set_text("cloud: ", cx));
+        cx.notify();
+    }
+
+    /// While the user hasn't typed a branch of their own, the suggested one
+    /// follows the task's text.
+    fn follow_cloud_text(&mut self, cx: &mut Context<Self>) {
+        let q = self.query(cx);
+        let Some(task) = cloud::card_task(&q, self.seed.pilot.as_ref()) else {
+            return;
+        };
+        let current = self.cloud_branch.read(cx).text().to_string();
+        if !current.is_empty() && current != self.cloud_auto {
+            return;
+        }
+        let next = cloud::suggest_branch(task);
+        if next != current {
+            self.cloud_branch
+                .update(cx, |i, cx| i.set_text(next.clone(), cx));
+        }
+        self.cloud_auto = next;
+    }
+
+    fn set_cloud_target(&mut self, to_pull: bool, cx: &mut Context<Self>) {
+        self.cloud_to_pull = to_pull && self.cloud_pull().is_some();
+        cx.notify();
+    }
+
+    fn toggle_cloud_target(&mut self, cx: &mut Context<Self>) {
+        self.set_cloud_target(!self.cloud_to_pull, cx);
+    }
+
+    /// Enter on the cloud card: the request goes to the shell, or the
+    /// footer says what is missing.
+    fn send_cloud(&mut self, cx: &mut Context<Self>) {
+        if self.cloud_sending {
+            return;
+        }
+        let (Some(task), Some(seed)) = (
+            self.cloud_card().map(str::to_string),
+            self.seed.pilot.clone(),
+        ) else {
+            return;
+        };
+        let branch = self.cloud_branch.read(cx).text().to_string();
+        match cloud::request(&task, &seed, self.cloud_to_pull, &branch) {
+            Ok(req) => {
+                self.cloud_sending = true;
+                self.cloud_sent_draft = Some((self.query(cx), branch, self.cloud_to_pull));
+                self.show_note("Sending to the cloud agent…", true, cx);
+                cx.emit(PaletteEvent::CloudTask(req));
+            }
+            Err(e) => self.show_note(e, false, cx),
+        }
+    }
+
+    /// What the Worker answered the task: its id, or why it didn't take it.
+    pub fn cloud_sent(
+        &mut self,
+        result: Result<String, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cloud_sending = false;
+        let sent = self.cloud_sent_draft.take();
+        match result {
+            Ok(id) => {
+                let now = (
+                    self.query(cx),
+                    self.cloud_branch.read(cx).text().to_string(),
+                    self.cloud_to_pull,
+                );
+                if sent.as_ref() == Some(&now) {
+                    // Sent from the branch field, which goes with the card.
+                    window.focus(&self.input.focus_handle(cx), cx);
+                    self.keep_note = true;
+                    self.input.update(cx, |i, cx| i.set_text("", cx));
+                    self.cloud_auto.clear();
+                    self.cloud_branch.update(cx, |i, cx| i.set_text("", cx));
+                }
+                self.show_note(cloud::sent_note(&id), true, cx);
+            }
+            Err(e) => self.show_note(format!("Not sent: {e}"), false, cx),
+        }
+    }
+}
+
 impl Focusable for Palette {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.input.focus_handle(cx)
@@ -2139,6 +2328,7 @@ fn card_item(card: &Card) -> Item {
         Card::Rule(_) => "card:rule",
         Card::Todo(_) => "card:todo",
         Card::Confirm(..) => "card:confirm",
+        Card::Cloud(_) => "card:cloud",
     };
     let target = match card {
         Card::Clip(clip::Clip::GitHub { url, link }) => {

@@ -224,11 +224,12 @@ impl GitHubView {
     }
 
     fn render_queue_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let agent = self.pilot_section(cx);
         let g = self.github.read(cx);
         let q = g.queue().clone();
         let problem = g.problem().or(g.search_problem()).cloned();
         let loading = !g.loaded(false) || !g.searched();
-        if q.rows.is_empty() {
+        if q.rows.is_empty() && agent.is_empty() {
             return match problem {
                 Some(Problem::NoGh) => empty(
                     "github",
@@ -297,6 +298,8 @@ impl GitHubView {
                     .tooltip(ui::tip_text(full)),
             );
         }
+        // The agent's cards first: each waits on one click.
+        list = list.children(agent);
         let mut ix = 0;
         for group in Group::ALL.into_iter().filter(|g| *g != Group::Done) {
             if q.count(group) == 0 {
@@ -798,7 +801,7 @@ fn repo_tag(name: String) -> gpui::Div {
 }
 
 /// A group's heading in the queue: SMALL CAPS and a count on a chip.
-fn group_header(label: &str, n: usize) -> gpui::Div {
+pub(super) fn group_header(label: &str, n: usize) -> gpui::Div {
     div()
         .flex()
         .flex_none()

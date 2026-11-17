@@ -34,7 +34,7 @@ name: Reviewers
 #
 # A platform counts as touched when a file only that platform uses changes, or
 # when a diff hunk mentions it (`cfg(windows)`, `target_os = "macos"`,
-# `runs-on: macos-15`...). An edit deep inside a long cfg block, whose cfg line
+# `runs-on: depot-macos-15`...). An edit deep inside a long cfg block, whose cfg line
 # is not in the hunk, is missed; request the reviewer by hand then.
 #
 # When it runs:

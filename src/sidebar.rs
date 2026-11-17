@@ -494,6 +494,9 @@ pub struct Section {
     /// Not drawn while the rail is narrowed to icons.
     #[serde(default)]
     pub hide_in_icons: bool,
+    /// Its pieces as one row of icons, names in their tooltips.
+    #[serde(default)]
+    pub row: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<TitleAction>,
     #[serde(default)]
@@ -510,6 +513,7 @@ impl Section {
             collapsed: false,
             line_above: false,
             hide_in_icons: false,
+            row: false,
             action: None,
             items: pieces.into_iter().map(Item::new).collect(),
         }
@@ -543,6 +547,11 @@ impl Section {
         self
     }
 
+    fn in_row(mut self) -> Self {
+        self.row = true;
+        self
+    }
+
     fn with_action(mut self, a: TitleAction) -> Self {
         self.action = Some(a);
         self
@@ -554,6 +563,8 @@ pub type Path = (usize, usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
+    /// The open project and its environments; the views as a row of icons.
+    Switcher,
     /// Search, inbox and projects; the rest folded away.
     Focused,
     /// Inbox, projects, and the git tools in their own segment.
@@ -567,7 +578,8 @@ pub enum Preset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 5] = [
+    pub const ALL: [Preset; 6] = [
+        Preset::Switcher,
         Preset::Focused,
         Preset::Developer,
         Preset::Notion,
@@ -577,6 +589,7 @@ impl Preset {
 
     pub fn label(self) -> &'static str {
         match self {
+            Preset::Switcher => "Switcher",
             Preset::Focused => "Focused",
             Preset::Developer => "Developer",
             Preset::Notion => "Notion",
@@ -587,6 +600,7 @@ impl Preset {
 
     pub fn blurb(self) -> &'static str {
         match self {
+            Preset::Switcher => "One project at a time, its environments, the views as icons",
             Preset::Focused => "Inbox and projects; the rest folded away",
             Preset::Developer => "Projects, then runs and branches in a segment of their own",
             Preset::Notion => "Search and inbox up top, your pins, projects, account below",
@@ -619,6 +633,50 @@ impl Preset {
         let account = |pieces| Section::new("Account", Mode::Fixed, pieces);
         let mut style = Style::default();
         let sections = match self {
+            Preset::Switcher => vec![
+                Section::new(
+                    "Top",
+                    Mode::Fixed,
+                    vec![Piece::Search, Piece::view(View::Inbox)],
+                ),
+                Section::new(
+                    "Projects",
+                    Mode::Scroll,
+                    vec![Piece::Projects {
+                        envs: true,
+                        changes: true,
+                        only_open: true,
+                    }],
+                ),
+                account(vec![Piece::Usage]),
+                Section::new(
+                    "Views",
+                    Mode::Fixed,
+                    [
+                        views(&[
+                            #[cfg(feature = "coderlabs")]
+                            View::Tasks,
+                            View::Runs,
+                            View::Branches,
+                            View::GitHub,
+                        ]),
+                        views(
+                            &more
+                                .iter()
+                                .copied()
+                                .filter(|v| *v != View::Extensions)
+                                .collect::<Vec<_>>(),
+                        ),
+                        vec![
+                            Piece::view(View::Extensions),
+                            Piece::Spacer,
+                            Piece::Settings,
+                        ],
+                    ]
+                    .concat(),
+                )
+                .in_row(),
+            ],
             Preset::Focused => vec![
                 Section::new(
                     "Top",
@@ -759,10 +817,10 @@ pub struct Sidebar {
 }
 
 impl Default for Sidebar {
-    /// Before anyone arranged it: the rail as it always looked, so an update
-    /// moves nothing.
+    /// Before anyone arranged it. A layout someone arranged is saved and
+    /// keeps its look.
     fn default() -> Self {
-        Preset::Everything.layout()
+        Preset::Switcher.layout()
     }
 }
 
@@ -1102,11 +1160,24 @@ mod tests {
     }
 
     #[test]
-    fn the_default_is_the_rail_as_it_was() {
+    fn the_default_holds_every_view() {
         let s = Sidebar::default();
+        // An extension turned on in the Marketplace shows without a trip to the builder.
         assert!(View::ALL.iter().all(|v| s.has(&Piece::view(*v))));
         assert!(s.hidden_views().is_empty());
         assert_eq!(s.style, Style::default());
+        assert_eq!(
+            s.sections.iter().map(|x| x.row).collect::<Vec<_>>(),
+            [false, false, false, true],
+            "the views sit in a row at the bottom"
+        );
+    }
+
+    #[test]
+    fn a_layout_from_before_rows_has_none() {
+        let json = br#"{"sections":[{"title":"A","items":[{"type":"settings"}]}]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        assert!(!s.sections[0].row);
     }
 
     #[test]

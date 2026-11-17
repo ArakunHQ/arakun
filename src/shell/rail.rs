@@ -6,6 +6,86 @@ use super::*;
 const ENV_ROW_H: f32 = 28.;
 const ENV_GAP: f32 = 2.;
 
+const NEW_ENV_TIP: &str = "New environment (Ctrl+Shift+N). Alt+click for options";
+
+/// The one thing an environment row says at its end, the most urgent first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EnvSignal {
+    NeedsYou,
+    CiFailed,
+    /// Lines added and removed.
+    Changes(u32, u32),
+    Nothing,
+}
+
+/// A row says one thing so the list stays easy to scan: what needs the user
+/// beats a red build, which beats the diff.
+pub(super) fn env_signal(
+    status: Status,
+    ci_failed: bool,
+    changes: Option<(u32, u32)>,
+) -> EnvSignal {
+    if status == Status::NeedsInput {
+        EnvSignal::NeedsYou
+    } else if ci_failed {
+        EnvSignal::CiFailed
+    } else {
+        match changes {
+            Some((a, r)) if a + r > 0 => EnvSignal::Changes(a, r),
+            _ => EnvSignal::Nothing,
+        }
+    }
+}
+
+/// The diff as `+a -r`, the removals left out when there are none.
+fn diff_label(a: u32, r: u32) -> gpui::Div {
+    div()
+        .flex()
+        .gap(crate::ui::sp(3.))
+        .text_size(px(ui::TEXT_XS))
+        .font_family(theme::FONT_MONO)
+        .child(div().text_color(theme::diff_add()).child(format!("+{a}")))
+        .when(r > 0, |d| {
+            d.child(div().text_color(theme::diff_del()).child(format!("-{r}")))
+        })
+}
+
+/// An environment whose worktree is still being made: there at once, with a
+/// spinner, so a click on + answers right away.
+fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(("env-pending", id))
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(8.))
+        .h(px(ENV_ROW_H))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(8.))
+        .text_size(px(ui::TEXT_MD))
+        .text_color(theme::text_muted())
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(14.))
+                .child(ui::spinner(
+                    ("env-pending-spin", id),
+                    12.,
+                    theme::text_faint(),
+                )),
+        )
+        .child(div().flex_1().min_w_0().truncate().child(name))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_faint())
+                .child("Creating"),
+        )
+}
+
 pub(super) fn status_dot(status: Status) -> impl IntoElement {
     let color = match status {
         Status::Idle => theme::mix(0.25),
@@ -302,33 +382,33 @@ impl Shell {
                     ),
             );
             if selected && show_envs {
-                // Envs nest under their project like steps in the chat: a spine
-                // down from the project icon that curves into each row.
+                // The open project alone: its environments get a heading
+                // with the + on it. Otherwise they indent under the project.
                 let mut envs = div()
                     .flex()
                     .flex_col()
                     .gap(crate::ui::sp(ENV_GAP))
-                    .ml(px(10.));
+                    .when(!only_open, |d| d.ml(px(10.)));
+                if only_open {
+                    envs = envs.child(self.render_env_heading(pi, cx));
+                }
                 for (ei, env) in project.environments.iter().enumerate() {
-                    let active = ei == project.active_env;
-                    envs = envs.child(ui::tree_item(
-                        false,
-                        ENV_ROW_H / 2.,
-                        ENV_GAP,
+                    envs = envs.child(self.render_env_row(pi, ei, env, show_changes, cx));
+                }
+                for (i, name) in self
+                    .pending_envs
+                    .iter()
+                    .filter(|p| p.repo == project.path)
+                    .map(|p| p.name.clone())
+                    .enumerate()
+                {
+                    envs = envs.child(pending_env_row(pi * 1000 + i, name));
+                }
+                if !only_open {
+                    envs = envs.child(
                         div()
-                            .id(("env", pi * 1000 + ei))
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    this.menu = Some(ContextMenu {
-                                        target: MenuTarget::Env(pi, ei),
-                                        at: ev.position,
-                                    });
-                                    cx.notify();
-                                }),
-                            )
-                            .group("env-row")
+                            .id(("env-add-row", pi))
+                            .group("env-add-row")
                             .flex()
                             .items_center()
                             .gap(crate::ui::sp(8.))
@@ -338,112 +418,24 @@ impl Shell {
                             .rounded(crate::ui::rad(8.))
                             .cursor_pointer()
                             .text_size(px(ui::TEXT_MD))
-                            .text_color(if active {
-                                theme::content()
-                            } else {
-                                theme::mix(0.5)
-                            })
-                            .when(active, |d| d.bg(theme::selection()))
-                            .when(!active, |d| {
-                                d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
-                            })
-                            .child(
-                                icon(
-                                    if env.is_checkout {
-                                        "folder01"
-                                    } else {
-                                        "git-branch"
-                                    },
-                                    14.,
-                                )
-                                .text_color(if active {
-                                    theme::mix(0.7)
-                                } else {
-                                    theme::mix(0.4)
-                                }),
-                            )
-                            .child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
-                            .when_some(
-                                Some(env.diff_totals()).filter(|(a, r)| show_changes && a + r > 0),
-                                |d, (a, r)| {
-                                    d.child(
-                                        div()
-                                            .flex()
-                                            .gap(crate::ui::sp(3.))
-                                            .text_size(px(ui::TEXT_XS))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(
-                                                div()
-                                                    .text_color(theme::diff_add())
-                                                    .child(format!("+{a}")),
-                                            )
-                                            .when(r > 0, |d| {
-                                                d.child(
-                                                    div()
-                                                        .text_color(theme::diff_del())
-                                                        .child(format!("-{r}")),
-                                                )
-                                            }),
-                                    )
+                            .text_color(theme::text_faint())
+                            .hover(|s| s.bg(theme::hover()).text_color(theme::text_muted()))
+                            .tooltip(ui::tip(NEW_ENV_TIP))
+                            .child(hover_icon(
+                                "add01",
+                                14.,
+                                theme::text_faint(),
+                                theme::mix(0.7),
+                                "env-add-row",
+                            ))
+                            .child("New environment")
+                            .on_click(cx.listener(
+                                move |this, ev: &gpui::ClickEvent, window, cx| {
+                                    this.new_env_click(pi, ev, window, cx)
                                 },
-                            )
-                            .when_some(self.env_ci(pi, ei, cx), |d, (state, run)| {
-                                let id = run.id;
-                                d.child(
-                                    div()
-                                        .id(("env-ci", pi * 1000 + ei))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .size(px(14.))
-                                        .rounded(crate::ui::rad(4.))
-                                        .hover(|s| s.bg(theme::fill_selected()))
-                                        .child(ci_mark(state))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            cx.stop_propagation();
-                                            this.select_env(pi, ei, window, cx);
-                                            this.open_runs_tab(Some(id), window, cx);
-                                        })),
-                                )
-                            })
-                            .child(status_dot(env.aggregate_status()))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_env(pi, ei, window, cx)
-                            }))
-                            .into_any_element(),
-                    ));
+                            )),
+                    );
                 }
-                envs = envs.child(ui::tree_item(
-                    true,
-                    ENV_ROW_H / 2.,
-                    ENV_GAP,
-                    div()
-                        .id(("env-add-row", pi))
-                        .group("env-add-row")
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(8.))
-                        .h(px(ENV_ROW_H))
-                        .pl(crate::ui::sp(8.))
-                        .pr(crate::ui::sp(8.))
-                        .rounded(crate::ui::rad(8.))
-                        .cursor_pointer()
-                        .text_size(px(ui::TEXT_MD))
-                        .text_color(theme::text_faint())
-                        .hover(|s| s.bg(theme::hover()).text_color(theme::text_muted()))
-                        .child(hover_icon(
-                            "add01",
-                            14.,
-                            theme::text_faint(),
-                            theme::mix(0.7),
-                            "env-add-row",
-                        ))
-                        .child("New environment")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_create_env(pi, window, cx)
-                        }))
-                        .into_any_element(),
-                ));
                 projects = projects.child(envs);
             }
         }
@@ -560,5 +552,183 @@ impl Shell {
                 ),
             )
             .into_any_element()
+    }
+}
+
+impl Shell {
+    /// A click on a + for a new environment: at once, or with Alt the dialog
+    /// that asks for a branch and what to start from.
+    pub(super) fn new_env_click(
+        &mut self,
+        pi: usize,
+        ev: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ev.modifiers().alt {
+            self.open_create_env(pi, window, cx)
+        } else {
+            self.quick_create_env(pi, window, cx)
+        }
+    }
+
+    /// "Environments", with the + that makes one, over the open project's list.
+    fn render_env_heading(&self, pi: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .h(px(28.))
+            .mt(crate::ui::sp(6.))
+            .pl(crate::ui::sp(8.))
+            .text_size(px(ui::TEXT_SM))
+            .text_color(theme::text_subtle())
+            .child(div().flex_1().min_w_0().truncate().child("Environments"))
+            .child(
+                div()
+                    .id(("env-add", pi))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(24.))
+                    .rounded(crate::ui::rad(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::fill_selected()))
+                    .tooltip(ui::tip(NEW_ENV_TIP))
+                    .child(icon("add01", 14.).text_color(theme::text_muted()))
+                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                        this.new_env_click(pi, ev, window, cx)
+                    })),
+            )
+    }
+
+    /// One environment: its state as a dot (a folder for the checkout while
+    /// nothing runs there), its name, and one signal at the end.
+    fn render_env_row(
+        &self,
+        pi: usize,
+        ei: usize,
+        env: &Environment,
+        show_changes: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = self.projects.get(pi).is_some_and(|p| p.active_env == ei);
+        let status = env.aggregate_status();
+        let ci = self.env_ci(pi, ei, cx);
+        let ci_failed = ci.as_ref().is_some_and(|(s, _)| *s == ci::State::Failed);
+        // The diff of the open row; the others show theirs on hover.
+        let changes = show_changes.then(|| env.diff_totals());
+        let signal = env_signal(status, ci_failed, changes);
+        let lead: AnyElement = if env.is_checkout && status == Status::Idle {
+            icon("folder01", 14.)
+                .text_color(if active {
+                    theme::text_muted()
+                } else {
+                    theme::text_faint()
+                })
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(14.))
+                .child(status_dot(status))
+                .into_any_element()
+        };
+        let end: Option<AnyElement> = match signal {
+            EnvSignal::NeedsYou => Some(
+                div()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::needs_you())
+                    .child("Needs you")
+                    .into_any_element(),
+            ),
+            EnvSignal::CiFailed => ci.map(|(_, run)| {
+                let id = run.id;
+                div()
+                    .id(("env-ci", pi * 1000 + ei))
+                    .px(crate::ui::sp(4.))
+                    .rounded(crate::ui::rad(4.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::error())
+                    .hover(|s| s.bg(theme::fill_selected()))
+                    .tooltip(ui::tip("Open the failed run"))
+                    .child("CI failed")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.select_env(pi, ei, window, cx);
+                        this.open_runs_tab(Some(id), window, cx);
+                    }))
+                    .into_any_element()
+            }),
+            EnvSignal::Changes(a, r) => Some(
+                diff_label(a, r)
+                    .when(!active, |d| {
+                        d.invisible().group_hover("env-row", |s| s.visible())
+                    })
+                    .into_any_element(),
+            ),
+            EnvSignal::Nothing => None,
+        };
+        div()
+            .id(("env", pi * 1000 + ei))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.menu = Some(ContextMenu {
+                        target: MenuTarget::Env(pi, ei),
+                        at: ev.position,
+                    });
+                    cx.notify();
+                }),
+            )
+            .group("env-row")
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .h(px(ENV_ROW_H))
+            .px(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(8.))
+            .cursor_pointer()
+            .text_size(px(ui::TEXT_MD))
+            .text_color(if active || signal == EnvSignal::NeedsYou {
+                theme::content()
+            } else {
+                theme::text_muted()
+            })
+            .when(active, |d| d.bg(theme::selection()))
+            .when(!active, |d| {
+                d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+            })
+            .child(lead)
+            .child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
+            .children(end.map(|e| div().flex_none().child(e)))
+            .on_click(cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_says_the_most_urgent_thing() {
+        let diff = Some((12, 3));
+        assert_eq!(
+            env_signal(Status::NeedsInput, true, diff),
+            EnvSignal::NeedsYou
+        );
+        assert_eq!(env_signal(Status::Working, true, diff), EnvSignal::CiFailed);
+        assert_eq!(
+            env_signal(Status::Working, false, diff),
+            EnvSignal::Changes(12, 3)
+        );
+        assert_eq!(
+            env_signal(Status::Idle, false, Some((0, 0))),
+            EnvSignal::Nothing
+        );
+        // Changes turned off in the builder.
+        assert_eq!(env_signal(Status::Idle, false, None), EnvSignal::Nothing);
     }
 }

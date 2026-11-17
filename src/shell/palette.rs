@@ -1387,7 +1387,7 @@ impl Shell {
             Target::Env(pi, ei) => self.select_env(pi, ei, window, cx),
             Target::Session(pi, ei, id) => self.open_session_at(pi, ei, id, window, cx),
             Target::NewSession => self.new_session(window, cx),
-            Target::NewEnvironment => self.open_create_env(self.active_project, window, cx),
+            Target::NewEnvironment => self.quick_create_env(self.active_project, window, cx),
             Target::NewTerminal => self.new_terminal(window, cx),
             Target::NewBrowserTab => self.open_browser_tab(String::new(), window, cx),
             Target::AddProject => self.open_picker(window, cx),

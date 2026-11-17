@@ -2,6 +2,8 @@
 //! where it stands, and what was merged today folded at the bottom. Drawn
 //! from pilot's board; without one, from the review queue.
 
+use std::collections::HashSet;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
@@ -58,6 +60,8 @@ pub(super) struct Row {
     pub color: Hsla,
     /// A failure: its dot says so in red.
     pub broken: bool,
+    /// Its notification is unread: the row the alert or the island was about.
+    pub unread: bool,
 }
 
 impl Row {
@@ -92,15 +96,18 @@ pub(super) struct Section {
 }
 
 /// The groups of a board, in order: every estado that has a pull request.
-fn board_sections(b: &Board, now_open: bool) -> Vec<Section> {
+/// `unread` holds the keys (`queue::key_of`) with an unread notification.
+fn board_sections(b: &Board, now_open: bool, unread: &HashSet<String>) -> Vec<Section> {
     let mut out = Vec::new();
     for estado in Estado::ALL {
         let rows: Vec<Row> = b
             .group(estado)
             .into_iter()
             .filter_map(|(p, nested)| {
+                let item = p.item_ref()?;
                 Some(Row {
-                    item: Some(p.item_ref()?),
+                    unread: unread.contains(&crate::github::queue::key_of(&item)),
+                    item: Some(item),
                     entry: None,
                     title: p.title.clone(),
                     line: p.line(),
@@ -145,6 +152,7 @@ fn board_sections(b: &Board, now_open: bool) -> Vec<Section> {
                 nested: false,
                 color: theme::success().into(),
                 broken: false,
+                unread: false,
             })
         })
         .collect();
@@ -203,6 +211,7 @@ fn queue_row(e: &Entry, p: &crate::github::queue::Placed) -> Row {
         nested: false,
         color,
         broken: p.checks == Some(crate::github::pr::CheckState::Failed),
+        unread: e.unread(),
     }
 }
 
@@ -244,7 +253,14 @@ impl GitHubView {
             }
             return out;
         };
-        let mut out = board_sections(b, self.done_open);
+        // One pass over the queue, not one per board row.
+        let unread: HashSet<String> = q
+            .rows
+            .iter()
+            .filter(|(e, _)| e.unread())
+            .map(|(e, _)| e.key())
+            .collect();
+        let mut out = board_sections(b, self.done_open, &unread);
         // What the queue holds that pilot doesn't follow: review requests
         // elsewhere, mentions, issues. Folded: pilot covers the rest.
         let more: Vec<Row> = board::outside(b, q).map(|(e, p)| queue_row(e, p)).collect();
@@ -758,12 +774,16 @@ impl GitHubView {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(if selected {
+                    .text_color(if selected || r.unread {
                         theme::text()
                     } else {
                         theme::text_muted()
                     })
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(if r.unread {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    })
                     .child(r.title.clone()),
             )
             .child(
@@ -790,7 +810,12 @@ impl GitHubView {
                     .flex()
                     .flex_none()
                     .w(px(72.))
+                    .items_center()
                     .justify_end()
+                    .gap(crate::ui::sp(6.))
+                    .when(r.unread, |d| {
+                        d.child(div().size(px(6.)).rounded_full().bg(theme::link()))
+                    })
                     .child(super::mono(r.since.clone(), theme::text_faint())),
             )
             // The entry is looked up on the click, not on every frame: a
@@ -864,7 +889,9 @@ mod tests {
     #[test]
     fn the_board_groups_in_order_with_done_folded() {
         let b = board::parse_board(board::FIXTURE.as_bytes()).unwrap();
-        let s = board_sections(&b, false);
+        let first = b.group(Estado::TeNecesita)[0].0.item_ref().unwrap();
+        let unread = HashSet::from([crate::github::queue::key_of(&first)]);
+        let s = board_sections(&b, false, &unread);
         let ids: Vec<&str> = s.iter().map(|s| s.id).collect();
         assert_eq!(
             ids,
@@ -887,6 +914,12 @@ mod tests {
         assert!(!s[0].rows[0].broken);
         assert!(s[1].rows[0].broken);
         assert!(!s[2].rows[0].broken);
+        // A row with an unread notification says so; the rest don't.
+        assert!(s[0].rows[0].unread);
+        assert_eq!(
+            s.iter().flat_map(|s| &s.rows).filter(|r| r.unread).count(),
+            1
+        );
     }
 
     #[test]

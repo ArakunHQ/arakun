@@ -70,6 +70,12 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   Changes; the Branches tab draws every live branch against the default one.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
+- **Add or clone a project.** "Add project" (`Ctrl+O`) searches the git repositories
+  in your home folder, or browses a path you type (`~/code/`). Paste a clone URL
+  (`https://github.com/o/r`, `git@host:o/r.git`, a `gh repo clone o/r` or `git clone …`
+  line) or type a GitHub `o/r` to clone it and add it in one step. GitHub repositories
+  are cloned with `gh` when it is installed, so private ones use its sign-in. The clone
+  goes in the folder that already holds most of your repositories, or `~/code`.
 - **Branch names from the task.** A new environment starts on a random branch name
   (`env/brave-otter`); after the first prompt, a small model names it after the task
   (`fix/terminal-tab-name`) and Arakun renames the branch. The folder keeps its name. By

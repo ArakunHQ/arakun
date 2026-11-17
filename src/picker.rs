@@ -1,6 +1,8 @@
 //! arakun's own "Add project" picker. Typing a name searches every git repository
 //! found under the home folder (scanned once in the background, then cached);
-//! typing a path (`~/`, `/`, `./`) browses folders like a shell completion.
+//! typing a path (`~/`, `/`, `./`) browses folders like a shell completion;
+//! pasting a clone URL (`https://github.com/o/r`, `git@host:o/r.git`,
+//! `gh repo clone o/r`, or just `o/r`) offers to clone it.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -35,8 +37,12 @@ struct Repo {
 
 #[derive(Clone)]
 enum RowKind {
-    Repo { branch: Option<SharedString> },
+    Repo {
+        branch: Option<SharedString>,
+    },
     Folder,
+    /// Clone `source` into the row's path, then add it.
+    Clone(CloneSource),
 }
 
 #[derive(Clone)]
@@ -66,6 +72,8 @@ pub struct FolderPicker {
     /// without being its root: the user picks between that repository and a new one.
     inside: Option<PathBuf>,
     error: Option<SharedString>,
+    /// The repository being cloned, while `git clone` runs.
+    cloning: Option<SharedString>,
     /// Shown as a card inside a page (the setup's last step), not as a dialog.
     inline: bool,
     _input_events: Subscription,
@@ -91,6 +99,7 @@ impl FolderPicker {
             confirm_init: None,
             inside: None,
             error: None,
+            cloning: None,
             inline: false,
             _input_events: sub,
         };
@@ -122,7 +131,10 @@ impl FolderPicker {
     pub fn target_name(&self) -> Option<SharedString> {
         match (&self.browsing, self.rows.get(self.selected)) {
             (Some(dir), _) => Some(crate::model::dir_name(dir).into()),
-            (None, Some(row)) => Some(row.name.clone()),
+            (None, Some(row)) => match &row.kind {
+                RowKind::Clone(_) => Some(crate::model::dir_name(&row.path).into()),
+                _ => Some(row.name.clone()),
+            },
             (None, None) => None,
         }
     }
@@ -212,6 +224,21 @@ impl FolderPicker {
                     },
                 })
                 .collect();
+            if let Some(source) = parse_clone_source(&query) {
+                let path = clone_parent(&self.repos).join(&source.name);
+                let row = Row {
+                    name: format!("Clone {}", source.label).into(),
+                    detail: format!("into {}", pretty_path(&path)).into(),
+                    path,
+                    kind: RowKind::Clone(source.clone()),
+                };
+                // A pasted URL means clone; a bare `owner/repo` may be a search.
+                if source.shorthand {
+                    self.rows.push(row);
+                } else {
+                    self.rows = vec![row];
+                }
+            }
         }
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
         cx.notify();
@@ -230,6 +257,9 @@ impl FolderPicker {
 
     /// Enter: add a repository, or step into a plain folder.
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cloning.is_some() {
+            return;
+        }
         if let Some(path) = self.confirm_init.clone() {
             self.init_and_pick(path, cx);
             return;
@@ -243,6 +273,7 @@ impl FolderPicker {
         match row.kind {
             RowKind::Repo { .. } => self.pick(row.path, cx),
             RowKind::Folder => self.browse_into(&row.path, window, cx),
+            RowKind::Clone(source) => self.clone_and_pick(source, row.path, cx),
         }
     }
 
@@ -326,6 +357,43 @@ impl FolderPicker {
         .detach();
     }
 
+    /// Clones on the background executor; the picker stays open with a notice
+    /// until it is done, then adds the clone like any other repository.
+    fn clone_and_pick(&mut self, source: CloneSource, dest: PathBuf, cx: &mut Context<Self>) {
+        if dest.exists() {
+            // Cloned before: add that copy rather than fail or clone it twice.
+            if dest.join(".git").exists() {
+                self.pick(dest, cx);
+            } else {
+                self.error = Some(format!("{} already exists", pretty_path(&dest)).into());
+                cx.notify();
+            }
+            return;
+        }
+        self.error = None;
+        self.cloning = Some(source.label.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let target = dest.clone();
+            let result = cx
+                .background_spawn(async move {
+                    crate::git::clone(&source.url, source.on_github, &target)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.cloning = None;
+                match result {
+                    Ok(()) => this.add_root(dest, cx),
+                    Err(e) => {
+                        this.error = Some(e.to_string().into());
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     fn init_and_pick(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match crate::git::init(&path) {
             Ok(()) => cx.emit(PickerEvent::Picked(path)),
@@ -356,16 +424,23 @@ impl FolderPicker {
                     .child(ui::pixel_art(ui::project_art(art), 2., color))
                     .into_any_element()
             }
-            RowKind::Folder => div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .size(px(28.))
-                .rounded(crate::ui::rad(ui::RADIUS))
-                .bg(theme::fill_hover())
-                .child(icon("folder01", 14.).text_color(theme::text_subtle()))
-                .into_any_element(),
+            RowKind::Folder | RowKind::Clone(_) => {
+                let name = match &row.kind {
+                    RowKind::Clone(s) if s.on_github => "github",
+                    RowKind::Clone(_) => "download04",
+                    _ => "folder01",
+                };
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(28.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
+                    .bg(theme::fill_hover())
+                    .child(icon(name, 14.).text_color(theme::text_subtle()))
+                    .into_any_element()
+            }
         };
         let trailing: gpui::AnyElement = if added {
             div()
@@ -394,6 +469,12 @@ impl FolderPicker {
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_faint())
                     .child(icon("arrow-right01", 12.).text_color(theme::text_faint()))
+                    .into_any_element(),
+                RowKind::Clone(_) => div()
+                    .flex_none()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_subtle())
+                    .child("Clone")
                     .into_any_element(),
             }
         };
@@ -439,7 +520,7 @@ impl FolderPicker {
                 if ev.click_count() >= 2
                     || matches!(
                         this.rows.get(ix).map(|r| &r.kind),
-                        Some(RowKind::Repo { .. })
+                        Some(RowKind::Repo { .. } | RowKind::Clone(_))
                     )
                 {
                     this.activate(ix, window, cx);
@@ -501,7 +582,7 @@ impl Render for FolderPicker {
                     "No folders here. Press Ctrl+Enter to add this folder."
                 }
             } else {
-                "No repositories match. Type a path like ~/code/app to browse."
+                "No repositories match. Type a path like ~/code/app to browse, or paste a URL to clone."
             };
             div()
                 .flex()
@@ -531,7 +612,26 @@ impl Render for FolderPicker {
             .into_any_element()
         };
 
-        let notice: Option<gpui::AnyElement> = if let Some(path) = &self.confirm_init {
+        let notice: Option<gpui::AnyElement> = if let Some(label) = &self.cloning {
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(10.))
+                    .mx(px(16.))
+                    .mb(px(10.))
+                    .p(crate::ui::sp(10.))
+                    .rounded(crate::ui::rad(ui::RADIUS_LG))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::fill_hover())
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_muted())
+                    .child(icon("download04", 14.).text_color(theme::text_subtle()))
+                    .child(format!("Cloning {label}…"))
+                    .into_any_element(),
+            )
+        } else if let Some(path) = &self.confirm_init {
             let message = match &self.inside {
                 Some(root) => format!(
                     "{} is inside the repository {}.",
@@ -730,6 +830,130 @@ fn classify(path: &Path) -> Choice {
         Ok(top) if !same_dir(&top, path) => Choice::Nested(root),
         _ => Choice::Project(root),
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CloneSource {
+    /// What git (or `gh`) is given.
+    url: String,
+    /// On github.com, so `gh` can clone it with its sign-in.
+    on_github: bool,
+    /// `owner/repo` on GitHub, else the URL as typed.
+    label: SharedString,
+    /// Folder name of the clone.
+    name: String,
+    /// A bare `owner/repo`, which may also be a search.
+    shorthand: bool,
+}
+
+/// A repository to clone, from a URL, an scp-style address, a pasted
+/// `git clone …` or `gh repo clone …` line, or a GitHub `owner/repo`.
+fn parse_clone_source(query: &str) -> Option<CloneSource> {
+    let mut q = query.trim();
+    for prefix in ["gh repo clone ", "git clone "] {
+        if let Some(rest) = q.strip_prefix(prefix) {
+            q = rest;
+        }
+    }
+    // The first argument: flags and a target folder after it are ignored.
+    let token = q.split_whitespace().find(|t| !t.starts_with('-'))?;
+    let token = token.trim_end_matches('/');
+
+    let (host, path, url) = if let Some((scheme, rest)) = token.split_once("://") {
+        if !matches!(scheme, "https" | "http" | "ssh" | "git" | "git+ssh") {
+            return None;
+        }
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority.rsplit('@').next()?.split(':').next()?;
+        (host.to_string(), path.to_string(), token.to_string())
+    } else if let Some((user_host, path)) = token.split_once(':')
+        && let Some((_, host)) = user_host.split_once('@')
+        && !host.is_empty()
+        && !user_host.contains('/')
+    {
+        (host.to_string(), path.to_string(), token.to_string())
+    } else if let Some(path) = token.strip_prefix("github.com/") {
+        let url = format!("https://{token}");
+        ("github.com".to_string(), path.to_string(), url)
+    } else {
+        let (owner, repo) = token.split_once('/')?;
+        if !is_github_name(owner) || !is_github_name(repo.trim_end_matches(".git")) {
+            return None;
+        }
+        let repo = repo.trim_end_matches(".git");
+        return Some(CloneSource {
+            url: format!("https://github.com/{owner}/{repo}.git"),
+            on_github: true,
+            label: format!("{owner}/{repo}").into(),
+            name: repo.to_string(),
+            shorthand: true,
+        });
+    };
+
+    let host = host.to_lowercase();
+    if host == "github.com" || host == "www.github.com" {
+        // A link to a file, branch or pull request still clones its repository.
+        let mut parts = path.split('/').filter(|p| !p.is_empty());
+        let owner = parts.next()?;
+        let repo = parts.next()?.trim_end_matches(".git");
+        if !is_github_name(owner) || !is_github_name(repo) {
+            return None;
+        }
+        let url = if url.starts_with("http") {
+            format!("https://github.com/{owner}/{repo}.git")
+        } else {
+            url
+        };
+        return Some(CloneSource {
+            url,
+            on_github: true,
+            label: format!("{owner}/{repo}").into(),
+            name: repo.to_string(),
+            shorthand: false,
+        });
+    }
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()?
+        .trim_end_matches(".git")
+        .to_string();
+    if name.is_empty() || name.starts_with('.') || host.is_empty() {
+        return None;
+    }
+    Some(CloneSource {
+        label: url.trim_end_matches(".git").to_string().into(),
+        url,
+        on_github: false,
+        name,
+        shorthand: false,
+    })
+}
+
+fn is_github_name(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('.')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Where new clones go: the folder that already holds most of the user's
+/// repositories (`~/code`, `~/Developer`, …), else `~/code`.
+fn clone_parent(repos: &[Repo]) -> PathBuf {
+    let home = home();
+    let mut counts: std::collections::HashMap<&Path, usize> = std::collections::HashMap::new();
+    for repo in repos {
+        if let Some(parent) = repo.path.parent()
+            && parent != home
+        {
+            *counts.entry(parent).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+        .map(|(p, _)| p.to_path_buf())
+        .unwrap_or_else(|| home.join("code"))
 }
 
 /// Git prints `C:/x` where Windows reads `C:\x`; compare the folders themselves.
@@ -1013,6 +1237,74 @@ mod tests {
             (home().join("code"), "ap".into())
         );
         assert_eq!(split_path_query("/"), (PathBuf::from("/"), String::new()));
+    }
+
+    #[test]
+    fn clone_sources_parse_from_urls_and_commands() {
+        let gh = |q: &str| {
+            let s = parse_clone_source(q).unwrap_or_else(|| panic!("{q}"));
+            assert!(s.on_github, "{q}");
+            (s.url, s.label.to_string(), s.name, s.shorthand)
+        };
+        let https = (
+            "https://github.com/o/r.git".to_string(),
+            "o/r".to_string(),
+            "r".to_string(),
+            false,
+        );
+        assert_eq!(gh("https://github.com/o/r"), https);
+        assert_eq!(gh("https://github.com/o/r.git"), https);
+        assert_eq!(gh("https://github.com/o/r/pull/12"), https);
+        assert_eq!(gh("github.com/o/r/"), https);
+        assert_eq!(gh("git clone https://github.com/o/r my-dir"), https);
+        assert_eq!(gh("gh repo clone o/r").1, "o/r");
+        assert!(gh("o/r").3);
+        assert_eq!(
+            gh("git@github.com:o/r.git"),
+            (
+                "git@github.com:o/r.git".to_string(),
+                "o/r".to_string(),
+                "r".to_string(),
+                false
+            )
+        );
+
+        let other = parse_clone_source("https://gitlab.com/g/sub/proj.git").unwrap();
+        assert!(!other.on_github);
+        assert_eq!(other.name, "proj");
+        assert_eq!(other.url, "https://gitlab.com/g/sub/proj.git");
+        let scp = parse_clone_source("git@gitlab.com:g/proj").unwrap();
+        assert_eq!((scp.name.as_str(), scp.on_github), ("proj", false));
+
+        for search in [
+            "arakun",
+            "my repo",
+            "a/b/c",
+            "",
+            "ftp://x/y",
+            "https://github.com/o",
+        ] {
+            assert!(parse_clone_source(search).is_none(), "{search}");
+        }
+    }
+
+    #[test]
+    fn clones_go_where_most_repositories_are() {
+        let repo = |p: PathBuf| Repo {
+            name: "x".into(),
+            branch: None,
+            path: p,
+            touched: SystemTime::UNIX_EPOCH,
+        };
+        assert_eq!(clone_parent(&[]), home().join("code"));
+        let dev = home().join("Developer");
+        let repos = [
+            repo(dev.join("a")),
+            repo(dev.join("b")),
+            repo(home().join("other/c")),
+            repo(home().join("d")),
+        ];
+        assert_eq!(clone_parent(&repos), dev);
     }
 
     #[cfg(windows)]

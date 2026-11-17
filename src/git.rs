@@ -78,6 +78,30 @@ pub fn init(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Clones `url` into `dest`. A GitHub repository goes through `gh` when it is
+/// installed, so a private one uses its sign-in instead of a password prompt git
+/// can't show; plain git is the fallback when `gh` is missing or fails.
+pub fn clone(url: &str, on_github: bool, dest: &Path) -> Result<()> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent folder", dest.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("could not create {}", parent.display()))?;
+    if on_github && gh_available() {
+        let done = run_loud(
+            gh(parent)
+                .args(["repo", "clone", url])
+                .arg(dest)
+                .args(["--", "--quiet"]),
+        );
+        if done.is_ok() || dest.exists() {
+            return done.map(drop);
+        }
+    }
+    run_loud(git(parent).args(["clone", "--quiet", "--", url]).arg(dest))?;
+    Ok(())
+}
+
 /// The branch checked out in `dir`; None on a detached HEAD.
 pub fn current_branch(dir: &Path) -> Option<String> {
     let out = stdout(git(dir).args(["symbolic-ref", "--short", "-q", "HEAD"])).ok()?;

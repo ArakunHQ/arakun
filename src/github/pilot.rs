@@ -21,8 +21,8 @@ const POLL: Duration = Duration::from_secs(60);
 /// The only repository the Worker works on (SPEC.md): a task's `pr` is a
 /// number in it.
 pub const REPO: &str = "ArakunHQ/arakun";
-/// The most ready answers a card shows; the Worker sends 2 to 4.
-const OPCIONES_MAX: usize = 4;
+/// The most ready answers a card or the board shows; the Worker sends 2 to 4.
+pub(super) const OPCIONES_MAX: usize = 4;
 /// Ids kept in the book: far more than the Worker ever has open.
 const BOOK_MAX: usize = 1000;
 
@@ -272,7 +272,7 @@ pub struct Item {
 }
 
 /// A null reads as the field's default, like a missing one.
-fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
+pub(super) fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
@@ -280,22 +280,25 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
+/// The pull request `repo#number` names, else the one at `url`.
+pub(super) fn pull_ref(repo: &str, number: u64, url: &str) -> Option<ItemRef> {
+    let from_repo = (number > 0)
+        .then(|| ItemRef::parse(&format!("{repo}#{number}")))
+        .flatten();
+    from_repo
+        .or_else(|| ItemRef::from_url(url))
+        .map(|i| ItemRef {
+            kind: ItemKind::Pull,
+            ..i
+        })
+}
+
 impl Item {
     /// The pull request it is about, when it names one in `REPO`. The
     /// Worker reads other people's pull requests, so it never picks which
     /// repository an approval lands on: anything else names nothing.
     pub fn item_ref(&self) -> Option<ItemRef> {
-        let from_repo = (self.number > 0)
-            .then(|| ItemRef::parse(&format!("{}#{}", self.repo, self.number)))
-            .flatten();
-        // An address from the agent counts only on the host gh talks to.
-        from_repo
-            .or_else(|| ItemRef::from_url_on(&self.url, &super::pr::gh_host()))
-            .filter(|i| i.repo.eq_ignore_ascii_case(REPO))
-            .map(|i| ItemRef {
-                kind: ItemKind::Pull,
-                ..i
-            })
+        pull_ref(&self.repo, self.number, &self.url)
     }
 
     /// Whether the tab's focus keeps it: a card about no repository always
@@ -582,23 +585,10 @@ pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>)
 /// Every item the Worker has open. It closes some on its own, so a read of
 /// only the newest would keep those on show.
 pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
-    let url = format!("{}/items", cfg.url);
-    let mut res = agent(&cfg.url)
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", cfg.token))
-        .call()
-        .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
-    let status = res.status().as_u16();
-    if status != 200 {
-        return Err(status_problem(status));
+    match get(cfg, "/items", 8 * 1024 * 1024)? {
+        (200, bytes) => parse_items(&bytes),
+        (status, _) => Err(status_problem(status)),
     }
-    let bytes = res
-        .body_mut()
-        .with_config()
-        .limit(8 * 1024 * 1024)
-        .read_to_vec()
-        .map_err(|e| format!("the Worker cut the answer short: {e}"))?;
-    parse_items(&bytes)
 }
 
 /// Tells the Worker the user dealt with `id`. One it no longer knows is done too.

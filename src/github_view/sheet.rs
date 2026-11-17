@@ -22,9 +22,6 @@ use crate::github::queue::Details;
 use crate::theme;
 use crate::ui::{self, PillKind, Type, Typography as _, icon};
 
-/// A task title: the first line of what was asked, cut to this many chars.
-const TASK_TITLE_MAX: usize = 72;
-
 /// What the composer's "Pedirle a pilot" does with `text` on pull request
 /// `number`, or why it can't: pilot takes tasks only on the user's own pull
 /// requests in its repository, and only with the admin token.
@@ -51,15 +48,9 @@ pub(super) fn task_for(
     if text.is_empty() {
         return Err("Escribe en la caja qué le pides a pilot.");
     }
-    let first = text.lines().next().unwrap_or_default().trim();
-    let title: String = if first.chars().count() > TASK_TITLE_MAX {
-        let cut: String = first.chars().take(TASK_TITLE_MAX - 1).collect();
-        format!("{}…", cut.trim_end())
-    } else {
-        first.to_string()
-    };
     Ok(TaskRequest {
-        title,
+        // The palette's cut: the same task gets the same title from either.
+        title: crate::palette::cloud::title(text),
         prompt: text.to_string(),
         target: TaskTarget::Pull(n),
     })
@@ -1487,11 +1478,11 @@ mod tests {
                 .contains("Escribe")
         );
         assert!(task_for("x", None, true, true, true).is_err());
-        // A long first line is cut with an ellipsis.
-        let long = "a".repeat(200);
+        // A long first line is cut as the palette cuts it.
+        let long = "arregla el tab ".repeat(20);
         let t = task_for(&long, Some(1), true, true, true).unwrap();
-        assert_eq!(t.title.chars().count(), TASK_TITLE_MAX);
-        assert!(t.title.ends_with('…'));
+        assert_eq!(t.title, crate::palette::cloud::title(&long));
+        assert!(t.title.chars().count() <= 72 && t.title.ends_with('…'));
     }
 
     #[test]

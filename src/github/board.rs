@@ -7,21 +7,12 @@
 
 use serde::{Deserialize, Deserializer};
 
-use super::pilot::{Config, Opcion};
-use super::pr::{ItemKind, ItemRef};
+use super::pilot::{Config, OPCIONES_MAX, Opcion, or_default, pull_ref};
+use super::pr::ItemRef;
 
 /// A board file to read instead of the Worker (`ARAKUN_PILOT_BOARD`), for a
 /// test Arakun and screenshots before the Worker has `/board`.
 pub const FIXTURE_ENV: &str = "ARAKUN_PILOT_BOARD";
-
-/// A null reads as the field's default, like a missing one.
-fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
-}
 
 /// Where a pull request stands. `Listo` means approved and green: the
 /// author merges, pilot never does.
@@ -251,15 +242,7 @@ impl BoardPr {
     }
 
     pub fn item_ref(&self) -> Option<ItemRef> {
-        let from_repo = (self.number > 0)
-            .then(|| ItemRef::parse(&format!("{}#{}", self.repo, self.number)))
-            .flatten();
-        from_repo
-            .or_else(|| ItemRef::from_url(&self.url))
-            .map(|i| ItemRef {
-                kind: ItemKind::Pull,
-                ..i
-            })
+        pull_ref(&self.repo, self.number, &self.url)
     }
 
     /// The row's one line: what comes next, else pilot's last move.
@@ -298,13 +281,8 @@ pub struct Hecho {
 
 impl Hecho {
     pub fn item_ref(&self) -> Option<ItemRef> {
-        (self.number > 0)
-            .then(|| ItemRef::parse(&format!("{}#{}", self.repo, self.number)))
-            .flatten()
-            .map(|i| ItemRef {
-                kind: ItemKind::Pull,
-                ..i
-            })
+        // No address: a merge without a number names nothing.
+        pull_ref(&self.repo, self.number, "")
     }
 }
 
@@ -329,9 +307,6 @@ pub struct Board {
     #[serde(default, deserialize_with = "or_default")]
     pub hecho_hoy: Vec<Hecho>,
 }
-
-/// The most options a decision shows, as the cards did.
-const OPCIONES_MAX: usize = 4;
 
 impl Board {
     /// The pull request `number` of `repo` (any case).

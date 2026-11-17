@@ -1,17 +1,17 @@
 //! The page of a tab with no address: what runs in this environment and how to open it,
-//! with the raccoon at its bench below. Drawn natively over the (blank) Chromium page, so
+//! under the raccoon. Drawn natively over the (blank) Chromium page, so
 //! it is up before CEF paints anything and never flashes white.
 
 use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    ObjectFit, ParentElement as _, Pixels, SharedString, Size, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Window, div, img, linear_color_stop, linear_gradient,
-    prelude::FluentBuilder as _, px, relative,
+    ParentElement as _, Pixels, SharedString, Size, StatefulInteractiveElement as _, Styled as _,
+    Window, div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative,
 };
 
 use super::text_field::TextField;
+use crate::mascot::Mascot;
 use crate::theme;
 use crate::ui::{self, icon};
 
@@ -61,6 +61,8 @@ pub struct Home {
     pub size: Size<Pixels>,
     pub field: Entity<TextField>,
     pub field_focused: bool,
+    /// The brand's raccoon over the title.
+    pub mascot: Entity<Mascot>,
     /// Loads an address in this tab (the Open button, a server chip, the PR).
     pub open: Open,
     /// A click on the background: the view gives the big field the keyboard.
@@ -77,38 +79,8 @@ const FIELD: f32 = 15.;
 const CHIP: f32 = 12.5;
 const HINT: f32 = 11.5;
 
-/// The scene asset's pixel size. Its alpha channel fades out over the top and both
-/// sides, so it blends into the sky at any size without a visible rectangle.
-const SCENE_W: f32 = 1180.;
-const SCENE_H: f32 = 484.;
-/// Drawn between these widths, centered: wide panels get sky around the bench instead
-/// of a blown-up raccoon, narrow ones crop the faded sides rather than shrink him.
-const SCENE_MIN_W: f32 = 820.;
-const SCENE_MAX_W: f32 = 1040.;
-/// Short panels may shrink the scene down to this width to keep the raccoon whole;
-/// below it he is too small to read and the sky stands alone.
-const SCENE_FLOOR_W: f32 = 560.;
-/// Share of the scene's height above its highest detail, the tips of the raccoon's
-/// ears; the lamp shade starts just below them (eyes ~0.35, hands ~0.66).
-const EARS: f32 = 0.12;
-/// Share of the scene's height that must stay on screen: down past the raccoon's
-/// hands and magnifier, so a cropped bench never cuts through his face.
-const SHOW: f32 = 0.67;
-/// Breathing room between the text column and the ears.
-const SCENE_GAP: f32 = 8.;
-
-/// Where the text column ends, from the sizes in [`content`]; the scene stays below it.
-fn content_bottom(layout: Layout, chip_rows: f32) -> f32 {
-    let chips = 28. * chip_rows + 8. * (chip_rows - 1.);
-    if layout.compact {
-        // pill, title, field, chips
-        34. + 24. + 33. + 40. + chips + 3. * 12.
-    } else {
-        // pill, title, lede, field, handwritten line, chips, hints
-        let lede = if layout.narrow { 66. } else { 45. };
-        84. + 24. + 51. + lede + 40. + 28. + chips + 16. + 6. * 18.
-    }
-}
+/// The raccoon's width over the title; its height follows the drawing.
+pub const MASCOT_W: f32 = 96.;
 
 /// Tiny stars over the top of the sky: x and y as shares of the panel, size, alpha.
 const STARS: &[(f32, f32, f32, f32)] = &[
@@ -171,13 +143,13 @@ pub fn render(h: Home) -> AnyElement {
                 .rounded_full()
                 .bg(gpui::white().opacity(alpha))
         }))
-        .children(scene(h.size, layout, &h.info))
         .child(content(
             &h.info,
             layout,
             empty,
             h.field,
             h.field_focused,
+            h.mascot,
             h.open,
         ))
         .into_any_element()
@@ -216,51 +188,13 @@ fn sky() -> gpui::Div {
         )
 }
 
-/// The bench, anchored to the bottom edge. Nothing until the panel's size is known.
-fn scene(size: Size<Pixels>, layout: Layout, info: &HomeInfo) -> Option<gpui::Div> {
-    let (w, h) = (f32::from(size.width), f32::from(size.height));
-    if w <= 0. || h <= 0. {
-        return None;
-    }
-    // Narrow panels wrap the server chips onto a second row above the branch chip.
-    let chip_rows = if layout.narrow && !info.servers.is_empty() {
-        2.
-    } else {
-        1.
-    };
-    let room = h - content_bottom(layout, chip_rows) - SCENE_GAP;
-    // Only the ears may rise above the text; the bottom edge crops the bench. When
-    // that would leave less than SHOW of the picture, shrink it rather than cut it.
-    let fit_h = room / (SHOW - EARS);
-    let scene_w = w
-        .clamp(SCENE_MIN_W, SCENE_MAX_W)
-        .min(fit_h * SCENE_W / SCENE_H);
-    if scene_w < SCENE_FLOOR_W {
-        return None;
-    }
-    let scene_h = scene_w * SCENE_H / SCENE_W;
-    let top = (h - scene_h).max(h - room - scene_h * EARS);
-    Some(
-        div()
-            .absolute()
-            .left(px((w - scene_w) / 2.))
-            .top(px(top))
-            .w(px(scene_w))
-            .h(px(scene_h))
-            .child(
-                img("brand/browser-home.webp")
-                    .size_full()
-                    .object_fit(ObjectFit::Cover),
-            ),
-    )
-}
-
 fn content(
     info: &HomeInfo,
     layout: Layout,
     empty: bool,
     field: Entity<TextField>,
     field_focused: bool,
+    mascot: Entity<Mascot>,
     open: Open,
 ) -> gpui::Div {
     let small_title = layout.compact || layout.narrow;
@@ -271,9 +205,10 @@ fn content(
         .flex()
         .flex_col()
         .items_center()
-        .pt(crate::ui::sp(if layout.compact { 34. } else { 84. }))
+        .pt(crate::ui::sp(if layout.compact { 24. } else { 56. }))
         .px(crate::ui::sp(24.))
         .gap(crate::ui::sp(if layout.compact { 12. } else { 18. }))
+        .child(mascot)
         .child(pill(info, empty))
         .child(title(small_title))
         .when(!layout.compact, |d| d.child(lede(layout, empty)))

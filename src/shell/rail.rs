@@ -59,7 +59,7 @@ impl Shell {
             .gap(crate::ui::sp(2.))
             .when(
                 !self.sidebar.has(&crate::sidebar::Piece::Mascot)
-                    && self.rail_shows_raccoon(&inbox),
+                    && self.rail_shows_raccoon(&inbox, cx),
                 |d| d.child(self.rail_mascot.clone()),
             )
             .child(

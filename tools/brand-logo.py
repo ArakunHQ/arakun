@@ -36,6 +36,8 @@ import re
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 TILE, PAPER, AMBER = "#151515", "#f1efe8", "#ffb547"
+# The ASCII face image's width; src/ascii_face.rs scales it to the screen.
+ASCII_W = 268
 # raccoon.svg's units are the logo's 200-unit box moved by this much; the
 # head's (100, 77.5) then sits at the tile's centre.
 SHIFT = (10.73, 10.68)
@@ -112,6 +114,19 @@ def macos_svg(parts, small):
 <g transform="{fit(MAC_TILE, at)}">{glyph(parts, small, PAPER)}</g></svg>'''
 
 
+def ascii_face(parts):
+    """The raccoon alone on clear ground for the ASCII face. Black holes (not
+    cut out) keep the mask apart from the clear around the head: dark mode
+    leaves both empty, light mode draws the mask in ink."""
+    paths, _ = parts
+    head, holes, nose = paths[0], paths[1:4], paths[4]
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 178.54 137.16">
+<defs><radialGradient id="lit" gradientUnits="userSpaceOnUse" cx="89.27" cy="70" r="95">
+<stop offset="0" stop-color="{PAPER}"/><stop offset="0.55" stop-color="#d9d6ce"/>
+<stop offset="1" stop-color="#7a776f"/></radialGradient></defs>
+<path fill="url(#lit)" d="{head}"/><path fill="#000" d="{" ".join(holes)} {nose}"/></svg>'''
+
+
 def color(hex_):
     r, g, b = (int(hex_[i:i + 2], 16) / 255 for i in (1, 3, 5))
     return {"solid": f"srgb:{r:.5f},{g:.5f},{b:.5f},1.00000"}
@@ -175,6 +190,10 @@ def main():
         subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), "-o", out],
                        input=draw(parts, small).encode(), check=True)
         print(f"brand-logo: wrote {os.path.relpath(out, ROOT)} ({size} px)", file=sys.stderr)
+    out = os.path.join(brand, "ascii-face.png")
+    subprocess.run(["rsvg-convert", "-w", str(ASCII_W), "-o", out],
+                   input=ascii_face(parts).encode(), check=True)
+    print(f"brand-logo: wrote {os.path.relpath(out, ROOT)} ({ASCII_W} px wide)", file=sys.stderr)
     icon_composer(parts)
 
 

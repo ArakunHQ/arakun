@@ -73,6 +73,10 @@ impl BrowserView {
     pub fn is_home(&self) -> bool {
         self.url.is_empty()
     }
+    /// Only a notice shows here, no new-tab page and so no raccoon.
+    pub fn shows_raccoon(&self) -> bool {
+        false
+    }
     pub fn set_home(&mut self, _: HomeInfo, _: &mut Context<Self>) {}
 
     pub fn navigate(&mut self, input: &str, cx: &mut Context<Self>) {

@@ -2327,22 +2327,24 @@ impl Render for Shell {
             });
         }
         let body: AnyElement = if has_projects {
-            ui::card()
-                .id("main-card")
+            // The tabs sit on the window, above the sheet: only the work itself
+            // is a surface. The title bar moves the window itself, so a press
+            // anywhere here must not reach the root's handler as well.
+            div()
                 .map(crate::ui::stop_window_move)
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .bg(theme::background())
                 .child(self.render_titlebar(window, cx))
                 .child(
-                    div()
+                    ui::card()
+                        .id("main-card")
                         .relative()
                         .flex_1()
                         .min_h_0()
-                        .overflow_hidden()
+                        .bg(theme::sheet())
                         .child(self.render_main(window, cx))
                         .when_some(self.render_tab_drop_zones(cx), |d, zones| d.child(zones))
                         .when_some(self.render_image_drop_zone(cx), |d, zone| d.child(zone)),

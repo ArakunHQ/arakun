@@ -511,9 +511,7 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
         .flex_col()
         .min_w_0()
         .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::fill_hover())
+        .bg(theme::sunk())
         .overflow_hidden()
         .font_family(theme::FONT_MONO)
         .text_size(px(crate::ui::TEXT_SM))
@@ -526,9 +524,6 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
                     .gap(crate::ui::sp(8.))
                     .px(crate::ui::sp(10.))
                     .py(crate::ui::sp(6.))
-                    .when(!shown.is_empty(), |d| {
-                        d.border_b_1().border_color(theme::border_subtle())
-                    })
                     .child(div().flex_none().text_color(theme::text_faint()).child("$"))
                     .child(
                         div()
@@ -562,8 +557,6 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
                 div()
                     .px(crate::ui::sp(10.))
                     .py(crate::ui::sp(4.))
-                    .border_t_1()
-                    .border_color(theme::border_subtle())
                     .text_color(red().opacity(0.85))
                     .child(match tool.exit_code {
                         Some(code) => format!("Exited with code {code}"),

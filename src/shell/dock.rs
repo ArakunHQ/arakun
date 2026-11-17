@@ -454,7 +454,6 @@ impl Shell {
             .gap(crate::ui::sp(6.))
             .text_size(px(ui::TEXT_XS))
             .text_color(theme::text_subtle())
-            .when(dock_open, |d| d.border_b_1().border_color(theme::stroke()))
             .child(
                 div()
                     .id("status-branch")
@@ -685,23 +684,29 @@ impl Shell {
                 }),
             );
 
-        ui::card()
-            .id("dock-card")
+        // Open, the terminal is a sheet like the center. Closed, only its
+        // header is left, as the status line on the window itself.
+        let card = if dock_open {
+            ui::card().bg(theme::sheet())
+        } else {
+            div()
+        };
+        card.id("dock-card")
             .map(ui::stop_window_move)
             .relative()
             .flex()
             .flex_col()
             .flex_none()
-            // Open, the user's height; closed, as tall as its header plus its
-            // border, from the layout itself: a fixed number here cut the
-            // header by the border and pushed the chips to the bottom.
+            // Open, the user's height; closed, as tall as its header, from the
+            // layout itself: a fixed number here pushed the chips to the bottom.
             .when(dock_open, |d| d.h(px(self.dock_height)))
-            .when(!dock_open, |d| d.flex_none())
-            .bg(theme::background())
+            // Always there, so the content doesn't move by a pixel when a
+            // drag starts; seen only while dragging.
+            .border_1()
             .border_color(if self.dock_drag {
-                theme::accent()
+                theme::border_strong()
             } else {
-                theme::stroke()
+                gpui::transparent_black()
             })
             .child(header)
             .when(dock_open, |d| d.child(body).child(handle))

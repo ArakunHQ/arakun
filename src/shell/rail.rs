@@ -142,15 +142,7 @@ impl Shell {
             );
 
         let narrow = self.rail_narrow();
-        let card = match self.sidebar.style.variant {
-            crate::sidebar::Variant::Card => ui::card().bg(theme::sidebar()),
-            // Part of the window: no card around it.
-            crate::sidebar::Variant::Flush => div().overflow_hidden(),
-            crate::sidebar::Variant::Floating => ui::card()
-                .bg(theme::sidebar())
-                .shadow_lg()
-                .rounded(crate::ui::rad(16.)),
-        };
+        let card = self.side_card();
         let width = if narrow {
             rail_blocks::RAIL_ICONS_W
         } else {
@@ -170,6 +162,17 @@ impl Shell {
             .children(self.render_pinned_block(cx))
             .children(self.render_rail_sections(cx))
             .pb(crate::ui::sp(4.))
+    }
+
+    /// What the rail, the workspace panel and the subagents column sit in,
+    /// as the rail's style says: on the window itself (Flush, the default),
+    /// in a card, or in a card lifted off the window.
+    pub(super) fn side_card(&self) -> gpui::Div {
+        match self.sidebar.style.variant {
+            crate::sidebar::Variant::Card => ui::card().bg(theme::sidebar()),
+            crate::sidebar::Variant::Flush => div().overflow_hidden(),
+            crate::sidebar::Variant::Floating => ui::card().bg(theme::sidebar()).shadow_lg(),
+        }
     }
 
     /// The top of the rail narrowed to icons: room for the traffic lights,

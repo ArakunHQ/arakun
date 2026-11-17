@@ -280,9 +280,7 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
         .flex_col()
         .min_w_0()
         .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::fill_hover())
+        .bg(theme::sunk())
         .overflow_hidden()
         .child(
             div()

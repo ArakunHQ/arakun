@@ -1564,10 +1564,9 @@ impl Ctx<'_> {
             .flex()
             .flex_col()
             .min_w_0()
+            // Sunk into the sheet, without a border: the tone sets it apart.
             .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::fill_hover())
+            .bg(theme::sunk())
             .overflow_hidden()
             .child(
                 div()
@@ -1577,8 +1576,6 @@ impl Ctx<'_> {
                     .h(px(36.))
                     .pl(crate::ui::sp(12.))
                     .pr(crate::ui::sp(6.))
-                    .border_b_1()
-                    .border_color(theme::border_subtle())
                     .child(
                         icon(
                             if shell {

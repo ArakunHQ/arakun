@@ -8,12 +8,13 @@ use gpui::Point;
 use super::*;
 use crate::sidebar::{BadgeMode, Collapse, Item, Mode, Piece, Pin, Section, TitleAction, View};
 
-/// A count on a rail row, colored by how much it matters.
+/// A count on a rail row. Most counts are plain gray numbers; a failure or
+/// something waiting on the user keeps its color, with a dot.
 #[derive(Clone, Copy)]
 pub(super) struct Badge {
     count: usize,
-    bg: Hsla,
-    fg: Hsla,
+    /// The color of a count that matters; `None` draws it gray.
+    color: Option<Hsla>,
     /// A failure, or something waiting on the user.
     urgent: bool,
 }
@@ -22,30 +23,31 @@ impl Badge {
     pub(super) fn count(self) -> usize {
         self.count
     }
+
+    fn color(self) -> Hsla {
+        self.color.unwrap_or_else(theme::text_faint)
+    }
 }
 
 /// Width of the rail narrowed to icons.
 pub(super) const RAIL_ICONS_W: f32 = 52.;
 
 fn badge_pill(b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
+    let dot = || div().flex_none().size(px(6.)).rounded_full().bg(b.color());
     match mode {
         BadgeMode::Off => None,
         BadgeMode::Urgent if !b.urgent => None,
-        BadgeMode::Dot => Some(div().flex_none().size(px(7.)).rounded_full().bg(b.bg)),
+        BadgeMode::Dot => Some(dot()),
         _ => Some(
             div()
                 .flex()
                 .flex_none()
                 .items_center()
-                .justify_center()
-                .min_w(px(18.))
-                .h(px(18.))
-                .px(crate::ui::sp(5.))
-                .rounded_full()
-                .bg(b.bg)
+                .gap(crate::ui::sp(5.))
+                .when(b.color.is_some(), |d| d.child(dot()))
+                .font_family(theme::FONT_MONO)
                 .text_size(px(ui::TEXT_XS))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(b.fg)
+                .text_color(b.color())
                 .child(b.count.to_string()),
         ),
     }
@@ -140,14 +142,12 @@ impl Shell {
     pub(super) fn view_badge(&self, view: View, cx: &mut Context<Self>) -> Option<Badge> {
         let quiet = |count| Badge {
             count,
-            bg: theme::mix(0.12),
-            fg: theme::mix(0.8),
+            color: None,
             urgent: false,
         };
-        let loud = |count, bg: Hsla| Badge {
+        let loud = |count, color: Hsla| Badge {
             count,
-            bg,
-            fg: gpui::white(),
+            color: Some(color),
             urgent: true,
         };
         match view {
@@ -160,14 +160,9 @@ impl Shell {
                 // A session waiting on the user outranks notices read later.
                 let unseen = self.unseen_notices();
                 if waiting > 0 {
-                    Some(Badge {
-                        count: waiting + unseen,
-                        bg: theme::warn().into(),
-                        fg: theme::background(),
-                        urgent: true,
-                    })
+                    Some(loud(waiting + unseen, theme::accent()))
                 } else {
-                    (unseen > 0).then(|| loud(unseen, theme::accent()))
+                    (unseen > 0).then(|| quiet(unseen))
                 }
             }
             #[cfg(feature = "coderlabs")]
@@ -412,8 +407,7 @@ impl Shell {
                     d.children(badge_pill(
                         Badge {
                             count: urgent,
-                            bg: theme::error().into(),
-                            fg: gpui::white(),
+                            color: Some(theme::error().into()),
                             urgent: true,
                         },
                         BadgeMode::Count,
@@ -467,9 +461,8 @@ impl Shell {
             .flex()
             .flex_col()
             .py(crate::ui::sp(4.))
-            .when(section.line_above, |d| {
-                d.border_t_1().border_color(theme::stroke()).mt(px(4.))
-            })
+            // Space, not a line, between sections.
+            .when(section.line_above, |d| d.mt(crate::ui::sp(10.)))
             .children(title)
             .child(body)
             .into_any_element()
@@ -497,8 +490,9 @@ impl Shell {
                 .text_size(px(ui::TEXT_MD))
                 .child(e.clone())
                 .into_any_element(),
-            None => icon(item.piece.icon(), 16.)
-                .text_color(theme::mix(0.5 * 0.7))
+            // The chrome stays a step under the content: small, faint icons.
+            None => icon(item.piece.icon(), 15.)
+                .text_color(theme::text_faint())
                 .into_any_element(),
         };
         let row_id = SharedString::from(match &item.piece {
@@ -517,8 +511,7 @@ impl Shell {
                 .px(crate::ui::sp(8.))
                 .rounded(crate::ui::rad(8.))
                 .w_full()
-                .text_size(px(ui::TEXT_LG))
-                .font_weight(FontWeight::MEDIUM)
+                .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
@@ -568,7 +561,7 @@ impl Shell {
                                 .right(px(10.))
                                 .size(px(7.))
                                 .rounded_full()
-                                .bg(badge.map_or(theme::mix(0.3), |b| b.bg)),
+                                .bg(badge.map_or(theme::text_faint(), |b| b.color())),
                         )
                     })
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
@@ -594,9 +587,7 @@ impl Shell {
                         .into_any_element()
                 } else {
                     row(shortcut(&item.piece))
-                        .border_1()
-                        .border_color(theme::border())
-                        .shadow_sm()
+                        .bg(theme::fill_hover())
                         .my(px(2.))
                         .tooltip(ui::tip("Search everywhere (Ctrl+K)"))
                         .on_click(cx.listener(|this, _, window, cx| this.open_switcher(window, cx)))

@@ -181,10 +181,10 @@ impl Pin {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Variant {
-    /// A card beside the content, as the rail always was.
-    #[default]
+    /// A card beside the content.
     Card,
     /// No card: the rail is part of the window's background.
+    #[default]
     Flush,
     /// A card lifted off the window, with a shadow.
     Floating,
@@ -248,7 +248,7 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Style {
-            variant: Variant::Card,
+            variant: Variant::Flush,
             collapse: Collapse::Hide,
             side: Side::Left,
             density: Density::Normal,

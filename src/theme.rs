@@ -177,6 +177,9 @@ pub struct Palette {
     pub accent: u32,
 }
 
+/// How dark Calma's ground is.
+const CALMA_BG: f32 = 0.06;
+
 /// The accent the brand started with, `#ffb547`.
 pub const AMBER: u32 = 0xffb547;
 
@@ -196,6 +199,7 @@ impl Palette {
     pub fn built_in() -> Vec<Palette> {
         vec![
             Palette::new("black", "Arakun Black", 0., 0., 0.043, AMBER),
+            Palette::new("calma", "Calma", 240., 0.06, CALMA_BG, AMBER),
             Palette::new("night", "Arakun Night", 226., 0.28, 0.085, AMBER),
             Palette::new("graphite", "Graphite", 230., 0.06, 0.075, AMBER),
             Palette::new("midnight", "Midnight", 250., 0.45, 0.07, 0x8b9dff),
@@ -210,8 +214,21 @@ impl Palette {
     }
 
     #[cfg(test)]
+    fn built_in_by_id(id: &str) -> Palette {
+        Palette::built_in()
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("a built-in palette")
+    }
+
+    #[cfg(test)]
     pub fn night() -> Palette {
-        Palette::built_in().remove(1)
+        Palette::built_in_by_id("night")
+    }
+
+    #[cfg(test)]
+    pub fn calma() -> Palette {
+        Palette::built_in_by_id("calma")
     }
 
     /// Kept inside what the rest of the theme was tuned for, so a typed or
@@ -280,7 +297,10 @@ impl Palette {
     /// Those barely change with the background, since they carry some of it,
     /// so only lighter text helps them; some tints at full strength need it.
     pub fn readable_content_l(&self) -> f32 {
-        let back = tinted(self.hue, self.tint, self.readable_bg(), BASE_L);
+        // Checked on the ground and on the sheet, where most text sits: a
+        // gray that reads on one can fall short on the other.
+        let bg = self.readable_bg();
+        let backs = [BASE_L, BASE_L + SHEET_LIFT].map(|l| tinted(self.hue, self.tint, bg, l));
         let least = |role: fn(&Ramp) -> f32| {
             Grays::ALL
                 .iter()
@@ -294,8 +314,10 @@ impl Palette {
         );
         // Each only rises as the text gets lighter.
         let reads = |l: f32| {
-            let on = |alpha: f32| contrast(over(self.content_at(l).opacity(alpha), back), back);
-            on(muted) >= MIN_MUTED && on(subtle) >= MIN_SUBTLE && on(faint) >= MIN_FAINT
+            backs.iter().all(|&back| {
+                let on = |alpha: f32| contrast(over(self.content_at(l).opacity(alpha), back), back);
+                on(muted) >= MIN_MUTED && on(subtle) >= MIN_SUBTLE && on(faint) >= MIN_FAINT
+            })
         };
         if reads(CONTENT_L) {
             return CONTENT_L;
@@ -538,14 +560,20 @@ pub fn background() -> Hsla {
 
 /// The window itself: see-through with glass on. Everything painted with
 /// `background()` (text on accents, popovers, the terminal) stays opaque.
+/// In light mode the ground is a light gray, so the white sheet stands off it.
 pub fn window_bg() -> Hsla {
-    background().opacity(if glass() { 0.78 } else { 1. })
+    let ground = if is_light() {
+        current_surface(BASE_L - LIGHT_GROUND_DROP)
+    } else {
+        background()
+    };
+    ground.opacity(if glass() { 0.78 } else { 1. })
 }
 
-/// The same tone as the content area: the floating cards separate by gap
-/// and border, not by a darker sidebar.
+/// A rail or panel in a card of its own (the Card and Floating rail
+/// styles): the sheet's tone, since the ground around it is the window.
 pub fn sidebar() -> Hsla {
-    background().opacity(if glass() { 0.62 } else { 1. })
+    sheet()
 }
 
 /// `#e6e8ef` in the default palette.
@@ -731,6 +759,52 @@ pub fn selection_hover() -> Hsla {
 /// Dialogs, menus and popovers.
 pub fn dialog() -> Hsla {
     current_surface(BASE_L + DIALOG_LIFT)
+}
+
+// Four surfaces, each with one job. The window is the ground: the rail, the
+// workspace panel and the status line sit on it without a card of their own.
+// The sheet is where you work, a step lighter, so the eye lands there. Raised
+// asks something of you (the composer, a question from the agent). Sunk holds
+// code and terminal output inside a sheet.
+
+/// How much lighter than the ground the sheet is.
+const SHEET_LIFT: f32 = 0.03;
+/// How much lighter than the ground raised things are.
+const RAISED_LIFT: f32 = 0.06;
+/// How much lighter than the ground sunk wells are: darker than the sheet
+/// they sit in.
+const SUNK_LIFT: f32 = 0.012;
+/// On white nothing can be lighter than the sheet, so light mode steps raised
+/// things and wells down to a light gray instead, as far as the other wells.
+const LIGHT_RAISED_DROP: f32 = 0.025;
+const LIGHT_SUNK_DROP: f32 = 0.04;
+/// Light mode's window ground, under the white sheet: a step grayer than
+/// raised things so the rail and the sheet don't run together.
+const LIGHT_GROUND_DROP: f32 = 0.03;
+
+/// The lightness, as for the dark default, of a surface `lift` above the
+/// ground in dark mode, or `light_drop` below the white sheet in light mode.
+fn layer_l(light: bool, lift: f32, light_drop: f32) -> f32 {
+    if light {
+        BASE_L - light_drop
+    } else {
+        BASE_L + lift
+    }
+}
+
+/// Where you work: the center of the window.
+pub fn sheet() -> Hsla {
+    current_surface(layer_l(is_light(), SHEET_LIFT, 0.)).opacity(if glass() { 0.9 } else { 1. })
+}
+
+/// Something on the sheet that asks for you: the composer, a question.
+pub fn raised() -> Hsla {
+    current_surface(layer_l(is_light(), RAISED_LIFT, LIGHT_RAISED_DROP))
+}
+
+/// Code, diffs and terminal output inside a sheet.
+pub fn sunk() -> Hsla {
+    current_surface(layer_l(is_light(), SUNK_LIFT, LIGHT_SUNK_DROP))
 }
 
 /// Lemon yellow, apart from the amber accent. Always shown with an icon.
@@ -964,6 +1038,84 @@ mod tests {
                 "{} keeps its hue",
                 p.name
             );
+        }
+    }
+
+    #[test]
+    fn calma_is_a_quiet_ground_with_a_lighter_sheet() {
+        let p = Palette::calma();
+        assert!(
+            near(p.background(), 0x0f0f10),
+            "ground {:06x}",
+            hex(p.background())
+        );
+        let (ground, sheet) = (p.background(), p.surface(BASE_L + SHEET_LIFT));
+        let (raised, sunk) = (
+            p.surface(BASE_L + RAISED_LIFT),
+            p.surface(BASE_L + SUNK_LIFT),
+        );
+        assert!(ground.l < sunk.l && sunk.l < sheet.l && sheet.l < raised.l);
+        assert!(near(p.accent(), AMBER), "accent {:06x}", hex(p.accent()));
+    }
+
+    #[test]
+    fn on_white_raised_things_and_wells_still_stand_off_the_sheet() {
+        for p in Palette::built_in() {
+            let at = |lift, drop| light_tinted(p.hue, p.tint, layer_l(true, lift, drop));
+            let sheet = at(SHEET_LIFT, 0.);
+            let (raised, sunk) = (
+                at(RAISED_LIFT, LIGHT_RAISED_DROP),
+                at(SUNK_LIFT, LIGHT_SUNK_DROP),
+            );
+            let ground = light_tinted(p.hue, p.tint, BASE_L - LIGHT_GROUND_DROP);
+            assert_eq!(sheet, p.light_background(), "{} sheet is the white", p.name);
+            assert!(
+                sunk.l < raised.l && raised.l < sheet.l,
+                "{} raised and sunk read on white",
+                p.name
+            );
+            assert!(ground.l < sheet.l, "{} sheet stands off the ground", p.name);
+        }
+    }
+
+    #[test]
+    fn light_mode_gray_text_reads_on_the_gray_ground() {
+        for p in Palette::built_in() {
+            let ground = light_tinted(p.hue, p.tint, BASE_L - LIGHT_GROUND_DROP);
+            let text = hsla(
+                p.hue / 360.,
+                (p.tint * 0.8).min(CONTENT_S_MAX),
+                LIGHT_CONTENT_L,
+                1.,
+            );
+            for g in Grays::ALL {
+                let r = g.ramp();
+                let on = |alpha: f32| {
+                    let lifted = (alpha * LIGHT_TEXT_LIFT).min(1.);
+                    contrast(over(text.opacity(lifted), ground), ground)
+                };
+                assert!(on(r.text_muted) >= 7., "{} {g:?} muted", p.name);
+                assert!(on(r.text_subtle) >= 4.5, "{} {g:?} subtle", p.name);
+                assert!(on(r.text_faint) >= 2.5, "{} {g:?} faint", p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn gray_text_reads_on_the_sheet() {
+        // A light neutral custom palette: calibrating on the ground alone
+        // left subtle text under 4.5 on the lighter sheet.
+        let p = Palette::new("custom-test", "Test", 0., 0., 0.16, AMBER);
+        let bg = p.readable_bg();
+        let text = p.content_at(p.readable_content_l());
+        for lift in [0., SHEET_LIFT] {
+            let back = tinted(p.hue, p.tint, bg, BASE_L + lift);
+            for g in Grays::ALL {
+                let r = g.ramp();
+                let on = |alpha: f32| contrast(over(text.opacity(alpha), back), back);
+                assert!(on(r.text_subtle) >= 4.5, "{g:?} subtle at {lift}");
+                assert!(on(r.text_faint) >= 2.5, "{g:?} faint at {lift}");
+            }
         }
     }
 

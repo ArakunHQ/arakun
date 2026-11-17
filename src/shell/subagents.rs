@@ -192,8 +192,6 @@ impl Shell {
             .pl(crate::ui::sp(if opened.is_some() { 6. } else { 12. }))
             .pr(crate::ui::sp(6.))
             .gap(crate::ui::sp(6.))
-            .border_b_1()
-            .border_color(theme::stroke())
             .map(|d| match &opened {
                 Some((_, name, state, _)) => d
                     .child(
@@ -307,7 +305,7 @@ impl Shell {
             }
         };
 
-        ui::card()
+        self.side_card()
             .id("subagents-card")
             .map(ui::stop_window_move)
             .flex()
@@ -315,7 +313,6 @@ impl Shell {
             .flex_none()
             .w(px(self.subagents_w))
             .h_full()
-            .bg(theme::sidebar())
             .child(header)
             .child(div().flex_1().min_h_0().child(body))
     }

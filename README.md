@@ -178,7 +178,9 @@ it shows in `github/avatars/` (each downloaded again after a week).
 ### Make it yours
 
 - **Color palettes.** Settings › Appearance has built-in palettes (Arakun Black, the
-  default, then Arakun Night, Graphite, Midnight, Forest, Rosé). Customize one to change
+  default, then Calma, Arakun Night, Graphite, Midnight, Forest, Rosé). Only the center
+  of the window is a sheet; the sidebar, the workspace panel and the status line sit on
+  the window itself, and the accent is kept for what needs you. Customize one to change
   its tint, background and accent; Arakun warns when text or the accent gets hard to
   read. A palette fits in one line (`arakun:palette/v1:…`) that anyone can paste there to
   get it. The choice and your palettes are kept in `palettes.json` next to the state.

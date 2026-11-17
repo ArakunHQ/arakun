@@ -1,14 +1,29 @@
 name: Release
 
-# Builds release binaries for a pushed `v*` tag and publishes them as a GitHub
+# Builds release binaries for a `v*` tag and publishes them as a GitHub
 # Release with SHA256SUMS, its minisign signature and a build provenance
 # attestation.
 #
 # To release: set `version` in Cargo.toml and server/Cargo.toml, merge that,
-# then push the tag (`git tag v1.2.3 && git push origin v1.2.3`). Do not create
-# the release on GitHub by hand: the publish job makes it as a draft, uploads
-# the archives and then publishes it. A release published before that has no
-# archives, and with immutable releases on it can no longer take any.
+# then run this workflow on main with that version:
+#
+#   gh workflow run release.yml --ref main -f version=1.2.3
+#
+# The tag job tags main's commit as v1.2.3 and starts this workflow on the tag
+# with publish=true, which builds, signs and publishes. If that run fails,
+# merge the fix and run the same command again: as long as v1.2.3 has no
+# published release, the tag job moves the tag to the new commit, so nobody
+# has to force-push a tag. Pushing a tag by hand (`git push origin v1.2.3`)
+# still publishes too.
+#
+# The tag job pushes v* tags with the workflow token, which the `releases` tag
+# ruleset allows only because GitHub Actions is a bypass actor on it. Tags the
+# workflow token pushes start no workflow on their own, hence the dispatch.
+#
+# Do not create the release on GitHub by hand: the publish job makes it as a
+# draft, uploads the archives and then publishes it. A release published before
+# that has no archives, and with immutable releases on it can no longer take
+# any.
 #
 # - The version job fails a tag that is not `v` plus the version in
 #   Cargo.toml, since `arakun --version` and the crash reports print that
@@ -17,10 +32,10 @@ name: Release
 #   commit that fails them never publishes. For a tag, every CI job runs. They
 #   restore main's cache like any CI run, but nothing they build goes into the
 #   archives.
-# - A dry run (a pull request that changes this file, or a manual run) builds,
-#   smoke-tests and uploads the archives as `arakun-dev-<short sha>-…`, and
-#   does not publish. Only a pushed tag publishes; a manual run never does,
-#   even on a tag.
+# - A dry run (a pull request that changes this file, or a manual run without
+#   `version` or `publish`) builds, smoke-tests and uploads the archives as
+#   `arakun-dev-<short sha>-…`, and does not publish. Only a pushed tag or a
+#   manual run on a tag with publish=true publishes.
 # - Linux x86_64, Windows x86_64 (MSVC) and macOS arm64. No Intel Mac build.
 # - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it,
 #   in a disk image made by tools/macos-dmg.py that opens as a branded window
@@ -70,6 +85,15 @@ on:
       - tools/Arakun.icon/**
       - assets/brand/dmg-background*.png
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release this version: tag main's commit as v<version> and publish it (empty: dry run)"
+        type: string
+        default: ""
+      publish:
+        description: "Publish the tag this run is on (the tag job sets it)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -83,10 +107,75 @@ env:
   # Lets the binaries update themselves (src/update.rs). A build from source
   # never does, since a release would take its browser away.
   ARAKUN_RELEASE_BUILD: "1"
+  # The tag this run publishes, or empty for a dry run; it names the archives.
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.publish) && github.ref_name || '' }}
 
 jobs:
+  # A manual run with `version`: tags main and starts the real run on the tag.
+  # Every other job skips in this run.
+  tag:
+    name: Tag
+    if: inputs.version != ''
+    runs-on: depot-ubuntu-24.04
+    # Two runs for the same version would race to move its tag.
+    concurrency:
+      group: release-tag-${{ inputs.version }}
+    permissions:
+      # Creates and moves the tag.
+      contents: write
+      # Starts this workflow on the tag.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag and start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::run this on main (--ref main), not $GITHUB_REF; a release is cut from main"
+            exit 1
+          fi
+          read_version() { python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["package"]["version"])' "$1"; }
+          app=$(read_version Cargo.toml)
+          if [ "$VERSION" != "$app" ]; then
+            echo "::error::version $VERSION is not the version in main's Cargo.toml ($app); merge the version bump first"
+            exit 1
+          fi
+          tag="v$VERSION"
+
+          # A published release is immutable, so its tag must not move. A
+          # draft is left by a run that failed while publishing; the next run
+          # takes it over.
+          published=$(gh api --paginate "repos/$GH_REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$tag\" and (.draft | not)) | .html_url")
+          if [ -n "$published" ]; then
+            echo "::error::$tag is already released ($published); bump the version for a new release"
+            exit 1
+          fi
+
+          # An annotated tag, like one made by hand, so `git describe` finds it.
+          object=$(gh api "repos/$GH_REPO/git/tags" -f tag="$tag" -f message="Arakun $tag" \
+            -f object="$SHA" -f type=commit --jq .sha)
+          if old=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq .object.sha 2>/dev/null); then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$object" -F force=true >/dev/null
+            echo "::notice::moved $tag from tag object $old to $SHA"
+          else
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$object" >/dev/null
+            echo "::notice::created $tag at $SHA"
+          fi
+
+          gh workflow run release.yml --ref "$tag" -f publish=true
+          echo "::notice::started the release run on $tag: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/release.yml?query=branch%3A$tag"
+
   ci:
     name: CI
+    if: inputs.version == ''
     uses: $/.github/workflows/ci.yml
     # A called workflow gets at most what its caller job allows; the "What
     # changed" job in ci.yml lists a pull request's files.
@@ -94,10 +183,11 @@ jobs:
       contents: read
       pull-requests: read
 
-  # Runs for dry runs too, so the builds can always need it; only a tag push
-  # compares the tag.
+  # Runs for dry runs too, so the builds can always need it; only a run that
+  # publishes compares the tag.
   version:
     name: Version
+    if: inputs.version == ''
     runs-on: depot-ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,7 +196,7 @@ jobs:
 
       - name: Compare the tag and the crate versions
         env:
-          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           read_version() { python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["package"]["version"])' "$1"; }
           app=$(read_version Cargo.toml)
@@ -206,7 +296,7 @@ jobs:
         env:
           # Empty on a dry run; then the name carries the commit (for a pull
           # request its head, not the merge commit GitHub tests).
-          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          TAG: ${{ env.RELEASE_TAG }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         # Steps in this container run under sh (dash), not bash: POSIX only.
         run: |
@@ -297,7 +387,7 @@ jobs:
         env:
           # Empty on a dry run; then the name carries the commit (for a pull
           # request its head, not the merge commit GitHub tests).
-          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          TAG: ${{ env.RELEASE_TAG }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $tag = if ($env:TAG) { $env:TAG } else { "dev-" + $env:SHA.Substring(0, 7) }
@@ -394,7 +484,7 @@ jobs:
         env:
           # Empty on a dry run; then the name carries the commit (for a pull
           # request its head, not the merge commit GitHub tests).
-          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          TAG: ${{ env.RELEASE_TAG }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           tag=${TAG:-dev-$(printf %.7s "$SHA")}
@@ -698,8 +788,9 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [linux, windows, macos-notarize]
-    # Not on a manual run, even one started on a tag: that is a dry run.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # A manual run publishes only on a tag and with publish=true; any other
+    # manual run is a dry run.
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.publish)
     runs-on: depot-ubuntu-24.04
     # For the release signing key, below.
     environment: release-signing
@@ -779,6 +870,21 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS
+
+      # The tag job moves a tag that has no published release yet. A run still
+      # building the old commit must then not publish its archives under it.
+      - name: Check the tag still points at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          now=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          if [ "$now" != "$SHA" ]; then
+            echo "::error::$TAG moved to $now while this run built $SHA; the run on the new commit publishes it"
+            exit 1
+          fi
 
       # zizmor would have `gh release create` here. Moving over changes how a
       # re-run treats a release that already exists, which only a real tag can

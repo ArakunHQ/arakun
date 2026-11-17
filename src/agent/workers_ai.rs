@@ -591,17 +591,21 @@ impl Session {
         let Some(path) = Self::path(&self.id) else {
             return;
         };
-        let written = std::fs::create_dir_all(sessions_dir()).and_then(|_| {
-            crate::durable::write(&path, &serde_json::to_vec(self).unwrap_or_default())
-        });
         // The folder, not the session id: CodeQL counts the random id as
         // sensitive (code scanning alert 15), and the folder is enough to look.
-        if let Err(e) = written {
+        if let Err(e) = self.save_to(&path) {
             eprintln!(
                 "arakun: could not save a Workers AI session in {}: {e}",
                 sessions_dir().display()
             );
         }
+    }
+
+    /// The session holds the whole chat, tool output included, so only its
+    /// owner may read it. `write_private` also makes the folder, 0700; making
+    /// it first with `create_dir_all` would give it the default mode.
+    fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        crate::durable::write_private(path, &serde_json::to_vec(self).unwrap_or_default())
     }
 
     fn load(id: &str) -> Option<Self> {
@@ -3603,6 +3607,24 @@ mod tests {
         if let Some(p) = Session::path(&sid) {
             let _ = std::fs::remove_file(p);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_session_is_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = std::env::temp_dir().join(format!("arakun-wai-private-{}", uuid_v4()));
+        let path = dir.join("workers-ai").join("s.json");
+        let session = Session::new(dir.clone());
+        session.save_to(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir.join("workers-ai")), 0o700);
+        // A session saved before this was readable by all; the next save fixes it.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        session.save_to(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

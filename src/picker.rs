@@ -849,10 +849,8 @@ fn parse_clone_source(query: &str) -> Option<CloneSource> {
     }
     // The first argument: flags (and the values of those that take one) and a
     // target folder after it are ignored.
-    // A pasted command may quote its arguments (`git clone "https://…"`).
-    let mut words = q
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c| c == '"' || c == '\''));
+    let words = shell_words(q);
+    let mut words = words.iter().map(String::as_str);
     let token = loop {
         let word = words.next()?;
         if TAKES_VALUE.contains(&word) {
@@ -969,6 +967,28 @@ fn clone_or_reuse(source: &CloneSource, dest: &Path) -> anyhow::Result<Cloned> {
         Some(found) => anyhow::bail!("{} already holds {}", pretty_path(dest), found.label),
         None => anyhow::bail!("{} already exists", pretty_path(dest)),
     }
+}
+
+/// Splits a pasted command into words the way a shell quotes them
+/// (`git clone -c "user.name=a b" 'https://…'`), without expanding anything.
+fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut quote = None;
+    for c in line.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => word.get_or_insert_default().push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                word.get_or_insert_default();
+            }
+            None if c.is_whitespace() => words.extend(word.take()),
+            None => word.get_or_insert_default().push(c),
+        }
+    }
+    words.extend(word);
+    words
 }
 
 /// Options of `git clone` and `gh repo clone` whose value is the next word.
@@ -1356,6 +1376,10 @@ mod tests {
         assert_eq!(gh("gh repo clone o/r -- --depth 1").1, "o/r");
         assert_eq!(gh(r#"git clone "https://github.com/o/r" 'my dir'"#), https);
         assert_eq!(gh("gh repo clone 'o/r'").1, "o/r");
+        assert_eq!(
+            gh(r#"git clone -c "user.name=a b" --depth 1 https://github.com/o/r"#),
+            https
+        );
         // Neither does a query string or a fragment.
         assert_eq!(gh("https://github.com/o/r?tab=readme-ov-file"), https);
         assert_eq!(gh("https://github.com/o/r#readme"), https);
@@ -1451,6 +1475,14 @@ mod tests {
         let other = clone_or_reuse(&source("https://github.com/owner-b/app"), &dest);
         assert!(other.is_err_and(|e| e.to_string().ends_with("already holds owner-a/app")));
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn pasted_commands_split_like_a_shell() {
+        assert_eq!(
+            shell_words(r#"git clone -c "a b" 'c d'  e"f g"h "" "#),
+            ["git", "clone", "-c", "a b", "c d", "ef gh", ""]
+        );
     }
 
     #[test]

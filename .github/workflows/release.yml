@@ -68,6 +68,9 @@ env:
   # Cargo.toml keeps line tables in release builds (debug = 1); the published
   # binaries leave them out, which keeps the archives small and skips the .pdb.
   CARGO_PROFILE_RELEASE_DEBUG: 0
+  # Lets the binaries update themselves (src/update.rs). A build from source
+  # never does, since a release would take its browser away.
+  ARAKUN_RELEASE_BUILD: "1"
 
 jobs:
   ci:

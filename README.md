@@ -310,6 +310,23 @@ or set `ARAKUN_VERSION=v0.2.1` (on Windows, `$env:ARAKUN_VERSION = "v0.2.1"`). T
 no build for Intel Macs or Linux on ARM yet; build from source there. `v0.1.0` has no
 macOS build; on macOS, install a later version.
 
+### Updates
+
+A release build keeps itself up to date. Every 6 hours it asks GitHub for the latest
+release. When there is a newer one, it downloads it, checks it against `SHA256SUMS`, and
+puts it next to the installed app. The update is installed when you quit Arakun, so the
+next start runs it. Settings › General › Updates shows the version, has **Check now**,
+and on Linux and macOS **Restart now**. Turn **Update automatically** off there to stop
+the checks; `ARAKUN_UPDATES=0` turns them off for one run.
+
+From a terminal, `arakun update` downloads the latest release and installs it. If Arakun
+is running, it is installed when Arakun quits; `arakun restart` does that now.
+`arakun update --check` only says whether there is a newer release.
+
+Arakun updates itself where it runs from, so that folder must be writable by you (the
+install scripts' folders are). A build from source never updates itself: a release would
+take away the browser. Pull and build it again instead.
+
 ### Manual download
 
 Download the archive or disk image for your platform from

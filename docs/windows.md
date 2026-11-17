@@ -185,6 +185,11 @@ Manager (Windows Credentials, Generic Credentials).
 - **Notifications:** Windows toasts through PowerShell; they appear under the name
   "Windows PowerShell".
 - **Opening external files and links:** with the Windows default program.
+- **Updates:** a release build downloads a new release as `.arakun.exe.update` next to
+  `arakun.exe`. Windows does not let a running `.exe` be replaced, so when Arakun quits
+  it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. The
+  next start deletes the old one. Settings has no **Restart now** button on Windows:
+  quit Arakun and open it again. Not tested on real Windows yet.
 
 ## Not available on Windows
 

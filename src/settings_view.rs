@@ -38,6 +38,8 @@ pub enum SettingsEvent {
     DiffPalette(DiffPalette),
     Glass(bool),
     Island(bool),
+    /// Quit and start again, which installs the downloaded update.
+    RestartToUpdate,
     OpenAccount,
     OpenExtensions,
     #[cfg(feature = "coderlabs")]
@@ -175,11 +177,11 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone update updates version release upgrade"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts update updates version release upgrade"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
@@ -879,6 +881,7 @@ impl SettingsDialog {
                             .into_any_element(),
                         ],
                     ),
+                    titled("Updates", self.update_rows(cx)),
                     titled(
                         "Browser",
                         vec![
@@ -1187,6 +1190,66 @@ impl SettingsDialog {
             .child(head)
             .child(body)
             .into_any_element()
+    }
+
+    /// The Updates card: the automatic switch, and the version with what
+    /// the last check found.
+    fn update_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use crate::update::{self, Status};
+        let version = format!("Arakun {}", env!("CARGO_PKG_VERSION"));
+        if !update::release_build() {
+            return vec![
+                row(
+                    version,
+                    "Built from source, so it does not update itself. Pull and build it again, or install a release.",
+                    div().into_any_element(),
+                )
+                .into_any_element(),
+            ];
+        }
+        let automatic = update::automatic();
+        let auto = row(
+            "Update automatically",
+            "Looks for a new release on GitHub every 6 hours and downloads it. It is installed when you quit Arakun.",
+            switch(automatic).into_any_element(),
+        )
+        .id("set-auto-update")
+        .cursor_pointer()
+        .on_click(cx.listener(move |_, _, _, cx| {
+            if let Err(e) = update::set_automatic(!automatic) {
+                eprintln!("arakun: the update setting will not last past a restart: {e}");
+            }
+            cx.notify();
+        }))
+        .into_any_element();
+        let status = update::status();
+        let busy = matches!(status, Status::Checking | Status::Downloading(_));
+        let action = match &status {
+            // Only Linux and macOS can start Arakun again by themselves.
+            Status::Ready(_) if cfg!(unix) => ui::button(
+                "set-update-restart",
+                "Restart now",
+                ButtonKind::Outline,
+                true,
+            )
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::RestartToUpdate))),
+            _ => ui::button("set-update-check", "Check now", ButtonKind::Outline, !busy).on_click(
+                cx.listener(move |_, _, _, cx| {
+                    if busy {
+                        return;
+                    }
+                    update::set_status(Status::Checking);
+                    cx.spawn(async move |this, cx| {
+                        cx.background_spawn(async { update::check() }).await.ok();
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    })
+                    .detach();
+                    cx.notify();
+                }),
+            ),
+        };
+        let current = row(version, status.text(), action.into_any_element()).into_any_element();
+        vec![auto, current]
     }
 
     /// Puts `id` in use across the app and remembers it.

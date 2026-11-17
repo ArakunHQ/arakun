@@ -63,6 +63,7 @@ mod tasks;
 #[cfg(feature = "team")]
 mod team;
 mod titlebar;
+mod updates;
 
 // Free helpers the split-out parts of the window share.
 use documents::*;
@@ -907,6 +908,12 @@ impl Shell {
                     // Up to 2 s for usage events still queued.
                     crate::telemetry::quit();
                     crate::control::cleanup();
+                    // Before the restart below, so it starts the new version.
+                    match crate::update::apply_staged() {
+                        Ok(Some(tag)) => eprintln!("arakun: installed Arakun {tag}"),
+                        Ok(None) => {}
+                        Err(e) => eprintln!("arakun: {e}"),
+                    }
                     if this.restarting
                         && let Err(e) = crate::platform::relaunch()
                     {
@@ -931,6 +938,7 @@ impl Shell {
         this.start_scheduler(window, cx);
         this.start_rule_ticker(window, cx);
         this.restore_phone(window, cx);
+        this.start_updates(window, cx);
         this
     }
 
@@ -1764,6 +1772,10 @@ impl Shell {
                     crate::island::set_enabled(*on);
                     this.sync_island(window, cx);
                     this.save(cx);
+                }
+                SettingsEvent::RestartToUpdate => {
+                    this.restarting = true;
+                    cx.quit();
                 }
                 SettingsEvent::OpenAccount => {
                     this.close_modal(window, cx);

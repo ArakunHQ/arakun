@@ -299,6 +299,9 @@ Usage:
                              a site's pages as Markdown, through Browser Run
   arakun restart               quit and start again, on the installed build;
                              agent turns running go on by themselves after it
+  arakun update [--check]      download the latest release and install it (a
+                             running Arakun installs it when it quits);
+                             --check only says whether there is one
   arakun mem …                 memory agents keep across sessions: save, search,
                              get, context, list, forget (arakun mem help)
   arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--head <sha>] [--agent <name>]
@@ -390,6 +393,9 @@ fn cli(args: Vec<String>) -> Cli {
     #[cfg(feature = "coderlabs")]
     if first == "lab" {
         return Cli::Exit(crate::lab::cli(&args[1..]));
+    }
+    if first == "update" {
+        return Cli::Exit(crate::update::cli(&args[1..]));
     }
     if first == "fetch" || first == "crawl" {
         return Cli::Exit(crate::fetch::cli(&args[1..], first == "crawl"));
@@ -1046,6 +1052,11 @@ fn usage(line: &str) -> Cli {
 fn fail(message: &str) -> Cli {
     eprintln!("arakun: {message}");
     Cli::Exit(1)
+}
+
+/// Whether an Arakun window is running and listening for commands.
+pub fn app_running() -> bool {
+    UnixStream::connect(socket_path()).is_ok()
 }
 
 pub fn send(req: &Request) -> std::io::Result<Reply> {

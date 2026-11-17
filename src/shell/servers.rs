@@ -246,7 +246,7 @@ impl Shell {
             self.show_view_tab("Servers", TabKind::Servers, |k| {
                 matches!(k, TabKind::Servers)
             });
-            self.note_active_tab();
+            self.note_active_tab(cx);
         } else {
             // Following servers needs no project here: the tab shows in the
             // welcome's place, as the GitHub tab does. One of the two at a

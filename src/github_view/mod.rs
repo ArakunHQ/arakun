@@ -1,15 +1,21 @@
-//! The GitHub tab: a review work queue and the pull request or issue picked in
-//! it. On the left, what waits on the user (from the inbox and from searches,
-//! so what was read on github.com still shows) and the week's review pulse; on
-//! the right, the item: its state, what blocks it, its timeline, files, checks
-//! and commits, and the actions. Writing to GitHub always takes a second step,
-//! and an agent's review waits as a draft until the user posts it.
+//! The GitHub tab, the Bandeja: one line that says whether anything needs
+//! the user, then every pull request pilot follows, grouped by where it
+//! stands (from pilot's `GET /board`), with what was merged today folded at
+//! the bottom. Without a board it shows the review queue (the inbox and
+//! searches, so what was read on github.com still shows) the same way.
+//!
+//! A row opens the sheet on the right: where the pull request stands, who has
+//! it, pilot's question with its own answers, and the tabs (what pilot did,
+//! the conversation, checks, files) over the composer. Writing to GitHub
+//! always takes a second step, and an agent's review waits as a draft until
+//! the user posts it. The island opens the same sheet over any window.
 
+mod bandeja;
 mod diff;
 mod item;
 mod pilot;
-mod pulse;
 mod queue;
+mod sheet;
 mod timeline;
 
 use std::cell::{Cell, RefCell};
@@ -27,63 +33,38 @@ use gpui::{
 use crate::agent::markdown::{self, Block, MdStyle};
 use crate::github::pilot::Pilot;
 use crate::github::pr::{self, Draft, FileDiff, ItemKind, ItemRef, MergeMethod, Verdict};
-use crate::github::queue::{Details, Entry, Group};
+use crate::github::queue::{Details, Entry};
 use crate::github::{GitHub, Problem};
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
 use crate::ui::{self, Type, Typography as _};
 
-/// Under this width the queue and the item take turns instead of sharing.
+/// Under this width the sheet covers the whole tab.
 const NARROW: f32 = 900.;
-/// From this width the left column is at its full width, with the pulse.
-const WIDE: f32 = 1300.;
-/// The item card needs this much to keep its properties in a column beside
-/// the tabs; under it they wrap above them and the timeline gets the width.
-const SIDE_PROPS: f32 = 1050.;
-/// Under this height the pulse folds into a strip even when wide.
-const TALL: f32 = 860.;
+/// The gap the sheet keeps from the window's edges.
 const GAP: f32 = 12.;
 
 /// How the tab lays itself out at a size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Layout {
-    /// The queue and the item take turns.
+    /// The sheet covers the list instead of sitting beside it.
     narrow: bool,
-    /// The left column's width (the whole width when narrow).
-    left_w: f32,
-    /// The pulse as a full card; else a strip that opens on a click.
-    pulse_full: bool,
-    /// The item's properties in a column beside the tabs.
-    side_props: bool,
-    /// The item card's width.
-    item_w: f32,
+    /// The sheet's width.
+    sheet_w: f32,
 }
 
-fn layout(w: f32, h: f32) -> Layout {
-    // The gutters `render` draws follow the Spacing setting.
-    let gap = f32::from(crate::ui::sp(GAP));
+fn layout(w: f32) -> Layout {
     if w < NARROW {
+        // The gutters `render` draws follow the Spacing setting.
+        let gap = f32::from(crate::ui::sp(GAP));
         return Layout {
             narrow: true,
-            left_w: w,
-            pulse_full: false,
-            side_props: w - 2. * gap >= SIDE_PROPS,
-            item_w: w - 2. * gap,
+            sheet_w: (w - 2. * gap).max(0.),
         };
     }
-    let wide = w >= WIDE;
-    let left_w = if wide {
-        (w * 0.3).clamp(400., 440.)
-    } else {
-        (w * 0.34).clamp(340., 400.)
-    };
-    let item_w = w - left_w - 3. * gap;
     Layout {
         narrow: false,
-        left_w,
-        pulse_full: wide && h >= TALL,
-        side_props: item_w >= SIDE_PROPS,
-        item_w,
+        sheet_w: (w * 0.42).clamp(560., 680.),
     }
 }
 
@@ -92,10 +73,14 @@ pub enum GitHubViewEvent {
     Open(String),
     /// Start an agent session.
     Ask { title: String, prompt: String },
+    /// The sheet shown over another window closed.
+    Closed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
+    /// "Pilot activity": the board's timeline.
+    Pilot,
     Timeline,
     Files,
     Checks,
@@ -230,6 +215,8 @@ fn busy_note(what: &str) -> String {
         "post-draft" => "the draft review",
         "request-changes" => "the change request",
         "approve" => "the approval",
+        "merge" => "the merge",
+        "close" => "the close",
         other => other,
     };
     format!("Still sending {what}: this comment wasn't sent yet. Press Enter again once it's done.")
@@ -259,6 +246,15 @@ impl Note {
             text: text.into(),
         }
     }
+
+    /// Nothing went, and why: not a failure to fix.
+    fn quiet(text: impl Into<String>) -> Self {
+        Note {
+            ok: false,
+            quiet: true,
+            text: text.into(),
+        }
+    }
 }
 
 pub struct GitHubView {
@@ -266,10 +262,22 @@ pub struct GitHubView {
     /// The entry picked in the queue, kept while the queue drops it (it was
     /// read, or merged).
     picked: Option<Entry>,
-    /// The narrow layout shows the item instead of the queue.
-    narrow_open: bool,
+    /// The sheet shows the picked item.
+    sheet_open: bool,
+    /// The sheet shows over another window (opened from the island): the
+    /// tab's list isn't drawn, and closing it hands the window back.
+    floating: bool,
     tab: Tab,
+    /// "Done today" is unfolded.
     done_open: bool,
+    /// "More on GitHub" (the queue's rows pilot doesn't follow) is unfolded.
+    more_open: bool,
+    /// Folded groups the user asked to show past their first rows.
+    fold_full: HashSet<&'static str>,
+    /// Decisions answered from the sheet, until the board is done with them.
+    answers: sheet::Answers,
+    /// A task for pilot on its way from the composer.
+    task_sending: bool,
     /// Where the header menu opened, while it is open.
     menu_at: Option<Point<Pixels>>,
     /// Where the focus menu (which owners and repositories show) is open.
@@ -319,13 +327,11 @@ pub struct GitHubView {
     md_start: RefCell<HashMap<String, Rc<Vec<Block>>>>,
     /// The size this view got last frame: (width, height).
     size: Rc<Cell<(f32, f32)>>,
-    /// The folded pulse strip is open.
-    pulse_open: bool,
-    /// All the item's properties show in a short window.
-    head_open: bool,
     /// Timeline bodies shown in full past their first lines, by key.
     expanded: HashSet<String>,
     queue_scroll: ScrollHandle,
+    /// J or K moved the pick: its row scrolls into view at the next paint.
+    reveal_pick: Rc<Cell<bool>>,
     body_scroll: ScrollHandle,
     /// The timeline of the picked item, and the list that shows it: only the
     /// rows on screen are built and laid out, so scrolling a long one stays
@@ -359,7 +365,7 @@ pub struct GitHubView {
     pilot_sent: Option<(String, gpui::Task<()>)>,
     _pilot_sub: Subscription,
     _subs: Vec<Subscription>,
-    /// The body input's, replaced with the input.
+    /// Apart from `_subs`: it is replaced with each new body input.
     _body_sub: Option<Subscription>,
 }
 
@@ -433,50 +439,43 @@ impl GitHubView {
             }),
             cx.subscribe(&comment, |this, _, ev: &InputEvent, cx| match ev {
                 InputEvent::Submit | InputEvent::SubmitAlt => this.send_comment(cx),
+                // Esc clears the box; on an empty one it closes the sheet.
                 InputEvent::Cancel => {
-                    this.comment.update(cx, |i, cx| i.set_text("", cx));
+                    if this.comment.read(cx).text().is_empty() {
+                        this.close_sheet(cx);
+                    } else {
+                        this.comment.update(cx, |i, cx| i.set_text("", cx));
+                    }
                 }
                 _ => {}
             }),
         ];
         let me = cx.entity();
-        let queue_pane = Pane::new(
-            &me,
-            |this, cx| {
-                // The queue card grows to fill the column, as it did inline.
-                div()
-                    .flex()
-                    .flex_col()
-                    .size_full()
-                    .child(this.render_queue(cx))
-                    .into_any_element()
-            },
-            cx,
-        );
-        let card_pane = Pane::new(
-            &me,
-            |this, cx| {
-                let lay = this.layout();
-                div()
-                    .flex()
-                    .size_full()
-                    .child(this.render_item(lay, cx))
-                    .into_any_element()
-            },
-            cx,
-        );
+        let queue_pane = Pane::new(&me, |this, cx| this.render_bandeja(cx), cx);
+        let card_pane = Pane::new(&me, |this, cx| this.render_sheet(cx), cx);
         let body_pane = Pane::new(&me, |this, cx| this.render_body(cx), cx);
         let pilot_sub = cx.observe(&pilot, |this, pilot, cx| {
-            let (people, shown) = {
+            let (people, shown, open) = {
                 let p = pilot.read(cx);
-                (p.people(), p.shown_ids())
+                (p.people(), p.shown_ids(), p.open_decisions())
             };
             this.pilot_open.retain(|id| shown.contains(id));
-            this.pilot_notes.retain(|id, _| shown.contains(id));
+            // The board's questions aren't always shown cards (an answer
+            // hides its card): a failed answer's note stays while asked.
+            this.pilot_notes
+                .retain(|id, _| shown.contains(id) || open.contains(id));
+            if let Some(b) = pilot.read(cx).board() {
+                this.answers.settle(b);
+            }
+            this.settle_tab(cx);
+            // The sheet answers the board's question with the same line.
+            let asked = this
+                .board_pr(cx)
+                .and_then(|b| b.open_decision().map(|d| d.item.clone()));
             if this
                 .pilot_other
                 .as_ref()
-                .is_some_and(|id| !shown.contains(id))
+                .is_some_and(|id| !shown.contains(id) && asked.as_ref() != Some(id))
             {
                 this.pilot_other = None;
             }
@@ -486,9 +485,14 @@ impl GitHubView {
         let mut this = Self {
             github,
             picked: None,
-            narrow_open: false,
+            sheet_open: false,
+            floating: false,
             tab: Tab::Timeline,
             done_open: false,
+            more_open: false,
+            fold_full: HashSet::new(),
+            answers: sheet::Answers::default(),
+            task_sending: false,
             menu_at: None,
             focus_at: None,
             watch_input,
@@ -515,10 +519,9 @@ impl GitHubView {
             md_raw: RefCell::new(HashMap::new()),
             md_start: RefCell::new(HashMap::new()),
             size: Rc::new(Cell::new((1200., 900.))),
-            pulse_open: false,
-            head_open: false,
             expanded: HashSet::new(),
             queue_scroll: ScrollHandle::new(),
+            reveal_pick: Rc::default(),
             body_scroll: ScrollHandle::new(),
             timeline: None,
             timeline_list: ListState::new(0, ListAlignment::Top, px(600.)),
@@ -550,12 +553,7 @@ impl GitHubView {
     }
 
     fn layout(&self) -> Layout {
-        let (w, h) = self.size.get();
-        layout(w, h)
-    }
-
-    fn narrow(&self) -> bool {
-        self.layout().narrow
+        layout(self.size.get().0)
     }
 
     /// A person's avatar: their picture once downloaded, else initials.
@@ -575,36 +573,29 @@ impl GitHubView {
                 .iter()
                 .any(|(e, _)| e.key() == p.key())
         });
-        if gone {
+        // An item pilot follows stays: the board shows it whatever the focus.
+        let on_board = self.board_pr(cx).is_some();
+        if gone && !on_board && !self.sheet_open {
             self.picked = None;
-            self.narrow_open = false;
             self.switch_comment(cx);
         }
         self.on_github_changed(cx);
     }
 
-    /// Keeps the picked entry fresh, picks the first row when nothing is
-    /// picked yet, and reads the draft again: an agent may have left one.
+    /// Keeps the picked entry fresh and reads the draft again: an agent may
+    /// have left one. Nothing opens on its own: the sheet waits for a click.
     fn on_github_changed(&mut self, cx: &mut Context<Self>) {
-        let fresh = {
-            let q = self.github.read(cx).queue();
-            match &self.picked {
-                Some(p) => q
-                    .rows
-                    .iter()
-                    .find(|(e, _)| e.key() == p.key())
-                    .map(|(e, _)| e.clone()),
-                None => q
-                    .rows
-                    .iter()
-                    .find(|(_, p)| p.group != Group::Done)
-                    .map(|(e, _)| e.clone()),
-            }
-        };
-        match (fresh, self.picked.is_some()) {
-            (Some(e), true) => self.picked = Some(e),
-            (Some(e), false) if !self.narrow() => self.select(e, false, cx),
-            _ => {}
+        let fresh = self.picked.as_ref().and_then(|p| {
+            self.github
+                .read(cx)
+                .queue()
+                .rows
+                .iter()
+                .find(|(e, _)| e.key() == p.key())
+                .map(|(e, _)| e.clone())
+        });
+        if let Some(e) = fresh {
+            self.picked = Some(e);
         }
         // A push moves the head: the files shown must move with it.
         if self.tab == Tab::Files
@@ -631,7 +622,7 @@ impl GitHubView {
         self.picked.as_ref().and_then(|e| e.item.clone())
     }
 
-    /// Shows a pull request or issue, as the palette opens one.
+    /// Shows a pull request or issue in the sheet, as the palette opens one.
     pub fn reveal(&mut self, item: &ItemRef, cx: &mut Context<Self>) {
         let key = crate::github::queue::key_of(item);
         let found = self
@@ -655,16 +646,21 @@ impl GitHubView {
         self.select(entry, true, cx);
     }
 
-    /// Picks an entry; `open` shows it in the narrow layout too (a click,
-    /// not the first pick made for the user).
+    /// Picks an entry; `open` shows it in the sheet (a click, not J/K on
+    /// the list).
     fn select(&mut self, entry: Entry, open: bool, cx: &mut Context<Self>) {
         let same = self.picked.as_ref().is_some_and(|p| p.key() == entry.key());
         self.picked = Some(entry);
         if open {
-            self.narrow_open = true;
+            self.sheet_open = true;
         }
         if !same {
-            self.tab = Tab::Timeline;
+            // What pilot did comes first when pilot follows it.
+            self.tab = if self.board_pr(cx).is_some() {
+                Tab::Pilot
+            } else {
+                Tab::Timeline
+            };
             self.confirm = None;
             self.pilot_act = None;
             self.editing_draft = false;
@@ -673,6 +669,8 @@ impl GitHubView {
             self.unfolded_lines.clear();
             self.expanded.clear();
             self.body_scroll = ScrollHandle::new();
+        } else {
+            self.settle_tab(cx);
         }
         if let Some(item) = self.item() {
             let known = self.github.read(cx).details(&item).is_some();
@@ -790,6 +788,12 @@ impl GitHubView {
         .detach();
     }
 
+    /// "Pilot activity" is listed only while the board has the pull request:
+    /// once it goes (a 404, other settings), the conversation shows instead.
+    fn settle_tab(&mut self, cx: &App) {
+        self.tab = listed_tab(self.tab, self.board_pr(cx).is_some());
+    }
+
     fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
         self.body_scroll = ScrollHandle::new();
@@ -803,16 +807,6 @@ impl GitHubView {
         cx.notify();
     }
 
-    /// The rows J and K walk: every group, the done ones only when shown.
-    fn walkable(&self, cx: &App) -> Vec<Entry> {
-        let q = self.github.read(cx).queue();
-        q.rows
-            .iter()
-            .filter(|(_, p)| p.group != Group::Done || self.done_open)
-            .map(|(e, _)| e.clone())
-            .collect()
-    }
-
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
         let rows = self.walkable(cx);
         if rows.is_empty() {
@@ -821,20 +815,22 @@ impl GitHubView {
         let at = self
             .picked
             .as_ref()
-            .and_then(|p| rows.iter().position(|e| e.key() == p.key()));
+            .and_then(|p| rows.iter().position(|r| r.key() == p.key()));
         let next = match at {
             Some(i) => (i as isize + by).clamp(0, rows.len() as isize - 1) as usize,
             None => 0,
         };
-        let open = opens_on_step(self.narrow(), self.narrow_open);
-        self.select(rows[next].clone(), open, cx);
+        let open = opens_on_step(self.sheet_open);
+        if let Some(entry) = self.row_entry(&rows[next], cx) {
+            self.select(entry, open, cx);
+            // The picked row may be out of view: the list follows it.
+            self.reveal_pick.set(true);
+        }
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.github.update(cx, |g, cx| {
-            g.refresh(cx);
-            g.refresh_pulse(true, cx);
-        });
+        self.github.update(cx, |g, cx| g.refresh(cx));
+        self.pilot.update(cx, |p, cx| p.refresh(cx));
         if let Some(item) = self.item() {
             self.diffs.remove(&crate::github::queue::key_of(&item));
             self.github
@@ -1065,7 +1061,9 @@ impl GitHubView {
                     cx,
                 );
             }
-            CommentSend::Empty => return hold(self, "Write a comment first.".into(), cx),
+            CommentSend::Empty => {
+                return hold(self, "Write a comment first.".into(), cx);
+            }
             CommentSend::Busy(what) => return hold(self, busy_note(what), cx),
             CommentSend::Sending => return hold(self, "Sending this comment…".into(), cx),
             // Text typed for another item is never sent to this one.
@@ -1134,7 +1132,7 @@ impl GitHubView {
                 self.note = Some(Note {
                     ok: false,
                     quiet: true,
-                    text: format!("Actions here: {list}"),
+                    text: format!("Not sent: “{text}” is not an action. Actions here: {list}"),
                 });
                 cx.notify();
                 return;
@@ -1209,8 +1207,6 @@ impl GitHubView {
             }
             _ => {}
         });
-        // Its own slot: the fixed ones in `_subs` (comment submit among them)
-        // stay whatever their number.
         self._body_sub = Some(sub);
     }
 
@@ -1399,13 +1395,22 @@ impl GitHubView {
         match k.key.as_str() {
             "j" | "down" => self.step(1, cx),
             "k" | "up" => self.step(-1, cx),
-            "a" if pull && !mine => self.ask_confirm(Confirm::Approve, cx),
-            "c" if self.item().is_some() => window.focus(&self.comment.focus_handle(cx), cx),
+            // Both act in the sheet, so it opens first: the confirmation and
+            // the comment box are not on the list.
+            "a" if pull && !mine => {
+                self.sheet_open = true;
+                self.ask_confirm(Confirm::Approve, cx);
+            }
+            "c" if self.item().is_some() => {
+                self.sheet_open = true;
+                window.focus(&self.comment.focus_handle(cx), cx);
+                cx.notify();
+            }
             "r" if pull => self.review_with_agent(cx),
             "u" if self.item().is_some() => self.catch_up(cx),
             "s" if self.item().is_some() => self.summarize(cx),
-            "enter" if self.picked.is_some() && self.narrow() && !self.narrow_open => {
-                self.narrow_open = true;
+            "enter" if self.picked.is_some() && !self.sheet_open => {
+                self.sheet_open = true;
                 cx.notify();
             }
             "o" if self.picked.is_some() => self.open_on_github(cx),
@@ -1421,10 +1426,7 @@ impl GitHubView {
                 self.focus_at = None;
                 cx.notify();
             }
-            "escape" if self.narrow() && self.narrow_open => {
-                self.narrow_open = false;
-                cx.notify();
-            }
+            "escape" if self.sheet_open || self.floating => self.close_sheet(cx),
             _ => return,
         }
         cx.stop_propagation();
@@ -2398,11 +2400,20 @@ fn close_marker(out: &mut String, marker: &str, from: usize) {
     out.push_str(&format!("{lead}{marker}{text}{marker}{trail}"));
 }
 
-/// Whether J/K (↓/↑) open the item they move to. The narrow layout shows
-/// the list or one item: in the list they only move the pick, and Enter
-/// opens it; in an item they go to the next one, still open.
-fn opens_on_step(narrow: bool, narrow_open: bool) -> bool {
-    !narrow || narrow_open
+/// Whether J/K (↓/↑) open the item they move to: on the list they only
+/// move the pick, and Enter opens it; with the sheet open they go to the
+/// next one, still open.
+fn opens_on_step(sheet_open: bool) -> bool {
+    sheet_open
+}
+
+/// The tab to show: Pilot only while the board has the pull request, else
+/// the conversation, which every pull request lists.
+fn listed_tab(tab: Tab, on_board: bool) -> Tab {
+    match tab {
+        Tab::Pilot if !on_board => Tab::Timeline,
+        t => t,
+    }
 }
 
 /// The result of a write, naming its item when another one is picked now.
@@ -2532,7 +2543,6 @@ impl Render for GitHubView {
         .size_full();
 
         let lay = self.layout();
-        let narrow = lay.narrow;
         let root = div()
             .id("github-view")
             .track_focus(&self.focus)
@@ -2540,15 +2550,12 @@ impl Render for GitHubView {
             .relative()
             .flex()
             .size_full()
-            .gap(crate::ui::sp(GAP))
-            .p(crate::ui::sp(GAP))
             .overflow_hidden()
-            .bg(theme::background())
             .font_family(theme::FONT_SANS)
             .ty(Type::Body)
             .text_color(theme::text())
             .child(measure);
-        if crate::github::GitHub::disabled() {
+        if crate::github::GitHub::disabled() && !self.floating {
             return root.child(
                 ui::empty_state(
                     "github",
@@ -2560,38 +2567,51 @@ impl Render for GitHubView {
                 .justify_center(),
             );
         }
-        let left = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .min_h_0()
-            .gap(crate::ui::sp(GAP))
-            .when(narrow, |d| d.flex_1().w_full())
-            .when(!narrow, |d| d.w(px(lay.left_w)))
-            .child(Pane::cached(
+        // Over another window only the sheet shows; in the tab, the list.
+        let root = root.when(!self.floating, |d| {
+            d.child(Pane::cached(
                 &self.queue_pane,
-                StyleRefinement::default().flex_1().min_h_0(),
+                StyleRefinement::default().size_full(),
             ))
-            .child(if lay.pulse_full {
-                self.render_pulse(cx)
-            } else {
-                self.render_pulse_strip(cx)
-            });
-        let card = || {
-            Pane::cached(
-                &self.card_pane,
-                StyleRefinement::default().flex_1().min_w_0(),
+        });
+        let shows_sheet = (self.sheet_open || self.floating) && self.picked.is_some();
+        let root = root.when(shows_sheet, |d| {
+            d.child(
+                // The rest dims: a click on it closes the sheet.
+                div()
+                    .id("gh-sheet-dim")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(gpui::black().opacity(0.45))
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.close_sheet(cx)),
+                    ),
             )
-        };
-        let root = if narrow {
-            if self.narrow_open && self.picked.is_some() {
-                root.child(card())
-            } else {
-                root.child(left)
-            }
-        } else {
-            root.child(left).child(card())
-        };
+            .child(
+                div()
+                    .id("gh-sheet")
+                    .absolute()
+                    .top(crate::ui::sp(GAP))
+                    .bottom(crate::ui::sp(GAP))
+                    .right(crate::ui::sp(GAP))
+                    .w(px(lay.sheet_w))
+                    .flex()
+                    .flex_col()
+                    .rounded(crate::ui::rad(ui::RADIUS_XL))
+                    .bg(theme::sheet())
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .occlude()
+                    .child(Pane::cached(
+                        &self.card_pane,
+                        StyleRefinement::default().size_full(),
+                    )),
+            )
+        });
         let root = root.when_some(self.focus_at, |d, at| {
             d.child(
                 div()
@@ -2706,22 +2726,14 @@ mod tests {
 
     #[test]
     fn the_layout_follows_the_width() {
-        // Both sidebars open on a 1920 window: wide, properties above the tabs.
-        let l = layout(1400., 1000.);
-        assert!(!l.narrow && l.pulse_full && !l.side_props);
-        assert!((l.left_w - 420.).abs() < 0.5);
-        // Full width: room for the properties column.
-        let l = layout(1900., 1000.);
-        assert!(l.side_props && l.left_w == 440.);
-        // Medium: a narrower queue, the pulse folded.
-        let l = layout(1100., 1000.);
-        assert!(!l.narrow && !l.pulse_full && !l.side_props);
-        assert!(l.left_w >= 340. && l.left_w <= 400.);
-        // Wide but short: the pulse folds too.
-        assert!(!layout(1500., 700.).pulse_full);
-        // Narrow: one at a time.
-        assert!(layout(800., 900.).narrow);
-        assert!(!layout(900., 900.).narrow);
+        // The sheet takes a share of the window, within bounds.
+        assert_eq!(layout(1900.).sheet_w, 680.);
+        assert_eq!(layout(1000.).sheet_w, 560.);
+        let l = layout(1400.);
+        assert!(!l.narrow && (l.sheet_w - 588.).abs() < 0.5);
+        // Narrow: the sheet covers the list.
+        assert!(layout(800.).narrow);
+        assert!(!layout(900.).narrow);
     }
 
     #[test]
@@ -3074,11 +3086,16 @@ mod tests {
     }
 
     #[test]
-    fn keys_in_the_narrow_list_move_without_opening() {
-        assert!(!opens_on_step(true, false));
-        assert!(opens_on_step(true, true));
-        // Wide: the card is always there; it stays open if the window narrows.
-        assert!(opens_on_step(false, false));
+    fn the_pilot_tab_goes_with_the_board() {
+        assert_eq!(listed_tab(Tab::Pilot, true), Tab::Pilot);
+        assert_eq!(listed_tab(Tab::Pilot, false), Tab::Timeline);
+        assert_eq!(listed_tab(Tab::Files, false), Tab::Files);
+    }
+
+    #[test]
+    fn keys_in_the_list_move_without_opening() {
+        assert!(!opens_on_step(false));
+        assert!(opens_on_step(true));
     }
 
     #[test]

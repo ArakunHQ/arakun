@@ -140,31 +140,49 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **CI and checks.** GitHub Actions runs for each project, with jobs, annotations and
   the failing log, read through the `gh` CLI.
-- **Review queue.** The GitHub tab is a work queue of what waits on you: pull requests
-  whose review is asked of you, mentions and assignments, your own open pull requests,
-  what is ready to merge and what was done today. It reads your notifications and runs
-  searches through the `gh` CLI and its session, so what you already read on github.com
-  still shows. It opens before you add a project too.
-- **Pull request view.** Pick an item to see its state, checks, what blocks the merge,
-  its timeline, files and commits; comment, approve, request changes or merge from there.
-  A comment posts at once; approve, request changes and merge ask a second time, and an
-  approval or a merge stops if new commits came after you looked.
+- **Queue.** The GitHub tab opens on one line that says how many things need you,
+  then a quiet list grouped by where each pull request stands (Needs you, Stuck,
+  pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull
+  requests under their base, and what was merged today folded at the bottom. With
+  arakun-pilot (below) the list is its board; without it, the review queue: pull
+  requests whose review is asked of you, mentions and assignments, your own open pull
+  requests, what is ready to merge and what was done today, read from your
+  notifications and searches through the `gh` CLI and its session. It opens before you
+  add a project too.
+- **Pull request sheet.** A row opens a sheet on the right with where the pull request
+  stands, who has it, what comes next, the checks and the stack, then tabs for what
+  pilot did, the conversation, checks and files. The box at the bottom comments (Enter
+  or "Comment"), and says why when a comment doesn't go out. Approve, request changes
+  and merge ask a second time, and an approval or a merge stops if new commits came
+  after you looked.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits
   the draft can only be posted as a comment.
 - **Alerts and filters.** Review requests, mentions and assignments raise an alert; so
   does anything new in the organizations and repositories on your watch list. Click the
-  line under "Review queue" to show only some organizations or repositories; the rest
+  repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), its cards show at the top of the queue under "Your agent":
-  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
-  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/items` every
-  minute. Approve and request changes go through the same second click, with your own
-  `gh`; an approval only goes to the commit the agent read. When the agent asks you
-  something with ready answers, they show as buttons on its card, with "Other answer…"
-  for your own words (`POST <url>/items/<id>/answer`). What you saw and dealt with is
+  (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
+  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/board` and
+  `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
+  starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
+  The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
+  and `[::1]`, so the tokens never cross a network unencrypted. The board fills the
+  queue; the rows pilot doesn't follow fold under "More on GitHub". When pilot
+  asks you something, the sheet shows the question with one button per answer and
+  "Other answer…" for your own words ("Answer…" when there are no ready answers;
+  `POST <url>/items/<id>/answer`), and the notice in
+  the island opens that sheet over whatever window is in front (Esc gives it back).
+  Without a board, the notice opens the pull request's sheet, which doesn't show the
+  question: answer it on pilot's card in the queue. On your own pull requests, "Ask pilot" in the sheet sends what you
+  typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
+  While the Worker has no board, its cards show at the top of the queue under "Your
+  agent". With a board, a card about a pull request the board follows shows under
+  "From pilot" in that pull request's sheet, and the rest in a "From pilot" group at the
+  top of the queue. "Looks good" approves the commit pilot read, and both it and
+  request changes go through the same second click. What you saw and dealt with is
   kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
   Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
   `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
@@ -177,9 +195,9 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 Arakun reads GitHub in the background only after you open the tab once, and stops while
 `gh` is missing or signed out. It keeps the watch list, the filter choice and whether you
-opened the tab in `github.json` next to its state, the days your queue reached zero in
-`github-streak.json`, drafts in `github/drafts/` beside them, and the profile pictures
-it shows in `github/avatars/` (each downloaded again after a week).
+opened the tab in `github.json` next to its state, drafts in `github/drafts/` beside
+them, and the profile pictures it shows in `github/avatars/` (each downloaded again
+after a week).
 
 </details>
 
@@ -761,9 +779,10 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   recalls earlier prompts; paste or drop images to attach them
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
-  GitHub; `Enter` sends a comment, `/` in the comment box lists the actions. In
-  a narrow window the keys move through the list and `Enter` opens the item; `Esc`
-  goes back to the list
+  GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an
+  island notice opened over another tab too). While the sheet is closed, `J` / `K`
+  only move through the list; while it is open, they open the next item. In the
+  comment box, `Enter` sends the comment and `/` lists the actions
 
 ## Contributing
 

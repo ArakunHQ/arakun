@@ -113,7 +113,7 @@ impl Shell {
         if activate {
             env.active_tab = index;
             if visible {
-                self.note_active_tab();
+                self.note_active_tab(cx);
             }
         }
         self.reload_doc(env_path.to_path_buf(), kind, cx);
@@ -293,6 +293,7 @@ impl Shell {
             if env.active_tab >= env.tabs.len() || env.active_tab > i {
                 env.active_tab = env.active_tab.saturating_sub(1);
             }
+            self.unfloat_github(cx);
             self.save(cx);
             cx.notify();
         }

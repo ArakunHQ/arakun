@@ -21,7 +21,7 @@ impl Shell {
         self.show_view_tab("Branches", TabKind::Branches, |k| {
             matches!(k, TabKind::Branches)
         });
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.sync_branches_view(cx);
         self.branches_view.update(cx, |v, cx| {
             v.refresh_if_stale(cx);

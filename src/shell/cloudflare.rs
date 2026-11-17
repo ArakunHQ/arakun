@@ -22,7 +22,7 @@ impl Shell {
         self.show_view_tab("Cloudflare", TabKind::Cloudflare, |k| {
             matches!(k, TabKind::Cloudflare)
         });
-        self.note_active_tab();
+        self.note_active_tab(cx);
         let roots: Vec<PathBuf> = self.projects.iter().map(|p| p.path.clone()).collect();
         let agent = self.env().agent;
         self.cloudflare_view.update(cx, |v, cx| {

@@ -647,7 +647,7 @@ impl Shell {
                 env.active_tab = env.tabs.len() - 1;
             }
             if visible {
-                self.note_active_tab();
+                self.note_active_tab(cx);
             }
         }
         crate::telemetry::capture(
@@ -817,7 +817,7 @@ impl Shell {
         self.apply_env_settings(&env_path, agent, Vec::new(), &thread, cx);
         self.attach(&env_path, &id, thread, window, cx);
         self.save_transcript(&env_path, &id, cx);
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.save(cx);
         cx.notify();
     }
@@ -861,7 +861,7 @@ impl Shell {
                 }
             }
         };
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
         cx.notify();

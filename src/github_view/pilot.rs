@@ -1,6 +1,8 @@
 //! "Your agent": the cards arakun-pilot leaves (`crate::github::pilot`), at the
-//! top of the queue. Their text is Spanish like the items, and every write to
-//! GitHub goes through the tab's own confirm strip, as the user, with `gh`.
+//! top of the queue. With a board, a card shows in the sheet of the pull
+//! request it is about ("From pilot"), or in the Bandeja's own group when the
+//! board doesn't follow that pull request. Every write to GitHub goes through
+//! the tab's own confirm strip, as the user, with `gh`.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -11,6 +13,7 @@ use gpui::{
 
 use super::{Confirm, GitHubView, NEWLINE, Note, Tab};
 use crate::github::Problem;
+use crate::github::board::{self, CardPlace};
 use crate::github::pilot::{self, Answer, Item, Kind, Opcion, Riesgo};
 use crate::github::pr::{self, ItemRef, Verdict};
 use crate::theme;
@@ -83,9 +86,9 @@ fn moved_text(number: u64, read: &str, now: &str) -> String {
     )
 }
 
-/// The review a card sends, approval or change request: only for the commit
-/// the agent read, and only while it is still the head. GitHub gets the SHA
-/// just checked, never the Worker's.
+/// The review a card sends: only for the commit the agent read, and only
+/// while it is still the head. GitHub gets the full SHA, since a card may
+/// carry a short one.
 fn pinned_job(item: &ItemRef, verdict: Verdict, body: &str, head: &str) -> Result<(), Problem> {
     let now = pr::head_sha(item)?;
     if !pilot::same_commit(&now, head) {
@@ -116,18 +119,28 @@ fn quote(color: Hsla, text: impl Into<gpui::SharedString>, strong: bool) -> gpui
 
 impl GitHubView {
     /// The section's heading and its cards; nothing when no card waits.
+    /// With a board, only the cards no sheet shows: "From pilot".
     pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = self.pilot.read(cx);
+        let board = p.board();
         // The focus menu's promise: what it leaves out doesn't show.
         let focus = self.github.read(cx).focus();
-        let items: Vec<Item> = p.shown_in(focus).cloned().collect();
+        let items: Vec<Item> = p
+            .shown_in(focus)
+            .filter(|c| board.is_none_or(|b| board::card_place(b, c) == CardPlace::Loose))
+            .cloned()
+            .collect();
         let problem = p.problem().map(str::to_string);
         let sent = self.pilot_sent.as_ref().map(|(t, _)| t.clone());
         if items.is_empty() && problem.is_none() && sent.is_none() {
             return Vec::new();
         }
-        let mut out =
-            vec![super::queue::group_header("Your agent", items.len()).into_any_element()];
+        let label = if board.is_some() {
+            "From pilot"
+        } else {
+            "Your agent"
+        };
+        let mut out = vec![super::queue::group_header(label, items.len()).into_any_element()];
         // The answered card is gone; this says where the answer went.
         if let Some(text) = sent {
             out.push(
@@ -174,6 +187,39 @@ impl GitHubView {
             out.push(self.render_pilot_card(ix, item, cx));
         }
         out
+    }
+
+    /// "From pilot" in the sheet of a pull request the board follows: its
+    /// briefs and fixed or failed cards, with their own actions ("Looks good"
+    /// approves the commit pilot read). None without a board or a card.
+    pub(super) fn render_from_pilot(
+        &self,
+        pr: &ItemRef,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let p = self.pilot.read(cx);
+        let b = p.board()?;
+        let key = crate::github::queue::key_of(pr);
+        let cards: Vec<Item> = p
+            .shown()
+            .filter(|c| board::card_place(b, c) == CardPlace::Sheet)
+            .filter(|c| {
+                c.item_ref()
+                    .is_some_and(|r| crate::github::queue::key_of(&r) == key)
+            })
+            .cloned()
+            .collect();
+        if cards.is_empty() {
+            return None;
+        }
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .child(super::queue::group_header("From pilot", cards.len()));
+        for (ix, card) in cards.iter().enumerate() {
+            col = col.child(self.render_pilot_card(ix, card, cx));
+        }
+        Some(col.into_any_element())
     }
 
     fn render_pilot_card(&self, ix: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {
@@ -657,7 +703,12 @@ impl GitHubView {
     }
 
     /// "Other answer…": a line under the card for the user's own words.
-    fn pilot_open_other(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn pilot_open_other(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.pilot_other.as_deref() != Some(id) {
             self.pilot_other = Some(id.to_string());
             self.pilot_input.update(cx, |i, cx| i.set_text("", cx));
@@ -678,17 +729,33 @@ impl GitHubView {
             cx.notify();
             return;
         }
-        self.pilot_answer(&id, Answer::Texto(text), cx);
+        let decision = self.board_pr(cx).and_then(|b| b.open_decision().cloned());
+        // Only words that went out: a refused or second send must not show.
+        if self.pilot_answer(&id, Answer::Texto(text.clone()), cx)
+            && decision.is_some_and(|d| d.item == id)
+        {
+            self.note_decision_answer(&id, text);
+        }
     }
 
     /// Hands the answer to the agent. The card goes once the Worker took it;
-    /// on an error it stays, saying why.
-    fn pilot_answer(&mut self, id: &str, answer: Answer, cx: &mut Context<Self>) {
+    /// on an error it stays, saying why. False when nothing was sent.
+    pub(super) fn pilot_answer(
+        &mut self,
+        id: &str,
+        answer: Answer,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(cfg) = self.pilot.read(cx).config().cloned() else {
-            return;
+            self.pilot_notes.insert(
+                id.to_string(),
+                "Not sent: arakun-pilot's client.json is missing.".into(),
+            );
+            cx.notify();
+            return false;
         };
         if !self.pilot_sending.insert(id.to_string()) {
-            return;
+            return false;
         }
         self.pilot_notes.remove(id);
         cx.notify();
@@ -717,9 +784,15 @@ impl GitHubView {
                             });
                         });
                         this.pilot_sent = Some(("Sent: the agent is on it.".into(), clear));
-                        this.pilot.update(cx, |p, cx| p.answered(&id, cx));
+                        this.pilot.update(cx, |p, cx| {
+                            p.answered(&id, cx);
+                            // The board moves on with the answer: read it again.
+                            p.refresh(cx);
+                        });
                     }
                     Err(e) => {
+                        // Nothing was said: no "You told pilot…" for it.
+                        this.answers.forget(&id);
                         this.pilot_notes
                             .insert(id.clone(), format!("Your answer wasn't sent: {e}"));
                     }
@@ -728,6 +801,7 @@ impl GitHubView {
             });
         })
         .detach();
+        true
     }
 
     /// "Looks good": the confirm strip for an approval of the commit the

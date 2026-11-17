@@ -20,7 +20,7 @@ impl Shell {
         self.menu = None;
         if self.has_projects() {
             self.show_view_tab("GitHub", TabKind::GitHub, |k| matches!(k, TabKind::GitHub));
-            self.note_active_tab();
+            self.note_active_tab(cx);
         } else {
             // The queue doesn't need a project: it shows in the welcome's place.
             self.github_alone = true;
@@ -30,8 +30,19 @@ impl Shell {
             }
         }
         self.github.update(cx, |g, cx| g.opened(cx));
-        self.github_view.update(cx, |v, cx| v.focus(window, cx));
+        self.github_view.update(cx, |v, cx| {
+            v.unfloat(cx);
+            v.focus(window, cx);
+        });
         cx.notify();
+    }
+
+    /// Ends the island's floating sheet once the GitHub tab is in front, by
+    /// whatever path it got there.
+    pub(super) fn unfloat_github(&mut self, cx: &mut Context<Self>) {
+        if self.github_in_front() && self.github_view.read(cx).floating() {
+            self.github_view.update(cx, |v, cx| v.unfloat(cx));
+        }
     }
 
     /// The rail badge: how many things wait on the user (the agent's cards
@@ -39,21 +50,37 @@ impl Shell {
     pub(super) fn github_badge(&self, cx: &App) -> Option<(usize, bool)> {
         let g = self.github.read(cx);
         let p = self.pilot.read(cx);
-        let on_you = g.on_you() + p.count(g.focus());
-        (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent(g.focus())))
+        // With pilot's board, what it says needs the user, what waits on the
+        // user where pilot doesn't look, and the cards that aren't one of its
+        // questions (those are in `te_necesita` already). The cards show in
+        // the tab, so they make it urgent as they did before the board.
+        let focus = g.focus();
+        if let Some(b) = p.board() {
+            let cards = || github::board::visible_cards(b, p.shown(), focus);
+            let n = github::board::waiting(b, g.queue(), cards());
+            let urgent =
+                b.verdict.te_necesita > 0 || g.wants_attention() || cards().any(pilot::Item::pops);
+            return (n > 0).then_some((n, urgent));
+        }
+        let on_you = g.on_you() + p.count(focus);
+        (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent(focus)))
     }
 
     /// Whether the GitHub tab is what the user looks at right now.
     fn watching_github(&self, window: &Window) -> bool {
-        window.is_window_active()
-            && if self.has_projects() {
-                matches!(
-                    self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
-                    Some(TabKind::GitHub)
-                )
-            } else {
-                self.github_alone
-            }
+        window.is_window_active() && self.github_in_front()
+    }
+
+    /// Whether the window shows the GitHub tab, looked at or not.
+    fn github_in_front(&self) -> bool {
+        if self.has_projects() {
+            matches!(
+                self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
+                Some(TabKind::GitHub)
+            )
+        } else {
+            self.github_alone
+        }
     }
 
     /// A notice for each new card that needs the user: the agent stopped for
@@ -68,9 +95,17 @@ impl Shell {
         if self.watching_github(window) {
             return;
         }
-        // What the tab's focus leaves out doesn't alert.
-        let focus = self.github.read(cx).focus().to_vec();
-        let new: Vec<pilot::Item> = new.iter().filter(|i| i.in_focus(&focus)).cloned().collect();
+        // What the tab's focus leaves out doesn't alert; with a board, the
+        // cards in a followed pull request's sheet always show.
+        let new: Vec<pilot::Item> = {
+            let focus = self.github.read(cx).focus();
+            match self.pilot.read(cx).board() {
+                Some(b) => github::board::visible_cards(b, new.iter(), focus)
+                    .cloned()
+                    .collect(),
+                None => new.iter().filter(|i| i.in_focus(focus)).cloned().collect(),
+            }
+        };
         if new.is_empty() {
             return;
         }
@@ -109,15 +144,45 @@ impl Shell {
         }
     }
 
-    /// "Ver" on an agent notice: the GitHub tab, at the card.
+    /// A click on an agent notice: its pull request's sheet over the window
+    /// in front, the rest dimmed; Esc gives the window back. In the GitHub
+    /// tab, the same sheet there. A notice the board doesn't know opens the
+    /// tab at its card.
     pub(super) fn open_pilot_notice(
         &mut self,
         id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_github_tab(window, cx);
-        self.github_view.update(cx, |v, cx| v.reveal_pilot(id, cx));
+        // The tab already draws the view: the sheet opens there, not over it.
+        let over = !self.github_in_front();
+        let shown = self
+            .github_view
+            .update(cx, |v, cx| v.float_pilot(id, over, cx));
+        if !shown || !over {
+            self.open_github_tab(window, cx);
+            if !shown {
+                self.github_view.update(cx, |v, cx| v.reveal_pilot(id, cx));
+            }
+            return;
+        }
+        self.github_view.update(cx, |v, cx| v.focus(window, cx));
+        cx.notify();
+    }
+
+    /// The sheet the island opened, over the window: None unless it is up.
+    pub(super) fn render_floating_sheet(&self, cx: &App) -> Option<gpui::AnyElement> {
+        use gpui::{IntoElement as _, ParentElement as _, Styled as _};
+        let floating = self.github_view.read(cx).floating() && !self.github_in_front();
+        floating.then(|| {
+            gpui::div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(self.github_view.clone())
+                .into_any_element()
+        })
     }
 
     pub(super) fn on_github_view_event(
@@ -128,6 +193,16 @@ impl Shell {
     ) {
         match ev {
             GitHubViewEvent::Open(url) => self.open_url(url.clone(), window, cx),
+            // The sheet over this window closed: the window takes the keys back.
+            GitHubViewEvent::Closed => {
+                // The composer of a session, or what the tab in front takes.
+                if self.has_projects() {
+                    self.focus_active_content(window, cx);
+                } else {
+                    window.focus(&self.focus, cx);
+                }
+                cx.notify();
+            }
             GitHubViewEvent::Ask { title, prompt } => {
                 // An agent works in a project: without one, add one first.
                 if !self.has_projects() {

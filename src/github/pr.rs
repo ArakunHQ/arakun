@@ -1823,27 +1823,32 @@ fn approve_cmd(item: &ItemRef, body: &str, head: &str) -> Result<Cmd, Problem> {
             "Arakun doesn't know which commit you looked at; reload the pull request, then approve.",
         ));
     }
+    // An approval may come with no words.
+    let stdin = (!body.trim().is_empty()).then(|| body.to_string());
+    let mut args = review_api_args(item, "APPROVE", head, stdin.is_some());
+    args.extend(strings(&["--jq", ".html_url"]));
+    Ok(Cmd { args, stdin })
+}
+
+/// `gh api` posting a review on commit `sha`: the REST endpoint is the one
+/// that takes a commit. `-F body=@-` takes the words from stdin, and as text
+/// whatever they look like.
+fn review_api_args(item: &ItemRef, event: &str, sha: &str, words: bool) -> Vec<String> {
     let path = format!("repos/{}/pulls/{}/reviews", item.repo, item.number);
-    let commit = format!("commit_id={head}");
     let mut args = strings(&[
         "api",
         "-X",
         "POST",
         &path,
         "-f",
-        "event=APPROVE",
+        &format!("event={event}"),
         "-f",
-        &commit,
+        &format!("commit_id={sha}"),
     ]);
-    // An approval may come with no words; when it has some, they go on stdin.
-    let stdin = if body.trim().is_empty() {
-        None
-    } else {
+    if words {
         args.extend(strings(&["-F", "body=@-"]));
-        Some(body.to_string())
-    };
-    args.extend(strings(&["--jq", ".html_url"]));
-    Ok(Cmd { args, stdin })
+    }
+    args
 }
 
 /// A review tied to one commit, through the REST API (`gh pr review` can't
@@ -1867,21 +1872,7 @@ fn review_at_cmd(item: &ItemRef, verdict: Verdict, body: &str, sha: &str) -> Res
     } else {
         with_body(body)?
     };
-    let path = format!("repos/{}/pulls/{}/reviews", item.repo, item.number);
-    let mut args = strings(&[
-        "api",
-        "-X",
-        "POST",
-        &path,
-        "-f",
-        &format!("event={event}"),
-        "-f",
-        &format!("commit_id={sha}"),
-    ]);
-    if stdin.is_some() {
-        // `-F body=@-` takes the field from stdin, and as text whatever it looks like.
-        args.extend(strings(&["-F", "body=@-"]));
-    }
+    let args = review_api_args(item, event, sha, stdin.is_some());
     Ok(Cmd { args, stdin })
 }
 

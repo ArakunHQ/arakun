@@ -571,12 +571,8 @@ impl GitHubView {
 
     /// About how many characters a line of the timeline holds now.
     fn timeline_cols(&self) -> usize {
-        let lay = self.layout();
-        let mut main = lay.item_w;
-        if lay.side_props {
-            main -= super::item::SIDE_W;
-        }
-        // The rail, the gaps and the card's own padding.
+        let main = self.layout().sheet_w;
+        // The rail, the gaps and the sheet's own padding.
         ((main - 130.) / 7.4).max(30.) as usize
     }
 

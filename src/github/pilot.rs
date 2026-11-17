@@ -21,8 +21,8 @@ const POLL: Duration = Duration::from_secs(60);
 /// The only repository the Worker works on (SPEC.md): a task's `pr` is a
 /// number in it.
 pub const REPO: &str = "ArakunHQ/arakun";
-/// The most ready answers a card shows; the Worker sends 2 to 4.
-const OPCIONES_MAX: usize = 4;
+/// The most ready answers a card or the board shows; the Worker sends 2 to 4.
+pub(super) const OPCIONES_MAX: usize = 4;
 /// Ids kept in the book: far more than the Worker ever has open.
 const BOOK_MAX: usize = 1000;
 
@@ -272,7 +272,7 @@ pub struct Item {
 }
 
 /// A null reads as the field's default, like a missing one.
-fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
+pub(super) fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
@@ -280,22 +280,26 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
+/// The pull request `repo#number` names, else the one at `url`. An address
+/// from the Worker counts only on the host gh talks to.
+pub(super) fn pull_ref(repo: &str, number: u64, url: &str) -> Option<ItemRef> {
+    let from_repo = (number > 0)
+        .then(|| ItemRef::parse(&format!("{repo}#{number}")))
+        .flatten();
+    from_repo
+        .or_else(|| ItemRef::from_url_on(url, &super::pr::gh_host()))
+        .map(|i| ItemRef {
+            kind: ItemKind::Pull,
+            ..i
+        })
+}
+
 impl Item {
     /// The pull request it is about, when it names one in `REPO`. The
     /// Worker reads other people's pull requests, so it never picks which
     /// repository an approval lands on: anything else names nothing.
     pub fn item_ref(&self) -> Option<ItemRef> {
-        let from_repo = (self.number > 0)
-            .then(|| ItemRef::parse(&format!("{}#{}", self.repo, self.number)))
-            .flatten();
-        // An address from the agent counts only on the host gh talks to.
-        from_repo
-            .or_else(|| ItemRef::from_url_on(&self.url, &super::pr::gh_host()))
-            .filter(|i| i.repo.eq_ignore_ascii_case(REPO))
-            .map(|i| ItemRef {
-                kind: ItemKind::Pull,
-                ..i
-            })
+        pull_ref(&self.repo, self.number, &self.url).filter(|i| i.repo.eq_ignore_ascii_case(REPO))
     }
 
     /// Whether the tab's focus keeps it: a card about no repository always
@@ -480,8 +484,15 @@ fn store_book(book: &Book) {
 // ---------------------------------------------------------------------------
 // The Worker
 
-fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+/// An agent for requests to `base`. Plain `http://` to this machine skips
+/// the proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`): it would carry
+/// the tokens off the machine unencrypted. `https://` keeps it.
+fn agent(base: &str) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder();
+    if local_http(base) {
+        config = config.proxy(None);
+    }
+    config
         .timeout_global(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
         .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
@@ -502,7 +513,7 @@ fn encode(s: &str) -> String {
 }
 
 /// What a status means. Never the token: errors only name the address.
-fn status_problem(status: u16) -> String {
+pub(super) fn status_problem(status: u16) -> String {
     match status {
         401 | 403 => "the Worker refused the key (check the token in client.json)".into(),
         _ => format!("the Worker answered {status}"),
@@ -534,7 +545,7 @@ fn post_json(
     body: &serde_json::Value,
     admin: bool,
 ) -> Result<Vec<u8>, String> {
-    let mut res = agent()
+    let mut res = agent(base)
         .post(format!("{base}{path}"))
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -554,31 +565,36 @@ fn post_json(
     }
 }
 
-/// Every item the Worker has open. It closes some on its own, so a read of
-/// only the newest would keep those on show.
-pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
-    let url = format!("{}/items", cfg.url);
-    let mut res = agent()
-        .get(&url)
+/// A read of `path` with the read token: the status and up to `limit` bytes.
+/// Never the token in an error: only the address.
+pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>), String> {
+    let mut res = agent(&cfg.url)
+        .get(format!("{}{path}", cfg.url))
         .header("Authorization", format!("Bearer {}", cfg.token))
         .call()
         .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
     let status = res.status().as_u16();
-    if status != 200 {
-        return Err(status_problem(status));
-    }
     let bytes = res
         .body_mut()
         .with_config()
-        .limit(8 * 1024 * 1024)
+        .limit(limit)
         .read_to_vec()
         .map_err(|e| format!("the Worker cut the answer short: {e}"))?;
-    parse_items(&bytes)
+    Ok((status, bytes))
+}
+
+/// Every item the Worker has open. It closes some on its own, so a read of
+/// only the newest would keep those on show.
+pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
+    match get(cfg, "/items", 8 * 1024 * 1024)? {
+        (200, bytes) => parse_items(&bytes),
+        (status, _) => Err(status_problem(status)),
+    }
 }
 
 /// Tells the Worker the user dealt with `id`. One it no longer knows is done too.
 pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
-    let res = agent()
+    let res = agent(&cfg.url)
         .post(format!("{}/items/{}/done", cfg.url, encode(id)))
         .header("Authorization", format!("Bearer {}", cfg.token))
         .send_empty()
@@ -587,6 +603,25 @@ pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
         200..=299 | 404 => Ok(()),
         s => Err(status_problem(s)),
     }
+}
+
+/// The most `done` calls in flight at once.
+const TELL_AT_ONCE: usize = 8;
+
+/// Tells the Worker every id in `ids`, a few at a time so one slow call
+/// doesn't hold up the rest. Returns those it took.
+fn tell_all(cfg: &Config, ids: Vec<String>) -> Vec<String> {
+    let mut told = Vec::new();
+    for batch in ids.chunks(TELL_AT_ONCE) {
+        std::thread::scope(|s| {
+            let calls: Vec<_> = batch
+                .iter()
+                .map(|id| s.spawn(move || tell_done(cfg, id).is_ok().then(|| id.clone())))
+                .collect();
+            told.extend(calls.into_iter().filter_map(|c| c.join().ok().flatten()));
+        });
+    }
+    told
 }
 
 /// What the user answers a needs_you card with.
@@ -682,7 +717,13 @@ pub struct Pilot {
     /// No book on disk yet: the first read doesn't pop anything.
     fresh_book: bool,
     busy: bool,
+    /// A refresh was asked for while a read was going.
+    again: bool,
     problem: Option<String>,
+    /// The last board read, kept while a later read fails.
+    board: Option<super::board::Board>,
+    /// Why the last board read failed; `Missing` while the Worker has none.
+    board_problem: Option<super::board::BoardProblem>,
     _poll: Task<()>,
 }
 
@@ -705,7 +746,10 @@ impl Pilot {
             fresh_book: book.is_none(),
             book: book.unwrap_or_default(),
             busy: false,
+            again: false,
             problem: None,
+            board: None,
+            board_problem: None,
             _poll: poll,
         }
     }
@@ -718,6 +762,16 @@ impl Pilot {
     /// Why the last read failed.
     pub fn problem(&self) -> Option<&str> {
         self.problem.as_deref()
+    }
+
+    /// The board, once read.
+    pub fn board(&self) -> Option<&super::board::Board> {
+        self.board.as_ref()
+    }
+
+    /// Why the last board read failed.
+    pub fn board_problem(&self) -> Option<&super::board::BoardProblem> {
+        self.board_problem.as_ref()
     }
 
     /// The cards to show: not handled, newest first.
@@ -747,7 +801,13 @@ impl Pilot {
     /// Reads the settings again and, when there are some, the new items.
     /// Handled items the Worker missed are told first.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.busy || super::GitHub::disabled() {
+        if super::GitHub::disabled() {
+            return;
+        }
+        if self.busy {
+            // A read already going may have started before an answer: one
+            // more follows it.
+            self.again = true;
             return;
         }
         let config = load_config();
@@ -755,45 +815,81 @@ impl Pilot {
             // Another Worker (or none) knows other items.
             self.items.clear();
             self.problem = None;
+            self.board = None;
+            self.board_problem = None;
             self.config = config.clone();
             cx.notify();
         }
-        let Some(cfg) = config else { return };
+        // A board file stands in for the Worker even without settings.
+        let fixture = std::env::var_os(super::board::FIXTURE_ENV).is_some();
+        if config.is_none() && !fixture {
+            return;
+        }
         self.busy = true;
         let untold = self.book.untold.clone();
         cx.spawn(async move |this, cx| {
-            let (told, read) = cx
+            let (told, read, board) = cx
                 .background_spawn(async move {
-                    let told: Vec<String> = untold
-                        .into_iter()
-                        .filter(|id| tell_done(&cfg, id).is_ok())
-                        .collect();
-                    (told, fetch(&cfg))
+                    // The board and the items side by side: a slow one
+                    // doesn't hold the other up.
+                    // The handled ids the Worker missed go out beside them:
+                    // the book hides those cards whatever the read says.
+                    std::thread::scope(|s| {
+                        let board = s.spawn(|| super::board::fetch(config.as_ref()));
+                        let (told, read) = match &config {
+                            None => (Vec::new(), Ok(Vec::new())),
+                            Some(cfg) => {
+                                let told = s.spawn(|| tell_all(cfg, untold));
+                                let read = fetch(cfg);
+                                (told.join().unwrap_or_default(), read)
+                            }
+                        };
+                        let board = board.join().unwrap_or_else(|_| {
+                            Err(super::board::BoardProblem::Failed(
+                                "reading the board failed".into(),
+                            ))
+                        });
+                        (told, read, board)
+                    })
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
+                let before = this.book.clone();
                 for id in &told {
                     this.book.told(id);
+                }
+                match board {
+                    Ok(b) => {
+                        this.board = Some(b);
+                        this.board_problem = None;
+                    }
+                    Err(super::board::BoardProblem::Missing) => {
+                        this.board = None;
+                        this.board_problem = Some(super::board::BoardProblem::Missing);
+                    }
+                    Err(e) => this.board_problem = Some(e),
                 }
                 match read {
                     Ok(read) => {
                         this.problem = None;
                         let quiet = std::mem::take(&mut this.fresh_book);
                         let pops = this.book.absorb(&mut this.items, read, quiet);
-                        store_book(&this.book);
                         if !pops.is_empty() {
                             cx.emit(PilotEvent::New(pops));
                         }
                     }
-                    Err(e) => {
-                        this.problem = Some(e);
-                        if !told.is_empty() {
-                            store_book(&this.book);
-                        }
-                    }
+                    Err(e) => this.problem = Some(e),
+                }
+                // Most reads change nothing: the file is written only when
+                // something new was seen or told.
+                if this.book != before {
+                    store_book(&this.book);
                 }
                 cx.notify();
+                if std::mem::take(&mut this.again) {
+                    this.refresh(cx);
+                }
             });
         })
         .detach();
@@ -832,12 +928,17 @@ impl Pilot {
         cx.notify();
     }
 
-    /// Every login a card shows, for their pictures.
+    /// Every login a card or the board shows, for their pictures.
     pub fn people(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for i in self.shown() {
-            if !i.author.is_empty() && !out.contains(&i.author) {
-                out.push(i.author.clone());
+        let board = self.board.iter().flat_map(|b| &b.prs);
+        let logins = self
+            .shown()
+            .map(|i| i.author.as_str())
+            .chain(board.flat_map(|p| [p.author.as_str(), p.lo_tiene.login.as_str()]));
+        for login in logins {
+            if !login.is_empty() && !out.iter().any(|o| o == login) {
+                out.push(login.to_string());
             }
         }
         out
@@ -847,11 +948,48 @@ impl Pilot {
     pub fn shown_ids(&self) -> HashSet<String> {
         self.shown().map(|i| i.id.clone()).collect()
     }
+
+    /// The item ids of the board's open questions.
+    pub fn open_decisions(&self) -> HashSet<String> {
+        self.board
+            .as_ref()
+            .map(super::board::Board::asking)
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_untold_id_is_told_past_one_batch() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let n = TELL_AT_ONCE + 3;
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(n) {
+                let mut stream = stream.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        let cfg = Config {
+            url: format!("http://127.0.0.1:{port}"),
+            token: "t".into(),
+            admin_token: None,
+        };
+        let ids: Vec<String> = (0..n).map(|i| format!("id{i}")).collect();
+        let mut told = tell_all(&cfg, ids.clone());
+        told.sort();
+        let mut want = ids;
+        want.sort();
+        assert_eq!(told, want);
+    }
 
     const FULL: &str = r#"{
         "id": "brief-95-40a1b2c",
@@ -1123,6 +1261,24 @@ mod tests {
         assert_eq!(e.unwrap().admin_token, None);
         assert!(parse_config(br#"{"url": "https://p.dev", "token": ""}"#).is_none());
         assert!(parse_config(br#"{"url": "file:///etc", "token": "t"}"#).is_none());
+        for local in [
+            "http://localhost:8787",
+            "http://127.0.0.1",
+            "http://[::1]:8787/",
+        ] {
+            let json = format!(r#"{{"url": "{local}", "token": "t"}}"#);
+            assert!(parse_config(json.as_bytes()).is_some(), "{local}");
+        }
+        for remote in [
+            "http://pilot.example.dev",
+            "http://localhost.example.dev",
+            "http://127.0.0.1.example.dev",
+            "http://localhost@evil.dev",
+            "http://[::1]evil.dev",
+        ] {
+            let json = format!(r#"{{"url": "{remote}", "token": "t"}}"#);
+            assert!(parse_config(json.as_bytes()).is_none(), "{remote}");
+        }
         assert!(parse_config(b"nope").is_none());
     }
 

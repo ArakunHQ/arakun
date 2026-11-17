@@ -1250,6 +1250,7 @@ impl Shell {
             }
         };
         self.active_project = index;
+        self.unfloat_github(cx);
         self.refresh_project(index, cx);
         self.sync_ci_roots(cx);
         self.save(cx);
@@ -1273,6 +1274,7 @@ impl Shell {
         self.active_project = self
             .active_project
             .min(self.projects.len().saturating_sub(1));
+        self.unfloat_github(cx);
         // Its Servers tab went with it; a no-op while one is left elsewhere.
         self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
@@ -1450,7 +1452,7 @@ impl Shell {
             return;
         }
         self.show_view_tab("Notes", TabKind::Notes, |k| matches!(k, TabKind::Notes));
-        self.note_active_tab();
+        self.note_active_tab(cx);
         let focus = self.notes_input.focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
@@ -1463,7 +1465,7 @@ impl Shell {
             return;
         }
         self.show_view_tab("Memory", TabKind::Memory, |k| matches!(k, TabKind::Memory));
-        self.note_active_tab();
+        self.note_active_tab(cx);
         let dir = self.env().path.clone();
         self.memory_view.update(cx, |v, cx| {
             v.set_dir(&dir, cx);
@@ -1479,7 +1481,7 @@ impl Shell {
             return;
         }
         self.show_view_tab("Usage", TabKind::Usage, |k| matches!(k, TabKind::Usage));
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.sync_usage_view(cx);
         self.usage_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -1493,7 +1495,7 @@ impl Shell {
             return;
         }
         self.show_view_tab("Equipo", TabKind::Team, |k| matches!(k, TabKind::Team));
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.team_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
@@ -1507,7 +1509,7 @@ impl Shell {
         self.show_view_tab("Design system", TabKind::Gallery, |k| {
             matches!(k, TabKind::Gallery)
         });
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.gallery_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
@@ -1521,7 +1523,7 @@ impl Shell {
         self.show_view_tab("Isometric", TabKind::Isometric, |k| {
             matches!(k, TabKind::Isometric)
         });
-        self.note_active_tab();
+        self.note_active_tab(cx);
         let root = self.env().path.clone();
         self.iso_view.update(cx, |v, cx| {
             v.set_root(root, cx);
@@ -1544,7 +1546,7 @@ impl Shell {
             return;
         }
         self.show_view_tab("Canvas", TabKind::Canvas, |k| matches!(k, TabKind::Canvas));
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.canvas_view.update(cx, |v, cx| {
             if let Some(source) = source {
                 v.open(source, cx);
@@ -1630,6 +1632,7 @@ impl Shell {
                             .active_env
                             .min(project.environments.len().saturating_sub(1));
                     }
+                    this.unfloat_github(cx);
                     this.servers_tab_closed(cx);
                     this.save(cx);
                     this.refresh_project(pi, cx);
@@ -2055,6 +2058,8 @@ impl Shell {
 
     fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.completion = None;
+        // The project or environment switched to may show its GitHub tab.
+        self.unfloat_github(cx);
         self.refresh_visible(cx);
         self.ensure_active_live(window, cx);
         self.ensure_terminal(window, cx);
@@ -2090,7 +2095,7 @@ impl Shell {
 
     fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.activate_tab(index, window, cx);
-        self.note_active_tab();
+        self.note_active_tab(cx);
     }
 
     fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -2098,13 +2103,18 @@ impl Shell {
         let prev = env.tabs.get(env.active_tab).map(|t| t.id);
         env.active_tab = index;
         env.settle_split(prev);
+        // Back and forward come here without `note_active_tab`.
+        self.unfloat_github(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
         cx.notify();
     }
 
     /// Remembers the active tab for the back/forward buttons.
-    fn note_active_tab(&mut self) {
+    fn note_active_tab(&mut self, cx: &mut Context<Self>) {
+        // The GitHub tab came to the front: a sheet floating over another
+        // tab stays open in it instead of hiding its list.
+        self.unfloat_github(cx);
         let env = self.env_mut();
         // Every path that changes the active tab ends here, so the split settles here too.
         env.settle_split(env.tab_back.last().copied());
@@ -2200,7 +2210,7 @@ impl Shell {
         if closed_servers {
             self.servers_tab_closed(cx);
         }
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
         cx.notify();
@@ -2221,7 +2231,7 @@ impl Shell {
             env.tabs.push(Tab::new("New session", TabKind::NewSession));
             env.active_tab = env.tabs.len() - 1;
         }
-        self.note_active_tab();
+        self.note_active_tab(cx);
         window.focus(&self.composer_focus, cx);
         cx.notify();
     }
@@ -2552,6 +2562,7 @@ impl Render for Shell {
             Modal::Telemetry(e) => e.clone().into_any_element(),
         });
         let viewport_h = window.viewport_size().height.as_f32();
+        let floating_sheet = self.render_floating_sheet(cx);
         let context_menu = self.menu.as_ref().map(|m| {
             let above = matches!(
                 m.target,
@@ -2849,6 +2860,7 @@ impl Render for Shell {
                         .child(menu),
                 ))
             })
+            .when_some(floating_sheet, |d, sheet| d.child(sheet))
             .when_some(modal, |d, modal| {
                 d.child(
                     div()

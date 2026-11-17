@@ -18,7 +18,7 @@ impl Shell {
         self.show_view_tab("Marketplace", TabKind::Extensions, |k| {
             matches!(k, TabKind::Extensions)
         });
-        self.note_active_tab();
+        self.note_active_tab(cx);
         let dir = self.env().path.clone();
         self.extensions_view.update(cx, |v, cx| {
             v.set_dir(dir, cx);

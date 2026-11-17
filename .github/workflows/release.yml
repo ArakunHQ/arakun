@@ -38,8 +38,12 @@ name: Release
 #   156.0.15 (Chromium), the version the `cef` crate in Cargo.lock is built for:
 #   Linux in a cef/ folder next to the binary, Windows next to arakun.exe with
 #   arakun-helper.exe, macOS as Chromium Embedded Framework.framework inside
-#   Arakun.app. Linux takes the archive ci.yml's clippy-browser job checks;
-#   macOS and Windows let the `cef` crate download it, with CMake and Ninja from
+#   Arakun.app. Each job downloads its platform's archive, checks it against a
+#   pinned SHA-1 before unpacking it, and points the build at it: Linux as
+#   ci.yml's clippy-browser job does, macOS and Windows with
+#   tools/fetch-cef.py. The `cef` crate's own download is not used: it trusts
+#   the CDN's index, which has also grown past what its HTTP client reads.
+#   macOS and Windows build CEF's wrapper with CMake and Ninja from
 #   tools/build-requirements.txt.
 # - Dependencies resolve exactly as in ci.yml (same Cargo.toml and --locked, no
 #   rewriting of the [patch] section), so this builds wherever ci.yml does.
@@ -62,6 +66,7 @@ on:
       - tools/macos-dmg.py
       - tools/macos-dmg-requirements.txt
       - tools/build-requirements.txt
+      - tools/fetch-cef.py
       - tools/Arakun.icon/**
       - assets/brand/dmg-background*.png
   workflow_dispatch:
@@ -269,25 +274,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "pip exited with $LASTEXITCODE" }
           "$venv\Scripts" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
+      # See the header. The SHA-1 is the one cef-builds publishes.
+      - name: Prepare CEF
+        env:
+          CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_windows64_minimal.tar.bz2
+          CEF_SHA1: b690e035689ee20ba9d2500ac8953815bc7ed46a
+        shell: pwsh
+        run: |
+          python tools/fetch-cef.py $env:CEF_ARCHIVE $env:CEF_SHA1 "$env:RUNNER_TEMP/cef"
+          if ($LASTEXITCODE -ne 0) { throw "fetch-cef.py exited with $LASTEXITCODE" }
+
       # gpui compiles its HLSL shaders with fxc.exe from the Windows SDK in
       # release builds; the runner image ships the SDK (GPUI_FXC_PATH overrides).
-      # build.rs copies the CEF runtime the `cef` crate downloads next to arakun.exe.
+      # build.rs copies the CEF runtime from CEF_PATH next to arakun.exe.
       - name: cargo build
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc
-
-      # The `cef` crate checks its download against the SHA-1 in the index on
-      # the same CDN, and records it in archive.json. This pins it, as Linux
-      # pins its archive. From cef-builds' index.json for this CEF build.
-      - name: Check the CEF download
-        shell: pwsh
         env:
-          CEF_SHA1: b690e035689ee20ba9d2500ac8953815bc7ed46a
-        run: |
-          $json = Get-ChildItem .cef-sdk/*/cef_windows_*/archive.json | Select-Object -Last 1
-          if (-not $json) { throw "the build left no CEF archive.json in .cef-sdk" }
-          $sha1 = (Get-Content $json.FullName -Raw | ConvertFrom-Json).sha1
-          Write-Host "$($json.FullName): $sha1"
-          if ($sha1 -ne $env:CEF_SHA1) { throw "CEF archive SHA-1 $sha1, expected $env:CEF_SHA1" }
+          CEF_PATH: ${{ runner.temp }}/cef
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
       - name: Package
         shell: pwsh
@@ -369,20 +372,17 @@ jobs:
             -r tools/build-requirements.txt
           echo "$RUNNER_TEMP/build-tools/bin" >> "$GITHUB_PATH"
 
-      # The `cef` crate downloads CEF for macOS arm64 into .cef-sdk.
-      - name: cargo build
-        run: cargo build --release --locked --target aarch64-apple-darwin
-
-      # As on Windows: pins what the `cef` crate downloaded.
-      - name: Check the CEF download
+      # As on Windows.
+      - name: Prepare CEF
         env:
+          CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_macosarm64_minimal.tar.bz2
           CEF_SHA1: bcdd1877edb300b0fb91d8f71c0b14aae256cd0f
-        run: |
-          json=$(ls -d .cef-sdk/*/cef_macos_*/archive.json 2>/dev/null | tail -1 || true)
-          [ -n "$json" ] || { echo "::error::the build left no CEF archive.json in .cef-sdk"; exit 1; }
-          sha1=$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha1"])' "$json")
-          echo "$json: $sha1"
-          [ "$sha1" = "$CEF_SHA1" ] || { echo "::error::CEF archive SHA-1 $sha1, expected $CEF_SHA1"; exit 1; }
+        run: python tools/fetch-cef.py "$CEF_ARCHIVE" "$CEF_SHA1" "$RUNNER_TEMP/cef"
+
+      - name: cargo build
+        env:
+          CEF_PATH: ${{ runner.temp }}/cef
+        run: cargo build --release --locked --target aarch64-apple-darwin
 
       - name: dmgbuild
         run: |
@@ -400,9 +400,9 @@ jobs:
           tag=${TAG:-dev-$(printf %.7s "$SHA")}
           name="arakun-$tag-macos-arm64"
           mkdir -p work dist
-          # As tools/install.sh finds it.
-          framework=$(ls -d .cef-sdk/*/cef_macos_*/"Chromium Embedded Framework.framework" 2>/dev/null | tail -1 || true)
-          [ -n "$framework" ] || { echo "::error::the build left no CEF framework in .cef-sdk"; exit 1; }
+          # The one the build used (Prepare CEF).
+          framework="$RUNNER_TEMP/cef/Chromium Embedded Framework.framework"
+          [ -d "$framework" ] || { echo "::error::no CEF framework at $framework"; exit 1; }
           tools/macos-app.sh --strip --framework "$framework" \
             target/aarch64-apple-darwin/release/arakun work/Arakun.app
           "$RUNNER_TEMP/dmg/bin/python" tools/macos-dmg.py work/Arakun.app "dist/$name.dmg"

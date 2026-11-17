@@ -65,7 +65,10 @@ powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1          # -Check o
 There is no need to install CEF by hand: the first build downloads the CEF 156.0.15
 distribution for Windows (a few hundred MB) into `.cef-sdk\` and copies its runtime
 (`libcef.dll`, the `.pak` files, `locales\`...) next to `arakun.exe` in
-`target\<profile>\`. gpui renders with Direct3D 11.
+`target\<profile>\`. gpui renders with Direct3D 11. If that download fails with "the
+response body is larger than request limit", fetch the archive with
+`python tools\fetch-cef.py <archive> <sha1> <folder>` (the names and checksums are in
+`.github\workflows\release.yml`) and set `CEF_PATH` to that folder.
 
 ## MSVC environment
 

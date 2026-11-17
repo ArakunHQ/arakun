@@ -504,7 +504,10 @@ The default `browser` feature needs CEF at build time and at run time.
   at.
 - **Windows and macOS:** the first build downloads CEF into `.cef-sdk` by itself. It
   also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
-  [docs/windows.md](docs/windows.md).
+  [docs/windows.md](docs/windows.md). If that download fails with "the response body is
+  larger than request limit", the `cef` crate can no longer read the CDN's index. Fetch
+  the archive with `tools/fetch-cef.py` instead and point `CEF_PATH` at it, as the
+  release workflow does (it has the archive names and checksums).
 
 ### Browser tabs on Ubuntu
 

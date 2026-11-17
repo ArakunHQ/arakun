@@ -151,18 +151,27 @@ impl Shell {
     }
 
     /// The sheet the island opened, over the window: None unless it is up.
-    pub(super) fn render_floating_sheet(&self, cx: &App) -> Option<gpui::AnyElement> {
+    pub(super) fn render_floating_sheet(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         use gpui::{IntoElement as _, ParentElement as _, Styled as _};
-        let floating = self.github_view.read(cx).floating() && !self.github_in_front();
-        floating.then(|| {
+        if !self.github_view.read(cx).floating() {
+            return None;
+        }
+        if self.github_in_front() {
+            // The tab came to the front some other way than its opener (a
+            // click on it, a shortcut, another environment): the sheet stays
+            // open in it, over the list.
+            self.github_view.update(cx, |v, cx| v.unfloat(cx));
+            return None;
+        }
+        Some(
             gpui::div()
                 .absolute()
                 .top_0()
                 .left_0()
                 .size_full()
                 .child(self.github_view.clone())
-                .into_any_element()
-        })
+                .into_any_element(),
+        )
     }
 
     pub(super) fn on_github_view_event(

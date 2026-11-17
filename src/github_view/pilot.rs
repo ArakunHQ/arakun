@@ -683,7 +683,7 @@ impl GitHubView {
 
     /// Hands the answer to the agent. The card goes once the Worker took it;
     /// on an error it stays, saying why.
-    fn pilot_answer(&mut self, id: &str, answer: Answer, cx: &mut Context<Self>) {
+    pub(super) fn pilot_answer(&mut self, id: &str, answer: Answer, cx: &mut Context<Self>) {
         let Some(cfg) = self.pilot.read(cx).config().cloned() else {
             return;
         };
@@ -716,8 +716,12 @@ impl GitHubView {
                                 cx.notify();
                             });
                         });
-                        this.pilot_sent = Some(("Sent: the agent is on it.".into(), clear));
-                        this.pilot.update(cx, |p, cx| p.answered(&id, cx));
+                        this.pilot_sent = Some(("Enviado: el agente sigue con eso.".into(), clear));
+                        this.pilot.update(cx, |p, cx| {
+                            p.answered(&id, cx);
+                            // The board moves on with the answer: read it again.
+                            p.refresh(cx);
+                        });
                     }
                     Err(e) => {
                         this.pilot_notes

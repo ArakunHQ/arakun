@@ -1,0 +1,327 @@
+{
+  "at": "2026-11-16T23:00:00Z",
+  "verdict": {
+    "te_necesita": 1,
+    "pilot_lleva": 4,
+    "texto": "Una decisión en #151 y lo demás va solo: pilot lleva 4 PRs."
+  },
+  "prs": [
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 151,
+      "title": "fix(windows): copy the cef runtime next to arakun.exe",
+      "author": "daniektj",
+      "url": "https://github.com/ArakunHQ/arakun/pull/151",
+      "head": "9f1c2ab7e0d4c3b2a1908f7e6d5c4b3a2f1e0d9c",
+      "branch": "fix/windows-cef-runtime",
+      "base": "main",
+      "draft": true,
+      "va_encima_de": null,
+      "estado": "te_necesita",
+      "lo_tiene": {
+        "login": "KarloAldrete",
+        "nombre": "Karlo",
+        "tipo": "tu"
+      },
+      "siguiente": "Si dices que sí, subo el arreglo a la rama de Dani",
+      "desde": "2026-11-16T21:40:00Z",
+      "ultimo_pilot": {
+        "texto": "Revisó el fallo y pidió cambios",
+        "at": "2026-11-16T21:40:00Z"
+      },
+      "que_pasa": "El build de Windows deja arakun.exe sin libcef.dll al lado: el paso de copia busca en target/release y el build usa la carpeta del target. El arreglo es una línea. Es la rama de Dani y está en borrador, así que no la toco sin tu sí.",
+      "checks": {
+        "pasaron": 14,
+        "total": 16,
+        "corriendo": 0,
+        "fallando": [
+          "build-windows",
+          "smoke-windows"
+        ]
+      },
+      "al_fusionar": "Cambia el instalador de Windows",
+      "decision": {
+        "item": "needs-151-9f1c2ab",
+        "pregunta": "¿Arreglo el CI yo mismo en la rama de Dani?",
+        "opciones": [
+          {
+            "id": "fix",
+            "texto": "Sí, arréglalo en su rama"
+          },
+          {
+            "id": "dani",
+            "texto": "Que lo vea Dani"
+          },
+          {
+            "id": "skip",
+            "texto": "Lo veo yo"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "at": "2026-11-16T18:00:00Z",
+          "texto": "Leyó el PR de Dani",
+          "tipo": "pilot"
+        },
+        {
+          "at": "2026-11-16T21:35:00Z",
+          "texto": "CI falló en build-windows",
+          "tipo": "ci"
+        },
+        {
+          "at": "2026-11-16T21:40:00Z",
+          "texto": "Revisó el fallo y pidió cambios",
+          "tipo": "revision"
+        },
+        {
+          "at": "2026-11-16T21:41:00Z",
+          "texto": "¿Arreglo el CI yo mismo en la rama de Dani?",
+          "tipo": "pregunta"
+        }
+      ]
+    },
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 120,
+      "title": "feat(ui): keep the amber for what needs you",
+      "author": "KarloAldrete",
+      "url": "https://github.com/ArakunHQ/arakun/pull/120",
+      "head": "a3e91c2",
+      "branch": "pr/calma-color",
+      "base": "pr/calma-surfaces",
+      "draft": false,
+      "va_encima_de": 119,
+      "estado": "pilot_trabajando",
+      "lo_tiene": {
+        "login": "arakun-pilot",
+        "nombre": "pilot",
+        "tipo": "pilot"
+      },
+      "siguiente": "Cuando pase el CI, Rik revisa la ronda 2",
+      "desde": "2026-11-16T22:48:00Z",
+      "ultimo_pilot": {
+        "texto": "Subió 1 commit y contestó 4 hilos",
+        "at": "2026-11-16T22:48:00Z"
+      },
+      "que_pasa": "Rik pidió cambios en 4 hilos: el ámbar seguía en los contadores de la barra y en el borde del input. Ya lo quité de los dos lados y contesté cada hilo. Falta que termine el CI; después se lo paso a Rik para la ronda 2.",
+      "checks": {
+        "pasaron": 9,
+        "total": 16,
+        "corriendo": 7,
+        "fallando": []
+      },
+      "al_fusionar": "#121 se rebasa encima",
+      "decision": null,
+      "timeline": [
+        {
+          "at": "2026-11-16T22:14:00Z",
+          "texto": "Leyó la revisión de Rik · 4 hilos, ronda 1 de 3",
+          "tipo": "revision"
+        },
+        {
+          "at": "2026-11-16T22:21:00Z",
+          "texto": "Quitó el ámbar de los contadores de la barra",
+          "tipo": "pilot"
+        },
+        {
+          "at": "2026-11-16T22:25:00Z",
+          "texto": "Quitó el ámbar del borde del input",
+          "tipo": "pilot"
+        },
+        {
+          "at": "2026-11-16T22:48:00Z",
+          "texto": "Subió 1 commit y contestó 4 hilos · a3e91c2 +18 −11",
+          "tipo": "commit"
+        },
+        {
+          "at": "2026-11-16T23:00:00Z",
+          "texto": "CI corriendo · 9 de 16",
+          "tipo": "ci"
+        }
+      ]
+    },
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 121,
+      "title": "feat(agent): give each part of the chat its own shape",
+      "author": "KarloAldrete",
+      "url": "https://github.com/ArakunHQ/arakun/pull/121",
+      "head": "c71d0e4",
+      "branch": "pr/calma-shapes",
+      "base": "pr/calma-color",
+      "draft": false,
+      "va_encima_de": 120,
+      "estado": "esperando",
+      "lo_tiene": {
+        "login": "rikvisser-dev",
+        "nombre": "Rik",
+        "tipo": "persona"
+      },
+      "siguiente": "Rik re-aprueba tras el rebase",
+      "desde": "2026-11-16T22:40:00Z",
+      "ultimo_pilot": {
+        "texto": "Rebasó sobre #120",
+        "at": "2026-11-16T22:40:00Z"
+      },
+      "que_pasa": "Rik ya lo aprobó una vez; el rebase sobre #120 quitó la aprobación. No hay nada que cambiar.",
+      "checks": {
+        "pasaron": 16,
+        "total": 16,
+        "corriendo": 0,
+        "fallando": []
+      },
+      "al_fusionar": null,
+      "decision": null,
+      "timeline": [
+        {
+          "at": "2026-11-16T22:40:00Z",
+          "texto": "Rebasó sobre #120",
+          "tipo": "commit"
+        }
+      ]
+    },
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 119,
+      "title": "feat(ui): make the center the only sheet and quiet the chrome",
+      "author": "KarloAldrete",
+      "url": "https://github.com/ArakunHQ/arakun/pull/119",
+      "head": "5b2e8f1",
+      "branch": "pr/calma-surfaces",
+      "base": "main",
+      "draft": false,
+      "va_encima_de": null,
+      "estado": "listo",
+      "lo_tiene": {
+        "login": "KarloAldrete",
+        "nombre": "Karlo",
+        "tipo": "tu"
+      },
+      "siguiente": "Fusionar: es la base de la pila",
+      "desde": "2026-11-16T22:46:00Z",
+      "ultimo_pilot": {
+        "texto": "Rik aprobó",
+        "at": "2026-11-16T22:46:00Z"
+      },
+      "que_pasa": "Aprobado por Rik y todo verde. Es la base de #120 y #121: al fusionarlo, pilot rebasa los dos.",
+      "checks": {
+        "pasaron": 16,
+        "total": 16,
+        "corriendo": 0,
+        "fallando": []
+      },
+      "al_fusionar": "#120 y #121 se rebasan sobre main",
+      "decision": null,
+      "timeline": [
+        {
+          "at": "2026-11-16T22:46:00Z",
+          "texto": "Rik aprobó",
+          "tipo": "revision"
+        }
+      ]
+    },
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 182,
+      "title": "feat(agent): ask before installing an agent's adapter",
+      "author": "KarloAldrete",
+      "url": "https://github.com/ArakunHQ/arakun/pull/182",
+      "head": "e0a41f9",
+      "branch": "fix/issue-172",
+      "base": "main",
+      "draft": false,
+      "va_encima_de": null,
+      "estado": "esperando_ci",
+      "lo_tiene": {
+        "login": "github-actions",
+        "nombre": "CI",
+        "tipo": "ci"
+      },
+      "siguiente": "Si pasa, se lo pido a Rik",
+      "desde": "2026-11-16T22:54:00Z",
+      "ultimo_pilot": {
+        "texto": "Arregló el test de clippy",
+        "at": "2026-11-16T22:52:00Z"
+      },
+      "que_pasa": null,
+      "checks": {
+        "pasaron": 11,
+        "total": 16,
+        "corriendo": 5,
+        "fallando": []
+      },
+      "al_fusionar": null,
+      "decision": null,
+      "timeline": [
+        {
+          "at": "2026-11-16T22:52:00Z",
+          "texto": "Arregló el test de clippy",
+          "tipo": "commit"
+        }
+      ]
+    },
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 179,
+      "title": "feat: send crash reports and usage counts to posthog",
+      "author": "KarloAldrete",
+      "url": "https://github.com/ArakunHQ/arakun/pull/179",
+      "head": "77aa01c",
+      "branch": "feat/add-posthog-analytics",
+      "base": "main",
+      "draft": false,
+      "va_encima_de": null,
+      "estado": "atorado",
+      "lo_tiene": {
+        "login": "arakun-pilot",
+        "nombre": "pilot",
+        "tipo": "pilot"
+      },
+      "siguiente": "Necesita la llave de PostHog en los secretos del repo",
+      "desde": "2026-11-16T19:50:00Z",
+      "ultimo_pilot": {
+        "texto": "Intentó 3 veces; falla igual",
+        "at": "2026-11-16T19:50:00Z"
+      },
+      "que_pasa": "El test de telemetría pide POSTHOG_KEY y el repo no la tiene. No es algo que pilot pueda arreglar en el código.",
+      "checks": {
+        "pasaron": 15,
+        "total": 16,
+        "corriendo": 0,
+        "fallando": [
+          "test-telemetry"
+        ]
+      },
+      "al_fusionar": null,
+      "decision": null,
+      "timeline": [
+        {
+          "at": "2026-11-16T19:50:00Z",
+          "texto": "Intentó 3 veces; falla igual",
+          "tipo": "ci"
+        }
+      ]
+    }
+  ],
+  "hecho_hoy": [
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 183,
+      "title": "fix(github): read HTML lists, headings and block ends as markdown",
+      "merged_at": "2026-11-16T21:00:00Z"
+    },
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 181,
+      "title": "fix(agent): save sessions and transcripts so only the owner can read them",
+      "merged_at": "2026-11-16T19:40:00Z"
+    },
+    {
+      "repo": "ArakunHQ/arakun",
+      "number": 180,
+      "title": "fix(durable): keep the file name out of the temp-name error",
+      "merged_at": "2026-11-16T18:40:00Z"
+    }
+  ]
+}

@@ -140,34 +140,42 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **CI and checks.** GitHub Actions runs for each project, with jobs, annotations and
   the failing log, read through the `gh` CLI.
-- **Review queue.** The GitHub tab is a work queue of what waits on you: pull requests
-  whose review is asked of you, mentions and assignments, your own open pull requests,
-  what is ready to merge and what was done today. It reads your notifications and runs
-  searches through the `gh` CLI and its session, so what you already read on github.com
-  still shows. It opens before you add a project too.
-- **Pull request view.** Pick an item to see its state, checks, what blocks the merge,
-  its timeline, files and commits; comment, approve, request changes or merge from there.
-  A comment posts at once; approve, request changes and merge ask a second time, and an
-  approval or a merge stops if new commits came after you looked.
+- **Bandeja.** The GitHub tab opens on one line that says how many things need you,
+  then a quiet list grouped by where each pull request stands (Te necesita, Atorado,
+  Pilot trabajando, Esperando CI, Esperando a otros, Listo para fusionar), stacked pull
+  requests under their base, and what was merged today folded at the bottom. With
+  arakun-pilot (below) the list is its board; without it, the review queue: pull
+  requests whose review is asked of you, mentions and assignments, your own open pull
+  requests, what is ready to merge and what was done today, read from your
+  notifications and searches through the `gh` CLI and its session. It opens before you
+  add a project too.
+- **Pull request sheet.** A row opens a sheet on the right with where the pull request
+  stands, who has it, what comes next, the checks and the stack, then tabs for what
+  pilot did, the conversation, checks and files. The box at the bottom comments (Enter
+  or "Comentar"), and says why when a comment doesn't go out. Approve, request changes
+  and merge ask a second time, and an approval or a merge stops if new commits came
+  after you looked.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits
   the draft can only be posted as a comment.
 - **Alerts and filters.** Review requests, mentions and assignments raise an alert; so
   does anything new in the organizations and repositories on your watch list. Click the
-  line under "Review queue" to show only some organizations or repositories; the rest
+  repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), its cards show at the top of the queue under "Your agent":
-  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
-  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/items` every
-  minute. Approve and request changes go through the same second click, with your own
-  `gh`; an approval only goes to the commit the agent read. When the agent asks you
-  something with ready answers, they show as buttons on its card, with "Other answer…"
-  for your own words (`POST <url>/items/<id>/answer`). What you saw and dealt with is
-  kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
-  Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
-  `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
+  (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set;
+  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/board` and
+  `GET <url>/items` every minute. The board fills the Bandeja; the queue's rows pilot
+  doesn't follow fold under "Más en GitHub". When pilot asks you something, the sheet
+  shows the question with one button per answer (`POST <url>/items/<id>/answer`), and
+  the notice in the island opens that sheet over whatever window is in front (Esc gives
+  it back). On your own pull requests, "Pedirle a pilot" in the sheet sends what you
+  typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
+  While the Worker has no board, its cards show at the top of the queue under "Tu
+  agente", with approve and request changes going through the same second click. What you saw and dealt with is
+  kept in `pilot.json` next to the state. Ctrl+K "Mandar al agente de la nube…" (or type
+  `nube: <task>`) hands it new work, on the open pull request of yours picked in the tab
   or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
   too. On that card `Tab` switches between your pull request and a new branch (see
   [Keyboard shortcuts](#keyboard-shortcuts)).
@@ -177,9 +185,9 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 Arakun reads GitHub in the background only after you open the tab once, and stops while
 `gh` is missing or signed out. It keeps the watch list, the filter choice and whether you
-opened the tab in `github.json` next to its state, the days your queue reached zero in
-`github-streak.json`, drafts in `github/drafts/` beside them, and the profile pictures
-it shows in `github/avatars/` (each downloaded again after a week).
+opened the tab in `github.json` next to its state, drafts in `github/drafts/` beside
+them, and the profile pictures it shows in `github/avatars/` (each downloaded again
+after a week).
 
 </details>
 

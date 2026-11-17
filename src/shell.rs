@@ -2552,6 +2552,7 @@ impl Render for Shell {
             Modal::Telemetry(e) => e.clone().into_any_element(),
         });
         let viewport_h = window.viewport_size().height.as_f32();
+        let floating_sheet = self.render_floating_sheet(cx);
         let context_menu = self.menu.as_ref().map(|m| {
             let above = matches!(
                 m.target,
@@ -2849,6 +2850,7 @@ impl Render for Shell {
                         .child(menu),
                 ))
             })
+            .when_some(floating_sheet, |d, sheet| d.child(sheet))
             .when_some(modal, |d, modal| {
                 d.child(
                     div()

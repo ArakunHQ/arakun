@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::git;
 
 pub mod avatars;
+pub mod board;
 pub mod pilot;
 pub mod pr;
 pub mod pulse;
@@ -32,8 +33,6 @@ const POLL_ACTIVE: Duration = Duration::from_secs(60);
 const POLL_IDLE: Duration = Duration::from_secs(300);
 /// How many pull requests or issues are read at once for the queue.
 const DETAILS_AT_ONCE: usize = 3;
-/// The pulse changes slowly and its query is heavy: read it this often.
-const PULSE_EVERY: Duration = Duration::from_secs(300);
 /// How far back a mention still counts.
 const MENTIONS_DAYS: i32 = 30;
 
@@ -743,31 +742,6 @@ fn save_draft_cli(args: &[String]) -> Result<String, String> {
     ))
 }
 
-/// What is known of one item's details, for `details_settled`.
-struct DetailRead<'a> {
-    details: Option<&'a queue::Details>,
-    /// The entry's `updated_at` when its details were last asked for.
-    asked_at: Option<&'a str>,
-    busy: bool,
-    failed: bool,
-}
-
-/// Whether every item in the queue has details as new as the lists say, read
-/// without error. Before that, an item may sit in the wrong lane.
-fn details_settled<'a>(entries: &[queue::Entry], read: impl Fn(&str) -> DetailRead<'a>) -> bool {
-    entries
-        .iter()
-        .filter_map(|e| e.item.as_ref().map(|i| (i, e)))
-        .all(|(item, e)| {
-            let r = read(&queue::key_of(item));
-            // A list date the details never reach was asked for once: that counts.
-            let current = |d: &queue::Details| {
-                d.updated_at() >= e.updated_at.as_str() || r.asked_at == Some(e.updated_at.as_str())
-            };
-            !r.busy && !r.failed && r.details.is_some_and(current)
-        })
-}
-
 /// Whether to read an item's details: not yet asked at this date, or the last
 /// read failed. Once per inbox read at most (`tried_since_poll`): a failure
 /// isn't retried in a loop while offline, and new activity on an item waits
@@ -863,12 +837,6 @@ pub struct GitHub {
     /// When an item's last read started: it is read once per inbox read at most.
     tried_at: HashMap<String, Instant>,
     queue: queue::Queue,
-    activity: Option<Vec<pulse::Activity>>,
-    /// Why the last pulse read failed; cleared by one that works.
-    pulse_problem: Option<Problem>,
-    pulse_at: Option<Instant>,
-    pulse_busy: bool,
-    zero_days: Vec<String>,
     /// Profile pictures by lower-case login.
     avatars: HashMap<String, Avatar>,
     avatars_busy: bool,
@@ -947,11 +915,6 @@ impl GitHub {
             detail_problems: HashMap::new(),
             tried_at: HashMap::new(),
             queue: queue::Queue::default(),
-            activity: None,
-            pulse_problem: None,
-            pulse_at: None,
-            pulse_busy: false,
-            zero_days: queue::load_zero_days(),
             avatars: HashMap::new(),
             avatars_busy: false,
             poll_wake,
@@ -1142,7 +1105,6 @@ impl GitHub {
                 }
                 this.rebuild();
                 this.fetch_details(cx);
-                this.refresh_pulse(false, cx);
                 this.fetch_avatars(cx);
                 cx.notify();
                 // Only a person sets it: they asked, so it reads at once.
@@ -1264,22 +1226,6 @@ impl GitHub {
         self.fetching.contains(&queue::key_of(item))
     }
 
-    /// Why the last pulse read failed, once no read is running.
-    pub fn pulse_problem(&self) -> Option<&Problem> {
-        self.pulse_problem.as_ref().filter(|_| !self.pulse_busy)
-    }
-
-    /// The review activity inside the focus.
-    pub fn activity(&self) -> Option<Vec<pulse::Activity>> {
-        let acts = self.activity.as_ref()?;
-        Some(
-            acts.iter()
-                .filter(|a| in_focus(&a.repo, &self.settings.focus))
-                .cloned()
-                .collect(),
-        )
-    }
-
     pub fn focus(&self) -> &[String] {
         &self.settings.focus
     }
@@ -1311,10 +1257,6 @@ impl GitHub {
         self.rebuild();
         self.fetch_details(cx);
         cx.notify();
-    }
-
-    pub fn zero_days(&self) -> &[String] {
-        &self.zero_days
     }
 
     /// An island notice for a notification: its title, the line under it and
@@ -1368,7 +1310,7 @@ impl GitHub {
     }
 
     /// Everyone the tab can show: the user, the queue's authors, the people
-    /// of every item read, who waits in the pulse, and the agent's cards.
+    /// of every item read, and the agent's cards and board.
     fn shown_people(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         out.extend(self.me.clone());
@@ -1385,9 +1327,6 @@ impl GitHub {
         }));
         for d in self.details.values() {
             out.extend(avatars::people(d));
-        }
-        if let Some(acts) = &self.activity {
-            out.extend(acts.iter().map(|a| a.author.clone()));
         }
         out
     }
@@ -1472,26 +1411,6 @@ impl GitHub {
         let now = crate::model::unix_now();
         let me = self.me.clone().unwrap_or_default();
         self.queue = queue::build(&entries, &self.details, &me, queue::day_start(now, 0));
-        // Only a full read can say nothing waits; a failed search knows less,
-        // and so does an item whose details aren't read yet (an authored pull
-        // request with conflicts waits on you only once they are).
-        if self.loaded
-            && self.searched
-            && self.search_problem.is_none()
-            && self.me.is_some()
-            && self.queue.on_you == 0
-            && details_settled(&entries, |key| DetailRead {
-                details: self.details.get(key),
-                asked_at: self.asked_at.get(key).map(String::as_str),
-                busy: self.fetching.contains(key),
-                failed: self.detail_problems.contains_key(key),
-            })
-        {
-            let today = queue::day_key(now);
-            if !today.is_empty() && queue::record_zero_day(&mut self.zero_days, &today) {
-                queue::store_zero_days(&self.zero_days);
-            }
-        }
     }
 
     /// Reads, a few at a time, the pull requests and issues of the queue whose
@@ -1566,41 +1485,6 @@ impl GitHub {
                 }
                 this.rebuild();
                 this.fetch_details(cx);
-                this.fetch_avatars(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Reads the week's review activity, when it is older than `PULSE_EVERY`
-    /// or `force` says so.
-    pub fn refresh_pulse(&mut self, force: bool, cx: &mut Context<Self>) {
-        if Self::disabled()
-            || self.pulse_busy
-            || (!force && self.pulse_at.is_some_and(|t| t.elapsed() < PULSE_EVERY))
-        {
-            return;
-        }
-        self.pulse_busy = true;
-        let now = crate::model::unix_now();
-        // Two weeks back from this Monday: this week and the one before it.
-        let wday = crate::platform::local_time(now).map_or(0, |l| (l.wday + 6) % 7);
-        let since = queue::day_key(queue::day_start(now, wday + 7));
-        cx.spawn(async move |this, cx| {
-            let read = cx
-                .background_spawn(async move { pulse::fetch(&since) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.pulse_busy = false;
-                this.pulse_at = Some(Instant::now());
-                match read {
-                    Ok(acts) => {
-                        this.activity = Some(acts);
-                        this.pulse_problem = None;
-                    }
-                    Err(p) => this.pulse_problem = Some(p),
-                }
                 this.fetch_avatars(cx);
                 cx.notify();
             });
@@ -1829,77 +1713,6 @@ mod tests {
         assert_eq!(split_response(out), (None, &b"[]"[..]));
         // Without headers, all of it is the body.
         assert_eq!(split_response(b"[]"), (None, &b"[]"[..]));
-    }
-
-    #[test]
-    fn inbox_zero_waits_for_every_item_s_details() {
-        let item = pr::ItemRef {
-            repo: "o/r".into(),
-            number: 1,
-            kind: pr::ItemKind::Issue,
-        };
-        let entry = queue::Entry {
-            item: Some(item),
-            title: "t".into(),
-            author: String::new(),
-            updated_at: "2026-11-14T10:00:00Z".into(),
-            closed_at: String::new(),
-            state: "open".into(),
-            why: vec![queue::Why::Authored],
-            notification: None,
-        };
-        let at = |when: &str| {
-            queue::Details::Issue(Box::new(pr::Issue {
-                updated_at: when.into(),
-                ..Default::default()
-            }))
-        };
-        let (old, new) = (at("2026-11-13T00:00:00Z"), at("2026-11-14T10:00:00Z"));
-        let read = |details, asked_at, busy, failed| DetailRead {
-            details,
-            asked_at,
-            busy,
-            failed,
-        };
-        let entries = std::slice::from_ref(&entry);
-        assert!(!details_settled(entries, |_| read(
-            None, None, false, false
-        )));
-        assert!(!details_settled(entries, |_| read(None, None, true, false)));
-        assert!(!details_settled(entries, |_| read(
-            Some(&new),
-            None,
-            false,
-            true
-        )));
-        assert!(!details_settled(entries, |_| read(
-            Some(&old),
-            None,
-            false,
-            false
-        )));
-        assert!(details_settled(entries, |_| read(
-            Some(&new),
-            None,
-            false,
-            false
-        )));
-        // Details that never reach the list's date, asked for at that date.
-        let asked = Some("2026-11-14T10:00:00Z");
-        assert!(details_settled(entries, |_| read(
-            Some(&old),
-            asked,
-            false,
-            false
-        )));
-        // A notification about something else has no details to wait for.
-        let other = queue::Entry {
-            item: None,
-            ..entry.clone()
-        };
-        assert!(details_settled(&[other], |_| read(
-            None, None, false, false
-        )));
     }
 
     #[test]

@@ -1,0 +1,459 @@
+{
+ "at": "2026-11-17T03:00:34.614Z",
+ "verdict": {
+  "te_necesita": 0,
+  "pilot_lleva": 2,
+  "texto": "Nada te necesita · pilot lleva 2 PRs"
+ },
+ "prs": [
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 184,
+   "title": "feat(island): run the Dynamic Island on Windows",
+   "author": "daniektj",
+   "url": "https://github.com/ArakunHQ/arakun/pull/184",
+   "head": "1f1c513067f7c46f37ff0da9dd6700d1db8a56f7",
+   "branch": "pr/island-windows",
+   "base": "main",
+   "draft": false,
+   "va_encima_de": null,
+   "estado": "esperando",
+   "lo_tiene": {
+    "login": "daniektj",
+    "nombre": "Dani",
+    "tipo": "persona"
+   },
+   "siguiente": "Dani atiende los cambios que pediste",
+   "desde": "2026-11-17T02:51:49.378Z",
+   "ultimo_pilot": {
+    "texto": "Pidió cambios en tu nombre",
+    "at": "2026-11-17T02:51:49.321Z"
+   },
+   "que_pasa": "En Windows, Arakun ahora muestra la Dynamic Island: una ventana pequeña, siempre encima, arriba al centro de la pantalla principal. No roba el foco y los clics alrededor de su forma pasan a las ventanas de abajo. Arakun la arranca al abrirse, sigue visible después de cerrar Arakun, y un clic en ella vuelve a abrir Arakun. `arakun island …` y `island_demo` también funcionan en Windows. En Linux no cambia nada.",
+   "checks": {
+    "pasaron": 23,
+    "total": 23,
+    "corriendo": 0,
+    "fallando": []
+   },
+   "al_fusionar": null,
+   "decision": null,
+   "timeline": [
+    {
+     "at": "2026-11-17T02:58:44.000Z",
+     "tipo": "ci",
+     "texto": "Pasaron los 23 checks"
+    },
+    {
+     "at": "2026-11-17T02:51:49.321Z",
+     "texto": "Pidió cambios en tu nombre",
+     "tipo": "pilot"
+    },
+    {
+     "at": "2026-11-17T02:51:42.000Z",
+     "texto": "Pediste cambios",
+     "tipo": "revision"
+    },
+    {
+     "at": "2026-11-17T02:48:12.000Z",
+     "texto": "Dani lo marcó listo para revisión",
+     "tipo": "commit"
+    },
+    {
+     "at": "2026-11-17T02:37:27.000Z",
+     "texto": "CodeRabbit comentó",
+     "tipo": "revision"
+    },
+    {
+     "at": "2026-11-17T02:34:33.000Z",
+     "texto": "Dani subió 3 commits",
+     "tipo": "commit"
+    }
+   ]
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 185,
+   "title": "feat(island): show agents outside Arakun on the Windows island",
+   "author": "daniektj",
+   "url": "https://github.com/ArakunHQ/arakun/pull/185",
+   "head": "c8442986b622707724fc2b09ea4e19c813978409",
+   "branch": "pr/island-outside-agents",
+   "base": "pr/island-windows",
+   "draft": false,
+   "va_encima_de": 184,
+   "estado": "esperando",
+   "lo_tiene": {
+    "login": "daniektj",
+    "nombre": "Dani",
+    "tipo": "persona"
+   },
+   "siguiente": "Dani atiende los cambios que pidió CodeRabbit",
+   "desde": "2026-11-17T02:55:55.000Z",
+   "ultimo_pilot": {
+    "texto": "Aprobó en tu nombre",
+    "at": "2026-11-17T02:51:19.163Z"
+   },
+   "que_pasa": "En Windows, la isla ahora puede mostrar agentes que corren fuera de Arakun, como Claude Code en otra terminal o en un editor. Para eso se configuran sus hooks con `arakun island hook`. La sesión aparece en la lista mientras trabaja, y sale una tarjeta cuando pide permiso (\"Claude Code pide permiso · quiere usar Bash\"), cuando te necesita, cuando termina o cuando falla. También se puede avisar a mano desde cualquier agente con `arakun island session <id> <estado> [proyecto] [qué hace]`. En Linux y macOS no cambia nada.",
+   "checks": {
+    "pasaron": 22,
+    "total": 22,
+    "corriendo": 0,
+    "fallando": []
+   },
+   "al_fusionar": null,
+   "decision": null,
+   "timeline": [
+    {
+     "at": "2026-11-17T02:56:19.000Z",
+     "tipo": "ci",
+     "texto": "Pasaron los 22 checks"
+    },
+    {
+     "at": "2026-11-17T02:55:55.000Z",
+     "texto": "CodeRabbit pidió cambios",
+     "tipo": "revision"
+    },
+    {
+     "at": "2026-11-17T02:51:19.163Z",
+     "texto": "Aprobó en tu nombre",
+     "tipo": "pilot"
+    },
+    {
+     "at": "2026-11-17T02:51:00.000Z",
+     "texto": "Aprobaste",
+     "tipo": "revision"
+    },
+    {
+     "at": "2026-11-17T02:48:15.000Z",
+     "texto": "Dani lo marcó listo para revisión",
+     "tipo": "commit"
+    },
+    {
+     "at": "2026-11-17T02:38:33.000Z",
+     "texto": "CodeRabbit comentó",
+     "tipo": "revision"
+    },
+    {
+     "at": "2026-11-17T02:34:33.000Z",
+     "texto": "Dani subió 2 commits",
+     "tipo": "commit"
+    }
+   ]
+  }
+ ],
+ "hecho_hoy": [
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 182,
+   "title": "feat(agent): ask before installing an agent's adapter",
+   "merged_at": "2026-11-17T02:52:00Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 179,
+   "title": "feat: send crash reports and usage counts to posthog",
+   "merged_at": "2026-11-17T02:51:13Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 175,
+   "title": "fix(github): send comments with Enter and say why when they don't go",
+   "merged_at": "2026-11-17T02:49:48Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 183,
+   "title": "fix(github): read HTML lists, headings and block ends as markdown",
+   "merged_at": "2026-11-17T02:28:42Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 181,
+   "title": "fix(agent): save sessions and transcripts so only the owner can read them",
+   "merged_at": "2026-11-17T02:28:32Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 180,
+   "title": "fix(durable): keep the file name out of the temp-name error",
+   "merged_at": "2026-11-17T02:16:33Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 176,
+   "title": "fix(agent): leave the session id out of the save error",
+   "merged_at": "2026-11-17T01:56:07Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 173,
+   "title": "fix(server): retry a failed transcript save on every flush",
+   "merged_at": "2026-11-17T01:54:03Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 174,
+   "title": "fix(agent): say why codex sign-in, sign-out and connect can't run",
+   "merged_at": "2026-11-17T01:42:58Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 121,
+   "title": "feat(agent): give each part of the chat its own shape",
+   "merged_at": "2026-11-17T01:39:46Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 151,
+   "title": "fix(windows): copy the cef runtime next to arakun.exe",
+   "merged_at": "2026-11-17T01:39:09Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 120,
+   "title": "feat(ui): keep the amber for what needs you",
+   "merged_at": "2026-11-17T01:38:15Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 119,
+   "title": "feat(ui): make the center the only sheet and quiet the chrome",
+   "merged_at": "2026-11-17T01:38:14Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 148,
+   "title": "ci(relay): deploy the relay and the phone page from main",
+   "merged_at": "2026-11-17T01:13:49Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 160,
+   "title": "feat(agent): add OpenAI Codex as an agent",
+   "merged_at": "2026-11-17T01:08:28Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 170,
+   "title": "build(macos): bump the gpui fork to hand appkit the services menu",
+   "merged_at": "2026-11-17T00:58:57Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 161,
+   "title": "feat: reopen the window where it was left",
+   "merged_at": "2026-11-17T00:58:50Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 169,
+   "title": "fix(ci): require the CLA sentence alone and co-author signatures",
+   "merged_at": "2026-11-17T00:53:35Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 158,
+   "title": "feat(macos): add an edit menu, services and ctrl+cmd+f full screen",
+   "merged_at": "2026-11-17T00:51:10Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 149,
+   "title": "fix(github): poll the inbox at GitHub's X-Poll-Interval",
+   "merged_at": "2026-11-17T00:51:05Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 165,
+   "title": "docs: retake the readme screenshots in geist",
+   "merged_at": "2026-11-17T00:37:44Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 164,
+   "title": "feat: use geist and geist mono everywhere, as the brand book says",
+   "merged_at": "2026-11-17T00:36:31Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 157,
+   "title": "fix(macos): make minimize, zoom and cmd+m act on the window",
+   "merged_at": "2026-11-17T00:05:33Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 146,
+   "title": "fix(github): read the HTML in comments as markdown",
+   "merged_at": "2026-11-17T00:05:20Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 168,
+   "title": "fix(agent): draw the chat raccoon in paper fur on white",
+   "merged_at": "2026-11-17T00:05:08Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 159,
+   "title": "fix: show the right keys in shortcut hints",
+   "merged_at": "2026-11-17T00:04:57Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 163,
+   "title": "fix(shell): stop the crash on first launch with no projects",
+   "merged_at": "2026-11-17T00:04:44Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 153,
+   "title": "build(tools): add a script that takes product screenshots",
+   "merged_at": "2026-11-16T20:51:24Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 147,
+   "title": "fix(github): open a notice's pull request in the GitHub tab",
+   "merged_at": "2026-11-16T20:47:24Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 152,
+   "title": "feat: follow the brand book's black, white and amber look",
+   "merged_at": "2026-11-16T20:46:56Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 155,
+   "title": "build(server): match the aes-gcm and sha2 bumps",
+   "merged_at": "2026-11-16T20:33:01Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 141,
+   "title": "build: bump sha2 from 0.10.9 to 0.11.1",
+   "merged_at": "2026-11-16T19:45:29Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 140,
+   "title": "build: bump aes-gcm from 0.10.3 to 0.11.1",
+   "merged_at": "2026-11-16T19:42:44Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 145,
+   "title": "feat(agent): show CLIProxyAPI accounts' plan limits in the usage tab",
+   "merged_at": "2026-11-16T19:11:59Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 142,
+   "title": "build: bump x11rb from 0.13.2 to 0.14.0",
+   "merged_at": "2026-11-16T18:14:39Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 131,
+   "title": "feat(servers): follow a server's sessions from a Servers tab",
+   "merged_at": "2026-11-16T18:13:45Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 128,
+   "title": "feat(server): add arakun server to run sessions on a remote machine",
+   "merged_at": "2026-11-16T18:13:44Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 139,
+   "title": "ci: replace the cla assistant action with our own workflow",
+   "merged_at": "2026-11-16T18:09:25Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 127,
+   "title": "ci: tighten coderabbit approvals and add review instructions",
+   "merged_at": "2026-11-16T17:53:11Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 124,
+   "title": "feat(macos): size the app icon to the grid and add a Liquid Glass icon",
+   "merged_at": "2026-11-16T17:07:14Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 136,
+   "title": "docs: add branding, badges and grouped features to the readme",
+   "merged_at": "2026-11-16T17:00:53Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 137,
+   "title": "ci: run the windows clippy job on 4 cpus",
+   "merged_at": "2026-11-16T17:00:08Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 122,
+   "title": "ci: pin every action by SHA, drop checkout tokens and lint with zizmor",
+   "merged_at": "2026-11-16T16:51:54Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 138,
+   "title": "fix(ci): compare each run's memory peak with its own runner's memory",
+   "merged_at": "2026-11-16T16:51:31Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 135,
+   "title": "docs: keep pull request screenshots in the pr-assets repository",
+   "merged_at": "2026-11-16T16:51:14Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 125,
+   "title": "feat(agent): accept claude code on an api key or another endpoint",
+   "merged_at": "2026-11-16T16:49:38Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 134,
+   "title": "fix(cloudflare): fit the overview to narrow windows",
+   "merged_at": "2026-11-16T16:43:37Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 118,
+   "title": "fix: address the follow-ups from #66",
+   "merged_at": "2026-11-16T16:05:05Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 126,
+   "title": "ci: install the GPUI libraries the apt cache leaves out",
+   "merged_at": "2026-11-16T15:55:17Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 123,
+   "title": "docs(github): cover deps, platforms, UI and stacks in the pr template",
+   "merged_at": "2026-11-16T14:20:52Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 66,
+   "title": "feat(github): add a GitHub tab with a review queue and a pull request view",
+   "merged_at": "2026-11-16T06:27:33Z"
+  },
+  {
+   "repo": "ArakunHQ/arakun",
+   "number": 116,
+   "title": "fix(github): address #66's minor review notes and Windows test feedback",
+   "merged_at": "2026-11-16T06:13:00Z"
+  }
+ ]
+}

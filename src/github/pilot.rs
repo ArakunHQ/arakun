@@ -502,7 +502,7 @@ fn encode(s: &str) -> String {
 }
 
 /// What a status means. Never the token: errors only name the address.
-fn status_problem(status: u16) -> String {
+pub(super) fn status_problem(status: u16) -> String {
     match status {
         401 | 403 => "the Worker refused the key (check the token in client.json)".into(),
         _ => format!("the Worker answered {status}"),
@@ -552,6 +552,24 @@ fn post_json(
     } else {
         Err(write_problem(status, &bytes, admin))
     }
+}
+
+/// A read of `path` with the read token: the status and up to `limit` bytes.
+/// Never the token in an error: only the address.
+pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>), String> {
+    let mut res = agent()
+        .get(format!("{}{path}", cfg.url))
+        .header("Authorization", format!("Bearer {}", cfg.token))
+        .call()
+        .map_err(|e| format!("no pude llegar a {}: {e}", cfg.url))?;
+    let status = res.status().as_u16();
+    let bytes = res
+        .body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()
+        .map_err(|e| format!("el Worker cortó la respuesta: {e}"))?;
+    Ok((status, bytes))
 }
 
 /// Every item the Worker has open. It closes some on its own, so a read of
@@ -683,6 +701,10 @@ pub struct Pilot {
     fresh_book: bool,
     busy: bool,
     problem: Option<String>,
+    /// The last board read, kept while a later read fails.
+    board: Option<super::board::Board>,
+    /// Why the last board read failed; `Missing` while the Worker has none.
+    board_problem: Option<super::board::BoardProblem>,
     _poll: Task<()>,
 }
 
@@ -706,6 +728,8 @@ impl Pilot {
             book: book.unwrap_or_default(),
             busy: false,
             problem: None,
+            board: None,
+            board_problem: None,
             _poll: poll,
         }
     }
@@ -718,6 +742,16 @@ impl Pilot {
     /// Why the last read failed.
     pub fn problem(&self) -> Option<&str> {
         self.problem.as_deref()
+    }
+
+    /// The board, once read.
+    pub fn board(&self) -> Option<&super::board::Board> {
+        self.board.as_ref()
+    }
+
+    /// Why the last board read failed.
+    pub fn board_problem(&self) -> Option<&super::board::BoardProblem> {
+        self.board_problem.as_ref()
     }
 
     /// The cards to show: not handled, newest first.
@@ -755,26 +789,47 @@ impl Pilot {
             // Another Worker (or none) knows other items.
             self.items.clear();
             self.problem = None;
+            self.board = None;
+            self.board_problem = None;
             self.config = config.clone();
             cx.notify();
         }
-        let Some(cfg) = config else { return };
+        // A board file stands in for the Worker even without settings.
+        let fixture = std::env::var_os(super::board::FIXTURE_ENV).is_some();
+        if config.is_none() && !fixture {
+            return;
+        }
         self.busy = true;
         let untold = self.book.untold.clone();
         cx.spawn(async move |this, cx| {
-            let (told, read) = cx
+            let (told, read, board) = cx
                 .background_spawn(async move {
+                    let board = super::board::fetch(config.as_ref());
+                    let Some(cfg) = config else {
+                        return (Vec::new(), Ok(Vec::new()), board);
+                    };
                     let told: Vec<String> = untold
                         .into_iter()
                         .filter(|id| tell_done(&cfg, id).is_ok())
                         .collect();
-                    (told, fetch(&cfg))
+                    (told, fetch(&cfg), board)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 for id in &told {
                     this.book.told(id);
+                }
+                match board {
+                    Ok(b) => {
+                        this.board = Some(b);
+                        this.board_problem = None;
+                    }
+                    Err(super::board::BoardProblem::Missing) => {
+                        this.board = None;
+                        this.board_problem = Some(super::board::BoardProblem::Missing);
+                    }
+                    Err(e) => this.board_problem = Some(e),
                 }
                 match read {
                     Ok(read) => {

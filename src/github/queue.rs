@@ -412,12 +412,12 @@ impl Group {
 
     pub fn label(self) -> &'static str {
         match self {
-            Group::NeedsReview => "Needs your review",
-            Group::Mentions => "Mentions",
-            Group::Yours => "Your pull requests",
-            Group::Ready => "Ready to merge",
-            Group::Other => "Other",
-            Group::Done => "Done today",
+            Group::NeedsReview => "Te piden revisión",
+            Group::Mentions => "Te mencionan",
+            Group::Yours => "Tus PRs",
+            Group::Ready => "Listo para fusionar",
+            Group::Other => "Otros",
+            Group::Done => "Hecho hoy",
         }
     }
 }
@@ -463,17 +463,6 @@ pub struct Placed {
     pub changes: Option<(u32, u32)>,
     /// How a pull request's checks stand, when it has any.
     pub checks: Option<pr::CheckState>,
-}
-
-/// `+9.2k`: changes counted short.
-pub fn short_count(n: u32) -> String {
-    if n >= 10_000 {
-        format!("{}k", n / 1000)
-    } else if n >= 1000 {
-        format!("{:.1}k", n as f32 / 1000.)
-    } else {
-        n.to_string()
-    }
 }
 
 fn closed_since(at: &str, day_start: u64) -> bool {
@@ -838,10 +827,6 @@ impl Queue {
         self.rows.iter().filter(move |(_, p)| p.group == g)
     }
 
-    pub fn count(&self, g: Group) -> usize {
-        self.group(g).count()
-    }
-
     /// Rows in the order they show, the done ones last.
     pub fn tracked(&self) -> usize {
         self.rows.len()
@@ -888,61 +873,6 @@ pub fn build(
         })
     });
     q
-}
-
-// ---------------------------------------------------------------------------
-// Inbox-zero streak
-
-/// The days (`2026-11-14`, local) the "on you" count reached zero, kept in
-/// `github-streak.json` next to `github.json`.
-fn streak_file() -> std::path::PathBuf {
-    super::file().with_file_name("github-streak.json")
-}
-
-pub fn load_zero_days() -> Vec<String> {
-    std::fs::read(streak_file())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
-}
-
-/// How many zero days `github-streak.json` keeps.
-pub const KEPT_DAYS: usize = 60;
-
-/// The local days back from `now`, today first, as many as are kept: a
-/// streak can be as long as the history, not only the days on the chart.
-pub fn recent_days(now: u64) -> Vec<String> {
-    (0..=KEPT_DAYS as i32)
-        .map(|i| day_key(day_start(now, i) + 3600))
-        .collect()
-}
-
-/// Adds `day` when it isn't there yet; keeps the last `KEPT_DAYS` days.
-pub fn record_zero_day(days: &mut Vec<String>, day: &str) -> bool {
-    if days.iter().any(|d| d == day) {
-        return false;
-    }
-    days.push(day.to_string());
-    days.sort();
-    let extra = days.len().saturating_sub(KEPT_DAYS);
-    days.drain(..extra);
-    true
-}
-
-pub fn store_zero_days(days: &[String]) {
-    let path = streak_file();
-    if let Err(e) = crate::durable::write(&path, &serde_json::to_vec(days).unwrap_or_default()) {
-        eprintln!("arakun: could not save {}: {e}", path.display());
-    }
-}
-
-/// How many days in a row reached zero, counting back from `recent[0]`
-/// (today). Today not reached yet doesn't break a streak that held until
-/// yesterday. `recent` is today first, then each day before.
-pub fn streak(days: &[String], recent: &[String]) -> usize {
-    let has = |d: &String| days.contains(d);
-    let start = usize::from(recent.first().is_some_and(|d| !has(d)));
-    recent.iter().skip(start).take_while(|d| has(d)).count()
 }
 
 /// The local day of unix time `t`, as `2026-11-14`.
@@ -1280,46 +1210,7 @@ mod tests {
             .collect();
         // Waiting longest first within a group.
         assert_eq!(order, [9, 1, 3, 2]);
-        assert_eq!(q.count(Group::NeedsReview), 2);
-    }
-
-    #[test]
-    fn the_streak_counts_days_in_a_row() {
-        let days: Vec<String> = ["2026-11-10", "2026-11-12", "2026-11-13"]
-            .map(String::from)
-            .to_vec();
-        let recent: Vec<String> = ["2026-11-14", "2026-11-13", "2026-11-12", "2026-11-11"]
-            .map(String::from)
-            .to_vec();
-        // Today not reached yet: the streak up to yesterday still holds.
-        assert_eq!(streak(&days, &recent), 2);
-        let mut with_today = days.clone();
-        assert!(record_zero_day(&mut with_today, "2026-11-14"));
-        assert!(!record_zero_day(&mut with_today, "2026-11-14"));
-        assert_eq!(streak(&with_today, &recent), 3);
-        assert_eq!(streak(&[], &recent), 0);
-        let mut many: Vec<String> = (0..70).map(|i| format!("2026-01-{i:02}")).collect();
-        record_zero_day(&mut many, "2026-12-01");
-        assert_eq!(many.len(), KEPT_DAYS);
-        assert_eq!(many.last().map(String::as_str), Some("2026-12-01"));
-    }
-
-    #[test]
-    fn the_streak_goes_past_the_chart() {
-        let now = DAY + 12 * 3600;
-        let recent = recent_days(now);
-        assert_eq!(recent.len(), KEPT_DAYS + 1);
-        assert_eq!(recent[0], day_key(now));
-        // Ten days in a row, today included: more than the seven on the chart.
-        let days: Vec<String> = recent[..10].to_vec();
-        assert_eq!(streak(&days, &recent), 10);
-    }
-
-    #[test]
-    fn counts_read_short() {
-        assert_eq!(short_count(487), "487");
-        assert_eq!(short_count(9_200), "9.2k");
-        assert_eq!(short_count(12_345), "12k");
+        assert_eq!(q.group(Group::NeedsReview).count(), 2);
     }
 
     #[test]

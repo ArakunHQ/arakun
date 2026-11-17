@@ -209,6 +209,10 @@ impl GitHubView {
                 } else if let Some(line) = self.answered_line(b) {
                     top = top.child(line);
                 }
+                // pilot's cards about this pull request, above the timeline.
+                if let Some(cards) = item.as_ref().and_then(|i| self.render_from_pilot(i, cx)) {
+                    top = top.child(cards);
+                }
             }
             (None, Some(d)) => {
                 let props = match d {

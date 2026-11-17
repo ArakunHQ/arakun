@@ -179,7 +179,10 @@ terminal-only. The status line and keybindings from your settings don't apply in
   question: answer it on pilot's card in the queue. On your own pull requests, "Ask pilot" in the sheet sends what you
   typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
   While the Worker has no board, its cards show at the top of the queue under "Your
-  agent", with approve and request changes going through the same second click. What you saw and dealt with is
+  agent". With a board, a card about a pull request the board follows shows under
+  "From pilot" in that pull request's sheet, and the rest in a "From pilot" group at the
+  top of the queue. "Looks good" approves the commit pilot read, and both it and
+  request changes go through the same second click. What you saw and dealt with is
   kept in `pilot.json` next to the state. Ctrl+K "Send to the cloud agent…" (or type
   `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
   or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`

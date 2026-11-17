@@ -50,13 +50,14 @@ impl Shell {
     pub(super) fn github_badge(&self, cx: &App) -> Option<(usize, bool)> {
         let g = self.github.read(cx);
         let p = self.pilot.read(cx);
-        // With pilot's board, what it says needs the user plus what waits
-        // on the user where pilot doesn't look. Its cards are the board's
-        // questions, so they don't count twice, and the rest don't show in
-        // the tab, so they don't make the badge urgent either.
+        // With pilot's board, what it says needs the user, what waits on the
+        // user where pilot doesn't look, and the cards that aren't one of its
+        // questions (those are in `te_necesita` already). The cards show in
+        // the tab, so they make it urgent as they did before the board.
         if let Some(b) = p.board() {
-            let n = github::board::needs_you(b, g.queue());
-            let urgent = b.verdict.te_necesita > 0 || g.wants_attention();
+            let n =
+                github::board::needs_you(b, g.queue()) + github::board::extra_cards(b, p.shown());
+            let urgent = b.verdict.te_necesita > 0 || g.wants_attention() || p.urgent();
             return (n > 0).then_some((n, urgent));
         }
         let on_you = g.on_you() + p.count();
@@ -92,13 +93,6 @@ impl Shell {
         if self.watching_github(window) {
             return;
         }
-        let new: Vec<pilot::Item> = github::board::noticed(self.pilot.read(cx).board(), new)
-            .into_iter()
-            .cloned()
-            .collect();
-        if new.is_empty() {
-            return;
-        }
         if new.len() > NOTICES_AT_ONCE {
             self.notify_from(
                 AlertKind::Info,
@@ -111,7 +105,7 @@ impl Shell {
             );
             return;
         }
-        for item in &new {
+        for item in new {
             let (title, text) = item.notice();
             let image = self
                 .github

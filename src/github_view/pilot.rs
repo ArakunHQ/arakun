@@ -1,6 +1,8 @@
 //! "Your agent": the cards arakun-pilot leaves (`crate::github::pilot`), at the
-//! top of the queue. Their text is Spanish like the items, and every write to
-//! GitHub goes through the tab's own confirm strip, as the user, with `gh`.
+//! top of the queue. With a board, a card shows in the sheet of the pull
+//! request it is about ("From pilot"), or in the Bandeja's own group when the
+//! board doesn't follow that pull request. Every write to GitHub goes through
+//! the tab's own confirm strip, as the user, with `gh`.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -11,6 +13,7 @@ use gpui::{
 
 use super::{Confirm, GitHubView, NEWLINE, Note, Tab};
 use crate::github::Problem;
+use crate::github::board::{self, CardPlace};
 use crate::github::pilot::{self, Answer, Item, Kind, Opcion, Riesgo};
 use crate::github::pr::{self, ItemRef, Verdict};
 use crate::theme;
@@ -116,18 +119,26 @@ fn quote(color: Hsla, text: impl Into<gpui::SharedString>, strong: bool) -> gpui
 
 impl GitHubView {
     /// The section's heading and its cards; nothing when no card waits.
+    /// With a board, only the cards no sheet shows: "From pilot".
     pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = self.pilot.read(cx);
-        // The focus menu's promise: what it leaves out doesn't show.
-        let focus = self.github.read(cx).focus();
-        let items: Vec<Item> = p.shown_in(focus).cloned().collect();
+        let board = p.board();
+        let items: Vec<Item> = p
+            .shown()
+            .filter(|c| board.is_none_or(|b| board::card_place(b, c) == CardPlace::Loose))
+            .cloned()
+            .collect();
         let problem = p.problem().map(str::to_string);
         let sent = self.pilot_sent.as_ref().map(|(t, _)| t.clone());
         if items.is_empty() && problem.is_none() && sent.is_none() {
             return Vec::new();
         }
-        let mut out =
-            vec![super::queue::group_header("Your agent", items.len()).into_any_element()];
+        let label = if board.is_some() {
+            "From pilot"
+        } else {
+            "Your agent"
+        };
+        let mut out = vec![super::queue::group_header(label, items.len()).into_any_element()];
         // The answered card is gone; this says where the answer went.
         if let Some(text) = sent {
             out.push(
@@ -174,6 +185,39 @@ impl GitHubView {
             out.push(self.render_pilot_card(ix, item, cx));
         }
         out
+    }
+
+    /// "From pilot" in the sheet of a pull request the board follows: its
+    /// briefs and fixed or failed cards, with their own actions ("Looks good"
+    /// approves the commit pilot read). None without a board or a card.
+    pub(super) fn render_from_pilot(
+        &self,
+        pr: &ItemRef,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let p = self.pilot.read(cx);
+        let b = p.board()?;
+        let key = crate::github::queue::key_of(pr);
+        let cards: Vec<Item> = p
+            .shown()
+            .filter(|c| board::card_place(b, c) == CardPlace::Sheet)
+            .filter(|c| {
+                c.item_ref()
+                    .is_some_and(|r| crate::github::queue::key_of(&r) == key)
+            })
+            .cloned()
+            .collect();
+        if cards.is_empty() {
+            return None;
+        }
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .child(super::queue::group_header("From pilot", cards.len()));
+        for (ix, card) in cards.iter().enumerate() {
+            col = col.child(self.render_pilot_card(ix, card, cx));
+        }
+        Some(col.into_any_element())
     }
 
     fn render_pilot_card(&self, ix: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {

@@ -410,16 +410,34 @@ pub fn needs_you(b: &Board, q: &super::queue::Queue) -> usize {
     b.verdict.te_necesita as usize + elsewhere
 }
 
-/// The new cards worth a notice. With a board the tab shows no cards, only
-/// the board's questions, so only a card that is one of them gets a notice:
-/// the others would point at nothing the user can find.
-pub fn noticed<'a>(
-    b: Option<&Board>,
-    new: &'a [super::pilot::Item],
-) -> Vec<&'a super::pilot::Item> {
-    new.iter()
-        .filter(|i| b.is_none_or(|b| b.find_decision(&i.id).is_some()))
-        .collect()
+/// Where one of pilot's cards shows when there is a board.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardPlace {
+    /// It is the board's question on a pull request: the sheet asks it.
+    Question,
+    /// Its pull request is on the board: "From pilot" in that sheet.
+    Sheet,
+    /// The board doesn't follow its pull request, or it names none: the
+    /// Bandeja's own "From pilot" group.
+    Loose,
+}
+
+pub fn card_place(b: &Board, card: &super::pilot::Item) -> CardPlace {
+    if b.find_decision(&card.id).is_some() {
+        return CardPlace::Question;
+    }
+    match card.item_ref() {
+        Some(i) if b.find(&i.repo, i.number).is_some() => CardPlace::Sheet,
+        _ => CardPlace::Loose,
+    }
+}
+
+/// The cards that wait on top of what the board counts: every one but its
+/// questions, which `te_necesita` already has.
+pub fn extra_cards<'a>(b: &Board, cards: impl Iterator<Item = &'a super::pilot::Item>) -> usize {
+    cards
+        .filter(|c| card_place(b, c) != CardPlace::Question)
+        .count()
 }
 
 /// What `GET /board` answered, cleaned: options without an id or words go,
@@ -663,16 +681,22 @@ mod tests {
     }
 
     #[test]
-    fn with_a_board_only_its_questions_get_a_notice() {
+    fn every_card_has_a_place_with_a_board() {
         use super::super::pilot::{Item, Kind};
-        let card = |id: &str, kind: Kind| Item {
+        let card = |id: &str, kind: Kind, repo: &str, number: u64| Item {
             id: id.into(),
             kind,
+            repo: repo.into(),
+            number,
             ..Item::default()
         };
-        let new = [card("q1", Kind::NeedsYou), card("b1", Kind::Brief)];
         let b = Board {
+            verdict: Verdict {
+                te_necesita: 1,
+                ..Verdict::default()
+            },
             prs: vec![BoardPr {
+                repo: "o/r".into(),
                 number: 7,
                 decision: Some(Decision {
                     item: "q1".into(),
@@ -682,10 +706,27 @@ mod tests {
             }],
             ..Board::default()
         };
-        let ids = |v: Vec<&Item>| v.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
-        assert_eq!(ids(noticed(Some(&b), &new)), ["q1"]);
-        // Without a board the tab shows every card.
-        assert_eq!(ids(noticed(None, &new)), ["q1", "b1"]);
+        let cards = [
+            // The board's own question: the sheet asks it.
+            card("q1", Kind::NeedsYou, "o/r", 7),
+            // A brief on a pull request the board follows: in its sheet.
+            card("b1", Kind::Brief, "O/R", 7),
+            // A fix elsewhere, and a failure about no pull request.
+            card("f1", Kind::Fixed, "x/y", 3),
+            card("e1", Kind::Failed, "", 0),
+        ];
+        let places: Vec<CardPlace> = cards.iter().map(|c| card_place(&b, c)).collect();
+        assert_eq!(
+            places,
+            [
+                CardPlace::Question,
+                CardPlace::Sheet,
+                CardPlace::Loose,
+                CardPlace::Loose
+            ]
+        );
+        // The question is already in te_necesita; the rest add to it.
+        assert_eq!(extra_cards(&b, cards.iter()), 3);
     }
 
     #[test]

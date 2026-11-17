@@ -366,15 +366,15 @@ impl GitHubView {
         let problems = self.render_problems(cx);
         let has_problems = !problems.is_empty();
         list = list.children(problems);
-        // Without a board, pilot's cards still say what it left.
-        if self.board(cx).is_none() {
-            let cards = self.pilot_section(cx);
-            if !cards.is_empty() {
-                list = list.child(div().flex().flex_col().children(cards));
-            }
+        // pilot's cards: all of them without a board; with one, those no
+        // sheet shows ("From pilot").
+        let cards = self.pilot_section(cx);
+        let has_cards = !cards.is_empty();
+        if has_cards {
+            list = list.child(div().flex().flex_col().children(cards));
         }
         let mut ix = 0;
-        let empty = sections.is_empty();
+        let empty = sections.is_empty() && !has_cards;
         for s in sections {
             list = list.child(self.render_section(s, &mut ix, picked.as_deref(), cx));
         }

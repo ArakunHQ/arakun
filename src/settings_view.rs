@@ -2382,7 +2382,7 @@ fn label_block(title: impl Into<SharedString>, hint: impl Into<SharedString>) ->
 /// asked should know where they come from.
 fn no_sign_in_row(agent: AgentKind) -> AnyElement {
     row(
-        "No separate sign-in",
+        "No Arakun account",
         crate::agent::cli_login::notice(agent),
         div().into_any_element(),
     )

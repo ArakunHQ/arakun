@@ -17,7 +17,7 @@ use anyhow::{Result, bail};
 use super::AgentKind;
 
 /// The one line under the Usage tab's plan limits.
-pub const USAGE_NOTE: &str = "Read with the sign-ins your agent CLIs already have, so Arakun never asks you to sign in. It only reads them, sends each one only to its own provider, and never saves or changes them.";
+pub const USAGE_NOTE: &str = "Read with the sign-ins your agent CLIs already have: Arakun has no account of its own and never asks you to approve access. It only reads them, sends each one only to its own provider, and never changes them. A Factory API key you connect instead is kept in the system keyring.";
 
 /// The hosts a CLI's sign-in may be sent to.
 pub fn hosts(agent: AgentKind) -> &'static [&'static str] {
@@ -49,20 +49,22 @@ pub fn check(agent: AgentKind, url: &str) -> Result<()> {
     )
 }
 
-/// Why there is no sign-in prompt, for the agent's section in Settings.
+/// Why there is no Arakun account or consent screen, for the agent's section
+/// in Settings. It sits under the section's Sign in or Connect button, so it
+/// says what that button runs.
 pub fn notice(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::Claude => {
-            "Arakun has no sign-in of its own, so it never asks you to sign in or approve access. It uses the one Claude Code already has. It only reads it, sends it only to api.anthropic.com, and never saves or changes it."
+            "Arakun has no account of its own and never asks you to approve access. Sign in runs Claude Code's own login. Arakun only reads what Claude Code saves, sends it only to api.anthropic.com, and never changes it."
         }
         AgentKind::Codex => {
-            "Arakun has no sign-in of its own, so it never asks you to sign in or approve access. Codex runs on the sign-in the codex CLI already has. Arakun only checks which kind it is and never reads the tokens."
+            "Arakun has no account of its own and never asks you to approve access. Sign in runs the codex CLI's own login. Arakun only checks which kind of sign-in Codex has and never reads the tokens."
         }
         AgentKind::Droid => {
-            "Arakun has no sign-in of its own, so it never asks you to sign in or approve access. It uses the login droid already has. It only reads it, sends it only to api.factory.ai, and never saves or changes it. droid renews it itself."
+            "Arakun has no account of its own and never asks you to approve access. It reads the login droid already has and never changes it; droid renews it itself. A Factory API key you connect here, or FACTORY_API_KEY, is used instead; a connected key is kept in the system keyring. Either one goes only to api.factory.ai."
         }
         AgentKind::OpenCode | AgentKind::WorkersAi => {
-            "Arakun has no sign-in of its own, so it never asks you to sign in or approve access. It uses the keys OpenCode already has. It only reads them, sends the Go key only to opencode.ai and the Workers AI key only to api.cloudflare.com, and never saves or changes them."
+            "Arakun has no account of its own and never asks you to approve access. Sign in and Connect run OpenCode's own login. Arakun only reads the keys OpenCode saves, sends the Go key only to opencode.ai and the Workers AI key only to api.cloudflare.com, and never changes them."
         }
     }
 }
@@ -123,5 +125,8 @@ mod tests {
             }
         }
         assert!(notice(AgentKind::Codex).contains("never reads the tokens"));
+        // Droid can run on a key Arakun keeps, not only on droid's login.
+        assert!(notice(AgentKind::Droid).contains("keyring"));
+        assert!(USAGE_NOTE.contains("keyring"));
     }
 }

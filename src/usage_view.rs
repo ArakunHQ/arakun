@@ -1780,7 +1780,7 @@ impl UsageView {
                         div()
                             .text_size(px(ui::TEXT_XS))
                             .line_height(px(15.))
-                            .text_color(theme::text_faint())
+                            .text_color(theme::text_subtle())
                             .child(crate::agent::cli_login::USAGE_NOTE),
                     ),
             )

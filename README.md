@@ -712,7 +712,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
   a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
   (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
-  agent. On a cloud task card (`cloud: <task>`), `Enter` sends it, `Tab` switches
+  agent. On a cloud task card (`nube: <task>`), `Enter` sends it, `Tab` switches
   between the open pull request and a new branch (only when there is a pull request),
   and `Esc` cancels. A question offers a short answer from Claude Haiku through Claude Code, on
   your Claude account or the key or endpoint Claude Code is set up with: `Enter` on the offer asks, and nothing is sent
@@ -732,9 +732,10 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   recalls earlier prompts; paste or drop images to attach them
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
-  GitHub; `Enter` sends a comment, `/` in the comment box lists the actions. In
-  a narrow window the keys move through the list and `Enter` opens the item; `Esc`
-  goes back to the list
+  GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an
+  island notice opened over another tab too). While the sheet is closed, `J` / `K`
+  only move through the list; while it is open, they open the next item. In the
+  comment box, `Enter` sends the comment and `/` lists the actions
 
 ## Contributing
 

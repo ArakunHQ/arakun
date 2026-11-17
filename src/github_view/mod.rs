@@ -659,8 +659,6 @@ impl GitHubView {
             } else {
                 Tab::Timeline
             };
-        } else {
-            self.settle_tab(cx);
             self.confirm = None;
             self.pilot_act = None;
             self.editing_draft = false;
@@ -669,6 +667,8 @@ impl GitHubView {
             self.unfolded_lines.clear();
             self.expanded.clear();
             self.body_scroll = ScrollHandle::new();
+        } else {
+            self.settle_tab(cx);
         }
         if let Some(item) = self.item() {
             let known = self.github.read(cx).details(&item).is_some();

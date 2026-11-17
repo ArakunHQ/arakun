@@ -51,8 +51,9 @@ pub(super) struct MarketState {
     pub(super) selected: Option<String>,
     pub(super) sort: Sort,
     pub(super) rows: Rows,
-    /// What the rows were laid out for, and how many there were.
-    rows_for: std::cell::RefCell<Option<(RowsKey, usize)>>,
+    /// What the rows were laid out for, how many there were, and whether the
+    /// top row (notes, the needs-you banner) was one of them.
+    rows_for: std::cell::RefCell<Option<(RowsKey, usize, bool)>>,
     pub(super) last_width: std::cell::Cell<f32>,
     pub(super) check_pending: std::cell::Cell<bool>,
 }
@@ -647,9 +648,9 @@ impl ExtensionsView {
                     query,
                     per,
                     featured,
-                    top,
                 },
                 rows.len(),
+                top,
             );
             let rows = Rc::new(rows);
             list(
@@ -681,19 +682,14 @@ impl ExtensionsView {
             .children(detail)
     }
 
-    /// Keeps the list's rows in step: a new filter starts over at the top, and
-    /// "Load more" only adds lines below.
-    fn sync_rows(&self, key: RowsKey, total: usize) {
-        let mut last = self.ms.rows_for.borrow_mut();
-        match last.as_ref() {
-            Some((k, n)) if *k == key && *n == total => {}
-            Some((k, n)) if *k == key => {
-                let keep = (*n).min(total).saturating_sub(1);
-                self.ms.rows.0.splice(keep..*n, total - keep);
-            }
-            _ => self.ms.rows.0.reset(total),
-        }
-        *last = Some((key, total));
+    fn sync_rows(&self, key: RowsKey, total: usize, top: bool) {
+        sync_rows(
+            &self.ms.rows.0,
+            &mut self.ms.rows_for.borrow_mut(),
+            key,
+            total,
+            top,
+        );
     }
 
     fn render_market_row(
@@ -1498,7 +1494,38 @@ pub(super) struct RowsKey {
     query: String,
     per: usize,
     featured: usize,
+}
+
+/// Keeps the list's rows in step: a new filter starts over at the top. The top
+/// row coming or going (a notice after Install, the banner) and "Load more"
+/// only splice, so the list keeps its place.
+fn sync_rows(
+    list: &ListState,
+    last: &mut Option<(RowsKey, usize, bool)>,
+    key: RowsKey,
+    total: usize,
     top: bool,
+) {
+    match last.as_ref() {
+        Some((k, n, had_top)) if *k == key => {
+            let mut n = *n;
+            if *had_top != top {
+                if top {
+                    list.splice(0..0, 1);
+                    n += 1;
+                } else {
+                    list.splice(0..1, 0);
+                    n -= 1;
+                }
+            }
+            if n != total {
+                let keep = n.min(total).saturating_sub(1);
+                list.splice(keep..n, total - keep);
+            }
+        }
+        _ => list.reset(total),
+    }
+    *last = Some((key, total, top));
 }
 
 /// Discover's list, its rows of different heights laid out only when in view.
@@ -1929,5 +1956,67 @@ fn category_color(c: &str) -> u32 {
         "deployment" => CAT_CYAN,
         "design" => theme::CATEGORY[6],
         _ => CAT_SAND,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(query: &str) -> RowsKey {
+        RowsKey {
+            plugins: true,
+            category: None,
+            everything: false,
+            by_name: false,
+            query: query.to_string(),
+            per: 2,
+            featured: 2,
+        }
+    }
+
+    /// The list scrolled to row `ix`, its rows synced once.
+    fn scrolled(total: usize, top: bool, ix: usize) -> (ListState, Option<(RowsKey, usize, bool)>) {
+        let list = ListState::new(0, ListAlignment::Top, px(400.));
+        let mut last = None;
+        sync_rows(&list, &mut last, key(""), total, top);
+        list.scroll_to(ListOffset {
+            item_ix: ix,
+            offset_in_item: px(30.),
+        });
+        (list, last)
+    }
+
+    #[test]
+    fn a_notice_appearing_keeps_the_place() {
+        // Install on a card further down clears the notice, then sets one.
+        let (list, mut last) = scrolled(12, false, 7);
+        sync_rows(&list, &mut last, key(""), 13, true);
+        assert_eq!(list.item_count(), 13);
+        assert_eq!(
+            list.logical_scroll_top().item_ix,
+            8,
+            "same card, one row lower"
+        );
+        assert_eq!(list.logical_scroll_top().offset_in_item, px(30.));
+        sync_rows(&list, &mut last, key(""), 12, false);
+        assert_eq!(list.item_count(), 12);
+        assert_eq!(list.logical_scroll_top().item_ix, 7);
+    }
+
+    #[test]
+    fn load_more_keeps_the_place() {
+        let (list, mut last) = scrolled(10, true, 6);
+        sync_rows(&list, &mut last, key(""), 15, true);
+        assert_eq!(list.item_count(), 15);
+        assert_eq!(list.logical_scroll_top().item_ix, 6);
+    }
+
+    #[test]
+    fn a_new_search_starts_at_the_top() {
+        let (list, mut last) = scrolled(10, false, 6);
+        sync_rows(&list, &mut last, key("github"), 4, false);
+        assert_eq!(list.item_count(), 4);
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
     }
 }

@@ -1,8 +1,10 @@
-//! The Extensions tab: what the agents load in the visible environment. For
-//! Claude Code, its MCP servers with their health and scope, plugins (with a
-//! switch), skills and permission rules (`agent::claude_ext`); for Droid, its
-//! plugins (Claude SEO with an install button), MCP servers and skills, each
-//! with a switch (`agent::extensions`, `agent::plugins`).
+//! The Marketplace tab. Discover lists the plugins and MCP servers there are to
+//! add (`market`). Installed shows what the agents load in the visible
+//! environment. For Claude Code, that is its MCP servers with their health and
+//! scope, plugins (with a switch), skills and permission rules
+//! (`agent::claude_ext`). For Droid, it is its plugins (Claude SEO with an
+//! install button), MCP servers and skills, each with a switch
+//! (`agent::extensions`, `agent::plugins`).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -54,7 +56,6 @@ enum Which {
 /// What the page lists.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
-    All,
     Servers,
     Plugins,
     Skills,
@@ -226,7 +227,7 @@ impl EventEmitter<ExtensionsEvent> for ExtensionsView {}
 
 impl ExtensionsView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| TextInput::new("Filter servers, plugins, skills and rules…", cx));
+        let query = cx.new(|cx| TextInput::new("Search plugins and MCP servers…", cx));
         let sub = cx.subscribe(&query, |this, input, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => {
                 this.query_changed(cx);
@@ -261,7 +262,7 @@ impl ExtensionsView {
         Self {
             cwd: None,
             which: Which::Claude,
-            kind: Kind::All,
+            kind: Kind::Marketplace,
             market: Market::Plugins,
             ms: MarketState::default(),
             query,
@@ -329,6 +330,9 @@ impl ExtensionsView {
                 self.load_droid(cx)
             }
             _ => {}
+        }
+        if self.which == Which::Claude && self.kind == Kind::Marketplace {
+            self.open_market(cx);
         }
     }
 
@@ -680,7 +684,7 @@ impl ExtensionsView {
         };
         let filtering = !words.is_empty();
         let kind = self.kind;
-        let wants = |k: Kind| kind == Kind::All || kind == k;
+        let wants = |k: Kind| kind == k;
         let mut body = div().flex().flex_col().gap(crate::ui::sp(28.));
         if !x.cli {
             body = body.child(note(
@@ -689,9 +693,6 @@ impl ExtensionsView {
             ));
         }
 
-        if kind == Kind::All && !filtering {
-            body = body.child(self.render_overview(x));
-        }
         if wants(Kind::Servers) && !filtering {
             body = body.children(self.render_attention(x, cx));
         }
@@ -1270,74 +1271,6 @@ impl ExtensionsView {
         ))
     }
 
-    /// Big numbers at the top: what works and what doesn't.
-    fn render_overview(&self, x: &ClaudeExtensions) -> Div {
-        let mine: Vec<&Server> = x.servers.iter().filter(|s| !s.unused_connector()).collect();
-        let connected = mine
-            .iter()
-            .filter(|s| s.health == Health::Connected)
-            .count();
-        let problems = x.problems();
-        let on = x.plugins.iter().filter(|p| p.enabled).count();
-        let rules = x.permissions.rules.len();
-        let pct = if mine.is_empty() {
-            0.
-        } else {
-            connected as f32 * 100. / mine.len() as f32
-        };
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(crate::ui::sp(12.))
-            .child(kpi(
-                "link01",
-                "MCP servers",
-                format!("{connected}/{}", mine.len()),
-                "connected".into(),
-                if problems > 0 {
-                    Tone::Warning
-                } else {
-                    Tone::Success
-                },
-                Some(pct),
-            ))
-            .child(kpi(
-                "alert-circle",
-                "Needs you",
-                problems.to_string(),
-                if problems == 0 {
-                    "all good".into()
-                } else {
-                    "to fix below".into()
-                },
-                if problems > 0 {
-                    Tone::Danger
-                } else {
-                    Tone::Success
-                },
-                None,
-            ))
-            .child(kpi(
-                "cube",
-                "Plugins",
-                format!("{on}/{}", x.plugins.len()),
-                "turned on".into(),
-                Tone::Info,
-                None,
-            ))
-            .child(kpi(
-                "sparkles",
-                "Skills",
-                x.skills.len().to_string(),
-                format!(
-                    "{rules} permission rule{}",
-                    if rules == 1 { "" } else { "s" }
-                ),
-                Tone::Accent,
-                None,
-            ))
-    }
-
     /// Popular servers you don't have yet, one click away.
     fn render_discover(
         &self,
@@ -1753,7 +1686,7 @@ impl ExtensionsView {
             words.iter().all(|w| hay.contains(w.as_str()))
         };
         let kind = self.kind;
-        let wants = |k: Kind| kind == Kind::All || kind == k;
+        let wants = |k: Kind| kind == k;
         let mut body = div().flex().flex_col().gap(crate::ui::sp(28.));
         if let Some(e) = &self.droid_error {
             body = body.child(note(e.clone(), Tone::Danger));
@@ -2121,8 +2054,6 @@ const CAT_CORAL: u32 = theme::CATEGORY[4];
 const CAT_CYAN: u32 = theme::CATEGORY[5];
 const CAT_SAND: u32 = theme::CATEGORY[7];
 
-/// How narrow a stat card gets before the row of them wraps.
-const KPI_MIN_W: f32 = 150.;
 /// The name column's least width: below it the table scrolls sideways
 /// instead of squeezing names to nothing under the fixed columns.
 const NAME_MIN_W: f32 = 180.;
@@ -2131,7 +2062,11 @@ fn table(cols: &[Col], rows: Vec<AnyElement>) -> Stateful<Div> {
     // Cells, the gaps between them and the padding at both ends.
     let min_w = cols
         .iter()
-        .map(|c| c.width.unwrap_or(NAME_MIN_W))
+        .map(|c| match c.width {
+            None => NAME_MIN_W,
+            Some(TAGS_W) => TAGS_MIN_W,
+            Some(w) => w,
+        })
         .sum::<f32>()
         + 16. * (cols.len() as f32 - 1.)
         + 32.;
@@ -2170,10 +2105,21 @@ fn table(cols: &[Col], rows: Vec<AnyElement>) -> Stateful<Div> {
         )
 }
 
+/// How narrow the tags column gets: beside the left column the table is often
+/// narrower than its columns, and the tags give way before the name does.
+const TAGS_MIN_W: f32 = 64.;
+
 fn cell(width: Option<f32>) -> Div {
     match width {
+        Some(TAGS_W) => div()
+            .flex()
+            .flex_shrink(1.)
+            .min_w(px(TAGS_MIN_W))
+            .overflow_hidden()
+            .items_center()
+            .w(px(TAGS_W)),
         Some(w) => div().flex().flex_none().items_center().w(px(w)),
-        None => div().flex().flex_1().min_w_0().items_center(),
+        None => div().flex().flex_1().min_w(px(NAME_MIN_W)).items_center(),
     }
 }
 
@@ -2259,73 +2205,6 @@ fn tag_list(tags: &[(String, u32)], max: usize) -> Div {
         .when(tags.len() > max, |d| {
             d.child(ui::badge(format!("+{}", tags.len() - max), Tone::Neutral))
         })
-}
-
-fn kpi(
-    icon_name: &str,
-    label: &str,
-    value: String,
-    sub: String,
-    tone: Tone,
-    meter: Option<f32>,
-) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        // Four abreast on a wide page, two by two (or one above the other) on
-        // a narrow one, rather than four squeezed past their text.
-        .flex_grow(1.)
-        .flex_basis(px(KPI_MIN_W))
-        .min_w_0()
-        .overflow_hidden()
-        .gap(crate::ui::sp(10.))
-        .p(crate::ui::sp(16.))
-        .rounded(crate::ui::rad(ui::RADIUS_LG))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::fill_raised())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(8.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .size(px(24.))
-                        .rounded(crate::ui::rad(ui::RADIUS_SM))
-                        .bg(tone.color().opacity(0.16))
-                        .child(icon(icon_name, 13.).text_color(tone.color())),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .ty(Type::Label)
-                        .text_color(theme::text_subtle())
-                        .child(label.to_string()),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .items_end()
-                .gap(crate::ui::sp(8.))
-                .child(div().ty(Type::Title).text_color(theme::text()).child(value))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .pb(crate::ui::sp(3.))
-                        .ty(Type::Caption)
-                        .text_color(theme::text_subtle())
-                        .child(sub),
-                ),
-        )
-        .children(meter.map(|pct| ui::meter(pct, tone, 4.)))
 }
 
 fn group_row(label: String, action: Option<AnyElement>) -> Div {
@@ -2595,6 +2474,175 @@ fn short_path(p: &std::path::Path) -> String {
     }
 }
 
+impl ExtensionsView {
+    fn set_which(&mut self, which: Which, cx: &mut Context<Self>) {
+        self.which = which;
+        self.open = None;
+        if which == Which::Droid && matches!(self.kind, Kind::Permissions | Kind::Marketplace) {
+            self.set_kind(Kind::Servers, cx);
+        }
+        self.refresh_if_stale(cx);
+        cx.notify();
+    }
+
+    /// Shows one list of Installed, or Discover, with the search box worded for it.
+    fn set_kind(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        self.kind = kind;
+        self.open = None;
+        let hint = match kind {
+            Kind::Marketplace => "Search plugins and MCP servers…",
+            Kind::Servers => "Filter MCP servers…",
+            Kind::Plugins => "Filter plugins…",
+            Kind::Skills => "Filter skills…",
+            Kind::Permissions => "Filter permission rules…",
+        };
+        self.query.update(cx, |q, cx| q.set_placeholder(hint, cx));
+        cx.notify();
+    }
+
+    /// The column at the left: whose things, what there is to add, what is
+    /// installed, and in Discover its categories.
+    fn render_nav(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let which = self.which;
+        let mut agents = ui::segmented().w_full();
+        for (i, (value, label)) in [(Which::Claude, "Claude Code"), (Which::Droid, "Droid")]
+            .into_iter()
+            .enumerate()
+        {
+            agents = agents.child(
+                ui::segment(("ext-which", i), None, label, which == value)
+                    .flex_1()
+                    .justify_center()
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_which(value, cx))),
+            );
+        }
+        let mut nav = div()
+            .id("ext-nav")
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(NAV_W))
+            .h_full()
+            .overflow_y_scroll()
+            .gap(crate::ui::sp(2.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(16.))
+            .border_r_1()
+            .border_color(theme::border_subtle())
+            .child(div().flex_none().pb(crate::ui::sp(12.)).child(agents));
+
+        if which == Which::Claude {
+            nav = nav.child(nav_heading("Discover", false));
+            for (i, (m, label, icon_name)) in [
+                (Market::Plugins, "Plugins", "cube"),
+                (Market::Registry, "MCP servers", "link01"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let on = self.kind == Kind::Marketplace && self.market == m;
+                nav = nav.child(
+                    market::nav_row(("ext-src", i), icon_name, label, self.discover_count(m), on)
+                        .on_click(cx.listener(move |this, _, _, cx| this.show_market(m, cx))),
+                );
+            }
+        }
+
+        nav = nav.child(nav_heading("Installed", which == Which::Claude));
+        let problems = match which {
+            Which::Claude => self.problems(),
+            Which::Droid => 0,
+        };
+        let rows: Vec<(Kind, &str, &str, Option<usize>)> = match which {
+            Which::Claude => {
+                let x = self.claude.as_ref();
+                vec![
+                    (
+                        Kind::Servers,
+                        "MCP servers",
+                        "link01",
+                        x.map(|x| x.servers.iter().filter(|s| !s.unused_connector()).count()),
+                    ),
+                    (Kind::Plugins, "Plugins", "cube", x.map(|x| x.plugins.len())),
+                    (
+                        Kind::Skills,
+                        "Skills",
+                        "sparkles",
+                        x.map(|x| x.skills.len()),
+                    ),
+                    (
+                        Kind::Permissions,
+                        "Permissions",
+                        "shield-alert",
+                        x.map(|x| x.permissions.rules.len()),
+                    ),
+                ]
+            }
+            Which::Droid => {
+                let d = self.droid.as_ref();
+                vec![
+                    (
+                        Kind::Servers,
+                        "MCP servers",
+                        "link01",
+                        d.map(|d| d.servers.len()),
+                    ),
+                    (
+                        Kind::Plugins,
+                        "Plugins",
+                        "cube",
+                        self.plugins.as_ref().map(|p| p.droid.len()),
+                    ),
+                    (
+                        Kind::Skills,
+                        "Skills",
+                        "sparkles",
+                        d.map(|d| d.skills.len()),
+                    ),
+                ]
+            }
+        };
+        for (i, (k, label, icon_name, n)) in rows.into_iter().enumerate() {
+            let on = self.kind == k;
+            let row = if k == Kind::Servers && problems > 0 {
+                market::nav_alert_row(("ext-kind", i), icon_name, label, problems, on)
+            } else {
+                market::nav_row(("ext-kind", i), icon_name, label, n, on)
+            };
+            nav = nav.child(row.on_click(cx.listener(move |this, _, _, cx| this.set_kind(k, cx))));
+        }
+
+        if which == Which::Claude && self.kind == Kind::Marketplace {
+            nav = nav.children(self.render_market_filters(cx));
+        }
+        nav
+    }
+
+    /// The last error and what the last action did.
+    fn render_notes(&self) -> Option<Div> {
+        (self.error.is_some() || self.notice.is_some()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .when_some(self.error.clone(), |d, e| d.child(note(e, Tone::Danger)))
+                .when_some(self.notice.clone(), |d, n| d.child(note(n, Tone::Success)))
+        })
+    }
+}
+
+/// The small capitals over a group of the left column.
+fn nav_heading(label: &str, gap_above: bool) -> Div {
+    ui::overline(label)
+        .flex_none()
+        .px(crate::ui::sp(8.))
+        .pb(crate::ui::sp(4.))
+        .when(gap_above, |d| d.mt(crate::ui::sp(16.)))
+}
+
+/// The left column's width.
+const NAV_W: f32 = 212.;
+
 impl Render for ExtensionsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let which = self.which;
@@ -2616,112 +2664,6 @@ impl Render for ExtensionsView {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let mut agents = ui::segmented();
-        for (i, (value, label)) in [(Which::Claude, "Claude Code"), (Which::Droid, "Droid")]
-            .into_iter()
-            .enumerate()
-        {
-            let on = which == value;
-            agents = agents.child(ui::segment(("ext-which", i), None, label, on).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.which = value;
-                    this.open = None;
-                    if value == Which::Droid
-                        && matches!(this.kind, Kind::Permissions | Kind::Marketplace)
-                    {
-                        this.kind = Kind::All;
-                    }
-                    this.refresh_if_stale(cx);
-                    cx.notify();
-                }),
-            ));
-        }
-
-        let counts: [(Kind, &str, Option<usize>); 6] = match (which, &self.claude, &self.droid) {
-            (Which::Claude, Some(x), _) => [
-                (Kind::All, "All", None),
-                (
-                    Kind::Servers,
-                    "MCP servers",
-                    Some(x.servers.iter().filter(|s| !s.unused_connector()).count()),
-                ),
-                (Kind::Plugins, "Plugins", Some(x.plugins.len())),
-                (Kind::Skills, "Skills", Some(x.skills.len())),
-                (
-                    Kind::Permissions,
-                    "Permissions",
-                    Some(x.permissions.rules.len()),
-                ),
-                (Kind::Marketplace, "Marketplace", None),
-            ],
-            (Which::Droid, _, Some(d)) => [
-                (Kind::All, "All", None),
-                (Kind::Servers, "MCP servers", Some(d.servers.len())),
-                (
-                    Kind::Plugins,
-                    "Plugins",
-                    self.plugins.as_ref().map(|p| p.droid.len()),
-                ),
-                (Kind::Skills, "Skills", Some(d.skills.len())),
-                (Kind::Permissions, "", None),
-                (Kind::Marketplace, "", None),
-            ],
-            _ => [
-                (Kind::All, "All", None),
-                (Kind::Servers, "MCP servers", None),
-                (Kind::Plugins, "Plugins", None),
-                (Kind::Skills, "Skills", None),
-                (
-                    Kind::Permissions,
-                    if which == Which::Claude {
-                        "Permissions"
-                    } else {
-                        ""
-                    },
-                    None,
-                ),
-                (
-                    Kind::Marketplace,
-                    if which == Which::Claude {
-                        "Marketplace"
-                    } else {
-                        ""
-                    },
-                    None,
-                ),
-            ],
-        };
-        let mut kinds = ui::segmented();
-        for (i, (k, label, n)) in counts.into_iter().enumerate() {
-            if label.is_empty() {
-                continue;
-            }
-            let on = self.kind == k;
-            kinds = kinds.child(
-                ui::segment(("ext-kind", i), None, label, on)
-                    .when_some(n, |d, n| {
-                        d.child(
-                            div()
-                                .ty(Type::Caption)
-                                .text_color(if on {
-                                    theme::text_muted()
-                                } else {
-                                    theme::text_faint()
-                                })
-                                .child(n.to_string()),
-                        )
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.kind = k;
-                        this.open = None;
-                        if k == Kind::Marketplace {
-                            this.open_market(cx);
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-
         let market = which == Which::Claude && self.kind == Kind::Marketplace;
         let body: AnyElement = match which {
             Which::Claude if market => div().into_any_element(),
@@ -2736,6 +2678,99 @@ impl Render for ExtensionsView {
             Which::Droid => self.render_droid(cx).into_any_element(),
         };
 
+        let header = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(12.))
+            .h(px(64.))
+            .px(crate::ui::sp(ui::PAGE_PAD))
+            .border_b_1()
+            .border_color(theme::border_subtle())
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(32.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::fill_raised())
+                    .child(icon("store01", 16.).text_color(theme::text())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .ty(Type::Subtitle)
+                            .text_color(theme::text())
+                            .child("Marketplace"),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .ty(Type::Caption)
+                            .text_color(theme::text_subtle())
+                            .child(format!(
+                                "Plugins and MCP servers for your agents in {place}"
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink(1.)
+                    .w(px(300.))
+                    .min_w(px(160.))
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .h(px(ui::BUTTON_H + 4.))
+                    .px(crate::ui::sp(10.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::fill_raised())
+                    .ty(Type::Body)
+                    .child(icon("search01", 14.).text_color(theme::text_faint()))
+                    .child(div().flex_1().min_w_0().child(self.query.clone())),
+            )
+            .child(ui::refresh_control(
+                "ext-refresh",
+                busy,
+                updated,
+                cx.listener(|this, _, _, cx| this.refresh(cx)),
+            ));
+
+        let notes = self.render_notes();
+
+        // The Marketplace scrolls its own virtual list and fills the height.
+        let content: AnyElement = if market {
+            self.render_market(cx).into_any_element()
+        } else {
+            div()
+                .id("extensions-list")
+                .track_scroll(&self.scroll)
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(crate::ui::sp(ui::PAGE_PAD))
+                .pt(crate::ui::sp(20.))
+                .pb(crate::ui::sp(32.))
+                .gap(crate::ui::sp(16.))
+                .children(notes)
+                .child(body)
+                .into_any_element()
+        };
+
         div()
             .flex()
             .flex_col()
@@ -2743,146 +2778,15 @@ impl Render for ExtensionsView {
             .bg(theme::background())
             .font_family(theme::FONT_SANS)
             .text_color(theme::content())
+            .child(header)
             .child(
                 div()
                     .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(crate::ui::sp(12.))
-                    .h(px(64.))
-                    .px(crate::ui::sp(ui::PAGE_PAD))
-                    .border_b_1()
-                    .border_color(theme::border_subtle())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .size(px(32.))
-                            .rounded(crate::ui::rad(ui::RADIUS))
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::fill_raised())
-                            .child(icon("sparkles", 16.).text_color(theme::text())),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .ty(Type::Subtitle)
-                                    .text_color(theme::text())
-                                    .child("Extensions"),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .ty(Type::Caption)
-                                    .text_color(theme::text_subtle())
-                                    .child(format!("What your agents load in {place}")),
-                            ),
-                    )
-                    .child(ui::refresh_control(
-                        "ext-refresh",
-                        busy,
-                        updated,
-                        cx.listener(|this, _, _, cx| this.refresh(cx)),
-                    ))
-                    .when(which == Which::Claude, |d| {
-                        d.child(
-                            ui::button_with(
-                                "ext-browse",
-                                Some("add01"),
-                                "Browse plugins",
-                                ButtonKind::Primary,
-                                true,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.kind = Kind::Marketplace;
-                                this.market = Market::Plugins;
-                                this.open_market(cx);
-                                cx.notify();
-                            })),
-                        )
-                    }),
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_nav(cx))
+                    .child(content),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    // On a narrow window the kinds and the search drop to lines of
-                    // their own, and the kinds scroll when even that is too narrow.
-                    .flex_wrap()
-                    .gap(crate::ui::sp(8.))
-                    .px(crate::ui::sp(ui::PAGE_PAD))
-                    .py(crate::ui::sp(12.))
-                    .child(agents)
-                    .child(
-                        div()
-                            .id("ext-kinds")
-                            .flex()
-                            .max_w_full()
-                            .overflow_x_scroll()
-                            .child(kinds),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w(px(160.))
-                            .items_center()
-                            .gap(crate::ui::sp(8.))
-                            .h(px(ui::BUTTON_H))
-                            .px(crate::ui::sp(10.))
-                            .rounded(crate::ui::rad(ui::RADIUS))
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::fill_raised())
-                            .ty(Type::Body)
-                            .child(icon("search01", 14.).text_color(theme::text_faint()))
-                            .child(div().flex_1().min_w_0().child(self.query.clone())),
-                    ),
-            )
-            // The Marketplace scrolls its own virtual list and fills the height.
-            .when(market, |d| {
-                d.when(self.error.is_some() || self.notice.is_some(), |d| {
-                    d.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(crate::ui::sp(8.))
-                            .px(crate::ui::sp(ui::PAGE_PAD))
-                            .pb(crate::ui::sp(8.))
-                            .when_some(self.error.clone(), |d, e| d.child(note(e, Tone::Danger)))
-                            .when_some(self.notice.clone(), |d, n| d.child(note(n, Tone::Success))),
-                    )
-                })
-                .child(self.render_market(cx))
-            })
-            .when(!market, |d| {
-                d.child(
-                    div()
-                        .id("extensions-list")
-                        .track_scroll(&self.scroll)
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .px(crate::ui::sp(ui::PAGE_PAD))
-                        .pt(crate::ui::sp(8.))
-                        .pb(crate::ui::sp(32.))
-                        .gap(crate::ui::sp(16.))
-                        .when_some(self.error.clone(), |d, e| d.child(note(e, Tone::Danger)))
-                        .when_some(self.notice.clone(), |d, n| d.child(note(n, Tone::Success)))
-                        .child(body),
-                )
-            })
     }
 }
 

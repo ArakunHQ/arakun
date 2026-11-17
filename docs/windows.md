@@ -191,8 +191,8 @@ Manager (Windows Credentials, Generic Credentials).
 - **Dynamic Island:** it needs a Wayland layer shell, so it only runs on Linux.
 - **Headless agents (`arakun agent run`):** their sandbox is bubblewrap, which is
   Linux-only.
-- **`arakun dev`** (the test instance in Xvfb) and the **Claude SEO** installer in
-  Extensions are Linux-only; on Windows they print a notice instead of running.
+- **`arakun dev`** (the test instance in Xvfb) and the **Claude SEO** installer in the
+  Marketplace tab are Linux-only; on Windows they print a notice instead of running.
 
 ## Known issues
 

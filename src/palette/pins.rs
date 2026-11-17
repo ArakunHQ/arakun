@@ -63,7 +63,20 @@ impl Pins {
     }
 
     pub fn load() -> Self {
-        Self::read(&file())
+        let mut pins = Self::read(&file());
+        pins.migrate();
+        pins
+    }
+
+    /// A view's id is its label, and Extensions is now Marketplace: pins saved
+    /// before the rename open it under the new name.
+    fn migrate(&mut self) {
+        for pin in &mut self.items {
+            if pin.kind == "view" && pin.id == "extensions" {
+                pin.id = "marketplace".into();
+                pin.label = "Marketplace".into();
+            }
+        }
     }
 
     pub fn save(&self) {
@@ -98,6 +111,22 @@ mod tests {
             id: id.into(),
             label: id.into(),
         }
+    }
+
+    #[test]
+    fn an_extensions_pin_opens_the_marketplace() {
+        let mut p = Pins::default();
+        p.toggle(Pin {
+            kind: "view".into(),
+            id: "extensions".into(),
+            label: "Extensions".into(),
+        });
+        p.toggle(pin("github"));
+        p.migrate();
+        assert!(p.has("view:marketplace"));
+        assert!(!p.has("view:extensions"));
+        assert_eq!(p.items[0].label, "Marketplace");
+        assert!(p.has("view:github"), "other pins stay as they were");
     }
 
     #[test]

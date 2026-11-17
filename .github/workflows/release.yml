@@ -34,8 +34,17 @@ name: Release
 #   or newer (Ubuntu 22.04+, Debian 12+). A runner image links against its own,
 #   newer glibc (ubuntu-24.04: 2.39), and the binary then refuses to start on
 #   older systems. A step after the build fails if the floor is exceeded.
-# - Built with --no-default-features: no `browser` feature, so no CEF in the
-#   archives. Browser tabs need a build from source (see README.md).
+# - Built with the default `browser` feature, so each download carries CEF
+#   156.0.15 (Chromium), the version the `cef` crate in Cargo.lock is built for:
+#   Linux in a cef/ folder next to the binary, Windows next to arakun.exe with
+#   arakun-helper.exe, macOS as Chromium Embedded Framework.framework inside
+#   Arakun.app. Each job downloads its platform's archive, checks it against a
+#   pinned SHA-1 before unpacking it, and points the build at it: Linux as
+#   ci.yml's clippy-browser job does, macOS and Windows with
+#   tools/fetch-cef.py. The `cef` crate's own download is not used: it trusts
+#   the CDN's index, which has also grown past what its HTTP client reads.
+#   macOS and Windows build CEF's wrapper with CMake and Ninja from
+#   tools/build-requirements.txt.
 # - Dependencies resolve exactly as in ci.yml (same Cargo.toml and --locked, no
 #   rewriting of the [patch] section), so this builds wherever ci.yml does.
 #   CI_CARGO_CONFIG is not used: it only tunes the dev profile.
@@ -56,6 +65,8 @@ on:
       - tools/macos-app.sh
       - tools/macos-dmg.py
       - tools/macos-dmg-requirements.txt
+      - tools/build-requirements.txt
+      - tools/fetch-cef.py
       - tools/Arakun.icon/**
       - assets/brand/dmg-background*.png
   workflow_dispatch:
@@ -121,6 +132,9 @@ jobs:
     container: ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c
     env:
       GLIBC_FLOOR: "2.35"
+      # Keep both in step with the clippy-browser job in ci.yml.
+      CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_linux64_minimal.tar.bz2
+      CEF_SHA1: 09235427222e026a4f34399742df27c5d98a4f8a
     steps:
       # Same libraries as ci.yml (installed directly: cache-apt-pkgs-action expects
       # a runner, not a container), plus what the bare image lacks. Before checkout,
@@ -133,7 +147,8 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
-            libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
+            libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev \
+            bzip2 cmake ninja-build
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -150,20 +165,42 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustup" toolchain install --no-self-update
 
-      - name: cargo build
-        run: cargo build --release --locked --no-default-features --target x86_64-unknown-linux-gnu
+      # As ci.yml's clippy-browser job does, without its cache (see the header).
+      # $RUNNER_TEMP/cef is the runtime the archive carries; its sdk/ is only for
+      # the build, through the .cef-sdk link tools/install-cef.sh makes.
+      - name: Prepare CEF
+        run: |
+          archive="$RUNNER_TEMP/$CEF_ARCHIVE"
+          url="https://cef-builds.spotifycdn.com/$(printf %s "$CEF_ARCHIVE" | sed 's/+/%2B/g')"
+          curl -fsSL --retry 3 -o "$archive" "$url"
+          echo "$CEF_SHA1  $archive" | sha1sum -c -
+          mkdir -p "$RUNNER_TEMP/cef-dist"
+          tar -xjf "$archive" -C "$RUNNER_TEMP/cef-dist" --strip-components=1
+          rm "$archive"
+          tools/install-cef.sh "$RUNNER_TEMP/cef-dist" "$RUNNER_TEMP/cef"
+          rm -rf "$RUNNER_TEMP/cef-dist"
 
+      - name: cargo build
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+
+      # The runtime's libraries too: the browser loads them into this process.
       - name: Check glibc floor
         run: |
-          bin=target/x86_64-unknown-linux-gnu/release/arakun
-          max=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9.]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
-          [ -n "$max" ] || { echo "::error::no GLIBC_ symbol versions found in $bin"; exit 1; }
-          echo "highest GLIBC_ symbol version: $max (floor $GLIBC_FLOOR)"
-          if [ "$(printf '%s\n' "$max" "$GLIBC_FLOOR" | sort -V | tail -1)" != "$GLIBC_FLOOR" ]; then
-            echo "::error::arakun needs glibc $max, above the $GLIBC_FLOOR floor"
-            objdump -T "$bin" | grep -F "GLIBC_$max"
-            exit 1
-          fi
+          app=target/x86_64-unknown-linux-gnu/release/arakun
+          for bin in "$app" "$RUNNER_TEMP"/cef/*.so*; do
+            max=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9.]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
+            if [ -z "$max" ]; then
+              [ "$bin" != "$app" ] || { echo "::error::no GLIBC_ symbol versions found in $bin"; exit 1; }
+              echo "$bin: no GLIBC_ symbol versions"
+              continue
+            fi
+            echo "$bin: highest GLIBC_ symbol version: $max (floor $GLIBC_FLOOR)"
+            if [ "$(printf '%s\n' "$max" "$GLIBC_FLOOR" | sort -V | tail -1)" != "$GLIBC_FLOOR" ]; then
+              echo "::error::$bin needs glibc $max, above the $GLIBC_FLOOR floor"
+              objdump -T "$bin" | grep -F "GLIBC_$max"
+              exit 1
+            fi
+          done
 
       - name: Package
         env:
@@ -179,7 +216,12 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/arakun "dist/$name/"
           strip "dist/$name/arakun"
           cp LICENSE NOTICE README.md "dist/$name/"
+          # Next to the binary, where src/browser/loader.rs looks first. Without
+          # sdk/, which only the build reads.
+          cp -r "$RUNNER_TEMP/cef" "dist/$name/cef"
+          rm -rf "dist/$name/cef/sdk"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+          du -sh "dist/$name" "dist/$name.tar.gz"
 
       # The archive as a user gets it: unpacks, and the binary loads and runs.
       - name: Smoke test
@@ -187,6 +229,13 @@ jobs:
           mkdir smoke
           tar -C smoke -xzf dist/*.tar.gz
           smoke/*/arakun --version
+          test -f smoke/*/cef/libcef.so
+          test -f smoke/*/cef/locales/en-US.pak
+          # Loaded on the first browser tab, never at startup.
+          if objdump -p smoke/*/arakun | grep -q 'NEEDED.*libcef'; then
+            echo "::error::arakun links libcef.so at startup"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -210,10 +259,38 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update
 
+      # No cache: see the header.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      # CMake and Ninja for CEF's wrapper. The cmake crate finds MSVC by itself.
+      - name: Build tools
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP build-tools
+          python -m venv $venv
+          & "$venv\Scripts\pip" install --require-hashes --no-deps --only-binary :all: -r tools/build-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "pip exited with $LASTEXITCODE" }
+          "$venv\Scripts" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      # See the header. The SHA-1 is the one cef-builds publishes.
+      - name: Prepare CEF
+        env:
+          CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_windows64_minimal.tar.bz2
+          CEF_SHA1: b690e035689ee20ba9d2500ac8953815bc7ed46a
+        shell: pwsh
+        run: |
+          python tools/fetch-cef.py $env:CEF_ARCHIVE $env:CEF_SHA1 "$env:RUNNER_TEMP/cef"
+          if ($LASTEXITCODE -ne 0) { throw "fetch-cef.py exited with $LASTEXITCODE" }
+
       # gpui compiles its HLSL shaders with fxc.exe from the Windows SDK in
       # release builds; the runner image ships the SDK (GPUI_FXC_PATH overrides).
+      # build.rs copies the CEF runtime from CEF_PATH next to arakun.exe.
       - name: cargo build
-        run: cargo build --release --locked --no-default-features --target x86_64-pc-windows-msvc
+        env:
+          CEF_PATH: ${{ runner.temp }}/cef
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
       - name: Package
         shell: pwsh
@@ -225,10 +302,20 @@ jobs:
         run: |
           $tag = if ($env:TAG) { $env:TAG } else { "dev-" + $env:SHA.Substring(0, 7) }
           $name = "arakun-$tag-windows-x86_64"
-          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/arakun.exe "dist/$name/"
-          Copy-Item LICENSE, NOTICE, README.md "dist/$name/"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          $out = "dist/$name"
+          $release = "target/x86_64-pc-windows-msvc/release"
+          New-Item -ItemType Directory -Force -Path "$out/locales" | Out-Null
+          # arakun-helper.exe starts CEF's child processes without a console each.
+          Copy-Item "$release/arakun.exe", "$release/arakun-helper.exe" $out
+          # The CEF runtime build.rs copied: DLLs, .pak, .bin, .dat and the
+          # SwiftShader manifest, not the import libraries. The two locales
+          # src/browser/runtime.rs picks from, as on Linux.
+          Copy-Item "$release/*" $out -Include *.dll, *.pak, *.bin, *.dat, *.json
+          Copy-Item "$release/locales/en-US.pak", "$release/locales/es.pak", "$release/locales/es-419.pak" "$out/locales"
+          Copy-Item LICENSE, NOTICE, README.md $out
+          Get-ChildItem -Recurse $out | Format-Table -AutoSize Length, FullName
+          Compress-Archive -Path $out -DestinationPath "dist/$name.zip"
+          "{0:N0} MB" -f ((Get-Item "dist/$name.zip").Length / 1MB)
 
       # The archive as a user gets it: unpacks, and the binary loads and runs.
       - name: Smoke test
@@ -238,6 +325,10 @@ jobs:
           $exe = (Get-Item smoke/*/arakun.exe).FullName
           & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "arakun.exe --version exited with $LASTEXITCODE" }
+          $dir = Split-Path $exe
+          foreach ($f in 'arakun-helper.exe', 'libcef.dll', 'icudtl.dat', 'resources.pak', 'locales/en-US.pak') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "the archive has no $f" }
+          }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -267,14 +358,31 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update
 
-      - name: cargo build
-        run: cargo build --release --locked --no-default-features --target aarch64-apple-darwin
-
-      # For dmgbuild (tools/macos-dmg.py), which needs 3.10 or newer; the
-      # system python3 is older. No cache: see the header.
+      # For CMake and Ninja, and dmgbuild (tools/macos-dmg.py), which needs 3.10
+      # or newer; the system python3 is older. No cache: see the header.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
+
+      # CMake and Ninja for CEF's wrapper.
+      - name: Build tools
+        run: |
+          python -m venv "$RUNNER_TEMP/build-tools"
+          "$RUNNER_TEMP/build-tools/bin/pip" install --require-hashes --no-deps --only-binary :all: \
+            -r tools/build-requirements.txt
+          echo "$RUNNER_TEMP/build-tools/bin" >> "$GITHUB_PATH"
+
+      # As on Windows.
+      - name: Prepare CEF
+        env:
+          CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_macosarm64_minimal.tar.bz2
+          CEF_SHA1: bcdd1877edb300b0fb91d8f71c0b14aae256cd0f
+        run: python tools/fetch-cef.py "$CEF_ARCHIVE" "$CEF_SHA1" "$RUNNER_TEMP/cef"
+
+      - name: cargo build
+        env:
+          CEF_PATH: ${{ runner.temp }}/cef
+        run: cargo build --release --locked --target aarch64-apple-darwin
 
       - name: dmgbuild
         run: |
@@ -292,8 +400,13 @@ jobs:
           tag=${TAG:-dev-$(printf %.7s "$SHA")}
           name="arakun-$tag-macos-arm64"
           mkdir -p work dist
-          tools/macos-app.sh --strip target/aarch64-apple-darwin/release/arakun work/Arakun.app
+          # The one the build used (Prepare CEF).
+          framework="$RUNNER_TEMP/cef/Chromium Embedded Framework.framework"
+          [ -d "$framework" ] || { echo "::error::no CEF framework at $framework"; exit 1; }
+          tools/macos-app.sh --strip --framework "$framework" \
+            target/aarch64-apple-darwin/release/arakun work/Arakun.app
           "$RUNNER_TEMP/dmg/bin/python" tools/macos-dmg.py work/Arakun.app "dist/$name.dmg"
+          du -sh work/Arakun.app "dist/$name.dmg"
 
       # The image as a user gets it: it mounts with the app, the Applications
       # link and the window layout, the signature holds, and the binary loads
@@ -314,6 +427,11 @@ jobs:
           codesign --verify --deep --strict "$app"
           test -f "$app/Contents/Resources/Assets.car"
           test -f "$app/Contents/Resources/LICENSE"
+          test -f "$app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+          # What the notarize job signs before the framework.
+          echo "::group::Mach-O files in the framework"
+          find "$app/Contents/Frameworks" -type f -exec file {} + | grep 'Mach-O'
+          echo "::endgroup::"
           # Which images the icon catalog holds, for each macOS version and appearance.
           echo "::group::Assets.car"; xcrun assetutil --info "$app/Contents/Resources/Assets.car"; echo "::endgroup::"
           "$app/Contents/MacOS/arakun" --version
@@ -410,16 +528,41 @@ jobs:
           KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
           APP: ${{ steps.image.outputs.mnt }}/Arakun.app
         run: |
-          # Hardened runtime, which notarization requires, with no entitlements:
-          # the build without the browser needs none (no JIT, no plugins). One
-          # binary and no frameworks, so signing the bundle signs everything;
-          # a CEF build would have to sign the framework and helpers first.
+          # Hardened runtime, which notarization requires. Inside out: the
+          # framework's libraries, the framework, then the app, since signing a
+          # bundle does not sign the code nested in it. There are no helper apps:
+          # CEF's child processes are arakun itself again (src/browser/runtime.rs),
+          # so the one binary takes the entitlement Chromium gives its renderer
+          # and GPU helpers: V8 and SwiftShader write JIT code.
           # Extended attributes first: codesign --strict refuses a bundle with
           # Finder information on it.
           xattr -cr "$APP"
-          codesign --force --timestamp --options runtime \
-            --sign "$IDENTITY" --keychain "$KEYCHAIN" "$APP"
-          codesign --verify --strict --verbose=2 "$APP"
+          sign() {
+            codesign --force --timestamp --options runtime \
+              --sign "$IDENTITY" --keychain "$KEYCHAIN" "$@"
+          }
+          fw="$APP/Contents/Frameworks/Chromium Embedded Framework.framework"
+          if [ -d "$fw" ]; then
+            # Every Mach-O in it (libraries, and helpers such as
+            # chrome_crashpad_handler), or notarization refuses the app.
+            find "$fw" -type f -print0 | while IFS= read -r -d '' f; do
+              if file -b "$f" | grep -q '^Mach-O'; then sign "$f"; fi
+            done
+            sign "$fw"
+          fi
+          entitlements=$RUNNER_TEMP/entitlements.plist
+          cat > "$entitlements" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.cs.allow-jit</key><true/>
+          </dict>
+          </plist>
+          EOF
+          sign --entitlements "$entitlements" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --display --entitlements - "$APP"
 
       # The API key, and notarize(), which submits a file, waits, prints
       # Apple's log and staples the ticket. It runs twice: for the app, so it

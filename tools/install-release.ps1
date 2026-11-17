@@ -2,9 +2,9 @@
 #
 #   irm https://arakun.dev/install.ps1 | iex
 #
-# Puts arakun.exe in %LOCALAPPDATA%\Programs\Arakun, adds that folder to the user PATH and
-# adds a Start menu shortcut. $env:ARAKUN_VERSION = "v0.1.0" pins a release. Release builds
-# have no browser tabs; for those, build from source (see docs/windows.md).
+# Puts arakun.exe, with arakun-helper.exe and the browser's CEF runtime next to it, in
+# %LOCALAPPDATA%\Programs\Arakun, adds that folder to the user PATH and adds a Start menu
+# shortcut. $env:ARAKUN_VERSION = "v0.1.0" pins a release.
 #
 # Works in Windows PowerShell 5.1 and PowerShell 7. Under `iex`, `exit` would close the
 # user's window, so errors throw instead. Everything runs from the call at the end, so a
@@ -100,16 +100,18 @@ function Install-Arakun {
 
         $dir = [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Arakun')
         $target = Join-Path $dir 'arakun.exe'
-        # Windows keeps a running .exe locked, so it cannot be replaced.
-        if (Get-Process -Name arakun -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $target }) {
+        # Windows keeps a running .exe and the DLLs it loaded locked, so they cannot be
+        # replaced. The browser's child processes run arakun-helper.exe.
+        $running = Get-Process -Name arakun, arakun-helper -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and (Split-Path $_.Path) -eq $dir }
+        if ($running) {
             throw 'arakun: Arakun is running; quit it and run the installer again'
         }
 
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        Copy-Item -Force $exe $target
-        foreach ($f in 'LICENSE', 'NOTICE', 'README.md') {
-            Copy-Item -Force (Join-Path $unpacked $f) $dir -ErrorAction SilentlyContinue
-        }
+        # Everything in the archive: arakun.exe, arakun-helper.exe, the CEF runtime
+        # (libcef.dll, .pak files, locales\...), LICENSE, NOTICE and README.md.
+        Get-ChildItem $unpacked | Copy-Item -Destination $dir -Recurse -Force
 
         # The user PATH as stored in the registry, with its %VAR% entries left
         # unexpanded. [Environment]::GetEnvironmentVariable expands them and

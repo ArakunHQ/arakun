@@ -28,10 +28,22 @@ pub use windows::load;
 /// Where the CEF runtime lives: `$ARAKUN_CEF_DIR`, else on Linux and macOS
 /// `${XDG_DATA_HOME:-~/.local/share}/arakun/cef` (filled by `tools/install-cef.sh`) and on
 /// Windows the folder of arakun.exe (where the build copies it). Inside Arakun.app the
-/// bundle's own `Contents/Frameworks` comes first (tools/install.sh puts CEF there).
+/// bundle's own `Contents/Frameworks` comes first (tools/install.sh puts CEF there). On
+/// Linux a `cef` folder next to the binary comes first: the release archive has one, so
+/// it runs where it was unpacked.
 pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("ARAKUN_CEF_DIR") {
         return dir.into();
+    }
+    #[cfg(target_os = "linux")]
+    // Canonical, so a link to the binary finds the folder next to the real one.
+    if let Some(dir) = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("cef")))
+        .filter(|dir| dir.join("libcef.so").is_file())
+    {
+        return dir;
     }
     #[cfg(target_os = "macos")]
     // Canonical: started through the `arakun` link in ~/.local/bin, current_exe is the link.
@@ -50,6 +62,25 @@ pub fn runtime_dir() -> PathBuf {
         .unwrap_or_default();
     #[cfg(not(windows))]
     data_home().join("arakun/cef")
+}
+
+/// Why the runtime at `path` can't load. A release says how to get it back: the
+/// updater of a release from before the browser left it out. A build from
+/// source gets `dev_hint`.
+fn missing(path: &std::path::Path, dev_hint: &str) -> String {
+    // As crate::update::release_build(), which the browser demo does not build.
+    if option_env!("ARAKUN_RELEASE_BUILD") != Some("1") {
+        return format!("CEF runtime not found at {} ({dev_hint})", path.display());
+    }
+    let install = if cfg!(windows) {
+        "irm https://arakun.dev/install.ps1 | iex"
+    } else {
+        "curl -fsSL https://arakun.dev/install | sh"
+    };
+    format!(
+        "This Arakun has no browser runtime at {}. Quit Arakun and install it again: {install}",
+        path.display()
+    )
 }
 
 pub fn data_home() -> PathBuf {
@@ -132,10 +163,7 @@ mod linux {
             .get_or_init(|| {
                 let path = runtime_dir().join("libcef.so");
                 if !path.exists() {
-                    return Err(format!(
-                        "CEF runtime not found at {} (run tools/install-cef.sh)",
-                        path.display()
-                    ));
+                    return Err(super::missing(&path, "run tools/install-cef.sh"));
                 }
                 let c_path =
                     CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
@@ -186,10 +214,7 @@ mod macos {
             .get_or_init(|| {
                 let path = framework_dir().join("Chromium Embedded Framework");
                 if !path.exists() {
-                    return Err(format!(
-                        "CEF runtime not found at {} (run tools/install-cef.sh)",
-                        path.display()
-                    ));
+                    return Err(super::missing(&path, "run tools/install-cef.sh"));
                 }
                 let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
                     .map_err(|e| e.to_string())?;
@@ -221,10 +246,10 @@ mod windows {
             .get_or_init(|| {
                 let path = runtime_dir().join("libcef.dll");
                 if !path.exists() {
-                    return Err(format!(
-                        "CEF runtime not found at {} (`cargo build` copies it next to arakun.exe; \
-                         or point ARAKUN_CEF_DIR at a folder that has it)",
-                        path.display()
+                    return Err(super::missing(
+                        &path,
+                        "`cargo build` copies it next to arakun.exe; \
+                         or point ARAKUN_CEF_DIR at a folder that has it",
                     ));
                 }
                 let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();

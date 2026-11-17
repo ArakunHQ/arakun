@@ -1,0 +1,11 @@
+# CMake and Ninja for the macOS and Windows release builds, pinned with hashes. The
+# `browser` feature builds CEF's C++ wrapper with CMake's Ninja generator (cef-dll-sys).
+# Install with: pip install --require-hashes --no-deps --only-binary :all: -r <this file>
+# Both are Apache-2.0. One wheel each for macOS (universal2) and Windows (x86_64); to
+# update, take the new wheels' sha256 from PyPI.
+cmake==4.4.4 \
+    --hash=sha256:883962a72b1b3a16ff445427f24c8caca9797dd9e563bbe208cbcd89e877f9d3 \
+    --hash=sha256:ad8e0a38b5707e27882701146bdfffecacd80e7703fa0fc36c77528518d545af
+ninja==1.13.2 \
+    --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b \
+    --hash=sha256:1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118

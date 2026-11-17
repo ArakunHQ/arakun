@@ -17,7 +17,7 @@ use anyhow::{Result, bail};
 use super::AgentKind;
 
 /// The one line under the Usage tab's plan limits.
-pub const USAGE_NOTE: &str = "Read with the sign-ins your agent CLIs already have: Arakun has no account of its own and never asks you to approve access. It only reads them, sends each one only to its own provider, and never changes them. A Factory API key you connect instead is kept in the system keyring.";
+pub const USAGE_NOTE: &str = "Read with the sign-ins your agent CLIs already have: Arakun has no account of its own and never asks you to approve access. It only reads them, sends each one only to its own provider, and never changes them. A Factory API key you connect instead (kept in the system keyring), or FACTORY_API_KEY, goes only to api.factory.ai.";
 
 /// The hosts a CLI's sign-in may be sent to.
 pub fn hosts(agent: AgentKind) -> &'static [&'static str] {
@@ -127,6 +127,8 @@ mod tests {
         assert!(notice(AgentKind::Codex).contains("never reads the tokens"));
         // Droid can run on a key Arakun keeps, not only on droid's login.
         assert!(notice(AgentKind::Droid).contains("keyring"));
-        assert!(USAGE_NOTE.contains("keyring"));
+        for word in ["keyring", "FACTORY_API_KEY", "api.factory.ai"] {
+            assert!(USAGE_NOTE.contains(word), "{word}");
+        }
     }
 }

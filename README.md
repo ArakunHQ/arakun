@@ -637,8 +637,10 @@ arakun-server service uninstall   # stop it and remove the service; the data sta
   prints the `sudo` command to run. It also works after `su - user` or `sudo -u user`,
   where `systemctl --user` usually cannot find the user's systemd.
 - **As root.** Many VPSs only have root. There it installs a system unit that runs as
-  root and starts once the network is up. To run the agents as another user, log in as
-  that user and install from there.
+  root and starts once the network is up. Because it runs as root at every boot, the
+  binary must be owned by root in folders only root can write to (`/usr/local/bin`,
+  not a home folder), and only such folders are kept on its `PATH`. To run the agents
+  as another user, log in as that user and install from there.
 - **Logged out (macOS).** A user's launchd agent runs from login to logout, so a Mac
   that nobody sits at needs automatic login.
 - **A second server.** With `ARAKUN_SERVER_DIR` set, the service is named after that

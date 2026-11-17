@@ -133,7 +133,12 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
     if let Some(path) = std::env::var_os("PATH") {
         // Shells that source their profile twice repeat entries.
         let mut seen = std::collections::HashSet::new();
-        let dirs = std::env::split_paths(&path).filter(|d| seen.insert(d.clone()));
+        // A root service runs what it finds there as root at every boot: only
+        // folders no one else can write to.
+        let root = system_unit();
+        let dirs = std::env::split_paths(&path)
+            .filter(|d| seen.insert(d.clone()))
+            .filter(|d| !root || only_root_writes(d));
         if let Ok(path) = std::env::join_paths(dirs) {
             env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
         }
@@ -144,6 +149,16 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
     {
         env.push(("ARAKUN_SERVER_DIR".into(), d.to_string_lossy().into_owned()));
     }
+    if system_unit() && !only_root_writes(&exe) {
+        return Err(format!(
+            "a system service runs {} as root at every boot, so it must be owned by root, \
+             in folders only root can write to. Copy it there first:\n  \
+             install -m755 {} /usr/local/bin/arakun-server\n\
+             or install the service as a normal user, without sudo",
+            exe.display(),
+            exe.display()
+        ));
+    }
     Ok(Spec {
         name: service_name(),
         exe,
@@ -151,6 +166,30 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
         env,
         log: dir().join("server.log"),
     })
+}
+
+/// Whether this installs a system unit: Linux, as root.
+fn system_unit() -> bool {
+    cfg!(target_os = "linux") && is_root()
+}
+
+/// Whether `path` and every folder above it belong to root and no group or
+/// other user can write to them, so no one but root can change what runs.
+fn only_root_writes(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let Ok(path) = crate::platform::canonicalize(path) else {
+            return false;
+        };
+        path.ancestors()
+            .all(|p| std::fs::metadata(p).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 /// A build in Cargo's `target/` folder changes or goes away with the next build.
@@ -258,7 +297,7 @@ fn is_root() -> bool {
 
 /// The unit or agent file for `name`; None where there is no service manager.
 fn file_path(name: &str) -> Option<PathBuf> {
-    if cfg!(target_os = "linux") && is_root() {
+    if system_unit() {
         return Some(PathBuf::from(format!("/etc/systemd/system/{name}.service")));
     }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
@@ -279,7 +318,7 @@ fn file_text(spec: &Spec) -> String {
     if cfg!(target_os = "macos") {
         plist(spec)
     } else {
-        unit(spec, is_root())
+        unit(spec, system_unit())
     }
 }
 
@@ -726,6 +765,20 @@ mod tests {
             other.starts_with(&base) && other.ends_with("work-box"),
             "{other}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_folders_root_alone_can_change_pass() {
+        assert!(only_root_writes(Path::new("/bin/sh")) || !Path::new("/bin/sh").exists());
+        // Whoever runs the tests can write their temp folder; root cannot be the only one.
+        let mine = std::env::temp_dir().join(format!("arakun-svc-{}", std::process::id()));
+        std::fs::create_dir_all(&mine).unwrap();
+        if !is_root() {
+            assert!(!only_root_writes(&mine));
+        }
+        let _ = std::fs::remove_dir(&mine);
+        assert!(!only_root_writes(Path::new("/no/such/path")));
     }
 
     #[test]

@@ -243,7 +243,23 @@ mod host {
     /// A second click on the shape a button just shrank is not one on the resting island.
     const AFTER_BUTTON: Duration = Duration::from_secs(1);
 
+    /// How often finished and silent outside sessions are looked for.
+    #[cfg(windows)]
+    const EXPIRE_EVERY: Duration = Duration::from_secs(30);
+
     static EXIT: AtomicI32 = AtomicI32::new(0);
+
+    /// A card of an agent outside Arakun: the app leaving doesn't take it along.
+    #[cfg(windows)]
+    fn outside(key: &str) -> bool {
+        key.starts_with(super::external::PREFIX)
+    }
+
+    /// Only Windows has agents outside Arakun on the island.
+    #[cfg(not(windows))]
+    fn outside(_: &str) -> bool {
+        false
+    }
 
     enum Msg {
         Hello {
@@ -545,6 +561,22 @@ mod host {
                     cx.background_executor().timer(WATCH_EVERY).await;
                 }
             });
+            // Outside agents may go quiet for good: their rows still have to leave.
+            #[cfg(windows)]
+            let expiry = cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(EXPIRE_EVERY).await;
+                    let now = crate::model::unix_now();
+                    let alive = this.update(cx, |host, cx| {
+                        if host.external.expire(now) {
+                            host.push(cx);
+                        }
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            });
             let events = cx.subscribe(&island, |host, _, ev, cx| host.on_island(ev, cx));
             #[cfg(feature = "coderlabs")]
             let (heard, mut calls) = mpsc::unbounded::<(u64, call::Out)>();
@@ -588,6 +620,8 @@ mod host {
                     headless,
                     #[cfg(feature = "coderlabs")]
                     voice,
+                    #[cfg(windows)]
+                    expiry,
                 ],
             }
         }
@@ -632,6 +666,7 @@ mod host {
                                     || a.key.is_empty()
                                     || a.kind == AlertKind::Confirm
                                     || headless.contains(&a.key)
+                                    || outside(&a.key)
                             },
                             cx,
                         );

@@ -105,10 +105,6 @@ impl Sessions {
             asks: SharedString::default(),
             updated: now,
         });
-        // Claude says it waits for input a while after a turn ended: not news.
-        if update.state == State::Waiting && s.state == State::Done {
-            return None;
-        }
         let before = s.state;
         s.state = update.state;
         s.updated = now;
@@ -149,13 +145,20 @@ impl Sessions {
         })
     }
 
-    /// The rows to list, forgetting sessions done long ago or gone silent.
-    pub fn rows(&mut self, now: u64) -> Vec<Row> {
+    /// Forgets sessions done long ago or gone silent; whether any went.
+    pub fn expire(&mut self, now: u64) -> bool {
+        let before = self.all.len();
         self.all.retain(|_, s| {
             let quiet = now.saturating_sub(s.updated);
             let settled = matches!(s.state, State::Done | State::Error);
             quiet < STALE_SECS && !(settled && quiet >= RECENT_SECS)
         });
+        self.all.len() != before
+    }
+
+    /// The rows to list, forgetting sessions done long ago or gone silent.
+    pub fn rows(&mut self, now: u64) -> Vec<Row> {
+        self.expire(now);
         self.all
             .iter()
             .map(|(key, s)| Row {
@@ -192,7 +195,14 @@ pub fn from_hook(input: &Value, agent: &str) -> Option<Update> {
         "UserPromptSubmit" => (State::Working, text("prompt")),
         // Back to work after a permission prompt was answered.
         "PostToolUse" => (State::Working, String::new()),
-        "Notification" => (State::Waiting, text("message")),
+        // Only the notices that wait for the user: not a sign-in, nor the
+        // idle reminder a minute after a turn ended. Older Claude Code sends no type.
+        "Notification" => match input["notification_type"].as_str() {
+            None | Some("permission_prompt" | "elicitation_dialog" | "elicitation_url_dialog") => {
+                (State::Waiting, text("message"))
+            }
+            Some(_) => return None,
+        },
         "Stop" => (State::Done, String::new()),
         "SessionEnd" => (State::Ended, String::new()),
         _ => return None,
@@ -313,11 +323,32 @@ mod tests {
         assert_eq!((tool.state, tool.doing.as_ref()), (State::Working, ""));
         let asks = hook(
             "Notification",
-            json!({"message": "Claude needs your permission to use Bash"}),
+            json!({
+                "notification_type": "permission_prompt",
+                "message": "Claude needs your permission to use Bash",
+            }),
         )
         .unwrap();
         assert_eq!(asks.state, State::Waiting);
         assert_eq!(asks.doing, "Claude needs your permission to use Bash");
+        let form = |kind: &str| {
+            hook(
+                "Notification",
+                json!({"notification_type": kind, "message": "m"}),
+            )
+            .map(|u| u.state)
+        };
+        // Only notices that wait for the user put the session waiting.
+        assert_eq!(form("elicitation_dialog"), Some(State::Waiting));
+        assert_eq!(form("elicitation_url_dialog"), Some(State::Waiting));
+        assert_eq!(form("idle_prompt"), None);
+        assert_eq!(form("auth_success"), None);
+        assert_eq!(form("agent_completed"), None);
+        // Claude Code before notification types: every notice waits.
+        assert_eq!(
+            hook("Notification", json!({"message": "m"})).map(|u| u.state),
+            Some(State::Waiting)
+        );
         assert_eq!(hook("Stop", json!({})).unwrap().state, State::Done);
         assert_eq!(hook("SessionEnd", json!({})).unwrap().state, State::Ended);
         assert_eq!(hook("PreCompact", json!({})), None);
@@ -378,15 +409,13 @@ mod tests {
         assert_eq!(done.title, "Claude Code terminó");
         // The prompt it worked on, not what it last waited for.
         assert_eq!(done.subtitle, "ArakunHQ · arregla el build");
-        // A second Stop, or "waiting for your input" once done, is no news.
+        // A second Stop is no news.
         assert_eq!(s.update(update("a", State::Done, ""), NOW + 40), None);
-        assert_eq!(
-            s.update(
-                update("a", State::Waiting, "waiting for your input"),
-                NOW + 99
-            ),
-            None
-        );
+        // Waiting after done, told by hand, is news.
+        let again = s
+            .update(update("a", State::Waiting, "Review this"), NOW + 99)
+            .unwrap();
+        assert_eq!(again.subtitle, "ArakunHQ · Review this");
         let failed = s.update(update("b", State::Error, "sin red"), NOW).unwrap();
         assert_eq!(failed.kind, AlertKind::Error);
         assert_eq!(failed.title, "Claude Code falló");
@@ -416,5 +445,18 @@ mod tests {
         // Done ones go after a while; any that went silent for long, too.
         assert_eq!(s.rows(NOW + RECENT_SECS + 1).len(), 2);
         assert!(s.rows(NOW + STALE_SECS + 2).is_empty());
+    }
+
+    #[test]
+    fn says_when_rows_expire_with_no_new_update() {
+        let mut s = Sessions::default();
+        assert!(!s.expire(NOW));
+        s.update(update("done", State::Done, ""), NOW);
+        s.update(update("busy", State::Working, ""), NOW);
+        assert!(!s.expire(NOW + RECENT_SECS - 1));
+        assert!(s.expire(NOW + RECENT_SECS));
+        assert!(!s.expire(NOW + RECENT_SECS + 1));
+        assert!(s.expire(NOW + STALE_SECS));
+        assert!(s.rows(NOW + STALE_SECS).is_empty());
     }
 }

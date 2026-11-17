@@ -274,12 +274,12 @@ no build for Intel Macs or Linux on ARM yet; build from source there.
 
 ### Manual download
 
-Download the archive for your platform from
+Download the archive or disk image for your platform from
 [GitHub Releases](https://github.com/arakunhq/arakun/releases) and check it against
 `SHA256SUMS`. Release builds are built without the browser feature.
 
-Each archive also has a build provenance attestation. It shows that this repository's
-release workflow built the archive, and from which commit. Check it with the
+Each download also has a build provenance attestation. It shows that this repository's
+release workflow built it, and from which commit. Check it with the
 [GitHub CLI](https://cli.github.com):
 
 ```sh
@@ -294,8 +294,9 @@ freetype).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
 
-**macOS:** `arakun-<version>-macos-arm64.tar.gz` holds `Arakun.app`, signed with a
-Developer ID and notarized by Apple. Move it to `Applications` and open it.
+**macOS:** open `arakun-<version>-macos-arm64.dmg` and drag `Arakun.app` into
+`Applications`. The app and the disk image are signed with a Developer ID and notarized by
+Apple.
 
 Arakun does not bundle the agents. Install the ones you want to use:
 

@@ -25,12 +25,19 @@ For macOS it also writes:
 For the phone remote (phone/) it writes icon.svg, icon-192.png and icon-512.png
 (the tile), and apple-touch-icon.png and icon-maskable-512.png (full-bleed ink,
 which iOS and Android round or mask themselves).
+
+For the macOS disk image (tools/macos-dmg.py) it writes dmg-background.png and
+dmg-background@2x.png: the wordmark on ink, and a stage the app and the
+Applications link sit on, with an arrow from one to the other. Finder draws
+the icon names black in light mode and white in dark mode, whatever the
+background, so the stage is a grey both read on (about 4.5:1 each).
 Needs rsvg-convert.
 """
 import json
 import os
 import subprocess
 import sys
+import tempfile
 
 import re
 
@@ -44,6 +51,14 @@ SHIFT = (10.73, 10.68)
 # Apple's macOS icon grid: on a 1024 px canvas the tile is 824 px with a
 # 185.4 px corner radius, and a shadow below it (10 px down, 10 px blur, 30 %).
 MAC_CANVAS, MAC_TILE, MAC_RADIUS = 1024, 824, 185.4
+# The disk image window's content, in points, and where the centres of the app
+# and the Applications link go. tools/macos-dmg.py reads these.
+DMG_SIZE = (640, 400)
+DMG_APP, DMG_APPLICATIONS = (168, 252), (472, 252)
+DMG_ICON_SIZE = 128
+# The stage: from light at the top to dark at the bottom, around the grey
+# where black and white names both read about 4.5:1 (#78746b).
+DMG_STAGE = ("#85807a", "#6f6b63")
 
 
 def face():
@@ -169,6 +184,47 @@ def icon_composer(parts):
     print(f"brand-logo: wrote {os.path.relpath(icon, ROOT)}", file=sys.stderr)
 
 
+def dmg_svg(parts):
+    """The disk image background, in points. The stage runs past the bottom
+    edge: the window's title bar takes some of its height, and how much
+    differs between macOS versions, so the bottom must look right cut short."""
+    w, h = DMG_SIZE
+    (ax, cy), (bx, _) = DMG_APP, DMG_APPLICATIONS
+    mark = 44
+    k = mark / 196
+    # The arrow runs between the icons' edges, with room for the tiles' shadow.
+    start, end = ax + DMG_ICON_SIZE / 2 + 16, bx - DMG_ICON_SIZE / 2 - 22
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
+<defs><linearGradient id="stage" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="{DMG_STAGE[0]}"/><stop offset="1" stop-color="{DMG_STAGE[1]}"/></linearGradient></defs>
+<rect width="{w}" height="{h}" fill="{TILE}"/>
+<g transform="translate({222 - 2 * k:.3f} {34 - 2 * k:.3f}) scale({k:.5f})">{glyph(parts, True, PAPER)}</g>
+<text x="270" y="66" font-family="Geist" font-size="30" font-weight="600" fill="{PAPER}" letter-spacing="-0.6">Arakun</text>
+<text x="{w / 2:g}" y="104" font-family="Geist" font-size="13" fill="#8a867d" text-anchor="middle">Drag Arakun into Applications to install it</text>
+<rect x="16" y="132" width="{w - 32}" height="{h}" rx="22" fill="url(#stage)"/>
+<rect x="16.5" y="132.5" width="{w - 33}" height="{h}" rx="21.5" fill="none" stroke="#ffffff" stroke-opacity="0.12"/>
+<line x1="{start:g}" y1="{cy}" x2="{end - 6:g}" y2="{cy}" stroke="{PAPER}" stroke-width="3" stroke-linecap="round" stroke-dasharray="0.1 9"/>
+<path d="M{end - 12:g} {cy - 11} L{end:g} {cy} L{end - 12:g} {cy + 11}" fill="none" stroke="{AMBER}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>'''
+
+
+def dmg_background(parts, brand):
+    """Renders dmg_svg at 1x and 2x with the repository's Geist, not whatever
+    fonts this machine has."""
+    with tempfile.TemporaryDirectory() as tmp:
+        conf = os.path.join(tmp, "fonts.conf")
+        with open(conf, "w") as f:
+            f.write(f'<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig>'
+                    f'<dir>{os.path.abspath(os.path.join(ROOT, "assets", "fonts"))}</dir>'
+                    f'<cachedir>{tmp}</cachedir></fontconfig>')
+        env = dict(os.environ, FONTCONFIG_FILE=conf)
+        for zoom, name in [(1, "dmg-background.png"), (2, "dmg-background@2x.png")]:
+            out = os.path.join(brand, name)
+            subprocess.run(["rsvg-convert", "-z", str(zoom), "-o", out],
+                           input=dmg_svg(parts).encode(), env=env, check=True)
+            print(f"brand-logo: wrote {os.path.relpath(out, ROOT)} ({zoom}x)", file=sys.stderr)
+
+
 def main():
     parts = face()
     brand = os.path.join(ROOT, "assets", "brand")
@@ -195,6 +251,7 @@ def main():
                    input=ascii_face(parts).encode(), check=True)
     print(f"brand-logo: wrote {os.path.relpath(out, ROOT)} ({ASCII_W} px wide)", file=sys.stderr)
     icon_composer(parts)
+    dmg_background(parts, brand)
 
 
 if __name__ == "__main__":

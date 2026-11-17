@@ -85,6 +85,9 @@ cat >"$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
+# The licence and notices travel with the app: the release disk image holds only the app.
+cp "$here/LICENSE" "$here/NOTICE" "$app/Contents/Resources/"
+
 if [ -n "$framework" ]; then
   mkdir -p "$app/Contents/Frameworks"
   ditto "$framework" "$app/Contents/Frameworks/Chromium Embedded Framework.framework"

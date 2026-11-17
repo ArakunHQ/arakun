@@ -74,7 +74,6 @@ main() {
   done
 
   command -v curl >/dev/null || die "curl is needed"
-  command -v tar >/dev/null || die "tar is needed"
 
   os=$(uname -s) arch=$(uname -m)
   case $os in
@@ -84,7 +83,7 @@ main() {
         arch=arm64
       fi
       [ "$arch" = arm64 ] || die "Intel Macs have no release build; build from source (see README.md)"
-      platform=macos-arm64
+      platform=macos-arm64 ext=dmg
       ;;
     Linux)
       case $arch in
@@ -92,7 +91,8 @@ main() {
         *) die "Linux on $arch has no release build; build from source (see README.md)" ;;
       esac
       check_glibc
-      platform=linux-x86_64
+      command -v tar >/dev/null || die "tar is needed"
+      platform=linux-x86_64 ext=tar.gz
       ;;
     MINGW* | MSYS* | CYGWIN*)
       die "on Windows, run in PowerShell: irm https://arakun.dev/install.ps1 | iex"
@@ -107,40 +107,48 @@ main() {
   fi
 
   name=arakun-$version-$platform
+  file=$name.$ext
   base=https://github.com/$repo/releases/download/$version
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
+  mnt=
+  # Detaches the disk image too, if the script stops while it is attached.
+  trap 'if [ -n "$mnt" ]; then hdiutil detach -quiet "$mnt" || true; fi; rm -rf "$tmp"' EXIT
 
   say "downloading Arakun $version for $platform"
-  curl -fSL --progress-bar -o "$tmp/$name.tar.gz" "$base/$name.tar.gz" ||
-    die "could not download $base/$name.tar.gz (does $version have a $platform build?)"
+  curl -fSL --progress-bar -o "$tmp/$file" "$base/$file" ||
+    die "could not download $base/$file (does $version have a $platform build?)"
   curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" ||
     die "could not download $base/SHA256SUMS"
 
-  want=$(awk -v f="$name.tar.gz" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")
-  [ -n "$want" ] || die "$name.tar.gz is not listed in SHA256SUMS"
-  have=$(sha256 "$tmp/$name.tar.gz")
-  [ "$have" = "$want" ] || die "checksum mismatch for $name.tar.gz (expected $want, got $have)"
+  want=$(awk -v f="$file" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")
+  [ -n "$want" ] || die "$file is not listed in SHA256SUMS"
+  have=$(sha256 "$tmp/$file")
+  [ "$have" = "$want" ] || die "checksum mismatch for $file (expected $want, got $have)"
 
-  mkdir "$tmp/x"
-  tar -C "$tmp/x" -xzf "$tmp/$name.tar.gz"
   bindir=$HOME/.local/bin
   mkdir -p "$bindir"
 
   if [ "$platform" = macos-arm64 ]; then
-    [ -d "$tmp/x/$name/Arakun.app" ] || die "the archive has no Arakun.app"
+    mnt=$tmp/mnt
+    hdiutil attach -quiet -readonly -nobrowse -noautoopen -mountpoint "$mnt" "$tmp/$file" ||
+      die "could not open $file"
+    [ -d "$mnt/Arakun.app" ] || die "the disk image has no Arakun.app"
     apps=$HOME/Applications
     app=$apps/Arakun.app
     mkdir -p "$apps"
-    # Moved next to the old app first, so the swap is two renames on one disk.
+    # Copied next to the old app first, so the swap is two renames on one disk.
     rm -rf "$apps/.Arakun.app.new"
-    mv "$tmp/x/$name/Arakun.app" "$apps/.Arakun.app.new"
+    ditto "$mnt/Arakun.app" "$apps/.Arakun.app.new"
+    hdiutil detach -quiet "$mnt" || true
+    mnt=
     rm -rf "$app"
     mv "$apps/.Arakun.app.new" "$app"
     ln -sfn "$app/Contents/MacOS/arakun" "$bindir/arakun"
     say "installed Arakun.app in $apps, and arakun in $bindir"
     uninstall="rm -rf ~/Applications/Arakun.app ~/.local/bin/arakun"
   else
+    mkdir "$tmp/x"
+    tar -C "$tmp/x" -xzf "$tmp/$file"
     [ -f "$tmp/x/$name/arakun" ] || die "the archive has no arakun binary"
     # A rename, so an Arakun that is running keeps its old binary.
     cp "$tmp/x/$name/arakun" "$bindir/.arakun.new"

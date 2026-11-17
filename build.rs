@@ -46,17 +46,17 @@ fn copy_cef_runtime() {
         println!("cargo::warning=no build folder above {}", out_dir.display());
         return;
     };
-    // Again when CEF changes, or when the copy is deleted.
-    println!(
-        "cargo::rerun-if-changed={}",
-        cef_dir.join("libcef.dll").display()
-    );
-    println!(
-        "cargo::rerun-if-changed={}",
-        profile.join("libcef.dll").display()
-    );
+    // Again when CEF changes. copy_files watches each copy, for when one is deleted.
+    let libcef = cef_dir.join("libcef.dll");
+    println!("cargo::rerun-if-changed={}", libcef.display());
+    // Written only when everything is copied. Cargo runs this script again while it is
+    // missing, so a failed copy is retried on the next build.
+    let stamp = out_dir.join("cef-runtime-copied");
+    println!("cargo::rerun-if-changed={}", stamp.display());
+    let _ = std::fs::remove_file(&stamp);
     let copied = copy_files(&cef_dir, profile)
-        .and_then(|()| copy_files(&cef_dir.join("locales"), &profile.join("locales")));
+        .and_then(|()| copy_files(&cef_dir.join("locales"), &profile.join("locales")))
+        .and_then(|()| write_stamp(&stamp, &libcef));
     // A running arakun.exe keeps libcef.dll open; the build itself still works.
     if let Err(e) = copied {
         println!(
@@ -68,6 +68,10 @@ fn copy_cef_runtime() {
 
 /// Copies the files (not the folders) of `from` into `to`, skipping those already there
 /// with the same size and modification time.
+///
+/// Cargo runs the script again when a watched file is newer than the start of its last
+/// run. So each copy and the stamp keep the (older) time of their source, not the time
+/// they were written; otherwise every build would run this script again.
 fn copy_files(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
@@ -77,12 +81,24 @@ fn copy_files(from: &Path, to: &Path) -> std::io::Result<()> {
             continue;
         }
         let dest = to.join(entry.file_name());
-        let same = std::fs::metadata(&dest).is_ok_and(|old| {
-            old.len() == meta.len() && old.modified().ok() == meta.modified().ok()
-        });
+        println!("cargo::rerun-if-changed={}", dest.display());
+        let modified = meta.modified()?;
+        let same = std::fs::metadata(&dest)
+            .is_ok_and(|old| old.len() == meta.len() && old.modified().ok() == Some(modified));
         if !same {
             std::fs::copy(entry.path(), &dest)?;
+            // Windows keeps the time when copying; other hosts (cross builds) don't.
+            std::fs::File::options()
+                .write(true)
+                .open(&dest)?
+                .set_modified(modified)?;
         }
     }
     Ok(())
+}
+
+/// See copy_files for why the stamp takes the time of `like`.
+fn write_stamp(stamp: &Path, like: &Path) -> std::io::Result<()> {
+    let modified = std::fs::metadata(like)?.modified()?;
+    std::fs::File::create(stamp)?.set_modified(modified)
 }

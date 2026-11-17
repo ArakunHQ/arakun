@@ -15,6 +15,10 @@ name: Release
 # moves the tag to the new commit, so nobody has to force-push a tag. Pushing
 # a tag by hand still works too.
 #
+# A release waits for approval twice, from a required reviewer of the
+# environment: the tag job (`release-tagging`) and the publish job
+# (`release-signing`). Approve each under "Review deployments" on the run.
+#
 # The tag job pushes with a token from the release tagger GitHub App, the
 # only actor besides admins that the `releases` tag ruleset lets create or
 # move v* tags. The workflow token cannot (GitHub does not accept GitHub

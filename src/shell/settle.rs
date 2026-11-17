@@ -36,7 +36,9 @@ impl Shell {
             .projects
             .iter()
             .flat_map(|p| &p.environments)
-            .filter(|e| e.sync.github && e.sync.gh)
+            // The main checkout sits on the default branch: `--head main` would
+            // match any merged pull request opened from a fork's `main`.
+            .filter(|e| !e.is_checkout && e.sync.github && e.sync.gh)
             .filter_map(|e| Some((e.path.clone(), e.sync.branch.clone()?)))
             .collect();
         self.settle.last = Some(Instant::now());

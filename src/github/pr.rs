@@ -544,7 +544,9 @@ fn fetch_thread_states(item: &ItemRef) -> Result<HashMap<u64, ThreadState>, Prob
     ))
 }
 
-/// The id of every review thread still open, to resolve them.
+/// The id of every review thread still open, to resolve them. Only the first
+/// 100 threads are read: the merge counts as settled anyway, and a pull
+/// request with more is rare.
 const OPEN_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){\
 pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved}}}}}";
 
@@ -570,6 +572,11 @@ fn open_thread_ids(answer: &Value) -> Vec<String> {
 /// Resolves every review thread still open on a pull request, for one that was
 /// merged. Returns how many it resolved; the first failure stops it.
 pub fn resolve_open_threads(item: &ItemRef) -> Result<usize, Problem> {
+    // A test build shares the person's real gh session: it must not change
+    // threads on GitHub.
+    if super::read_only() {
+        return Ok(0);
+    }
     let (owner, name) = item.repo.split_once('/').unwrap_or((&item.repo, ""));
     let out = super::gh_out(&[
         "api",

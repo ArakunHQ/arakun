@@ -43,7 +43,10 @@ pub(super) struct Who {
 /// One row of the list.
 #[derive(Clone, Debug)]
 pub(super) struct Row {
-    pub item: ItemRef,
+    /// None for a notice about no pull request or issue (a release, a run).
+    pub item: Option<ItemRef>,
+    /// The queue's entry behind the row; board rows find theirs when opened.
+    pub entry: Option<Entry>,
     pub title: String,
     /// What comes next, or the last thing that happened.
     pub line: String,
@@ -55,6 +58,25 @@ pub(super) struct Row {
     pub color: Hsla,
     /// A failure: its dot says so in red.
     pub broken: bool,
+}
+
+impl Row {
+    /// The key the picked entry is matched on.
+    fn key(&self) -> String {
+        match (&self.entry, &self.item) {
+            (Some(e), _) => e.key(),
+            (None, Some(i)) => crate::github::queue::key_of(i),
+            (None, None) => String::new(),
+        }
+    }
+
+    /// "#148 Title", or the title alone for a notice.
+    fn hint(&self) -> String {
+        match &self.item {
+            Some(i) => format!("#{} {}", i.number, self.title),
+            None => self.title.clone(),
+        }
+    }
 }
 
 /// A group of rows under its heading. Folded ones show one line.
@@ -78,7 +100,8 @@ fn board_sections(b: &Board, now_open: bool) -> Vec<Section> {
             .into_iter()
             .filter_map(|(p, nested)| {
                 Some(Row {
-                    item: p.item_ref()?,
+                    item: Some(p.item_ref()?),
+                    entry: None,
                     title: p.title.clone(),
                     line: p.line(),
                     who: (!p.lo_tiene.login.is_empty() || p.lo_tiene.tipo != Tipo::Otro).then(
@@ -113,7 +136,8 @@ fn board_sections(b: &Board, now_open: bool) -> Vec<Section> {
         .iter()
         .filter_map(|h| {
             Some(Row {
-                item: h.item_ref()?,
+                item: Some(h.item_ref()?),
+                entry: None,
                 title: h.title.clone(),
                 line: String::new(),
                 who: None,
@@ -127,7 +151,7 @@ fn board_sections(b: &Board, now_open: bool) -> Vec<Section> {
     if !done.is_empty() {
         let hint = done
             .first()
-            .map(|r| format!("último: #{} {}", r.item.number, r.title))
+            .map(|r| format!("último: {}", r.hint()))
             .unwrap_or_default();
         out.push(Section {
             id: "hecho",
@@ -154,8 +178,7 @@ fn estado_id(e: Estado) -> &'static str {
 }
 
 /// A queue row as a Bandeja row.
-fn queue_row(e: &Entry, p: &crate::github::queue::Placed) -> Option<Row> {
-    let item = e.item.clone()?;
+fn queue_row(e: &Entry, p: &crate::github::queue::Placed) -> Row {
     let color = match (p.group, p.lane) {
         (Group::NeedsReview | Group::Mentions, _) | (_, Lane::OnYou) => theme::needs_you(),
         (Group::Ready, _) => theme::success().into(),
@@ -167,8 +190,9 @@ fn queue_row(e: &Entry, p: &crate::github::queue::Placed) -> Option<Row> {
     } else {
         p.author.clone()
     };
-    Some(Row {
-        item,
+    Row {
+        item: e.item.clone(),
+        entry: Some(e.clone()),
         title: e.title.clone(),
         line: p.sub.clone(),
         who: (!who.is_empty()).then_some(Who {
@@ -179,7 +203,7 @@ fn queue_row(e: &Entry, p: &crate::github::queue::Placed) -> Option<Row> {
         nested: false,
         color,
         broken: p.checks == Some(crate::github::pr::CheckState::Failed),
-    })
+    }
 }
 
 impl GitHubView {
@@ -195,10 +219,7 @@ impl GitHubView {
             // No board: the queue's groups, done today folded at the end.
             let mut out = Vec::new();
             for group in Group::ALL {
-                let rows: Vec<Row> = q
-                    .group(group)
-                    .filter_map(|(e, p)| queue_row(e, p))
-                    .collect();
+                let rows: Vec<Row> = q.group(group).map(|(e, p)| queue_row(e, p)).collect();
                 if rows.is_empty() {
                     continue;
                 }
@@ -206,7 +227,7 @@ impl GitHubView {
                 let hint = rows
                     .first()
                     .filter(|_| done)
-                    .map(|r| format!("último: #{} {}", r.item.number, r.title))
+                    .map(|r| format!("último: {}", r.hint()))
                     .unwrap_or_default();
                 out.push(Section {
                     id: group_id(group),
@@ -235,17 +256,14 @@ impl GitHubView {
                     .as_ref()
                     .is_none_or(|i| b.find(&i.repo, i.number).is_none())
             })
-            .filter_map(|(e, p)| queue_row(e, p))
+            .map(|(e, p)| queue_row(e, p))
             .collect();
         if !more.is_empty() {
             let at = out
                 .iter()
                 .position(|s| s.id == "hecho")
                 .unwrap_or(out.len());
-            let hint = more
-                .first()
-                .map(|r| format!("#{} {}", r.item.number, r.title))
-                .unwrap_or_default();
+            let hint = more.first().map(Row::hint).unwrap_or_default();
             out.insert(
                 at,
                 Section {
@@ -267,15 +285,28 @@ impl GitHubView {
             .into_iter()
             .filter(|s| s.fold != Some(false))
             .flat_map(|s| {
-                let cap = if s.fold.is_some() {
-                    FOLD_MAX
-                } else {
-                    usize::MAX
-                };
+                let cap = self.fold_cap(&s);
                 s.rows.into_iter().take(cap)
             })
-            .map(|r| self.entry_for(&r.item, &r.title, cx))
+            .filter_map(|r| self.row_entry(&r, cx))
             .collect()
+    }
+
+    /// How many rows a section shows: a folded one stops at FOLD_MAX until
+    /// the user asks for the rest.
+    fn fold_cap(&self, s: &Section) -> usize {
+        if s.fold.is_some() && !self.fold_full.contains(s.id) {
+            FOLD_MAX
+        } else {
+            usize::MAX
+        }
+    }
+
+    /// The entry a row opens.
+    fn row_entry(&self, r: &Row, cx: &App) -> Option<Entry> {
+        r.entry
+            .clone()
+            .or_else(|| Some(self.entry_for(r.item.as_ref()?, &r.title, cx)))
     }
 
     /// The queue's entry for `item`, or one made for it: a pull request the
@@ -312,10 +343,9 @@ impl GitHubView {
 
     pub(super) fn render_bandeja(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let sections = self.sections(cx);
-        let picked = self
-            .item()
-            .filter(|_| self.sheet_open)
-            .map(|i| crate::github::queue::key_of(&i));
+        // J and K move the pick with the sheet closed: the row shows what
+        // Enter opens.
+        let picked = self.picked.as_ref().map(Entry::key);
         let mut list = div()
             .flex()
             .flex_col()
@@ -654,25 +684,29 @@ impl GitHubView {
                 }
             }
         }
-        let folded = s.fold.is_some();
-        let past = count.saturating_sub(FOLD_MAX);
-        for r in s
-            .rows
-            .into_iter()
-            .take(if folded { FOLD_MAX } else { usize::MAX })
-        {
-            let selected = picked == Some(crate::github::queue::key_of(&r.item).as_str());
+        let cap = self.fold_cap(&s);
+        let past = count.saturating_sub(cap);
+        let id = s.id;
+        for r in s.rows.into_iter().take(cap) {
+            let selected = picked == Some(r.key().as_str());
             col = col.child(self.render_bandeja_row(*ix, r, selected, cx));
             *ix += 1;
         }
-        if folded && past > 0 {
+        if past > 0 {
             col = col.child(
                 div()
+                    .id(("gh-fold-all", *ix))
                     .px(crate::ui::sp(12.))
                     .pt(crate::ui::sp(4.))
                     .ty(Type::Caption)
                     .text_color(theme::text_faint())
-                    .child(format!("y {past} más")),
+                    .cursor_pointer()
+                    .hover(|st| st.text_color(theme::text()))
+                    .child(format!("Ver {past} más"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.fold_full.insert(id);
+                        cx.notify();
+                    })),
             );
         }
         col.into_any_element()
@@ -686,8 +720,12 @@ impl GitHubView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let face = r.who.as_ref().map(|w| self.who_face(w, 20., cx));
-        let item = r.item.clone();
-        let title = r.title.clone();
+        let entry = self.row_entry(&r, cx);
+        let number = r
+            .item
+            .as_ref()
+            .map(|i| format!("#{}", i.number))
+            .unwrap_or_default();
         div()
             .id(("gh-bandeja-row", ix))
             .flex()
@@ -713,7 +751,7 @@ impl GitHubView {
                     }),
             )
             .child(
-                super::mono(format!("#{}", r.item.number), theme::text_faint())
+                super::mono(number, theme::text_faint())
                     .flex_none()
                     .w(px(44.)),
             )
@@ -758,7 +796,9 @@ impl GitHubView {
                     .child(super::mono(r.since.clone(), theme::text_faint())),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.open_row(&item, &title, cx);
+                if let Some(e) = entry.clone() {
+                    this.select(e, true, cx);
+                }
                 window.focus(&this.focus, cx);
             }))
             .into_any_element()

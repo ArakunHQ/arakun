@@ -887,12 +887,17 @@ impl Pilot {
         cx.notify();
     }
 
-    /// Every login a card shows, for their pictures.
+    /// Every login a card or the board shows, for their pictures.
     pub fn people(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for i in self.shown() {
-            if !i.author.is_empty() && !out.contains(&i.author) {
-                out.push(i.author.clone());
+        let board = self.board.iter().flat_map(|b| &b.prs);
+        let logins = self
+            .shown()
+            .map(|i| i.author.as_str())
+            .chain(board.flat_map(|p| [p.author.as_str(), p.lo_tiene.login.as_str()]));
+        for login in logins {
+            if !login.is_empty() && !out.iter().any(|o| o == login) {
+                out.push(login.to_string());
             }
         }
         out
@@ -1178,6 +1183,24 @@ mod tests {
         assert_eq!(e.unwrap().admin_token, None);
         assert!(parse_config(br#"{"url": "https://p.dev", "token": ""}"#).is_none());
         assert!(parse_config(br#"{"url": "file:///etc", "token": "t"}"#).is_none());
+        for local in [
+            "http://localhost:8787",
+            "http://127.0.0.1",
+            "http://[::1]:8787/",
+        ] {
+            let json = format!(r#"{{"url": "{local}", "token": "t"}}"#);
+            assert!(parse_config(json.as_bytes()).is_some(), "{local}");
+        }
+        for remote in [
+            "http://pilot.example.dev",
+            "http://localhost.example.dev",
+            "http://127.0.0.1.example.dev",
+            "http://localhost@evil.dev",
+            "http://[::1]evil.dev",
+        ] {
+            let json = format!(r#"{{"url": "{remote}", "token": "t"}}"#);
+            assert!(parse_config(json.as_bytes()).is_none(), "{remote}");
+        }
         assert!(parse_config(b"nope").is_none());
     }
 

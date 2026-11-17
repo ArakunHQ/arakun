@@ -676,14 +676,7 @@ impl GitHubView {
                     ),
             )
             .when(d.opciones.is_empty() && sent.is_none(), |el| {
-                el.child(
-                    div()
-                        .pl(crate::ui::sp(18.))
-                        .ty(Type::Label)
-                        .font_weight(FontWeight::NORMAL)
-                        .text_color(theme::text_muted())
-                        .child("pilot no dejó respuestas listas: contéstale en la caja de abajo."),
-                )
+                el.child(self.decision_text_row(&id, sending, cx))
             })
             .when(!d.opciones.is_empty() && sent.is_none(), |el| {
                 el.child(buttons)
@@ -738,6 +731,66 @@ impl GitHubView {
             .into_any_element()
     }
 
+    /// A question without ready answers: the user's own words go to pilot,
+    /// not to the pull request's comments.
+    fn decision_text_row(&self, id: &str, sending: bool, cx: &mut Context<Self>) -> AnyElement {
+        let row = div()
+            .id("gh-decision-text")
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .pl(crate::ui::sp(18.));
+        if self.pilot_other.as_deref() != Some(id) {
+            let oid = id.to_string();
+            return row
+                .child(
+                    div()
+                        .ty(Type::Label)
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme::text_muted())
+                        .child("pilot no dejó respuestas listas."),
+                )
+                .child(
+                    ui::key_pill(
+                        "gh-decision-answer",
+                        None,
+                        "Responder…",
+                        None,
+                        PillKind::Normal,
+                        !sending,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.pilot_open_other(&oid, window, cx)
+                    })),
+                )
+                .into_any_element();
+        }
+        row
+            // A click in the line stays in it and keeps the focus.
+            .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .child(
+                ui::field()
+                    .flex_1()
+                    .min_w_0()
+                    .child(self.pilot_input.clone()),
+            )
+            .child(
+                ui::key_pill(
+                    "gh-decision-send",
+                    None,
+                    "Enviar",
+                    Some("↵"),
+                    PillKind::Normal,
+                    !sending,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.pilot_send_other(cx);
+                })),
+            )
+            .into_any_element()
+    }
+
     /// After pilot took the answer and dropped the question: what was said.
     fn answered_line(&self, b: &BoardPr) -> Option<AnyElement> {
         let key = crate::github::queue::key_of(&b.item_ref()?);
@@ -772,12 +825,17 @@ impl GitHubView {
             cx.notify();
             return;
         }
-        self.decision_sent.insert(id.to_string(), o.texto.clone());
+        self.note_decision_answer(id, o.texto.clone());
+        self.pilot_answer(id, Answer::Opcion(o.id), cx);
+    }
+
+    /// Remembers what the user told pilot, to show it after the question goes.
+    pub(super) fn note_decision_answer(&mut self, id: &str, texto: String) {
+        self.decision_sent.insert(id.to_string(), texto);
         if let Some(item) = self.item() {
             self.answered_on
                 .insert(crate::github::queue::key_of(&item), id.to_string());
         }
-        self.pilot_answer(id, Answer::Opcion(o.id), cx);
     }
 
     /// The tabs under the head: what pilot did, the conversation, checks, files.
@@ -1063,6 +1121,7 @@ impl GitHubView {
         self.note = None;
         cx.notify();
         let sent_text = text.clone();
+        let on = self.item();
         cx.spawn(async move |this, cx| {
             let t = task.clone();
             let sent = cx
@@ -1081,8 +1140,16 @@ impl GitHubView {
                             "pilot recibió la tarea{id}: «{}». Lo verás en Qué hizo pilot.",
                             task.title
                         )));
-                        if this.comment.read(cx).text() == sent_text {
+                        // Text typed since, or for another item, stays.
+                        if super::same_item(this.item().as_ref(), on.as_ref())
+                            && this.comment.read(cx).text() == sent_text
+                        {
                             this.comment.update(cx, |i, cx| i.set_text("", cx));
+                        } else if let Some(on) = &on {
+                            let key = crate::github::queue::key_of(on);
+                            if this.comment_drafts.get(&key) == Some(&sent_text) {
+                                this.comment_drafts.remove(&key);
+                            }
                         }
                         this.pilot.update(cx, |p, cx| p.refresh(cx));
                     }

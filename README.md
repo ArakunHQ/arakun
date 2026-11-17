@@ -166,11 +166,16 @@ terminal-only. The status line and keybindings from your settings don't apply in
 - **Pull request agent.** With a pull request agent on a server of your own
   (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set;
   `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/board` and
-  `GET <url>/items` every minute. The board fills the Bandeja; the queue's rows pilot
-  doesn't follow fold under "Más en GitHub". When pilot asks you something, the sheet
-  shows the question with one button per answer (`POST <url>/items/<id>/answer`), and
-  the notice in the island opens that sheet over whatever window is in front (Esc gives
-  it back). On your own pull requests, "Pedirle a pilot" in the sheet sends what you
+  `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
+  starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
+  The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
+  and `[::1]`, so the tokens never cross a network unencrypted. The board fills the
+  Bandeja; the queue's rows pilot doesn't follow fold under "Más en GitHub". When pilot
+  asks you something, the sheet shows the question with one button per answer, or
+  "Responder…" for your own words (`POST <url>/items/<id>/answer`), and the notice in
+  the island opens that sheet over whatever window is in front (Esc gives it back).
+  Without a board, the notice opens the pull request's sheet, which doesn't show the
+  question: answer it on pilot's card in the Bandeja. On your own pull requests, "Pedirle a pilot" in the sheet sends what you
   typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
   While the Worker has no board, its cards show at the top of the queue under "Tu
   agente", with approve and request changes going through the same second click. What you saw and dealt with is

@@ -651,7 +651,6 @@ impl Palette {
                     kit::field()
                         .flex_1()
                         .min_w_0()
-                        .h(px(30.))
                         .child(icon("git-branch", 13.).text_color(theme::text_subtle()))
                         .child(div().flex_1().min_w_0().child(self.cloud_branch.clone())),
                 )

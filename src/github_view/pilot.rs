@@ -83,9 +83,9 @@ fn moved_text(number: u64, read: &str, now: &str) -> String {
     )
 }
 
-/// The review a card sends, approval or change request: only for the commit
-/// the agent read, and only while it is still the head. GitHub gets the SHA
-/// just checked, never the Worker's.
+/// The review a card sends: only for the commit the agent read, and only
+/// while it is still the head. GitHub gets the full SHA, since a card may
+/// carry a short one.
 fn pinned_job(item: &ItemRef, verdict: Verdict, body: &str, head: &str) -> Result<(), Problem> {
     let now = pr::head_sha(item)?;
     if !pilot::same_commit(&now, head) {
@@ -656,8 +656,13 @@ impl GitHubView {
         cx.notify();
     }
 
-    /// "Other answer…": a line under the card for the user's own words.
-    fn pilot_open_other(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// "Otra respuesta…": a line under the card for the user's own words.
+    pub(super) fn pilot_open_other(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.pilot_other.as_deref() != Some(id) {
             self.pilot_other = Some(id.to_string());
             self.pilot_input.update(cx, |i, cx| i.set_text("", cx));
@@ -677,6 +682,10 @@ impl GitHubView {
                 .insert(id, "Write your answer first.".into());
             cx.notify();
             return;
+        }
+        let decision = self.board_pr(cx).and_then(|b| b.open_decision().cloned());
+        if decision.is_some_and(|d| d.item == id) {
+            self.note_decision_answer(&id, text.clone());
         }
         self.pilot_answer(&id, Answer::Texto(text), cx);
     }
@@ -833,11 +842,8 @@ impl GitHubView {
         let id = act.id.clone();
         let from = act.item.clone();
         let after = move |this: &mut Self, cx: &mut Context<Self>| {
-            // Another card's or pull request's strip may be up now: only
-            // this card's goes.
-            if this.pilot_act.as_ref().is_some_and(|a| a.id == id)
-                && this.item().as_ref() == Some(&from)
-            {
+            // Another pull request may be picked now, with its own strip.
+            if this.item().as_ref() == Some(&from) {
                 this.confirm = None;
             }
             this.pilot_finish(&id, cx);
@@ -846,7 +852,7 @@ impl GitHubView {
         match c {
             Confirm::Approve => self.write(
                 "approve",
-                "Approved.".into(),
+                "Visto bueno enviado.".into(),
                 move |i| pinned_job(i, Verdict::Approve, &body, &head),
                 after,
                 cx,
@@ -860,7 +866,13 @@ impl GitHubView {
                 self.write(
                     "request-changes",
                     "Changes requested.".into(),
-                    move |i| pinned_job(i, Verdict::RequestChanges, &body, &head),
+                    move |i| {
+                        if pinned {
+                            pinned_job(i, Verdict::RequestChanges, &body, &head)
+                        } else {
+                            pr::review(i, Verdict::RequestChanges, &body, "")
+                        }
+                    },
                     after,
                     cx,
                 )

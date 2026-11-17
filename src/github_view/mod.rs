@@ -273,6 +273,8 @@ pub struct GitHubView {
     done_open: bool,
     /// "Más en GitHub" (the queue's rows pilot doesn't follow) is unfolded.
     more_open: bool,
+    /// Folded groups the user asked to show past their first rows.
+    fold_full: HashSet<&'static str>,
     /// Decisions answered from the sheet, by item id: the words of the
     /// answer, until the board stops asking.
     decision_sent: HashMap<String, String>,
@@ -366,7 +368,7 @@ pub struct GitHubView {
     pilot_sent: Option<(String, gpui::Task<()>)>,
     _pilot_sub: Subscription,
     _subs: Vec<Subscription>,
-    /// The body input's, replaced with the input.
+    /// Apart from `_subs`: it is replaced with each new body input.
     _body_sub: Option<Subscription>,
 }
 
@@ -462,10 +464,14 @@ impl GitHubView {
             };
             this.pilot_open.retain(|id| shown.contains(id));
             this.pilot_notes.retain(|id, _| shown.contains(id));
+            // The sheet answers the board's question with the same line.
+            let asked = this
+                .board_pr(cx)
+                .and_then(|b| b.open_decision().map(|d| d.item.clone()));
             if this
                 .pilot_other
                 .as_ref()
-                .is_some_and(|id| !shown.contains(id))
+                .is_some_and(|id| !shown.contains(id) && asked.as_ref() != Some(id))
             {
                 this.pilot_other = None;
             }
@@ -480,6 +486,7 @@ impl GitHubView {
             tab: Tab::Timeline,
             done_open: false,
             more_open: false,
+            fold_full: HashSet::new(),
             decision_sent: HashMap::new(),
             answered_on: HashMap::new(),
             task_sending: false,
@@ -1188,8 +1195,6 @@ impl GitHubView {
             }
             _ => {}
         });
-        // Its own slot: the fixed ones in `_subs` (comment submit among them)
-        // stay whatever their number.
         self._body_sub = Some(sub);
     }
 

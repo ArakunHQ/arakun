@@ -925,13 +925,7 @@ impl GitHubView {
                 self.write(
                     "request-changes",
                     "Changes requested.".into(),
-                    move |i| {
-                        if pinned {
-                            pinned_job(i, Verdict::RequestChanges, &body, &head)
-                        } else {
-                            pr::review(i, Verdict::RequestChanges, &body, "")
-                        }
-                    },
+                    move |i| pinned_job(i, Verdict::RequestChanges, &body, &head),
                     after,
                     cx,
                 )

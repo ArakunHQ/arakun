@@ -280,13 +280,14 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
-/// The pull request `repo#number` names, else the one at `url`.
+/// The pull request `repo#number` names, else the one at `url`. An address
+/// from the Worker counts only on the host gh talks to.
 pub(super) fn pull_ref(repo: &str, number: u64, url: &str) -> Option<ItemRef> {
     let from_repo = (number > 0)
         .then(|| ItemRef::parse(&format!("{repo}#{number}")))
         .flatten();
     from_repo
-        .or_else(|| ItemRef::from_url(url))
+        .or_else(|| ItemRef::from_url_on(url, &super::pr::gh_host()))
         .map(|i| ItemRef {
             kind: ItemKind::Pull,
             ..i
@@ -298,7 +299,7 @@ impl Item {
     /// Worker reads other people's pull requests, so it never picks which
     /// repository an approval lands on: anything else names nothing.
     pub fn item_ref(&self) -> Option<ItemRef> {
-        pull_ref(&self.repo, self.number, &self.url)
+        pull_ref(&self.repo, self.number, &self.url).filter(|i| i.repo.eq_ignore_ascii_case(REPO))
     }
 
     /// Whether the tab's focus keeps it: a card about no repository always

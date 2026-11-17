@@ -928,8 +928,17 @@ impl ServersView {
             // A question with many options scrolls in its band rather
             // than squeezing the transcript.
             .children(self.render_asks(open, cx).map(|asks| {
+                // One scroll per question: the next starts at its top, not
+                // where the last was left.
+                let asked = match (&open.permission, &open.questions) {
+                    (Some(p), _) => format!("p:{}", p.title),
+                    (None, Some((id, _))) => format!("q:{id}:{}", self.answers.1.len()),
+                    (None, None) => String::new(),
+                };
                 div()
-                    .id("servers-asks")
+                    .id(gpui::ElementId::Name(
+                        format!("servers-asks-{}-{asked}", open.session).into(),
+                    ))
                     .flex()
                     .flex_col()
                     .flex_none()

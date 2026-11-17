@@ -286,7 +286,8 @@ impl ThreadView {
     pub fn queue_height(&self, cx: &App) -> f32 {
         let t = self.thread.read(cx);
         let background = !t.is_subagent_view() && !t.is_busy() && t.running_subagents() > 0;
-        let rows = t.queued().len()
+        // The queued messages scroll past five rows (`QUEUE_LIST_H`).
+        let rows = t.queued().len().min(5)
             + usize::from(t.stuck().is_some())
             + usize::from(t.check_offer().is_some())
             + usize::from(background);

@@ -1413,6 +1413,7 @@ impl GitHubView {
             "r" if pull => self.review_with_agent(cx),
             "u" if self.item().is_some() => self.catch_up(cx),
             "s" if self.item().is_some() => self.summarize(cx),
+            "d" if self.sheet_open && self.item().is_some() => self.toggle_details(cx),
             "enter" if self.picked.is_some() && !self.sheet_open => {
                 self.sheet_open = true;
                 cx.notify();

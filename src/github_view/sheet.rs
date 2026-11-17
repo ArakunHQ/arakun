@@ -196,8 +196,7 @@ impl GitHubView {
 
         // A short sheet folds its details to one line, so the tabs under
         // them keep most of the height.
-        let short = self.size.get().1 < SHEET_TALL;
-        let folded = self.details_open.map_or(short, |open| !open);
+        let folded = self.details_folded().0;
         let mut top = div()
             .flex()
             .flex_col()
@@ -278,7 +277,7 @@ impl GitHubView {
                 // Open details scroll and end mid-row: keep the toggle off them.
                 .when(!folded, |d| d.pt(crate::ui::sp(10.)))
                 .pb(crate::ui::sp(12.))
-                .child(self.details_toggle(folded, short, cx))
+                .child(self.details_toggle(folded, cx))
         });
         let content = div()
             .flex()
@@ -309,7 +308,7 @@ impl GitHubView {
 
     /// "All details" under folded details, "Fewer details" under unfolded
     /// ones; the choice holds for the next pull request too.
-    fn details_toggle(&self, folded: bool, short: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn details_toggle(&self, folded: bool, cx: &mut Context<Self>) -> AnyElement {
         let (label, glyph) = if folded {
             ("All details", "arrow-down01")
         } else {
@@ -326,12 +325,28 @@ impl GitHubView {
             .hover(|s| s.text_color(theme::text()))
             .child(label)
             .child(icon(glyph, 12.).text_color(theme::text_faint()))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                // Back to automatic once it matches what the height picks.
-                this.details_open = if folded == short { Some(folded) } else { None };
-                cx.notify();
+            .tooltip(ui::tip(if folded {
+                "All details (D)"
+            } else {
+                "Fewer details (D)"
             }))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_details(cx)))
             .into_any_element()
+    }
+
+    /// Whether the sheet's details are folded, and whether the height alone
+    /// would fold them.
+    fn details_folded(&self) -> (bool, bool) {
+        let short = self.size.get().1 < SHEET_TALL;
+        (self.details_open.map_or(short, |open| !open), short)
+    }
+
+    /// Folds the sheet's details, or unfolds them: the toggle and `D`.
+    pub(super) fn toggle_details(&mut self, cx: &mut Context<Self>) {
+        let (folded, short) = self.details_folded();
+        // Back to automatic once it matches what the height picks.
+        self.details_open = if folded == short { Some(folded) } else { None };
+        cx.notify();
     }
 
     /// Why GitHub's read of `item` failed, and "Try again".

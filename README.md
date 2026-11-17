@@ -156,7 +156,10 @@ terminal-only. The status line and keybindings from your settings don't apply in
   add a project too.
 - **Pull request sheet.** A row opens a sheet on the right with where the pull request
   stands, who has it, what comes next, the checks and the stack, then tabs for what
-  pilot did, the conversation, checks and files. The box at the bottom comments (Enter
+  pilot did, the conversation, checks and files. On a window under 1000 pixels tall the
+  details fold to one line (status, checks, review and merge) so the tabs keep the room;
+  "All details" (`D`) unfolds them and "Fewer details" folds them again, and the choice
+  stays for the next pull request. The box at the bottom comments (Enter
   or "Comment"), and says why when a comment doesn't go out. Approve, request changes
   and merge ask a second time, and an approval or a merge stops if new commits came
   after you looked.
@@ -784,8 +787,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
-  `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
-  GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an
+  `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `D` all or
+  fewer details, `O` open on GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an
   island notice opened over another tab too). While the sheet is closed, `J` / `K`
   only move through the list; while it is open, they open the next item. In the
   comment box, `Enter` sends the comment and `/` lists the actions

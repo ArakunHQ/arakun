@@ -18,9 +18,6 @@ the versions the release uses in a virtual environment:
     .venv-dmg/bin/pip install --require-hashes --no-deps --only-binary :all: \\
         -r tools/macos-dmg-requirements.txt
     .venv-dmg/bin/python tools/macos-dmg.py Arakun.app Arakun.dmg
-
-The image has free space left in it, so the release workflow can sign the app
-again inside it and staple the notarization ticket to it.
 """
 import os
 import subprocess
@@ -28,9 +25,6 @@ import sys
 import tempfile
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-# Room for the Developer ID signature and the stapled ticket, which are bigger
-# than the ad-hoc signature the app has here. Empty, so it compresses away.
-SLACK_SECTORS = 64 * 1024 * 1024 // 512
 # The window's height counts its title bar; the background is the content.
 TITLE_BAR = 28
 # The window's content in points, and the centres of the app and the
@@ -71,19 +65,13 @@ def main():
         "icon_size": ICON_SIZE,
         "text_size": 13,
         "icon_locations": {name: APP, "Applications": APPLICATIONS},
-        # Read-write, so it can be grown below before it is compressed.
+        # Read-write, converted below. The release workflow's notarize job
+        # makes room in it for the Developer ID signature itself.
         "format": "UDRW",
     }
     with tempfile.TemporaryDirectory() as tmp:
         rw = os.path.join(tmp, "rw.dmg")
         dmgbuild.build_dmg(rw, "Arakun", settings=settings)
-        # dmgbuild shrinks the file system to what it holds; grow it again.
-        # -limits prints the smallest, current and largest size, in sectors.
-        limits = [int(v) for v in hdiutil("resize", "-limits", rw).split() if v.isdigit()]
-        if len(limits) != 3:
-            sys.exit(f"macos-dmg: cannot read hdiutil resize -limits: {limits}")
-        current = limits[1]
-        hdiutil("resize", "-sectors", str(current + SLACK_SECTORS), rw)
         # LZFSE: smaller than zlib, and opens on every macOS the app runs on.
         if os.path.exists(dmg):
             os.remove(dmg)

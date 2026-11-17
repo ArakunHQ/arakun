@@ -510,13 +510,22 @@ jobs:
 
       # The app is signed and stapled inside the image, so the window layout
       # tools/macos-dmg.py made stays as it is and this job needs no code from
-      # the repository. The image has free space for the bigger signature and
-      # the ticket.
+      # the repository.
       - name: Open the image
         id: image
         run: |
           rw=$RUNNER_TEMP/rw.dmg
           hdiutil convert adhoc/*.dmg -format UDRW -o "$rw"
+          # codesign writes the signed copy of a file next to it before it
+          # replaces it, so the volume needs more free space than the biggest
+          # file: the CEF framework binary, about 300 MB. Without it codesign
+          # stops with "internal error in Code Signing subsystem". Package
+          # shrinks the image again.
+          # -limits prints the smallest, current and largest size, in sectors.
+          # read fails at the end of input without a newline; the count decides.
+          read -r -a limits < <(hdiutil resize -limits "$rw" | tr -cs '0-9' ' ') || true
+          [ "${#limits[@]}" = 3 ] || { echo "::error::cannot read hdiutil resize -limits: ${limits[*]}"; exit 1; }
+          hdiutil resize -sectors $(( limits[1] + 2 * 1024 * 1024 * 1024 / 512 )) "$rw"
           mnt=$RUNNER_TEMP/image
           hdiutil attach -nobrowse -noautoopen -mountpoint "$mnt" "$rw"
           echo "rw=$rw" >> "$GITHUB_OUTPUT"
@@ -624,6 +633,9 @@ jobs:
           rm -rf "$MNT/.fseventsd" "$MNT/.Trashes"
           # Spotlight can hold the volume for a moment.
           hdiutil detach "$MNT" || { sleep 5; hdiutil detach -force "$MNT"; }
+          # Gives back the room Open the image added, so the mounted volume is
+          # not mostly empty.
+          hdiutil resize -sectors min "$RW"
           mkdir dist
           dmg="dist/$(basename adhoc/*.dmg)"
           hdiutil convert "$RW" -format ULFO -o "$dmg"

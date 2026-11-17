@@ -588,8 +588,9 @@ jobs:
       #   RELEASE_SIGNING_KEY_PASSWORD  its password
       #
       # Its public half is assets/release-key.pub, also in both install
-      # scripts. A new key needs a new public key in all three, and a release
-      # an old updater can install first: it only trusts the old key.
+      # scripts and the README. They also accept assets/release-key-backup.pub,
+      # whose secret half is kept offline: if this key is lost or leaked, sign
+      # with the backup by hand, then ship a new key in a release it signs.
       - name: Install minisign
         run: |
           sudo apt-get update

@@ -360,7 +360,9 @@ signature shows the release was made by someone who holds that key, which only t
 release workflow can use: someone who can change a release on GitHub but has no key
 can't make the updater install anything. A missing or bad signature stops the update.
 The public key is built into Arakun and is
-[assets/release-key.pub](assets/release-key.pub).
+[assets/release-key.pub](assets/release-key.pub). A second key, kept offline, is
+accepted too ([assets/release-key-backup.pub](assets/release-key-backup.pub)), so
+releases can still be signed if the first one is ever lost.
 
 The install scripts check the signature only when a verifier is installed: `minisign`,
 or on Linux and macOS also OpenSSL 3 (macOS ships LibreSSL, so there it usually takes
@@ -380,6 +382,9 @@ Download the archive or disk image for your platform from
 ```sh
 minisign -Vm SHA256SUMS -P RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn
 ```
+
+If a release says it is signed with the backup key, check it with that one instead:
+`-P RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg`.
 
 Each download also has a build provenance attestation. It shows that this repository's
 release workflow built it, and from which commit. Check it with the

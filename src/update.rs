@@ -1,8 +1,8 @@
 //! Updates: a release build looks for a newer release on GitHub, downloads it,
 //! checks it against the release's `SHA256SUMS`, and puts it next to the
 //! installed app. `SHA256SUMS` must carry a signature by the release key
-//! (`assets/release-key.pub`), so a release changed by someone without that
-//! key is refused. The swap happens when Arakun quits (`apply_staged`), so the
+//! (`assets/release-key.pub`, or the offline backup next to it), so a release
+//! changed by someone without that key is refused. The swap happens when Arakun quits (`apply_staged`), so the
 //! running app never has its binary replaced under it, and the agents it starts
 //! meanwhile run the same version as the window.
 //!
@@ -29,9 +29,14 @@ const REPO: &str = "arakunhq/arakun";
 pub const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 /// A release download bigger than this is refused.
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
-/// The public half of the minisign key `release.yml` signs `SHA256SUMS` with.
-/// The install scripts carry the same key; a test keeps them in step.
-const RELEASE_KEY: &str = include_str!("../assets/release-key.pub");
+/// The minisign keys a release's `SHA256SUMS` may be signed with: the one
+/// `release.yml` uses, and a backup kept offline, so losing the first one does
+/// not strand every installed updater. The install scripts carry the same
+/// keys; a test keeps them in step.
+const RELEASE_KEYS: [&str; 2] = [
+    include_str!("../assets/release-key.pub"),
+    include_str!("../assets/release-key-backup.pub"),
+];
 
 /// Whether the release workflow built this binary.
 pub fn release_build() -> bool {
@@ -353,15 +358,23 @@ fn tag_from_url(url: &str) -> Option<String> {
     (!tag.is_empty() && !tag.contains('/')).then(|| tag.to_string())
 }
 
-/// Whether `sig` (a `SHA256SUMS.minisig`) is `key`'s signature of `sums`.
-/// Only the prehashed form `minisign` makes by default is accepted.
-fn signed(key: &str, sums: &[u8], sig: &str) -> Result<(), String> {
-    let key = minisign_verify::PublicKey::decode(key)
-        .map_err(|e| format!("the release key built into Arakun can't be read: {e}"))?;
+/// Whether `sig` (a `SHA256SUMS.minisig`) is a signature of `sums` by one of
+/// `keys`. Only the prehashed form `minisign` makes by default is accepted.
+fn signed(keys: &[&str], sums: &[u8], sig: &str) -> Result<(), String> {
     let sig = minisign_verify::Signature::decode(sig)
         .map_err(|e| format!("SHA256SUMS.minisig can't be read: {e}"))?;
-    key.verify(sums, &sig, false)
-        .map_err(|e| format!("SHA256SUMS is not signed with Arakun's release key ({e})"))
+    let mut error = String::from("no release key");
+    for key in keys {
+        let key = minisign_verify::PublicKey::decode(key)
+            .map_err(|e| format!("a release key built into Arakun can't be read: {e}"))?;
+        match key.verify(sums, &sig, false) {
+            Ok(()) => return Ok(()),
+            Err(e) => error = e.to_string(),
+        }
+    }
+    Err(format!(
+        "SHA256SUMS is not signed with Arakun's release key ({error})"
+    ))
 }
 
 /// The checksum `sums` (a `SHA256SUMS` file) lists for `file`.
@@ -450,7 +463,7 @@ fn stage(tag: &str, install: &Install) -> Result<(), String> {
     // Before any checksum in it is trusted. Every release after v0.3.0 is
     // signed, and the updater only installs newer ones than itself.
     let sig = fetch("SHA256SUMS.minisig")?;
-    signed(RELEASE_KEY, sums.as_bytes(), &sig).map_err(|e| format!("{tag}: {e}"))?;
+    signed(&RELEASE_KEYS, sums.as_bytes(), &sig).map_err(|e| format!("{tag}: {e}"))?;
     let want = listed(&sums, &file).ok_or_else(|| format!("{tag} has no {platform} build"))?;
 
     let work = crate::platform::app_dir().join("update-download");
@@ -848,24 +861,37 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
 
     #[test]
     fn only_a_signature_by_the_key_is_accepted() {
-        assert_eq!(signed(TEST_KEY, SUMS.as_bytes(), SIG), Ok(()));
+        assert_eq!(signed(&[TEST_KEY], SUMS.as_bytes(), SIG), Ok(()));
         // Someone who changed a checksum but has no key.
         let changed = SUMS.replace("abc123", "abc124");
-        assert!(signed(TEST_KEY, changed.as_bytes(), SIG).is_err());
-        assert!(signed(TEST_KEY, SUMS.as_bytes(), OTHER_KEY_SIG).is_err());
-        assert!(signed(TEST_KEY, SUMS.as_bytes(), LEGACY_SIG).is_err());
+        assert!(signed(&[TEST_KEY], changed.as_bytes(), SIG).is_err());
+        assert!(signed(&[TEST_KEY], SUMS.as_bytes(), OTHER_KEY_SIG).is_err());
+        assert!(signed(&[TEST_KEY], SUMS.as_bytes(), LEGACY_SIG).is_err());
         // A release with no signature: GitHub's 404 page, or nothing.
-        assert!(signed(TEST_KEY, SUMS.as_bytes(), "Not Found").is_err());
-        assert!(signed(TEST_KEY, SUMS.as_bytes(), "").is_err());
+        assert!(signed(&[TEST_KEY], SUMS.as_bytes(), "Not Found").is_err());
+        assert!(signed(&[TEST_KEY], SUMS.as_bytes(), "").is_err());
         // The trusted comment is signed too.
         let comment = SIG.replace("arakun v9.0.0", "arakun v9.0.1");
-        assert!(signed(TEST_KEY, SUMS.as_bytes(), &comment).is_err());
+        assert!(signed(&[TEST_KEY], SUMS.as_bytes(), &comment).is_err());
+        // Either key will do, whichever comes first.
+        assert_eq!(
+            signed(&[RELEASE_KEYS[0], TEST_KEY], SUMS.as_bytes(), SIG),
+            Ok(())
+        );
+        assert_eq!(
+            signed(&[TEST_KEY, RELEASE_KEYS[1]], SUMS.as_bytes(), SIG),
+            Ok(())
+        );
+        assert!(signed(&RELEASE_KEYS, SUMS.as_bytes(), SIG).is_err());
     }
 
     #[test]
-    fn the_release_key_is_the_same_everywhere() {
-        minisign_verify::PublicKey::decode(RELEASE_KEY).expect("assets/release-key.pub");
-        let b64 = RELEASE_KEY.lines().nth(1).unwrap().trim();
+    fn the_release_keys_are_the_same_everywhere() {
+        let [main, backup] = RELEASE_KEYS.map(|key| {
+            minisign_verify::PublicKey::decode(key).expect("assets/release-key*.pub");
+            key.lines().nth(1).unwrap().trim()
+        });
+        assert_ne!(main, backup);
         for (script, text) in [
             (
                 "tools/install-release.sh",
@@ -877,10 +903,12 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
             ),
             ("README.md", include_str!("../README.md")),
         ] {
-            assert!(
-                text.contains(b64),
-                "{script} does not carry the key in assets/release-key.pub"
-            );
+            for b64 in [main, backup] {
+                assert!(
+                    text.contains(b64),
+                    "{script} does not carry the key {b64} from assets/"
+                );
+            }
         }
     }
 

@@ -13,8 +13,9 @@
 set -eu
 
 repo=arakunhq/arakun
-# The minisign key release.yml signs SHA256SUMS with: assets/release-key.pub.
-release_key=RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn
+# The minisign keys SHA256SUMS may be signed with: the one release.yml uses
+# (assets/release-key.pub), and an offline backup (assets/release-key-backup.pub).
+release_keys="RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg"
 
 say() { printf 'arakun: %s\n' "$*"; }
 die() {
@@ -46,29 +47,42 @@ signed_release() {
   }'
 }
 
-# Checks SHA256SUMS ($1) against its signature ($2) with minisign, or with
-# OpenSSL 3 where minisign is missing, using the directory $3 for its files.
-# Returns 2 when there is neither. OpenSSL checks the signature of the file,
-# not the one of the trusted comment, which nothing here reads.
+# Checks SHA256SUMS ($1) against its signature ($2) by one of the release
+# keys, with minisign, or with OpenSSL 3 where minisign is missing, using the
+# directory $3 for its files. Returns 2 when there is neither.
 verify_sums() {
   if command -v minisign >/dev/null; then
-    minisign -V -q -P "$release_key" -m "$1" -x "$2" >/dev/null 2>&1
-    return
+    tool=minisign
+  else
+    case $(openssl version 2>/dev/null) in
+      "OpenSSL "[3-9]*) tool=openssl ;;
+      *) return 2 ;;
+    esac
   fi
-  case $(openssl version 2>/dev/null) in
-    "OpenSSL "[3-9]*) ;;
-    *) return 2 ;;
-  esac
+  for key in $release_keys; do
+    "verify_with_$tool" "$key" "$@" && return 0
+  done
+  return 1
+}
+
+# verify_with_minisign KEY SUMS SIG
+verify_with_minisign() {
+  minisign -V -q -P "$1" -m "$2" -x "$3" >/dev/null 2>&1
+}
+
+# verify_with_openssl KEY SUMS SIG DIR. It checks the signature of the file,
+# not the one of the trusted comment, which nothing here reads.
+verify_with_openssl() {
   # The key is "Ed", an 8-byte key id and the 32-byte Ed25519 key; the
   # signature is "ED", the key id and a 64-byte signature of the file's
   # BLAKE2b-512. OpenSSL reads the key as DER: a fixed 12-byte prefix, then it.
-  printf '%s\n' "$release_key" | openssl base64 -d -A >"$3/key.bin" &&
-    sed -n 2p "$2" | openssl base64 -d -A >"$3/sig.bin" &&
-    { printf '\060\052\060\005\006\003\053\145\160\003\041\000' && tail -c 32 "$3/key.bin"; } >"$3/key.der" &&
-    tail -c 64 "$3/sig.bin" >"$3/ed25519.sig" &&
-    openssl dgst -blake2b512 -binary "$1" >"$3/blake2b" &&
-    openssl pkeyutl -verify -pubin -keyform DER -inkey "$3/key.der" -rawin \
-      -in "$3/blake2b" -sigfile "$3/ed25519.sig" >/dev/null 2>&1
+  printf '%s\n' "$1" | openssl base64 -d -A >"$4/key.bin" &&
+    sed -n 2p "$3" | openssl base64 -d -A >"$4/sig.bin" &&
+    { printf '\060\052\060\005\006\003\053\145\160\003\041\000' && tail -c 32 "$4/key.bin"; } >"$4/key.der" &&
+    tail -c 64 "$4/sig.bin" >"$4/ed25519.sig" &&
+    openssl dgst -blake2b512 -binary "$2" >"$4/blake2b" &&
+    openssl pkeyutl -verify -pubin -keyform DER -inkey "$4/key.der" -rawin \
+      -in "$4/blake2b" -sigfile "$4/ed25519.sig" >/dev/null 2>&1
 }
 
 sha256() {

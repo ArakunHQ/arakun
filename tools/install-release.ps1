@@ -18,8 +18,12 @@ function Install-Arakun {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
     $repo = 'arakunhq/arakun'
-    # The minisign key release.yml signs SHA256SUMS with: assets/release-key.pub.
-    $releaseKey = 'RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn'
+    # The minisign keys SHA256SUMS may be signed with: the one release.yml uses
+    # (assets/release-key.pub), and an offline backup (assets/release-key-backup.pub).
+    $releaseKeys = @(
+        'RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn',
+        'RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg'
+    )
 
     # PROCESSOR_ARCHITEW6432 is set in a 32-bit PowerShell on 64-bit Windows.
     $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -66,8 +70,14 @@ function Install-Arakun {
             Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS.minisig" -OutFile $sig
             $minisign = Get-Command minisign -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($minisign) {
-                & $minisign.Source -V -q -P $releaseKey -m $sums -x $sig | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "arakun: SHA256SUMS is not signed with Arakun's release key; nothing was installed" }
+                $good = $false
+                # No 2>$null: with ErrorActionPreference Stop, Windows PowerShell
+                # 5.1 turns redirected stderr from a program into an error.
+                foreach ($key in $releaseKeys) {
+                    & $minisign.Source -V -q -P $key -m $sums -x $sig | Out-Null
+                    if ($LASTEXITCODE -eq 0) { $good = $true; break }
+                }
+                if (-not $good) { throw "arakun: SHA256SUMS is not signed with Arakun's release key; nothing was installed" }
                 Write-Host "arakun: SHA256SUMS is signed with Arakun's release key"
             } else {
                 Write-Host "arakun: warning: the signature of SHA256SUMS was not checked; install minisign to check it"

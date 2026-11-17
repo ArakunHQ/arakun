@@ -331,6 +331,8 @@ impl GitHubView {
                 .map(|n| n.web_url())
         });
         let mine = self.is_mine(cx);
+        let me = self.github.read(cx).me().unwrap_or_default().to_string();
+        let merge = board.as_ref().is_some_and(|b| offers_merge(b, &me, mine));
         let open = matches!(self.item().and_then(|i| self.github.read(cx).details(&i).cloned()), Some(Details::Pull(p)) if p.open());
         let review = offers_review(listo, open, mine);
         div()
@@ -394,7 +396,7 @@ impl GitHubView {
                     .on_click(cx.listener(|this, _, _, cx| this.ask_confirm(Confirm::Approve, cx))),
                 )
             })
-            .when(listo, |d| {
+            .when(merge, |d| {
                 let can = self.merge_method().is_some() && !busy;
                 d.child(
                     ui::key_pill(
@@ -1297,6 +1299,15 @@ fn offers_review(listo: bool, open: bool, mine: bool) -> bool {
     !listo && open && !mine
 }
 
+/// Whether the bar offers "Fusionar": a `Listo` pull request, only to its
+/// author or to whom the board says has it. The author merges, not pilot
+/// and not a reviewer.
+fn offers_merge(b: &BoardPr, me: &str, mine: bool) -> bool {
+    let is_me = |login: &str| !me.is_empty() && login.eq_ignore_ascii_case(me);
+    b.estado == Estado::Listo
+        && (mine || is_me(&b.author) || b.lo_tiene.tipo == Tipo::Tu || is_me(&b.lo_tiene.login))
+}
+
 /// The board's pull request with the key `key` (`queue::key_of`).
 fn board_pr_by_key<'a>(b: &'a board::Board, key: &str) -> Option<&'a BoardPr> {
     b.prs.iter().find(|p| {
@@ -1414,6 +1425,39 @@ mod tests {
             "ultimo_pilot": {"texto": "algo", "at": moved},
         }]});
         board::parse_board(json.to_string().as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn only_the_author_is_offered_the_merge() {
+        let pr = |author: &str, tipo: Tipo, login: &str| BoardPr {
+            estado: Estado::Listo,
+            author: author.into(),
+            lo_tiene: board::LoTiene {
+                login: login.into(),
+                tipo,
+                ..board::LoTiene::default()
+            },
+            ..BoardPr::default()
+        };
+        assert!(offers_merge(&pr("Karlo", Tipo::Otro, ""), "karlo", false));
+        assert!(offers_merge(&pr("dani", Tipo::Tu, ""), "karlo", false));
+        assert!(offers_merge(
+            &pr("dani", Tipo::Persona, "karlo"),
+            "karlo",
+            false
+        ));
+        assert!(offers_merge(&pr("dani", Tipo::Otro, ""), "karlo", true));
+        // Someone else's approved pull request: they merge it.
+        assert!(!offers_merge(
+            &pr("dani", Tipo::Persona, "dani"),
+            "karlo",
+            false
+        ));
+        assert!(!offers_merge(&pr("", Tipo::Otro, ""), "", false));
+        // Not ready: no merge, whoever has it.
+        let mut waiting = pr("karlo", Tipo::Tu, "");
+        waiting.estado = Estado::Esperando;
+        assert!(!offers_merge(&waiting, "karlo", true));
     }
 
     #[test]

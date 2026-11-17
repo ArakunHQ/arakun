@@ -241,6 +241,68 @@ fn subprocess_path() -> Option<PathBuf> {
     None
 }
 
+/// Whether Chromium's user-namespace sandbox can start. The same test Chromium makes
+/// before it gives up (`Credentials::CanCreateProcessInNewUserNS`), in a child process:
+/// a new user namespace with the user's own ids mapped in, then one inside it. Ubuntu
+/// 23.10 and later allow the namespace but refuse the maps, unless an AppArmor profile
+/// for arakun allows `userns`.
+#[cfg(target_os = "linux")]
+fn userns_sandbox_works() -> bool {
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
+
+    // Formatted before the fork: the child may only make system calls.
+    // SAFETY: getuid and getgid cannot fail.
+    let uid_map = format!("0 {} 1\n", unsafe { libc::getuid() });
+    let gid_map = format!("0 {} 1\n", unsafe { libc::getgid() });
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let mut cmd = Command::new(exe);
+    cmd.arg(super::SANDBOX_PROBE)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: the closure only makes system calls, on data made before the fork.
+    unsafe {
+        cmd.pre_exec(move || {
+            unshare_user()?;
+            write_proc(c"/proc/self/setgroups", b"deny")?;
+            write_proc(c"/proc/self/uid_map", uid_map.as_bytes())?;
+            write_proc(c"/proc/self/gid_map", gid_map.as_bytes())?;
+            unshare_user()
+        });
+    }
+    cmd.status().is_ok_and(|s| s.success())
+}
+
+#[cfg(target_os = "linux")]
+fn unshare_user() -> std::io::Result<()> {
+    // SAFETY: no pointers.
+    if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn write_proc(path: &std::ffi::CStr, data: &[u8]) -> std::io::Result<()> {
+    // SAFETY: a NUL-terminated path, and a buffer of the length given.
+    unsafe {
+        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let written = libc::write(fd, data.as_ptr().cast(), data.len());
+        let error = std::io::Error::last_os_error();
+        libc::close(fd);
+        if written != data.len() as isize {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// Chromium's message pump asks `NSApp` whether it is inside `sendEvent:` through
 /// `CrAppProtocol`, which GPUI's application class does not implement; without it CEF
 /// aborts. The flag is never set because GPUI, not Chromium, dispatches the events.
@@ -305,8 +367,20 @@ fn adopt_ns_app() {
     }
 }
 
+/// Why browser tabs cannot start where Linux blocks Chromium's sandbox.
+#[cfg(target_os = "linux")]
+const NO_SANDBOX: &str = "This system blocks the sandbox Chromium keeps web pages in, so \
+Arakun does not start it. Ubuntu 23.10 and later block it with AppArmor; the README's \
+\"Browser tabs on Ubuntu\" section shows the rule that allows it.";
+
 fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     let started = Instant::now();
+    // Chromium aborts the whole process ("No usable sandbox!") on the first page
+    // otherwise, taking every terminal and agent with it.
+    #[cfg(target_os = "linux")]
+    if !userns_sandbox_works() {
+        return Err(NO_SANDBOX.into());
+    }
     loader::load()?;
     let _ = cef::api_hash(cef::sys::CEF_API_VERSION_LAST, 0);
     #[cfg(target_os = "macos")]

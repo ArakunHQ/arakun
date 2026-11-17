@@ -502,6 +502,42 @@ The default `browser` feature needs CEF at build time and at run time.
   also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
   [docs/windows.md](docs/windows.md).
 
+### Browser tabs on Ubuntu
+
+Chromium keeps web pages in a sandbox built on user namespaces. Ubuntu 23.10 and later
+block those for programs that have no AppArmor profile allowing them. There Arakun does not
+start the browser, and a browser tab says why. To allow it, give `arakun` a profile like
+the one Ubuntu ships for Chrome (`/etc/apparmor.d/chrome`), then restart Arakun. Run in a
+checkout, it takes the build in `target/release`; anywhere else, the `arakun` on your
+`PATH`:
+
+```sh
+arakun=target/release/arakun
+[ -x "$arakun" ] || arakun=$(command -v arakun)
+arakun=$(readlink -f "$arakun")
+if [ -x "$arakun" ]; then
+  # One profile per binary, so a checkout's does not replace an installed one's.
+  profile=arakun-$(printf %s "$arakun" | cksum | cut -d' ' -f1)
+  # Quoted, with AppArmor's pattern characters escaped, for paths with spaces.
+  attach=$(printf %s "$arakun" | sed 's/[][\\*?{}^"]/\\&/g')
+  sudo tee "/etc/apparmor.d/$profile" >/dev/null <<EOF
+abi <abi/4.0>,
+include <tunables/global>
+
+profile $profile "$attach" flags=(unconfined) {
+  userns,
+}
+EOF
+  sudo apparmor_parser -r "/etc/apparmor.d/$profile"
+else
+  echo "no arakun found; run this in the checkout or put arakun on your PATH"
+fi
+```
+
+Each binary gets a profile of its own, `/etc/apparmor.d/arakun-<number>`, named after its
+path, so run this again if `arakun` moves. To remove one, run
+`sudo apparmor_parser -R /etc/apparmor.d/arakun-<number>` and delete the file.
+
 ### The server alone (no display)
 
 `arakun-server` is the [server](#server) built without the window. It needs none of the

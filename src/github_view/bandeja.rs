@@ -247,17 +247,7 @@ impl GitHubView {
         let mut out = board_sections(b, self.done_open);
         // What the queue holds that pilot doesn't follow: review requests
         // elsewhere, mentions, issues. Folded: pilot covers the rest.
-        let more: Vec<Row> = q
-            .rows
-            .iter()
-            .filter(|(_, p)| p.group != Group::Done)
-            .filter(|(e, _)| {
-                e.item
-                    .as_ref()
-                    .is_none_or(|i| b.find(&i.repo, i.number).is_none())
-            })
-            .map(|(e, p)| queue_row(e, p))
-            .collect();
+        let more: Vec<Row> = board::outside(b, q).map(|(e, p)| queue_row(e, p)).collect();
         if !more.is_empty() {
             let at = out
                 .iter()
@@ -391,14 +381,22 @@ impl GitHubView {
         let g = self.github.read(cx);
         let (need, rest, texto) = match self.board(cx) {
             Some(b) => {
-                let need = b.verdict.te_necesita as usize;
+                // What waits in "Más en GitHub" needs the user too.
+                let need = board::needs_you(b, g.queue());
                 let lleva = b.verdict.pilot_lleva as usize;
                 let rest = match lleva {
                     0 => String::new(),
                     1 => "pilot lleva 1 PR".to_string(),
                     n => format!("pilot lleva {n} PRs"),
                 };
-                (need, rest, b.verdict.texto.trim().to_string())
+                // pilot's words count only its pull requests: with more
+                // waiting elsewhere, the count speaks instead.
+                let texto = if need > b.verdict.te_necesita as usize {
+                    String::new()
+                } else {
+                    b.verdict.texto.trim().to_string()
+                };
+                (need, rest, texto)
             }
             None => {
                 let q = g.queue();

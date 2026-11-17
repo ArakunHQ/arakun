@@ -402,6 +402,31 @@ impl Board {
     }
 }
 
+/// The queue's rows pilot doesn't follow, done ones aside: review requests
+/// elsewhere, mentions, issues. The Bandeja folds them under "Más en GitHub".
+pub fn outside<'a>(
+    b: &'a Board,
+    q: &'a super::queue::Queue,
+) -> impl Iterator<Item = &'a (super::queue::Entry, super::queue::Placed)> {
+    q.rows
+        .iter()
+        .filter(|(_, p)| p.group != super::queue::Group::Done)
+        .filter(|(e, _)| {
+            e.item
+                .as_ref()
+                .is_none_or(|i| b.find(&i.repo, i.number).is_none())
+        })
+}
+
+/// How many things need the user with a board: what pilot says, plus the
+/// queue's rows on the user that pilot doesn't follow.
+pub fn needs_you(b: &Board, q: &super::queue::Queue) -> usize {
+    let elsewhere = outside(b, q)
+        .filter(|(_, p)| p.lane == super::queue::Lane::OnYou)
+        .count();
+    b.verdict.te_necesita as usize + elsewhere
+}
+
 /// What `GET /board` answered, cleaned: options without an id or words go,
 /// as on the cards, and pull requests without a number.
 pub fn parse_board(bytes: &[u8]) -> Result<Board, String> {
@@ -585,6 +610,55 @@ mod tests {
             ..Board::default()
         };
         assert_eq!(looped.group(Estado::Esperando).len(), 2);
+    }
+
+    #[test]
+    fn what_pilot_does_not_follow_still_needs_you() {
+        use crate::github::queue::{Entry, Group, Lane, Placed, Queue};
+        let row = |repo: &str, n: u64, group: Group, lane: Lane| {
+            let entry = Entry {
+                item: ItemRef::parse(&format!("{repo}#{n}")),
+                title: String::new(),
+                author: String::new(),
+                updated_at: String::new(),
+                closed_at: String::new(),
+                state: String::new(),
+                why: Vec::new(),
+                notification: None,
+            };
+            let placed = Placed {
+                group,
+                lane,
+                ..Placed::default()
+            };
+            (entry, placed)
+        };
+        let b = Board {
+            verdict: Verdict {
+                te_necesita: 1,
+                ..Verdict::default()
+            },
+            prs: vec![BoardPr {
+                repo: "o/r".into(),
+                number: 7,
+                ..BoardPr::default()
+            }],
+            ..Board::default()
+        };
+        let q = Queue {
+            rows: vec![
+                // pilot follows it: its count is pilot's.
+                row("O/R", 7, Group::NeedsReview, Lane::OnYou),
+                // A review asked elsewhere counts.
+                row("x/y", 1, Group::NeedsReview, Lane::OnYou),
+                // Someone else's move, and what is done, don't.
+                row("x/y", 2, Group::Yours, Lane::OnOthers),
+                row("x/y", 3, Group::Done, Lane::OnYou),
+            ],
+            ..Queue::default()
+        };
+        assert_eq!(outside(&b, &q).count(), 2);
+        assert_eq!(needs_you(&b, &q), 2);
     }
 
     #[test]

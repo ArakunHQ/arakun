@@ -42,10 +42,13 @@ impl Shell {
     pub(super) fn github_badge(&self, cx: &App) -> Option<(usize, bool)> {
         let g = self.github.read(cx);
         let p = self.pilot.read(cx);
-        // With pilot's board, only what it says needs the user counts.
+        // With pilot's board, what it says needs the user plus what waits
+        // on the user where pilot doesn't look. Its cards are the board's
+        // questions, so they don't count twice.
         if let Some(b) = p.board() {
-            let n = b.verdict.te_necesita as usize;
-            return (n > 0).then_some((n, true));
+            let n = github::board::needs_you(b, g.queue());
+            let urgent = b.verdict.te_necesita > 0 || g.wants_attention() || p.urgent();
+            return (n > 0).then_some((n, urgent));
         }
         let on_you = g.on_you() + p.count();
         (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent()))

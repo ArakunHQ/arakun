@@ -147,6 +147,9 @@ gpui::actions!(
         SplitDown,
         FocusOtherPane,
         SwapPanes,
+        ReopenClosedTab,
+        MoveTabLeft,
+        MoveTabRight,
         FindInChat,
         ZoomIn,
         ZoomOut,
@@ -2266,7 +2269,24 @@ impl Shell {
             .any(|id| env.tabs.iter().any(|t| t.id == *id))
     }
 
+    /// Closes a tab the user asked to close; Reopen closed tab can bring it back.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.remove_tab(index, true, window, cx);
+    }
+
+    /// Closes a tab that went away by itself (its session or diff is gone, the
+    /// page closed itself), so Reopen closed tab skips it.
+    fn discard_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.remove_tab(index, false, window, cx);
+    }
+
+    fn remove_tab(
+        &mut self,
+        index: usize,
+        remember: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_projects() {
             return;
         }
@@ -2275,6 +2295,9 @@ impl Shell {
         let mut closed_servers = false;
         if index < env.tabs.len() {
             let tab = env.tabs.remove(index);
+            if let Some(kind) = reopenable(&tab, cx).filter(|_| remember) {
+                env.remember_closed(index, kind);
+            }
             closed_servers = matches!(tab.kind, TabKind::Servers);
             if let Some(b) = &tab.browser {
                 b.view.update(cx, |v, cx| v.close(cx));
@@ -2320,6 +2343,24 @@ impl Shell {
         self.note_active_tab(cx);
         window.focus(&self.composer_focus, cx);
         cx.notify();
+    }
+}
+
+/// What Reopen closed tab brings back for `tab`: a browser tab at the page it
+/// was on. `None` for tabs not worth reopening, such as a blank New session tab.
+fn reopenable(tab: &Tab, cx: &App) -> Option<TabKind> {
+    match &tab.kind {
+        TabKind::NewSession => None,
+        TabKind::Browser { url } => {
+            let url = tab
+                .browser
+                .as_ref()
+                .map(|b| b.view.read(cx).url())
+                .unwrap_or_else(|| url.clone());
+            let blank = matches!(url.as_ref(), "" | "about:blank");
+            (!blank).then_some(TabKind::Browser { url })
+        }
+        kind => Some(kind.clone()),
     }
 }
 

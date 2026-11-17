@@ -70,6 +70,7 @@ pub fn install(cx: &mut App) {
                 ),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", shell::CloseTab),
+                MenuItem::action("Reopen Closed Tab", shell::ReopenClosedTab),
             ],
             disabled: false,
         },

@@ -266,7 +266,7 @@ impl Shell {
         let active = self.has_projects() && self.env().path == env_path;
         if active {
             while let Some(i) = self.env().tabs.iter().position(open) {
-                self.close_tab(i, window, cx);
+                self.discard_tab(i, window, cx);
             }
         }
         let Some(env) = self.find_env_mut(env_path) else {

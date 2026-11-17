@@ -183,7 +183,8 @@ terminal-only. The status line and keybindings from your settings don't apply in
   "From pilot" in that pull request's sheet, and the rest in a "From pilot" group at the
   top of the queue. "Looks good" approves the commit pilot read, and both it and
   request changes go through the same second click. What you saw and dealt with is
-  kept in `pilot.json` next to the state. Ctrl+K "Send to the cloud agent…" (or type
+  kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
+  Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
   `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
   or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
   too. On that card `Tab` switches between your pull request and a new branch (see

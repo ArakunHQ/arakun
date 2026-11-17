@@ -12,6 +12,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
 };
 
+use crate::agent::AgentKind;
 use crate::agent::claude_auth;
 use crate::agent::plan::{self, PlanUsage};
 use crate::env_name;
@@ -107,7 +108,6 @@ impl Section {
 
     /// The agent a section is about; the list shows its logo.
     fn agent(self) -> Option<crate::agent::AgentKind> {
-        use crate::agent::AgentKind;
         match self {
             Section::Claude => Some(AgentKind::Claude),
             Section::Codex => Some(AgentKind::Codex),
@@ -1023,6 +1023,7 @@ impl SettingsDialog {
                         .into_any_element(),
                     );
                 }
+                rows.push(no_sign_in_row(AgentKind::Claude));
                 stack(vec![titled("Account", rows)])
             }
             Section::Codex => {
@@ -1050,6 +1051,7 @@ impl SettingsDialog {
                             },
                         )
                         .into_any_element(),
+                        no_sign_in_row(AgentKind::Codex),
                     ],
                 )])
             }
@@ -1069,6 +1071,7 @@ impl SettingsDialog {
                                 .into_any_element(),
                         )
                         .into_any_element(),
+                        no_sign_in_row(AgentKind::Droid),
                     ],
                 ),
                 titled(
@@ -1127,6 +1130,7 @@ impl SettingsDialog {
                                 .into_any_element(),
                         )
                         .into_any_element(),
+                        no_sign_in_row(AgentKind::OpenCode),
                     ],
                 )])
             }
@@ -2371,6 +2375,18 @@ fn label_block(title: impl Into<SharedString>, hint: impl Into<SharedString>) ->
                     .child(hint),
             )
         })
+}
+
+/// Why the agent's section has no sign-in prompt of Arakun's own: it uses the
+/// CLI's sign-in, read only. People who see plan limits appear without being
+/// asked should know where they come from.
+fn no_sign_in_row(agent: AgentKind) -> AnyElement {
+    row(
+        "No separate sign-in",
+        crate::agent::cli_login::notice(agent),
+        div().into_any_element(),
+    )
+    .into_any_element()
 }
 
 /// One setting: what it is on the left, its control on the right. A control

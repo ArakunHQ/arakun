@@ -193,7 +193,11 @@ it shows in `github/avatars/` (each downloaded again after a week).
 - **Service tabs.** A PostHog tab (personal API keys; matches projects by their `phc_`
   keys) and a Cloudflare tab (uses the `cf` CLI's sign-in).
 - **Usage.** Token use and cost from Claude Code's and Droid's own logs, and each plan's
-  limits. When Claude Code runs on CLIProxyAPI, add the proxy's management key in the
+  limits. Arakun has no sign-in of its own, so it never asks you to sign in or approve
+  access: it reads the limits with the sign-in each CLI already has (Claude Code,
+  droid, OpenCode). It only reads that sign-in and never saves or changes it. It sends
+  it only to that provider's own host over https, never to a gateway set in
+  `ANTHROPIC_BASE_URL`. When Claude Code runs on CLIProxyAPI, add the proxy's management key in the
   tab to see the 5-hour and weekly limits of every claude.ai account behind it. The
   key is only sent to the proxy it was added for, over https or to this machine. It is
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read

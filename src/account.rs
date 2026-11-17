@@ -539,9 +539,12 @@ fn fetch_limits(key: &str, source: KeySource) -> Result<Limits, String> {
         let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         return Ok(Limits::parse(&v));
     }
+    let url = format!("{API_BASE}/api/billing/limits");
+    crate::agent::cli_login::check(crate::agent::AgentKind::Droid, &url)
+        .map_err(|e| e.to_string())?;
     let mut child = crate::platform::command("curl")
         .args(["-sS", "--max-time", "15", "-K", "-", "-w", "\n%{http_code}"])
-        .arg(format!("{API_BASE}/api/billing/limits"))
+        .arg(url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

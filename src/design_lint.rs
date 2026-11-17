@@ -525,6 +525,9 @@ fn the_layout_audit_catches_what_it_should() {
     // good.json also has a full-height wrapper that draws nothing in a
     // bordered box, around a child that fits: no edge of it is cut.
     assert!(!text.contains("src/framed.rs"), "{text}");
+    // It also has a switch that is on: the thumb sits at the far end, as far
+    // from that side as from the top, so its gap to the left is no inset.
+    assert!(!text.contains("src/switch.rs"), "{text}");
 
     let (code, text) = run("bad.json");
     assert_eq!(code, 1, "{text}");
@@ -544,6 +547,8 @@ fn the_layout_audit_catches_what_it_should() {
         "src/wrapped.rs:9 [clip]",
         // One rounded corner is no pill: its corner still has to match.
         "src/tab.rs:5 [radius]",
+        // A thumb near the far end, but not as close as to the top, is still off.
+        "src/offswitch.rs:9 [inset]",
     ] {
         assert!(text.contains(kind), "missing {kind}:\n{text}");
     }

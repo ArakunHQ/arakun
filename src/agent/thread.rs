@@ -531,6 +531,8 @@ pub struct Thread {
     /// prompt forks the session.
     fork_point: Option<String>,
     turn_user: Option<usize>,
+    /// How long the last turn took, including one the agent took by itself.
+    last_turn_ms: Option<u64>,
     last_prompt: Option<String>,
     cancelling: bool,
     /// ACP settings picked before the session existed, applied in order once it does.
@@ -988,6 +990,7 @@ impl Thread {
             cost_base: 0.,
             fork_point: None,
             turn_user: None,
+            last_turn_ms: None,
             last_prompt: None,
             cancelling: false,
             want_config: Vec::new(),
@@ -1024,6 +1027,10 @@ impl Thread {
 
     pub fn kind(&self) -> AgentKind {
         self.kind
+    }
+
+    pub fn last_turn_ms(&self) -> Option<u64> {
+        self.last_turn_ms
     }
 
     pub fn cwd(&self) -> &Path {
@@ -2274,6 +2281,7 @@ impl Thread {
 
     /// Appends what the settled turn used to the usage log.
     fn log_turn_usage(&mut self, elapsed_ms: Option<u64>, cx: &mut Context<Self>) {
+        self.last_turn_ms = elapsed_ms;
         let (now, before) = (&self.usage, &self.turn_usage);
         let model = match self.backend {
             Backend::Native => self.native.settings.as_ref().map(|s| s.model_id.clone()),

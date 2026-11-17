@@ -345,9 +345,11 @@ impl Shell {
             }
             ThreadEvent::Finished { stop_reason } => {
                 let t = thread.read(cx);
-                crate::telemetry::capture(
+                let seconds = t.last_turn_ms().map(|ms| ("seconds", ms / 1000));
+                crate::telemetry::capture_with(
                     crate::telemetry::events::TURN_FINISHED,
                     &[("agent", t.kind().id()), ("stop_reason", stop_reason)],
+                    seconds.as_slice(),
                 );
                 let (status, (added, removed), meta) = (status_of(t), t.diff_stats(), t.meta());
                 let transcript = t.transcript(cx);

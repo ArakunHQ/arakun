@@ -239,11 +239,15 @@ setup or already have a project. Settings › Privacy has a switch for each:
 - **Crash reports:** a panic's message and stack trace, and when an agent stops with
   an error, the agent's name and a fixed category such as "rate limited" or "not
   signed in", never the error's text.
-- **Usage counts:** app launched, session started (with the agent), agent turn
-  finished, project added, environment created, a built-in view opened (with its name)
-  and a browser tab opened.
+- **Usage counts:** app launched, app quit (with the minutes it was open), setup
+  finished (whether you added a project or skipped, and the step you were on),
+  session started (with the agent), agent turn finished (with the agent, how it
+  stopped and how many seconds it took), project added, environment created, a
+  built-in view opened (with its name) and a browser tab opened.
 
-Each event carries Arakun's version, the OS and the CPU architecture. Arakun never
+Each event carries Arakun's version, the OS and the CPU architecture. On first launch,
+what happens before you answer the question waits in memory: it is sent if you turn
+usage counts on, and dropped if you don't. Arakun never
 sends prompts, replies or file contents. A panic's message is the one text that is
 sent: before it leaves your machine, Arakun replaces your home folder with `~` and
 removes paths, links, emails and anything shaped like a key or token. Its other words

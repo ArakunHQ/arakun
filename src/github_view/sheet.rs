@@ -340,9 +340,8 @@ impl GitHubView {
                 .map(|n| n.web_url())
         });
         let mine = self.is_mine(cx);
-        let open_pull = !listo
-            && board.is_none()
-            && matches!(self.item().and_then(|i| self.github.read(cx).details(&i).cloned()), Some(Details::Pull(p)) if p.open());
+        let open = matches!(self.item().and_then(|i| self.github.read(cx).details(&i).cloned()), Some(Details::Pull(p)) if p.open());
+        let review = offers_review(listo, open, mine);
         div()
             .flex()
             .flex_none()
@@ -378,7 +377,7 @@ impl GitHubView {
                         d.child(ui::spinner("gh-reading", 12., theme::text_faint()))
                     }),
             )
-            .when(open_pull && !mine, |d| {
+            .when(review, |d| {
                 d.child(
                     ui::key_pill(
                         "gh-changes",
@@ -1278,6 +1277,13 @@ fn que_pasa(body: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
+/// Whether the bar offers "Aprobar" and "Pedir cambios": on someone else's
+/// open pull request, pilot following it or not. A `Listo` one offers
+/// "Fusionar" instead.
+fn offers_review(listo: bool, open: bool, mine: bool) -> bool {
+    !listo && open && !mine
+}
+
 /// The board's pull request with the key `key` (`queue::key_of`).
 fn board_pr_by_key<'a>(b: &'a board::Board, key: &str) -> Option<&'a BoardPr> {
     b.prs.iter().find(|p| {
@@ -1395,6 +1401,16 @@ mod tests {
             "ultimo_pilot": {"texto": "algo", "at": moved},
         }]});
         board::parse_board(json.to_string().as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn a_followed_pull_can_still_be_reviewed() {
+        // Esperando or TeNecesita on the board: the review buttons show.
+        assert!(offers_review(false, true, false));
+        // Your own, a closed one, or one ready to merge: they don't.
+        assert!(!offers_review(false, true, true));
+        assert!(!offers_review(false, false, false));
+        assert!(!offers_review(true, true, false));
     }
 
     #[test]

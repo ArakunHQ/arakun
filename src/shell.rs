@@ -1670,6 +1670,7 @@ impl Shell {
         self.menu = None;
         self.env_menu_open = false;
         let arcade = self.arcade;
+        let droid = self.account.read(cx).connected();
         #[cfg(feature = "coderlabs")]
         let coderspace = {
             let cs = self.coderspace.read(cx);
@@ -1684,6 +1685,7 @@ impl Shell {
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
                 arcade,
+                droid,
                 #[cfg(feature = "coderlabs")]
                 coderspace,
                 window,

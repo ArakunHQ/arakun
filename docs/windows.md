@@ -107,7 +107,7 @@ build with the browser.
 | That the first-launch setup was done | `%LOCALAPPDATA%\arakun\state.onboarding.json` |
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
-| Branch naming agent and model (Settings › General) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
+| Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
@@ -116,7 +116,7 @@ build with the browser.
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
-| Crash reports and usage counts: the random install id, and your answer (Settings › General) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
+| Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).

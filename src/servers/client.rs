@@ -892,6 +892,22 @@ mod tests {
         futures::executor::block_on(rx.next()).expect("the server is listening")
     }
 
+    /// Whether the server heard the unpair in time. The socket closing as it
+    /// does races the unpair to the server's channel, so its `Disconnected`
+    /// may come first. A lost unpair leaves the channel quiet, hence the deadline.
+    fn unpaired(rx: &mut mpsc::UnboundedReceiver<Incoming>) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match rx.try_recv() {
+                Ok(Incoming::Unpaired) => return true,
+                Ok(Incoming::Disconnected(_)) => {}
+                Ok(_) => return false,
+                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+                Err(_) => return false,
+            }
+        }
+    }
+
     #[test]
     fn it_pairs_with_a_server_talks_to_it_and_is_told_when_unpaired() {
         let access = Access::new(Vec::new(), String::new());
@@ -1004,7 +1020,7 @@ mod tests {
         assert_eq!(access.lock().unwrap().devices.len(), 1);
 
         client.unpair();
-        assert!(matches!(from_server(&mut incoming), Incoming::Unpaired));
+        assert!(unpaired(&mut incoming));
         assert!(access.lock().unwrap().devices.is_empty());
         // For good: no status follows, and nothing dials again.
         std::thread::sleep(Duration::from_millis(300));
@@ -1038,10 +1054,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(round * 7));
             client.unpair();
             drop(client);
-            assert!(
-                matches!(from_server(&mut incoming), Incoming::Unpaired),
-                "round {round}"
-            );
+            assert!(unpaired(&mut incoming), "round {round}");
             assert!(access.lock().unwrap().devices.is_empty(), "round {round}");
         }
     }

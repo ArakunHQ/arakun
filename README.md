@@ -531,7 +531,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   recalls earlier prompts; paste or drop images to attach them
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
-  GitHub; `Ctrl+Enter` sends a comment, `/` in the comment box lists the actions. In
+  GitHub; `Enter` sends a comment, `/` in the comment box lists the actions. In
   a narrow window the keys move through the list and `Enter` opens the item; `Esc`
   goes back to the list
 

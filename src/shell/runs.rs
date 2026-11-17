@@ -28,7 +28,7 @@ impl Shell {
             return;
         }
         self.show_view_tab("Runs", TabKind::Runs, |k| matches!(k, TabKind::Runs));
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.sync_runs_view(cx);
         let root = self.project().path.clone();
         self.ci.update(cx, |ci, cx| {

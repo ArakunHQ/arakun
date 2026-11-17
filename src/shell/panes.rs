@@ -206,7 +206,7 @@ impl Shell {
                 env.active_tab = next;
             }
         }
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.ensure_active_browser(false, window, cx);
         self.focus_active_content(window, cx);
@@ -243,7 +243,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.ensure_active_browser(false, window, cx);
         self.focus_active_content(window, cx);
@@ -425,7 +425,7 @@ impl Shell {
         }
         // A no-op while a Servers tab is left anywhere.
         self.servers_tab_closed(cx);
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
         cx.notify();

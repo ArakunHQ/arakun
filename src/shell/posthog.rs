@@ -16,7 +16,7 @@ impl Shell {
         self.show_view_tab("PostHog", TabKind::PostHog, |k| {
             matches!(k, TabKind::PostHog)
         });
-        self.note_active_tab();
+        self.note_active_tab(cx);
         let root = self.project().path.clone();
         self.posthog_view.update(cx, |v, cx| {
             v.set_project(&root, cx);

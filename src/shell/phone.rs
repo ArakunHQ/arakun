@@ -137,7 +137,7 @@ impl Shell {
             }
         };
         env.active_tab = index;
-        self.note_active_tab();
+        self.note_active_tab(cx);
         self.sync_phone_view(cx);
         self.phone_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();

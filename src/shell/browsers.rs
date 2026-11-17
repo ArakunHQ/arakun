@@ -80,7 +80,7 @@ impl Shell {
             env.active_tab = env.tabs.len() - 1;
         }
         if activate && visible {
-            self.note_active_tab();
+            self.note_active_tab(cx);
         }
         self.ensure_active_browser(focus, window, cx);
         self.save(cx);

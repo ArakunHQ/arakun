@@ -63,6 +63,8 @@ mod phone_page {
     #[folder = "../phone"]
     pub struct Page;
 }
+#[path = "../../src/caret.rs"]
+mod caret;
 #[allow(dead_code)]
 #[path = "../../src/highlight.rs"]
 mod highlight;

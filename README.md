@@ -507,11 +507,14 @@ The default `browser` feature needs CEF at build time and at run time.
 Chromium keeps web pages in a sandbox built on user namespaces. Ubuntu 23.10 and later
 block those for programs that have no AppArmor profile allowing them. There Arakun does not
 start the browser, and a browser tab says why. To allow it, give `arakun` a profile like
-the one Ubuntu ships for Chrome (`/etc/apparmor.d/chrome`), then restart Arakun. It takes
-the `arakun` on your `PATH`, or else, run in a checkout, the build in `target/release`:
+the one Ubuntu ships for Chrome (`/etc/apparmor.d/chrome`), then restart Arakun. Run in a
+checkout, it takes the build in `target/release`; anywhere else, the `arakun` on your
+`PATH`:
 
 ```sh
-arakun=$(readlink -f "$(command -v arakun || echo target/release/arakun)")
+arakun=target/release/arakun
+[ -x "$arakun" ] || arakun=$(command -v arakun)
+arakun=$(readlink -f "$arakun")
 if [ -x "$arakun" ]; then
   sudo tee /etc/apparmor.d/arakun >/dev/null <<EOF
 abi <abi/4.0>,
@@ -523,7 +526,7 @@ profile arakun $arakun flags=(unconfined) {
 EOF
   sudo apparmor_parser -r /etc/apparmor.d/arakun
 else
-  echo "no arakun found; put it on your PATH or run this in the checkout"
+  echo "no arakun found; run this in the checkout or put arakun on your PATH"
 fi
 ```
 

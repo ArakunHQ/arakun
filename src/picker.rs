@@ -304,6 +304,11 @@ impl FolderPicker {
     }
 
     fn pick(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        // Ctrl+Enter or the folder buttons could otherwise add the clone's folder
+        // before it is done; the clone adds it itself when it finishes.
+        if self.cloning.is_some() {
+            return;
+        }
         if !path.is_dir() {
             self.error = Some(format!("{} is not a folder", pretty_path(&path)).into());
             cx.notify();
@@ -1455,18 +1460,13 @@ mod tests {
         let dest = std::env::temp_dir().join(format!("arakun-reuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dest);
         std::fs::create_dir_all(&dest).unwrap();
-        for args in [
-            &["init", "-q"][..],
+        // `git` drops GIT_DIR and the like, so a hook running the tests can't
+        // point these at its own checkout.
+        git(&dest, &["init", "-q"]);
+        git(
+            &dest,
             &["remote", "add", "origin", "git@github.com:owner-a/app.git"],
-        ] {
-            let ok = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&dest)
-                .args(args)
-                .status()
-                .unwrap();
-            assert!(ok.success());
-        }
+        );
         let source = |q: &str| parse_clone_source(q).unwrap();
         assert!(matches!(
             clone_or_reuse(&source("https://github.com/owner-a/app"), &dest),

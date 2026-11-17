@@ -85,8 +85,8 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   `arakun page` (screenshot, console, click, type, eval). Links you click open in a
   browser tab; turn off Settings › General › Open links in Arakun to open them in your
   own browser instead. That covers links from chats, the GitHub view and pins; a link
-  clicked inside a browser tab always stays in Arakun. Builds without the browser, such as
-  the release downloads, open links in your own browser from the start. The choice is
+  clicked inside a browser tab always stays in Arakun. Builds without the browser open
+  links in your own browser from the start. The choice is
   saved in `~/.local/share/arakun/open-links` (`%LOCALAPPDATA%\arakun\open-links` on
   Windows).
 
@@ -478,7 +478,7 @@ sudo pacman -S --needed base-devel pkgconf \
 
 ### Without the browser
 
-The quickest path, and what CI and the release builds use:
+The quickest path, and what most CI jobs use:
 
 ```sh
 git clone https://github.com/arakunhq/arakun

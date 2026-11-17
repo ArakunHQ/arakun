@@ -1,8 +1,8 @@
 //! Arakun's raccoon, alive: the brand drawing on springs, with eyes that
 //! follow the cursor and blink, and ears that bend past their base.
 //! A small brain turns what the agent is doing into poses over time, and
-//! each state reads at a glance: one gaze, one rhythm and one symbol over the
-//! head per state.
+//! each state reads at a glance: one gaze, one rhythm and, for most states,
+//! one symbol over the head.
 //!
 //! The drawing is `assets/brand/raccoon.svg` as the designer made it. The
 //! prototype page `shots/mascota-preview/` runs the same motion in a browser;
@@ -444,7 +444,6 @@ enum Eyes {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Prop {
     Dots,
-    Code,
     Ask,
     Bang,
     Check,
@@ -453,9 +452,8 @@ enum Prop {
     Notes,
 }
 
-const PROPS: [Prop; 8] = [
+const PROPS: [Prop; 7] = [
     Prop::Dots,
-    Prop::Code,
     Prop::Ask,
     Prop::Bang,
     Prop::Check,
@@ -464,20 +462,10 @@ const PROPS: [Prop; 8] = [
     Prop::Notes,
 ];
 
-/// Indent and length of the lines the working raccoon writes, in a loop.
-const CODE_LINES: [(f32, f32); 7] = [
-    (0., 34.),
-    (8., 22.),
-    (8., 40.),
-    (16., 16.),
-    (8., 30.),
-    (0., 26.),
-    (0., 44.),
-];
-/// Seconds each of those lines takes; the eyes sweep once per line.
+/// Seconds each line the working raccoon reads takes; the eyes sweep once per line.
 const CODE_PERIOD: f64 = 1.25;
 
-/// Which line is being written `t` seconds into the work, and how far along it is.
+/// Which line is being read `t` seconds into the work, and how far along it is.
 fn code_line(t: f64) -> (i64, f32) {
     let t = t.max(0.);
     (
@@ -1051,8 +1039,9 @@ impl Mascot {
         p.prop = Some(Prop::Dots);
     }
 
-    /// Head down, narrowed eyes following each line of code as it is written
-    /// overhead, glancing up at you every fifth line.
+    /// Head down, narrowed eyes reading line after line, glancing up at you
+    /// every fifth line. No symbol: at the chat's size the lines it once wrote
+    /// overhead read as a stray dash, and amber is for what needs you.
     fn working(&mut self, p: &mut Pose, t: f64, now: f64) {
         let (n, c) = code_line(t);
         let n = n as u32;
@@ -1060,7 +1049,6 @@ impl Mascot {
         if self.once(1, n) {
             self.head[1].v += 40.;
         }
-        p.prop = Some(Prop::Code);
         if n % 5 == 4 && c > 0.2 {
             p.look = self.cursor(now).unwrap_or([0., -0.1]);
             return;
@@ -1486,34 +1474,6 @@ impl Mascot {
                     out.push(Mark::Fill(
                         pts(&circle([-21. + 21. * i as f32, -9. * u], 7.), [0.; 2], 0.),
                         a * (0.4 + 0.6 * u),
-                    ));
-                }
-            }
-            Prop::Code => {
-                // Lines of code written one after another, in step with the
-                // eyes; the block scrolls up as each new line starts.
-                let (k, f) = code_line(now - self.t0);
-                let scroll = (f / 0.2).clamp(0., 1.);
-                for i in 0..4 {
-                    let j = k + i - 3;
-                    if j < 0 {
-                        continue;
-                    }
-                    let (indent, len) = CODE_LINES[j as usize % CODE_LINES.len()];
-                    let len = if i == 3 {
-                        len * ((f - 0.15) / 0.7).clamp(0., 1.)
-                    } else {
-                        len
-                    };
-                    let fade = if i == 0 { 1. - scroll } else { 1. };
-                    if len < 6. || fade < 0.02 {
-                        continue;
-                    }
-                    let (x, y) = (-27. + indent, -23. + (i as f32 - scroll) * 12.);
-                    out.push(Mark::Line(
-                        pts(&[[x + 3., y], [x + len - 3., y]], [0.; 2], 0.),
-                        6. * s,
-                        a * fade,
                     ));
                 }
             }

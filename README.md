@@ -75,7 +75,7 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   (`fix/terminal-tab-name`) and Arakun renames the branch. The folder keeps its name. By
   default the agent the prompt went to names it, when that is Claude Code (with `haiku`)
   or Droid, so the prompt goes nowhere else; other agents leave the name alone.
-  Settings › General can pick Claude Code or Droid for every environment, or turn naming
+  Settings › Branches can pick Claude Code or Droid for every environment, or turn naming
   off; it saves that in `~/.local/share/arakun/branch-namer.json`
   (`%LOCALAPPDATA%\arakun\branch-namer.json` on Windows).
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on
@@ -212,7 +212,7 @@ it shows in `github/avatars/` (each downloaded again after a week).
 Arakun sends nothing until you say so. On first launch it asks whether to send crash
 reports and anonymous usage counts to Arakun's PostHog project, so we can see what
 breaks and what gets used: as a step of the setup, or in a dialog when you skip the
-setup or already have a project. Settings › General has a switch for each:
+setup or already have a project. Settings › Privacy has a switch for each:
 
 - **Crash reports:** a panic's message and stack trace, and when an agent stops with
   an error, the agent's name and a fixed category such as "rate limited" or "not

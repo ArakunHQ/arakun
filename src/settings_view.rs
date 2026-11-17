@@ -1,6 +1,6 @@
-//! The Settings dialog, laid out like the attach picker: a search field on
-//! top, the sections as a list on the left, the chosen section on the right,
-//! and key hints in the footer.
+//! The Settings dialog: the search and the sections on the left, grouped as
+//! Arakun's own and the agents', and the chosen section on the right as
+//! captioned cards of rows.
 
 use crate::ui::Typography as _;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -46,65 +46,106 @@ pub enum SettingsEvent {
     DisconnectCoderSpace,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Where a section sits in the list: Arakun's own settings, then the agents'.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Group {
+    Arakun,
+    Agents,
+}
+
+impl Group {
+    const ALL: [Group; 2] = [Group::Arakun, Group::Agents];
+
+    fn title(self) -> &'static str {
+        match self {
+            Group::Arakun => "Arakun",
+            Group::Agents => "Agents",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Section {
     General,
     Appearance,
-    Account,
-    Claude,
-    Droid,
-    OpenCode,
-    Codex,
+    Branches,
     Voice,
+    Privacy,
     #[cfg(feature = "coderlabs")]
     CoderSpace,
     Shortcuts,
+    Claude,
+    Codex,
+    Droid,
+    OpenCode,
 }
 
 impl Section {
+    /// In the order the list shows them, so ↑ and ↓ move down the list.
     const ALL: &[Section] = &[
         Section::General,
         Section::Appearance,
-        Section::Account,
-        Section::Claude,
-        Section::Droid,
-        Section::OpenCode,
-        Section::Codex,
+        Section::Branches,
         Section::Voice,
+        Section::Privacy,
         #[cfg(feature = "coderlabs")]
         Section::CoderSpace,
         Section::Shortcuts,
+        Section::Claude,
+        Section::Codex,
+        Section::Droid,
+        Section::OpenCode,
     ];
+
+    fn group(self) -> Group {
+        if self.agent().is_some() {
+            Group::Agents
+        } else {
+            Group::Arakun
+        }
+    }
+
+    /// The agent a section is about; the list shows its logo.
+    fn agent(self) -> Option<crate::agent::AgentKind> {
+        use crate::agent::AgentKind;
+        match self {
+            Section::Claude => Some(AgentKind::Claude),
+            Section::Codex => Some(AgentKind::Codex),
+            Section::Droid => Some(AgentKind::Droid),
+            Section::OpenCode => Some(AgentKind::OpenCode),
+            _ => None,
+        }
+    }
 
     fn title(self) -> &'static str {
         match self {
             Section::General => "General",
             Section::Appearance => "Appearance",
-            Section::Account => "Factory account",
-            Section::Claude => "Claude",
-            Section::Droid => "Droid",
-            Section::OpenCode => "OpenCode",
-            Section::Codex => "Codex",
+            Section::Branches => "Branches",
             Section::Voice => "Voice",
+            Section::Privacy => "Privacy",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "CoderSpace",
             Section::Shortcuts => "Keyboard shortcuts",
+            Section::Claude => "Claude Code",
+            Section::Codex => "Codex",
+            Section::Droid => "Droid",
+            Section::OpenCode => "OpenCode",
         }
     }
 
+    /// The list's icon for a section that is not an agent's.
     fn icon(self) -> &'static str {
         match self {
             Section::General => "settings01",
             Section::Appearance => "paint-board",
-            Section::Account => "user",
-            Section::Claude => "sparkles",
-            Section::Droid => "bot",
-            Section::OpenCode => "computer-terminal01",
-            Section::Codex => "file-code",
+            Section::Branches => "git-branch",
             Section::Voice => "volume-high",
+            Section::Privacy => "shield-alert",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "check-list",
             Section::Shortcuts => "keyboard",
+            Section::Claude | Section::Codex | Section::Droid | Section::OpenCode => "bot",
         }
     }
 
@@ -112,15 +153,20 @@ impl Section {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => "Colors and surfaces. Changes apply right away.",
-            Section::Account => "The Factory plan Arakun reads usage from.",
-            Section::Claude => "Claude Code's sign-in and what your plan has left.",
-            Section::Droid => "What Droid loads in the visible environment.",
-            Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
-            Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
+            Section::Branches => {
+                "A new environment starts on a random branch name; an agent can rename it after the task."
+            }
             Section::Voice => "Droid's questions, read aloud with an ElevenLabs voice.",
+            Section::Privacy => {
+                "What Arakun sends to its PostHog, under a random id. Never prompts, replies, files or URLs."
+            }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "Your pending tasks, inside Arakun.",
             Section::Shortcuts => "Everything you can do without the mouse.",
+            Section::Claude => "Claude Code's sign-in and what your plan has left.",
+            Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
+            Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
+            Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
         }
     }
 
@@ -133,29 +179,51 @@ impl Section {
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts telemetry analytics usage crash reports privacy posthog"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
+                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
             }
-            Section::Account => "plan usage api key credits factory",
-            Section::Claude => {
-                "claude code anthropic plan usage limits weekly monthly window sign in logout"
-            }
-            Section::Droid => "skills mcp servers extensions",
-            Section::OpenCode => "opencode go zen provider api key models sign in logout",
-            Section::Codex => "codex openai chatgpt gpt api key sign in logout",
+            Section::Branches => "branch name naming environment worktree rename model haiku agent",
             Section::Voice => {
-                "elevenlabs speech speak tts read aloud audio sound api key questions"
+                "elevenlabs speech speak tts read aloud audio sound api key questions tone"
+            }
+            Section::Privacy => {
+                "telemetry analytics usage counts crash reports privacy posthog data"
             }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "tasks sign in sign out email",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
+            Section::Claude => {
+                "claude code anthropic plan usage limits weekly monthly window sign in logout"
+            }
+            Section::Codex => "codex openai chatgpt gpt api key sign in logout",
+            Section::Droid => {
+                "factory account plan usage api key credits skills mcp servers extensions plugins"
+            }
+            Section::OpenCode => "opencode go zen provider api key models sign in logout",
         }
     }
-}
 
-const NAMING_KEYWORDS: &str = "branch name environment worktree rename model haiku";
+    /// Whether the search `query` (lower case, trimmed) leaves this section.
+    fn matches(self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        let text = format!(
+            "{} {} {}",
+            self.title(),
+            self.description(),
+            self.keywords()
+        )
+        .to_lowercase();
+        query.split_whitespace().all(|w| text.contains(w))
+            || (self == Section::Shortcuts
+                && SHORTCUTS
+                    .iter()
+                    .any(|sc| SettingsDialog::shortcut_matches(query, sc)))
+    }
+}
 
 /// The section the last dialog was left on.
 static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
@@ -231,14 +299,20 @@ const TEST_KEY: &str = "settings-test";
 /// How long a palette edit waits for the next before it is saved.
 const PALETTE_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
-const LIST_W: f32 = 232.;
+const DIALOG_W: f32 = 880.;
+/// The section list's column, search included.
+const LIST_W: f32 = 224.;
 /// Under Claude Code's API key or endpoint, which needs no claude.ai sign-in.
 const ACCESS_HINT: &str = "Claude Code runs on this, from ~/.claude/settings.json or the environment. Sign in only to see claude.ai plan limits.";
-const BODY_H: f32 = 420.;
-const ROW_H: f32 = 44.;
+/// The list and the pane under the header. A short window shrinks it.
+const BODY_H: f32 = 560.;
+/// A row of the section list, as tall as one of the rail's.
+const NAV_ROW_H: f32 = 32.;
 
 pub struct SettingsDialog {
     arcade: bool,
+    /// Whether a Factory API key is connected, for Droid's dot in the list.
+    droid: bool,
     /// Who is signed in to CoderSpace, if anyone.
     #[cfg(feature = "coderlabs")]
     coderspace: Option<String>,
@@ -296,11 +370,13 @@ impl EventEmitter<SettingsEvent> for SettingsDialog {}
 impl SettingsDialog {
     pub fn new(
         arcade: bool,
+        droid: bool,
         #[cfg(feature = "coderlabs")] coderspace: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| TextInput::new("Search settings and shortcuts", cx));
+        // Shortcuts match too; the list's column is too narrow to say so.
+        let input = cx.new(|cx| TextInput::new("Search settings", cx));
         let sub = cx.subscribe_in(&input, window, Self::on_input);
         window.focus(&input.focus_handle(cx), cx);
         let section =
@@ -411,6 +487,7 @@ impl SettingsDialog {
 
         Self {
             arcade,
+            droid,
             #[cfg(feature = "coderlabs")]
             coderspace,
             claude: None,
@@ -620,36 +697,13 @@ impl SettingsDialog {
             || group.to_lowercase().contains(query)
     }
 
-    fn section_matches(&self, s: Section, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        // The branch naming rows of General, in every build.
-        let naming = if s == Section::General {
-            NAMING_KEYWORDS
-        } else {
-            ""
-        };
-        let text = format!(
-            "{} {} {} {naming}",
-            s.title(),
-            s.description(),
-            s.keywords()
-        )
-        .to_lowercase();
-        let words = query.split_whitespace().all(|w| text.contains(w));
-        words
-            || (s == Section::Shortcuts
-                && SHORTCUTS.iter().any(|sc| Self::shortcut_matches(query, sc)))
-    }
-
     /// The sections the search leaves, in order.
     fn shown(&self, cx: &App) -> Vec<Section> {
         let q = self.query(cx);
         Section::ALL
             .iter()
             .copied()
-            .filter(|s| self.section_matches(*s, &q))
+            .filter(|s| s.matches(&q))
             .collect()
     }
 
@@ -680,88 +734,61 @@ impl SettingsDialog {
         }
     }
 
-    /// The line under a section's name in the list.
-    fn summary(&self, s: Section) -> String {
-        let on_off = |b: bool| if b { "on" } else { "off" };
+    /// Whether an agent's section gets the green dot: it can run, through a
+    /// sign-in or a key. `false` for the other sections.
+    fn signed_in(&self, s: Section) -> bool {
         match s {
-            Section::General => format!("Raccoon animation {}", on_off(self.arcade)),
-            Section::Appearance => {
-                format!(
-                    "{} grays · {} diffs · Glass {}",
-                    theme::grays().label(),
-                    theme::diff_palette().label(),
-                    on_off(theme::glass())
-                )
-            }
-            Section::Account => "Plan usage and API key".into(),
-            Section::Claude => match &self.claude {
-                Some(p) => [p.plan_label(), p.windows_summary()]
-                    .into_iter()
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" · "),
-                None => match &self.claude_access {
-                    Some(a) => a.label(),
-                    None => "Not signed in".into(),
-                },
-            },
-            Section::Droid => "Skills and MCP servers".into(),
-            Section::OpenCode if self.opencode.is_empty() => "No providers signed in".into(),
-            Section::OpenCode => self.opencode.join(", "),
-            Section::Codex => self.codex_status(),
-            Section::Voice => match (self.voice.enabled, self.voice_key) {
-                (false, _) => "Read aloud off".into(),
-                (true, Some(false)) => "On · needs an API key".into(),
-                (true, _) if self.voice.voice_id.is_empty() => "On · needs a voice ID".into(),
-                (true, _) => "Reads questions aloud".into(),
-            },
-            #[cfg(feature = "coderlabs")]
-            Section::CoderSpace => match &self.coderspace {
-                Some(who) => format!("Signed in as {who}"),
-                None => "Not signed in".into(),
-            },
-            Section::Shortcuts => format!("{} shortcuts", SHORTCUTS.len()),
+            Section::Claude => self.claude.is_some() || self.claude_access.is_some(),
+            Section::Codex => self.codex.is_some() || self.codex_env.is_some(),
+            Section::Droid => self.droid,
+            Section::OpenCode => !self.opencode.is_empty(),
+            _ => false,
         }
     }
 
+    /// One line of the section list: its icon (an agent's logo), its name,
+    /// and a dot when the agent is signed in.
     fn render_row(&self, s: Section, cx: &mut Context<Self>) -> AnyElement {
         let selected = s == self.section;
+        let lead = match s.agent() {
+            Some(agent) => agent.icon(14.),
+            None => icon(s.icon(), 14.)
+                .text_color(if selected {
+                    theme::text()
+                } else {
+                    theme::text_subtle()
+                })
+                .into_any_element(),
+        };
         div()
             .id(s.title())
             .w_full()
             .flex()
+            .flex_none()
             .items_center()
-            .gap(crate::ui::sp(10.))
-            .h(px(ROW_H))
+            .gap(crate::ui::sp(8.))
+            .h(px(NAV_ROW_H))
             .px(crate::ui::sp(8.))
             .rounded(crate::ui::rad(ui::RADIUS))
+            .text_size(px(ui::TEXT_MD))
             .cursor_pointer()
-            .when(selected, |d| d.bg(theme::selection()))
-            .when(!selected, |d| d.hover(|st| st.bg(theme::hover())))
-            .child(tile(s.icon(), 28., selected))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_size(px(ui::TEXT_MD))
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(s.title()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(ui::TEXT_XS))
-                            .text_color(theme::text_faint())
-                            .truncate()
-                            .child(self.summary(s)),
-                    ),
-            )
             .when(selected, |d| {
-                d.child(icon("arrow-right01", 12.).text_color(theme::text_faint()))
+                d.bg(theme::selection()).text_color(theme::text())
+            })
+            .when(!selected, |d| {
+                d.text_color(theme::text_muted())
+                    .hover(|st| st.bg(theme::fill_hover()))
+            })
+            .child(lead)
+            .child(div().flex_1().min_w_0().truncate().child(s.title()))
+            .when(self.signed_in(s), |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(theme::success()),
+                )
             })
             .on_click(cx.listener(move |this, _, _, cx| this.select(s, cx)))
             .into_any_element()
@@ -771,134 +798,145 @@ impl SettingsDialog {
         let s = self.section;
         let head = div()
             .flex()
+            .flex_col()
             .flex_none()
-            .items_center()
-            .gap(crate::ui::sp(12.))
-            .child(tile(s.icon(), 40., true))
+            .gap(crate::ui::sp(2.))
+            .child(div().ty(ui::Type::Heading).child(s.title()))
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(crate::ui::sp(2.))
-                    .min_w_0()
-                    .child(div().ty(ui::Type::Subtitle).child(s.title()))
-                    .child(
-                        div()
-                            .text_size(px(ui::TEXT_SM))
-                            .text_color(theme::text_subtle())
-                            .child(s.description()),
-                    ),
+                    .text_size(px(ui::TEXT_SM))
+                    .line_height(px(16.))
+                    .text_color(theme::text_subtle())
+                    .child(s.description()),
             );
         let body: AnyElement = match s {
             Section::General => {
-                let mut rows = vec![
-                {
-                    let mut chips = div().flex().flex_none().items_center().gap(crate::ui::sp(6.));
-                    for (i, agent) in crate::agent::AgentKind::ALL.into_iter().enumerate() {
-                        let on = crate::account_view::rail_shows(agent);
-                        chips = chips.child(
-                            ui::chip(("set-rail-usage", i), agent.label(), on).on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(SettingsEvent::RailUsage(agent, !on));
+                let raccoon = vec![
+                    row(
+                        "Raccoon animation",
+                        "Follows the cursor and acts out what agents do. Off, it holds still.",
+                        switch(self.arcade).into_any_element(),
+                    )
+                    .id("set-arcade")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.arcade = !this.arcade;
+                        cx.emit(SettingsEvent::Arcade(this.arcade));
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                    row(
+                        "Dynamic Island",
+                        "What every agent is doing, at the top of the screen, and a card when one finishes, needs you or fails. Wayland only.",
+                        switch(crate::island::enabled()).into_any_element(),
+                    )
+                    .id("set-island")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(SettingsEvent::Island(!crate::island::enabled()));
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                    #[cfg(feature = "coderlabs")]
+                    row(
+                        "Oye Arakun",
+                        "The island listens for \"Oye Arakun\" to start a call, on this computer. Off, it doesn't use the microphone until you call it yourself.",
+                        switch(crate::island_host::wake::enabled()).into_any_element(),
+                    )
+                    .id("set-wake")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        crate::island_host::wake::set_enabled(!crate::island_host::wake::enabled());
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                ];
+                let mut chips = div().flex().flex_wrap().items_center().gap(crate::ui::sp(6.));
+                for (i, agent) in crate::agent::AgentKind::ALL.into_iter().enumerate() {
+                    let on = crate::account_view::rail_shows(agent);
+                    chips = chips.child(
+                        ui::chip(("set-rail-usage", i), agent.label(), on).on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(SettingsEvent::RailUsage(agent, !on));
+                            cx.notify();
+                        })),
+                    );
+                }
+                stack(vec![
+                    titled("Raccoon", raccoon),
+                    titled(
+                        "Sidebar",
+                        vec![
+                            stacked_row(
+                                "Usage card",
+                                "The plans the card at the bottom of the sidebar shows; OpenCode's once a Go key is connected. The Usage tab always shows them all.",
+                                chips.into_any_element(),
+                            )
+                            .into_any_element(),
+                        ],
+                    ),
+                    titled(
+                        "Browser",
+                        vec![
+                            row(
+                                "Agents drive any web page",
+                                "Click, type and run scripts in any tab, with your signed-in accounts. Off, they drive local pages and only read the rest.",
+                                switch(crate::shell::pages::drive_any_page()).into_any_element(),
+                            )
+                            .id("set-drive-pages")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                crate::shell::pages::set_drive_any_page(!crate::shell::pages::drive_any_page());
                                 cx.notify();
-                            })),
-                        );
-                    }
-                    row(
-                        "Sidebar usage",
-                        "Which plans the usage card at the bottom of the sidebar shows. OpenCode shows its Go plan once a Go key is connected. The Usage tab always shows them all.",
-                        chips.into_any_element(),
-                    )
-                    .into_any_element()
-                },
-                {
-                    let current = self.namer.choice;
-                    let mut chips = div().flex().flex_none().items_center().gap(crate::ui::sp(6.));
-                    for (i, choice) in env_name::Choice::ALL.into_iter().enumerate() {
-                        chips = chips.child(
-                            ui::chip(("set-namer", i), choice.label(), choice == current)
-                                .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
-                        );
-                    }
-                    row(
-                        "Name new branches",
-                        "The New environment dialog fills in a random branch name. After the first prompt, an agent names the branch after the task and Arakun renames it; the folder keeps its name. Session's agent: the agent the prompt went to, if it is Claude Code or Droid, so the prompt goes nowhere else. Claude Code names with no tools; Droid runs read-only (it can read files, not change them).",
-                        chips.into_any_element(),
-                    )
-                    .into_any_element()
-                },
-                row(
-                    "Naming model",
-                    match self.namer.choice {
-                        env_name::Choice::Claude => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default.",
-                        env_name::Choice::Droid => "A small, fast model, as the CLI names it. Empty uses the CLI's default.",
-                        env_name::Choice::Session => "Following the session: haiku for Claude Code, the CLI's default for Droid.",
-                        env_name::Choice::Off => "Naming is off: new branches keep their random name.",
-                    },
-                    // Only an agent picked here takes a model of its own.
-                    if self.namer.choice.agent().is_some() {
-                        field(self.namer_input.clone(), 180.).into_any_element()
-                    } else {
-                        div().into_any_element()
-                    },
-                )
-                .into_any_element(),
-                row(
-                    "Raccoon animation",
-                    "Arakun's raccoon follows the cursor and acts out what agents do. Off, it holds still.",
-                    switch(self.arcade).into_any_element(),
-                )
-                .id("set-arcade")
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.arcade = !this.arcade;
-                    cx.emit(SettingsEvent::Arcade(this.arcade));
-                    cx.notify();
-                }))
-                .into_any_element(),
-                row(
-                    "Dynamic Island",
-                    "The raccoon at the top of the screen: what every agent is doing, and a card when one finishes, needs you or fails. Wayland only.",
-                    switch(crate::island::enabled()).into_any_element(),
-                )
-                .id("set-island")
-                .cursor_pointer()
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(SettingsEvent::Island(!crate::island::enabled()));
-                    cx.notify();
-                }))
-                .into_any_element(),
-                #[cfg(feature = "coderlabs")]
-                row(
-                    "Oye Arakun",
-                    "The island listens for \"Oye Arakun\" to start a call, on this computer. Off, it doesn't use the microphone until you call it yourself.",
-                    switch(crate::island_host::wake::enabled()).into_any_element(),
-                )
-                .id("set-wake")
-                .cursor_pointer()
-                .on_click(cx.listener(|_, _, _, cx| {
-                    crate::island_host::wake::set_enabled(!crate::island_host::wake::enabled());
-                    cx.notify();
-                }))
-                .into_any_element(),
-                row(
-                    "Agents drive any web page",
-                    "Lets agents click, type and run scripts in browser tabs on any site, with your signed-in accounts. Off, they only drive local pages and just read the rest.",
-                    switch(crate::shell::pages::drive_any_page()).into_any_element(),
-                )
-                .id("set-drive-pages")
-                .cursor_pointer()
-                .on_click(cx.listener(|_, _, _, cx| {
-                    crate::shell::pages::set_drive_any_page(!crate::shell::pages::drive_any_page());
-                    cx.notify();
-                }))
-                .into_any_element(),
-                self.telemetry_row(true, cx),
-                self.telemetry_row(false, cx),
-            ];
+                            }))
+                            .into_any_element(),
+                        ],
+                    ),
+                ])
+            }
+            Section::Appearance => self.render_appearance(cx),
+            Section::Branches => {
+                let current = self.namer.choice;
+                let mut choices = ui::segmented();
+                for (i, choice) in env_name::Choice::ALL.into_iter().enumerate() {
+                    choices = choices.child(
+                        ui::segment(("set-namer", i), None, choice.label(), choice == current)
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
+                    );
+                }
+                stack(vec![titled(
+                    "Naming",
+                    vec![
+                        stacked_row(
+                            "Name new branches",
+                            "After the first prompt, an agent names the branch after the task and Arakun renames it. The folder keeps its name.",
+                            choices.into_any_element(),
+                        )
+                        .into_any_element(),
+                        row(
+                            "Naming model",
+                            match self.namer.choice {
+                                env_name::Choice::Claude => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default. Claude Code names with no tools.",
+                                env_name::Choice::Droid => "A small, fast model, as the CLI names it. Empty uses the CLI's default. Droid names read-only: it can read files, not change them.",
+                                env_name::Choice::Session => "The agent the prompt went to names it, if it is Claude Code or Droid, so the prompt goes nowhere else: haiku for Claude Code, the CLI's default for Droid.",
+                                env_name::Choice::Off => "Naming is off: new branches keep their random name.",
+                            },
+                            // Only an agent picked here takes a model of its own.
+                            if self.namer.choice.agent().is_some() {
+                                field(self.namer_input.clone(), 180.).into_any_element()
+                            } else {
+                                div().into_any_element()
+                            },
+                        )
+                        .into_any_element(),
+                    ],
+                )])
+            }
+            Section::Privacy => {
+                let mut rows = vec![self.telemetry_row(true, cx), self.telemetry_row(false, cx)];
                 if let Some(e) = &self.telemetry_error {
                     rows.push(
                         div()
-                            .px(crate::ui::sp(12.))
+                            .px(crate::ui::sp(14.))
                             .py(crate::ui::sp(10.))
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::error())
@@ -906,19 +944,8 @@ impl SettingsDialog {
                             .into_any_element(),
                     );
                 }
-                group(rows)
+                stack(vec![titled("Sent to Arakun", rows)])
             }
-            Section::Appearance => self.render_appearance(cx),
-            Section::Account => group(vec![
-                row(
-                    "Plan usage",
-                    "Credits used this period and the API key Arakun reads them with.",
-                    ui::button("set-account", "Open", ButtonKind::Outline, true)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAccount)))
-                        .into_any_element(),
-                )
-                .into_any_element(),
-            ]),
             Section::Claude => {
                 let signed_in = self.claude.is_some();
                 let access = self.claude_access.as_ref();
@@ -974,84 +1001,112 @@ impl SettingsDialog {
                         .into_any_element(),
                     );
                 }
-                group(rows)
+                stack(vec![titled("Account", rows)])
             }
-            Section::Droid => group(vec![
-                row(
-                    "Plugins, skills & MCP servers",
-                    "Install Claude SEO, and turn skills and servers on or off for the visible environment.",
-                    ui::button("set-extensions", "Manage", ButtonKind::Outline, true)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenExtensions)))
+            Section::Codex => {
+                let signed_in = self.codex.is_some();
+                stack(vec![titled(
+                    "Account",
+                    vec![
+                        row(
+                            self.codex_status(),
+                            if signed_in {
+                                "The same sign-in the codex CLI uses; Arakun reads it from ~/.codex."
+                            } else if self.codex_env.is_some() {
+                                "Sessions use the API key in the environment. Sign in to use your ChatGPT plan instead."
+                            } else {
+                                "Runs codex login in a terminal; approve the sign-in with ChatGPT in the browser. CODEX_API_KEY or OPENAI_API_KEY works too."
+                            },
+                            if signed_in {
+                                ui::button("set-codex-out", "Sign out", ButtonKind::Danger, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CodexSignOut)))
+                                    .into_any_element()
+                            } else {
+                                ui::button("set-codex-in", "Sign in", ButtonKind::Outline, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CodexSignIn)))
+                                    .into_any_element()
+                            },
+                        )
                         .into_any_element(),
-                )
-                .into_any_element(),
+                    ],
+                )])
+            }
+            Section::Droid => stack(vec![
+                titled(
+                    "Factory",
+                    vec![
+                        row(
+                            "Plan usage",
+                            if self.droid {
+                                "Credits used this period, and the API key Arakun reads them with."
+                            } else {
+                                "Connect a Factory API key to see what your plan has left."
+                            },
+                            ui::button("set-account", "Open", ButtonKind::Outline, true)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAccount)))
+                                .into_any_element(),
+                        )
+                        .into_any_element(),
+                    ],
+                ),
+                titled(
+                    "Extensions",
+                    vec![
+                        row(
+                            "Plugins, skills & MCP servers",
+                            "Install Claude SEO, and turn skills and servers on or off for the visible environment.",
+                            ui::button("set-extensions", "Manage", ButtonKind::Outline, true)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenExtensions)))
+                                .into_any_element(),
+                        )
+                        .into_any_element(),
+                    ],
+                ),
             ]),
             Section::OpenCode => {
                 let signed_in = !self.opencode.is_empty();
                 let go = self.opencode.iter().any(|p| p == "opencode-go");
-                group(vec![
-                row(
-                    if go { "OpenCode Go connected".to_string() } else { "OpenCode Go".to_string() },
-                    "Copy your API key from the OpenCode console, then Connect: a terminal asks only for the key. Go models show as opencode-go/… in the composer's model menu.",
-                    div()
-                        .flex()
-                        .gap(crate::ui::sp(6.))
-                        .child(
-                            ui::button_with("set-opencode-go-key", Some("link-square02"), "Get API key", ButtonKind::Ghost, true)
-                                .on_click(|_, _, cx| cx.open_url("https://opencode.ai/auth")),
-                        )
-                        .child(
-                            ui::button("set-opencode-go", if go { "Replace key" } else { "Connect" }, ButtonKind::Outline, true)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCodeGoSignIn))),
-                        )
-                        .into_any_element(),
-                )
-                .into_any_element(),
-                row(
-                    if signed_in { format!("Signed in to {}", self.opencode.join(", ")) } else { "Not signed in".to_string() },
-                    "Runs opencode auth login in a terminal: pick OpenCode Go (or another provider) and paste its API key. Its models show in the composer's model menu.",
-                    div()
-                        .flex()
-                        .gap(crate::ui::sp(6.))
-                        .when(signed_in, |d| {
-                            d.child(
-                                ui::button("set-opencode-out", "Sign out", ButtonKind::Danger, true)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCodeSignOut))),
-                            )
-                        })
-                        .child(
-                            ui::button("set-opencode-in", if signed_in { "Add provider" } else { "Sign in" }, ButtonKind::Outline, true)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCodeSignIn))),
+                stack(vec![titled(
+                    "Providers",
+                    vec![
+                        row(
+                            if go { "OpenCode Go connected".to_string() } else { "OpenCode Go".to_string() },
+                            "Copy your API key from the OpenCode console, then Connect: a terminal asks only for the key. Go models show as opencode-go/… in the composer.",
+                            div()
+                                .flex()
+                                .gap(crate::ui::sp(6.))
+                                .child(
+                                    ui::button_with("set-opencode-go-key", Some("link-square02"), "Get API key", ButtonKind::Ghost, true)
+                                        .on_click(|_, _, cx| cx.open_url("https://opencode.ai/auth")),
+                                )
+                                .child(
+                                    ui::button("set-opencode-go", if go { "Replace key" } else { "Connect" }, ButtonKind::Outline, true)
+                                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCodeGoSignIn))),
+                                )
+                                .into_any_element(),
                         )
                         .into_any_element(),
-                )
-                .into_any_element(),
-                ])
-            }
-            Section::Codex => {
-                let signed_in = self.codex.is_some();
-                group(vec![
-                    row(
-                        self.codex_status(),
-                        if signed_in {
-                            "The same sign-in the codex CLI uses; Arakun reads it from ~/.codex."
-                        } else if self.codex_env.is_some() {
-                            "Sessions use the API key in the environment. Sign in to use your ChatGPT plan instead."
-                        } else {
-                            "Runs codex login in a terminal; approve the sign-in with ChatGPT in the browser. CODEX_API_KEY or OPENAI_API_KEY works too."
-                        },
-                        if signed_in {
-                            ui::button("set-codex-out", "Sign out", ButtonKind::Danger, true)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CodexSignOut)))
-                                .into_any_element()
-                        } else {
-                            ui::button("set-codex-in", "Sign in", ButtonKind::Outline, true)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CodexSignIn)))
-                                .into_any_element()
-                        },
-                    )
-                    .into_any_element(),
-                ])
+                        row(
+                            if signed_in { format!("Signed in to {}", self.opencode.join(", ")) } else { "Not signed in".to_string() },
+                            "Runs opencode auth login in a terminal: pick a provider and paste its API key. Its models show in the composer's model menu.",
+                            div()
+                                .flex()
+                                .gap(crate::ui::sp(6.))
+                                .when(signed_in, |d| {
+                                    d.child(
+                                        ui::button("set-opencode-out", "Sign out", ButtonKind::Danger, true)
+                                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCodeSignOut))),
+                                    )
+                                })
+                                .child(
+                                    ui::button("set-opencode-in", if signed_in { "Add provider" } else { "Sign in" }, ButtonKind::Outline, true)
+                                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCodeSignIn))),
+                                )
+                                .into_any_element(),
+                        )
+                        .into_any_element(),
+                    ],
+                )])
             }
             Section::Voice => self.render_voice(cx),
             #[cfg(feature = "coderlabs")]
@@ -1103,10 +1158,10 @@ impl SettingsDialog {
             .h_full()
             .overflow_y_scroll()
             .track_scroll(&self.pane_scroll)
-            .p(crate::ui::sp(16.))
-            .gap(crate::ui::sp(16.))
-            .border_l_1()
-            .border_color(theme::stroke())
+            .px(crate::ui::sp(24.))
+            .pt(crate::ui::sp(16.))
+            .pb(crate::ui::sp(24.))
+            .gap(crate::ui::sp(24.))
             .child(head)
             .child(body)
             .into_any_element()
@@ -1128,7 +1183,7 @@ impl SettingsDialog {
         let (title, hint, on) = if crashes {
             (
                 "Crash reports",
-                "Crashes, with their stack trace, and the kind of error when an agent stops, sent to Arakun's PostHog under a random id. Paths, links, emails and key-like values are removed from a crash's message; its other words are sent.",
+                "Crashes, with their stack trace, and the kind of error when an agent stops. Paths, links, emails and key-like values are removed from a crash's message; its other words are sent.",
                 shown.crashes,
             )
         } else {
@@ -1435,7 +1490,7 @@ impl SettingsDialog {
             .flex()
             .flex_col()
             .gap(crate::ui::sp(12.))
-            .px(crate::ui::sp(12.))
+            .px(crate::ui::sp(14.))
             .py(crate::ui::sp(12.))
             .child(head)
             .when(self.show_import, |d| {
@@ -1690,7 +1745,8 @@ impl SettingsDialog {
         self.save_palette_later(cx);
     }
 
-    fn render_shape(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The Corners, Spacing and Window gap rows.
+    fn render_shape(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let s = &self.palettes;
         let this = cx.entity().downgrade();
         let setter = move |f: fn(&mut crate::palettes::Saved, f32)| {
@@ -1723,7 +1779,7 @@ impl SettingsDialog {
                 .flex()
                 .flex_col()
                 .gap(crate::ui::sp(8.))
-                .px(crate::ui::sp(12.))
+                .px(crate::ui::sp(14.))
                 .py(crate::ui::sp(12.))
                 .child(
                     div()
@@ -1744,7 +1800,7 @@ impl SettingsDialog {
                 .into_any_element()
         };
         let track = || ui::blend_track(theme::fill_raised(), theme::fill_selected());
-        group(vec![
+        vec![
             line(
                 "Corners",
                 "How round cards, buttons and fields are.",
@@ -1805,7 +1861,7 @@ impl SettingsDialog {
                     setter(|s, t| s.window_gap = (t * 20.).round()),
                 ),
             ),
-        ])
+        ]
     }
 
     fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1908,102 +1964,115 @@ impl SettingsDialog {
                     .text_color(theme::text_subtle())
                     .child("}"),
             );
-        div()
+        let mode = {
+            let mut seg = ui::segmented();
+            for (i, m) in crate::theme::Mode::ALL.into_iter().enumerate() {
+                seg = seg.child(
+                    ui::segment(("set-mode", i), None, m.label(), crate::theme::mode() == m)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_shape(|s| s.light = m == crate::theme::Mode::Light, cx);
+                        })),
+                );
+            }
+            row(
+                "Mode",
+                "Dark draws the palette on black; Light on white with dark text.",
+                seg.into_any_element(),
+            )
+            .into_any_element()
+        };
+        let grays = {
+            let mut seg = ui::segmented();
+            for (i, g) in crate::theme::Grays::ALL.into_iter().enumerate() {
+                seg = seg.child(
+                    ui::segment(
+                        ("set-grays", i),
+                        None,
+                        g.label(),
+                        crate::theme::grays() == g,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(SettingsEvent::Grays(g));
+                        cx.notify();
+                    })),
+                );
+            }
+            row(
+                "Grays",
+                "How bright secondary text and borders are. Crisp lifts labels on the dark background; Soft quiets them.",
+                seg.into_any_element(),
+            )
+            .into_any_element()
+        };
+        let text_size = {
+            let mut seg = ui::segmented();
+            for (i, t) in crate::ui::TypeScale::ALL.into_iter().enumerate() {
+                seg = seg.child(
+                    ui::segment(
+                        ("set-type", i),
+                        None,
+                        t.label(),
+                        crate::ui::type_scale() == t,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(SettingsEvent::TypeScale(t));
+                        cx.notify();
+                    })),
+                );
+            }
+            row(
+                "Text size",
+                "Comfortable sets body text at 14 instead of 13.",
+                seg.into_any_element(),
+            )
+            .into_any_element()
+        };
+        let diffs = div()
             .flex()
             .flex_col()
-            .gap(crate::ui::sp(12.))
-            .child(group(vec![self.render_palettes(cx)]))
-            .child(self.render_shape(cx))
-            .child(group(vec![
+            .gap(crate::ui::sp(10.))
+            .px(crate::ui::sp(14.))
+            .py(crate::ui::sp(12.))
+            .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(crate::ui::sp(10.))
-                    .px(crate::ui::sp(12.))
-                    .py(crate::ui::sp(10.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(12.))
-                            .child(label_block(
-                                "Diff colors",
-                                "Colorblind uses blue and orange. Lines keep their + and − marks.",
-                            ))
-                            .child(segments),
-                    )
-                    .child(preview)
-                    .into_any_element(),
-                row(
-                    "Glass",
-                    "See-through window and sidebar; the compositor blurs what is behind (KDE, Hyprland).",
-                    switch(glass).into_any_element(),
-                )
-                .id("set-glass")
-                .cursor_pointer()
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.emit(SettingsEvent::Glass(!glass));
-                    cx.notify();
-                }))
+                    .items_center()
+                    .gap(crate::ui::sp(16.))
+                    .child(label_block(
+                        "Diff colors",
+                        "Colorblind uses blue and orange. Lines keep their + and − marks.",
+                    ))
+                    .child(segments),
+            )
+            .child(preview)
+            .into_any_element();
+        let glass_row = row(
+            "Glass",
+            "See-through window and sidebar; the compositor blurs what is behind (KDE, Hyprland).",
+            switch(glass).into_any_element(),
+        )
+        .id("set-glass")
+        .cursor_pointer()
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.emit(SettingsEvent::Glass(!glass));
+            cx.notify();
+        }))
+        .into_any_element();
+        let gallery = row(
+            "Design system",
+            "Every color, type style and component Arakun is built from, with the gray and type choices.",
+            ui::button("set-gallery", "Open", ButtonKind::Outline, true)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenGallery)))
                 .into_any_element(),
-                {
-                    let mut seg = ui::segmented();
-                    for (i, m) in crate::theme::Mode::ALL.into_iter().enumerate() {
-                        seg = seg.child(
-                            ui::segment(("set-mode", i), None, m.label(), crate::theme::mode() == m)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.set_shape(|s| s.light = m == crate::theme::Mode::Light, cx);
-                                })),
-                        );
-                    }
-                    row(
-                        "Mode",
-                        "Dark draws the palette on black; Light on white with dark text.",
-                        seg.into_any_element(),
-                    )
-                    .into_any_element()
-                },
-                {
-                    let mut seg = ui::segmented();
-                    for (i, g) in crate::theme::Grays::ALL.into_iter().enumerate() {
-                        seg = seg.child(
-                            ui::segment(("set-grays", i), None, g.label(), crate::theme::grays() == g)
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(SettingsEvent::Grays(g));
-                                    cx.notify();
-                                })),
-                        );
-                    }
-                    row(
-                        "Grays",
-                        "How bright secondary text and borders are. Crisp lifts labels on the dark background; Soft quiets them.",
-                        seg.into_any_element(),
-                    )
-                    .into_any_element()
-                },
-                {
-                    let mut seg = ui::segmented();
-                    for (i, t) in crate::ui::TypeScale::ALL.into_iter().enumerate() {
-                        seg = seg.child(
-                            ui::segment(("set-type", i), None, t.label(), crate::ui::type_scale() == t)
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(SettingsEvent::TypeScale(t));
-                                    cx.notify();
-                                })),
-                        );
-                    }
-                    row("Text size", "Comfortable sets body text at 14 instead of 13.", seg.into_any_element()).into_any_element()
-                },
-                row(
-                    "Design system",
-                    "Every color, type style and component Arakun is built from, with the gray and type choices.",
-                    ui::button("set-gallery", "Open", ButtonKind::Outline, true)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenGallery)))
-                        .into_any_element(),
-                )
-                .into_any_element(),
-            ]))
-            .into_any_element()
+        )
+        .into_any_element();
+        stack(vec![
+            titled("Colors", vec![self.render_palettes(cx), mode]),
+            titled("Text", vec![text_size, grays]),
+            titled("Shape", self.render_shape(cx)),
+            titled("Code", vec![diffs]),
+            titled("Window", vec![glass_row, gallery]),
+        ])
     }
 
     fn render_voice(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2019,7 +2088,7 @@ impl SettingsDialog {
             .flex_none()
             .items_center()
             .gap(crate::ui::sp(6.))
-            .child(field(self.key_input.clone(), 150.))
+            .child(field(self.key_input.clone(), 260.))
             .child(
                 ui::button("set-voice-key-save", "Save", ButtonKind::Outline, !busy)
                     .on_click(cx.listener(|this, _, _, cx| this.save_key(cx))),
@@ -2089,46 +2158,58 @@ impl SettingsDialog {
             })
         });
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(10.))
-            .child(group(vec![
-                row(
-                    "Read questions aloud",
-                    "When Droid asks you something, Arakun says the question and its options, even with the session on screen. It stops once you answer.",
-                    switch(enabled).into_any_element(),
-                )
-                .id("set-voice")
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| this.set_voice_enabled(!enabled, cx)))
-                .into_any_element(),
-                row("ElevenLabs API key", key_hint, key_control.into_any_element()).into_any_element(),
-                row("Voice ID", id_hint, field(self.voice_input.clone(), 210.).into_any_element()).into_any_element(),
-                row(
-                    "Tone",
-                    "How much the voice acts out what it reads. Calm sounds the steadiest.",
-                    tones.into_any_element(),
-                )
-                .into_any_element(),
-                row(
-                    "Test voice",
-                    "Says a short sample with this key and voice.",
-                    test_control.into_any_element(),
-                )
-                .into_any_element(),
-            ]))
-            .when_some(note, |d, (text, failed)| {
-                d.child(
-                    div()
-                        .px(crate::ui::sp(4.))
-                        .text_size(px(ui::TEXT_SM))
-                        .line_height(px(17.))
-                        .text_color(if failed { theme::danger().into() } else { theme::mix(0.55) })
-                        .child(text),
-                )
-            })
-            .into_any_element()
+        let mut blocks = vec![
+            titled(
+                "Read aloud",
+                vec![
+                    row(
+                        "Read questions aloud",
+                        "When Droid asks you something, Arakun says the question and its options, even with the session on screen. It stops once you answer.",
+                        switch(enabled).into_any_element(),
+                    )
+                    .id("set-voice")
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_voice_enabled(!enabled, cx)))
+                    .into_any_element(),
+                    row(
+                        "Tone",
+                        "How much the voice acts out what it reads. Calm sounds the steadiest.",
+                        tones.into_any_element(),
+                    )
+                    .into_any_element(),
+                ],
+            ),
+            titled(
+                "ElevenLabs",
+                vec![
+                    stacked_row("API key", key_hint, key_control.into_any_element()).into_any_element(),
+                    stacked_row("Voice ID", id_hint, field(self.voice_input.clone(), 260.).into_any_element())
+                        .into_any_element(),
+                    row(
+                        "Test voice",
+                        "Says a short sample with this key and voice.",
+                        test_control.into_any_element(),
+                    )
+                    .into_any_element(),
+                ],
+            ),
+        ];
+        if let Some((text, failed)) = note {
+            blocks.push(
+                div()
+                    .px(crate::ui::sp(4.))
+                    .text_size(px(ui::TEXT_SM))
+                    .line_height(px(17.))
+                    .text_color(if failed {
+                        theme::danger().into()
+                    } else {
+                        theme::text_subtle()
+                    })
+                    .child(text)
+                    .into_any_element(),
+            );
+        }
+        stack(blocks)
     }
 
     fn render_shortcuts(&self, cx: &App) -> AnyElement {
@@ -2149,24 +2230,12 @@ impl SettingsDialog {
                 .child("No shortcut matches")
                 .into_any_element();
         }
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(16.))
-            .children(groups.into_iter().map(|(name, items)| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(crate::ui::sp(6.))
-                    .child(
-                        div()
-                            .px(crate::ui::sp(4.))
-                            .text_size(px(ui::TEXT_XS))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text_subtle())
-                            .child(name),
-                    )
-                    .child(group(
+        stack(
+            groups
+                .into_iter()
+                .map(|(name, items)| {
+                    titled(
+                        name,
                         items
                             .into_iter()
                             .map(|(_, keys, what)| {
@@ -2174,14 +2243,14 @@ impl SettingsDialog {
                                     .flex()
                                     .items_center()
                                     .gap(crate::ui::sp(12.))
-                                    .min_h(px(32.))
-                                    .px(crate::ui::sp(12.))
-                                    .py(crate::ui::sp(4.))
+                                    .min_h(px(36.))
+                                    .px(crate::ui::sp(14.))
+                                    .py(crate::ui::sp(6.))
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
-                                            .text_size(px(ui::TEXT_SM))
+                                            .text_size(px(ui::TEXT_MD))
                                             .text_color(theme::text_muted())
                                             .child(*what),
                                     )
@@ -2189,9 +2258,10 @@ impl SettingsDialog {
                                     .into_any_element()
                             })
                             .collect(),
-                    ))
-            }))
-            .into_any_element()
+                    )
+                })
+                .collect(),
+        )
     }
 }
 
@@ -2199,31 +2269,6 @@ impl Focusable for SettingsDialog {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.input.focus_handle(cx)
     }
-}
-
-/// A rounded icon square, like the attach picker's file tiles.
-fn tile(name: &str, size: f32, lit: bool) -> gpui::Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(size))
-        .rounded(crate::ui::rad(if size > 32. {
-            ui::RADIUS_LG
-        } else {
-            ui::RADIUS
-        }))
-        .bg(if lit {
-            theme::active().opacity(0.14)
-        } else {
-            theme::mix(0.05)
-        })
-        .child(icon(name, size * 0.5).text_color(if lit {
-            theme::active()
-        } else {
-            theme::mix(0.55)
-        }))
 }
 
 /// A text field sized for a settings row.
@@ -2244,42 +2289,71 @@ fn field(input: Entity<TextInput>, width: f32) -> gpui::Div {
         .child(input)
 }
 
-/// Rows in one bordered card, divided by hairlines.
+/// Rows in one card, divided by hairlines.
 fn group(rows: Vec<AnyElement>) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .rounded(crate::ui::rad(ui::RADIUS_LG))
-        .border_1()
-        .border_color(theme::stroke())
-        .bg(theme::fill_raised())
-        .overflow_hidden()
+    ui::surface_card()
         .children(rows.into_iter().enumerate().map(|(i, r)| {
             div()
-                .when(i > 0, |d| d.border_t_1().border_color(theme::stroke()))
+                .when(i > 0, |d| {
+                    d.border_t_1().border_color(theme::border_subtle())
+                })
                 .child(r)
         }))
         .into_any_element()
 }
 
+/// A card of rows under its caption: one part of a section.
+fn titled(caption: &str, rows: Vec<AnyElement>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(crate::ui::sp(8.))
+        .child(ui::overline(caption).px(crate::ui::sp(4.)))
+        .child(group(rows))
+        .into_any_element()
+}
+
+/// A section's parts, one under the other.
+fn stack(parts: Vec<AnyElement>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(crate::ui::sp(24.))
+        .children(parts)
+        .into_any_element()
+}
+
+/// A setting's name, and under it a hint of a line or two.
 fn label_block(title: impl Into<SharedString>, hint: impl Into<SharedString>) -> gpui::Div {
+    let hint = hint.into();
     div()
         .flex()
         .flex_col()
         .flex_1()
         .min_w_0()
         .gap(crate::ui::sp(2.))
-        .child(div().text_size(px(ui::TEXT_MD)).child(title.into()))
         .child(
             div()
-                .text_size(px(ui::TEXT_XS))
-                .line_height(px(15.))
-                .text_color(theme::text_subtle())
-                .child(hint.into()),
+                .text_size(px(ui::TEXT_MD))
+                .line_height(px(18.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(title.into()),
         )
+        .when(!hint.is_empty(), |d| {
+            d.child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .line_height(px(16.))
+                    .text_color(theme::text_subtle())
+                    .child(hint),
+            )
+        })
 }
 
-/// One setting: what it is on the left, its control on the right.
+/// One setting: what it is on the left, its control on the right. A control
+/// wider than about 200 px goes in a `stacked_row` instead, so it doesn't
+/// squeeze the text into a narrow column.
 fn row(
     title: impl Into<SharedString>,
     hint: impl Into<SharedString>,
@@ -2288,12 +2362,31 @@ fn row(
     div()
         .flex()
         .items_center()
-        .gap(crate::ui::sp(12.))
-        .px(crate::ui::sp(12.))
-        .py(crate::ui::sp(10.))
+        .gap(crate::ui::sp(16.))
+        .px(crate::ui::sp(14.))
+        .py(crate::ui::sp(12.))
         .hover(|s| s.bg(theme::fill_raised()))
         .child(label_block(title, hint))
         .child(control)
+}
+
+/// One setting with its control under the text: chips, a field, or more
+/// choices than fit beside it.
+fn stacked_row(
+    title: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+    control: AnyElement,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(crate::ui::sp(10.))
+        .px(crate::ui::sp(14.))
+        .py(crate::ui::sp(12.))
+        .child(label_block(title, hint))
+        // In a row of its own, so a segmented control keeps its width
+        // instead of stretching across the card.
+        .child(div().flex().flex_wrap().items_center().child(control))
 }
 
 /// "Ctrl+K / Ctrl+P" as key caps: Ctrl K / Ctrl P, and ⌘ K / ⌘ P on macOS.
@@ -2360,34 +2453,53 @@ fn keycaps(keys: &str) -> AnyElement {
 pub use crate::ui::switch;
 
 impl Render for SettingsDialog {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let viewport_w = window.viewport_size().width.as_f32();
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let q = self.query(cx);
         let shown = self.shown(cx);
 
-        let field = div()
+        // Filled and borderless, like the rail's search, so it reads as part
+        // of the list it filters.
+        let search = div()
             .flex()
-            .flex_1()
-            .min_w_0()
+            .flex_none()
             .items_center()
             .gap(crate::ui::sp(8.))
             .h(px(ui::INPUT_H))
             .px(crate::ui::sp(10.))
             .rounded(crate::ui::rad(ui::RADIUS))
-            .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::background())
+            .bg(theme::fill_hover())
             .text_size(px(ui::TEXT_MD))
             .line_height(px(20.))
             .child(icon("search01", 14.).text_color(theme::text_subtle()))
             .child(self.input.clone());
 
-        let crumb: SharedString = if shown.is_empty() {
-            "Settings".into()
-        } else {
-            format!("Settings › {}", self.section.title()).into()
-        };
-        let count: SharedString = if q.is_empty() {
+        let mut list = div()
+            .id("settings-sections")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .pt(crate::ui::sp(16.))
+            .gap(crate::ui::sp(2.));
+        for (i, group) in Group::ALL.into_iter().enumerate() {
+            let rows: Vec<_> = shown.iter().filter(|s| s.group() == group).collect();
+            if rows.is_empty() {
+                continue;
+            }
+            list = list.child(
+                ui::overline(group.title())
+                    .px(crate::ui::sp(8.))
+                    .pb(crate::ui::sp(6.))
+                    .when(i > 0, |d| d.pt(crate::ui::sp(16.))),
+            );
+            for s in rows {
+                list = list.child(self.render_row(*s, cx));
+            }
+        }
+
+        // The version, or how many sections the search leaves.
+        let foot: SharedString = if q.is_empty() {
             format!("Arakun {}", env!("CARGO_PKG_VERSION")).into()
         } else {
             match shown.len() {
@@ -2397,27 +2509,38 @@ impl Render for SettingsDialog {
             }
         };
 
-        let list = div()
-            .id("settings-sections")
+        let nav = div()
             .flex()
             .flex_col()
             .flex_none()
             .w(px(LIST_W))
             .h_full()
-            .overflow_y_scroll()
             .px(crate::ui::sp(8.))
-            .pb(crate::ui::sp(8.))
-            .gap(crate::ui::sp(2.))
-            .children(shown.iter().map(|s| self.render_row(*s, cx)));
+            .py(crate::ui::sp(12.))
+            .border_r_1()
+            .border_color(theme::border_subtle())
+            .child(search)
+            .child(list)
+            .child(
+                div()
+                    .flex_none()
+                    .px(crate::ui::sp(8.))
+                    .pt(crate::ui::sp(8.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child(foot),
+            );
 
-        let body: AnyElement = if shown.is_empty() {
+        let pane: AnyElement = if shown.is_empty() {
             div()
                 .flex()
                 .flex_col()
+                .flex_1()
                 .items_center()
                 .justify_center()
                 .gap(crate::ui::sp(10.))
-                .size_full()
+                .h_full()
+                .px(crate::ui::sp(24.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
                 .child(icon("search01", 20.).text_color(theme::text_faint()))
@@ -2426,95 +2549,27 @@ impl Render for SettingsDialog {
                 ))
                 .into_any_element()
         } else {
-            div()
-                .flex()
-                .size_full()
-                .child(list)
-                .child(self.render_pane(cx))
-                .into_any_element()
+            self.render_pane(cx)
         };
 
-        let hint = |key: &str, label: &str| {
-            div()
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(4.))
-                .child(
-                    div()
-                        .px(crate::ui::sp(4.))
-                        .h(px(16.))
-                        .rounded(crate::ui::rad(ui::RADIUS_SM))
-                        .bg(theme::fill_selected())
-                        .text_size(px(ui::TEXT_XS))
-                        .line_height(px(16.))
-                        .text_color(theme::text_subtle())
-                        .child(key.to_string()),
-                )
-                .child(label.to_string())
-        };
-
-        ui::modal_panel("settings", 780.)
+        ui::modal_panel("settings", DIALOG_W)
             .child(ui::modal_header(
                 "Settings",
-                Some("Preferences save as you change them.".into()),
+                Some("Changes save as you make them.".into()),
                 ui::close_button("settings-close")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Dismissed))),
             ))
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .px(crate::ui::sp(16.))
-                    .pt(crate::ui::sp(12.))
-                    .child(field),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .px(crate::ui::sp(20.))
-                    .pt(crate::ui::sp(12.))
-                    .pb(crate::ui::sp(4.))
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(theme::text_subtle())
-                    .child(div().flex_1().min_w_0().truncate().child(crumb))
-                    .child(count),
-            )
-            .child(
-                div()
-                    .flex()
                     .h(px(BODY_H))
                     .min_h_0()
-                    .overflow_hidden()
-                    .child(body),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(crate::ui::sp(12.))
-                    .px(crate::ui::sp(16.))
-                    .py(crate::ui::sp(10.))
+                    .mt(crate::ui::sp(12.))
                     .border_t_1()
-                    .border_color(theme::stroke())
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(theme::text_subtle())
-                    .when(viewport_w >= 640., |d| {
-                        d.child(hint("↑↓", "section")).child(hint(
-                            "Esc",
-                            if q.is_empty() {
-                                "close"
-                            } else {
-                                "clear search"
-                            },
-                        ))
-                    })
-                    .child(div().flex_1())
-                    .child(
-                        ui::button("settings-done", "Done", ButtonKind::Primary, true)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Dismissed))),
-                    ),
+                    .border_color(theme::border_subtle())
+                    .overflow_hidden()
+                    .child(nav)
+                    .child(pane),
             )
     }
 }
@@ -2543,5 +2598,39 @@ mod tests {
         assert!(SettingsDialog::shortcut_matches("close", sc));
         assert!(SettingsDialog::shortcut_matches("panes", sc));
         assert!(!SettingsDialog::shortcut_matches("terminal", sc));
+    }
+
+    /// ↑ and ↓ walk `Section::ALL`, and the list draws it group by group, so
+    /// the two orders must agree or the keys would jump around the list.
+    #[test]
+    fn sections_are_listed_group_by_group() {
+        let groups: Vec<Group> = Section::ALL.iter().map(|s| s.group()).collect();
+        let mut sorted = groups.clone();
+        sorted.sort_by_key(|g| Group::ALL.iter().position(|x| x == g));
+        assert_eq!(groups, sorted);
+        assert!(
+            Section::ALL
+                .iter()
+                .all(|s| (s.group() == Group::Agents) == s.agent().is_some())
+        );
+    }
+
+    #[test]
+    fn search_finds_settings_where_they_moved() {
+        let found = |q: &str| -> Vec<Section> {
+            Section::ALL
+                .iter()
+                .copied()
+                .filter(|s| s.matches(q))
+                .collect()
+        };
+        assert!(found("branch").contains(&Section::Branches));
+        assert!(found("haiku").contains(&Section::Branches));
+        assert!(found("crash").contains(&Section::Privacy));
+        assert!(!found("crash").contains(&Section::General));
+        assert!(found("factory").contains(&Section::Droid));
+        assert!(found("ctrl+w").contains(&Section::Shortcuts));
+        assert_eq!(found("").len(), Section::ALL.len());
+        assert!(found("zzz-nothing").is_empty());
     }
 }

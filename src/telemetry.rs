@@ -4,7 +4,7 @@
 //! Nothing is sent until the user answers the question Arakun asks on first
 //! launch (`telemetry_dialog`), and only what they agreed to: crash reports
 //! (panics with their stack trace, agent errors) and usage counts are two
-//! choices, kept in `app_dir/telemetry.json` and changed in Settings › General.
+//! choices, kept in `app_dir/telemetry.json` and changed in Settings › Privacy.
 //! `DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the
 //! question; `ARAKUN_TELEMETRY=1` turns both on.
 //!

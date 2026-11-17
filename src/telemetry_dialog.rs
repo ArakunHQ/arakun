@@ -14,7 +14,7 @@ use crate::ui::{self, ButtonKind, icon};
 pub const DETAILS_URL: &str = "https://github.com/ArakunHQ/arakun#usage-and-crash-reports";
 
 pub enum TelemetryEvent {
-    /// The user chose; Settings › General can change it later.
+    /// The user chose; Settings › Privacy can change it later.
     Answered(bool),
     /// "What is sent" was clicked.
     OpenDetails,
@@ -121,7 +121,7 @@ impl Render for TelemetryDialog {
                         div()
                             .text_size(px(ui::TEXT_XS))
                             .text_color(theme::text_subtle())
-                            .child("Change it any time in Settings › General."),
+                            .child("Change it any time in Settings › Privacy."),
                     )
                     .child(
                         div()

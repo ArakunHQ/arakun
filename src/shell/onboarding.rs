@@ -783,10 +783,10 @@ impl Shell {
         };
         let said = match crate::telemetry::consent() {
             Some(c) if c == crate::telemetry::Consent::NONE => {
-                "You chose not to send them. Change it any time in Settings › General."
+                "You chose not to send them. Change it any time in Settings › Privacy."
             }
-            Some(_) => "You chose to send them. Change it any time in Settings › General.",
-            None => "Either answer moves on. Change it any time in Settings › General.",
+            Some(_) => "You chose to send them. Change it any time in Settings › Privacy.",
+            None => "Either answer moves on. Change it any time in Settings › Privacy.",
         };
         div()
             .flex()

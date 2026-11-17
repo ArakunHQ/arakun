@@ -9,6 +9,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -85,31 +86,34 @@ impl Merged {
     }
 }
 
-/// The user's newest merged pull request from `branch`, asked in `dir`. None
-/// when there is none or gh can't say.
-pub fn merged_pr(dir: &Path, branch: &str) -> Option<Merged> {
-    let out = crate::git::gh(dir)
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--author",
-            "@me",
-            "--head",
-            branch,
-            "--limit",
-            "1",
-            "--json",
-            "number,url,mergedAt",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+/// The most merged pull requests read per branch: a branch can be merged
+/// more than once.
+const MERGED_PER_BRANCH: &str = "5";
+/// A `gh` that hangs must not hold up the next check.
+const GH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The user's newest merged pull requests from `branch`, asked in `dir`.
+/// Empty when there are none or gh can't say.
+pub fn merged_prs(dir: &Path, branch: &str) -> Vec<Merged> {
+    let mut cmd = crate::git::gh(dir);
+    cmd.args([
+        "pr",
+        "list",
+        "--state",
+        "merged",
+        "--author",
+        "@me",
+        "--head",
+        branch,
+        "--limit",
+        MERGED_PER_BRANCH,
+        "--json",
+        "number,url,mergedAt",
+    ]);
+    match crate::headless::sandbox::run_with_timeout(cmd, None, GH_TIMEOUT) {
+        Ok(out) if out.status.success() => serde_json::from_slice(&out.stdout).unwrap_or_default(),
+        _ => Vec::new(),
     }
-    let list: Vec<Merged> = serde_json::from_slice(&out.stdout).ok()?;
-    list.into_iter().next()
 }
 
 /// The merges already settled, by pull request URL, oldest first.
@@ -133,7 +137,7 @@ impl Book {
             let _ = std::fs::create_dir_all(dir);
         }
         if let Ok(bytes) = serde_json::to_vec(self)
-            && let Err(e) = std::fs::write(&path, bytes)
+            && let Err(e) = crate::durable::write(&path, &bytes)
         {
             eprintln!("arakun: could not keep the settled merges: {e}");
         }

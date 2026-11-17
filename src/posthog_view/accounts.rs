@@ -134,6 +134,7 @@ impl PostHogView {
                 )),
         )
         .when_some(self.connect_note.clone(), |d, (note, error)| {
+            let note = crate::redact::text(&note).into_owned();
             d.child(ui::text(Type::Body, if error { theme::error().into() } else { theme::text_muted() }, note))
         })
         .into_any_element()
@@ -150,7 +151,10 @@ impl PostHogView {
             let projects: Vec<&Project> = dir
                 .map(|d| d.projects.iter().filter(|p| p.session == s.id).collect())
                 .unwrap_or_default();
-            let mut orgs: Vec<&str> = projects.iter().map(|p| p.org.as_str()).collect();
+            let mut orgs: Vec<String> = projects
+                .iter()
+                .map(|p| crate::redact::value(&p.org))
+                .collect();
             orgs.dedup();
             let summary = if projects.is_empty() {
                 "no projects read yet".to_string()
@@ -186,7 +190,11 @@ impl PostHogView {
                                     .flex()
                                     .items_center()
                                     .gap(crate::ui::sp(8.))
-                                    .child(ui::text(Type::Body, theme::text(), s.email.clone()))
+                                    .child(ui::text(
+                                        Type::Body,
+                                        theme::text(),
+                                        crate::redact::value(&s.email),
+                                    ))
                                     .child(ui::badge(s.region_label(), Tone::Neutral)),
                             )
                             .child(

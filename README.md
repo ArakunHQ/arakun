@@ -207,6 +207,28 @@ it shows in `github/avatars/` (each downloaded again after a week).
   Wide). The defaults (100%, 100%, 8 px) look as before. These are kept in
   `palettes.json` too.
 
+### Redacted mode
+
+For streams, demos and screen sharing. `Ctrl+Shift+H`, the palette or Settings › Privacy
+turns it on; a "Redacted" pill in the title bar shows it is on, and a click on it turns it
+off. While it is on, Arakun hides:
+
+- account emails and names: the Cloudflare and PostHog accounts, the claude.ai accounts
+  behind CLIProxyAPI, your git name and email in the sidebar, Cloudflare's audit log;
+- the phone's pairing QR code and code, its addresses and the names of paired phones
+  ("Copy link" still copies the real link);
+- the host Claude Code runs on, a server's pairing link, and IP addresses;
+- in terminals, agent replies, tool output, tab titles, notifications and the Inbox:
+  emails, values shaped like keys or tokens (`sk-…`, `ghp_…` and long random words keep
+  their first four characters), the value after a name such as `API_KEY=` or `token:`,
+  the word after `Bearer`, IPv4 addresses other than `127.0.0.1`, and your user name
+  and the computer's name, as a shell prompt shows them (`you@laptop`).
+
+It works on what it can recognize, so check a view before you share it: a secret that
+looks like a plain word still shows. The choice is kept in a `redacted` file in Arakun's
+data folder, so it is still on after a restart. `ARAKUN_REDACTED=1` turns it on for one
+run without changing that file.
+
 ### Usage and crash reports
 
 Arakun sends nothing until you say so. On first launch it asks whether to send crash
@@ -575,6 +597,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
   next to the state file.
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
+- `Ctrl+Shift+H` turns [redacted mode](#redacted-mode) on or off
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,

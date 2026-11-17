@@ -1118,6 +1118,9 @@ impl Ctx<'_> {
         inline: Option<&Inline>,
         links: Vec<(Range<usize>, SharedString)>,
     ) -> AnyElement {
+        // Every offset below (runs, links, selection, search) still fits:
+        // the masked text keeps its length in bytes.
+        let text = crate::redact::same_bytes(&text).map_or(text, SharedString::from);
         let start = self.next.get();
         self.next.set(start + text.len() + 1);
         // Links to files open them in arakun, through the surface's file clicks.

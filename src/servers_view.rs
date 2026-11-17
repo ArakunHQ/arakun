@@ -193,7 +193,7 @@ fn tone(status: Status) -> (Tone, &'static str) {
 
 impl ServersView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let link = cx.new(|cx| TextInput::new("https://…", cx).mono());
+        let link = cx.new(|cx| TextInput::new("https://…", cx).mono().redacted());
         let prompt = cx.new(|cx| TextInput::new("Send a follow-up…", cx));
         let first = cx.new(|cx| TextInput::new("What should the agent do?", cx));
         let answer = cx.new(|cx| TextInput::new("Or type an answer…", cx));
@@ -420,7 +420,7 @@ impl ServersView {
                     .ty(Type::Label)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::content())
-                    .child(server.name.clone()),
+                    .child(crate::redact::text(&server.name).into_owned()),
             )
             .child(
                 ui::icon_button(("servers-forget", ix), "delete02", 13.)
@@ -529,9 +529,13 @@ impl ServersView {
             .gap(ui::sp(2.))
             .child(head)
             .children(note.map(|n| {
-                ui::text(Type::Caption, theme::text_faint(), n)
-                    .px(ui::sp(8.))
-                    .pb(ui::sp(4.))
+                ui::text(
+                    Type::Caption,
+                    theme::text_faint(),
+                    crate::redact::text(&n).into_owned(),
+                )
+                .px(ui::sp(8.))
+                .pb(ui::sp(4.))
             }))
             .children(confirm)
             .children(sessions)
@@ -619,7 +623,7 @@ impl ServersView {
                     ),
             )
             .children(self.state.error.clone().map(|e| {
-                ui::text(Type::Label, theme::attention().into(), e)
+                ui::text(Type::Label, theme::attention().into(), crate::redact::text(&e).into_owned())
             }))
             .child(ui::text(
                 Type::Caption,
@@ -639,7 +643,7 @@ impl ServersView {
             .p(ui::sp(ui::PAGE_PAD))
             .max_w(px(620.))
             .child(ui::page_title(
-                format!("New session on {}", server.name),
+                format!("New session on {}", crate::redact::text(&server.name)),
                 None,
             ));
         let Some(picked) = self.picked_place(server) else {

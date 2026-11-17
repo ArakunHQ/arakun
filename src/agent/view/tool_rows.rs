@@ -363,10 +363,9 @@ impl ThreadView {
                         d.child(icon("file01", 12.).text_color(theme::text_subtle()))
                     })
                     .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child(label.target.replace('\n', " ")),
+                        div().min_w_0().truncate().child(
+                            crate::redact::text(&label.target.replace('\n', " ")).into_owned(),
+                        ),
                     ),
             )
             .when(tool.added > 0 || tool.removed > 0, |d| {
@@ -530,7 +529,7 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
                             .flex_1()
                             .min_w_0()
                             .text_color(theme::text_muted())
-                            .child(cmd),
+                            .child(crate::redact::text(&cmd).into_owned()),
                     ),
             )
         })
@@ -549,7 +548,7 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
                     .px(crate::ui::sp(10.))
                     .py(crate::ui::sp(6.))
                     .text_color(theme::text_subtle())
-                    .child(shown),
+                    .child(crate::redact::text(&shown).into_owned()),
             )
         })
         .when(failed, |d| {
@@ -630,6 +629,6 @@ pub(super) fn mono_block(text: &str, color: Hsla) -> AnyElement {
         .text_size(px(crate::ui::TEXT_SM))
         .line_height(px(20.))
         .text_color(color)
-        .child(shown)
+        .child(crate::redact::text(&shown).into_owned())
         .into_any_element()
 }

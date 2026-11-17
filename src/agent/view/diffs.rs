@@ -250,7 +250,9 @@ pub(super) fn colored_line(
     if text.len() > at {
         runs.push(run(text.len() - at, base));
     }
-    StyledText::new(SharedString::from(text.to_string())).with_runs(runs)
+    // Masked to the same length, so the syntax colors still line up.
+    let text = crate::redact::same_bytes(text).unwrap_or_else(|| text.to_string());
+    StyledText::new(SharedString::from(text)).with_runs(runs)
 }
 
 pub(super) fn diff_bg(kind: LineKind) -> Option<Hsla> {

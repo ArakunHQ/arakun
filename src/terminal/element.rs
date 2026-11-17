@@ -587,7 +587,11 @@ impl Element for TerminalElement {
         let shaped_lines = frame
             .segments
             .into_iter()
-            .map(|seg| {
+            .map(|mut seg| {
+                // Same length in bytes, so the runs below still cover it.
+                if let Some(text) = crate::redact::same_bytes(&seg.text) {
+                    seg.text = text;
+                }
                 let runs: Vec<TextRun> = seg
                     .runs
                     .into_iter()

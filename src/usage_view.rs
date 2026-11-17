@@ -592,7 +592,7 @@ impl UsageView {
                     .text_size(px(ui::TEXT_SM))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme::text_muted())
-                    .child(a.name.clone()),
+                    .child(crate::redact::value(&a.name)),
             );
             match (&a.usage, &a.error) {
                 (Some(u), _) => {
@@ -612,7 +612,10 @@ impl UsageView {
                 }
                 (None, e) => {
                     let e = e.clone().unwrap_or_else(|| "No windows reported.".into());
-                    account = account.child(note(e, theme::text_subtle()));
+                    account = account.child(note(
+                        crate::redact::text(&e).into_owned(),
+                        theme::text_subtle(),
+                    ));
                 }
             }
             rows = rows.child(account);
@@ -623,8 +626,12 @@ impl UsageView {
             .map_or(proxy.base.as_str(), |(_, r)| r)
             .trim_end_matches("/v0/management")
             .to_string();
+        let host = crate::redact::value(&host);
         if let Some(e) = &proxy.error {
-            rows = rows.child(note(e.clone(), theme::error().into()));
+            rows = rows.child(note(
+                crate::redact::text(e).into_owned(),
+                theme::error().into(),
+            ));
         } else if proxy.has_key && proxy.accounts.is_empty() && proxy.at > 0 {
             rows = rows.child(note(
                 "CLIProxyAPI has no claude.ai accounts signed in.".into(),

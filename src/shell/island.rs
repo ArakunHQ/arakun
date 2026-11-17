@@ -137,7 +137,14 @@ impl Open {
 
 /// Sends `alert` when the island is connected; while it isn't, the link
 /// would drop it, so it isn't sent and the caller tells it some other way.
-fn send_alert(tx: &std::sync::mpsc::Sender<ToIsland>, up: &AtomicBool, alert: isl::Alert) -> bool {
+/// The Inbox keeps the alert as it was; only what goes on screen is masked.
+fn send_alert(
+    tx: &std::sync::mpsc::Sender<ToIsland>,
+    up: &AtomicBool,
+    mut alert: isl::Alert,
+) -> bool {
+    alert.title = crate::redact::text(&alert.title).into_owned().into();
+    alert.subtitle = crate::redact::text(&alert.subtitle).into_owned().into();
     up.load(Ordering::Relaxed) && tx.send(ToIsland::Alert { alert }).is_ok()
 }
 
@@ -389,7 +396,13 @@ impl Shell {
             .map(|seen| seen.usd)
             .sum();
         let feed = isl::Feed {
-            rows,
+            rows: rows
+                .into_iter()
+                .map(|mut r| {
+                    r.doing = crate::redact::text(&r.doing).into_owned().into();
+                    r
+                })
+                .collect(),
             today: (spent > 0.).then(|| crate::agent::fmt_cost(spent, "USD", false).into()),
             viewing: window
                 .is_window_active()

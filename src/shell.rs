@@ -126,6 +126,7 @@ gpui::actions!(
         ToggleSubagents,
         OpenSettings,
         ToggleDance,
+        ToggleRedacted,
         GoBackTab,
         GoForwardTab,
         NextTab,
@@ -1861,6 +1862,15 @@ impl Shell {
         cx.notify();
     }
 
+    /// Turns redacted mode on or off. Every window draws again at once, so
+    /// nothing private stays on screen for a frame longer than it must.
+    pub(super) fn toggle_redacted(&mut self, cx: &mut Context<Self>) {
+        if let Err(e) = crate::redact::set(!crate::redact::on()) {
+            eprintln!("arakun: redacted mode will not last past a restart: {e}");
+        }
+        cx.refresh_windows();
+    }
+
     /// The rail holds "Add project", so it stays while there is no project.
     /// Narrowed to icons it still shows, and some rails never close.
     fn rail_shown(&self) -> bool {
@@ -2684,6 +2694,7 @@ impl Render for Shell {
                 crate::mascot::toggle_dancing();
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleRedacted, _, cx| this.toggle_redacted(cx)))
             .on_action(cx.listener(|this, _: &NewEnvironment, window, cx| {
                 if this.has_projects() {
                     this.open_create_env(this.active_project, window, cx)

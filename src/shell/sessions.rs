@@ -1692,7 +1692,12 @@ pub(super) fn send_notification(title: &str, body: &str, critical: bool) {
     } else {
         notification_icon()
     };
-    crate::platform::notify(title, body, critical, icon.as_deref());
+    crate::platform::notify(
+        &crate::redact::text(title),
+        &crate::redact::text(body),
+        critical,
+        icon.as_deref(),
+    );
 }
 
 /// Drops what was remembered about a session's alerts, and any it is still speaking.

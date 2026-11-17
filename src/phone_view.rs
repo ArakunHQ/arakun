@@ -215,6 +215,34 @@ impl PhoneView {
         rows
     }
 
+    /// Where the QR code goes while redacted mode is on: a code on screen is a
+    /// code anyone watching can scan. Same size, so nothing moves.
+    fn render_hidden_qr(url: &str) -> impl IntoElement {
+        const CELL: f32 = 4.;
+        const QUIET: usize = 4;
+        let width = qrcode::QrCode::new(url.as_bytes()).map_or(25, |c| c.width());
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(crate::ui::sp(6.))
+            .flex_none()
+            .size(px((width + 2 * QUIET) as f32 * CELL))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::fill_raised())
+            .text_size(px(ui::TEXT_XS))
+            .text_color(theme::text_faint())
+            .text_center()
+            .child(icon("view-off", 20.).text_color(theme::text_subtle()))
+            .child(
+                "Hidden in redacted mode. Copy the link, or turn the mode off with Ctrl+Shift+H.",
+            )
+    }
+
     fn section_title(text: &'static str) -> impl IntoElement {
         div()
             .text_size(px(ui::TEXT_SM))
@@ -357,7 +385,7 @@ impl PhoneView {
                             .rounded(crate::ui::rad(ui::RADIUS))
                             .bg(theme::fill_raised())
                             .text_color(theme::content())
-                            .child(relay.url.clone()),
+                            .child(crate::redact::value(&relay.url)),
                     )
                     .child(
                         ui::button(
@@ -404,12 +432,14 @@ impl PhoneView {
                         .rounded(crate::ui::rad(ui::RADIUS))
                         .bg(theme::fill_raised())
                         .text_color(theme::content())
-                        .child(url.clone()),
+                        .child(crate::redact::value(url)),
                 ),
-            Address::Pending(what) => row.text_color(theme::text_faint()).child(what.clone()),
+            Address::Pending(what) => row
+                .text_color(theme::text_faint())
+                .child(crate::redact::text(what).into_owned()),
             Address::Problem { what, link } => row
                 .text_color(theme::attention())
-                .child(what.clone())
+                .child(crate::redact::text(what).into_owned())
                 .when_some(link.clone(), |d, (label, url)| {
                     d.child(
                         ui::button("phone-address-help", label, ButtonKind::Outline, true)
@@ -450,7 +480,11 @@ impl PhoneView {
             .flex()
             .gap(crate::ui::sp(24.))
             .items_start()
-            .child(Self::render_qr(&pairing.url))
+            .child(if crate::redact::on() {
+                Self::render_hidden_qr(&pairing.url).into_any_element()
+            } else {
+                Self::render_qr(&pairing.url).into_any_element()
+            })
             .child(
                 div()
                     .flex()
@@ -473,7 +507,7 @@ impl PhoneView {
                                     .ty(Type::Display)
                                     .font_family(theme::FONT_MONO)
                                     .text_color(theme::content())
-                                    .child(code)
+                                    .child(crate::redact::value(&code))
                             }))
                             .child(
                                 div()
@@ -547,7 +581,11 @@ impl PhoneView {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_size(px(ui::TEXT_SM)).child(d.name.clone()))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .child(crate::redact::value(&d.name)),
+                    )
                     .child(
                         div()
                             .text_size(px(ui::TEXT_XS))

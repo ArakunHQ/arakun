@@ -343,6 +343,7 @@ impl ThreadView {
 
     /// A prompt's text, with the search matches in it painted.
     fn user_text(&self, ix: usize, shown: String) -> AnyElement {
+        let shown = crate::redact::same_bytes(&shown).unwrap_or(shown);
         let Some(find) = self.find_for(ix) else {
             return shown.into_any_element();
         };
@@ -2128,7 +2129,12 @@ fn notice_row(ix: usize, text: &str, error: bool, mark: Option<NoticeMark>) -> A
             theme::mix(0.45)
         })
         .child(glyph)
-        .child(div().flex_1().min_w_0().child(text.to_string()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(crate::redact::text(text).into_owned()),
+        )
         .into_any_element()
 }
 

@@ -251,7 +251,8 @@ impl Shell {
                             .min_w_0()
                             .truncate()
                             .when(tab.preview, |d| d.italic())
-                            .child(tab.title.clone()),
+                            // A terminal's title is often `user@host:~/path`.
+                            .child(crate::redact::text(&tab.title).into_owned()),
                     )
                     .when(closable, |d| {
                         d.child(
@@ -360,6 +361,22 @@ impl Shell {
                         crate::ui::drag_window(ev, window)
                     }),
             )
+            // Whoever shares the screen sees at a glance that it is safe to.
+            .when(crate::redact::on(), |d| {
+                d.child(
+                    div()
+                        .id("title-redacted")
+                        .flex_none()
+                        .mr(crate::ui::sp(6.))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .tooltip(ui::tip(
+                            "Redacted mode: emails, keys and codes are hidden. Click or Ctrl+Shift+H to show them.",
+                        ))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_redacted(cx)))
+                        .child(ui::state_pill("view-off", "Redacted", theme::attention())),
+                )
+            })
             // macOS draws its own traffic lights at the left.
             .when(cfg!(not(target_os = "macos")), |d| {
                 d.child(

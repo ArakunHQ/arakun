@@ -309,6 +309,8 @@ impl ThreadView {
         }
         let paused = t.queue_paused();
         let busy = t.is_busy();
+        // Prompts sent now go next; they need no button for it.
+        let now = t.sending_now();
         let button = |id: &'static str, glyph: Option<&'static str>, label: &'static str| {
             div()
                 .id(id)
@@ -487,7 +489,10 @@ impl ThreadView {
                                         .gap(crate::ui::sp(8.))
                                         .min_h(px(28.))
                                         .when(i > 0, |d| d.border_t_1().border_color(theme::stroke()))
-                                        .child(icon("list-end", 14.).text_color(theme::text_subtle()))
+                                        .child(
+                                            icon(if i < now { "arrow-up01" } else { "list-end" }, 14.)
+                                                .text_color(theme::text_subtle()),
+                                        )
                                         .child(
                                             div()
                                                 .flex_1()
@@ -496,7 +501,8 @@ impl ThreadView {
                                                 .text_color(theme::text_muted())
                                                 .child(text.replace('\n', " ")),
                                         )
-                                        .child(
+                                        .when(i >= now, |d| {
+                                            d.child(
                                             div()
                                                 .id(("queue-now", i))
                                                 .group("queue-now")
@@ -523,6 +529,7 @@ impl ThreadView {
                                                     this.thread.update(cx, |t, cx| t.send_now(i, cx))
                                                 })),
                                         )
+                                        })
                                         .child(
                                             div()
                                                 .id(("queue-del", i))

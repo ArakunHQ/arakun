@@ -109,7 +109,10 @@ impl Shell {
                 "up" => Some(CompKey::Up),
                 "down" => Some(CompKey::Down),
                 "tab" => Some(CompKey::Accept),
-                "enter" if !k.modifiers.shift => Some(CompKey::Accept),
+                // Ctrl+Enter sends now, past the popup.
+                "enter" if !k.modifiers.shift && !crate::platform::command_key(&k.modifiers) => {
+                    Some(CompKey::Accept)
+                }
                 "escape" => Some(CompKey::Close),
                 _ => None,
             }
@@ -153,6 +156,7 @@ impl Shell {
         }
         if ctrl_only && !m.shift && k.key == "enter" {
             cx.stop_propagation();
+            self.completion = None;
             self.submit_with(true, window, cx);
             return;
         }

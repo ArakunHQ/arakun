@@ -153,9 +153,9 @@ impl Render for BrowserView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let address_focused = self.address.read(cx).is_focused(window);
         let why = if cfg!(target_os = "macos") {
-            "The Mac download comes without them; tools/install.sh builds Arakun with them."
+            "tools/install.sh builds Arakun with them."
         } else if cfg!(windows) {
-            "The Windows download comes without them; a build from source has them."
+            "A build with the `browser` cargo feature has them (see docs/windows.md)."
         } else {
             "Build Arakun with the `browser` cargo feature to get them."
         };

@@ -74,7 +74,7 @@ Then set `relay_base` in Arakun's `phone.json` to your Worker's base URL.
 3. Initial limits and the admin secret (without it, `/_admin` does not exist):
 
    ```sh
-   npx wrangler kv key put --binding CONFIG plans '{"free":{"phones":3,"burst":50,"daily":20000,"frame":262144}}'
+   npx wrangler kv key put --binding CONFIG --env="" --remote plans '{"free":{"phones":3,"burst":50,"daily":20000,"frame":262144}}'
    npx wrangler secret put ADMIN_SECRET --name <label> --env=""
    ```
 
@@ -103,9 +103,15 @@ Everything is tuned in KV without redeploying:
 | `blocked` | `["<label>", …]` | 403 for those labels |
 
 ```sh
-npx wrangler kv key put --binding CONFIG disabled "maintenance until 05:00 UTC"
-npx wrangler kv key delete --binding CONFIG disabled
+# arakun.dev's own relay ([env.production])
+npx wrangler kv key put --binding CONFIG --env production --remote disabled "maintenance until 05:00 UTC"
+npx wrangler kv key delete --binding CONFIG --env production --remote disabled
+# a self-hosted relay (the top level of wrangler.toml)
+npx wrangler kv key put --binding CONFIG --env="" --remote disabled "maintenance until 05:00 UTC"
+npx wrangler kv key delete --binding CONFIG --env="" --remote disabled
 ```
+
+Without `--remote`, wrangler v4 writes to local storage and the relay never sees it.
 
 With the admin secret:
 

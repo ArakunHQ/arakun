@@ -594,10 +594,12 @@ impl Session {
         let written = std::fs::create_dir_all(sessions_dir()).and_then(|_| {
             crate::durable::write(&path, &serde_json::to_vec(self).unwrap_or_default())
         });
+        // The folder, not the session id: CodeQL counts the random id as
+        // sensitive (code scanning alert 15), and the folder is enough to look.
         if let Err(e) = written {
             eprintln!(
-                "arakun: could not save the Workers AI session {}: {e}",
-                self.id
+                "arakun: could not save a Workers AI session in {}: {e}",
+                sessions_dir().display()
             );
         }
     }

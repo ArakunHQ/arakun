@@ -20,16 +20,25 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .flex_1()
+                .min_h_0()
                 .justify_center()
                 .mx_auto()
                 .w_full()
                 .max_w(px(896.))
                 .px(crate::ui::sp(6.))
-                .pt(crate::ui::sp(48.))
-                // Optical center: extra room below lifts the group above the
-                // geometric middle, where the eye expects it.
-                .pb(crate::ui::sp(96.))
-                .child(div().mb(px(10.)).child(self.home_face.clone()))
+                // Optical center: twice the room below as above lifts the group
+                // above the geometric middle, where the eye expects it. On a
+                // short window both go first, then the face shrinks.
+                .child(div().flex_1().max_h(crate::ui::sp(48.)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_shrink(1.)
+                        .min_h_0()
+                        .mb(px(10.))
+                        .child(self.home_face.clone()),
+                )
                 .child(
                     div()
                         .mb(px(16.))
@@ -40,9 +49,11 @@ impl Shell {
                 )
                 .child(
                     div()
+                        .flex_none()
                         .opacity(alpha)
                         .child(self.render_composer(true, window, cx)),
-                ),
+                )
+                .child(div().flex_1().max_h(crate::ui::sp(96.))),
         )
     }
 

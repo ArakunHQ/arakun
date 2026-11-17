@@ -25,6 +25,9 @@ use crate::mascot::{Spring, animated};
 use crate::theme;
 
 pub const HEIGHT: f32 = 360.;
+/// Below this height the face is not drawn: a smaller head stops reading as
+/// one, and the room is better left to what is under it.
+const MIN_HEIGHT: f32 = 150.;
 const CELL_W: f32 = 7.;
 const CELL_H: f32 = 12.;
 const FONT_SIZE: f32 = CELL_H * 0.92;
@@ -235,11 +238,14 @@ struct Pose {
 }
 
 impl Pose {
-    fn still(w: f32) -> Self {
+    /// The face at rest in a `w` by `h` canvas: full size in `HEIGHT`, and
+    /// smaller when the window leaves it less room either way.
+    fn still(w: f32, h: f32) -> Self {
+        let fit = (h / HEIGHT).min(w / (FACE_W + 40.)).min(1.);
         Pose {
-            at: [w / 2., HEIGHT * 0.53],
+            at: [w / 2., h * 0.53],
             turn: 0.,
-            k: FACE_W / img().w as f32,
+            k: FACE_W / img().w as f32 * fit,
             stretch: 1.,
             gaze: [0.; 2],
             blink: 1.,
@@ -312,11 +318,11 @@ struct Grid {
 }
 
 impl Grid {
-    fn new(w: f32) -> Self {
+    fn new(w: f32, h: f32) -> Self {
         let cols = (w / CELL_W).floor().max(0.) as usize;
         Grid {
             cols,
-            rows: (HEIGHT / CELL_H).floor() as usize,
+            rows: (h / CELL_H).floor().max(0.) as usize,
             x0: (w - cols as f32 * CELL_W) / 2.,
         }
     }
@@ -710,8 +716,8 @@ impl AsciiFace {
         (IDLE[(self.time / 2.6) as usize % IDLE.len()], 0.)
     }
 
-    fn pose(&mut self, w: f32, dt: f32) -> Pose {
-        let mut pose = Pose::still(w);
+    fn pose(&mut self, w: f32, h: f32, dt: f32) -> Pose {
+        let mut pose = Pose::still(w, h);
         let now = self.now();
         if !animated() {
             self.intro = None;
@@ -773,10 +779,11 @@ impl AsciiFace {
         let dt = self.last.map_or(1. / 60., |l| (now - l).min(0.05)) as f32;
         self.last = Some(now);
         let w = bounds.size.width.as_f32() / self.scale;
+        let h = (bounds.size.height.as_f32() / self.scale).min(HEIGHT);
         self.origin = bounds.origin;
-        let pose = self.pose(w, dt);
+        let pose = self.pose(w, h, dt);
         self.eyes = pose.eyes_at();
-        let grid = Grid::new(w);
+        let grid = Grid::new(w, if h < MIN_HEIGHT { 0. } else { h });
         let glyphs = self
             .glyphs
             .get_or_insert_with(|| Rc::new(glyphs(window)))
@@ -856,23 +863,30 @@ impl Render for AsciiFace {
         self.rendered = true;
         self.active = window.is_window_active();
         let (weak, moves) = (cx.weak_entity(), cx.weak_entity());
-        div().w_full().h(px(HEIGHT * self.scale)).child(
-            canvas(
-                move |b, window, cx| weak.update(cx, |f, _| f.frame(b, window)).ok(),
-                move |b, frame, window, _| {
-                    if let Some(frame) = frame {
-                        paint(&frame, b, window);
-                    }
-                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
-                        if phase == DispatchPhase::Bubble {
-                            let _ =
-                                moves.update(cx, |f, _| f.pointer = Some((e.position, f.now())));
+        // It gives up height first when the window is short (see `Pose::still`),
+        // so what sits under it stays on screen.
+        div()
+            .w_full()
+            .h(px(HEIGHT * self.scale))
+            .flex_shrink(1.)
+            .min_h_0()
+            .child(
+                canvas(
+                    move |b, window, cx| weak.update(cx, |f, _| f.frame(b, window)).ok(),
+                    move |b, frame, window, _| {
+                        if let Some(frame) = frame {
+                            paint(&frame, b, window);
                         }
-                    });
-                },
+                        window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                let _ = moves
+                                    .update(cx, |f, _| f.pointer = Some((e.position, f.now())));
+                            }
+                        });
+                    },
+                )
+                .size_full(),
             )
-            .size_full(),
-        )
     }
 }
 
@@ -883,7 +897,7 @@ mod tests {
     const W: f32 = 860.;
 
     fn lit(pose: &Pose) -> (usize, usize) {
-        let cells = face_cells(pose, Grid::new(W));
+        let cells = face_cells(pose, Grid::new(W, HEIGHT));
         let eyes = cells
             .iter()
             .filter(|c| matches!(c.ch, '█' | '▓' | '░'))
@@ -908,8 +922,8 @@ mod tests {
 
     #[test]
     fn the_face_reads_and_stays_in_its_grid() {
-        let pose = Pose::still(W);
-        let grid = Grid::new(W);
+        let pose = Pose::still(W, HEIGHT);
+        let grid = Grid::new(W, HEIGHT);
         let cells = face_cells(&pose, grid);
         assert!(cells.iter().all(|c| c.col < grid.cols && c.row < grid.rows));
         let (eyes, fur) = lit(&pose);
@@ -973,7 +987,7 @@ mod tests {
         let pose = Pose {
             reveal: Some((1., 0., 0.35)),
             glow: 1.,
-            ..Pose::still(W)
+            ..Pose::still(W, HEIGHT)
         };
         let (eyes, fur) = lit(&pose);
         assert!(eyes > 10);

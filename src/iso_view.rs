@@ -809,7 +809,15 @@ impl Render for IsoView {
                     .flex_wrap()
                     .items_center()
                     .gap(crate::ui::sp(10.))
-                    .child(scenes_seg)
+                    // More scenes than fit the line scroll sideways.
+                    .child(
+                        div()
+                            .id("iso-scenes")
+                            .flex()
+                            .max_w_full()
+                            .overflow_x_scroll()
+                            .child(scenes_seg),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()

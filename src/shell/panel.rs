@@ -103,7 +103,12 @@ impl Shell {
                                 div()
                                     .id(label)
                                     .flex()
-                                    .flex_1()
+                                    // Sized from their labels, so a tab with a
+                                    // count gets the room for it. On a narrow
+                                    // panel the labels shorten rather than push
+                                    // the last tab out.
+                                    .flex_auto()
+                                    .min_w_0()
                                     .items_center()
                                     .justify_center()
                                     .gap(crate::ui::sp(6.))
@@ -122,12 +127,13 @@ impl Shell {
                                             s.bg(theme::hover()).text_color(theme::content())
                                         })
                                     })
-                                    .child(label)
+                                    .child(div().min_w_0().truncate().child(label))
                                     // The line counts are inside the tab; its label only says how many files.
                                     .when(tab == PanelTab::Changes && changed_files > 0, |d| {
                                         d.child(
                                             div()
                                                 .flex()
+                                                .flex_none()
                                                 .items_center()
                                                 .h(px(16.))
                                                 .px(crate::ui::sp(4.))
@@ -168,7 +174,7 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(self.panel_w))
+            .w(px(self.panel_width()))
             .h_full()
             .child(header)
             .child(tabs)
@@ -191,6 +197,7 @@ impl Shell {
                 div()
                     .flex()
                     .flex_1()
+                    .min_w_0()
                     .items_center()
                     .h(px(28.))
                     .pl(crate::ui::sp(8.))

@@ -1661,25 +1661,35 @@ fn mark_by(name: &str, hint: &str, publisher: Option<&str>) -> logos::Mark {
 }
 
 /// Cards `per` to a line, the last line padded so every card is as wide.
+/// How narrow a card in `grid` gets before its line holds one card fewer.
+const CARD_MIN_W: f32 = 200.;
+
 pub(super) fn grid(cards: Vec<AnyElement>, per: usize) -> Div {
-    // Every card sits in a cell of the same width, the empty cells of the last
-    // line too, so a short line keeps the others' widths; cards fill their cell's height.
-    let cell = || div().flex().flex_col().flex_1().min_w_0();
-    let mut out = div().flex().flex_col().gap(crate::ui::sp(12.));
-    let mut cards = cards.into_iter().peekable();
-    while cards.peek().is_some() {
-        let mut line = div().flex().gap(crate::ui::sp(12.));
-        let mut n = 0;
-        for c in cards.by_ref().take(per) {
-            line = line.child(cell().child(c));
-            n += 1;
-        }
-        for _ in n..per {
-            line = line.child(cell());
-        }
-        out = out.child(line);
-    }
-    out
+    // `per` cards a line, or fewer when they would be narrower than
+    // CARD_MIN_W. Every cell has the same basis and the same growth, and
+    // `per` empty cells with no height follow the cards, so a short last line
+    // keeps the others' widths. Cards fill their cell's height.
+    let cell = || {
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow(1.)
+            .flex_basis(gpui::relative(1. / (per as f32 + 1.)))
+            .min_w(px(CARD_MIN_W))
+    };
+    // The space between lines is each card's bottom margin, not a row gap,
+    // so a line of empty cells adds none; the last line's is taken back.
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(crate::ui::sp(12.))
+        .mb(-crate::ui::sp(12.))
+        .children(
+            cards
+                .into_iter()
+                .map(|c| cell().mb(crate::ui::sp(12.)).child(c)),
+        )
+        .children((0..per).map(|_| cell()))
 }
 
 fn category_color(c: &str) -> u32 {

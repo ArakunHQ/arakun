@@ -432,7 +432,14 @@ impl RunsView {
             .child(
                 ui::page_title(
                     "Runs",
-                    Some(format!("{} · GitHub Actions", self.project_name).into_any_element()),
+                    // One line: a long project name would otherwise break mid-word
+                    // beside the view switch.
+                    Some(
+                        div()
+                            .truncate()
+                            .child(format!("{} · GitHub Actions", self.project_name))
+                            .into_any_element(),
+                    ),
                 )
                 .flex_1(),
             )

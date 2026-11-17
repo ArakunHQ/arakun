@@ -1287,6 +1287,7 @@ impl ExtensionsView {
         };
         div()
             .flex()
+            .flex_wrap()
             .gap(crate::ui::sp(12.))
             .child(kpi(
                 "link01",
@@ -2120,7 +2121,25 @@ const CAT_CORAL: u32 = theme::CATEGORY[4];
 const CAT_CYAN: u32 = theme::CATEGORY[5];
 const CAT_SAND: u32 = theme::CATEGORY[7];
 
-fn table(cols: &[Col], rows: Vec<AnyElement>) -> Div {
+/// How narrow a stat card gets before the row of them wraps.
+const KPI_MIN_W: f32 = 150.;
+/// The name column's least width: below it the table scrolls sideways
+/// instead of squeezing names to nothing under the fixed columns.
+const NAME_MIN_W: f32 = 180.;
+
+fn table(cols: &[Col], rows: Vec<AnyElement>) -> Stateful<Div> {
+    // Cells, the gaps between them and the padding at both ends.
+    let min_w = cols
+        .iter()
+        .map(|c| c.width.unwrap_or(NAME_MIN_W))
+        .sum::<f32>()
+        + 16. * (cols.len() as f32 - 1.)
+        + 32.;
+    let id: SharedString = format!(
+        "ext-table-{}",
+        cols.iter().map(|c| c.label).collect::<String>()
+    )
+    .into();
     let header = div()
         .flex()
         .items_center()
@@ -2135,15 +2154,20 @@ fn table(cols: &[Col], rows: Vec<AnyElement>) -> Div {
                 .child(c.label)
         }));
     div()
-        .flex()
-        .flex_col()
+        .id(id)
         .rounded(crate::ui::rad(ui::RADIUS_LG))
         .border_1()
         .border_color(theme::border())
         .bg(theme::background())
-        .overflow_hidden()
-        .child(header)
-        .children(rows)
+        .overflow_x_scroll()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w(px(min_w))
+                .child(header)
+                .children(rows),
+        )
 }
 
 fn cell(width: Option<f32>) -> Div {
@@ -2248,8 +2272,12 @@ fn kpi(
     div()
         .flex()
         .flex_col()
-        .flex_1()
+        // Four abreast on a wide page, two by two (or one above the other) on
+        // a narrow one, rather than four squeezed past their text.
+        .flex_grow(1.)
+        .flex_basis(px(KPI_MIN_W))
         .min_w_0()
+        .overflow_hidden()
         .gap(crate::ui::sp(10.))
         .p(crate::ui::sp(16.))
         .rounded(crate::ui::rad(ui::RADIUS_LG))
@@ -2274,6 +2302,8 @@ fn kpi(
                 )
                 .child(
                     div()
+                        .min_w_0()
+                        .truncate()
                         .ty(Type::Label)
                         .text_color(theme::text_subtle())
                         .child(label.to_string()),
@@ -2287,6 +2317,8 @@ fn kpi(
                 .child(div().ty(Type::Title).text_color(theme::text()).child(value))
                 .child(
                     div()
+                        .min_w_0()
+                        .truncate()
                         .pb(crate::ui::sp(3.))
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
@@ -2384,6 +2416,7 @@ fn section(
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w_0()
                         .gap(crate::ui::sp(2.))
                         .child(ui::heading(title))
                         .child(
@@ -2782,11 +2815,21 @@ impl Render for ExtensionsView {
                     .flex()
                     .flex_none()
                     .items_center()
+                    // On a narrow window the kinds and the search drop to lines of
+                    // their own, and the kinds scroll when even that is too narrow.
+                    .flex_wrap()
                     .gap(crate::ui::sp(8.))
                     .px(crate::ui::sp(ui::PAGE_PAD))
                     .py(crate::ui::sp(12.))
                     .child(agents)
-                    .child(kinds)
+                    .child(
+                        div()
+                            .id("ext-kinds")
+                            .flex()
+                            .max_w_full()
+                            .overflow_x_scroll()
+                            .child(kinds),
+                    )
                     .child(
                         div()
                             .flex()

@@ -143,11 +143,7 @@ impl Shell {
 
         let narrow = self.rail_narrow();
         let card = self.side_card();
-        let width = if narrow {
-            rail_blocks::RAIL_ICONS_W
-        } else {
-            self.rail_w
-        };
+        let width = self.rail_width();
         card.id("rail-card")
             .map(ui::stop_window_move)
             .flex()

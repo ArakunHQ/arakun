@@ -311,7 +311,7 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(self.subagents_w))
+            .w(px(self.subagents_width()))
             .h_full()
             .child(header)
             .child(div().flex_1().min_h_0().child(body))

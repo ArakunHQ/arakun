@@ -314,6 +314,12 @@ pub fn which(name: &str) -> Option<PathBuf> {
     crate::platform::find_in(search_path(), name)
 }
 
+/// Whether an override variable names a program. A blank one is ignored, so it
+/// must not skip the install prompt either.
+fn names_program(raw: Option<&str>) -> bool {
+    raw.is_some_and(|r| r.split_whitespace().next().is_some())
+}
+
 fn from_override(var: &str) -> Option<Result<LaunchSpec>> {
     let raw = std::env::var(var).ok()?;
     let mut parts = raw.split_whitespace();
@@ -602,13 +608,7 @@ const NPM_FLAGS: [&str; 4] = [
 impl AdapterInstall {
     /// The command arakun runs, for the user to read or run by hand.
     pub fn command(&self) -> String {
-        let dir = self.dir.display().to_string();
-        // Double quotes work in sh, cmd and PowerShell alike.
-        let dir = if dir.contains(char::is_whitespace) {
-            format!("\"{dir}\"")
-        } else {
-            dir
-        };
+        let dir = shell_quote(&self.dir.display().to_string());
         format!(
             "npm install --prefix {dir} {} {}",
             NPM_FLAGS[..3].join(" "),
@@ -648,6 +648,31 @@ impl std::fmt::Display for AdapterInstall {
 
 impl std::error::Error for AdapterInstall {}
 
+/// `arg` as one word for the user's shell, so a folder with spaces, `$` or quotes
+/// in it stays that folder when they paste the command.
+fn shell_quote(arg: &str) -> String {
+    // A backslash separates folders on Windows but escapes in sh.
+    let safe = if cfg!(windows) {
+        "\\/._-+:,@"
+    } else {
+        "/._-+:,@"
+    };
+    let plain = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || safe.contains(c));
+    if plain {
+        arg.to_string()
+    } else if cfg!(windows) {
+        // cmd and PowerShell both take double quotes, and a Windows path can't hold one.
+        format!("\"{arg}\"")
+    } else {
+        // Nothing expands inside single quotes; a quote itself ends, is escaped
+        // and starts again.
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
 /// What has to be installed before `kind` can start, if anything: only the
 /// Claude and Codex adapters, and only when no override replaces them.
 pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
@@ -666,7 +691,7 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
         ),
         AgentKind::Droid | AgentKind::OpenCode | AgentKind::WorkersAi => return None,
     };
-    if std::env::var_os(var).is_some() || is_executable(&bin) {
+    if names_program(std::env::var(var).ok().as_deref()) || is_executable(&bin) {
         return None;
     }
     Some(AdapterInstall { kind, package, dir })
@@ -984,17 +1009,31 @@ mod tests {
         assert_eq!(err.downcast_ref::<AdapterInstall>(), Some(&plan));
     }
 
+    #[cfg(not(windows))]
     #[test]
-    fn adapter_install_quotes_a_folder_with_spaces() {
+    fn the_install_folder_stays_one_word_in_the_shell() {
+        assert_eq!(shell_quote("/home/a/.local/share"), "/home/a/.local/share");
+        assert_eq!(shell_quote("/Users/a b/x"), "'/Users/a b/x'");
+        assert_eq!(shell_quote("/home/a$b/x"), "'/home/a$b/x'");
+        assert_eq!(shell_quote("/home/a\\b/x"), "'/home/a\\b/x'");
+        assert_eq!(shell_quote("/home/o'neil/x"), r"'/home/o'\''neil/x'");
         let plan = AdapterInstall {
             kind: AgentKind::Claude,
             package: CLAUDE_ACP_PACKAGE,
             dir: PathBuf::from("/Users/a b/Library/Application Support/arakun/agents"),
         };
         assert!(plan.command().starts_with(
-            "npm install --prefix \"/Users/a b/Library/Application Support/arakun/agents\" "
+            "npm install --prefix '/Users/a b/Library/Application Support/arakun/agents' "
         ));
         assert_eq!(plan.override_var(), "ARAKUN_CLAUDE_ACP");
+    }
+
+    #[test]
+    fn a_blank_override_still_asks_before_installing() {
+        assert!(!names_program(None));
+        assert!(!names_program(Some("")));
+        assert!(!names_program(Some("  \t")));
+        assert!(names_program(Some("my-adapter --flag")));
     }
 
     #[test]

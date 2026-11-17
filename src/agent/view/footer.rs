@@ -277,7 +277,8 @@ impl ThreadView {
                                 button(
                                     "install-copy",
                                     if copied { "tick02" } else { "copy01" },
-                                    if copied { "Copied" } else { "Copy command" },
+                                    // One label, so the buttons beside it stay put.
+                                    "Copy command",
                                     false,
                                 )
                                 .on_click(move |_, window, cx| {

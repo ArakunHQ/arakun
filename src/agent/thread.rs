@@ -1494,7 +1494,7 @@ impl Thread {
         let kind = self.kind;
         let native = self.backend == Backend::Native;
         let cwd = self.cwd.clone();
-        let install = self.install_approved;
+        let install = self.take_install_approval();
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
@@ -1768,6 +1768,12 @@ impl Thread {
         self.needs_install
             .as_ref()
             .filter(|_| matches!(self.status, ThreadStatus::Error(_)))
+    }
+
+    /// Spends the user's yes on one attempt: a later reconnect asks again if the
+    /// adapter is gone by then.
+    fn take_install_approval(&mut self) -> bool {
+        std::mem::take(&mut self.install_approved)
     }
 
     /// The user agreed to install the adapter [`Self::needs_install`] names.
@@ -3578,6 +3584,15 @@ pub fn pr_url(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_install_approval_is_used_once() {
+        let mut t = Thread::new(AgentKind::Codex, "/p".into(), None);
+        assert!(!t.take_install_approval());
+        t.install_approved = true;
+        assert!(t.take_install_approval());
+        assert!(!t.take_install_approval());
+    }
 
     #[test]
     fn claude_cost_survives_a_resume_and_a_restart() {

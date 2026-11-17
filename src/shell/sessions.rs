@@ -21,6 +21,8 @@ use crate::state;
 pub fn status_of(t: &Thread) -> Status {
     match t.status() {
         ThreadStatus::NeedsInput => Status::NeedsInput,
+        // Waits for the user to agree to install its adapter, not broken.
+        ThreadStatus::Error(_) if t.needs_install().is_some() => Status::NeedsInput,
         ThreadStatus::Working | ThreadStatus::Connecting if t.is_busy() => Status::Working,
         ThreadStatus::Working => Status::Working,
         ThreadStatus::Error(_) => Status::Error,
@@ -1306,6 +1308,9 @@ impl Shell {
                     "Needs your input.".into()
                 };
                 (Notice::Input, body)
+            }
+            ThreadEvent::StatusChanged if t.needs_install().is_some() => {
+                (Notice::Input, error_text(t))
             }
             ThreadEvent::StatusChanged if matches!(t.status(), ThreadStatus::Error(_)) => {
                 (Notice::Error, error_text(t))

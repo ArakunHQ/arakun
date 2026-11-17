@@ -15,9 +15,10 @@
 //! it sends `Hold` (speaking, listening) and alerts through `apply`, and hears
 //! the presses next to the app.
 
-// The island needs a Wayland layer shell or macOS: elsewhere it builds but never runs.
+// The island needs a Wayland layer shell, macOS or Windows: elsewhere it builds
+// but never runs.
 #![cfg_attr(
-    not(any(target_os = "linux", target_os = "macos")),
+    not(any(target_os = "linux", target_os = "macos", windows)),
     allow(dead_code, unused_imports)
 )]
 
@@ -25,7 +26,7 @@
 pub mod call;
 #[cfg(target_os = "linux")]
 pub mod desktop;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod link;
 #[cfg(all(target_os = "linux", feature = "coderlabs"))]
 pub mod meeting;
@@ -33,6 +34,8 @@ pub mod proto;
 #[cfg(feature = "coderlabs")]
 pub mod wake;
 pub mod watch;
+#[cfg(windows)]
+mod windows;
 
 /// `arakun island …`: one request, straight to the island.
 pub fn cli(args: &[String]) -> i32 {
@@ -70,7 +73,7 @@ pub fn reunion(args: &[String]) -> i32 {
 pub const REUNION_USAGE: &str = "arakun reunion [on|off] [personas]";
 
 fn send(msg: proto::ToIsland) -> i32 {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         match proto::request(&msg) {
             Ok(reply) if reply.ok => {
@@ -91,7 +94,7 @@ fn send(msg: proto::ToIsland) -> i32 {
             Err(e) => fail(&format!("could not reach the island: {e}")),
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = msg;
         fail(NEEDS)
@@ -191,24 +194,27 @@ fn unlink(line: &str) -> String {
     out
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn main() -> i32 {
     fail(NEEDS)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use host::main;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod host {
     use std::collections::HashSet;
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    #[cfg(unix)]
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::Path;
     #[cfg(feature = "coderlabs")]
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::time::{Duration, Instant};
+    #[cfg(windows)]
+    use uds_windows::{UnixListener, UnixStream};
 
     use futures::StreamExt as _;
     use futures::channel::{mpsc, oneshot};
@@ -268,6 +274,9 @@ mod host {
     impl Global for Keep {}
 
     pub fn main() -> i32 {
+        // Started from the Run key or Explorer, its own console window would sit by the island.
+        #[cfg(windows)]
+        crate::platform::detach_own_console();
         let path = proto::socket_path();
         if UnixStream::connect(&path).is_ok() {
             eprintln!("arakun: the island already runs on {}", path.display());
@@ -337,10 +346,16 @@ mod host {
     }
 
     /// The island's window, and the host that feeds it. On Linux it goes on
-    /// the landscape screen; on macOS `island::adopt` places it.
+    /// the landscape screen, on macOS `island::adopt` places it, and on Windows
+    /// it goes at the top center of the main display.
     fn open(cx: &mut App, rx: mpsc::UnboundedReceiver<Msg>) {
         let mut options = island::window_options(false);
-        options.display_id = island::landscape_display(cx);
+        #[cfg(not(windows))]
+        {
+            options.display_id = island::landscape_display(cx);
+        }
+        #[cfg(windows)]
+        super::windows::place(cx, &mut options);
         for d in cx.displays() {
             let b = d.bounds();
             eprintln!(
@@ -392,8 +407,11 @@ mod host {
             }
             other => other?,
         };
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(listener)
     }
 

@@ -201,7 +201,7 @@ impl Shell {
         if self.island.is_some() {
             return;
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
             use futures::StreamExt as _;
             let (tx, mut presses, up) = crate::island_host::link::connect(true);

@@ -6,11 +6,14 @@
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::Shutdown;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use uds_windows::UnixStream;
 
 use futures::channel::mpsc as fmpsc;
 

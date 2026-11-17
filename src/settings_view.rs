@@ -215,7 +215,7 @@ impl Section {
         // The Updates card is in General in every build, so its words are
         // added here rather than to each build's keyword list.
         let updates = if self == Section::General {
-            "update updates version release upgrade"
+            "update updates automatic automatically auto version release upgrade"
         } else {
             ""
         };
@@ -2720,6 +2720,7 @@ mod tests {
         assert!(found("haiku").contains(&Section::Branches));
         assert!(found("crash").contains(&Section::Privacy));
         assert!(found("update").contains(&Section::General));
+        assert!(found("automatic updates").contains(&Section::General));
         assert!(found("redacted").contains(&Section::Privacy));
         assert!(found("stream").contains(&Section::Privacy));
         assert!(!found("crash").contains(&Section::General));

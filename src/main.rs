@@ -69,6 +69,7 @@ mod server;
 mod servers;
 mod servers_view;
 mod settings_view;
+mod settle;
 mod sheet;
 mod shell;
 mod sidebar;

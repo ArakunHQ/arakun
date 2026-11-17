@@ -662,6 +662,14 @@ fn restore_unread(
     unread.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 }
 
+/// The ids of the notifications in `list` about the item `key` (`queue::key_of`).
+fn notifications_of(list: &[Notification], key: &str) -> Vec<String> {
+    list.iter()
+        .filter(|n| pr::ItemRef::from_notification(n).is_some_and(|i| queue::key_of(&i) == key))
+        .map(|n| n.id.clone())
+        .collect()
+}
+
 pub fn mark_thread_read(id: &str) -> Result<(), Problem> {
     // A test build shares the person's real gh session, and GitHub's API cannot
     // mark a thread unread again: there the change stays in memory.
@@ -1500,7 +1508,11 @@ impl GitHub {
                 match read {
                     Ok(d) => {
                         this.detail_problems.remove(&key);
-                        this.details.insert(key, d);
+                        let merged = matches!(&d, queue::Details::Pull(p) if p.merged());
+                        this.details.insert(key.clone(), d);
+                        if merged {
+                            this.settle_merged(&key, cx);
+                        }
                     }
                     Err(p) => {
                         // Not retried here, which would loop while the
@@ -1555,6 +1567,16 @@ impl GitHub {
         self.settle_all();
         self.rebuild();
         marked
+    }
+
+    /// Marks read the unread notifications of a merged pull request (`key`,
+    /// as `queue::key_of`), when settling after a merge is on.
+    pub fn settle_merged(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !crate::settle::on() {
+            return;
+        }
+        let ids = notifications_of(&self.unread, key);
+        self.mark_all_read(ids, cx);
     }
 
     pub fn mark_read(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -1673,6 +1695,47 @@ mod tests {
         assert!(read_due(false, Some(s(70)), poll_gap(None, true)));
         assert!(read_due(false, None, poll_gap(None, false)));
         assert!(!read_due(true, None, poll_gap(None, true)));
+    }
+
+    #[test]
+    fn a_merged_pull_requests_notifications_are_found_by_its_key() {
+        let api = |n: u64| format!("https://api.github.com/repos/O/R/pulls/{n}");
+        let list = [
+            note(
+                "1",
+                "PullRequest",
+                "author",
+                Some(&api(7)),
+                "O/R",
+                "2025-01-01T00:00:00Z",
+            ),
+            note(
+                "2",
+                "PullRequest",
+                "comment",
+                Some(&api(8)),
+                "O/R",
+                "2025-01-01T00:00:00Z",
+            ),
+            note(
+                "3",
+                "PullRequest",
+                "comment",
+                Some(&api(7)),
+                "O/R",
+                "2025-01-02T00:00:00Z",
+            ),
+            note(
+                "4",
+                "CheckSuite",
+                "ci_activity",
+                None,
+                "O/R",
+                "2025-01-02T00:00:00Z",
+            ),
+        ];
+        assert_eq!(notifications_of(&list, "o/r#7"), ["1", "3"]);
+        assert!(notifications_of(&list, "o/r#9").is_empty());
     }
 
     #[test]

@@ -54,6 +54,7 @@ mod runs;
 mod servers;
 mod session_actions;
 mod sessions;
+mod settle;
 mod sidebar_builder;
 #[cfg(feature = "coderlabs")]
 mod site;
@@ -330,6 +331,8 @@ pub struct Shell {
     _control: Option<Task<()>>,
     /// Runs scheduled automations while the window is open.
     _scheduler: Option<Task<()>>,
+    /// Merges seen and settled (`settle`).
+    settle: settle::Watch,
     /// Set while the divider between split panes is being dragged.
     split_drag: bool,
     /// Bounds of the split panes as last painted, for dragging the divider.
@@ -804,6 +807,7 @@ impl Shell {
             shown_browsers: Vec::new(),
             _control: None,
             _scheduler: None,
+            settle: settle::Watch::default(),
             split_drag: false,
             split_bounds: Rc::default(),
             browsers_dirty: false,

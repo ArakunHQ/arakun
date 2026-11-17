@@ -118,6 +118,7 @@ build with the browser.
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
+| Settle threads after merge (Settings › Branches), and the merges settled | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |

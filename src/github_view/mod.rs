@@ -84,6 +84,7 @@ enum Tab {
     Timeline,
     Files,
     Checks,
+    Commits,
 }
 
 /// A write to GitHub waiting for its second click.

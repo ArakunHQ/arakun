@@ -3,7 +3,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div,
+    StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
 use std::rc::Rc;
@@ -404,6 +404,62 @@ impl GitHubView {
                             )
                         }),
                 );
+        }
+        list.into_any_element()
+    }
+
+    pub(super) fn render_commits(&self, p: &Pull, me: &str, cx: &Context<Self>) -> AnyElement {
+        let new: Vec<String> = pr::new_since_my_review(p, me)
+            .iter()
+            .map(|c| c.oid.clone())
+            .collect();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .px(crate::ui::sp(16.))
+            .py(crate::ui::sp(12.));
+        for c in p.commits.iter().rev() {
+            let fresh = new.contains(&c.oid);
+            let who = c.author().to_string();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(12.))
+                    .px(crate::ui::sp(8.))
+                    .h(px(44.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
+                    .hover(|s| s.bg(theme::fill_hover()))
+                    .child(self.face(&who, 24., cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .ty(Type::Body)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(c.message_headline.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .ty(Type::Caption)
+                                    .text_color(theme::text_subtle())
+                                    .child(format!(
+                                        "{who} committed {} ago",
+                                        super::ago_iso(&c.committed_date)
+                                    )),
+                            ),
+                    )
+                    .when(fresh, |d| d.child(ui::tag("new", theme::text_muted())))
+                    .child(
+                        super::mono(c.short_oid().to_string(), theme::text_subtle()).flex_none(),
+                    ),
+            );
         }
         list.into_any_element()
     }

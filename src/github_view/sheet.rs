@@ -877,10 +877,18 @@ impl GitHubView {
         };
         list.push((Tab::Checks, "Checks", checks));
         list.push((
+            Tab::Commits,
+            "Commits",
+            pull.map(|p| p.commits.len().to_string()),
+        ));
+        list.push((
             Tab::Files,
             "Files",
             pull.map(|p| p.changed_files.to_string()),
         ));
+        // What was pushed after the user's last review, so they read that first.
+        let me = self.github.read(cx).me().unwrap_or_default().to_string();
+        let new_since = pull.map_or(0, |p| pr::new_since_my_review(p, &me).len());
         let tab = self.tab;
         let mut row = div()
             .flex()
@@ -912,6 +920,13 @@ impl GitHubView {
                     .child(label)
                     .when_some(count, |d, c| d.child(super::mono(c, theme::text_faint())))
                     .on_click(cx.listener(move |this, _, _, cx| this.set_tab(t, cx))),
+            );
+        }
+        if new_since > 0 {
+            row = row.child(
+                div()
+                    .ml_auto()
+                    .child(super::mono(new_since_text(new_since), theme::text_subtle())),
             );
         }
         Some(row.into_any_element())
@@ -1292,6 +1307,15 @@ fn que_pasa(body: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
+/// "1 new since your review", "3 new since your review".
+fn new_since_text(n: usize) -> String {
+    if n == 1 {
+        "1 new since your review".to_string()
+    } else {
+        format!("{n} new since your review")
+    }
+}
+
 /// Whether the bar offers "Approve" and "Request changes": on someone else's
 /// open pull request, pilot following it or not. A `Listo` one offers
 /// "Merge" instead.
@@ -1425,6 +1449,12 @@ mod tests {
             "ultimo_pilot": {"texto": "algo", "at": moved},
         }]});
         board::parse_board(json.to_string().as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn the_tabs_say_how_many_commits_are_new() {
+        assert_eq!(new_since_text(1), "1 new since your review");
+        assert_eq!(new_since_text(3), "3 new since your review");
     }
 
     #[test]

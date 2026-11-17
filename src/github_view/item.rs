@@ -746,6 +746,10 @@ impl GitHubView {
         let content = match (tab, details) {
             (Tab::Files, Details::Pull(p)) => self.render_files(p, cx),
             (Tab::Checks, Details::Pull(p)) => self.render_checks(p, cx),
+            (Tab::Commits, Details::Pull(p)) => {
+                let me = g.me().unwrap_or_default().to_string();
+                self.render_commits(p, &me, cx)
+            }
             _ => gpui::list(
                 self.timeline_list.clone(),
                 cx.processor(Self::render_timeline_row),
@@ -754,7 +758,10 @@ impl GitHubView {
             .into_any_element(),
         };
         // The timeline and the files are lists that scroll themselves.
-        let scrolls = matches!((tab, details), (Tab::Checks, Details::Pull(_)));
+        let scrolls = matches!(
+            (tab, details),
+            (Tab::Checks | Tab::Commits, Details::Pull(_))
+        );
         div()
             .id("gh-body")
             .size_full()

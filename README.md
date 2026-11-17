@@ -165,8 +165,7 @@ it shows in `github/avatars/` (each downloaded again after a week).
   either it hangs from the top of the main screen. Turning it off in Settings ends that
   process. If it reads the cutout wrong, set
   `ARAKUN_ISLAND_EDGE` to `flat`, `notch:<width>x<height>` or
-  `pill:<width>x<height>+<gap to the top>`, in points. It speaks English on macOS and
-  Spanish on Linux for now.
+  `pill:<width>x<height>+<gap to the top>`, in points.
 - **Notification history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
   grouped by day. Click one to open what it is about. The Inbox is the button at the end

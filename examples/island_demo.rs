@@ -6,7 +6,7 @@
 //! A state given on the command line holds still; each alert shown is the next
 //! of a few samples (a long reply, a long failure with a path, a short notice,
 //! a long question). `alerts` plays them one after another, each put away
-//! ("Luego") after a few seconds, so the drip and the melt can be filmed with
+//! ("Later") after a few seconds, so the drip and the melt can be filmed with
 //! ARAKUN_ISLAND_PASSTHROUGH=1. ISLAND_DEMO_SCREEN=n opens it on the nth screen
 //! (Linux). ARAKUN_ISLAND_EDGE=notch or =pill draws it around a camera cutout
 //! the screen doesn't have (see `src/island/edge.rs`).
@@ -46,7 +46,7 @@ mod demo {
     use crate::island::{Alert, AlertKind, Feed, Island, IslandEvent, Phase, Row, Status};
 
     const CYCLE: Duration = Duration::from_secs(4);
-    /// In the `alerts` tour, how long a card with buttons hangs before "Luego".
+    /// In the `alerts` tour, how long a card with buttons hangs before "Later".
     const READ_FOR: Duration = Duration::from_millis(3500);
     const PHASES: [Phase; 5] = [
         Phase::Sleeping,
@@ -71,21 +71,21 @@ mod demo {
                 row(
                     Status::Working,
                     "GLM-5.3",
-                    "bench qkv m32 en la H100, ronda 4 de 6 con whole_compare",
+                    "bench qkv m32 on the H100, round 4 of 6 with whole_compare",
                     "12:41",
                     "$0.84",
                 ),
                 row(
                     Status::Waiting,
                     "Opus 5.5",
-                    "¿Aplico el parche a src/shell/rail.rs y corro las pruebas?",
+                    "Apply the patch to src/shell/rail.rs and run the tests?",
                     "3:07",
                     "$1.92",
                 ),
                 row(
                     Status::Error,
                     "Kimi K3",
-                    "cargo test: 2 fallas en usage_history::rolls_over_midnight",
+                    "cargo test: 2 failures in usage_history::rolls_over_midnight",
                     "0:58",
                     "$0.11",
                 ),
@@ -109,31 +109,31 @@ mod demo {
             alert(
                 "Opus 5.5",
                 AlertKind::Finished,
-                "Opus 5.5 terminó",
-                "Listo: moví las notificaciones de deploy, CI, límites y Cloudflare a la isla, arreglé la reconexión \
-                 que perdía alertas y agregué pruebas para la cola de avisos largos. Falta que pruebes el respaldo sin \
-                 Wayland.",
+                "Opus 5.5 finished",
+                "Done: moved the deploy, CI, limit and Cloudflare notices to the island, fixed the reconnect that \
+                 lost alerts and added tests for the queue of long notices. The fallback without Wayland is left \
+                 for you to try.",
             ),
             alert(
                 "open:runs",
                 AlertKind::Failure,
-                "Deploy de doop-selfhosted-containers-staging falló en Cloudflare",
-                "wrangler deploy salió con código 1: la imagen \
-                 registry.cloudflare.com/acme/doop:2026-11-05-1742/layers/sha256-9f2c7e1b44a0d3 pesa 2.4 GB y el plan \
-                 permite 2 GB.",
+                "Deploy of doop-selfhosted-containers-staging failed on Cloudflare",
+                "wrangler deploy exited with code 1: the image \
+                 registry.cloudflare.com/acme/doop:2026-11-05-1742/layers/sha256-9f2c7e1b44a0d3 weighs 2.4 GB and the \
+                 plan allows 2 GB.",
             ),
             alert(
                 "",
                 AlertKind::Success,
-                "Deploy listo",
-                "doop · wrangler deploy en 41 s",
+                "Deploy ready",
+                "doop · wrangler deploy in 41 s",
             ),
             alert(
                 "Sonnet 5.5",
                 AlertKind::Input,
-                "Sonnet 5.5 necesita tu decisión en «Swarm de agentes con Cloudflare»",
-                "¿Borro las 14 ramas viejas de feature/* que ya están mergeadas en main, o prefieres que solo borre \
-                 las que llevan más de 30 días sin commits?",
+                "Sonnet 5.5 needs your decision in \"Agent swarm with Cloudflare\"",
+                "Delete the 14 old feature/* branches already merged into main, or only the ones with no commits \
+                 for more than 30 days?",
             ),
         ]
     }
@@ -226,7 +226,7 @@ mod demo {
             });
         }
 
-        /// The tour: a sample, "Luego" after a while (a notice without buttons
+        /// The tour: a sample, "Later" after a while (a notice without buttons
         /// times out by itself), a pause, the next.
         fn step_tour(&mut self, cx: &mut Context<Self>) {
             let since = self.changed.elapsed();

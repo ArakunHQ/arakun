@@ -1021,7 +1021,7 @@ mod host {
         }
     }
 
-    /// "Aprobar" / "Rechazar": the answer `arakun agent approve|deny` writes.
+    /// "Approve" / "Deny": the answer `arakun agent approve|deny` writes.
     pub(super) fn answer(key: &str, req: &str, approve: bool) -> Result<String, String> {
         crate::headless::resolve(key, req, approve, "")
     }

@@ -165,7 +165,8 @@ terminal-only. The status line and keybindings from your settings don't apply in
   `gh`; an approval only goes to the commit the agent read. When the agent asks you
   something with ready answers, they show as buttons on its card, with "Other answer…"
   for your own words (`POST <url>/items/<id>/answer`). What you saw and dealt with is
-  kept in `pilot.json` next to the state. Ctrl+K "Send to the cloud agent…" (or type
+  kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
+  Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
   `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
   or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
   too.

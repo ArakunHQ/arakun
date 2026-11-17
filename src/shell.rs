@@ -40,6 +40,7 @@ mod limits;
 mod menus;
 mod naming;
 mod notes;
+mod onboarding;
 pub(crate) mod pages;
 mod palette;
 mod panel;
@@ -456,6 +457,8 @@ pub struct Shell {
     inbox_shown: Cell<u64>,
     /// "Clear" was clicked once; the second click empties the history.
     clear_armed: bool,
+    /// The setup, while it shows in the window's place (`shell::onboarding`).
+    onboarding: Option<onboarding::Onboarding>,
 }
 
 struct InboxItem {
@@ -854,6 +857,7 @@ impl Shell {
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
             github_alone: false,
+            onboarding: None,
             servers_alone: false,
             inbox_shown: Cell::new(0),
             clear_armed: false,
@@ -1205,6 +1209,8 @@ impl Shell {
         window.focus(&self.composer_focus, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
+        // A project is what the setup was for, however it was added.
+        self.finish_onboarding(window, cx);
         cx.notify();
     }
 
@@ -1623,7 +1629,9 @@ impl Shell {
     /// Asks once, on first launch, whether to send crash reports and usage
     /// counts; nothing is sent before the answer.
     pub fn ask_telemetry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.modal.is_some() || !crate::telemetry::should_ask() {
+        // The setup asks it as one of its steps, and again here when it
+        // closes without an answer.
+        if self.modal.is_some() || self.onboarding.is_some() || !crate::telemetry::should_ask() {
             return;
         }
         use crate::telemetry_dialog::{DETAILS_URL, TelemetryDialog, TelemetryEvent};
@@ -1915,7 +1923,9 @@ impl Shell {
         if let Some((Modal::Attach(picker), _)) = self.modal.take() {
             picker.update(cx, |picker, cx| picker.release(cx));
         }
-        if self.has_projects() {
+        if let Some(focus) = self.onboarding_focus() {
+            window.focus(focus, cx);
+        } else if self.has_projects() {
             window.focus(&self.composer_focus, cx);
         } else {
             window.focus(&self.focus, cx);
@@ -2371,7 +2381,12 @@ impl Render for Shell {
                 }
             });
         }
-        let body: AnyElement = if has_projects {
+        let onboarding = self.render_onboarding(window, cx);
+        // The setup takes the window's whole place: no rail, panels or dock.
+        let chrome = onboarding.is_none();
+        let body: AnyElement = if let Some(onboarding) = onboarding {
+            onboarding
+        } else if has_projects {
             // The tabs sit on the window, above the sheet: only the work itself
             // is a surface. The title bar moves the window itself, so a press
             // anywhere here must not reach the root's handler as well.
@@ -2662,25 +2677,25 @@ impl Render for Shell {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .when(self.rail_shown() && !rail_right, |d| {
+                    .when(chrome && self.rail_shown() && !rail_right, |d| {
                         d.child(self.render_rail(window, cx))
                             .child(self.side_handle(SideDrag::Rail, cx))
                     })
                     .child(body)
-                    .when(has_projects && self.subagents_open, |d| {
+                    .when(chrome && has_projects && self.subagents_open, |d| {
                         d.child(self.side_handle(SideDrag::Subagents, cx))
                             .child(self.render_subagents(cx))
                     })
-                    .when(has_projects && self.panel_open, |d| {
+                    .when(chrome && has_projects && self.panel_open, |d| {
                         d.child(self.side_handle(SideDrag::Panel, cx))
                             .child(self.render_panel(cx))
                     })
-                    .when(self.rail_shown() && rail_right, |d| {
+                    .when(chrome && self.rail_shown() && rail_right, |d| {
                         d.child(self.side_handle(SideDrag::Rail, cx))
                             .child(self.render_rail(window, cx))
                     }),
             )
-            .when(has_projects, |d| d.child(self.render_dock(cx)))
+            .when(chrome && has_projects, |d| d.child(self.render_dock(cx)))
             .when_some(self.render_session_drop_menu(cx), |d, m| d.child(m))
             .when_some(context_menu, |d, (at, above, menu)| {
                 d.child(

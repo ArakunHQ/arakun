@@ -42,7 +42,24 @@ impl Focusable for TelemetryDialog {
     }
 }
 
-fn point(icon_name: &str, text: &'static str) -> impl IntoElement {
+/// What is and is not sent, as an icon and a sentence each. The setup's step
+/// (`shell::onboarding`) shows the same ones.
+pub const POINTS: [(&str, &str); 3] = [
+    (
+        "alert-circle",
+        "Crashes with their stack trace, and the kind of error when an agent stops. A crash's message loses paths, links and keys; its other words are sent.",
+    ),
+    (
+        "activity01",
+        "Counts such as sessions started, with the agent's name.",
+    ),
+    (
+        "view-off",
+        "Never prompts, replies or files. A random id, not your account.",
+    ),
+];
+
+pub fn point(icon_name: &str, text: &'static str) -> impl IntoElement {
     div()
         .flex()
         .items_start()
@@ -88,18 +105,7 @@ impl Render for TelemetryDialog {
                     .child(
                         "They tell us what breaks and what gets used. Nothing is sent unless you say yes.",
                     )
-                    .child(point(
-                        "alert-circle",
-                        "Crashes with their stack trace, and the kind of error when an agent stops. A crash's message loses paths, links and keys; its other words are sent.",
-                    ))
-                    .child(point(
-                        "activity01",
-                        "Counts such as sessions started, with the agent's name.",
-                    ))
-                    .child(point(
-                        "view-off",
-                        "Never prompts, replies or files. A random id, not your account.",
-                    ))
+                    .children(POINTS.map(|(icon_name, text)| point(icon_name, text)))
                     .child(
                         div()
                             .id("telemetry-details")

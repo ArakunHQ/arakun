@@ -200,14 +200,15 @@ Arakun sends nothing until you say so. On first launch it asks whether to send c
 reports and anonymous usage counts to Arakun's PostHog project, so we can see what
 breaks and what gets used. Settings › General has a switch for each:
 
-- **Crash reports:** a panic's message and stack trace, and the first line of an
-  agent's error with the agent's name.
+- **Crash reports:** a panic's message and stack trace, and when an agent stops with
+  an error, the agent's name and a fixed category such as "rate limited" or "not
+  signed in", never the error's text.
 - **Usage counts:** app launched, session started (with the agent), agent turn
   finished, project added, environment created, a built-in view opened (with its name)
   and a browser tab opened.
 
 Each event carries Arakun's version, the OS and the CPU architecture. Arakun never
-sends prompts, replies, file contents, URLs or project names. Before an error message
+sends prompts, replies, file contents, URLs or project names. Before a panic's message
 leaves your machine, Arakun replaces your home folder with `~` and removes paths, links,
 emails and anything shaped like a key or token. Events carry a random id kept in
 `telemetry-id` in Arakun's data folder (`~/.local/share/arakun` on Linux and macOS,

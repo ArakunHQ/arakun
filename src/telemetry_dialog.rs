@@ -90,7 +90,7 @@ impl Render for TelemetryDialog {
                     )
                     .child(point(
                         "alert-circle",
-                        "Crashes and agent errors, without paths, links or anything shaped like a key.",
+                        "Crashes, and the kind of error when an agent stops: never paths, links or keys.",
                     ))
                     .child(point(
                         "activity01",

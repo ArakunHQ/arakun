@@ -545,7 +545,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04
     # For the release signing key, below.
-    environment: release
+    environment: release-signing
     permissions:
       contents: write
       # For the provenance attestation. Only this job gets them: it runs no code
@@ -581,7 +581,8 @@ jobs:
 
       # The updater (src/update.rs) refuses a release whose SHA256SUMS this key
       # did not sign, and the install scripts check it where they can. The key
-      # lives only in the `release` environment, which takes v* tags and main:
+      # lives only in the `release-signing` environment, which takes v* tags
+      # and nothing else, so no branch or manual run can read it:
       #
       #   RELEASE_SIGNING_KEY           the secret key file `minisign -G` made
       #   RELEASE_SIGNING_KEY_PASSWORD  its password

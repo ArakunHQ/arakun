@@ -19,7 +19,7 @@ function Install-Arakun {
 
     $repo = 'arakunhq/arakun'
     # The minisign key release.yml signs SHA256SUMS with: assets/release-key.pub.
-    $releaseKey = 'RWQ7q+QH/F3LkpvPC4VUQF5guWk5BUJhsveIDg6zNfdGH7EEMu+W7at7'
+    $releaseKey = 'RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn'
 
     # PROCESSOR_ARCHITEW6432 is set in a 32-bit PowerShell on 64-bit Windows.
     $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }

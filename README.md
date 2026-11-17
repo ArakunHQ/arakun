@@ -378,7 +378,7 @@ Download the archive or disk image for your platform from
 [minisign](https://jedisct1.github.io/minisign/):
 
 ```sh
-minisign -Vm SHA256SUMS -P RWQ7q+QH/F3LkpvPC4VUQF5guWk5BUJhsveIDg6zNfdGH7EEMu+W7at7
+minisign -Vm SHA256SUMS -P RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn
 ```
 
 Each download also has a build provenance attestation. It shows that this repository's

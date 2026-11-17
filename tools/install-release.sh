@@ -14,7 +14,7 @@ set -eu
 
 repo=arakunhq/arakun
 # The minisign key release.yml signs SHA256SUMS with: assets/release-key.pub.
-release_key=RWQ7q+QH/F3LkpvPC4VUQF5guWk5BUJhsveIDg6zNfdGH7EEMu+W7at7
+release_key=RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn
 
 say() { printf 'arakun: %s\n' "$*"; }
 die() {

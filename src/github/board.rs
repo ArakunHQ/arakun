@@ -423,11 +423,12 @@ pub enum CardPlace {
 }
 
 pub fn card_place(b: &Board, card: &super::pilot::Item) -> CardPlace {
-    // A question counts as the board's only where its row can open: an
-    // entry that names no pull request has no row, so the card shows.
-    if b.find_decision(&card.id)
-        .is_some_and(|p| p.item_ref().is_some())
-    {
+    // A question counts as the board's only where the sheet can ask it: its
+    // row opens (the entry names a pull request) and the decision is one
+    // the sheet draws. Otherwise the card shows, with its own buttons.
+    if b.find_decision(&card.id).is_some_and(|p| {
+        p.item_ref().is_some() && p.open_decision().is_some_and(|d| d.item == card.id)
+    }) {
         return CardPlace::Question;
     }
     match card.item_ref() {
@@ -730,6 +731,7 @@ mod tests {
                 number: 7,
                 decision: Some(Decision {
                     item: "q1".into(),
+                    pregunta: "¿Sigo?".into(),
                     ..Decision::default()
                 }),
                 ..BoardPr::default()
@@ -772,6 +774,12 @@ mod tests {
         };
         let q2 = card("q2", Kind::NeedsYou, "", 0);
         assert_eq!(card_place(&nowhere, &q2), CardPlace::Loose);
+        // A decision the sheet can't draw (no question) doesn't hide the
+        // card either: it shows in its pull request's sheet.
+        let mut blank = b.clone();
+        blank.prs[0].decision.as_mut().unwrap().pregunta.clear();
+        let q1 = card("q1", Kind::NeedsYou, "ArakunHQ/arakun", 7);
+        assert_eq!(card_place(&blank, &q1), CardPlace::Sheet);
         // The headline and the badge both count te_necesita and those cards.
         let q = crate::github::queue::Queue::default();
         assert_eq!(waiting(&b, &q, cards.iter()), 4);

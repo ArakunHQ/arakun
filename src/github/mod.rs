@@ -816,6 +816,8 @@ pub struct GitHub {
     window_active: bool,
     /// The login gh is signed in as, once known.
     me: Option<String>,
+    /// A read of `me` alone is on its way (`want_me`).
+    me_reading: bool,
     /// What the searches found at the last read.
     found: Vec<(queue::Why, queue::Found)>,
     searched: bool,
@@ -903,6 +905,7 @@ impl GitHub {
             settings: load(),
             window_active: true,
             me: None,
+            me_reading: false,
             found: Vec::new(),
             searched: false,
             search_problem: None,
@@ -1121,6 +1124,28 @@ impl GitHub {
 
     pub fn me(&self) -> Option<&str> {
         self.me.as_deref()
+    }
+
+    /// Reads the login gh is signed in as, when it isn't known yet. For a
+    /// sheet opened from the island before the tab ever was: it needs to know
+    /// which pull requests are the user's. Unlike `opened`, it turns on no
+    /// background reads.
+    pub fn want_me(&mut self, cx: &mut Context<Self>) {
+        if self.me.is_some() || self.me_reading || Self::disabled() {
+            return;
+        }
+        self.me_reading = true;
+        cx.spawn(async move |this, cx| {
+            let me = cx.background_spawn(async { pr::me().ok() }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.me_reading = false;
+                if this.me.is_none() && me.is_some() {
+                    this.me = me;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn queue(&self) -> &queue::Queue {

@@ -141,6 +141,9 @@ impl GitHubView {
             .and_then(|b| b.find(&item.repo, item.number))
             .map(|p| p.title.clone())
             .unwrap_or_default();
+        // The tab may never have opened: "Ask pilot" needs to know whose
+        // pull request this is.
+        self.github.update(cx, |g, cx| g.want_me(cx));
         self.open_row(&item, &title, cx);
         true
     }
@@ -933,7 +936,7 @@ impl GitHubView {
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(6.))
-                    .h(px(28.))
+                    .h(px(ui::BUTTON_H))
                     .px(crate::ui::sp(10.))
                     .rounded(crate::ui::rad(ui::RADIUS))
                     .cursor_pointer()
@@ -1058,7 +1061,7 @@ impl GitHubView {
                                     .flex_none()
                                     .items_center()
                                     .gap(crate::ui::sp(6.))
-                                    .h(px(26.))
+                                    .h(px(ui::CONTROL_H))
                                     .px(crate::ui::sp(10.))
                                     .rounded(crate::ui::rad(ui::RADIUS))
                                     .ty(Type::Label)
@@ -1240,7 +1243,7 @@ fn decision_button(
         .flex()
         .flex_none()
         .items_center()
-        .h(px(30.))
+        .h(px(ui::BUTTON_H))
         .px(crate::ui::sp(12.))
         .rounded(crate::ui::rad(ui::RADIUS))
         .ty(Type::Label)

@@ -1362,12 +1362,19 @@ mod tests {
                 .name,
             "proj"
         );
-        for secret in [
+        // The message names the case by number, so not even a made-up secret is printed.
+        for (case, with_credentials) in [
             "https://user:pass@gitlab.com/g/proj.git",
             "https://ghp_token@github.com/o/r",
             "ssh://git:pass@host/g/proj.git",
-        ] {
-            assert!(parse_clone_source(secret).is_none(), "{secret}");
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                parse_clone_source(with_credentials).is_none(),
+                "case {case}"
+            );
         }
 
         let other = parse_clone_source("https://gitlab.com/g/sub/proj.git").unwrap();

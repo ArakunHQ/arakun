@@ -95,13 +95,13 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 | Cloudflare Workers AI | A tool loop Arakun runs itself against the Workers AI API |
 
 The Claude Code adapter runs the Claude Code binary bundled with it (the `claude` on
-your `PATH` only when that one is missing; `CLAUDE_CODE_EXECUTABLE` picks another). It
-loads your user, project and local settings, so your skills, hooks, plugins, MCP
-servers, `CLAUDE.md` and permission rules work as they do in the terminal. It leaves out
-commands that only make sense in the terminal app: `/clear`, `/cost`,
-`/keybindings-help`, `/login`, `/logout`, `/output-style:new`, `/release-notes`,
-`/todos` and others Claude Code marks as terminal-only. The status line and keybindings
-from your settings don't apply in Arakun.
+your `PATH` only when that one is missing; `CLAUDE_CODE_EXECUTABLE` picks another), so
+its version can differ from the `claude` in your terminal. It loads your user, project
+and local settings, so your skills, hooks, plugins, MCP servers, `CLAUDE.md` and
+permission rules work as they do in the terminal. It leaves out commands that only make
+sense in the terminal app: `/clear`, `/cost`, `/keybindings-help`, `/login`, `/logout`,
+`/output-style:new`, `/release-notes`, `/todos` and others Claude Code marks as
+terminal-only. The status line and keybindings from your settings don't apply in Arakun.
 
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including

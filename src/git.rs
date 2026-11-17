@@ -881,10 +881,13 @@ pub fn pr_view(dir: &Path) -> Option<PullRequest> {
     serde_json::from_slice(&out.stdout).ok()
 }
 
-/// Opens GitHub's "new pull request" page for `branch`, prefilled from its commits.
+/// Opens GitHub's "new pull request" page for `branch`. GitHub fills in the
+/// title and body from the commits. `--fill` is left out: it makes gh read them
+/// from the local clone first, which fails when `origin/<base>` is stale or the
+/// branch has no commits of its own yet.
 pub fn pr_create_web(dir: &Path, branch: &str) -> Result<()> {
     let out = gh(dir)
-        .args(["pr", "create", "--web", "--fill", "--head", branch])
+        .args(["pr", "create", "--web", "--head", branch])
         .output()
         .context("could not run gh")?;
     if !out.status.success() {

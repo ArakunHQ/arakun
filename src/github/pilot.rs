@@ -91,12 +91,38 @@ pub fn parse_config(bytes: &[u8]) -> Option<Config> {
         .admin_token
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
-    let web = url.starts_with("https://") || url.starts_with("http://");
+    let web = url.starts_with("https://") || local_http(&url);
     (web && !token.is_empty()).then_some(Config {
         url,
         token,
         admin_token,
     })
+}
+
+/// Plain `http://` only to this machine: the tokens must never cross a
+/// network unencrypted, and `admin_token` can hand the agent work.
+fn local_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.find(']') {
+        Some(end) if authority.starts_with('[') => {
+            let port = &authority[end + 1..];
+            if !port.is_empty() && !port.starts_with(':') {
+                return false;
+            }
+            &authority[..=end]
+        }
+        _ => authority.split(':').next().unwrap_or_default(),
+    };
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "[::1]"
+    )
 }
 
 pub fn load_config() -> Option<Config> {
@@ -255,13 +281,17 @@ where
 }
 
 impl Item {
-    /// The pull request it is about, when it names one.
+    /// The pull request it is about, when it names one in `REPO`. The
+    /// Worker reads other people's pull requests, so it never picks which
+    /// repository an approval lands on: anything else names nothing.
     pub fn item_ref(&self) -> Option<ItemRef> {
         let from_repo = (self.number > 0)
             .then(|| ItemRef::parse(&format!("{}#{}", self.repo, self.number)))
             .flatten();
+        // An address from the agent counts only on the host gh talks to.
         from_repo
-            .or_else(|| ItemRef::from_url(&self.url))
+            .or_else(|| ItemRef::from_url_on(&self.url, &super::pr::gh_host()))
+            .filter(|i| i.repo.eq_ignore_ascii_case(REPO))
             .map(|i| ItemRef {
                 kind: ItemKind::Pull,
                 ..i
@@ -313,33 +343,37 @@ pub fn first_sentence(text: &str) -> String {
     t.to_string()
 }
 
-/// Whether two names of a commit are the same commit: equal, or one a
-/// prefix of the other (a short SHA), never shorter than 7.
-pub fn same_commit(a: &str, b: &str) -> bool {
-    let (a, b) = (a.trim().to_ascii_lowercase(), b.trim().to_ascii_lowercase());
-    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    short.len() >= 7 && long.starts_with(&short)
+/// A full commit SHA: 40 hex characters. A card's review is pinned to one,
+/// never to a short name GitHub might read as another commit.
+pub fn full_sha(s: &str) -> bool {
+    let s = s.trim();
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// What `GET /items` answers: a list, or `{"items": [...]}`. Items without an
-/// id are dropped: nothing could mark them done.
+/// Whether two full SHAs name the same commit.
+pub fn same_commit(a: &str, b: &str) -> bool {
+    full_sha(a) && full_sha(b) && a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+/// What `GET /items` answers: a list, or `{"items": [...]}`. Anything else
+/// (an error object, a login page's JSON) is an error, so the cards on show
+/// stay. Each item is read on its own: one with a field of the wrong type is
+/// dropped, not the whole answer. Items without an id are dropped too:
+/// nothing could mark them done.
 pub fn parse_items(bytes: &[u8]) -> Result<Vec<Item>, String> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Answer {
-        List(Vec<Item>),
-        Wrapped {
-            #[serde(default)]
-            items: Vec<Item>,
-        },
-    }
-    let answer: Answer =
+    let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| format!("unexpected answer: {e}"))?;
-    let items = match answer {
-        Answer::List(l) | Answer::Wrapped { items: l } => l,
+    let list = match value {
+        serde_json::Value::Array(list) => list,
+        serde_json::Value::Object(mut o) => match o.remove("items") {
+            Some(serde_json::Value::Array(list)) => list,
+            _ => return Err("unexpected answer: no \"items\" list".into()),
+        },
+        _ => return Err("unexpected answer: not a list of items".into()),
     };
-    Ok(items
+    Ok(list
         .into_iter()
+        .filter_map(|v| serde_json::from_value::<Item>(v).ok())
         .filter(|i| !i.id.is_empty())
         .map(|mut i| {
             i.opciones
@@ -875,8 +909,42 @@ mod tests {
             ..Item::default()
         };
         assert_eq!(by_url.item_ref().map(|r| r.number), Some(88));
-        assert!(parse_items(b"{\"error\": \"nope\"}").unwrap().is_empty());
+        // An answer with no list of items is an error: the cards on show stay.
+        assert!(parse_items(b"{\"error\": \"nope\"}").is_err());
+        assert!(parse_items(b"{\"items\": null}").is_err());
+        assert!(parse_items(b"\"nope\"").is_err());
         assert!(parse_items(b"<html>").is_err());
+        // One item with a field of the wrong type goes; the rest read.
+        let mixed = parse_items(br#"[{"id": "a", "number": "95"}, {"id": "b", "number": 95}]"#);
+        let ids: Vec<String> = mixed.unwrap().into_iter().map(|i| i.id).collect();
+        assert_eq!(ids, ["b"]);
+    }
+
+    #[test]
+    fn an_item_names_a_pull_request_only_in_pilots_repository() {
+        let other = Item {
+            repo: "other/proj".into(),
+            number: 95,
+            ..Item::default()
+        };
+        assert!(other.item_ref().is_none());
+        let elsewhere = Item {
+            url: "https://github.com/other/proj/pull/95".into(),
+            ..Item::default()
+        };
+        assert!(elsewhere.item_ref().is_none());
+        // An address on another host names nothing, even with the right path.
+        let host = Item {
+            url: "https://evil.example/ArakunHQ/arakun/pull/95".into(),
+            ..Item::default()
+        };
+        assert!(host.item_ref().is_none());
+        let ours = Item {
+            repo: "arakunhq/arakun".into(),
+            number: 95,
+            ..Item::default()
+        };
+        assert_eq!(ours.item_ref().map(|r| r.number), Some(95));
     }
 
     fn item(id: &str, at: &str, kind: Kind, importante: bool) -> Item {
@@ -1032,13 +1100,40 @@ mod tests {
     }
 
     #[test]
-    fn commits_match_by_prefix() {
+    fn plain_http_only_goes_to_this_machine() {
+        let ok = |url: &str| {
+            let json = format!(r#"{{"url": "{url}", "token": "t"}}"#);
+            parse_config(json.as_bytes()).is_some()
+        };
+        assert!(ok("http://127.0.0.1:8787"));
+        assert!(ok("http://localhost:8787/"));
+        assert!(ok("http://LOCALHOST"));
+        assert!(ok("http://[::1]:8787"));
+        assert!(ok("https://pilot.example.com"));
+        // Anything else would send the tokens over the network unencrypted.
+        assert!(!ok("http://evil.com"));
+        assert!(!ok("http://pilot.example.com:8787"));
+        assert!(!ok("http://localhost.evil.com"));
+        assert!(!ok("http://127.0.0.1.evil.com"));
+        assert!(!ok("http://127.0.0.1@evil.com"));
+        assert!(!ok("http://localhost:80@evil.com/"));
+        assert!(!ok("http://[::1]evil.com"));
+    }
+
+    #[test]
+    fn commits_match_only_by_their_full_sha() {
         let full = "40a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3";
-        assert!(same_commit(full, full));
-        assert!(same_commit("40A1B2C", full));
-        assert!(!same_commit("40a1b2", full));
+        assert!(full_sha(full));
+        assert!(same_commit(full, &full.to_ascii_uppercase()));
+        // A short name could be read as another commit.
+        assert!(!same_commit("40a1b2c", full));
+        assert!(!full_sha("40a1b2c"));
+        assert!(!full_sha(&format!("{}z", &full[..39])));
         assert!(!same_commit("", ""));
-        assert!(!same_commit("50a1b2c3", full));
+        assert!(!same_commit(
+            "50a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+            full
+        ));
     }
 
     #[test]

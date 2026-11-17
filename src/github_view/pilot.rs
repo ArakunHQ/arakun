@@ -76,14 +76,15 @@ fn moved_text(number: u64, read: &str, now: &str) -> String {
     )
 }
 
-/// The approval a card sends: only for the commit the agent read, and only
-/// while it is still the head.
-fn approve_job(item: &ItemRef, body: &str, head: &str) -> Result<(), Problem> {
+/// The review a card sends, approval or change request: only for the commit
+/// the agent read, and only while it is still the head. GitHub gets the SHA
+/// just checked, never the Worker's.
+fn pinned_job(item: &ItemRef, verdict: Verdict, body: &str, head: &str) -> Result<(), Problem> {
     let now = pr::head_sha(item)?;
     if !pilot::same_commit(&now, head) {
         return Err(Problem::Other(moved_text(item.number, head, &now)));
     }
-    pr::review_at(item, Verdict::Approve, body, head)
+    pr::review_at(item, verdict, body, &now)
 }
 
 /// A quote under a card's text: why it matters, or what the agent asks.
@@ -206,14 +207,20 @@ impl GitHubView {
             })
             .child(div().flex_1())
             .child(super::mono(super::ago(when), theme::text_subtle()).flex_none());
-        // Like a queue row's second line: the number, then who.
+        // Like a queue row's second line: where it is, then who. The
+        // repository shows too: an approval lands there.
+        let place = match (&pr_ref, item.repo.trim()) {
+            (Some(r), _) => r.label(),
+            (None, "") => format!("#{}", item.number),
+            (None, repo) => format!("{repo}#{}", item.number),
+        };
         let meta = div()
             .flex()
             .items_center()
             .gap(crate::ui::sp(6.))
             .min_w_0()
-            .when(item.number > 0, |d| {
-                d.child(super::mono(format!("#{}", item.number), theme::text_subtle()).flex_none())
+            .when(item.number > 0 || pr_ref.is_some(), |d| {
+                d.child(super::mono(place, theme::text_subtle()).flex_none())
             })
             .when(!item.author.is_empty(), |d| {
                 d.child(
@@ -713,28 +720,38 @@ impl GitHubView {
     }
 
     /// "Looks good": the confirm strip for an approval of the commit the
-    /// agent read. A push since then cancels it.
+    /// agent read.
     fn pilot_approve(&mut self, item: &Item, cx: &mut Context<Self>) {
-        let Some(r) = item.item_ref() else { return };
+        self.pilot_pin(item, Confirm::Approve, cx);
+    }
+
+    /// The confirm strip `c` for a card's review, pinned to the commit the
+    /// agent read: approval and change request follow the same rule. False,
+    /// with a note on the card, when the card names no full commit. A push
+    /// since then cancels the strip.
+    fn pilot_pin(&mut self, item: &Item, c: Confirm, cx: &mut Context<Self>) -> bool {
+        let Some(r) = item.item_ref() else {
+            return false;
+        };
         self.pilot_notes.remove(&item.id);
-        if item.head.is_empty() {
+        if !pilot::full_sha(&item.head) {
             self.pilot_notes.insert(
                 item.id.clone(),
-                "The summary doesn't say which commit it's for; approve it from the pull request."
+                "The summary doesn't name the full commit it's for; review it from the pull request."
                     .into(),
             );
             cx.notify();
-            return;
+            return false;
         }
         self.pilot_see(item, cx);
-        self.ask_confirm(Confirm::Approve, cx);
+        self.ask_confirm(c, cx);
         let act = PilotAct {
             id: item.id.clone(),
             item: r.clone(),
-            head: item.head.clone(),
+            head: item.head.trim().to_string(),
         };
         self.pilot_act = Some(act.clone());
-        // Asked now so the strip goes before anyone types; the approval asks again.
+        // Asked now so the strip goes before anyone types; the review asks again.
         cx.spawn(async move |this, cx| {
             let it = r.clone();
             let now = cx.background_spawn(async move { pr::head_sha(&it) }).await;
@@ -754,23 +771,18 @@ impl GitHubView {
             });
         })
         .detach();
+        true
     }
 
     /// "Request changes": the confirm strip with the agent's review in it, to
-    /// edit or send as it is.
+    /// edit or send as it is, for the commit the agent read.
     fn pilot_request_changes(&mut self, item: &Item, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(r) = item.item_ref() else { return };
-        self.pilot_notes.remove(&item.id);
-        self.pilot_see(item, cx);
-        self.ask_confirm(Confirm::RequestChanges, cx);
+        if !self.pilot_pin(item, Confirm::RequestChanges, cx) {
+            return;
+        }
         let text = item.borrador.trim_end().replace('\n', NEWLINE);
         self.body_input.update(cx, |i, cx| i.set_text(text, cx));
         window.focus(&self.body_input.focus_handle(cx), cx);
-        self.pilot_act = Some(PilotAct {
-            id: item.id.clone(),
-            item: r,
-            head: item.head.clone(),
-        });
     }
 
     /// Ok, Done, or a card's write that GitHub took: the card goes.
@@ -813,7 +825,7 @@ impl GitHubView {
             Confirm::Approve => self.write(
                 "approve",
                 "Approved.".into(),
-                move |i| approve_job(i, &body, &head),
+                move |i| pinned_job(i, Verdict::Approve, &body, &head),
                 after,
                 cx,
             ),
@@ -823,17 +835,10 @@ impl GitHubView {
                     cx.notify();
                     return;
                 }
-                let pinned = !head.is_empty();
                 self.write(
                     "request-changes",
                     "Changes requested.".into(),
-                    move |i| {
-                        if pinned {
-                            pr::review_at(i, Verdict::RequestChanges, &body, &head)
-                        } else {
-                            pr::review(i, Verdict::RequestChanges, &body, "")
-                        }
-                    },
+                    move |i| pinned_job(i, Verdict::RequestChanges, &body, &head),
                     after,
                     cx,
                 )
@@ -854,13 +859,11 @@ impl GitHubView {
     /// The confirm strip's words when it came from a card.
     pub(super) fn pilot_question(&self, c: Confirm) -> Option<(String, String)> {
         let act = self.pilot_for(c)?;
-        let n = act.item.number;
+        // The repository too: the review lands there.
+        let n = act.item.label();
         Some(match c {
-            Confirm::Approve => (format!("Approve #{n} as you?"), "Approve".into()),
-            _ => (
-                format!("Request changes on #{n}?"),
-                "Request changes".into(),
-            ),
+            Confirm::Approve => (format!("Approve {n} as you?"), "Approve".into()),
+            _ => (format!("Request changes on {n}?"), "Request changes".into()),
         })
     }
 }

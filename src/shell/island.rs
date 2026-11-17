@@ -1,5 +1,5 @@
 //! The shell's side of the Dynamic Island (`crate::island_host`): the link to
-//! it, what it shows of every project's sessions, its alerts, and "Ver".
+//! it, what it shows of every project's sessions, its alerts, and "View".
 
 // The island runs on Linux (Wayland) and macOS: elsewhere this builds but does nothing.
 #![cfg_attr(
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::sessions::Notice;
 use crate::agent::{Entry, Setting, Thread, ThreadStatus};
-use crate::island::{self as isl, AlertKind, one_line, say};
+use crate::island::{self as isl, AlertKind, one_line};
 use crate::island_host::brief;
 use crate::island_host::proto::{FromIsland, ToIsland};
 
@@ -47,7 +47,7 @@ struct Seen {
     usd: f64,
 }
 
-/// What "Ver" opens for a notice that isn't a session's turn. On the island it
+/// What "View" opens for a notice that isn't a session's turn. On the island it
 /// is the alert's key: a session's id as it is, anything else `open:…`, so it
 /// never passes for a session.
 #[derive(Clone, Debug, PartialEq)]
@@ -237,7 +237,7 @@ impl Shell {
         }
     }
 
-    /// "Ver" or a row: the window in front, at the session or what the notice is about.
+    /// "View" or a row: the window in front, at the session or what the notice is about.
     pub(super) fn open_from_island(
         &mut self,
         key: SharedString,
@@ -296,7 +296,7 @@ impl Shell {
 
     /// A notice that isn't about a session's turn (CI, a deploy, a limit, a
     /// task…): a card on the island when it is there, else a desktop
-    /// notification. `open`: what the card's "Ver" shows; without it the card
+    /// notification. `open`: what the card's "View" shows; without it the card
     /// has no buttons and leaves by itself.
     pub(super) fn notify(
         &self,
@@ -455,23 +455,16 @@ impl Shell {
         let (kind, head, line) = match notice {
             Notice::Finished => {
                 let reply = last_text(t.entries()).map(brief).filter(|b| !b.is_empty());
-                (
-                    AlertKind::Finished,
-                    format!("{model} {}", say("finished", "terminó")),
-                    reply,
-                )
+                (AlertKind::Finished, format!("{model} finished"), reply)
             }
             Notice::Input => (
                 AlertKind::Input,
-                format!(
-                    "{model} {}",
-                    say("needs your decision", "necesita tu decisión")
-                ),
+                format!("{model} needs your decision"),
                 waiting_on(t, brief),
             ),
             Notice::Error => (
                 AlertKind::Error,
-                format!("{model} {}", say("failed", "falló")),
+                format!("{model} failed"),
                 error_line(t, brief),
             ),
         };
@@ -589,11 +582,7 @@ fn last_reply(entries: &[Entry]) -> Option<String> {
 fn waiting_on(t: &Thread, shape: fn(&str) -> String) -> Option<String> {
     if let Some(p) = t.pending_permission() {
         return Some(if p.plan.is_some() {
-            say(
-                "Has a plan ready to approve",
-                "Tiene un plan listo para aprobar",
-            )
-            .into()
+            "Has a plan ready to approve".into()
         } else {
             shape(&p.title)
         });

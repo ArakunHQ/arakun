@@ -123,7 +123,7 @@ const BODY_LINES: usize = 4;
 const NECK_R: f32 = 12.;
 /// How long a card takes to melt back in; the next one drips after.
 const MELT_FOR: f32 = 0.9;
-/// How long a confirmation card is up before a click on "Aprobar" counts.
+/// How long a confirmation card is up before a click on "Approve" counts.
 const ARM_AFTER: Duration = Duration::from_millis(1200);
 /// How long the island stays open after the pointer leaves it. It should
 /// close as the pointer goes; this much is left for SUPER P's overlay,
@@ -143,12 +143,6 @@ const POINTER_MARGIN: f32 = 80.;
 const SCREENS_EVERY: Duration = Duration::from_secs(2);
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
-
-/// What the island says: English on macOS, Spanish where it has always
-/// spoken it. One place decides, so the two can't mix on one island.
-pub const fn say(en: &'static str, es: &'static str) -> &'static str {
-    if cfg!(target_os = "macos") { en } else { es }
-}
 
 /// Whether the island shows (Settings › General, `island_off` in the state file).
 pub fn enabled() -> bool {
@@ -456,7 +450,7 @@ impl Status {
 /// One agent session, as the list shows it.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Row {
-    /// The session id; what "Ver" and a click on the row open.
+    /// The session id; what "View" and a click on the row open.
     pub key: SharedString,
     pub status: Status,
     pub model: SharedString,
@@ -583,11 +577,11 @@ pub enum AlertKind {
     Finished,
     Input,
     Error,
-    /// A headless agent's tool call waiting for "Aprobar" or "Rechazar"; it
+    /// A headless agent's tool call waiting for "Approve" or "Deny"; it
     /// stays until answered.
     Confirm,
     /// Not about a session (a deploy, CI, a limit, a task…): a badge in the
-    /// raccoon's place, and "Ver" only when `key` names something to open.
+    /// raccoon's place, and "View" only when `key` names something to open.
     Success,
     Warning,
     Failure,
@@ -634,7 +628,7 @@ pub struct Alert {
 }
 
 impl Alert {
-    /// "Luego" and "Ver" (or "Rechazar" and "Aprobar"): a session's card always,
+    /// "Later" and "View" (or "Deny" and "Approve"): a session's card always,
     /// a notice only when it names something to open.
     pub fn buttons(&self) -> bool {
         self.kind.session() || !self.key.is_empty()
@@ -725,15 +719,15 @@ impl Alerts {
 }
 
 pub enum IslandEvent {
-    /// "Ver": show this session in the main window.
+    /// "View": show this session in the main window.
     Open(SharedString),
     /// A row of the list was clicked.
     OpenRow(SharedString),
-    /// "Luego" put the alert about this session away.
+    /// "Later" put the alert about this session away.
     Later(SharedString),
-    /// An alert went away, by "Luego" or its time.
+    /// An alert went away, by "Later" or its time.
     Dismissed,
-    /// "Aprobar" or "Rechazar" on a `Confirm` card.
+    /// "Approve" or "Deny" on a `Confirm` card.
     Answer {
         key: SharedString,
         req: SharedString,
@@ -1210,7 +1204,7 @@ pub struct Island {
     /// When the last card started back in, for the island's bounce.
     melted: Option<Instant>,
     /// The confirmation card on screen, since when, and whether the pointer has
-    /// been off the island since: "Aprobar" counts only for a pointer that came to it.
+    /// been off the island since: "Approve" counts only for a pointer that came to it.
     armed: Option<(u64, Instant, bool)>,
     /// When an agent was last busy.
     busy_at: Option<Instant>,
@@ -1589,7 +1583,7 @@ impl Island {
             && self.alerts.front().is_some_and(|(n, _)| n == seq)
     }
 
-    /// The card's "Ver": its session in front, and the card away.
+    /// The card's "View": its session in front, and the card away.
     pub fn see(&mut self, cx: &mut Context<Self>) {
         if let Some((_, a)) = self
             .alerts
@@ -1602,7 +1596,7 @@ impl Island {
         }
     }
 
-    /// The card's "Luego".
+    /// The card's "Later".
     pub fn later(&mut self, cx: &mut Context<Self>) {
         if let Some((_, a)) = self
             .alerts
@@ -1614,7 +1608,7 @@ impl Island {
         }
     }
 
-    /// A confirmation's "Aprobar" or "Rechazar".
+    /// A confirmation's "Approve" or "Deny".
     pub fn answer(&mut self, approve: bool, cx: &mut Context<Self>) {
         if approve && !self.approvable(Instant::now()) {
             return;
@@ -1633,7 +1627,7 @@ impl Island {
         }
     }
 
-    /// A click on "Aprobar" is the user's only when the card has been up a
+    /// A click on "Approve" is the user's only when the card has been up a
     /// moment and the pointer came to it after it appeared, not one already there.
     fn approvable(&self, now: Instant) -> bool {
         may_approve(self.armed, self.confirm_front(), now)
@@ -1804,9 +1798,7 @@ impl Island {
         };
         let label = match phase {
             Phase::Speaking => Some(("Arakun", hsla(0., 0., 1., 0.55))),
-            Phase::Listening => {
-                Some((say("Listening", "Escuchando"), theme::accent().opacity(0.7)))
-            }
+            Phase::Listening => Some(("Listening", theme::accent().opacity(0.7))),
             _ => None,
         };
         div()
@@ -1975,7 +1967,7 @@ impl Island {
                     cx.notify();
                 }
             }))
-            // A click anywhere on a notice opens what it is about, like "Ver".
+            // A click anywhere on a notice opens what it is about, like "View".
             .when(a.buttons() && !confirm, |d| {
                 d.cursor_pointer().on_mouse_down(
                     MouseButton::Left,
@@ -2061,9 +2053,9 @@ impl Island {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(gpui::white())
                     .child(if n == 1 {
-                        say("1 agent", "1 agente").to_string()
+                        "1 agent".to_string()
                     } else {
-                        format!("{n} {}", say("agents", "agentes"))
+                        format!("{n} agents")
                     }),
             )
             .when_some(self.feed.today.clone(), |d, today| {
@@ -2072,7 +2064,7 @@ impl Island {
                         .font_family(theme::FONT_MONO)
                         .text_size(px(11.5))
                         .text_color(dim)
-                        .child(format!("{today} {}", say("today", "hoy"))),
+                        .child(format!("{today} today")),
                 )
             });
         let rows = self
@@ -2170,8 +2162,8 @@ impl Island {
         };
         let listening = c.phase == Phase::Listening;
         let (label, color) = match c.phase {
-            Phase::Listening => (say("Listening", "Escuchando"), theme::accent().opacity(0.8)),
-            Phase::Working => (say("Thinking", "Pensando"), hsla(0., 0., 1., 0.45)),
+            Phase::Listening => ("Listening", theme::accent().opacity(0.8)),
+            Phase::Working => ("Thinking", hsla(0., 0., 1., 0.45)),
             _ => ("Arakun", hsla(0., 0., 1., 0.6)),
         };
         let head = div()
@@ -2575,17 +2567,14 @@ fn avatar(alert: &Alert) -> impl IntoElement {
 }
 
 /// A card's buttons, left to right, and whether each is the action. The
-/// action stays on the right, where "Aprobar" has always been: swapping it
-/// with "Rechazar" would turn a habit into the wrong answer. On hover the row
-/// sits at the card's right edge, so "Ver" lands under the thumb too.
+/// action stays on the right, where "Approve" has always been: swapping it
+/// with "Deny" would turn a habit into the wrong answer. On hover the row
+/// sits at the card's right edge, so "View" lands under the thumb too.
 fn card_buttons(confirm: bool) -> [(&'static str, bool); 2] {
     if confirm {
-        [
-            (say("Deny", "Rechazar"), false),
-            (say("Approve", "Aprobar"), true),
-        ]
+        [("Deny", false), ("Approve", true)]
     } else {
-        [(say("Later", "Luego"), false), (say("View", "Ver"), true)]
+        [("Later", false), ("View", true)]
     }
 }
 
@@ -3204,14 +3193,11 @@ mod tests {
     fn approve_stays_right_of_reject() {
         assert_eq!(
             super::card_buttons(true),
-            [
-                (say("Deny", "Rechazar"), false),
-                (say("Approve", "Aprobar"), true)
-            ]
+            [("Deny", false), ("Approve", true)]
         );
         assert_eq!(
             super::card_buttons(false),
-            [(say("Later", "Luego"), false), (say("View", "Ver"), true)]
+            [("Later", false), ("View", true)]
         );
     }
 

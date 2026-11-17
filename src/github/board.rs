@@ -257,8 +257,8 @@ impl BoardPr {
             .unwrap_or_default()
     }
 
-    /// The decision, when it can be answered: an item and at least one
-    /// option with its own words. A bare question has no buttons.
+    /// The decision, when it can be answered: an item and a question. Its
+    /// options may be missing; the user can always answer in their own words.
     pub fn open_decision(&self) -> Option<&Decision> {
         self.decision
             .as_ref()

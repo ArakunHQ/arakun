@@ -640,7 +640,29 @@ impl GitHubView {
                     },
                 ));
             }
+            // None of the ready answers may fit: the user's own words go too.
+            let writing = self.pilot_other.as_deref() == Some(id.as_str());
+            if !d.opciones.is_empty() && !writing {
+                let oid = id.clone();
+                buttons = buttons.child(
+                    ui::key_pill(
+                        "gh-decision-other",
+                        None,
+                        "Otra respuesta…",
+                        None,
+                        PillKind::Quiet,
+                        !sending,
+                    )
+                    .when(!sending, |b| {
+                        b.on_click(cx.listener(move |this, _, window, cx| {
+                            this.pilot_open_other(&oid, window, cx)
+                        }))
+                    }),
+                );
+            }
         }
+        let text_row = sent.is_none()
+            && (d.opciones.is_empty() || self.pilot_other.as_deref() == Some(id.as_str()));
         div()
             .flex()
             .flex_col()
@@ -667,11 +689,11 @@ impl GitHubView {
                             .child(d.pregunta.trim().to_string()),
                     ),
             )
-            .when(d.opciones.is_empty() && sent.is_none(), |el| {
-                el.child(self.decision_text_row(&id, sending, cx))
-            })
             .when(!d.opciones.is_empty() && sent.is_none(), |el| {
                 el.child(buttons)
+            })
+            .when(text_row, |el| {
+                el.child(self.decision_text_row(&id, sending, cx))
             })
             .when(sending, |el| {
                 el.child(
@@ -723,8 +745,8 @@ impl GitHubView {
             .into_any_element()
     }
 
-    /// A question without ready answers: the user's own words go to pilot,
-    /// not to the pull request's comments.
+    /// The user's own words for pilot's question, with or without ready
+    /// answers: they go to pilot, not to the pull request's comments.
     fn decision_text_row(&self, id: &str, sending: bool, cx: &mut Context<Self>) -> AnyElement {
         let row = div()
             .id("gh-decision-text")

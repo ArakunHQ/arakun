@@ -171,8 +171,9 @@ terminal-only. The status line and keybindings from your settings don't apply in
   The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
   and `[::1]`, so the tokens never cross a network unencrypted. The board fills the
   Bandeja; the queue's rows pilot doesn't follow fold under "Más en GitHub". When pilot
-  asks you something, the sheet shows the question with one button per answer, or
-  "Responder…" for your own words (`POST <url>/items/<id>/answer`), and the notice in
+  asks you something, the sheet shows the question with one button per answer and
+  "Otra respuesta…" for your own words ("Responder…" when there are no ready answers;
+  `POST <url>/items/<id>/answer`), and the notice in
   the island opens that sheet over whatever window is in front (Esc gives it back).
   Without a board, the notice opens the pull request's sheet, which doesn't show the
   question: answer it on pilot's card in the Bandeja. On your own pull requests, "Pedirle a pilot" in the sheet sends what you

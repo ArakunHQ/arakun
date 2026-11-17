@@ -13,6 +13,9 @@
 set -eu
 
 repo=arakunhq/arakun
+# The minisign keys SHA256SUMS may be signed with: the one release.yml uses
+# (assets/release-key.pub), and an offline backup (assets/release-key-backup.pub).
+release_keys="RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg"
 
 say() { printf 'arakun: %s\n' "$*"; }
 die() {
@@ -34,6 +37,54 @@ latest_tag() {
 # The checksum SHA256SUMS ($2) lists for the file $1, or nothing.
 listed() {
   awk -v f="$1" '$2 == f || $2 == "*" f { print $1 }' "$2"
+}
+
+# Whether release $1 has a signed SHA256SUMS: every release after v0.3.0 does.
+signed_release() {
+  printf '%s\n' "$1" | awk -F. '{
+    sub(/^v/, ""); sub(/-.*/, "")
+    exit !($1 > 0 || $2 > 3 || ($2 == 3 && $3 > 0))
+  }'
+}
+
+# Checks SHA256SUMS ($1) against its signature ($2) by one of the release
+# keys, with minisign, or with OpenSSL 3 where minisign is missing, using the
+# directory $3 for its files. Returns 2 when there is neither, and 1 for any
+# other failure. Never pass a tool's own status through: minisign exits 2 on an
+# empty or broken signature, which would read as "no verifier" and install.
+verify_sums() {
+  if command -v minisign >/dev/null; then
+    tool=minisign
+  else
+    case $(openssl version 2>/dev/null) in
+      "OpenSSL "[3-9]*) tool=openssl ;;
+      *) return 2 ;;
+    esac
+  fi
+  for key in $release_keys; do
+    "verify_with_$tool" "$key" "$@" && return 0
+  done
+  return 1
+}
+
+# verify_with_minisign KEY SUMS SIG
+verify_with_minisign() {
+  minisign -V -q -P "$1" -m "$2" -x "$3" >/dev/null 2>&1
+}
+
+# verify_with_openssl KEY SUMS SIG DIR. It checks the signature of the file,
+# not the one of the trusted comment, which nothing here reads.
+verify_with_openssl() {
+  # The key is "Ed", an 8-byte key id and the 32-byte Ed25519 key; the
+  # signature is "ED", the key id and a 64-byte signature of the file's
+  # BLAKE2b-512. OpenSSL reads the key as DER: a fixed 12-byte prefix, then it.
+  printf '%s\n' "$1" | openssl base64 -d -A >"$4/key.bin" &&
+    sed -n 2p "$3" | openssl base64 -d -A >"$4/sig.bin" &&
+    { printf '\060\052\060\005\006\003\053\145\160\003\041\000' && tail -c 32 "$4/key.bin"; } >"$4/key.der" &&
+    tail -c 64 "$4/sig.bin" >"$4/ed25519.sig" &&
+    openssl dgst -blake2b512 -binary "$2" >"$4/blake2b" &&
+    openssl pkeyutl -verify -pubin -keyform DER -inkey "$4/key.der" -rawin \
+      -in "$4/blake2b" -sigfile "$4/ed25519.sig" >/dev/null 2>&1
 }
 
 sha256() {
@@ -107,6 +158,10 @@ main() {
     *) die "$os has no release build" ;;
   esac
 
+  # A version the user asked for may be one from before signing; the latest
+  # must be signed, or whoever can edit releases could mark an unsigned one
+  # as latest.
+  pinned=$version
   if [ -z "$version" ]; then
     version=$(latest_tag)
   else
@@ -124,6 +179,23 @@ main() {
   # First, since it says which files the release has.
   curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" ||
     die "could not download $base/SHA256SUMS (is there a release $version?)"
+  # Before any checksum in it is trusted.
+  if [ -z "$pinned" ] && ! signed_release "$version"; then
+    die "the latest release, $version, is not signed; to install it anyway, run this again with --version $version"
+  fi
+  if signed_release "$version"; then
+    curl -fsSL -o "$tmp/SHA256SUMS.minisig" "$base/SHA256SUMS.minisig" ||
+      die "could not download $base/SHA256SUMS.minisig, which every release after v0.3.0 has"
+    mkdir "$tmp/sig"
+    verify_sums "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.minisig" "$tmp/sig" && signature=0 || signature=$?
+    case $signature in
+      0) say "SHA256SUMS is signed with Arakun's release key" ;;
+      2) say "warning: the signature of SHA256SUMS was not checked; install minisign or OpenSSL 3 to check it" ;;
+      *) die "SHA256SUMS is not signed with Arakun's release key; nothing was installed" ;;
+    esac
+  else
+    say "$version is from before releases were signed; only its checksums are checked"
+  fi
   want=$(listed "$file" "$tmp/SHA256SUMS")
   # v0.2.1 has the macOS app in a tar.gz and no disk image.
   if [ -z "$want" ] && [ "$ext" = dmg ]; then

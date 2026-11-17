@@ -318,7 +318,8 @@ irm https://arakun.dev/install.ps1 | iex
 
 The scripts ([tools/install-release.sh](tools/install-release.sh) and
 [tools/install-release.ps1](tools/install-release.ps1)) download the latest release,
-check it against `SHA256SUMS`, and install it for your user:
+check it against `SHA256SUMS` (and its signature, when a verifier is installed; see
+[Updates](#updates)), and install it for your user:
 
 | Platform | Installs to | Uninstall |
 |---|---|---|
@@ -334,9 +335,9 @@ macOS build; on macOS, install a later version.
 ### Updates
 
 A release build keeps itself up to date. Every 6 hours it asks GitHub for the latest
-release. When there is a newer one, it downloads it, checks it against `SHA256SUMS`, and
-puts it next to the installed app. The update is installed when you quit Arakun, so the
-next start runs it. Settings › General › Updates shows the version, has **Check now**,
+release. When there is a newer one, it downloads it, checks it against the release's
+signed `SHA256SUMS`, and puts it next to the installed app. The update is installed when
+you quit Arakun, so the next start runs it. Settings › General › Updates shows the version, has **Check now**,
 and on Linux and macOS **Restart now**. Turn **Update automatically** off there to stop
 the checks; `ARAKUN_UPDATES=0` turns them off for one run.
 
@@ -365,17 +366,37 @@ browser. A release with another version of CEF is not installed by the updater, 
 Windows keeps a running browser's files locked; it says so, and the install script
 installs it once Arakun is closed.
 
-What is checked: the download matches the checksum in the release's `SHA256SUMS`, and
-the new binary starts and says the version it should. This catches a broken or cut-short
-download. It does not prove who made the release, since `SHA256SUMS` comes from the same
-place. The install scripts trust the same thing. To check where a release came from, use
-`gh attestation verify` (see [Manual download](#manual-download)).
+What is checked: `SHA256SUMS` is signed with Arakun's release key, the download matches
+the checksum in it, and the new binary starts and says the version it should. The
+signature shows the release was made by someone who holds that key, which only the
+release workflow can use: someone who can change a release on GitHub but has no key
+can't make the updater install anything. A missing or bad signature stops the update.
+The public key is built into Arakun and is
+[assets/release-key.pub](assets/release-key.pub). A second key, kept offline, is
+accepted too ([assets/release-key-backup.pub](assets/release-key-backup.pub)), so
+releases can still be signed if the first one is ever lost.
+
+The install scripts check the signature only when a verifier is installed: `minisign`,
+or on Linux and macOS also OpenSSL 3 (macOS ships LibreSSL, so there it usually takes
+`brew install minisign`). Without one they check only the checksum, and say so.
+Releases up to v0.3.0 are not signed. The scripts install one only when you ask for it
+with `--version` (`ARAKUN_VERSION` on Windows); an unsigned latest release is refused.
 
 ### Manual download
 
 Download the archive or disk image for your platform from
 [GitHub Releases](https://github.com/arakunhq/arakun/releases) and check it against
-`SHA256SUMS`. Release builds are built without the browser feature.
+`SHA256SUMS`. Release builds are built without the browser feature. To check that
+`SHA256SUMS` is signed with Arakun's release key (releases after v0.3.0), download
+`SHA256SUMS.minisig` next to it and run
+[minisign](https://jedisct1.github.io/minisign/):
+
+```sh
+minisign -Vm SHA256SUMS -P RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn
+```
+
+If a release says it is signed with the backup key, check it with that one instead:
+`-P RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg`.
 
 Each download also has a build provenance attestation. It shows that this repository's
 release workflow built it, and from which commit. Check it with the

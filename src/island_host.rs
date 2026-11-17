@@ -226,6 +226,8 @@ mod host {
     const WATCH_EVERY: Duration = Duration::from_secs(1);
     /// A click starts the app at most this often, while it comes up.
     const LAUNCH_EVERY: Duration = Duration::from_secs(10);
+    /// How long after `Quit` the host goes: time for the reply to leave first.
+    const QUIT_AFTER: Duration = Duration::from_millis(100);
     /// A second click on the shape a button just shrank is not one on the resting island.
     const AFTER_BUTTON: Duration = Duration::from_secs(1);
 
@@ -624,6 +626,17 @@ mod host {
 
         /// What any source asks of the island.
         pub(super) fn apply(&mut self, msg: ToIsland, cx: &mut Context<Self>) -> Reply {
+            if msg == ToIsland::Quit {
+                eprintln!("arakun: island: asked to quit");
+                cx.spawn(async move |_, cx| {
+                    cx.background_executor().timer(QUIT_AFTER).await;
+                    // macOS ends the process inside `quit`, before `main` gets to it.
+                    let _ = std::fs::remove_file(proto::socket_path());
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+                return Reply::ok("");
+            }
             #[cfg(feature = "coderlabs")]
             match &msg {
                 ToIsland::Voice { on } => return self.voice(*on, cx),
@@ -668,6 +681,8 @@ mod host {
                     }
                     Reply::ok("")
                 }
+                // Handled above, before the island is asked.
+                ToIsland::Quit => Reply::ok(""),
                 ToIsland::State => Reply::ok(format!("{:?}", island.phase()).to_lowercase()),
                 ToIsland::Fps => Reply::ok(island.fps_report()),
                 #[cfg(feature = "coderlabs")]

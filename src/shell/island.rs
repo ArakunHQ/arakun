@@ -148,6 +148,27 @@ fn send_alert(
     up.load(Ordering::Relaxed) && tx.send(ToIsland::Alert { alert }).is_ok()
 }
 
+/// What the island is told when this app lets go of it: to quit, when the
+/// setting was turned off while the app was linked to it. The host is a
+/// process of its own with no window to close and no Dock icon, so otherwise
+/// it would stay on screen. Not when the app never linked to it (a start with
+/// the setting already off): that island was started by someone else.
+fn farewell(linked: bool, enabled: bool) -> Option<ToIsland> {
+    (linked && !enabled).then_some(ToIsland::Quit)
+}
+
+/// One request to the island, off this thread: it waits for the answer.
+fn tell_once(msg: ToIsland) {
+    #[cfg(unix)]
+    std::thread::spawn(move || {
+        if let Err(e) = crate::island_host::proto::request(&msg) {
+            eprintln!("arakun: island: {e}");
+        }
+    });
+    #[cfg(not(unix))]
+    let _ = msg;
+}
+
 /// `feed`, unless the island already shows it.
 fn changed(sent: &mut Option<isl::Feed>, feed: isl::Feed) -> Option<isl::Feed> {
     if sent.as_ref() == Some(&feed) {
@@ -166,6 +187,9 @@ impl Shell {
                 log_once(
                     "arakun: no Dynamic Island: it needs macOS, or Linux on Wayland with layer-shell",
                 );
+            }
+            if let Some(msg) = farewell(self.island.is_some(), crate::island::enabled()) {
+                tell_once(msg);
             }
             self.island = None;
             return;
@@ -639,6 +663,14 @@ mod tests {
             Some("Listo: qkv m32 −0.4 µs")
         );
         assert_eq!(last_reply(&[agent("viejo"), user()]), None);
+    }
+
+    #[test]
+    fn turning_the_island_off_tells_it_to_quit() {
+        assert_eq!(farewell(true, false), Some(ToIsland::Quit));
+        // Still on (the platform has no island), or never linked to one.
+        assert_eq!(farewell(true, true), None);
+        assert_eq!(farewell(false, false), None);
     }
 
     #[test]

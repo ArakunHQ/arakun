@@ -161,8 +161,9 @@ it shows in `github/avatars/` (each downloaded again after a week).
   card when one finishes, fails or needs an answer. It runs as its own process
   (`arakun island-host`). On Linux it needs a compositor with the wlr-layer-shell
   protocol. On a MacBook it grows out of the notch, or out of the screen's own Dynamic
-  Island on the models that have one, and sits on the built-in screen; on a Mac without
-  either it hangs from the top of the main screen. If it reads the cutout wrong, set
+  Island on the models that have one, and sits on the built-in screen. On a Mac without
+  either it hangs from the top of the main screen. Turning it off in Settings ends that
+  process. If it reads the cutout wrong, set
   `ARAKUN_ISLAND_EDGE` to `flat`, `notch:<width>x<height>` or
   `pill:<width>x<height>+<gap to the top>`, in points. It speaks English on macOS and
   Spanish on Linux for now.

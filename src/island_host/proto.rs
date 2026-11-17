@@ -41,6 +41,9 @@ pub enum ToIsland {
     State,
     /// Frames painted in the last two seconds.
     Fps,
+    /// Ends the island's process: the app sends it when the island is turned
+    /// off in Settings, since the host outlives the app and has no window to close.
+    Quit,
     /// Starts or ends a voice call; `None` flips it.
     #[cfg(feature = "coderlabs")]
     Voice {
@@ -230,6 +233,7 @@ mod tests {
             },
             ToIsland::State,
             ToIsland::Fps,
+            ToIsland::Quit,
         ];
         for msg in all {
             let line = encode(&msg);

@@ -564,10 +564,11 @@ impl ExtensionsView {
             Market::Registry => self.ms.registry_error.clone(),
         };
         let query = self.query.read(cx).text().trim().to_string();
-        // The most installed, larger, when there is room for two side by side
-        // and nothing narrows the list.
+        // The most installed, larger, when there is room for two side by side,
+        // nothing narrows the list, and it is sorted by installs.
         let featured = if self.market == Market::Plugins
             && per >= 2
+            && self.ms.sort == Sort::Popular
             && self.ms.category.is_none()
             && query.is_empty()
             && items.len() > per
@@ -579,6 +580,8 @@ impl ExtensionsView {
         let top = self.render_notes().is_some() || self.needy().next().is_some();
 
         let main: AnyElement = if loading || items.is_empty() {
+            // No list now: the next one starts over, even for the same search.
+            forget_rows(&mut self.ms.rows_for.borrow_mut());
             let state: AnyElement = if loading {
                 match error.clone() {
                     Some(e) => note(e, Tone::Danger).into_any_element(),
@@ -996,6 +999,11 @@ impl ExtensionsView {
             kind,
             self.op.is_none(),
         )
+        // A plugin goes on in every project, as the details say; a server
+        // asks how in the details first.
+        .when(matches!(item, Item::Plugin(_)), |b| {
+            b.tooltip(ui::tip("Install for every project"))
+        })
         .on_click(cx.listener(move |this, _, window, cx| {
             // The card under the button opens the details; Install alone installs.
             cx.stop_propagation();
@@ -1537,6 +1545,11 @@ fn sync_rows(
     *last = Some((key, total, top));
 }
 
+/// Drops what the rows were laid out for, so the next `sync_rows` resets.
+fn forget_rows(last: &mut Option<(RowsKey, usize, bool)>) {
+    *last = None;
+}
+
 /// Discover's list, its rows of different heights laid out only when in view.
 pub(super) struct Rows(pub(super) ListState);
 
@@ -2019,6 +2032,16 @@ mod tests {
         sync_rows(&list, &mut last, key(""), 15, true);
         assert_eq!(list.item_count(), 15);
         assert_eq!(list.logical_scroll_top().item_ix, 6);
+    }
+
+    #[test]
+    fn a_search_back_from_no_results_starts_at_the_top() {
+        // Scrolled down, a search with no matches draws no list, then the
+        // first words come back: same key, but not the old place.
+        let (list, mut last) = scrolled(10, false, 6);
+        forget_rows(&mut last);
+        sync_rows(&list, &mut last, key(""), 10, false);
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
     }
 
     #[test]

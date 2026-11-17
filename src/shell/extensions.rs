@@ -1,4 +1,4 @@
-//! The Extensions tab: opening it on the visible environment and what its
+//! The Marketplace tab: opening it on the visible environment and what its
 //! buttons do in the window (terminals, files beside the chat).
 
 use gpui::{Context, Window};
@@ -7,7 +7,7 @@ use super::*;
 use crate::extensions_view::ExtensionsEvent;
 
 impl Shell {
-    /// Opens (or focuses) the Extensions tab of the visible environment.
+    /// Opens (or focuses) the Marketplace tab of the visible environment.
     pub(super) fn open_extensions_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.env_menu_open = false;
@@ -15,7 +15,7 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        self.show_view_tab("Extensions", TabKind::Extensions, |k| {
+        self.show_view_tab("Marketplace", TabKind::Extensions, |k| {
             matches!(k, TabKind::Extensions)
         });
         self.note_active_tab();

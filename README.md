@@ -183,7 +183,8 @@ it shows in `github/avatars/` (each downloaded again after a week).
   key is only sent to the proxy it was added for, over https or to this machine. It is
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
   in `cliproxy-plan.json` next to it.
-- **Extensions.** MCP servers, plugins, skills and permission rules of the agents.
+- **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
+  and permission rules the agents load now.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours

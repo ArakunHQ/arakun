@@ -1234,10 +1234,10 @@ impl Shell {
         );
         add(
             "extensions",
-            "sparkles",
-            "Extensions: plugins, skills & MCP",
+            "store01",
+            "Marketplace: plugins, skills & MCP",
             &[],
-            "What the agents can use besides the code.",
+            "Plugins and MCP servers to add, and what the agents load now.",
             Target::Extensions,
         );
         if self.has_projects() {

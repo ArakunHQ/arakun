@@ -1,13 +1,12 @@
-//! The Marketplace: Claude Code plugins its marketplaces offer, and the
-//! official MCP Registry with an install form for what a server needs.
+//! Discover, the store half of the Marketplace tab: Claude Code plugins its
+//! marketplaces offer, and the official MCP Registry with an install form for
+//! what a server needs.
 
 use std::collections::HashMap;
 
 use std::rc::Rc;
 
-use gpui::{
-    Hsla, ScrollStrategy, UniformListScrollHandle, linear_color_stop, linear_gradient, uniform_list,
-};
+use gpui::{Hsla, ListAlignment, ListOffset, ListState, list};
 
 use super::*;
 use crate::agent::marketplace::{self, Input, Install, PluginEntry, RegistryServer};
@@ -51,7 +50,9 @@ pub(super) struct MarketState {
     /// The plugin id or server name whose details show on the right.
     pub(super) selected: Option<String>,
     pub(super) sort: Sort,
-    pub(super) scroll: UniformListScrollHandle,
+    pub(super) rows: Rows,
+    /// What the rows were laid out for, and how many there were.
+    rows_for: std::cell::RefCell<Option<(RowsKey, usize)>>,
     pub(super) last_width: std::cell::Cell<f32>,
     pub(super) check_pending: std::cell::Cell<bool>,
 }
@@ -367,12 +368,8 @@ impl ExtensionsView {
     /// at `MIN_CARD` each. Before the first layout it guesses, and looks again next frame.
     fn market_columns(&self, cx: &mut Context<Self>) -> usize {
         let read = |this: &Self| {
-            this.ms
-                .scroll
-                .0
-                .borrow()
-                .last_item_size
-                .map_or(0., |s| s.item.width.as_f32())
+            this.ms.rows.0.viewport_bounds().size.width.as_f32()
+                - 2. * f32::from(crate::ui::sp(ui::PAGE_PAD))
         };
         let width = read(self);
         self.ms.last_width.set(width);
@@ -436,6 +433,119 @@ impl ExtensionsView {
         cx.notify();
     }
 
+    /// How many plugins or servers Discover has for `m`, as the scope shows them.
+    pub(super) fn discover_count(&self, m: Market) -> Option<usize> {
+        match m {
+            Market::Plugins => self.ms.catalog.as_ref().map(|c| {
+                c.iter()
+                    .filter(|p| self.ms.everything || p.official)
+                    .count()
+            }),
+            Market::Registry if self.ms.everything => self.ms.registry.as_ref().map(Vec::len),
+            Market::Registry => self.ms.official.as_ref().map(Vec::len),
+        }
+    }
+
+    /// Opens Discover on plugins or on MCP servers.
+    pub(super) fn show_market(&mut self, m: Market, cx: &mut Context<Self>) {
+        self.set_kind(Kind::Marketplace, cx);
+        self.market = m;
+        self.ms.category = None;
+        self.ms.selected = None;
+        self.ms.installing = None;
+        self.ms.sort = Sort::Popular;
+        self.ms.rows.top();
+        self.open_market(cx);
+        if m == Market::Registry && self.ms.everything {
+            self.search_registry(false, cx);
+        }
+        cx.notify();
+    }
+
+    /// Discover's categories for plugins, or the companies of official servers,
+    /// for the left column.
+    pub(super) fn render_market_filters(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let mut groups: Vec<(String, usize)> = Vec::new();
+        let mut add = |g: &str| match groups.iter_mut().find(|(n, _)| n == g) {
+            Some((_, n)) => *n += 1,
+            None => groups.push((g.to_string(), 1)),
+        };
+        let heading = match self.market {
+            Market::Plugins => {
+                for p in self
+                    .ms
+                    .catalog
+                    .iter()
+                    .flatten()
+                    .filter(|p| self.ms.everything || p.official)
+                {
+                    if let Some(c) = &p.category {
+                        add(c);
+                    }
+                }
+                "Categories"
+            }
+            Market::Registry if !self.ms.everything => {
+                for s in self.ms.official.iter().flatten() {
+                    if let Some(c) = &s.official {
+                        add(c);
+                    }
+                }
+                "Companies"
+            }
+            Market::Registry => return None,
+        };
+        if groups.is_empty() {
+            return None;
+        }
+        groups.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let total = self.discover_count(self.market).unwrap_or(0);
+        let mut out = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(crate::ui::sp(2.))
+            .child(nav_heading(heading, true))
+            .child(
+                nav_row(
+                    "ext-cat-all",
+                    "dashboard-square01",
+                    "All",
+                    Some(total),
+                    self.ms.category.is_none(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.ms.category = None;
+                    this.ms.rows.top();
+                    cx.notify();
+                })),
+            );
+        for (i, (g, n)) in groups.into_iter().enumerate() {
+            let on = self.ms.category.as_ref() == Some(&g);
+            let row = match self.market {
+                Market::Plugins => nav_dot_row(
+                    ("ext-cat", i),
+                    rgb(category_color(&g)).into(),
+                    capitalize(&g),
+                    n,
+                    on,
+                ),
+                Market::Registry => {
+                    nav_mark_row(("ext-cat", i), logos::mark(&g, ""), g.clone(), n, on)
+                }
+            };
+            out = out.child(row.on_click(cx.listener(move |this, _, _, cx| {
+                this.ms.category = Some(g.clone());
+                this.ms.rows.top();
+                cx.notify();
+            })));
+        }
+        Some(out)
+    }
+
+    /// Discover: what needs you, the featured strip, the heading with its
+    /// filters, then a virtual list of card lines (only the visible ones are
+    /// laid out, however many there are), and the picked item on the right.
     pub(super) fn render_market(&self, cx: &mut Context<Self>) -> Div {
         let items = Rc::new(self.market_items(cx));
         let detail = self.render_detail(cx);
@@ -448,78 +558,342 @@ impl ExtensionsView {
             Market::Registry if self.ms.everything => self.ms.registry.is_none(),
             Market::Registry => self.ms.official.is_none(),
         };
-        let busy = match self.market {
-            Market::Plugins => self.ms.catalog_loading,
-            Market::Registry if self.ms.everything => self.ms.registry_loading,
-            Market::Registry => self.ms.official_loading,
-        };
         let error = match self.market {
             Market::Plugins => self.ms.catalog_error.clone(),
             Market::Registry => self.ms.registry_error.clone(),
         };
-        let featured = self.market == Market::Plugins
-            && per >= 3
+        let query = self.query.read(cx).text().trim().to_string();
+        // The most installed, larger, when there is room for two side by side
+        // and nothing narrows the list.
+        let featured = if self.market == Market::Plugins
+            && per >= 2
             && self.ms.category.is_none()
-            && self.query.read(cx).text().trim().is_empty()
-            && !items.is_empty();
-
-        let list: AnyElement = if loading {
-            match error.clone() {
-                Some(e) => div()
-                    .p(crate::ui::sp(16.))
-                    .child(note(e, Tone::Danger))
-                    .into_any_element(),
-                None => ui::loading(
-                    "ext-market-loading",
-                    match self.market {
-                        Market::Plugins => "Reading the plugin marketplaces…",
-                        Market::Registry if self.ms.everything => "Asking the MCP Registry…",
-                        Market::Registry => "Gathering what each company publishes…",
-                    },
-                )
-                .into_any_element(),
-            }
-        } else if items.is_empty() {
-            ui::empty_state(
-                "search01",
-                "Nothing matches",
-                match self.market {
-                    Market::Registry if self.ms.everything => {
-                        "It searches server names: try a product name like github or postgres."
-                    }
-                    _ => "Try other words, another category, or All instead of Official.",
-                },
-                None,
-            )
-            .into_any_element()
+            && query.is_empty()
+            && items.len() > per
+        {
+            per.min(3)
         } else {
-            let list_items = items.clone();
-            let skip = if featured { 3 } else { 0 };
-            let total = rows_with(items.len(), skip, per, featured, more);
-            uniform_list(
-                "ext-market-list",
-                total,
-                cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .map(|row| {
-                            this.render_market_row(row, &list_items, per, featured, more, cx)
-                        })
-                        .collect::<Vec<_>>()
+            0
+        };
+        let top = self.render_notes().is_some() || self.needy().next().is_some();
+
+        let main: AnyElement = if loading || items.is_empty() {
+            let state: AnyElement = if loading {
+                match error.clone() {
+                    Some(e) => note(e, Tone::Danger).into_any_element(),
+                    None => ui::loading(
+                        "ext-market-loading",
+                        match self.market {
+                            Market::Plugins => "Reading the plugin marketplaces…",
+                            Market::Registry if self.ms.everything => "Asking the MCP Registry…",
+                            Market::Registry => "Gathering what each company publishes…",
+                        },
+                    )
+                    .into_any_element(),
+                }
+            } else {
+                ui::empty_state(
+                    "search01",
+                    "Nothing matches",
+                    match self.market {
+                        Market::Registry if self.ms.everything => {
+                            "It searches server names: try a product name like github or postgres."
+                        }
+                        _ => "Try other words, another category, or All instead of Official.",
+                    },
+                    None,
+                )
+                .into_any_element()
+            };
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .children(top.then(|| self.render_top(cx)))
+                .child(self.render_head(items.len(), loading, cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .px(crate::ui::sp(ui::PAGE_PAD))
+                        .child(state),
+                )
+                .into_any_element()
+        } else {
+            let mut rows = Vec::new();
+            if top {
+                rows.push(Row::Top);
+            }
+            if featured > 0 {
+                rows.push(Row::Featured);
+            }
+            rows.push(Row::Head);
+            let mut start = featured;
+            while start < items.len() {
+                rows.push(Row::Line(start));
+                start += per;
+            }
+            if more {
+                rows.push(Row::More);
+            }
+            self.sync_rows(
+                RowsKey {
+                    plugins: self.market == Market::Plugins,
+                    category: self.ms.category.clone(),
+                    everything: self.ms.everything,
+                    by_name: self.ms.sort == Sort::Name,
+                    query,
+                    per,
+                    featured,
+                    top,
+                },
+                rows.len(),
+            );
+            let rows = Rc::new(rows);
+            list(
+                self.ms.rows.0.clone(),
+                cx.processor(move |this, ix: usize, _, cx| match rows.get(ix) {
+                    Some(row) => this.render_market_row(*row, &items, per, featured, cx),
+                    None => div().into_any_element(),
                 }),
             )
-            .track_scroll(&self.ms.scroll)
             .flex_1()
             .min_h_0()
             .into_any_element()
         };
 
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(main),
+            )
+            .children(detail)
+    }
+
+    /// Keeps the list's rows in step: a new filter starts over at the top, and
+    /// "Load more" only adds lines below.
+    fn sync_rows(&self, key: RowsKey, total: usize) {
+        let mut last = self.ms.rows_for.borrow_mut();
+        match last.as_ref() {
+            Some((k, n)) if *k == key && *n == total => {}
+            Some((k, n)) if *k == key => {
+                let keep = (*n).min(total).saturating_sub(1);
+                self.ms.rows.0.splice(keep..*n, total - keep);
+            }
+            _ => self.ms.rows.0.reset(total),
+        }
+        *last = Some((key, total));
+    }
+
+    fn render_market_row(
+        &mut self,
+        row: Row,
+        items: &[Item],
+        per: usize,
+        featured: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match row {
+            Row::Top => self.render_top(cx).into_any_element(),
+            Row::Featured => {
+                let mut line = div().flex().w_full().gap(crate::ui::sp(GAP));
+                for item in items.iter().take(featured) {
+                    line = line.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.featured_card(item, cx)),
+                    );
+                }
+                div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .gap(crate::ui::sp(12.))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .pt(crate::ui::sp(20.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .ty(Type::Heading)
+                                    .text_color(theme::text())
+                                    .child("Featured"),
+                            )
+                            .child(
+                                div()
+                                    .ty(Type::Caption)
+                                    .text_color(theme::text_faint())
+                                    .child("Most installed"),
+                            ),
+                    )
+                    .child(line)
+                    .into_any_element()
+            }
+            Row::Head => self.render_head(items.len(), false, cx).into_any_element(),
+            Row::Line(start) => {
+                let mut line = div()
+                    .flex()
+                    .w_full()
+                    .gap(crate::ui::sp(GAP))
+                    .h(px(ROW_H))
+                    .px(crate::ui::sp(ui::PAGE_PAD))
+                    .pb(crate::ui::sp(GAP));
+                for item in items.iter().skip(start).take(per) {
+                    line = line.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.item_card(item, cx)),
+                    );
+                }
+                for _ in items.len().saturating_sub(start).min(per)..per {
+                    line = line.child(div().flex_1());
+                }
+                line.into_any_element()
+            }
+            Row::More => div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(px(ROW_H))
+                .child(if self.ms.registry_loading {
+                    ui::spinner("ext-registry-more-busy", 14., theme::text_faint())
+                        .into_any_element()
+                } else {
+                    ui::button("ext-registry-more", "Load more", ButtonKind::Outline, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.search_registry(true, cx)))
+                        .into_any_element()
+                })
+                .into_any_element(),
+        }
+    }
+
+    /// Claude Code's MCP servers that need you, as last read.
+    fn needy(&self) -> impl Iterator<Item = &Server> {
+        self.claude.iter().flat_map(|x| {
+            x.servers.iter().filter(|s| {
+                matches!(s.health, Health::Failed(_))
+                    || (s.health == Health::NeedsAuth && !s.unused_connector())
+            })
+        })
+    }
+
+    /// Above the store: the last error or notice, and a server that needs you.
+    fn render_top(&self, cx: &mut Context<Self>) -> Div {
+        let mut needy = self.needy();
+        let first = needy.next();
+        let others = needy.count();
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(ui::PAGE_PAD))
+            .pt(crate::ui::sp(16.))
+            .children(self.render_notes())
+            .when_some(first, |d, s| {
+                let warn = Tone::Warning.color();
+                let name = display_name(&s.name);
+                let mut what = match s.health {
+                    Health::NeedsAuth => format!("{name} needs you to sign in"),
+                    Health::Failed(_) => format!("{name} is failing"),
+                    _ => format!("{name}: {}", health_label(&s.health)),
+                };
+                if others > 0 {
+                    what.push_str(&format!(", and {} more", plural(others, "server")));
+                }
+                d.child(
+                    div()
+                        .id("ext-needs-you")
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(10.))
+                        .px(crate::ui::sp(12.))
+                        .py(crate::ui::sp(9.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
+                        .bg(warn.opacity(0.10))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(warn.opacity(0.16)))
+                        .ty(Type::Body)
+                        .child(icon("alert-circle", 14.).text_color(warn))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme::text())
+                                .child(what),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme::text_subtle())
+                                .child("Open in Installed"),
+                        )
+                        .child(icon("arrow-right01", 12.).text_color(theme::text_subtle()))
+                        .on_click(cx.listener(|this, _, _, cx| this.set_kind(Kind::Servers, cx))),
+                )
+            })
+    }
+
+    /// The list's heading: what it shows and how many, Official or All, and the sort.
+    fn render_head(&self, n: usize, loading: bool, cx: &mut Context<Self>) -> Div {
+        let busy = !loading
+            && match self.market {
+                Market::Plugins => self.ms.catalog_loading,
+                Market::Registry if self.ms.everything => self.ms.registry_loading,
+                Market::Registry => self.ms.official_loading,
+            };
+        let error = match self.market {
+            Market::Plugins => self.ms.catalog_error.clone(),
+            Market::Registry => self.ms.registry_error.clone(),
+        };
         let title = match (self.market, &self.ms.category) {
-            (_, Some(c)) => capitalize(c),
+            (_, Some(c)) if self.market == Market::Plugins => capitalize(c),
+            (_, Some(c)) => c.clone(),
             (Market::Plugins, None) if self.ms.everything => "All plugins".to_string(),
             (Market::Plugins, None) => "Official plugins".to_string(),
             (Market::Registry, None) if self.ms.everything => "MCP Registry".to_string(),
             (Market::Registry, None) => "Official MCP servers".to_string(),
         };
+        let mut scope = ui::segmented();
+        for (i, (everything, label)) in [(false, "Official"), (true, "All")].into_iter().enumerate()
+        {
+            scope = scope.child(
+                ui::segment(
+                    ("ext-scope", i),
+                    (!everything).then_some("checkmark-circle02"),
+                    label,
+                    self.ms.everything == everything,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.ms.everything = everything;
+                    this.ms.category = None;
+                    this.ms.rows.top();
+                    this.open_market(cx);
+                    cx.notify();
+                })),
+            );
+        }
         let mut sort = ui::segmented();
         for (i, (s, label)) in [
             (
@@ -539,337 +913,98 @@ impl ExtensionsView {
                 ui::segment(("ext-sort", i), None, label, self.ms.sort == s).on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.ms.sort = s;
-                        this.ms.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                        this.ms.rows.top();
                         cx.notify();
                     },
                 )),
             );
         }
-        let main = div()
+        div()
             .flex()
             .flex_col()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
+            .w_full()
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(ui::PAGE_PAD))
+            .pt(crate::ui::sp(24.))
+            .pb(crate::ui::sp(12.))
+            // Narrow (details open), the filters drop below the title.
             .child(
                 div()
                     .flex()
-                    .flex_none()
+                    .flex_wrap()
                     .items_center()
-                    .gap(crate::ui::sp(10.))
-                    .px(crate::ui::sp(20.))
-                    .pt(crate::ui::sp(16.))
-                    .pb(crate::ui::sp(12.))
+                    .gap(crate::ui::sp(8.))
                     .child(
                         div()
-                            .ty(Type::Subtitle)
+                            .flex_none()
+                            .ty(Type::Heading)
                             .text_color(theme::text())
                             .child(title),
                     )
-                    .child(
-                        div()
-                            .ty(Type::Label)
-                            .text_color(theme::text_faint())
-                            .child(items.len().to_string()),
-                    )
-                    .when(busy && !loading, |d| {
+                    .when(!loading, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .ty(Type::Label)
+                                .text_color(theme::text_faint())
+                                .child(n.to_string()),
+                        )
+                    })
+                    .when(busy, |d| {
                         d.child(ui::spinner("ext-market-busy", 13., theme::text_faint()))
                     })
                     .child(div().flex_1())
-                    .child(sort),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .gap(crate::ui::sp(8.))
+                            .child(scope)
+                            .child(sort),
+                    ),
             )
-            .when(error.is_some() && !loading, |d| {
-                d.child(
-                    div()
-                        .px(crate::ui::sp(20.))
-                        .pb(crate::ui::sp(8.))
-                        .child(note(error.clone().unwrap_or_default(), Tone::Danger)),
-                )
+            .when(!loading, |d| {
+                d.when_some(error, |d, e| d.child(note(e, Tone::Danger)))
             })
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .px(crate::ui::sp(20.))
-                    .child(list),
-            );
-
-        div()
-            .flex()
-            .flex_1()
-            .min_h_0()
-            .border_t_1()
-            .border_color(theme::border_subtle())
-            .child(self.render_market_sidebar(cx))
-            .child(main)
-            .children(detail)
     }
 
-    fn render_market_sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let official_plugins = self.ms.catalog.as_ref().map(|c| {
-            c.iter()
-                .filter(|p| self.ms.everything || p.official)
-                .count()
-        });
-        let official_servers = if self.ms.everything {
-            self.ms.registry.as_ref().map(Vec::len)
-        } else {
-            self.ms.official.as_ref().map(Vec::len)
-        };
-        let mut side = div()
-            .id("ext-market-side")
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(220.))
-            .h_full()
-            .overflow_y_scroll()
-            .gap(crate::ui::sp(2.))
-            .px(crate::ui::sp(12.))
-            .py(crate::ui::sp(16.))
-            .border_r_1()
-            .border_color(theme::border_subtle())
-            .child(
-                ui::overline("Source")
-                    .flex_none()
-                    .px(crate::ui::sp(8.))
-                    .pb(crate::ui::sp(4.)),
-            );
-        for (i, (m, label, icon_name, n)) in [
-            (Market::Plugins, "Claude plugins", "cube", official_plugins),
-            (Market::Registry, "MCP servers", "link01", official_servers),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            side = side.child(
-                nav_row(("ext-src", i), icon_name, label, n, self.market == m).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.market = m;
-                        this.ms.category = None;
-                        this.ms.selected = None;
-                        this.ms.installing = None;
-                        this.ms.sort = Sort::Popular;
-                        this.ms.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                        this.open_market(cx);
-                        if m == Market::Registry && this.ms.everything {
-                            this.search_registry(false, cx);
-                        }
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
-        let mut scope = ui::segmented().w_full();
-        for (i, (everything, label)) in [(false, "Official"), (true, "All")].into_iter().enumerate()
-        {
-            scope = scope.child(
-                ui::segment(
-                    ("ext-scope", i),
-                    if everything {
-                        None
-                    } else {
-                        Some("checkmark-circle02")
-                    },
-                    label,
-                    self.ms.everything == everything,
-                )
-                .flex_1()
-                .justify_center()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.ms.everything = everything;
-                    this.ms.category = None;
-                    this.ms.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                    this.open_market(cx);
-                    cx.notify();
-                })),
-            );
-        }
-        side = side
-            .child(div().flex_none().h(px(14.)))
-            .child(
-                ui::overline("Show")
-                    .flex_none()
-                    .px(crate::ui::sp(8.))
-                    .pb(crate::ui::sp(4.)),
-            )
-            .child(div().flex_none().px(crate::ui::sp(4.)).child(scope))
-            .child(
-                div()
-                    .flex_none()
-                    .px(crate::ui::sp(8.))
-                    .pt(crate::ui::sp(6.))
-                    .ty(Type::Caption)
-                    .text_color(theme::text_faint())
-                    .child(if self.ms.everything {
-                        "Community ones too."
-                    } else {
-                        "Made by Anthropic or the company itself."
-                    }),
-            );
-
-        // Categories for plugins; publishers for official servers.
-        let mut groups: Vec<(String, usize)> = Vec::new();
-        let mut add = |g: &str| match groups.iter_mut().find(|(n, _)| n == g) {
-            Some((_, n)) => *n += 1,
-            None => groups.push((g.to_string(), 1)),
-        };
-        let heading = match self.market {
-            Market::Plugins => {
-                for p in self
-                    .ms
-                    .catalog
-                    .iter()
-                    .flatten()
-                    .filter(|p| self.ms.everything || p.official)
-                {
-                    if let Some(c) = &p.category {
-                        add(c);
-                    }
-                }
-                Some("Categories")
-            }
-            Market::Registry if !self.ms.everything => {
-                for s in self.ms.official.iter().flatten() {
-                    if let Some(c) = &s.official {
-                        add(c);
-                    }
-                }
-                Some("Companies")
-            }
-            Market::Registry => None,
-        };
-        if let Some(heading) = heading {
-            groups.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let total: usize = match self.market {
-                Market::Plugins => official_plugins.unwrap_or(0),
-                Market::Registry => official_servers.unwrap_or(0),
-            };
-            side = side
-                .child(div().flex_none().h(px(14.)))
-                .child(
-                    ui::overline(heading)
-                        .flex_none()
-                        .px(crate::ui::sp(8.))
-                        .pb(crate::ui::sp(4.)),
-                )
-                .child(
-                    nav_row(
-                        "ext-cat-all",
-                        "dashboard-square01",
-                        "All",
-                        Some(total),
-                        self.ms.category.is_none(),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.ms.category = None;
-                        this.ms.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                        cx.notify();
-                    })),
-                );
-            for (i, (g, n)) in groups.into_iter().enumerate() {
-                let on = self.ms.category.as_ref() == Some(&g);
-                let label = if self.market == Market::Plugins {
-                    capitalize(&g)
-                } else {
-                    g.clone()
-                };
-                let row = match self.market {
-                    Market::Plugins => {
-                        nav_dot_row(("ext-cat", i), rgb(category_color(&g)).into(), label, n, on)
-                    }
-                    Market::Registry => {
-                        nav_mark_row(("ext-cat", i), logos::mark(&g, ""), label, n, on)
-                    }
-                };
-                side = side.child(row.on_click(cx.listener(move |this, _, _, cx| {
-                    this.ms.category = Some(g.clone());
-                    this.ms.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                    cx.notify();
-                })));
-            }
-        }
-        div().flex().flex_none().h_full().child(side)
-    }
-
-    /// One line of the virtual list: the featured strip, a line of cards, or "Load more".
-    fn render_market_row(
-        &self,
-        row: usize,
-        items: &[Item],
-        per: usize,
-        featured: bool,
-        more: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let skip = if featured { 3.min(items.len()) } else { 0 };
-        if featured && row == 0 {
-            let mut line = div()
-                .flex()
-                .w_full()
-                .gap(crate::ui::sp(12.))
-                .h(px(FEATURED_H))
-                .pb(crate::ui::sp(GAP));
-            for item in items.iter().take(3) {
-                line = line.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(self.featured_card(item, cx)),
-                );
-            }
-            for _ in skip..3 {
-                line = line.child(div().flex_1());
-            }
-            return line.into_any_element();
-        }
-        let r = row - usize::from(featured);
-        let start = skip + r * per;
-        if start >= items.len() && more {
-            return div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .h(px(ROW_H))
-                .child(if self.ms.registry_loading {
-                    ui::spinner("ext-registry-more-busy", 14., theme::text_faint())
-                        .into_any_element()
-                } else {
-                    ui::button("ext-registry-more", "Load more", ButtonKind::Outline, true)
-                        .on_click(cx.listener(|this, _, _, cx| this.search_registry(true, cx)))
-                        .into_any_element()
-                })
+    /// What a card offers: Installed, a spinner, or Install.
+    fn card_action(&self, item: &Item, kind: ButtonKind, cx: &mut Context<Self>) -> AnyElement {
+        if self.installed(item) {
+            return ui::state_pill("checkmark-circle02", "Installed", Tone::Success.color())
                 .into_any_element();
         }
-        let mut line = div()
-            .flex()
-            .w_full()
-            .gap(crate::ui::sp(GAP))
-            .h(px(ROW_H))
-            .pb(crate::ui::sp(GAP));
-        for item in items.iter().skip(start).take(per) {
-            line = line.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(self.item_card(item, cx)),
-            );
+        if let Item::Plugin(p) = item
+            && self.op.as_deref() == Some(p.name.as_str())
+        {
+            return ui::spinner(
+                SharedString::from(format!("ext-card-busy-{}", item.key())),
+                14.,
+                theme::text_faint(),
+            )
+            .into_any_element();
         }
-        for _ in items.len().saturating_sub(start).min(per)..per {
-            line = line.child(div().flex_1());
-        }
-        line.into_any_element()
+        let target = item.clone();
+        ui::button(
+            SharedString::from(format!("ext-card-install-{}", item.key())),
+            "Install",
+            kind,
+            self.op.is_none(),
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            // The card under the button opens the details; Install alone installs.
+            cx.stop_propagation();
+            match &target {
+                Item::Plugin(p) => this.install_plugin(p, cx),
+                // A server asks what it needs first, in the details.
+                Item::Server(_) => this.select(&target, window, cx),
+            }
+        }))
+        .into_any_element()
     }
 
     fn item_card(&self, item: &Item, cx: &mut Context<Self>) -> Stateful<Div> {
         let selected = self.ms.selected.as_deref() == Some(item.key());
-        let installed = self.installed(item);
         let (by, verified) = item.by();
         let target = item.clone();
         div()
@@ -880,31 +1015,28 @@ impl ExtensionsView {
             .h(px(ROW_H) - crate::ui::sp(GAP))
             .min_w_0()
             .overflow_hidden()
-            .gap(crate::ui::sp(10.))
-            .p(crate::ui::sp(14.))
+            .gap(crate::ui::sp(12.))
+            .p(crate::ui::sp(16.))
             .rounded(crate::ui::rad(ui::RADIUS_LG))
             .border_1()
-            .border_color(if selected {
-                theme::accent()
-            } else {
-                theme::border()
-            })
-            .bg(if selected {
-                theme::fill_hover()
-            } else {
-                theme::fill_raised()
-            })
             .cursor_pointer()
-            .hover(|d| {
-                d.bg(theme::fill_hover())
-                    .border_color(theme::border_strong())
+            .when(selected, |d| {
+                d.border_color(theme::accent()).bg(theme::fill_raised())
+            })
+            .when(!selected, |d| {
+                d.border_color(theme::border())
+                    .bg(theme::background())
+                    .hover(|d| {
+                        d.bg(theme::fill_raised())
+                            .border_color(theme::border_strong())
+                    })
             })
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(12.))
-                    .child(logos::tile(item.mark(), 36.))
+                    .child(logos::tile(item.mark(), 40.))
                     .child(
                         div()
                             .flex()
@@ -920,108 +1052,123 @@ impl ExtensionsView {
                             )
                             .child(by_line(by, verified)),
                     )
-                    .when(installed, |d| {
-                        d.child(icon("checkmark-circle02", 16.).text_color(Tone::Success.color()))
-                    }),
+                    .child(div().flex_none().child(self.card_action(
+                        item,
+                        ButtonKind::Outline,
+                        cx,
+                    ))),
             )
             .child(
                 div()
                     .flex_1()
                     .max_h(px(two_lines()))
                     .overflow_hidden()
-                    .ty(Type::Caption)
-                    .text_color(theme::text_muted())
+                    .ty(Type::Body)
+                    .text_color(theme::text_subtle())
                     .child(item.blurb(110)),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(crate::ui::sp(6.))
+                    .gap(crate::ui::sp(12.))
                     .children(
                         item.tags()
                             .into_iter()
                             .take(2)
-                            .map(|(t, c)| ui::tag(t, rgb(c))),
+                            .map(|(t, c)| ui::legend(t, rgb(c).into()).ty(Type::Caption)),
                     )
                     .child(div().flex_1())
-                    .children(item.installs().map(|n| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(4.))
-                            .ty(Type::Caption)
-                            .text_color(theme::text_subtle())
-                            .child(icon("download04", 11.).text_color(theme::text_faint()))
-                            .child(marketplace::short_count(n))
-                    })),
+                    .children(item.installs().map(installs)),
             )
             .on_click(cx.listener(move |this, _, window, cx| this.select(&target, window, cx)))
     }
 
-    /// The three most installed, larger and tinted with their brand.
+    /// One of the most installed, larger and on a flat wash of its brand's colour.
     fn featured_card(&self, item: &Item, cx: &mut Context<Self>) -> Stateful<Div> {
         let mark = item.mark();
         let hex = match mark {
             logos::Mark::Logo { hex, .. } | logos::Mark::Letter { hex, .. } => hex,
         };
+        let tint = rgb(hex);
         let (by, verified) = item.by();
         let target = item.clone();
         div()
             .id(SharedString::from(format!("ext-feat-{}", item.key())))
             .flex()
-            .h(px(FEATURED_H) - crate::ui::sp(GAP))
+            .flex_col()
+            .h(px(FEATURED_H))
             .min_w_0()
             .overflow_hidden()
-            .items_center()
-            .gap(crate::ui::sp(14.))
-            .p(crate::ui::sp(16.))
-            .rounded(crate::ui::rad(ui::RADIUS_LG))
+            .p(crate::ui::sp(18.))
+            .rounded(crate::ui::rad(ui::RADIUS_XL))
             .border_1()
-            .border_color(theme::border())
-            .bg(linear_gradient(
-                135.,
-                linear_color_stop(rgb(hex).opacity(0.22), 0.),
-                linear_color_stop(theme::fill_raised(), 0.75),
-            ))
+            .border_color(tint.opacity(0.28))
+            .bg(tint.opacity(0.09))
             .cursor_pointer()
-            .hover(|d| d.border_color(theme::border_strong()))
-            .child(logos::tile(mark, 52.))
+            .hover(|d| d.border_color(tint.opacity(0.5)))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
+                    .items_start()
+                    .child(logos::tile(mark, 40.))
+                    .child(div().flex_1())
+                    .child(ui::pill("Popular", Tone::Accent.color())),
+            )
+            .child(
+                div()
+                    .mt(crate::ui::sp(14.))
+                    .truncate()
+                    .ty(Type::Title)
+                    .text_color(theme::text())
+                    .child(item.title()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .mt(crate::ui::sp(2.))
                     .min_w_0()
-                    .gap(crate::ui::sp(4.))
+                    .child(by_line(by, verified))
+                    .children(item.installs().map(|n| {
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(crate::ui::sp(6.))
+                            .ty(Type::Caption)
+                            .text_color(theme::text_faint())
+                            .child("·")
+                            .child(installs(n))
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .mt(crate::ui::sp(10.))
+                    .max_h(px(two_lines()))
+                    .overflow_hidden()
+                    .ty(Type::Body)
+                    .text_color(theme::text_muted())
+                    .child(item.blurb(140)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(12.))
+                    .mt(crate::ui::sp(14.))
+                    .child(self.card_action(item, ButtonKind::Primary, cx))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(crate::ui::sp(6.))
-                            .child(ui::badge("Popular", Tone::Accent))
-                            .children(item.installs().map(|n| {
-                                div()
-                                    .ty(Type::Caption)
-                                    .text_color(theme::text_subtle())
-                                    .child(format!("{} installs", marketplace::short_count(n)))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .ty(Type::Subtitle)
-                            .text_color(theme::text())
-                            .child(item.title()),
-                    )
-                    .child(by_line(by, verified))
-                    .child(
-                        div()
-                            .max_h(px(two_lines()))
-                            .overflow_hidden()
-                            .ty(Type::Caption)
-                            .text_color(theme::text_muted())
-                            .child(item.blurb(90)),
+                            .gap(crate::ui::sp(4.))
+                            .ty(Type::Label)
+                            .text_color(theme::text_subtle())
+                            .child("Details")
+                            .child(icon("arrow-right01", 12.).text_color(theme::text_subtle())),
                     ),
             )
             .on_click(cx.listener(move |this, _, window, cx| this.select(&target, window, cx)))
@@ -1327,21 +1474,72 @@ impl ExtensionsView {
 }
 
 /// Lines in the virtual list: the featured strip, the lines of cards, "Load more".
-fn rows_with(n: usize, skip: usize, per: usize, featured: bool, more: bool) -> usize {
-    usize::from(featured) + n.saturating_sub(skip).div_ceil(per) + usize::from(more)
+/// One row of Discover's list.
+#[derive(Clone, Copy)]
+enum Row {
+    /// The last error or notice, and a server that needs you.
+    Top,
+    Featured,
+    /// The list's title, Official or All, and the sort.
+    Head,
+    /// A line of cards, from this item on.
+    Line(usize),
+    /// "Load more" of the registry.
+    More,
 }
 
-/// Exactly two lines of caption text, so a clipped description never shows half a third.
+/// What the rows depend on: when it changes, the list starts over at the top.
+#[derive(Clone, PartialEq)]
+pub(super) struct RowsKey {
+    plugins: bool,
+    category: Option<String>,
+    everything: bool,
+    by_name: bool,
+    query: String,
+    per: usize,
+    featured: usize,
+    top: bool,
+}
+
+/// Discover's list, its rows of different heights laid out only when in view.
+pub(super) struct Rows(pub(super) ListState);
+
+impl Default for Rows {
+    fn default() -> Self {
+        Rows(ListState::new(0, ListAlignment::Top, px(400.)))
+    }
+}
+
+impl Rows {
+    pub(super) fn top(&self) {
+        self.0.scroll_to(ListOffset::default());
+    }
+}
+
+/// Exactly two lines of body text, so a clipped description never shows half a third.
 fn two_lines() -> f32 {
-    2. * Type::Caption.metrics().1
+    2. * Type::Body.metrics().1
 }
 
-const ROW_H: f32 = 152.;
+/// "↓ 12.4k": how many installed it.
+fn installs(n: u64) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(crate::ui::sp(4.))
+        .ty(Type::Caption)
+        .font_family(theme::FONT_MONO)
+        .text_color(theme::text_subtle())
+        .child(icon("download04", 12.).text_color(theme::text_faint()))
+        .child(marketplace::short_count(n))
+}
+
+/// A line of cards, with the gap under it.
+const ROW_H: f32 = 164.;
 /// The narrowest a card gets before a line holds one fewer.
 const MIN_CARD: f32 = 250.;
-/// uniform_list gives every line the height of its first, so the featured
-/// strip must be exactly as tall as a line of cards or they overlap.
-const FEATURED_H: f32 = ROW_H;
+const FEATURED_H: f32 = 226.;
 const GAP: f32 = 12.;
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -1515,7 +1713,7 @@ fn nav_count(n: Option<usize>) -> Div {
         .children(n.map(|n| n.to_string()))
 }
 
-fn nav_row(
+pub(super) fn nav_row(
     id: impl Into<gpui::ElementId>,
     icon_name: &str,
     label: &str,
@@ -1530,6 +1728,35 @@ fn nav_row(
         }))
         .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
         .child(nav_count(n))
+}
+
+/// A row of the left column whose count says how many need you.
+pub(super) fn nav_alert_row(
+    id: impl Into<gpui::ElementId>,
+    icon_name: &str,
+    label: &str,
+    n: usize,
+    on: bool,
+) -> Stateful<Div> {
+    let warn = Tone::Warning.color();
+    nav_base(id, on)
+        .child(icon(icon_name, 14.).text_color(if on {
+            theme::text()
+        } else {
+            theme::text_subtle()
+        }))
+        .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(5.))
+                .ty(Type::Caption)
+                .text_color(warn)
+                .child(div().size(px(6.)).rounded_full().bg(warn))
+                .child(n.to_string()),
+        )
 }
 
 fn nav_dot_row(

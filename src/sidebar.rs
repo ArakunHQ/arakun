@@ -76,7 +76,7 @@ impl View {
             View::Notes => "Notes",
             View::Memory => "Memory",
             View::Usage => "Usage",
-            View::Extensions => "Extensions",
+            View::Extensions => "Marketplace",
             View::Cloudflare => "Cloudflare",
             View::PostHog => "PostHog",
             #[cfg(feature = "coderlabs")]
@@ -103,7 +103,7 @@ impl View {
             View::Notes => "file01",
             View::Memory => "ai-idea",
             View::Usage => "dashboard-square01",
-            View::Extensions => "sparkles",
+            View::Extensions => "store01",
             View::Cloudflare => "internet",
             View::PostHog => "chart-breakout-square",
             #[cfg(feature = "coderlabs")]
@@ -132,7 +132,7 @@ impl View {
             View::Notes => "Project notes",
             View::Memory => "What agents remember here",
             View::Usage => "Plan limits and spend",
-            View::Extensions => "MCP servers, skills and plugins",
+            View::Extensions => "Plugins, MCP servers and skills",
             View::Cloudflare => "Workers, tunnels and DNS",
             View::PostHog => "Product analytics for each repo",
             #[cfg(feature = "coderlabs")]

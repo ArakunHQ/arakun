@@ -123,7 +123,7 @@ build with the browser.
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | What you saw and dealt with from arakun-pilot | `%LOCALAPPDATA%\arakun\pilot.json` |
-| arakun-pilot's Worker address and token | `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set) |
+| arakun-pilot's Worker address and token | `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path) |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |

@@ -164,7 +164,7 @@ terminal-only. The status line and keybindings from your settings don't apply in
   repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set;
+  (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
   `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/board` and
   `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
   starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.

@@ -135,6 +135,9 @@ const LEAVE_GRACE: Duration = Duration::from_millis(150);
 const POINTER_NEAR: Duration = Duration::from_millis(16);
 #[cfg(target_os = "macos")]
 const POINTER_FAR: Duration = Duration::from_millis(60);
+/// How close to the island the pointer is "near".
+#[cfg(target_os = "macos")]
+const POINTER_MARGIN: f32 = 80.;
 /// How often the island checks it is still on the right screen.
 #[cfg(target_os = "macos")]
 const SCREENS_EVERY: Duration = Duration::from_secs(2);
@@ -1350,7 +1353,15 @@ impl Island {
             mac::click_through(!on);
             self.hover(on, cx);
         }
-        x > -WIN_W && x < 2. * WIN_W && y < 2. * WIN_H
+        // Near is a margin around the island itself, so the fast poll runs
+        // only while the pointer is about to reach it.
+        self.region.iter().flatten().any(|r| {
+            let (x, y) = (x - r[0] as f32, y - r[1] as f32);
+            x >= -POINTER_MARGIN
+                && y >= -POINTER_MARGIN
+                && x < r[2] as f32 + POINTER_MARGIN
+                && y < r[3] as f32 + POINTER_MARGIN
+        })
     }
 
     /// New data from the shell; redraws only when something shown changed.

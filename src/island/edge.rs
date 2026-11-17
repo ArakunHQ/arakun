@@ -11,6 +11,10 @@ const MAX_TOP: f32 = 20.;
 const NOTCH: (f32, f32) = (200., 32.);
 /// A Dynamic Island when only its kind is known: its width, height and gap to the top.
 const PILL: (f32, f32, f32) = (130., 30., 5.);
+/// A cutout this wide is a notch whatever else says otherwise: the notches
+/// are 185 and up, and a Dynamic Island is narrower.
+#[cfg(any(target_os = "macos", test))]
+const NOTCH_MIN_W: f32 = 160.;
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum Edge {
@@ -138,22 +142,27 @@ impl Edge {
     /// What a screen's safe area says about its top: `safe_top` is how much of
     /// it the menu bar's band takes, `left` and `right` how wide the free
     /// parts of that band are beside the cutout, on a screen `screen_w` wide.
-    /// macOS has no word for the cutout's kind; `floating` is the caller's
-    /// (see `mac::spot`). It doesn't give a pill's height or gap either: the
-    /// pill is taken to sit in the middle of the band, `PILL.2` from its ends.
+    /// macOS has no word for the cutout's kind. `touch`, whether the screen
+    /// takes touch, points at the MacBook Pro with a Dynamic Island, but a
+    /// notched screen may report it too (with an iPad as a second display), so
+    /// a cutout as wide as a notch stays one. It doesn't give a pill's height
+    /// or gap either: the pill is taken to sit in the middle of the band,
+    /// `PILL.2` from its ends.
     #[cfg(any(target_os = "macos", test))]
     pub fn from_safe_area(
         safe_top: f32,
         screen_w: f32,
         left: f32,
         right: f32,
-        floating: bool,
+        touch: bool,
     ) -> Edge {
         if safe_top <= 0. {
             return Edge::Flat;
         }
         let between = screen_w - left - right;
-        let w = if left > 0. && right > 0. && between > 0. {
+        let known = left > 0. && right > 0. && between > 0.;
+        let floating = touch && !(known && between >= NOTCH_MIN_W);
+        let w = if known {
             between
         } else if floating {
             PILL.0
@@ -270,11 +279,31 @@ mod tests {
             Edge::from_safe_area(32., 1512., 663., 664., false),
             Edge::Notch { w: 185., h: 32. }
         );
-        // The same numbers on a screen whose cutout floats.
+        // The same notch on a screen that says it takes touch (an iPad is
+        // connected as a second display): still a notch.
         assert_eq!(
             Edge::from_safe_area(32., 1512., 663., 664., true),
+            Edge::Notch { w: 185., h: 32. }
+        );
+        // A narrow cutout on a touch screen: the MacBook Pro's Dynamic Island.
+        assert_eq!(
+            Edge::from_safe_area(32., 1512., 696., 696., true),
             Edge::Pill {
-                w: 185.,
+                w: 120.,
+                h: 22.,
+                top: 5.
+            }
+        );
+        // A narrow cutout without touch is no island.
+        assert_eq!(
+            Edge::from_safe_area(32., 1512., 696., 696., false),
+            Edge::Notch { w: 120., h: 32. }
+        );
+        // Touch and no free parts to measure: the island's usual width.
+        assert_eq!(
+            Edge::from_safe_area(32., 1512., 0., 0., true),
+            Edge::Pill {
+                w: 130.,
                 h: 22.,
                 top: 5.
             }

@@ -144,7 +144,8 @@ fn spot() -> Option<Spot> {
             };
             // AppKit tells where the cutout is, not whether it is a notch or
             // a Dynamic Island. The MacBook Pro with the island is the one
-            // whose own screen takes touch, so that stands for it.
+            // whose own screen takes touch; `from_safe_area` weighs that
+            // against the cutout's width.
             let touch = responds(screen, c"touchCapabilities")
                 && send!(fn() -> usize)(screen, sel(c"touchCapabilities")) != 0;
             Edge::from_safe_area(
@@ -284,8 +285,11 @@ pub fn activate(pid: u32) {
             sel(c"runningApplicationWithProcessIdentifier:"),
             pid as i32,
         );
-        if !app.is_null() {
-            send!(fn(usize) -> bool)(app, sel(c"activateWithOptions:"), ALL_WINDOWS);
+        // macOS may decline: say so, or the window just stays behind.
+        if !app.is_null()
+            && !send!(fn(usize) -> bool)(app, sel(c"activateWithOptions:"), ALL_WINDOWS)
+        {
+            eprintln!("arakun: island: macOS did not bring app {pid} to the front");
         }
     }
 }

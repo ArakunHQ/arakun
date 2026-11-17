@@ -142,6 +142,10 @@ main() {
     *) die "$os has no release build" ;;
   esac
 
+  # A version the user asked for may be one from before signing; the latest
+  # must be signed, or whoever can edit releases could mark an unsigned one
+  # as latest.
+  pinned=$version
   if [ -z "$version" ]; then
     version=$(latest_tag)
   else
@@ -160,6 +164,9 @@ main() {
   curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" ||
     die "could not download $base/SHA256SUMS (is there a release $version?)"
   # Before any checksum in it is trusted.
+  if [ -z "$pinned" ] && ! signed_release "$version"; then
+    die "the latest release, $version, is not signed; to install it anyway, run this again with --version $version"
+  fi
   if signed_release "$version"; then
     curl -fsSL -o "$tmp/SHA256SUMS.minisig" "$base/SHA256SUMS.minisig" ||
       die "could not download $base/SHA256SUMS.minisig, which every release after v0.3.0 has"

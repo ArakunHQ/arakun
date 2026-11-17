@@ -27,7 +27,11 @@ function Install-Arakun {
         throw "arakun: Windows on $arch has no release build; build from source (see docs/windows.md)"
     }
 
+    # A version the user asked for may be one from before signing; the latest
+    # must be signed, or whoever can edit releases could mark an unsigned one
+    # as latest.
     $version = $env:ARAKUN_VERSION
+    $pinned = [bool]$version
     if (-not $version) {
         $release = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$repo/releases/latest"
         $version = $release.tag_name
@@ -51,7 +55,11 @@ function Install-Arakun {
         # signed. Windows has no Ed25519 of its own, so this needs minisign.
         $parsed = $null
         $plain = ($version.TrimStart('v') -split '-', 2)[0]
-        if ([version]::TryParse($plain, [ref]$parsed) -and $parsed -le [version]'0.3.0') {
+        $unsigned = [version]::TryParse($plain, [ref]$parsed) -and $parsed -le [version]'0.3.0'
+        if ($unsigned -and -not $pinned) {
+            throw "arakun: the latest release, $version, is not signed; to install it anyway, set `$env:ARAKUN_VERSION = `"$version`" and run this again"
+        }
+        if ($unsigned) {
             Write-Host "arakun: $version is from before releases were signed; only its checksum is checked"
         } else {
             $sig = Join-Path $tmp 'SHA256SUMS.minisig'

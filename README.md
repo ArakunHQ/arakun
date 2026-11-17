@@ -312,7 +312,8 @@ irm https://arakun.dev/install.ps1 | iex
 
 The scripts ([tools/install-release.sh](tools/install-release.sh) and
 [tools/install-release.ps1](tools/install-release.ps1)) download the latest release,
-check it against `SHA256SUMS` and its signature, and install it for your user:
+check it against `SHA256SUMS` (and its signature, when a verifier is installed; see
+[Updates](#updates)), and install it for your user:
 
 | Platform | Installs to | Uninstall |
 |---|---|---|
@@ -361,10 +362,11 @@ can't make the updater install anything. A missing or bad signature stops the up
 The public key is built into Arakun and is
 [assets/release-key.pub](assets/release-key.pub).
 
-The install scripts check the signature too, with `minisign` if it is installed, else
-with OpenSSL 3 (the Linux script only). Without either they check only the checksum,
-and say so. Releases up to v0.3.0 are not signed; the scripts check only their
-checksums.
+The install scripts check the signature only when a verifier is installed: `minisign`,
+or on Linux and macOS also OpenSSL 3 (macOS ships LibreSSL, so there it usually takes
+`brew install minisign`). Without one they check only the checksum, and say so.
+Releases up to v0.3.0 are not signed. The scripts install one only when you ask for it
+with `--version` (`ARAKUN_VERSION` on Windows); an unsigned latest release is refused.
 
 ### Manual download
 

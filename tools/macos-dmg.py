@@ -3,6 +3,11 @@
 the app, a link to /Applications and an arrow between them on
 assets/brand/dmg-background.png. The release workflow uses it; macOS only.
 
+The background is the DmgBackground component on the "App UI" Doop canvas
+(https://doop.arakun.dev/c/sEA9hKJMVj), exported at 1x and 2x from the frame
+"DMG background · white · export". It was drawn for the layout below: change
+one and the other together.
+
     python3 tools/macos-dmg.py APP DMG
 
 DMG is replaced if it exists. It needs dmgbuild, which writes Finder's window
@@ -17,7 +22,6 @@ the versions the release uses in a virtual environment:
 The image has free space left in it, so the release workflow can sign the app
 again inside it and staple the notarization ticket to it.
 """
-import importlib.util
 import os
 import subprocess
 import sys
@@ -29,15 +33,11 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SLACK_SECTORS = 64 * 1024 * 1024 // 512
 # The window's height counts its title bar; the background is the content.
 TITLE_BAR = 28
-
-
-def brand():
-    """The layout the background was drawn for, from tools/brand-logo.py."""
-    spec = importlib.util.spec_from_file_location(
-        "brand_logo", os.path.join(ROOT, "tools", "brand-logo.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+# The window's content in points, and the centres of the app and the
+# Applications link, which the background's arrow points between.
+SIZE = (640, 400)
+APP, APPLICATIONS = (168, 252), (472, 252)
+ICON_SIZE = 128
 
 
 def hdiutil(*args):
@@ -55,9 +55,8 @@ def main():
     if not os.path.isdir(app):
         sys.exit(f"macos-dmg: {app} is not an app bundle")
 
-    b = brand()
     name = os.path.basename(app)
-    w, h = b.DMG_SIZE
+    w, h = SIZE
     settings = {
         "files": [app],
         "symlinks": {"Applications": "/Applications"},
@@ -69,9 +68,9 @@ def main():
         "background": os.path.join(ROOT, "assets", "brand", "dmg-background.png"),
         "window_rect": ((200, 120), (w, h + TITLE_BAR)),
         "default_view": "icon-view",
-        "icon_size": b.DMG_ICON_SIZE,
+        "icon_size": ICON_SIZE,
         "text_size": 13,
-        "icon_locations": {name: b.DMG_APP, "Applications": b.DMG_APPLICATIONS},
+        "icon_locations": {name: APP, "Applications": APPLICATIONS},
         # Read-write, so it can be grown below before it is compressed.
         "format": "UDRW",
     }

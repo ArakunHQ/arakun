@@ -119,15 +119,20 @@ impl Edge {
         (edge == Edge::Flat || edge.clamped() != Edge::Flat).then(|| edge.clamped())
     }
 
+    /// Read once: the island asks again whenever it looks at its screen, and
+    /// a value it can't read should be reported a single time.
     pub fn from_env() -> Option<Edge> {
-        let value = std::env::var("ARAKUN_ISLAND_EDGE").ok()?;
-        let edge = Edge::parse(&value);
-        if edge.is_none() {
-            eprintln!(
-                "arakun: ARAKUN_ISLAND_EDGE={value}: expected flat, notch[:WxH] or pill[:WxH[+TOP]]"
-            );
-        }
-        edge
+        static EDGE: std::sync::OnceLock<Option<Edge>> = std::sync::OnceLock::new();
+        *EDGE.get_or_init(|| {
+            let value = std::env::var("ARAKUN_ISLAND_EDGE").ok()?;
+            let edge = Edge::parse(&value);
+            if edge.is_none() {
+                eprintln!(
+                    "arakun: ARAKUN_ISLAND_EDGE={value}: expected flat, notch[:WxH] or pill[:WxH[+TOP]]"
+                );
+            }
+            edge
+        })
     }
 
     /// What a screen's safe area says about its top: `safe_top` is how much of

@@ -745,6 +745,13 @@ pub fn accent() -> Hsla {
     rgb(a.load(Ordering::Relaxed)).into()
 }
 
+/// The accent as it shows on a dark ground, in both modes: for what sits on
+/// the brand's ink, like the raccoon's eyes in its mask. Light mode's darker
+/// accent would sink into the ink.
+pub fn accent_on_ink() -> Hsla {
+    rgb(ACCENT.load(Ordering::Relaxed)).into()
+}
+
 /// The logo's own colors, the same in every palette and mode: the raccoon's
 /// paper fur and the ink of its tile, mask and nose.
 pub fn brand_paper() -> Hsla {
@@ -753,18 +760,11 @@ pub fn brand_paper() -> Hsla {
 pub fn brand_ink() -> Hsla {
     rgb(0x151515).into()
 }
-/// The fur where paper would vanish, on white: the paper toward ink, dark
-/// enough to read (3.6:1) and still the light part of the face.
+/// The ASCII face's fur on white, where paper characters would vanish: the
+/// paper toward ink, dark enough to read (3.6:1). The drawn raccoon keeps
+/// its paper fur on white, as the brand book shows it.
 pub fn brand_fur_on_light() -> Hsla {
     rgb(0x8a867d).into()
-}
-/// The raccoon's fur in this mode: paper on dark, `brand_fur_on_light` on white.
-pub fn brand_fur() -> Hsla {
-    if is_light() {
-        brand_fur_on_light()
-    } else {
-        brand_paper()
-    }
 }
 
 /// Text and icons drawn on an accent fill: the background in dark mode, the

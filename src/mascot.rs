@@ -535,6 +535,8 @@ struct Frame {
     /// what is behind the raccoon.
     outline: usize,
     marks: Vec<Mark>,
+    /// How many of `marks` are the eyes; they sit in the ink of the mask.
+    eyes: usize,
     /// Paint is cut below this line (a shy raccoon behind the prompter).
     ledge: Option<f32>,
     /// Px the whole drawing sits above its box (on the card over the prompter).
@@ -597,7 +599,7 @@ pub struct Mascot {
     can_dance: bool,
     /// Moves even in a window that never takes focus (the island's layer).
     awake: bool,
-    /// Fur in this instead of the brand fur (`theme::brand_fur`).
+    /// Fur in this instead of the brand's paper (`theme::brand_paper`).
     color: Option<Hsla>,
     dance_t0: Option<f64>,
 
@@ -716,7 +718,7 @@ impl Mascot {
         self
     }
 
-    /// Paints the fur in `color` instead of the brand fur.
+    /// Paints the fur in `color` instead of the brand's paper.
     #[allow(dead_code, reason = "only the island uses it")]
     pub fn color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
@@ -1438,6 +1440,7 @@ impl Mascot {
                 }
             }
         }
+        let eyes = marks.len();
         if !self.small {
             for (&a, prop) in self.prop_a.iter().zip(PROPS) {
                 if a >= 0.02 {
@@ -1449,6 +1452,7 @@ impl Mascot {
             body,
             outline,
             marks,
+            eyes,
             ledge: self.shy.then_some(LEDGE_Y),
             lift: self.perch,
         }
@@ -1700,8 +1704,10 @@ fn map_seg(s: &Seg, f: &mut impl FnMut([f32; 2]) -> [f32; 2]) -> Seg {
 
 /// The brand face: `fur` for the head, the brand's ink under the holes (ear
 /// insides, mask, nose), and the theme's accent for the eyes and the symbols.
+/// The eyes sit on ink, so they take the accent as it shows on dark in both
+/// modes; the symbols float on the page and take its own.
 fn paint(frame: &Frame, bounds: Bounds<Pixels>, fur: Hsla, window: &mut Window) {
-    let accent = theme::accent();
+    let (eye, accent) = (theme::accent_on_ink(), theme::accent());
     let k = bounds.size.width.as_f32() / VB_W;
     let ox = bounds.origin.x.as_f32() - VB_X * k;
     let oy = bounds.origin.y.as_f32() - frame.lift - VB_Y * k
@@ -1732,7 +1738,8 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, fur: Hsla, window: &mut Window) 
         // The head in one even-odd path: the ear insides, the mask and the
         // nose are holes over that dark.
         fill(&frame.body, fur, window);
-        for mark in &frame.marks {
+        for (i, mark) in frame.marks.iter().enumerate() {
+            let color = if i < frame.eyes { eye } else { accent };
             let (path, alpha) = match mark {
                 Mark::Fill(q, alpha) if q.len() >= 3 => {
                     let mut b = PathBuilder::fill();
@@ -1751,7 +1758,7 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, fur: Hsla, window: &mut Window) 
                 _ => continue,
             };
             if let (Ok(path), true) = (path, alpha > 0.01) {
-                window.paint_path(path, accent.opacity(alpha.min(1.)));
+                window.paint_path(path, color.opacity(alpha.min(1.)));
             }
         }
     };
@@ -1776,7 +1783,7 @@ impl Render for Mascot {
         self.rendered = true;
         self.active = self.awake || window.is_window_active();
         let frame = self.step(now, dt);
-        let color = self.color.unwrap_or_else(theme::brand_fur);
+        let color = self.color.unwrap_or_else(theme::brand_paper);
         let (weak, click) = (cx.weak_entity(), cx.weak_entity());
         let bounds = self.bounds.clone();
         // Where it is drawn, not its box: it may sit higher, on the card over

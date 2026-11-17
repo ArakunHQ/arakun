@@ -49,7 +49,9 @@ signed_release() {
 
 # Checks SHA256SUMS ($1) against its signature ($2) by one of the release
 # keys, with minisign, or with OpenSSL 3 where minisign is missing, using the
-# directory $3 for its files. Returns 2 when there is neither.
+# directory $3 for its files. Returns 2 when there is neither, and 1 for any
+# other failure. Never pass a tool's own status through: minisign exits 2 on an
+# empty or broken signature, which would read as "no verifier" and install.
 verify_sums() {
   if command -v minisign >/dev/null; then
     tool=minisign

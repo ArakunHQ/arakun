@@ -126,11 +126,17 @@ impl Sessions {
         if before == update.state {
             return None;
         }
-        let (kind, title, about) = match update.state {
-            State::Waiting => (AlertKind::Input, "te necesita", &s.asks),
-            State::Done => (AlertKind::Finished, "terminó", &s.prompt),
-            State::Error => (AlertKind::Error, "falló", &s.asks),
-            State::Working | State::Ended => return None,
+        // Claude Code's own words for a permission prompt.
+        let tool = s
+            .asks
+            .strip_prefix("Claude needs your permission to use ")
+            .map(|tool| SharedString::from(format!("quiere usar {tool}")));
+        let (kind, title, about) = match (update.state, &tool) {
+            (State::Waiting, Some(tool)) => (AlertKind::Input, "pide permiso", tool),
+            (State::Waiting, None) => (AlertKind::Input, "te necesita", &s.asks),
+            (State::Done, _) => (AlertKind::Finished, "terminó", &s.prompt),
+            (State::Error, _) => (AlertKind::Error, "falló", &s.asks),
+            (State::Working | State::Ended, _) => return None,
         };
         Some(Alert {
             key: update.key,
@@ -353,6 +359,19 @@ mod tests {
         assert_eq!(asks.key, "ext:a");
         assert_eq!(asks.title, "Claude Code te necesita");
         assert_eq!(asks.subtitle, "ArakunHQ · needs your permission");
+        // A permission prompt says so at a glance, and which tool it wants.
+        let tool = s
+            .update(
+                update(
+                    "p",
+                    State::Waiting,
+                    "Claude needs your permission to use Bash",
+                ),
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(tool.title, "Claude Code pide permiso");
+        assert_eq!(tool.subtitle, "ArakunHQ · quiere usar Bash");
         assert_eq!(s.update(update("a", State::Working, ""), NOW + 20), None);
         let done = s.update(update("a", State::Done, ""), NOW + 30).unwrap();
         assert_eq!(done.kind, AlertKind::Finished);

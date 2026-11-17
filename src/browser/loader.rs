@@ -64,6 +64,25 @@ pub fn runtime_dir() -> PathBuf {
     data_home().join("arakun/cef")
 }
 
+/// Why the runtime at `path` can't load. A release says how to get it back: the
+/// updater of a release from before the browser left it out. A build from
+/// source gets `dev_hint`.
+fn missing(path: &std::path::Path, dev_hint: &str) -> String {
+    // As crate::update::release_build(), which the browser demo does not build.
+    if option_env!("ARAKUN_RELEASE_BUILD") != Some("1") {
+        return format!("CEF runtime not found at {} ({dev_hint})", path.display());
+    }
+    let install = if cfg!(windows) {
+        "irm https://arakun.dev/install.ps1 | iex"
+    } else {
+        "curl -fsSL https://arakun.dev/install | sh"
+    };
+    format!(
+        "This Arakun has no browser runtime at {}. Quit Arakun and install it again: {install}",
+        path.display()
+    )
+}
+
 pub fn data_home() -> PathBuf {
     crate::platform::data_home()
 }
@@ -144,10 +163,7 @@ mod linux {
             .get_or_init(|| {
                 let path = runtime_dir().join("libcef.so");
                 if !path.exists() {
-                    return Err(format!(
-                        "CEF runtime not found at {} (run tools/install-cef.sh)",
-                        path.display()
-                    ));
+                    return Err(super::missing(&path, "run tools/install-cef.sh"));
                 }
                 let c_path =
                     CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
@@ -198,10 +214,7 @@ mod macos {
             .get_or_init(|| {
                 let path = framework_dir().join("Chromium Embedded Framework");
                 if !path.exists() {
-                    return Err(format!(
-                        "CEF runtime not found at {} (run tools/install-cef.sh)",
-                        path.display()
-                    ));
+                    return Err(super::missing(&path, "run tools/install-cef.sh"));
                 }
                 let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
                     .map_err(|e| e.to_string())?;
@@ -233,10 +246,10 @@ mod windows {
             .get_or_init(|| {
                 let path = runtime_dir().join("libcef.dll");
                 if !path.exists() {
-                    return Err(format!(
-                        "CEF runtime not found at {} (`cargo build` copies it next to arakun.exe; \
-                         or point ARAKUN_CEF_DIR at a folder that has it)",
-                        path.display()
+                    return Err(super::missing(
+                        &path,
+                        "`cargo build` copies it next to arakun.exe; \
+                         or point ARAKUN_CEF_DIR at a folder that has it",
                     ));
                 }
                 let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();

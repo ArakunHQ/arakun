@@ -266,7 +266,7 @@ main() {
     mv -f "$bindir/.arakun.new" "$bindir/arakun"
     if [ -d "$cef" ]; then
       say "installed arakun in $bindir, and its browser in $cef"
-      uninstall="rm -rf ~/.local/bin/arakun $cef"
+      uninstall="rm -rf ~/.local/bin/arakun \"$cef\""
     else
       say "installed arakun in $bindir"
       uninstall="rm ~/.local/bin/arakun"

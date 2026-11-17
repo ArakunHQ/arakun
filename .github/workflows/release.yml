@@ -178,12 +178,17 @@ jobs:
       - name: cargo build
         run: cargo build --release --locked --target x86_64-unknown-linux-gnu
 
-      # libcef.so too: the browser loads it into this process.
+      # The runtime's libraries too: the browser loads them into this process.
       - name: Check glibc floor
         run: |
-          for bin in target/x86_64-unknown-linux-gnu/release/arakun "$RUNNER_TEMP/cef/libcef.so"; do
+          app=target/x86_64-unknown-linux-gnu/release/arakun
+          for bin in "$app" "$RUNNER_TEMP"/cef/*.so*; do
             max=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9.]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
-            [ -n "$max" ] || { echo "::error::no GLIBC_ symbol versions found in $bin"; exit 1; }
+            if [ -z "$max" ]; then
+              [ "$bin" != "$app" ] || { echo "::error::no GLIBC_ symbol versions found in $bin"; exit 1; }
+              echo "$bin: no GLIBC_ symbol versions"
+              continue
+            fi
             echo "$bin: highest GLIBC_ symbol version: $max (floor $GLIBC_FLOOR)"
             if [ "$(printf '%s\n' "$max" "$GLIBC_FLOOR" | sort -V | tail -1)" != "$GLIBC_FLOOR" ]; then
               echo "::error::$bin needs glibc $max, above the $GLIBC_FLOOR floor"
@@ -270,6 +275,20 @@ jobs:
       - name: cargo build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
+      # The `cef` crate checks its download against the SHA-1 in the index on
+      # the same CDN, and records it in archive.json. This pins it, as Linux
+      # pins its archive. From cef-builds' index.json for this CEF build.
+      - name: Check the CEF download
+        shell: pwsh
+        env:
+          CEF_SHA1: b690e035689ee20ba9d2500ac8953815bc7ed46a
+        run: |
+          $json = Get-ChildItem .cef-sdk/*/cef_windows_*/archive.json | Select-Object -Last 1
+          if (-not $json) { throw "the build left no CEF archive.json in .cef-sdk" }
+          $sha1 = (Get-Content $json.FullName -Raw | ConvertFrom-Json).sha1
+          Write-Host "$($json.FullName): $sha1"
+          if ($sha1 -ne $env:CEF_SHA1) { throw "CEF archive SHA-1 $sha1, expected $env:CEF_SHA1" }
+
       - name: Package
         shell: pwsh
         env:
@@ -354,6 +373,17 @@ jobs:
       - name: cargo build
         run: cargo build --release --locked --target aarch64-apple-darwin
 
+      # As on Windows: pins what the `cef` crate downloaded.
+      - name: Check the CEF download
+        env:
+          CEF_SHA1: bcdd1877edb300b0fb91d8f71c0b14aae256cd0f
+        run: |
+          json=$(ls -d .cef-sdk/*/cef_macos_*/archive.json 2>/dev/null | tail -1 || true)
+          [ -n "$json" ] || { echo "::error::the build left no CEF archive.json in .cef-sdk"; exit 1; }
+          sha1=$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha1"])' "$json")
+          echo "$json: $sha1"
+          [ "$sha1" = "$CEF_SHA1" ] || { echo "::error::CEF archive SHA-1 $sha1, expected $CEF_SHA1"; exit 1; }
+
       - name: dmgbuild
         run: |
           python -m venv "$RUNNER_TEMP/dmg"
@@ -371,7 +401,7 @@ jobs:
           name="arakun-$tag-macos-arm64"
           mkdir -p work dist
           # As tools/install.sh finds it.
-          framework=$(ls -d .cef-sdk/*/cef_macos_*/"Chromium Embedded Framework.framework" | tail -1)
+          framework=$(ls -d .cef-sdk/*/cef_macos_*/"Chromium Embedded Framework.framework" 2>/dev/null | tail -1 || true)
           [ -n "$framework" ] || { echo "::error::the build left no CEF framework in .cef-sdk"; exit 1; }
           tools/macos-app.sh --strip --framework "$framework" \
             target/aarch64-apple-darwin/release/arakun work/Arakun.app
@@ -398,6 +428,10 @@ jobs:
           test -f "$app/Contents/Resources/Assets.car"
           test -f "$app/Contents/Resources/LICENSE"
           test -f "$app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+          # What the notarize job signs before the framework.
+          echo "::group::Mach-O files in the framework"
+          find "$app/Contents/Frameworks" -type f -exec file {} + | grep 'Mach-O'
+          echo "::endgroup::"
           # Which images the icon catalog holds, for each macOS version and appearance.
           echo "::group::Assets.car"; xcrun assetutil --info "$app/Contents/Resources/Assets.car"; echo "::endgroup::"
           "$app/Contents/MacOS/arakun" --version
@@ -509,7 +543,11 @@ jobs:
           }
           fw="$APP/Contents/Frameworks/Chromium Embedded Framework.framework"
           if [ -d "$fw" ]; then
-            find "$fw" -name '*.dylib' -type f -print0 | while IFS= read -r -d '' lib; do sign "$lib"; done
+            # Every Mach-O in it (libraries, and helpers such as
+            # chrome_crashpad_handler), or notarization refuses the app.
+            find "$fw" -type f -print0 | while IFS= read -r -d '' f; do
+              if file -b "$f" | grep -q '^Mach-O'; then sign "$f"; fi
+            done
             sign "$fw"
           fi
           entitlements=$RUNNER_TEMP/entitlements.plist

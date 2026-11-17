@@ -174,34 +174,31 @@ fn write_transcript(path: &Path, transcript: &Transcript) -> std::io::Result<()>
     crate::durable::write_private(path, &bytes)
 }
 
-/// Writes `waiting`. What is written is no longer owed, unless a newer save
-/// of the file was handed over meanwhile; what fails goes to `unsaved`. A
-/// file already in `known` failed before, and said so then.
-fn write_all(
-    waiting: &mut Vec<Snapshot>,
-    unsaved: &mut Vec<Snapshot>,
-    known: &[PathBuf],
-    owed: &Owed,
-) {
-    for (path, number, transcript) in waiting.drain(..) {
-        match write_transcript(&path, &transcript) {
+/// Writes what is kept, in the order it was handed over. What is written is
+/// no longer owed, unless a newer save of the file was handed over meanwhile;
+/// what fails stays kept. A failure is said once per file, until it is written.
+fn write_all(kept: &mut Vec<Snapshot>, reported: &mut HashSet<PathBuf>, owed: &Owed) {
+    kept.retain(
+        |(path, number, transcript)| match write_transcript(path, transcript) {
             Ok(()) => {
+                reported.remove(path);
                 let mut owed = owed.lock().unwrap();
-                if owed.get(&path) == Some(&number) {
-                    owed.remove(&path);
+                if owed.get(path) == Some(number) {
+                    owed.remove(path);
                 }
+                false
             }
             Err(e) => {
-                if !known.contains(&path) {
+                if reported.insert(path.clone()) {
                     eprintln!(
                         "arakun server: could not save {}: {e}; it is kept and tried again",
                         path.display()
                     );
                 }
-                unsaved.push((path, number, transcript));
+                true
             }
-        }
-    }
+        },
+    );
 }
 
 impl Writer {
@@ -215,32 +212,30 @@ impl Writer {
             .name("arakun-server-save".into())
             .spawn(move || {
                 let owed = theirs;
-                // Snapshots whose write failed, for the next round.
-                let mut unsaved: Vec<Snapshot> = Vec::new();
+                // Snapshots not on disk yet: those handed over, and those whose
+                // write failed. Each file has only its newest. A failed one is
+                // tried again on every flush, not only when a batch of jobs
+                // starts: a flush may come in the batch that kept it.
+                let mut kept: Vec<Snapshot> = Vec::new();
+                let mut reported: HashSet<PathBuf> = HashSet::new();
                 while let Ok(first) = rx.recv() {
-                    // What failed last time goes first: anything newer for the
-                    // same file replaces it below. Of the saves waiting, only
-                    // the newest of each file is worth writing.
-                    let mut waiting = std::mem::take(&mut unsaved);
-                    let known: Vec<PathBuf> = waiting.iter().map(|s| s.0.clone()).collect();
                     for job in std::iter::once(first).chain(rx.try_iter()) {
                         match job {
                             Job::Save(path, number, transcript) => {
-                                waiting.retain(|s| s.0 != path);
-                                unsaved.retain(|s| s.0 != path);
-                                waiting.push((path, number, transcript));
+                                kept.retain(|s| s.0 != path);
+                                kept.push((path, number, transcript));
                             }
                             Job::Forget(path) => {
-                                waiting.retain(|s| s.0 != path);
-                                unsaved.retain(|s| s.0 != path);
+                                kept.retain(|s| s.0 != path);
+                                reported.remove(&path);
                             }
                             Job::Flush(done) => {
-                                write_all(&mut waiting, &mut unsaved, &known, &owed);
-                                let _ = done.send(unsaved.iter().map(|s| s.0.clone()).collect());
+                                write_all(&mut kept, &mut reported, &owed);
+                                let _ = done.send(kept.iter().map(|s| s.0.clone()).collect());
                             }
                         }
                     }
-                    write_all(&mut waiting, &mut unsaved, &known, &owed);
+                    write_all(&mut kept, &mut reported, &owed);
                 }
             })?;
         Ok(Writer {

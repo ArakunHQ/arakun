@@ -261,7 +261,14 @@ pub struct Prepaint {
     marked: Option<ShapedLine>,
 }
 
-fn fonts() -> [Font; 4] {
+/// Built once: the terminal paints every frame, and each build would allocate the
+/// feature and fallback lists again. Clones only bump their `Arc`s.
+fn fonts() -> &'static [Font; 4] {
+    static FONTS: std::sync::LazyLock<[Font; 4]> = std::sync::LazyLock::new(build_fonts);
+    &FONTS
+}
+
+fn build_fonts() -> [Font; 4] {
     let base = Font {
         family: theme::FONT_MONO.into(),
         features: FontFeatures::disable_ligatures(),

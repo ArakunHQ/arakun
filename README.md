@@ -296,7 +296,8 @@ freetype).
 
 **macOS:** open `arakun-<version>-macos-arm64.dmg` and drag `Arakun.app` into
 `Applications`. The app and the disk image are signed with a Developer ID and notarized by
-Apple.
+Apple. Releases up to v0.2.1 have `arakun-<version>-macos-arm64.tar.gz` instead: extract it
+and move `Arakun.app` to `Applications`.
 
 Arakun does not bundle the agents. Install the ones you want to use:
 

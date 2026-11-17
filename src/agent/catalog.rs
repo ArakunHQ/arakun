@@ -520,24 +520,29 @@ pub fn codex_options() -> Arc<Vec<ConfigOption>> {
     with_codex(|c| c.1.clone())
 }
 
-/// Keeps what a fresh Codex session reported, when it changed.
+/// Keeps what a fresh Codex session reported, when it changed. Writes the
+/// file after letting go of the cache, so readers don't wait for the disk.
+/// Blocking; run it off the main thread.
 pub fn remember_codex_options(raw: &Value) {
     let options = parse_config(raw);
     if options.is_empty() {
         return;
     }
-    with_codex(|c| {
+    let changed = with_codex(|c| {
         if c.0 == *raw {
-            return;
+            return false;
         }
+        *c = (raw.clone(), Arc::new(options));
+        true
+    });
+    if changed {
         let _ = crate::durable::write(
             &codex_cache_path(),
             json!({"fetched": unix_now(), "options": raw})
                 .to_string()
                 .as_bytes(),
         );
-        *c = (raw.clone(), Arc::new(options));
-    });
+    }
 }
 
 /// Asks Codex for its options when none are cached and it is installed: a

@@ -1678,10 +1678,7 @@ impl Shell {
                 }
                 SettingsEvent::ClaudeSignIn => {
                     this.close_modal(window, cx);
-                    if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude)
-                    {
-                        this.spawn_terminal_command(Some(cmd), true, window, cx);
-                    }
+                    this.sign_in(crate::agent::AgentKind::Claude, window, cx);
                 }
                 SettingsEvent::ClaudeSignOut => {
                     this.close_modal(window, cx);
@@ -1690,15 +1687,14 @@ impl Shell {
                         this.spawn_terminal_command(Some(cmd), true, window, cx);
                     }
                 }
-                SettingsEvent::CodexSignIn | SettingsEvent::CodexSignOut => {
+                SettingsEvent::CodexSignIn => {
                     this.close_modal(window, cx);
-                    let kind = crate::agent::AgentKind::Codex;
-                    let cmd = if matches!(ev, SettingsEvent::CodexSignIn) {
-                        crate::agent::login_command(kind)
-                    } else {
-                        crate::agent::logout_command(kind)
-                    };
-                    if let Some(cmd) = cmd {
+                    this.sign_in(crate::agent::AgentKind::Codex, window, cx);
+                }
+                SettingsEvent::CodexSignOut => {
+                    this.close_modal(window, cx);
+                    if let Some(cmd) = crate::agent::logout_command(crate::agent::AgentKind::Codex)
+                    {
                         this.spawn_terminal_command(Some(cmd), true, window, cx);
                     }
                 }

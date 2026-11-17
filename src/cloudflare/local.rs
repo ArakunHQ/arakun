@@ -74,26 +74,21 @@ fn opencode_mcp_server() -> Option<String> {
 }
 
 /// Codex keeps servers as `[mcp_servers.<name>]` tables with `url` and `enabled`.
-/// A line scan covers what `codex mcp add` writes, without a TOML parser.
+/// A line scan covers what `codex mcp add` writes, without a TOML parser: the
+/// first enabled server with Cloudflare's URL.
 fn codex_mcp_server(toml: &str) -> Option<String> {
-    let mut found: Option<(String, bool)> = None;
+    // (name, has Cloudflare's URL, enabled) of the table being read.
     let mut current: Option<(String, bool, bool)> = None;
-    let mut done = |c: Option<(String, bool, bool)>| {
-        if let Some((name, cloudflare, enabled)) = c
-            && cloudflare
-            && found.is_none()
-        {
-            found = Some((name, enabled));
-        }
+    let done = |c: Option<(String, bool, bool)>| {
+        c.filter(|(_, cloudflare, enabled)| *cloudflare && *enabled)
+            .map(|(name, ..)| name)
     };
     for line in toml.lines().map(str::trim) {
         if line.starts_with('[') {
-            done(current.take());
-            current = line
-                .strip_prefix("[mcp_servers.")
-                .and_then(|r| r.strip_suffix(']'))
-                .filter(|n| !n.contains('.') || n.starts_with('"'))
-                .map(|n| (n.trim_matches('"').to_string(), false, true));
+            if let Some(name) = done(current.take()) {
+                return Some(name);
+            }
+            current = codex_server_header(line).map(|n| (n, false, true));
             continue;
         }
         let Some((_, cloudflare, enabled)) = current.as_mut() else {
@@ -102,14 +97,65 @@ fn codex_mcp_server(toml: &str) -> Option<String> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
+        // Neither a URL nor a boolean holds a `#`, so it starts a comment.
+        let value = value.split('#').next().unwrap_or_default().trim();
         match key.trim() {
             "url" => *cloudflare = value.contains("mcp.cloudflare.com"),
-            "enabled" => *enabled = value.trim() != "false",
+            "enabled" => *enabled = value != "false",
             _ => {}
         }
     }
-    done(current.take());
-    found.filter(|(_, enabled)| *enabled).map(|(name, _)| name)
+    done(current)
+}
+
+/// The server a `[mcp_servers.<name>]` header opens, bare or quoted, with an
+/// optional `# comment` after it. `None` for any other table, such as a
+/// server's `[mcp_servers.<name>.env]`.
+fn codex_server_header(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("[mcp_servers.")?;
+    let (name, after) = match rest.chars().next()? {
+        q @ ('"' | '\'') => {
+            let body = &rest[1..];
+            let end = body.find(q)?;
+            (&body[..end], &body[end + 1..])
+        }
+        _ => {
+            let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))?;
+            (&rest[..end], &rest[end..])
+        }
+    };
+    let after = after.strip_prefix(']')?.trim_start();
+    (!name.is_empty() && (after.is_empty() || after.starts_with('#'))).then(|| name.to_string())
+}
+
+/// The `codex` to run: the user's, else the one installed with the adapter.
+/// Quoted for the terminal's shell.
+fn codex_program() -> String {
+    match crate::agent::codex_cli() {
+        Some(bin) => {
+            let bin = shell_word(&bin.display().to_string());
+            // PowerShell runs a quoted path only after `&`.
+            if cfg!(windows) && bin.starts_with('\'') {
+                format!("& {bin}")
+            } else {
+                bin
+            }
+        }
+        None => "codex".into(),
+    }
+}
+
+/// `s` as one word for the terminal's shell: sh, or PowerShell on Windows.
+fn shell_word(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.:/@".contains(c) || (cfg!(windows) && c == '\\'))
+    {
+        s.to_string()
+    } else if cfg!(windows) {
+        format!("'{}'", s.replace('\'', "''"))
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
 }
 
 /// `codex mcp list --json` says whether each server is signed in; it does not
@@ -145,7 +191,11 @@ pub fn mcp_status(agent: Agent) -> Mcp {
         Agent::Codex => "codex",
         Agent::WorkersAi => return Mcp::Missing,
     };
-    let bin = crate::agent::which(bin).unwrap_or_else(|| bin.into());
+    let bin = match agent {
+        Agent::Codex => crate::agent::codex_cli(),
+        _ => crate::agent::which(bin),
+    }
+    .unwrap_or_else(|| bin.into());
     let json = (agent == Agent::Codex).then_some("--json");
     let out = crate::platform::command(bin)
         .args(["mcp", "list"])
@@ -271,12 +321,20 @@ pub fn mcp_connect_command(agent: Agent, state: &Mcp) -> String {
             ),
             _ => "opencode mcp auth cloudflare".into(),
         },
-        // `codex mcp add` signs in to an OAuth server right away.
-        Agent::Codex => match state {
-            Mcp::Missing => format!("codex mcp add cloudflare --url {MCP_URL}"),
-            _ => "codex mcp login cloudflare".into(),
-        },
+        // `codex mcp add` signs in to an OAuth server right away. The server
+        // can have another name than `cloudflare`; sign in to the one found.
+        Agent::Codex => {
+            let name = mcp_server(Agent::Codex);
+            codex_connect_command(&codex_program(), state, name.as_deref())
+        }
         Agent::WorkersAi => String::new(),
+    }
+}
+
+fn codex_connect_command(codex: &str, state: &Mcp, name: Option<&str>) -> String {
+    match (state, name) {
+        (Mcp::Missing, _) | (_, None) => format!("{codex} mcp add cloudflare --url {MCP_URL}"),
+        (_, Some(name)) => format!("{codex} mcp login {}", shell_word(name)),
     }
 }
 
@@ -438,6 +496,44 @@ mod tests {
             "[mcp_servers.\"cf\"]\nurl = \"https://mcp.cloudflare.com/mcp\"\nenabled = false\n";
         assert_eq!(codex_mcp_server(off), None);
         assert_eq!(codex_mcp_server("[mcp_servers.docs]\nurl = \"x\"\n"), None);
+    }
+
+    #[test]
+    fn codex_config_skips_a_disabled_server() {
+        let toml = "[mcp_servers.old]\nurl = \"https://mcp.cloudflare.com/mcp\"\nenabled = false\n\n\
+                    [mcp_servers.cf]\nurl = \"https://mcp.cloudflare.com/mcp\"\n";
+        assert_eq!(codex_mcp_server(toml).as_deref(), Some("cf"));
+    }
+
+    #[test]
+    fn codex_config_allows_trailing_comments() {
+        let toml = "[mcp_servers.cloudflare] # work account\nurl = \"https://mcp.cloudflare.com/mcp\" # oauth\n";
+        assert_eq!(codex_mcp_server(toml).as_deref(), Some("cloudflare"));
+        let quoted = "[mcp_servers.'cf'] # quoted\nurl = \"https://mcp.cloudflare.com/mcp\"\n";
+        assert_eq!(codex_mcp_server(quoted).as_deref(), Some("cf"));
+        let paused = "[mcp_servers.cloudflare]\nurl = \"https://mcp.cloudflare.com/mcp\"\nenabled = false # paused\n";
+        assert_eq!(codex_mcp_server(paused), None);
+        assert_eq!(
+            codex_server_header("[mcp_servers.cloudflare.env] # x"),
+            None
+        );
+        assert_eq!(codex_server_header("[mcp_servers.cloudflare] x"), None);
+    }
+
+    #[test]
+    fn codex_connect_signs_in_to_the_found_server() {
+        assert_eq!(
+            codex_connect_command("codex", &Mcp::NeedsAuth, Some("cf")),
+            "codex mcp login cf"
+        );
+        assert_eq!(
+            codex_connect_command("codex", &Mcp::Missing, None),
+            format!("codex mcp add cloudflare --url {MCP_URL}")
+        );
+        assert_eq!(
+            codex_connect_command("codex", &Mcp::NeedsAuth, Some("my cf")),
+            "codex mcp login 'my cf'"
+        );
     }
 
     #[test]

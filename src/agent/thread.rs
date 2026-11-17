@@ -1686,7 +1686,11 @@ impl Thread {
                     super::catalog::remember_opencode_options(&v["configOptions"]);
                 }
                 if fresh && t.kind == AgentKind::Codex {
-                    super::catalog::remember_codex_options(&v["configOptions"]);
+                    let raw = v["configOptions"].clone();
+                    cx.background_spawn(async move {
+                        super::catalog::remember_codex_options(&raw)
+                    })
+                    .detach();
                 }
                 t.session_ready(id, &v, cx)
             });

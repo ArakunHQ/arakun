@@ -250,6 +250,8 @@ pub struct SettingsDialog {
     opencode: Vec<String>,
     /// How Codex is signed in, if it is.
     codex: Option<&'static str>,
+    /// The variable with Codex's API key, when the environment has one.
+    codex_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -413,6 +415,7 @@ impl SettingsDialog {
             claude_access: None,
             opencode: crate::agent::opencode_providers(),
             codex: crate::agent::codex_sign_in(),
+            codex_env: crate::agent::codex_env_key(),
             input,
             section,
             voice,
@@ -664,6 +667,16 @@ impl SettingsDialog {
         self.select(shown[next], cx);
     }
 
+    /// A sign-in in `~/.codex` comes first, as it does for the adapter; a key
+    /// only in the environment is named by its variable, never shown.
+    fn codex_status(&self) -> String {
+        match (self.codex, self.codex_env) {
+            (Some(how), _) => format!("Signed in · {how}"),
+            (None, Some(var)) => format!("API key · {var}"),
+            (None, None) => "Not signed in".into(),
+        }
+    }
+
     /// The line under a section's name in the list.
     fn summary(&self, s: Section) -> String {
         let on_off = |b: bool| if b { "on" } else { "off" };
@@ -692,10 +705,7 @@ impl SettingsDialog {
             Section::Droid => "Skills and MCP servers".into(),
             Section::OpenCode if self.opencode.is_empty() => "No providers signed in".into(),
             Section::OpenCode => self.opencode.join(", "),
-            Section::Codex => match self.codex {
-                Some(how) => format!("Signed in · {how}"),
-                None => "Not signed in".into(),
-            },
+            Section::Codex => self.codex_status(),
             Section::Voice => match (self.voice.enabled, self.voice_key) {
                 (false, _) => "Read aloud off".into(),
                 (true, Some(false)) => "On · needs an API key".into(),
@@ -1003,12 +1013,11 @@ impl SettingsDialog {
                 let signed_in = self.codex.is_some();
                 group(vec![
                     row(
-                        match self.codex {
-                            Some(how) => format!("Signed in · {how}"),
-                            None => "Not signed in".to_string(),
-                        },
+                        self.codex_status(),
                         if signed_in {
                             "The same sign-in the codex CLI uses; Arakun reads it from ~/.codex."
+                        } else if self.codex_env.is_some() {
+                            "Sessions use the API key in the environment. Sign in to use your ChatGPT plan instead."
                         } else {
                             "Runs codex login in a terminal; approve the sign-in with ChatGPT in the browser. CODEX_API_KEY or OPENAI_API_KEY works too."
                         },

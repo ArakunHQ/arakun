@@ -1395,11 +1395,7 @@ impl Shell {
                 self.open_tasks_tab(window, cx);
                 self.tasks_view.update(cx, |v, cx| v.select_task(&id, cx));
             }
-            Target::SignIn(kind) => {
-                if let Some(cmd) = crate::agent::login_command(kind) {
-                    self.spawn_terminal_command(Some(cmd), true, window, cx);
-                }
-            }
+            Target::SignIn(kind) => self.sign_in(kind, window, cx),
             Target::View(View::Automations) => self.open_automations(false, window, cx),
             Target::View(v) => {
                 self.open_view(v, gpui::point(gpui::px(0.), gpui::px(0.)), window, cx)

@@ -294,10 +294,7 @@ impl Shell {
             }
             ThreadEvent::LoginRequested => {
                 let kind = thread.read(cx).kind();
-                match crate::agent::login_command(kind) {
-                    Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
-                    None => eprintln!("arakun: no sign-in command found for {}", kind.label()),
-                }
+                self.sign_in(kind, window, cx);
             }
             ThreadEvent::Rewound { meta, prompt } => {
                 let meta = meta.clone();

@@ -210,6 +210,14 @@ pub fn codex_sign_in() -> Option<&'static str> {
     codex_auth_label(&v)
 }
 
+/// The variable that holds Codex's API key when only the environment has one:
+/// `CODEX_API_KEY` or `OPENAI_API_KEY`. Names it, never reads the key out.
+pub fn codex_env_key() -> Option<&'static str> {
+    ["CODEX_API_KEY", "OPENAI_API_KEY"]
+        .into_iter()
+        .find(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+}
+
 fn codex_auth_label(auth: &serde_json::Value) -> Option<&'static str> {
     match auth["auth_mode"].as_str() {
         Some(m) if m.eq_ignore_ascii_case("chatgpt") => Some("ChatGPT"),
@@ -679,10 +687,7 @@ pub fn resolve(
             // arakun does not call `authenticate`, so a key that is only in the
             // environment needs this. The adapter uses it only when Codex has no
             // sign-in, so a ChatGPT login still comes first.
-            let has_key = ["CODEX_API_KEY", "OPENAI_API_KEY"]
-                .iter()
-                .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
-            if has_key && std::env::var_os("DEFAULT_AUTH_REQUEST").is_none() {
+            if codex_env_key().is_some() && std::env::var_os("DEFAULT_AUTH_REQUEST").is_none() {
                 spec.env.push((
                     "DEFAULT_AUTH_REQUEST".into(),
                     r#"{"methodId":"api-key"}"#.into(),
@@ -785,6 +790,12 @@ fn install_claude_adapter() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Installs the Codex adapter, and with it the `codex` CLI, when it is missing
+/// or old, so a first sign-in works before any session ran. Blocking.
+pub fn install_codex() -> Result<()> {
+    install_codex_adapter()
 }
 
 /// The Codex adapter goes in a folder of its own, so starting the Claude adapter

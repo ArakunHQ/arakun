@@ -158,7 +158,7 @@ impl Section {
             }
             Section::Voice => "Droid's questions, read aloud with an ElevenLabs voice.",
             Section::Privacy => {
-                "What Arakun sends to its PostHog, under a random id. Never prompts, replies, files or URLs."
+                "What shows on screen, and what Arakun sends to its PostHog under a random id."
             }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "Your pending tasks, inside Arakun.",
@@ -189,7 +189,7 @@ impl Section {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
             }
             Section::Privacy => {
-                "telemetry analytics usage counts crash reports privacy posthog data"
+                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide streamer stream demo screen share sharing incognito"
             }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "tasks sign in sign out email",
@@ -248,6 +248,11 @@ const SHORTCUTS: &[Shortcut] = &[
         "Navigate",
         "Ctrl+= / Ctrl+- / Ctrl+0",
         "Zoom the interface in / out / back to 100%",
+    ),
+    (
+        "Navigate",
+        "Ctrl+Shift+H",
+        "Redacted mode: hide emails, keys and codes on screen",
     ),
     ("Sessions", "Ctrl+T", "New session"),
     ("Sessions", "Esc", "Stop the running agent turn"),
@@ -932,6 +937,20 @@ impl SettingsDialog {
                 )])
             }
             Section::Privacy => {
+                let redacted = row(
+                    "Redacted mode",
+                    "For streams, demos and screen sharing: hides account emails, keys and tokens, pairing codes, addresses and your user name, in the views, the terminals and the agents' replies. Ctrl+Shift+H turns it on and off.",
+                    switch(crate::redact::on()).into_any_element(),
+                )
+                .id("set-redacted")
+                .cursor_pointer()
+                .on_click(cx.listener(|_, _, _, cx| {
+                    if let Err(e) = crate::redact::set(!crate::redact::on()) {
+                        eprintln!("arakun: redacted mode will not last past a restart: {e}");
+                    }
+                    cx.refresh_windows();
+                }))
+                .into_any_element();
                 let mut rows = vec![self.telemetry_row(true, cx), self.telemetry_row(false, cx)];
                 if let Some(e) = &self.telemetry_error {
                     rows.push(
@@ -944,7 +963,10 @@ impl SettingsDialog {
                             .into_any_element(),
                     );
                 }
-                stack(vec![titled("Sent to Arakun", rows)])
+                stack(vec![
+                    titled("On screen", vec![redacted]),
+                    titled("Sent to Arakun", rows),
+                ])
             }
             Section::Claude => {
                 let signed_in = self.claude.is_some();
@@ -2627,6 +2649,8 @@ mod tests {
         assert!(found("branch").contains(&Section::Branches));
         assert!(found("haiku").contains(&Section::Branches));
         assert!(found("crash").contains(&Section::Privacy));
+        assert!(found("redacted").contains(&Section::Privacy));
+        assert!(found("stream").contains(&Section::Privacy));
         assert!(!found("crash").contains(&Section::General));
         assert!(found("factory").contains(&Section::Droid));
         assert!(found("ctrl+w").contains(&Section::Shortcuts));

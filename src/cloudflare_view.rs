@@ -192,7 +192,7 @@ impl EventEmitter<CloudflareEvent> for CloudflareView {}
 impl CloudflareView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let port = cx.new(|cx| TextInput::new("3000", cx));
-        let emails = cx.new(|cx| TextInput::new("you@example.com, *@team.dev", cx));
+        let emails = cx.new(|cx| TextInput::new("you@example.com, *@team.dev", cx).redacted());
         let on_input = |this: &mut Self,
                         _: Entity<TextInput>,
                         ev: &InputEvent,
@@ -1274,7 +1274,11 @@ impl CloudflareView {
                             .min_w_0()
                             .truncate()
                             .text_color(theme::text_muted())
-                            .child(format!("{} · {}", c.origin_ip, c.colos.join(", "))),
+                            .child(format!(
+                                "{} · {}",
+                                crate::redact::value(&c.origin_ip),
+                                c.colos.join(", ")
+                            )),
                     )
                     .child(
                         div()
@@ -1407,7 +1411,7 @@ impl CloudflareView {
         if !w.author.is_empty() {
             meta.push(format!(
                 "by {}",
-                w.author.split('@').next().unwrap_or(&w.author)
+                crate::redact::value(w.author.split('@').next().unwrap_or(&w.author))
             ));
         }
         if !w.domains.is_empty() {
@@ -2001,9 +2005,9 @@ impl CloudflareView {
         }
         for e in &s.audit {
             let who = if e.resource.is_empty() {
-                e.actor.clone()
+                crate::redact::value(&e.actor)
             } else {
-                format!("{} · {}", e.actor, e.resource)
+                format!("{} · {}", crate::redact::value(&e.actor), e.resource)
             };
             audit = audit.child(line_item(
                 "clock01",
@@ -2033,7 +2037,7 @@ impl CloudflareView {
             .child(
                 div().text_size(px(ui::TEXT_SM)).line_height(px(18.)).text_color(theme::text_muted()).child(format!(
                     "Arakun reads the account with the cf CLI's sign-in ({}). Agent sessions use the same sign-in from any project: they can run cf to read DNS, Tunnels, Workers, logs and settings. Granting read access asks Cloudflare once for every read permission this tab uses; writes stay limited to what you approved before.",
-                    if s.profile.is_empty() { "default profile".to_string() } else { format!("profile {}", s.profile) }
+                    if s.profile.is_empty() { "default profile".to_string() } else { format!("profile {}", crate::redact::value(&s.profile)) }
                 )),
             )
             .child(
@@ -2297,7 +2301,7 @@ fn dns_row(s: &Snapshot, r: &DnsRecord) -> Div {
                 .truncate()
                 .font_family(theme::FONT_MONO)
                 .text_color(theme::text_subtle())
-                .child(format!("→ {}", r.content)),
+                .child(format!("→ {}", crate::redact::text(&r.content))),
         )
         .when(r.proxied, |d| d.child(ui::tag("proxied", theme::accent())))
         .when_some(note, |d, (text, bad)| {

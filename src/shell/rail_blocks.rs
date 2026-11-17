@@ -622,17 +622,22 @@ impl Shell {
             }
             Piece::User => {
                 let (git_name, email) = git_identity();
-                let shown = item
-                    .label
-                    .clone()
-                    .filter(|l| !l.is_empty())
-                    .unwrap_or_else(|| {
-                        if git_name.is_empty() {
-                            "You".into()
-                        } else {
-                            git_name.clone()
-                        }
-                    });
+                let email = crate::redact::value(email);
+                // The avatar's letter would give the name away too.
+                let shown: String = if crate::redact::on() {
+                    "You".into()
+                } else {
+                    item.label
+                        .clone()
+                        .filter(|l| !l.is_empty())
+                        .unwrap_or_else(|| {
+                            if git_name.is_empty() {
+                                "You".into()
+                            } else {
+                                git_name.clone()
+                            }
+                        })
+                };
                 div()
                     .id(gpui::ElementId::Name(row_id.clone()))
                     .flex()

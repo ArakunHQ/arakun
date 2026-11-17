@@ -439,7 +439,11 @@ impl PostHogView {
                 .child(ui::text(
                     Type::Body,
                     theme::text_muted(),
-                    format!("{} · {} · ", p.email, p.org),
+                    format!(
+                        "{} · {} · ",
+                        crate::redact::value(&p.email),
+                        crate::redact::value(&p.org)
+                    ),
                 ))
                 .child(ui::text(Type::Body, theme::text(), p.name.clone()))
                 .when(self.auto, |d| {
@@ -547,7 +551,12 @@ impl PostHogView {
         for (i, p) in dir.projects.iter().enumerate() {
             let g = format!("{} · {}", p.email, p.org);
             if g != group {
-                rows.push(ui::menu_heading(&g).into_any_element());
+                let shown = format!(
+                    "{} · {}",
+                    crate::redact::value(&p.email),
+                    crate::redact::value(&p.org)
+                );
+                rows.push(ui::menu_heading(&shown).into_any_element());
                 group = g;
             }
             let on = self.current.as_ref() == Some(p);

@@ -273,7 +273,7 @@ fn notice_row(n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl IntoElement
             theme::text_muted()
         })
         .truncate()
-        .child(n.title.clone());
+        .child(crate::redact::text(&n.title).into_owned());
     let age = crate::github::pulse::span(now.saturating_sub(n.at));
     div()
         .id(("inbox-notice", n.id as usize))
@@ -295,8 +295,12 @@ fn notice_row(n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl IntoElement
                 .child(title)
                 .when(!n.subtitle.is_empty(), |d| {
                     d.child(
-                        ui::text(Type::Caption, theme::text_subtle(), n.subtitle.clone())
-                            .truncate(),
+                        ui::text(
+                            Type::Caption,
+                            theme::text_subtle(),
+                            crate::redact::text(&n.subtitle).into_owned(),
+                        )
+                        .truncate(),
                     )
                 }),
         )

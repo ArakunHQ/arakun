@@ -61,6 +61,7 @@ mod platform;
 mod posthog;
 mod posthog_view;
 mod prompts;
+mod redact;
 mod runs_view;
 mod schedule;
 mod server;
@@ -193,6 +194,8 @@ fn main() {
                 bind("ctrl-d", shell::SplitRight, "Shell && !Terminal"),
                 bind("ctrl-shift-d", shell::SplitDown, "Shell && !Terminal"),
                 bind("ctrl-alt-d", shell::ToggleDance, "Shell && !Terminal"),
+                // Works from a terminal too: hiding the screen can't wait for a click elsewhere.
+                bind("ctrl-shift-h", shell::ToggleRedacted, "Shell"),
                 bind("ctrl-alt-left", shell::FocusOtherPane, "Shell && !Terminal"),
                 bind(
                     "ctrl-alt-right",

@@ -102,6 +102,9 @@ pub struct TextInput {
     mono: bool,
     /// Draws every character as `*` and keeps the text off the clipboard.
     secret: bool,
+    /// Draws every character as `*` while redacted mode is on, for what is
+    /// private but fine to copy: a pairing link, an email.
+    redacted: bool,
     /// A caret of its own color, drawn 2 px wide (the palette's accent caret).
     caret: Option<gpui::Hsla>,
     selected_range: Range<usize>,
@@ -124,6 +127,7 @@ impl TextInput {
             placeholder: placeholder.into(),
             mono: false,
             secret: false,
+            redacted: false,
             caret: None,
             selected_range: 0..0,
             selection_reversed: false,
@@ -142,6 +146,11 @@ impl TextInput {
 
     pub fn secret(mut self) -> Self {
         self.secret = true;
+        self
+    }
+
+    pub fn redacted(mut self) -> Self {
+        self.redacted = true;
         self
     }
 
@@ -624,7 +633,7 @@ impl Element for TextElement {
 
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), theme::mix(0.35))
-        } else if input.secret {
+        } else if input.secret || (input.redacted && crate::redact::on()) {
             // Same byte length per char, so offsets into `content` still index the line.
             let masked: String = content.chars().map(|c| "*".repeat(c.len_utf8())).collect();
             (masked.into(), style.color)

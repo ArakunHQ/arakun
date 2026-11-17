@@ -217,7 +217,11 @@ impl CloudflareView {
                             .truncate()
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
-                            .child(format!("{} · {}", s.account_name, s.email))
+                            .child(format!(
+                                "{} · {}",
+                                crate::redact::value(&s.account_name),
+                                crate::redact::value(&s.email)
+                            ))
                     })),
             )
             .child(div().flex_1())
@@ -1548,7 +1552,7 @@ impl CloudflareView {
                                 .truncate()
                                 .ty(Type::Mono)
                                 .text_color(theme::text())
-                                .child(r.to.clone()),
+                                .child(crate::redact::text(&r.to).into_owned()),
                         )
                         .child(icon("arrow-right01", 12.).text_color(theme::text_faint()))
                         .when(!r.targets.is_empty(), |d| {
@@ -1561,7 +1565,7 @@ impl CloudflareView {
                                 .truncate()
                                 .ty(Type::Body)
                                 .text_color(theme::text_muted())
-                                .child(to),
+                                .child(crate::redact::text(&to).into_owned()),
                         ),
                 );
             }

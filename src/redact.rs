@@ -1,0 +1,451 @@
+//! Redacted mode, for screen sharing, streams and demos. While it is on, the
+//! window hides what identifies the user or opens something of theirs:
+//! emails and account names, keys and tokens, pairing codes and addresses.
+//!
+//! It is kept as a marker file, so a demo that starts with it on does not
+//! show anything in the first frames after a restart. `ARAKUN_REDACTED=1`
+//! turns it on for one run without touching the file.
+
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// What stands for a hidden character.
+pub const DOT: char = '•';
+
+/// What stands for a whole hidden value: always this long, so it does not
+/// give away the length of what it hides.
+pub const MASK: &str = "••••••••";
+
+/// 0: not read yet, 1: off, 2: on.
+static STATE: AtomicU8 = AtomicU8::new(0);
+
+/// Whether the window hides personal data right now.
+pub fn on() -> bool {
+    match STATE.load(Ordering::Relaxed) {
+        0 => {
+            let on =
+                std::env::var("ARAKUN_REDACTED").is_ok_and(|v| v == "1") || marker_path().is_file();
+            STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+        s => s == 2,
+    }
+}
+
+/// Turns the mode on or off and remembers it. The switch takes effect even
+/// when the marker file cannot be written; the error says it will not last.
+pub fn set(on: bool) -> std::io::Result<()> {
+    STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+    let path = marker_path();
+    if on {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, "hide personal data on screen\n")
+    } else {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn marker_path() -> std::path::PathBuf {
+    crate::platform::app_dir().join("redacted")
+}
+
+/// `value` as it is, or [`MASK`] while the mode is on. For what is private as
+/// a whole: an account's email, an account id, a key, a pairing code.
+pub fn value(value: &str) -> String {
+    if on() && !value.is_empty() {
+        MASK.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// `text` with what looks private masked while the mode is on, and as it is
+/// otherwise. For free text that may hold an email or a key among other words.
+pub fn text(text: &str) -> Cow<'_, str> {
+    if !on() {
+        return Cow::Borrowed(text);
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    if mask(&mut chars, me()) {
+        Cow::Owned(chars.into_iter().collect())
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// `text` masked as [`text`] masks it, but with `*` for each byte of a hidden
+/// character, so every byte offset into it still points at the same place:
+/// style runs, links, selections and search hits stay valid. `None` when the
+/// mode is off or nothing needed hiding.
+pub fn same_bytes(text: &str) -> Option<String> {
+    if !on() {
+        return None;
+    }
+    stars(text, me())
+}
+
+fn stars(text: &str, me: &Me) -> Option<String> {
+    let mut chars: Vec<char> = text.chars().collect();
+    if !mask(&mut chars, me) {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    for (was, now) in text.chars().zip(chars) {
+        if was == now {
+            out.push(was);
+        } else {
+            out.extend(std::iter::repeat_n('*', was.len_utf8()));
+        }
+    }
+    Some(out)
+}
+
+/// Who the user is, as text on screen shows it.
+pub struct Me {
+    /// The home folder, the user's name being its last part.
+    home: String,
+    /// Words that name the user or the machine: the user name and the host
+    /// name, as a shell prompt shows them (`ann@ann-laptop`).
+    names: Vec<String>,
+}
+
+impl Me {
+    fn new(home: &str, host: Option<&str>) -> Self {
+        let user = home
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default();
+        let mut names = vec![user.to_string()];
+        if let Some(host) = host {
+            names.push(host.to_string());
+            // A prompt shows `ann-laptop`, the machine knows `ann-laptop.lan`.
+            if let Some((short, _)) = host.split_once('.') {
+                names.push(short.to_string());
+            }
+        }
+        // Two letters would mask too many words that only look like them.
+        names.retain(|n| n.chars().count() >= 3);
+        Self {
+            home: home.to_string(),
+            names,
+        }
+    }
+}
+
+fn me() -> &'static Me {
+    static ME: std::sync::OnceLock<Me> = std::sync::OnceLock::new();
+    ME.get_or_init(|| {
+        let home = crate::platform::home().to_string_lossy().into_owned();
+        Me::new(&home, host_name().as_deref())
+    })
+}
+
+#[cfg(unix)]
+fn host_name() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for its whole length, which is what we pass.
+    let r = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if r != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8(buf[..end].to_vec()).ok()
+}
+
+#[cfg(not(unix))]
+fn host_name() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok()
+}
+
+/// Masks, in place, what looks private in `chars`: emails, values shaped like
+/// keys or tokens, the value of a `…KEY=` or `…TOKEN:` pair, the word after
+/// `Bearer`, IPv4 addresses, the user's name in the home folder, and the user
+/// and host names as words (`ann@ann-laptop`). Every hidden character becomes
+/// one [`DOT`], so the text keeps its width: a terminal's columns stay where
+/// they were. Returns whether it masked anything.
+pub fn mask(chars: &mut [char], me: &Me) -> bool {
+    let mut changed = mask_home(chars, &me.home);
+    let mut i = 0;
+    // The word before the current one, upper-cased, and the separator between.
+    let mut prev = String::new();
+    let mut sep = String::new();
+    while i < chars.len() {
+        if !is_word(chars[i]) {
+            sep.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_word(chars[i]) {
+            i += 1;
+        }
+        let word: String = chars[start..i].iter().collect();
+        let between = sep.trim_matches(|c: char| c == ' ' || c == '"' || c == '\'');
+        let keyed = matches!(between, "=" | ":") && names_secret(&prev);
+        let bearer = between.is_empty() && sep.contains(' ') && prev == "BEARER";
+        if keyed || bearer {
+            // The value runs to the next space or quote: a base64 key has `/`
+            // and `=` in it, which end a word.
+            let mut end = i;
+            while end < chars.len()
+                && !matches!(
+                    chars[end],
+                    ' ' | '\t' | '\n' | '\r' | '"' | '\'' | ',' | ';'
+                )
+            {
+                end += 1;
+            }
+            changed |= dot(&mut chars[start..end], 0);
+            i = end;
+        } else if let Some(at) = word.find('@').filter(|_| is_email(&word)) {
+            // A full stop after the address ends the sentence, not the address.
+            let end = i - (word.len() - word.trim_end_matches('.').len());
+            let at = start + word[..at].chars().count();
+            changed |= dot(&mut chars[start..at], 0);
+            changed |= dot(&mut chars[at + 1..end], 0);
+        } else if looks_secret(&word) {
+            changed |= dot(&mut chars[start..i], 4);
+        } else if is_public_ipv4(&word) {
+            for c in &mut chars[start..i] {
+                if *c != '.' {
+                    *c = DOT;
+                    changed = true;
+                }
+            }
+        } else {
+            // `ann@ann-laptop`: each side on its own.
+            let mut at = start;
+            for part in word.split('@') {
+                let len = part.chars().count();
+                let bare = part.trim_end_matches('.');
+                if me.names.iter().any(|n| n == bare) {
+                    changed |= dot(&mut chars[at..at + bare.chars().count()], 0);
+                }
+                at += len + 1;
+            }
+        }
+        prev = word.to_ascii_uppercase();
+        sep.clear();
+    }
+    changed
+}
+
+/// Characters a word, an email or a token is made of.
+fn is_word(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | '@' | '%')
+}
+
+/// Dots over `chars` past the first `keep`; whether there was any to cover.
+fn dot(chars: &mut [char], keep: usize) -> bool {
+    let mut changed = false;
+    for c in chars.iter_mut().skip(keep) {
+        if *c != DOT {
+            *c = DOT;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Masks the user's name wherever the home folder shows, `/home/ann/x`
+/// becoming `/home/•••/x`.
+fn mask_home(chars: &mut [char], home: &str) -> bool {
+    let home: Vec<char> = home.trim_end_matches(['/', '\\']).chars().collect();
+    let name = home
+        .iter()
+        .rev()
+        .take_while(|c| !matches!(c, '/' | '\\'))
+        .count();
+    // `/` or `C:\` alone has no name to hide.
+    if name == 0 || name == home.len() || chars.len() < home.len() {
+        return false;
+    }
+    let mut changed = false;
+    let mut i = 0;
+    while i + home.len() <= chars.len() {
+        if chars[i..i + home.len()] == home[..] {
+            changed |= dot(&mut chars[i + home.len() - name..i + home.len()], 0);
+            i += home.len();
+        } else {
+            i += 1;
+        }
+    }
+    changed
+}
+
+/// A name such as `OPENAI_API_KEY`, `token` or `password`, whose value is a secret.
+fn names_secret(upper: &str) -> bool {
+    ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"]
+        .iter()
+        .any(|w| upper.contains(w))
+        && upper != "KEYBOARD"
+        && !upper.ends_with("_PATH")
+        && !upper.ends_with("_FILE")
+}
+
+fn is_email(word: &str) -> bool {
+    let Some((user, domain)) = word.split_once('@') else {
+        return false;
+    };
+    let domain = domain.trim_end_matches('.');
+    // `git@github.com:o/r` is a remote, the same for everyone.
+    !user.is_empty()
+        && user != "git"
+        && !domain.contains('@')
+        && domain.rsplit_once('.').is_some_and(|(name, tld)| {
+            !name.is_empty() && tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
+        })
+}
+
+/// Known key prefixes, and long mixed-case words with digits that read as random.
+fn looks_secret(word: &str) -> bool {
+    const PREFIXES: [&str; 22] = [
+        "sk-",
+        "sk_",
+        "pk_",
+        "rk_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "phc_",
+        "phx_",
+        "phs_",
+        "AKIA",
+        "AIza",
+        "glpat-",
+        "eyJ",
+        "sbp_",
+        "npm_",
+        "hf_",
+    ];
+    if word.len() >= 16 && PREFIXES.iter().any(|p| word.starts_with(p)) {
+        return true;
+    }
+    let letters = word.chars().filter(char::is_ascii_alphabetic).count();
+    let digits = word.chars().filter(char::is_ascii_digit).count();
+    let upper = word.chars().any(|c| c.is_ascii_uppercase());
+    let lower = word.chars().any(|c| c.is_ascii_lowercase());
+    word.len() >= 24 && !word.contains(['.', '@']) && digits >= 3 && letters >= 8 && upper && lower
+}
+
+/// An IPv4 address other than the loopback and `0.0.0.0`, which say nothing
+/// about where the user is.
+fn is_public_ipv4(word: &str) -> bool {
+    let Ok(ip) = word.parse::<std::net::Ipv4Addr>() else {
+        return false;
+    };
+    !ip.is_loopback() && !ip.is_unspecified()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOME: &str = "/home/ann";
+
+    fn ann() -> Me {
+        Me::new(HOME, Some("ann-box.lan"))
+    }
+
+    fn masked(s: &str) -> String {
+        let mut chars: Vec<char> = s.chars().collect();
+        mask(&mut chars, &ann());
+        chars.into_iter().collect()
+    }
+
+    #[test]
+    fn plain_text_stays() {
+        for s in [
+            "cargo test --locked",
+            "fix(terminal): keep the tab name on resize",
+            "commit 840ea5e1b0f3c2a9d8e7f6a5b4c3d2e1f0a9b8c7",
+            "npx @playwright/mcp@latest --viewport-size 1280x800",
+            "listening on 127.0.0.1:3000 and 0.0.0.0:8080",
+            "KEYBOARD=us SSH_KEY_PATH=/x PWD=/tmp",
+            "git clone git@github.com:o/r.git",
+            "version 0.2.1",
+        ] {
+            assert_eq!(masked(s), s, "{s}");
+        }
+    }
+
+    #[test]
+    fn hides_emails_but_keeps_their_shape() {
+        assert_eq!(
+            masked("signed in as ann@example.com."),
+            "signed in as •••@•••••••••••."
+        );
+    }
+
+    #[test]
+    fn keeps_the_start_of_a_key() {
+        let key = "sk-ant-api03-FAKEFAKEFAKE1234";
+        assert_eq!(
+            masked(&format!("token {key}")),
+            format!("token sk-a{}", "•".repeat(key.len() - 4))
+        );
+        let random = "Abc123Def456Ghi789Jkl012Mno";
+        assert_eq!(
+            masked(&format!("x {random} x")),
+            format!("x Abc1{} x", "•".repeat(random.len() - 4))
+        );
+    }
+
+    #[test]
+    fn hides_values_of_secret_names() {
+        assert_eq!(
+            masked("OPENAI_API_KEY=abc/def=="),
+            "OPENAI_API_KEY=•••••••••"
+        );
+        assert_eq!(masked("\"token\": \"hunter2\","), "\"token\": \"•••••••\",");
+        assert_eq!(
+            masked("Authorization: Bearer abc.def"),
+            "Authorization: Bearer •••••••"
+        );
+    }
+
+    #[test]
+    fn hides_the_user_name_and_addresses() {
+        assert_eq!(masked("cd /home/ann/code"), "cd /home/•••/code");
+        assert_eq!(masked("ssh 203.0.113.7"), "ssh •••.•.•••.•");
+        // `/` as home has no name in it.
+        let mut chars: Vec<char> = "/etc".chars().collect();
+        assert!(!mask(&mut chars, &Me::new("/", None)));
+    }
+
+    #[test]
+    fn hides_the_user_and_the_machine_in_a_prompt() {
+        assert_eq!(masked("ann@ann-box:~$ ls"), "•••@•••••••:~$ ls");
+        assert_eq!(masked("ssh ann-box.lan."), "ssh •••••••••••.");
+        assert_eq!(masked("Annotate the annex"), "Annotate the annex");
+    }
+
+    #[test]
+    fn keeps_the_width() {
+        let s = "ann@example.com sk-proj-0123456789abcdefABCDEF /home/ann 10.1.2.3 é";
+        assert_eq!(masked(s).chars().count(), s.chars().count());
+    }
+
+    #[test]
+    fn stars_keep_every_byte_offset() {
+        let s = "a /home/ann/x bo@xy.de ok";
+        assert_eq!(stars(s, &ann()).unwrap(), "a /home/***/x **@***** ok");
+        // `ö` is two bytes, so two stars.
+        let s = "/home/jöe/x";
+        let out = stars(s, &Me::new("/home/jöe", None)).unwrap();
+        assert_eq!(out, "/home/****/x");
+        assert_eq!(out.len(), s.len());
+        assert_eq!(stars("plain words", &ann()), None);
+    }
+}

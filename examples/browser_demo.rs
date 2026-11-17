@@ -14,6 +14,9 @@ mod mascot;
 #[allow(dead_code)]
 #[path = "../src/platform.rs"]
 mod platform;
+#[allow(dead_code)]
+#[path = "../src/redact.rs"]
+mod redact;
 #[path = "../src/theme.rs"]
 #[allow(dead_code)]
 mod theme;

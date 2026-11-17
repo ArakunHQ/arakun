@@ -58,6 +58,9 @@ mod mascot;
 #[path = "../src/platform.rs"]
 mod platform;
 #[allow(dead_code)]
+#[path = "../src/redact.rs"]
+mod redact;
+#[allow(dead_code)]
 #[path = "../src/schedule.rs"]
 mod schedule;
 #[allow(dead_code)]

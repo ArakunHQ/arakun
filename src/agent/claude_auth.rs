@@ -29,11 +29,12 @@ pub enum Access {
 }
 
 impl Access {
-    /// "API key", "Endpoint · localhost:8317", "Amazon Bedrock".
+    /// "API key", "Endpoint · localhost:8317", "Amazon Bedrock". The host is
+    /// hidden in redacted mode: a company gateway names the company.
     pub fn label(&self) -> String {
         match self {
             Access::ApiKey => "API key".into(),
-            Access::Endpoint(host) => format!("Endpoint · {host}"),
+            Access::Endpoint(host) => format!("Endpoint · {}", crate::redact::value(host)),
             Access::Cloud(name) => (*name).into(),
         }
     }

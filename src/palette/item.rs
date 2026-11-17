@@ -87,6 +87,7 @@ pub enum Target {
 /// Settings the palette turns on and off in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Setting {
+    Redacted,
     Island,
     Glass,
     Arcade,

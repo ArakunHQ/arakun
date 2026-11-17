@@ -1285,7 +1285,14 @@ impl Shell {
     }
 
     fn palette_settings(&self, items: &mut Vec<Item>) {
-        let rows: [(Setting, &str, &str, &str, bool); 7] = [
+        let rows: [(Setting, &str, &str, &str, bool); 8] = [
+            (
+                Setting::Redacted,
+                "Redacted mode",
+                "Settings › Privacy",
+                "Hides emails, keys, tokens, pairing codes and addresses, for streams, demos and screen sharing (Ctrl+Shift+H).",
+                crate::redact::on(),
+            ),
             (
                 Setting::Island,
                 "Dynamic Island",
@@ -1345,6 +1352,7 @@ impl Shell {
             )
             .icon(
                 match s {
+                    Setting::Redacted => "view-off",
                     Setting::Island => "sparkles",
                     Setting::Glass | Setting::Arcade => "paint-board",
                     Setting::Dock => "layout-bottom",
@@ -1495,6 +1503,7 @@ impl Shell {
 
     fn flip_setting(&mut self, s: Setting, window: &mut Window, cx: &mut Context<Self>) {
         match s {
+            Setting::Redacted => self.toggle_redacted(cx),
             Setting::Island => {
                 crate::island::set_enabled(!crate::island::enabled());
                 self.sync_island(window, cx);

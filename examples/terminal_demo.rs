@@ -15,6 +15,9 @@ mod input;
 #[allow(dead_code)]
 #[path = "../src/platform.rs"]
 mod platform;
+#[allow(dead_code)]
+#[path = "../src/redact.rs"]
+mod redact;
 #[path = "../src/terminal/mod.rs"]
 mod terminal;
 #[path = "../src/theme.rs"]

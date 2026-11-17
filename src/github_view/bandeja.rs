@@ -398,8 +398,9 @@ impl GitHubView {
         let g = self.github.read(cx);
         let (need, rest, texto) = match self.board(cx) {
             Some(b) => {
-                // What waits in "More on GitHub" needs the user too.
-                let need = board::needs_you(b, g.queue());
+                // What waits in "More on GitHub" and pilot's cards need the
+                // user too: the same count as the badge.
+                let need = board::waiting(b, g.queue(), self.pilot.read(cx).shown());
                 let lleva = b.verdict.pilot_lleva as usize;
                 let rest = match lleva {
                     0 => String::new(),
@@ -421,7 +422,8 @@ impl GitHubView {
                     0 => String::new(),
                     n => format!("{n} on GitHub"),
                 };
-                (q.on_you, rest, String::new())
+                // The badge counts pilot's cards too.
+                (q.on_you + self.pilot.read(cx).count(), rest, String::new())
             }
         };
         let counted = match need {

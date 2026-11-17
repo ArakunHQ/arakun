@@ -432,6 +432,17 @@ pub fn card_place(b: &Board, card: &super::pilot::Item) -> CardPlace {
     }
 }
 
+/// Everything that waits on the user with a board, for the headline and the
+/// badge alike: what pilot says, the queue's rows on the user it doesn't
+/// follow, and pilot's cards that aren't one of its questions.
+pub fn waiting<'a>(
+    b: &Board,
+    q: &super::queue::Queue,
+    cards: impl Iterator<Item = &'a super::pilot::Item>,
+) -> usize {
+    needs_you(b, q) + extra_cards(b, cards)
+}
+
 /// The cards that wait on top of what the board counts: every one but its
 /// questions, which `te_necesita` already has.
 pub fn extra_cards<'a>(b: &Board, cards: impl Iterator<Item = &'a super::pilot::Item>) -> usize {
@@ -696,7 +707,7 @@ mod tests {
                 ..Verdict::default()
             },
             prs: vec![BoardPr {
-                repo: "o/r".into(),
+                repo: "ArakunHQ/arakun".into(),
                 number: 7,
                 decision: Some(Decision {
                     item: "q1".into(),
@@ -708,11 +719,11 @@ mod tests {
         };
         let cards = [
             // The board's own question: the sheet asks it.
-            card("q1", Kind::NeedsYou, "o/r", 7),
+            card("q1", Kind::NeedsYou, "ArakunHQ/arakun", 7),
             // A brief on a pull request the board follows: in its sheet.
-            card("b1", Kind::Brief, "O/R", 7),
-            // A fix elsewhere, and a failure about no pull request.
-            card("f1", Kind::Fixed, "x/y", 3),
+            card("b1", Kind::Brief, "arakunhq/arakun", 7),
+            // A fix on a pull request the board doesn't follow, and a failure about none.
+            card("f1", Kind::Fixed, "ArakunHQ/arakun", 3),
             card("e1", Kind::Failed, "", 0),
         ];
         let places: Vec<CardPlace> = cards.iter().map(|c| card_place(&b, c)).collect();
@@ -727,6 +738,9 @@ mod tests {
         );
         // The question is already in te_necesita; the rest add to it.
         assert_eq!(extra_cards(&b, cards.iter()), 3);
+        // The headline and the badge both count te_necesita and those cards.
+        let q = crate::github::queue::Queue::default();
+        assert_eq!(waiting(&b, &q, cards.iter()), 4);
     }
 
     #[test]

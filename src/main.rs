@@ -297,6 +297,17 @@ fn main() {
                 #[cfg(feature = "team")]
                 shell.sync_team(window, cx);
             });
+            // A click on one of Arakun's notifications shows what it was about, as
+            // "View" on the island does. Outside a bundle they come from osascript.
+            #[cfg(target_os = "macos")]
+            if platform::in_app_bundle() {
+                cx.on_system_notification_response(move |response, cx| {
+                    cx.activate(true);
+                    let _ = shell.update(cx, |shell, window, cx| {
+                        shell.open_from_island(response.tag, window, cx)
+                    });
+                });
+            }
             cx.activate(true);
             if std::env::var_os("ARAKUN_TIMING").is_some() {
                 eprintln!("arakun: window opened in {:?}", started.elapsed());

@@ -357,9 +357,32 @@ pub fn open(target: impl AsRef<OsStr>) {
     }
 }
 
+/// Whether this arakun runs from inside an `.app`. Only then can it post macOS
+/// notifications as Arakun.
+#[cfg(target_os = "macos")]
+pub fn in_app_bundle() -> bool {
+    std::env::current_exe().is_ok_and(|exe| is_bundled(&exe))
+}
+
+/// `…/Name.app/Contents/MacOS/binary`.
+#[cfg(any(test, target_os = "macos"))]
+fn is_bundled(exe: &Path) -> bool {
+    let mut up = exe.ancestors().skip(1);
+    up.next()
+        .is_some_and(|d| d.file_name() == Some(OsStr::new("MacOS")))
+        && up
+            .next()
+            .is_some_and(|d| d.file_name() == Some(OsStr::new("Contents")))
+        && up
+            .next()
+            .is_some_and(|d| d.extension() == Some(OsStr::new("app")))
+}
+
 /// Puts up a desktop notification. Linux uses `notify-send`; Windows a toast from Windows
 /// PowerShell, which ships with every Windows 10/11 and is registered to show toasts;
-/// macOS AppleScript's `display notification`.
+/// macOS AppleScript's `display notification`. On macOS that notification belongs to
+/// Script Editor, so a click opens it: Arakun.app posts its own through gpui instead
+/// (`shell::sessions::send_notification`), and this is for a build run outside one.
 pub fn notify(title: &str, body: &str, critical: bool, icon: Option<&str>) {
     // The test arakun (`arakun dev`) shares the user's desktop session: its
     // notifications would land on the real desktop and pile up there.
@@ -1382,6 +1405,18 @@ pub fn refresh_rate() -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_binary_in_an_app_bundle_counts_as_bundled() {
+        assert!(is_bundled(Path::new(
+            "/Applications/Arakun.app/Contents/MacOS/arakun"
+        )));
+        assert!(!is_bundled(Path::new(
+            "/Users/me/arakun/target/debug/arakun"
+        )));
+        assert!(!is_bundled(Path::new("/opt/Contents/MacOS/arakun")));
+        assert!(!is_bundled(Path::new("/MacOS/arakun")));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

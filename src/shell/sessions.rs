@@ -1367,7 +1367,7 @@ impl Shell {
         // The island says more (model, last reply); the desktop only stands in for it.
         let alert = self.session_alert(id, thread, kind, &title, cx);
         if !self.show_alert(alert, cx) {
-            send_notification(&title, &body, kind == Notice::Error);
+            send_notification(id, &title, &body, kind == Notice::Error, cx);
         }
     }
 
@@ -1685,10 +1685,32 @@ fn notification_icon() -> Option<String> {
     bundled.exists().then(|| bundled.display().to_string())
 }
 
-pub(super) fn send_notification(title: &str, body: &str, critical: bool) {
+/// `key`: what a click on it opens, as "View" on the island does (`Open::key`);
+/// empty when it is about nothing to open.
+pub(super) fn send_notification(
+    key: &str,
+    title: &str,
+    body: &str,
+    critical: bool,
+    cx: &gpui::App,
+) {
     if std::env::var_os("ARAKUN_NOTIFY").is_some_and(|v| v == "off") {
         return;
     }
+    // osascript's notifications belong to Script Editor, and a click opens it. From
+    // Arakun.app they are Arakun's own, and main.rs hears the click.
+    #[cfg(target_os = "macos")]
+    if crate::platform::in_app_bundle() && std::env::var_os("ARAKUN_DEV").is_none() {
+        cx.show_system_notification(gpui::SystemNotification {
+            tag: notification_tag(key),
+            title: crate::redact::text(title).into_owned().into(),
+            body: crate::redact::text(body).into_owned().into(),
+            actions: Vec::new(),
+        });
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (key, cx);
     let icon = if cfg!(windows) {
         None
     } else {
@@ -1700,6 +1722,19 @@ pub(super) fn send_notification(title: &str, body: &str, critical: bool) {
         critical,
         icon.as_deref(),
     );
+}
+
+/// A newer notification with the same tag replaces the older one: one per session is
+/// enough, but notices about nothing in particular each get their own. `open:none:…`
+/// opens nothing, so a click on one only brings the window forward.
+#[cfg(any(test, target_os = "macos"))]
+fn notification_tag(key: &str) -> SharedString {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    if key.is_empty() {
+        format!("open:none:{}", NEXT.fetch_add(1, Ordering::Relaxed)).into()
+    } else {
+        key.to_string().into()
+    }
 }
 
 /// Drops what was remembered about a session's alerts, and any it is still speaking.
@@ -1748,4 +1783,17 @@ pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)>
     }
     draft.sort_by_key(|(s, _)| *s != Setting::Model);
     draft
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_keeps_one_notification_and_other_notices_each_get_their_own() {
+        assert_eq!(notification_tag("abc123"), "abc123");
+        let (a, b) = (notification_tag(""), notification_tag(""));
+        assert!(a.starts_with("open:none:"));
+        assert_ne!(a, b);
+    }
 }

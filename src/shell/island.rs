@@ -237,8 +237,9 @@ impl Shell {
         }
     }
 
-    /// "View" or a row: the window in front, at the session or what the notice is about.
-    pub(super) fn open_from_island(
+    /// "View", a row or a click on a desktop notification: the window in front, at the
+    /// session or what the notice is about.
+    pub(crate) fn open_from_island(
         &mut self,
         key: SharedString,
         window: &mut Window,
@@ -321,8 +322,9 @@ impl Shell {
         brand: &str,
         cx: &mut Context<Self>,
     ) {
+        let key = open.map(|o| o.key()).unwrap_or_default();
         let alert = isl::Alert {
-            key: open.map(|o| o.key()).unwrap_or_default(),
+            key: key.clone(),
             kind,
             title: title.to_string().into(),
             subtitle: brief(body).into(),
@@ -334,7 +336,7 @@ impl Shell {
             brand: brand.to_string().into(),
         };
         if !self.show_alert(alert, cx) {
-            super::sessions::send_notification(title, body, kind == AlertKind::Failure);
+            super::sessions::send_notification(&key, title, body, kind == AlertKind::Failure, cx);
         }
     }
 

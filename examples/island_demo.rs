@@ -7,12 +7,14 @@
 //! of a few samples (a long reply, a long failure with a path, a short notice,
 //! a long question). `alerts` plays them one after another, each put away
 //! ("Luego") after a few seconds, so the drip and the melt can be filmed with
-//! ARAKUN_ISLAND_PASSTHROUGH=1. ISLAND_DEMO_SCREEN=n opens it on the nth screen.
+//! ARAKUN_ISLAND_PASSTHROUGH=1. ISLAND_DEMO_SCREEN=n opens it on the nth screen
+//! (Linux). ARAKUN_ISLAND_EDGE=notch or =pill draws it around a camera cutout
+//! the screen doesn't have (see `src/island/edge.rs`).
 //! Once clicked the island takes keys: 1-5 jump to a state, 6 pins the list,
 //! space goes to the next, p pauses.
 
-// Off Linux, island.rs allows dead code itself; a second allow trips clippy.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+// Where it can't run, island.rs allows dead code itself; a second allow trips clippy.
+#[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
 #[path = "../src/island.rs"]
 mod island;
 #[allow(dead_code)]
@@ -22,17 +24,17 @@ mod mascot;
 #[path = "../src/theme.rs"]
 mod theme;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() {
     demo::main();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn main() {
-    eprintln!("island_demo needs a Wayland compositor with layer-shell");
+    eprintln!("island_demo needs macOS, or a Wayland compositor with layer-shell");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod demo {
     use std::time::{Duration, Instant};
 
@@ -302,7 +304,8 @@ mod demo {
                 cx.update(|cx| {
                     let mut options = crate::island::window_options(true);
                     options.display_id = screen.and_then(|n| cx.displays().get(n).map(|d| d.id()));
-                    let opened = cx.open_window(options, |_, cx| {
+                    let opened = cx.open_window(options, |window, cx| {
+                        crate::island::adopt(window);
                         cx.new(|cx| Demo::new(phase, pinned, tour, cx))
                     });
                     if let Err(e) = opened {

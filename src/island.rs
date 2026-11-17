@@ -1,13 +1,27 @@
-//! The Dynamic Island: a black shape that grows out of the top bezel on a
-//! Wayland layer, with the raccoon as its face. It shows what the agents of
+//! The Dynamic Island: a black shape that grows out of the top bezel, with the
+//! raccoon as its face: a Wayland layer on Linux, a panel over the menu bar on
+//! macOS (`island/mac.rs`), where it grows out of the notch or the screen's own
+//! Dynamic Island when there is one (`island/edge.rs`). It shows what the agents of
 //! every project do: asleep when nothing ran for a while, a dot per busy
 //! session, a card when one finishes, needs an answer or fails, and the list
 //! of them on hover. It runs in a process of its own (`island_host.rs`), which
 //! the app (`shell/island.rs`) and headless agents feed; `examples/island_demo.rs`
 //! drives the same view with made-up agents.
 
-// The island needs a Wayland layer shell: elsewhere it builds but never runs.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+// The island needs a Wayland layer shell or macOS: elsewhere it builds but never runs.
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code, unused_imports)
+)]
+
+// Named by path: `examples/island_demo.rs` includes this file from another folder.
+#[path = "island/edge.rs"]
+mod edge;
+#[cfg(target_os = "macos")]
+#[path = "island/mac.rs"]
+mod mac;
+
+pub use edge::Edge;
 
 use std::collections::VecDeque;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -29,10 +43,20 @@ use crate::mascot::{Mascot, Mood};
 use crate::theme;
 
 /// The layer stays this big; only the shape inside moves, and the input
-/// region follows it so clicks around it reach the windows below.
-const WIN_W: f32 = 560.;
+/// region follows it so clicks around it reach the windows below. On macOS
+/// there is room for a camera cutout too: in the middle of a compact island,
+/// and over an open one.
+const WIN_W: f32 = if cfg!(target_os = "macos") {
+    640.
+} else {
+    560.
+};
 /// Tall enough for the call card with the tallest alert card under it.
-const WIN_H: f32 = 300.;
+const WIN_H: f32 = if cfg!(target_os = "macos") {
+    380.
+} else {
+    300.
+};
 /// The concave fillets where the shape melts into the top edge.
 const SHOULDER: f32 = 10.;
 const SMALL_W: f32 = 30.;
@@ -40,6 +64,9 @@ const SMALL_W: f32 = 30.;
 /// whatever shows right of it.
 const FACE_X: f32 = 12.;
 const FACE_GAP: f32 = 10.;
+/// The room the raccoon takes beside a camera cutout, and the least the
+/// island shows on each side of one.
+const EAR: f32 = FACE_X + SMALL_W + FACE_X;
 /// Where a compact island's content starts, past the raccoon.
 const CONTENT_X: f32 = FACE_X + SMALL_W + FACE_GAP;
 /// A compact island's inner padding on the right.
@@ -102,8 +129,26 @@ const ARM_AFTER: Duration = Duration::from_millis(1200);
 /// close as the pointer goes; this much is left for SUPER P's overlay,
 /// which takes the pointer the moment it opens, to freeze the screen first.
 const LEAVE_GRACE: Duration = Duration::from_millis(150);
+/// How often macOS is asked where the pointer is: while it is near the
+/// island, and while it is not.
+#[cfg(target_os = "macos")]
+const POINTER_NEAR: Duration = Duration::from_millis(16);
+#[cfg(target_os = "macos")]
+const POINTER_FAR: Duration = Duration::from_millis(60);
+/// How close to the island the pointer is "near".
+#[cfg(target_os = "macos")]
+const POINTER_MARGIN: f32 = 80.;
+/// How often the island checks it is still on the right screen.
+#[cfg(target_os = "macos")]
+const SCREENS_EVERY: Duration = Duration::from_secs(2);
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// What the island says: English on macOS, Spanish where it has always
+/// spoken it. One place decides, so the two can't mix on one island.
+pub const fn say(en: &'static str, es: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") { en } else { es }
+}
 
 /// Whether the island shows (Settings › General, `island_off` in the state file).
 pub fn enabled() -> bool {
@@ -114,17 +159,57 @@ pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }
 
-/// Layer-shell windows exist on Wayland only; on X11 gpui would open a normal window.
+/// The island needs a layer-shell window (Wayland; on X11 gpui would open a
+/// normal one) or macOS, where it is a panel over the menu bar.
 pub fn supported(cx: &App) -> bool {
-    cx.compositor_name() == "Wayland"
+    cfg!(target_os = "macos") || cx.compositor_name() == "Wayland"
 }
 
-/// The island's layer: on top of everything, anchored to the top edge, out of
-/// the window list. `keys` lets a click give it the keyboard (the demo's keys);
-/// without, it never takes focus.
-#[cfg(target_os = "linux")]
+/// Call from `open_window`'s build closure, before `Island::new`: on macOS it
+/// makes the new window the island's (`mac::adopt`) and reads the top edge of
+/// its screen, which the island then takes its shape from.
+pub fn adopt(window: &mut Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+        match window.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::AppKit(handle)) => {
+                mac::adopt(handle.ns_view.as_ptr(), (WIN_W, WIN_H));
+            }
+            _ => eprintln!("arakun: island: no AppKit window to place"),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+/// The top edge of the screen the island opened on.
+fn screen_edge() -> Edge {
+    #[cfg(target_os = "macos")]
+    return mac::edge();
+    #[cfg(not(target_os = "macos"))]
+    Edge::from_env().unwrap_or_default()
+}
+
+/// The island's process is no app of its own: out of the Dock (macOS).
+pub fn hide_from_dock() {
+    #[cfg(target_os = "macos")]
+    mac::hide_from_dock();
+}
+
+/// Brings the app with this process id to the front, where the island can
+/// (macOS; on Linux the compositor is asked, see `island_host`).
+pub fn activate_app(pid: u32) {
+    #[cfg(target_os = "macos")]
+    mac::activate(pid);
+    #[cfg(not(target_os = "macos"))]
+    let _ = pid;
+}
+
 /// The screen the island lives on: the widest landscape one, so a monitor
-/// turned on its side isn't picked. `None` leaves it to the compositor.
+/// turned on its side isn't picked. `None` leaves it to the compositor. On
+/// macOS `adopt` places the window itself.
+#[cfg(target_os = "linux")]
 pub fn landscape_display(cx: &gpui::App) -> Option<gpui::DisplayId> {
     let screens: Vec<_> = cx
         .displays()
@@ -148,7 +233,13 @@ pub fn landscape_display(cx: &gpui::App) -> Option<gpui::DisplayId> {
     pick_landscape(screens.iter().map(|&(id, _, _, w, h)| (id, w, h)))
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn landscape_display(_cx: &gpui::App) -> Option<gpui::DisplayId> {
+    None
+}
+
 /// Where the widest landscape monitor sits, by `hyprctl monitors -j`.
+#[cfg(target_os = "linux")]
 fn hyprland_landscape() -> Option<(f32, f32)> {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
     let out = std::process::Command::new("hyprctl")
@@ -159,6 +250,7 @@ fn hyprland_landscape() -> Option<(f32, f32)> {
     hyprland_pick(&monitors)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn hyprland_pick(monitors: &[serde_json::Value]) -> Option<(f32, f32)> {
     monitors
         .iter()
@@ -176,6 +268,7 @@ fn hyprland_pick(monitors: &[serde_json::Value]) -> Option<(f32, f32)> {
         .map(|(_, x, y)| (x, y))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn pick_landscape<I: Copy>(screens: impl Iterator<Item = (I, f32, f32)>) -> Option<I> {
     screens
         .filter(|&(_, w, h)| w > h)
@@ -183,6 +276,9 @@ fn pick_landscape<I: Copy>(screens: impl Iterator<Item = (I, f32, f32)>) -> Opti
         .map(|(id, _, _)| id)
 }
 
+/// The island's window: on top of everything, at the top edge, out of the
+/// window list. `keys` lets a click give it the keyboard (the demo's keys);
+/// without, it never takes focus.
 pub fn window_options(keys: bool) -> gpui::WindowOptions {
     use gpui::{WindowBackgroundAppearance, WindowBounds, WindowOptions};
     WindowOptions {
@@ -221,8 +317,9 @@ fn window_kind(keys: bool) -> gpui::WindowKind {
     })
 }
 
-/// Only Wayland has a layer shell: elsewhere `supported` says no and the island
-/// never opens, so this just has to build.
+/// macOS: a panel above the menu bar that doesn't activate the app; `adopt`
+/// makes the rest of it. Elsewhere `supported` says no and the island never
+/// opens, so this just has to build.
 #[cfg(not(target_os = "linux"))]
 fn window_kind(_keys: bool) -> gpui::WindowKind {
     gpui::WindowKind::PopUp
@@ -271,7 +368,40 @@ enum View {
 }
 
 impl View {
-    fn size(self) -> (f32, f32) {
+    /// The view's size on `edge`. A camera cutout takes the middle of a
+    /// compact island, so its two halves move apart; an open one starts under it.
+    fn size(self, edge: Edge) -> (f32, f32) {
+        let (w, h) = self.base();
+        let (cut_w, cut_h) = (edge.cut_w(), edge.cut_h());
+        let (w, h) = if cut_w <= 0. {
+            (w, h)
+        } else if self.open() {
+            (w.max(cut_w + 2. * EAR), cut_h + h)
+        } else {
+            (cut_w + 2. * self.ear(), h.max(cut_h))
+        };
+        (w.min(WIN_W - 2. * SHOULDER), h)
+    }
+
+    /// A list or a call: content in rows, which goes under a cutout whole.
+    fn open(self) -> bool {
+        matches!(self, View::List(_) | View::Call)
+    }
+
+    /// How wide a compact island is on each side of a cutout: the raccoon is
+    /// on its left, what the view shows on its right, and both sides match.
+    fn ear(self) -> f32 {
+        let (w, _) = self.base();
+        match self {
+            View::Compact(Phase::Sleeping | Phase::Idle) => EAR,
+            // A label after the raccoon and a wave at the far end.
+            View::Compact(Phase::Speaking | Phase::Listening | Phase::Alert) => w / 2.,
+            _ => (w - CONTENT_X + FACE_GAP).max(EAR),
+        }
+    }
+
+    /// The size on a plain edge.
+    fn base(self) -> (f32, f32) {
         match self {
             // At rest only the raccoon shows, so the island stays clear of the
             // window's tabs under it.
@@ -387,7 +517,7 @@ fn busy(rows: &[Row]) -> View {
 /// room and spill out of it. Recording swaps the dots for its bars, which
 /// need the recording view's width.
 fn drawn_as(view: View, rows: &[Row], recording: bool) -> bool {
-    let bars_fit = || view.size().0 >= View::Recording.size().0;
+    let bars_fit = || view.base().0 >= View::Recording.base().0;
     match view {
         View::Busy(..) => busy(rows) == view && (!recording || bars_fit()),
         View::Compact(_) if recording => bars_fit(),
@@ -1100,6 +1230,14 @@ pub struct Island {
     w: Spring,
     h: Spring,
     region: Option<Vec<[i32; 4]>>,
+    /// The top edge of the screen the island is on.
+    edge: Edge,
+    /// Whether the pointer is on the island, as `track_pointer` last saw it,
+    /// and when it last looked at the screens.
+    #[cfg(target_os = "macos")]
+    pointer_on: bool,
+    #[cfg(target_os = "macos")]
+    screens_at: Instant,
     call: Option<CallView>,
     /// A meeting being recorded: its levels and the one the green wave shows.
     recording: Option<(Arc<Levels>, f32)>,
@@ -1132,8 +1270,18 @@ impl Island {
             }
         })
         .detach();
+        // macOS says nothing while a window ignores the pointer: ask where it is.
+        #[cfg(target_os = "macos")]
+        cx.spawn(async move |this, cx| {
+            while let Ok(near) = this.update(cx, |island, cx| island.track_pointer(cx)) {
+                let wait = if near { POINTER_NEAR } else { POINTER_FAR };
+                cx.background_executor().timer(wait).await;
+            }
+        })
+        .detach();
+        let edge = screen_edge();
         let view = View::Compact(Phase::Sleeping);
-        let (w, h) = view.size();
+        let (w, h) = view.size(edge);
         let mut island = Island {
             start: Instant::now(),
             frames: Default::default(),
@@ -1159,6 +1307,11 @@ impl Island {
             w: Spring { x: w * 0.6, v: 0. },
             h: Spring { x: h, v: 0. },
             region: None,
+            edge,
+            #[cfg(target_os = "macos")]
+            pointer_on: false,
+            #[cfg(target_os = "macos")]
+            screens_at: Instant::now(),
             call: None,
             recording: None,
             small: cx.new(|cx| Mascot::new(SMALL_W, cx).awake().color(gpui::white())),
@@ -1170,6 +1323,45 @@ impl Island {
 
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// The pointer, which a window that ignores it hears nothing of: lets the
+    /// clicks through unless it is on the island, and tells the island when it
+    /// comes and goes. Returns whether it is near, to look again soon. Now and
+    /// then it also follows the screen (a lid closed, a monitor plugged in).
+    #[cfg(target_os = "macos")]
+    fn track_pointer(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.screens_at.elapsed() >= SCREENS_EVERY {
+            self.screens_at = Instant::now();
+            if let Some(edge) = mac::follow_screen()
+                && edge != self.edge
+            {
+                self.edge = edge;
+                cx.notify();
+            }
+        }
+        let Some((x, y)) = mac::pointer() else {
+            return false;
+        };
+        let on = !passthrough()
+            && self.region.iter().flatten().any(|r| {
+                let (x, y) = (x - r[0] as f32, y - r[1] as f32);
+                x >= 0. && y >= 0. && x < r[2] as f32 && y < r[3] as f32
+            });
+        if on != self.pointer_on {
+            self.pointer_on = on;
+            mac::click_through(!on);
+            self.hover(on, cx);
+        }
+        // Near is a margin around the island itself, so the fast poll runs
+        // only while the pointer is about to reach it.
+        self.region.iter().flatten().any(|r| {
+            let (x, y) = (x - r[0] as f32, y - r[1] as f32);
+            x >= -POINTER_MARGIN
+                && y >= -POINTER_MARGIN
+                && x < r[2] as f32 + POINTER_MARGIN
+                && y < r[3] as f32 + POINTER_MARGIN
+        })
     }
 
     /// New data from the shell; redraws only when something shown changed.
@@ -1500,7 +1692,7 @@ impl Island {
     /// Moves the shape toward the current view; returns whether it still moves.
     fn step(&mut self, dt: f32) -> bool {
         let target = self.target();
-        let (tw, th) = target.size();
+        let (tw, th) = target.size(self.edge);
         if target != self.view {
             self.prev = Some((self.view, Instant::now()));
             self.view = target;
@@ -1612,7 +1804,9 @@ impl Island {
         };
         let label = match phase {
             Phase::Speaking => Some(("Arakun", hsla(0., 0., 1., 0.55))),
-            Phase::Listening => Some(("Escuchando", theme::accent().opacity(0.7))),
+            Phase::Listening => {
+                Some((say("Listening", "Escuchando"), theme::accent().opacity(0.7)))
+            }
             _ => None,
         };
         div()
@@ -1851,8 +2045,8 @@ impl Island {
         // The last row sits ROW_INSET in from the island's bottom corners: its
         // own bottom corners follow them, concentric, instead of a fixed 10.
         let shown = n.min(MAX_ROWS);
-        let (w, h) = View::List(shown).size();
-        let last_radius = (bottom_radius(w, h) - ROW_INSET).clamp(10., ROW_H / 2.);
+        let (w, h) = View::List(shown).size(self.edge);
+        let last_radius = (bottom_radius(self.edge, w, h) - ROW_INSET).clamp(10., ROW_H / 2.);
         let head = div()
             .h(px(HEAD_H))
             .flex_none()
@@ -1867,9 +2061,9 @@ impl Island {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(gpui::white())
                     .child(if n == 1 {
-                        "1 agente".to_string()
+                        say("1 agent", "1 agente").to_string()
                     } else {
-                        format!("{n} agentes")
+                        format!("{n} {}", say("agents", "agentes"))
                     }),
             )
             .when_some(self.feed.today.clone(), |d, today| {
@@ -1878,7 +2072,7 @@ impl Island {
                         .font_family(theme::FONT_MONO)
                         .text_size(px(11.5))
                         .text_color(dim)
-                        .child(format!("{today} hoy")),
+                        .child(format!("{today} {}", say("today", "hoy"))),
                 )
             });
         let rows = self
@@ -1976,8 +2170,8 @@ impl Island {
         };
         let listening = c.phase == Phase::Listening;
         let (label, color) = match c.phase {
-            Phase::Listening => ("Escuchando", theme::accent().opacity(0.8)),
-            Phase::Working => ("Pensando", hsla(0., 0., 1., 0.45)),
+            Phase::Listening => (say("Listening", "Escuchando"), theme::accent().opacity(0.8)),
+            Phase::Working => (say("Thinking", "Pensando"), hsla(0., 0., 1., 0.45)),
             _ => ("Arakun", hsla(0., 0., 1., 0.6)),
         };
         let head = div()
@@ -2099,23 +2293,43 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 
-/// The radius of the island's bottom corners at this size.
-fn bottom_radius(w: f32, h: f32) -> f32 {
-    (12. + (h - 32.) * 0.2)
-        .clamp(11., 30.)
-        .min(h - SHOULDER.min(h / 2.))
-        .min(w / 2.)
+/// The radius a floating island's top corners have at most: at rest it is a
+/// pill, its ends half its height.
+const PILL_R: f32 = 20.;
+
+fn top_radius(h: f32) -> f32 {
+    (h / 2.).min(PILL_R)
 }
 
-/// The island: concave shoulders flaring into the top edge, straight sides,
-/// rounded bottom corners that grow with the height. `bow` pushes the middle
-/// of its bottom edge down (up when negative).
-fn shape(b: Bounds<Pixels>, w: f32, h: f32, bow: f32, window: &mut Window) {
+/// The radius of the island's bottom corners at this size.
+fn bottom_radius(edge: Edge, w: f32, h: f32) -> f32 {
+    let r = (12. + (h - 32.) * 0.2).clamp(11., 30.);
+    if edge.floating() {
+        let top = top_radius(h);
+        r.max(top).min(h - top).min(w / 2.)
+    } else {
+        r.min(h - SHOULDER.min(h / 2.)).min(w / 2.)
+    }
+}
+
+/// The island, `b` being the window from the island's top down. `bow` pushes
+/// the middle of its bottom edge down (up when negative).
+fn shape(b: Bounds<Pixels>, edge: Edge, w: f32, h: f32, bow: f32, window: &mut Window) {
+    if edge.floating() {
+        pill(b, edge, w, h, bow, window);
+    } else {
+        hung(b, edge, w, h, bow, window);
+    }
+}
+
+/// The island on a plain edge or a notch: concave shoulders flaring into the
+/// top edge, straight sides, rounded bottom corners that grow with the height.
+fn hung(b: Bounds<Pixels>, edge: Edge, w: f32, h: f32, bow: f32, window: &mut Window) {
     let o = b.origin;
     let p = |x: f32, y: f32| point(o.x + px(x), o.y + px(y));
     let (x0, x1) = (WIN_W / 2. - w / 2., WIN_W / 2. + w / 2.);
     let s = SHOULDER.min(h / 2.);
-    let r = bottom_radius(w, h);
+    let r = bottom_radius(edge, w, h);
     let arc = |pb: &mut PathBuilder, rad: f32, sweep: bool, to| {
         pb.arc_to(point(px(rad), px(rad)), px(0.), false, sweep, to)
     };
@@ -2137,14 +2351,49 @@ fn shape(b: Bounds<Pixels>, w: f32, h: f32, bow: f32, window: &mut Window) {
 
     // A hairline along the sides and bottom, just inside the black.
     let i = 0.5;
-    let mut edge = PathBuilder::stroke(px(1.));
-    edge.move_to(p(x0 + i, s + 2.));
-    edge.line_to(p(x0 + i, h - r));
-    arc(&mut edge, r - i, false, p(x0 + r, h - i));
-    bowed(&mut edge, &p, x0 + r, x1 - r, h - i, bow);
-    arc(&mut edge, r - i, false, p(x1 - i, h - r));
-    edge.line_to(p(x1 - i, s + 2.));
-    if let Ok(path) = edge.build() {
+    let mut line = PathBuilder::stroke(px(1.));
+    line.move_to(p(x0 + i, s + 2.));
+    line.line_to(p(x0 + i, h - r));
+    arc(&mut line, r - i, false, p(x0 + r, h - i));
+    bowed(&mut line, &p, x0 + r, x1 - r, h - i, bow);
+    arc(&mut line, r - i, false, p(x1 - i, h - r));
+    line.line_to(p(x1 - i, s + 2.));
+    if let Ok(path) = line.build() {
+        window.paint_path(path, hsla(0., 0., 1., 0.06));
+    }
+}
+
+/// The island around a screen's own Dynamic Island: it floats under the top
+/// edge like that one, round all the way, and its hairline goes all around.
+fn pill(b: Bounds<Pixels>, edge: Edge, w: f32, h: f32, bow: f32, window: &mut Window) {
+    let o = b.origin;
+    let p = |x: f32, y: f32| point(o.x + px(WIN_W / 2. + x), o.y + px(y));
+    let arc = |pb: &mut PathBuilder, rad: f32, to| {
+        pb.arc_to(point(px(rad), px(rad)), px(0.), false, true, to)
+    };
+    let (top, bottom) = (top_radius(h), bottom_radius(edge, w, h));
+    let outline = |pb: &mut PathBuilder, i: f32| {
+        let (x0, x1, y0, y1) = (-w / 2. + i, w / 2. - i, i, h - i);
+        let (rt, rb) = ((top - i).max(0.), (bottom - i).max(0.));
+        pb.move_to(p(x0 + rt, y0));
+        pb.line_to(p(x1 - rt, y0));
+        arc(pb, rt, p(x1, y0 + rt));
+        pb.line_to(p(x1, y1 - rb));
+        arc(pb, rb, p(x1 - rb, y1));
+        bowed(pb, &p, x1 - rb, x0 + rb, y1, bow);
+        arc(pb, rb, p(x0, y1 - rb));
+        pb.line_to(p(x0, y0 + rt));
+        arc(pb, rt, p(x0 + rt, y0));
+        pb.close();
+    };
+    let mut fill = PathBuilder::fill();
+    outline(&mut fill, 0.);
+    if let Ok(path) = fill.build() {
+        window.paint_path(path, gpui::black());
+    }
+    let mut line = PathBuilder::stroke(px(1.));
+    outline(&mut line, 0.5);
+    if let Ok(path) = line.build() {
         window.paint_path(path, hsla(0., 0., 1., 0.06));
     }
 }
@@ -2331,9 +2580,12 @@ fn avatar(alert: &Alert) -> impl IntoElement {
 /// sits at the card's right edge, so "Ver" lands under the thumb too.
 fn card_buttons(confirm: bool) -> [(&'static str, bool); 2] {
     if confirm {
-        [("Rechazar", false), ("Aprobar", true)]
+        [
+            (say("Deny", "Rechazar"), false),
+            (say("Approve", "Aprobar"), true),
+        ]
     } else {
-        [("Luego", false), ("Ver", true)]
+        [(say("Later", "Luego"), false), (say("View", "Ver"), true)]
     }
 }
 
@@ -2500,6 +2752,9 @@ impl Render for Island {
         let t = self.start.elapsed().as_secs_f32();
         let (w, h) = (self.w.x, self.h.x);
         let x0 = WIN_W / 2. - w / 2.;
+        // What follows is laid out from the island's top, `oy` under the window's.
+        let edge = self.edge;
+        let (oy, cut_h) = (edge.top(), edge.cut_h());
 
         // The card: measured once, removed when back in (and the next one let out).
         if let Some(card) = &mut self.card
@@ -2537,7 +2792,7 @@ impl Render for Island {
             hw: w / 2.,
             top: -100.,
             bottom: ih,
-            r: bottom_radius(w, ih),
+            r: bottom_radius(edge, w, ih),
         };
         let shapes = card.map(|(_, l, g)| {
             let box_ = Rounded {
@@ -2552,15 +2807,17 @@ impl Render for Island {
         let card_box = card
             .filter(|(c, ..)| c.gone.is_none())
             .map(|(_, _, g)| Bounds {
-                origin: point(px(WIN_W / 2. - g.w / 2.), px(g.top)),
+                origin: point(px(WIN_W / 2. - g.w / 2.), px(oy + g.top)),
                 size: size(px(g.w), px(g.h)),
             });
 
+        // The gap over a floating island is its own too: the pointer thrown
+        // at the top of the screen lands on it.
         let mut region = vec![[
             x0.floor() as i32,
             0,
             w.ceil() as i32 + 1,
-            ih.ceil() as i32 + 1,
+            (oy + ih).ceil() as i32 + 1,
         ]];
         if let Some(b) = card_box {
             let (x, y) = (b.origin.x.as_f32(), b.origin.y.as_f32());
@@ -2611,13 +2868,15 @@ impl Render for Island {
         let weak = cx.weak_entity();
         let alpha = self.content_alpha();
         let layer = |view: View, a: f32, el: gpui::AnyElement| {
-            let (tw, th) = view.size();
+            let (tw, th) = view.size(edge);
+            // An open view's rows start under the camera cutout.
+            let under = if view.open() { cut_h } else { 0. };
             div()
                 .absolute()
                 .left(px(WIN_W / 2. - tw / 2.))
-                .top(px((1. - a) * -4.))
+                .top(px(oy + under + (1. - a) * -4.))
                 .w(px(tw))
-                .h(px(th))
+                .h(px(th - under))
                 .opacity(a)
                 .child(el)
         };
@@ -2632,14 +2891,18 @@ impl Render for Island {
             let lift = (1. - g.alpha) * 4.;
             div()
                 .opacity(g.alpha)
-                .child(self.card_content(c, l, g.top + lift, g.h - lift, cx))
+                .child(self.card_content(c, l, oy + g.top + lift, g.h - lift, cx))
         });
 
         let mh = SMALL_W * 166. / 212.;
         let face = div()
             .absolute()
             .left(px(x0 + FACE_X))
-            .top(px(((h.min(HEAD_H) - mh) / 2.).max(0.)))
+            // Beside the cutout while the island is compact; as it opens, down
+            // to the head of what it shows under the cutout.
+            .top(px(oy
+                + (h - HEAD_H).clamp(0., cut_h)
+                + ((h.min(HEAD_H) - mh) / 2.).max(0.)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -2661,8 +2924,12 @@ impl Render for Island {
                 canvas(
                     |_, _, _| {},
                     move |b, _, window, _| {
+                        let b = Bounds {
+                            origin: point(b.origin.x, b.origin.y + px(oy)),
+                            size: b.size,
+                        };
                         let bow = shapes.map_or(0., |(_, g, _)| 0.6 * g.bulge);
-                        shape(b, w, ih, bow, window);
+                        shape(b, edge, w, ih, bow, window);
                         if let Some((c, g, edge)) = shapes {
                             card_shape(b, c, g.bulge, edge, window);
                             neck(b, island, c, NECK_R * g.join, 1.5 + g.bulge.abs(), window);
@@ -2671,7 +2938,7 @@ impl Render for Island {
                         // position and a growing shape would claim it again.
                         let inside = Bounds {
                             origin: point(px(x0), px(0.)),
-                            size: size(px(w), px(h)),
+                            size: size(px(w), px(oy + h)),
                         };
                         let on_move = weak.clone();
                         window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
@@ -2762,7 +3029,7 @@ mod tests {
         // Content is centered up and down; this keeps it off the edges.
         const PAD_Y: f32 = 4.;
         let fits = |view: View, content_w: f32, content_h: f32| {
-            let (w, h) = view.size();
+            let (w, h) = view.size(Edge::Flat);
             assert!(
                 CONTENT_X + content_w + PAD_R <= w,
                 "{view:?}: {content_w} wide needs {} but the island is {w}",
@@ -2937,11 +3204,14 @@ mod tests {
     fn approve_stays_right_of_reject() {
         assert_eq!(
             super::card_buttons(true),
-            [("Rechazar", false), ("Aprobar", true)]
+            [
+                (say("Deny", "Rechazar"), false),
+                (say("Approve", "Aprobar"), true)
+            ]
         );
         assert_eq!(
             super::card_buttons(false),
-            [("Luego", false), ("Ver", true)]
+            [(say("Later", "Luego"), false), (say("View", "Ver"), true)]
         );
     }
 
@@ -3031,7 +3301,7 @@ mod tests {
             hw: iw / 2.,
             top: -100.,
             bottom: ih,
-            r: bottom_radius(iw, ih),
+            r: bottom_radius(Edge::Flat, iw, ih),
         };
         let card = Rounded {
             hw: g.w / 2.,

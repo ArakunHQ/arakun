@@ -188,7 +188,7 @@ Manager (Windows Credentials, Generic Credentials).
 
 ## Not available on Windows
 
-- **Dynamic Island:** it needs a Wayland layer shell, so it only runs on Linux.
+- **Dynamic Island:** it runs on Linux (a Wayland layer shell) and on macOS only.
 - **Headless agents (`arakun agent run`):** their sandbox is bubblewrap, which is
   Linux-only.
 - **`arakun dev`** (the test instance in Xvfb) and the **Claude SEO** installer in the

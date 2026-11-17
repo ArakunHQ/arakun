@@ -39,6 +39,8 @@ pub enum SettingsEvent {
     DiffPalette(DiffPalette),
     Glass(bool),
     Island(bool),
+    /// Quit and start again, which installs the downloaded update.
+    RestartToUpdate,
     OpenAccount,
     OpenExtensions,
     #[cfg(feature = "coderlabs")]
@@ -210,8 +212,15 @@ impl Section {
         if query.is_empty() {
             return true;
         }
+        // The Updates card is in General in every build, so its words are
+        // added here rather than to each build's keyword list.
+        let updates = if self == Section::General {
+            "update updates automatic automatically auto version release upgrade"
+        } else {
+            ""
+        };
         let text = format!(
-            "{} {} {}",
+            "{} {} {} {updates}",
             self.title(),
             self.description(),
             self.keywords()
@@ -879,6 +888,7 @@ impl SettingsDialog {
                             .into_any_element(),
                         ],
                     ),
+                    titled("Updates", self.update_rows(cx)),
                     titled(
                         "Browser",
                         vec![
@@ -1191,6 +1201,66 @@ impl SettingsDialog {
             .child(head)
             .child(body)
             .into_any_element()
+    }
+
+    /// The Updates card: the automatic switch, and the version with what
+    /// the last check found.
+    fn update_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use crate::update::{self, Status};
+        let version = format!("Arakun {}", env!("CARGO_PKG_VERSION"));
+        if !update::release_build() {
+            return vec![
+                row(
+                    version,
+                    "Built from source, so it does not update itself. Pull and build it again, or install a release.",
+                    div().into_any_element(),
+                )
+                .into_any_element(),
+            ];
+        }
+        let automatic = update::automatic();
+        let auto = row(
+            "Update automatically",
+            "Looks for a new release on GitHub every 6 hours and downloads it. It is installed when you quit Arakun.",
+            switch(automatic).into_any_element(),
+        )
+        .id("set-auto-update")
+        .cursor_pointer()
+        .on_click(cx.listener(move |_, _, _, cx| {
+            if let Err(e) = update::set_automatic(!automatic) {
+                eprintln!("arakun: the update setting will not last past a restart: {e}");
+            }
+            cx.notify();
+        }))
+        .into_any_element();
+        let status = update::status();
+        let busy = matches!(status, Status::Checking | Status::Downloading(_));
+        let action = match &status {
+            // Only Linux and macOS can start Arakun again by themselves.
+            Status::Ready(_) if cfg!(unix) => ui::button(
+                "set-update-restart",
+                "Restart now",
+                ButtonKind::Outline,
+                true,
+            )
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::RestartToUpdate))),
+            _ => ui::button("set-update-check", "Check now", ButtonKind::Outline, !busy).on_click(
+                cx.listener(move |_, _, _, cx| {
+                    if busy {
+                        return;
+                    }
+                    update::set_status(Status::Checking);
+                    cx.spawn(async move |this, cx| {
+                        cx.background_spawn(async { update::check() }).await.ok();
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    })
+                    .detach();
+                    cx.notify();
+                }),
+            ),
+        };
+        let current = row(version, status.text(), action.into_any_element()).into_any_element();
+        vec![auto, current]
     }
 
     /// Puts `id` in use across the app and remembers it.
@@ -2665,6 +2735,8 @@ mod tests {
         assert!(found("branch").contains(&Section::Branches));
         assert!(found("haiku").contains(&Section::Branches));
         assert!(found("crash").contains(&Section::Privacy));
+        assert!(found("update").contains(&Section::General));
+        assert!(found("automatic updates").contains(&Section::General));
         assert!(found("redacted").contains(&Section::Privacy));
         assert!(found("stream").contains(&Section::Privacy));
         assert!(!found("crash").contains(&Section::General));

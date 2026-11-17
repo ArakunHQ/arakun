@@ -325,6 +325,40 @@ or set `ARAKUN_VERSION=v0.2.1` (on Windows, `$env:ARAKUN_VERSION = "v0.2.1"`). T
 no build for Intel Macs or Linux on ARM yet; build from source there. `v0.1.0` has no
 macOS build; on macOS, install a later version.
 
+### Updates
+
+A release build keeps itself up to date. Every 6 hours it asks GitHub for the latest
+release. When there is a newer one, it downloads it, checks it against `SHA256SUMS`, and
+puts it next to the installed app. The update is installed when you quit Arakun, so the
+next start runs it. Settings › General › Updates shows the version, has **Check now**,
+and on Linux and macOS **Restart now**. Turn **Update automatically** off there to stop
+the checks; `ARAKUN_UPDATES=0` turns them off for one run.
+
+From a terminal, `arakun update` downloads the latest release and installs it. If Arakun
+is running, it is installed when Arakun quits: on Linux and macOS `arakun restart` does
+that now; on Windows, quit Arakun and open it again. `arakun update --check` only says
+whether there is a newer release.
+
+The updater keeps its files in Arakun's data folder (`~/.local/share/arakun` on Linux
+and macOS, `%LOCALAPPDATA%\arakun` on Windows): `update.json` (the version waiting to be
+installed, its checksum, and the last one you were told about), `update.lock` (held while
+one updater runs), `no-auto-update` (there while **Update automatically** is off) and
+`update-download/` (the download, removed when it is done). The new version waits next to
+the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
+on Windows), unpacked first as `.arakun.incoming`.
+
+Arakun updates itself where it runs from, so that folder and the binary must be yours
+(the install scripts' folders are). A binary that belongs to another user, such as one a
+package manager installed, is left alone: update it the way it was installed. A build
+from source never updates itself: a release would take away the browser. Pull and build
+it again instead.
+
+What is checked: the download matches the checksum in the release's `SHA256SUMS`, and
+the new binary starts and says the version it should. This catches a broken or cut-short
+download. It does not prove who made the release, since `SHA256SUMS` comes from the same
+place. The install scripts trust the same thing. To check where a release came from, use
+`gh attestation verify` (see [Manual download](#manual-download)).
+
 ### Manual download
 
 Download the archive or disk image for your platform from

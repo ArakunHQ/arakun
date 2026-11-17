@@ -89,6 +89,7 @@ mod terminal;
 mod theme;
 mod ui;
 mod ui_zoom;
+mod update;
 mod usage_history;
 mod usage_view;
 mod voice;
@@ -144,6 +145,7 @@ fn main() {
     // Sends only what the user agreed to; the first launch asks (`ask_telemetry`).
     telemetry::init();
     telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);
+    update::clean_up();
     let started = std::time::Instant::now();
     gpui::Application::with_platform(ui_zoom::platform())
         .with_assets(assets::Assets)

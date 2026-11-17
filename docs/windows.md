@@ -118,6 +118,8 @@ build with the browser.
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
+| Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
+| A downloaded update, until Arakun quits | `.arakun.exe.update` next to `arakun.exe` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
@@ -185,6 +187,11 @@ Manager (Windows Credentials, Generic Credentials).
 - **Notifications:** Windows toasts through PowerShell; they appear under the name
   "Windows PowerShell".
 - **Opening external files and links:** with the Windows default program.
+- **Updates:** a release build downloads a new release as `.arakun.exe.update` next to
+  `arakun.exe`. Windows does not let a running `.exe` be replaced, so when Arakun quits
+  it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. The
+  next start deletes the old one. Settings has no **Restart now** button on Windows:
+  quit Arakun and open it again. Not tested on real Windows yet.
 
 ## Not available on Windows
 

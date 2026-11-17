@@ -106,13 +106,11 @@ fn create_temp(
             Err(e) => return Err(e),
         }
     }
+    // Leave `name` out: some callers name files after ids (a session is
+    // `<session-id>.json`) and print this error to the log.
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!(
-            "no free temp file name for {} in {}",
-            name.to_string_lossy(),
-            dir.display()
-        ),
+        format!("no free temp file name in {}", dir.display()),
     ))
 }
 
@@ -194,10 +192,12 @@ mod tests {
     fn gives_up_when_every_temp_name_is_taken() {
         let dir = scratch("taken-names");
         std::fs::create_dir_all(&dir).unwrap();
-        let planted = dir.join(format!(".f.{}-7.tmp", std::process::id()));
+        let name = "session-4f9c2e.json";
+        let planted = dir.join(format!(".{name}.{}-7.tmp", std::process::id()));
         std::fs::write(&planted, b"x").unwrap();
-        let err = super::create_temp(&dir, std::ffi::OsStr::new("f"), false, || 7).unwrap_err();
+        let err = super::create_temp(&dir, std::ffi::OsStr::new(name), false, || 7).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(!err.to_string().contains("4f9c2e"), "{err}");
         assert_eq!(std::fs::read(&planted).unwrap(), b"x");
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -337,6 +337,10 @@ pub struct Shell {
     /// Dragged widths of the side cards; state::RAIL_W / PANEL_W until dragged.
     rail_w: f32,
     panel_w: f32,
+    /// The widths the rail, workspace panel and subagents column are drawn at
+    /// this frame: the dragged ones, narrowed when the window is too small to
+    /// leave the work in the middle `MAIN_MIN_W` (see `fit_sides`).
+    side_fit: Cell<[f32; 3]>,
     /// The Subagents panel, between the chat and the Workspace panel.
     subagents_open: bool,
     subagents_w: f32,
@@ -472,10 +476,34 @@ struct InboxItem {
 }
 
 const DOCK_MIN_H: f32 = 120.;
+/// What the dock leaves above it for the work, however tall it was dragged.
+const DOCK_ROOM_ABOVE: f32 = 160.;
+
+/// The tallest the dock can be in a window `viewport_h` tall: its bottom edge
+/// is one gap above the window's.
+fn dock_max_h(viewport_h: f32) -> f32 {
+    (viewport_h - gap() - DOCK_ROOM_ABOVE).max(DOCK_MIN_H)
+}
 /// How narrow and wide the side cards can be dragged.
 const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
 const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
 const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
+/// How narrow the work between the side cards may get before they give way.
+const MAIN_MIN_W: f32 = 420.;
+
+/// Side card widths that leave `room` for the cards together. Each one gives
+/// up width in proportion to how far it is above its own minimum, and none
+/// goes below it: on a window too small even for that, the middle shrinks.
+/// `cards` holds (dragged width, minimum); a hidden card is (0, 0).
+fn fit_sides<const N: usize>(room: f32, cards: [(f32, f32); N]) -> [f32; N] {
+    let want: f32 = cards.iter().map(|c| c.0).sum();
+    let slack: f32 = cards.iter().map(|c| (c.0 - c.1).max(0.)).sum();
+    if want <= room || slack <= 0. {
+        return cards.map(|c| c.0);
+    }
+    let keep = 1. - ((want - room) / slack).min(1.);
+    cards.map(|(w, min)| (min + (w - min).max(0.) * keep).min(w).round())
+}
 /// Air around and between the window's floating cards, set in Settings ›
 /// Appearance. The window's edges, the room above the dock and the resize
 /// handles between side cards all use this one value, so they stay equal.
@@ -773,6 +801,7 @@ impl Shell {
             builder: Default::default(),
             rail_w: layout.rail_w,
             panel_w: layout.panel_w,
+            side_fit: Cell::new([layout.rail_w, layout.panel_w, layout.subagents_w]),
             subagents_open: layout.subagents_open,
             subagents_w: layout
                 .subagents_w
@@ -1846,15 +1875,66 @@ impl Shell {
     /// when it shows on the left.
     fn titlebar_x(&self) -> f32 {
         if self.rail_shown() && self.sidebar.style.side == crate::sidebar::Side::Left {
-            let w = if self.rail_narrow() {
-                rail_blocks::RAIL_ICONS_W
-            } else {
-                self.rail_w
-            };
-            gap() + w + gap()
+            gap() + self.rail_width() + gap()
         } else {
             gap()
         }
+    }
+
+    /// How wide the rail is drawn: its icons, or its dragged width as it fits.
+    fn rail_width(&self) -> f32 {
+        if self.rail_narrow() {
+            rail_blocks::RAIL_ICONS_W
+        } else {
+            self.side_fit.get()[0]
+        }
+    }
+
+    fn panel_width(&self) -> f32 {
+        self.side_fit.get()[1]
+    }
+
+    fn subagents_width(&self) -> f32 {
+        self.side_fit.get()[2]
+    }
+
+    /// Narrows the side cards for this frame when the window can't hold them
+    /// at their dragged widths and still leave `MAIN_MIN_W` for the work.
+    /// The dragged widths stay, so widening the window brings them back.
+    fn fit_side_cards(&self, window: &Window) {
+        let has_projects = self.has_projects();
+        let rail = self.rail_shown();
+        let panel = has_projects && self.panel_open;
+        let subagents = has_projects && self.subagents_open;
+        let rail_card = match (rail, self.rail_narrow()) {
+            (false, _) => (0., 0.),
+            (true, true) => (rail_blocks::RAIL_ICONS_W, rail_blocks::RAIL_ICONS_W),
+            (true, false) => (self.rail_w, RAIL_W_RANGE.start),
+        };
+        let shown = [rail, panel, subagents].iter().filter(|s| **s).count() as f32;
+        // The window's padding at both sides, and one handle beside each card.
+        let room = window.viewport_size().width.as_f32() - (2. + shown) * gap() - MAIN_MIN_W;
+        let [r, p, s] = fit_sides(
+            room,
+            [
+                rail_card,
+                if panel {
+                    (self.panel_w, PANEL_W_RANGE.start)
+                } else {
+                    (0., 0.)
+                },
+                if subagents {
+                    (self.subagents_w, SUBAGENTS_W_RANGE.start)
+                } else {
+                    (0., 0.)
+                },
+            ],
+        );
+        self.side_fit.set([
+            if rail { r } else { self.rail_w },
+            if panel { p } else { self.panel_w },
+            if subagents { s } else { self.subagents_w },
+        ]);
     }
 
     /// The gap between two cards doubles as the resize handle for the side card.
@@ -2352,6 +2432,7 @@ impl Render for Shell {
             });
         }
         let has_projects = self.has_projects();
+        self.fit_side_cards(window);
         if has_projects {
             // With a project the GitHub tab is a tab again; without one later,
             // the welcome comes back first. The Servers tab too.
@@ -2465,10 +2546,10 @@ impl Render for Shell {
                 d.cursor_row_resize()
                     .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
                         // The dock card's bottom edge is one gap above the window's edge.
-                        let bottom = window.viewport_size().height.as_f32() - gap();
-                        let max = (bottom - 160.).max(DOCK_MIN_H);
+                        let viewport_h = window.viewport_size().height.as_f32();
+                        let bottom = viewport_h - gap();
                         this.dock_height = (bottom - ev.position.y.as_f32())
-                            .clamp(DOCK_MIN_H, max)
+                            .clamp(DOCK_MIN_H, dock_max_h(viewport_h))
                             .round();
                         cx.notify();
                     }))
@@ -2503,19 +2584,14 @@ impl Render for Shell {
                                 // Its right edge is where the Workspace panel starts.
                                 let rail = this.rail_shown()
                                     && this.sidebar.style.side == crate::sidebar::Side::Right;
-                                let rail_w = if this.rail_narrow() {
-                                    rail_blocks::RAIL_ICONS_W
-                                } else {
-                                    this.rail_w
-                                };
                                 let right = window_w
                                     - gap()
                                     - if this.panel_open {
-                                        this.panel_w + gap()
+                                        this.panel_width() + gap()
                                     } else {
                                         0.
                                     }
-                                    - if rail { rail_w + gap() } else { 0. };
+                                    - if rail { this.rail_width() + gap() } else { 0. };
                                 this.subagents_w = (right - ev.position.x.as_f32())
                                     .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end)
                             }
@@ -2695,7 +2771,9 @@ impl Render for Shell {
                             .child(self.render_rail(window, cx))
                     }),
             )
-            .when(chrome && has_projects, |d| d.child(self.render_dock(cx)))
+            .when(chrome && has_projects, |d| {
+                d.child(self.render_dock(viewport_h, cx))
+            })
             .when_some(self.render_session_drop_menu(cx), |d, m| d.child(m))
             .when_some(context_menu, |d, (at, above, menu)| {
                 d.child(
@@ -2989,6 +3067,21 @@ mod tests {
     fn window_gap_is_one_value() {
         assert_eq!(gap_px(), px(8.));
         assert_eq!(gap_px(), px(crate::ui::window_gap()));
+    }
+
+    #[test]
+    fn side_cards_give_way_on_a_small_window() {
+        // Room enough: the dragged widths stay.
+        assert_eq!(fit_sides(500., [(200., 160.), (260., 200.)]), [200., 260.]);
+        // 40 short of 100 slack: each keeps 60% of what it has above its minimum.
+        assert_eq!(fit_sides(420., [(200., 160.), (260., 200.)]), [184., 236.]);
+        // Never below a minimum, and a hidden card stays hidden.
+        assert_eq!(
+            fit_sides(100., [(200., 160.), (0., 0.), (300., 260.)]),
+            [160., 0., 260.]
+        );
+        // A card already narrower than its minimum (icons) keeps its width.
+        assert_eq!(fit_sides(0., [(52., 52.)]), [52.]);
     }
 
     #[test]

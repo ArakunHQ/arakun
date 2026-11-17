@@ -405,7 +405,7 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn render_dock(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_dock(&self, viewport_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let env = self.env();
         let dock_open = self.dock_open;
         let env_path = env.path.clone();
@@ -741,9 +741,12 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            // Open, the user's height; closed, as tall as its header, from the
-            // layout itself: a fixed number here pushed the chips to the bottom.
-            .when(dock_open, |d| d.h(px(self.dock_height)))
+            // Open, the user's height, or less when the window got shorter
+            // since; closed, as tall as its header, from the layout itself: a
+            // fixed number here pushed the chips to the bottom.
+            .when(dock_open, |d| {
+                d.h(px(self.dock_height.min(dock_max_h(viewport_h))))
+            })
             // Always there, so the content doesn't move by a pixel when a
             // drag starts; seen only while dragging.
             .border_1()

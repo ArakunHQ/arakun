@@ -1297,7 +1297,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -1785,7 +1785,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2630,7 +2630,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2699,7 +2699,7 @@ dependencies = [
 [[package]]
 name = "gpui_apple"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "block",
@@ -2722,7 +2722,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2768,7 +2768,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2814,7 +2814,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2825,7 +2825,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -2838,7 +2838,7 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "schemars",
  "serde",
@@ -2848,7 +2848,7 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "log",
@@ -2858,7 +2858,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2886,7 +2886,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "ash",
@@ -2913,7 +2913,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3094,7 +3094,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -4645,7 +4645,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "collections",
  "serde",
@@ -5294,7 +5294,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "derive_refineable",
 ]
@@ -5581,7 +5581,7 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "async-task",
  "backtrace",
@@ -6072,7 +6072,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "heapless",
  "log",
@@ -6901,7 +6901,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "perf",
  "quote",
@@ -8371,7 +8371,7 @@ checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 [[package]]
 name = "zlog"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8400,7 +8400,7 @@ dependencies = [
 [[package]]
 name = "ztracing"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -8411,7 +8411,7 @@ dependencies = [
 [[package]]
 name = "ztracing_macro"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 
 [[package]]
 name = "zune-core"

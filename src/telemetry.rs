@@ -9,8 +9,9 @@
 //! question; `ARAKUN_TELEMETRY=1` turns both on.
 //!
 //! Never a prompt, a reply, a file's contents, a URL or a project's name.
-//! Error messages lose URLs, paths, emails and anything shaped like a secret
-//! before they leave the machine (`scrub`). Every event carries a random id
+//! An agent's error is sent as a fixed category, not its text (`category`);
+//! a panic's message loses URLs, paths, emails and anything shaped like a
+//! secret before it leaves the machine (`scrub`). Every event carries a random id
 //! kept in `app_dir/telemetry-id`, not tied to any account, and creates no
 //! person profile. Debug builds, tests and `arakun dev` send nothing.
 //!
@@ -161,22 +162,23 @@ pub fn init() {
 }
 
 /// Saves the user's answer (from the first-launch question or Settings) and
-/// applies it at once.
-pub fn set_consent(choice: Consent) {
+/// applies it at once. When it cannot be saved, this process still follows
+/// it, and the old answer is deleted so it cannot come back next launch,
+/// which then asks again.
+pub fn set_consent(choice: Consent) -> Result<(), String> {
     *lock(saved()) = Some(Some(choice));
+    apply(effective());
     let path = consent_file();
     let bytes = serde_json::to_vec_pretty(&choice).unwrap_or_default();
-    if let Err(e) = crate::durable::write(&path, &bytes) {
-        eprintln!("arakun: could not save {}: {e}", path.display());
-    }
-    apply(effective());
+    crate::durable::write(&path, &bytes).map_err(|e| {
+        let _ = std::fs::remove_file(&path);
+        format!("Could not save your choice ({e}); Arakun will ask again next time.")
+    })
 }
 
 fn apply(choice: Consent) {
-    if !choice.usage {
-        // What was queued while it was on is not sent either.
-        lock(&queue().events).clear();
-    }
+    // What was queued while a choice was on is not sent once it is off.
+    lock(&queue().events).retain(|e| allowed(e, choice));
     CRASHES.store(choice.crashes, Ordering::Relaxed);
     USAGE.store(choice.usage, Ordering::Relaxed);
     if (choice.crashes || choice.usage) && STARTED.set(()).is_ok() {
@@ -204,8 +206,9 @@ pub fn capture(event: &str, props: &[(&str, &str)]) {
 }
 
 /// Reports an error Arakun handled, such as an agent that stopped with one:
-/// `kind` is its type in PostHog (`AgentError`); only the scrubbed first line
-/// of `message` is sent.
+/// `kind` is its type in PostHog (`AgentError`). Only a fixed category of
+/// `message` is sent (`category`), never its text: an agent's error can hold
+/// a project's name or a credential no scrubbing would recognise.
 pub fn error(kind: &'static str, message: &str, props: &[(&str, &str)]) {
     if !CRASHES.load(Ordering::Relaxed) {
         return;
@@ -219,7 +222,7 @@ pub fn error(kind: &'static str, message: &str, props: &[(&str, &str)]) {
         "$exception_list".into(),
         json!([{
             "type": kind,
-            "value": scrub(message.lines().next().unwrap_or(""), &home()),
+            "value": category(message),
             "mechanism": {"type": "generic", "handled": true, "synthetic": false},
         }]),
     );
@@ -233,8 +236,78 @@ pub fn flush() {
         return;
     }
     let batch = std::mem::take(&mut *lock(&queue().events));
-    if !batch.is_empty() {
-        send(&batch, quick_agent());
+    send(&batch, quick_agent());
+}
+
+/// Whether `event` may go out under `choice`: crash reports and usage counts
+/// are separate answers.
+fn allowed(event: &Value, choice: Consent) -> bool {
+    if event["event"] == "$exception" {
+        choice.crashes
+    } else {
+        choice.usage
+    }
+}
+
+fn current() -> Consent {
+    Consent {
+        crashes: CRASHES.load(Ordering::Relaxed),
+        usage: USAGE.load(Ordering::Relaxed),
+    }
+}
+
+/// What an agent's error was, as one of a few fixed labels.
+fn category(message: &str) -> &'static str {
+    let m = message.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| m.contains(w));
+    if has(&[
+        "is not signed in",
+        "unauthorized",
+        "401",
+        "403",
+        "forbidden",
+    ]) {
+        "not signed in"
+    } else if has(&["rate limit", "429", "too many requests", "quota"]) {
+        "rate limited"
+    } else if has(&[
+        "overloaded",
+        "529",
+        "503",
+        "502",
+        "500 ",
+        "internal server error",
+    ]) {
+        "provider error"
+    } else if has(&["timed out", "timeout"]) {
+        "timed out"
+    } else if has(&[
+        "connection refused",
+        "connection reset",
+        "dns",
+        "network",
+        "unreachable",
+    ]) {
+        "network error"
+    } else if has(&[
+        "was not found on path",
+        "no such file",
+        "not found",
+        "not installed",
+    ]) {
+        "agent not found"
+    } else if has(&["stopped responding"]) {
+        "stopped responding"
+    } else if has(&[" exited ("]) {
+        "process exited"
+    } else if m.starts_with("initialize failed") {
+        "initialize failed"
+    } else if has(&["starting the session failed", "returned no sessionid"]) {
+        "session start failed"
+    } else if m.starts_with("the turn failed") {
+        "turn failed"
+    } else {
+        "other"
     }
 }
 
@@ -351,9 +424,7 @@ fn send_loop() {
                 .unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *events)
         };
-        if !batch.is_empty() {
-            send(&batch, agent());
-        }
+        send(&batch, agent());
     }
 }
 
@@ -364,6 +435,12 @@ thread_local! {
 
 /// Posts `batch`; on failure the events are dropped, as reports are best effort.
 fn send(batch: &[Value], agent: &ureq::Agent) {
+    // The answer may have changed since these were queued.
+    let now = current();
+    let batch: Vec<&Value> = batch.iter().filter(|e| allowed(e, now)).collect();
+    if batch.is_empty() {
+        return;
+    }
     let body = json!({"api_key": KEY, "batch": batch}).to_string();
     SENDING.with(|s| s.set(true));
     let _ = agent
@@ -674,6 +751,51 @@ mod tests {
             scrub("session 3f2a9c1e4b5d6f708192a3b4c5d6e7f8 gone", HOME),
             "session <secret> gone"
         );
+    }
+
+    #[test]
+    fn agent_errors_become_fixed_categories() {
+        let cases = [
+            (
+                "Claude Code is not signed in. Run claude login",
+                "not signed in",
+            ),
+            ("The turn failed: 429 Too Many Requests", "rate limited"),
+            ("The turn failed: overloaded_error", "provider error"),
+            ("initialize failed: request timed out", "timed out"),
+            (
+                "`droid` was not found on PATH or in ~/.local/bin",
+                "agent not found",
+            ),
+            (
+                "Droid exited (exit status: 1).\nat /srv/acme/x.rs",
+                "process exited",
+            ),
+            ("Codex stopped responding.", "stopped responding"),
+            ("initialize failed: bad version", "initialize failed"),
+            (
+                "Starting the session failed: Project Falcon is archived",
+                "session start failed",
+            ),
+            ("The turn failed: model said no", "turn failed"),
+            ("SecretProject broke", "other"),
+        ];
+        for (message, want) in cases {
+            assert_eq!(category(message), want, "{message}");
+        }
+    }
+
+    #[test]
+    fn events_follow_their_own_choice() {
+        let crash = json!({"event": "$exception"});
+        let usage = json!({"event": "app launched"});
+        let only_crashes = Consent {
+            crashes: true,
+            usage: false,
+        };
+        assert!(allowed(&crash, only_crashes));
+        assert!(!allowed(&usage, only_crashes));
+        assert!(!allowed(&crash, Consent::NONE));
     }
 
     #[test]

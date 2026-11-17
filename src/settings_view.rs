@@ -129,7 +129,7 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone telemetry analytics usage crash reports privacy posthog"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
@@ -286,6 +286,8 @@ pub struct SettingsDialog {
     /// Who names the branch of a new environment after its first prompt.
     namer: env_name::Namer,
     namer_input: Entity<TextInput>,
+    /// Why the last crash report or usage count choice could not be saved.
+    telemetry_error: Option<SharedString>,
     _subs: [Subscription; 8],
 }
 
@@ -426,6 +428,7 @@ impl SettingsDialog {
             voice_busy: false,
             namer,
             namer_input,
+            telemetry_error: None,
             palettes,
             share_input,
             palette_note: None,
@@ -787,7 +790,8 @@ impl SettingsDialog {
                     ),
             );
         let body: AnyElement = match s {
-            Section::General => group(vec![
+            Section::General => {
+                let mut rows = vec![
                 {
                     let mut chips = div().flex().flex_none().items_center().gap(crate::ui::sp(6.));
                     for (i, agent) in crate::agent::AgentKind::ALL.into_iter().enumerate() {
@@ -897,8 +901,8 @@ impl SettingsDialog {
                     )
                     .id("set-crash-reports")
                     .cursor_pointer()
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        crate::telemetry::set_consent(crate::telemetry::Consent { crashes: !c.crashes, ..c });
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.telemetry_error = crate::telemetry::set_consent(crate::telemetry::Consent { crashes: !c.crashes, ..c }).err().map(Into::into);
                         cx.notify();
                     }))
                     .into_any_element()
@@ -912,13 +916,26 @@ impl SettingsDialog {
                     )
                     .id("set-usage-counts")
                     .cursor_pointer()
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        crate::telemetry::set_consent(crate::telemetry::Consent { usage: !c.usage, ..c });
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.telemetry_error = crate::telemetry::set_consent(crate::telemetry::Consent { usage: !c.usage, ..c }).err().map(Into::into);
                         cx.notify();
                     }))
                     .into_any_element()
                 },
-            ]),
+            ];
+                if let Some(e) = &self.telemetry_error {
+                    rows.push(
+                        div()
+                            .px(crate::ui::sp(12.))
+                            .py(crate::ui::sp(10.))
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::error())
+                            .child(e.clone())
+                            .into_any_element(),
+                    );
+                }
+                group(rows)
+            }
             Section::Appearance => self.render_appearance(cx),
             Section::Account => group(vec![
                 row(

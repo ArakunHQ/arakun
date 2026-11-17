@@ -1633,11 +1633,15 @@ impl Shell {
             window,
             |this, _, ev: &TelemetryEvent, window, cx| match ev {
                 TelemetryEvent::Answered(yes) => {
-                    crate::telemetry::set_consent(if *yes {
+                    let choice = if *yes {
                         crate::telemetry::Consent::ALL
                     } else {
                         crate::telemetry::Consent::NONE
-                    });
+                    };
+                    // Followed for this run either way; unsaved, it asks again next launch.
+                    if let Err(e) = crate::telemetry::set_consent(choice) {
+                        eprintln!("arakun: {e}");
+                    }
                     this.close_modal(window, cx);
                 }
                 // The desktop browser: the dialog stays open over the app.

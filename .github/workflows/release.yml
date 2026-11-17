@@ -21,11 +21,14 @@ name: Release
 #   does not publish. Only a pushed tag publishes; a manual run never does,
 #   even on a tag.
 # - Linux x86_64, Windows x86_64 (MSVC) and macOS arm64. No Intel Mac build.
-# - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it.
-#   The build job signs it ad-hoc. For a tag or a manual run, the notarize job
-#   signs it again with the Developer ID certificate, has Apple notarize it and
-#   staples the ticket, so Gatekeeper opens it however it was downloaded. A
-#   pull request's dry run stops at the ad-hoc app: it gets no secrets.
+# - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it,
+#   in a disk image made by tools/macos-dmg.py that opens as a branded window
+#   with an Applications link to drag it to. The build job signs the app ad-hoc.
+#   For a tag or a manual run, the notarize job signs the app inside the image
+#   again with the Developer ID certificate, has Apple notarize it and staples
+#   the ticket, then does the same for the image, so Gatekeeper opens both
+#   however they were downloaded. A pull request's dry run stops at the ad-hoc
+#   image: it gets no secrets.
 # - Linux builds inside an ubuntu:22.04 container, so the binary needs glibc 2.35
 #   or newer (Ubuntu 22.04+, Debian 12+). A runner image links against its own,
 #   newer glibc (ubuntu-24.04: 2.39), and the binary then refuses to start on
@@ -43,11 +46,17 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Dry runs: a change to this file or to the macOS bundle script or icon, or a manual
+  # Dry runs: a change to this file or to the macOS bundle, image or icon, or a manual
   # run from the Actions tab, builds the archives without publishing, so a
   # broken release build shows up before a tag.
   pull_request:
-    paths: [".github/workflows/release.yml", "tools/macos-app.sh", "tools/Arakun.icon/**"]
+    paths:
+      - .github/workflows/release.yml
+      - tools/macos-app.sh
+      - tools/macos-dmg.py
+      - tools/macos-dmg-requirements.txt
+      - tools/Arakun.icon/**
+      - assets/brand/dmg-background*.png
   workflow_dispatch:
 
 permissions:
@@ -257,42 +266,61 @@ jobs:
       - name: cargo build
         run: cargo build --release --locked --no-default-features --target aarch64-apple-darwin
 
+      # For dmgbuild (tools/macos-dmg.py), which needs 3.10 or newer; the
+      # system python3 is older. No cache: see the header.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: dmgbuild
+        run: |
+          python -m venv "$RUNNER_TEMP/dmg"
+          "$RUNNER_TEMP/dmg/bin/pip" install --require-hashes --no-deps --only-binary :all: \
+            -r tools/macos-dmg-requirements.txt
+
       - name: Package
         env:
           # Empty on a dry run; then the name carries the commit (for a pull
           # request its head, not the merge commit GitHub tests).
           TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          # Keeps tar from adding ._* files for extended attributes.
-          COPYFILE_DISABLE: "1"
         run: |
           tag=${TAG:-dev-$(printf %.7s "$SHA")}
           name="arakun-$tag-macos-arm64"
-          mkdir -p "dist/$name"
-          tools/macos-app.sh --strip target/aarch64-apple-darwin/release/arakun "dist/$name/Arakun.app"
-          cp LICENSE NOTICE README.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          mkdir -p work dist
+          tools/macos-app.sh --strip target/aarch64-apple-darwin/release/arakun work/Arakun.app
+          "$RUNNER_TEMP/dmg/bin/python" tools/macos-dmg.py work/Arakun.app "dist/$name.dmg"
 
-      # The archive as a user gets it: unpacks, the signature holds, and the
-      # binary loads and runs.
+      # The image as a user gets it: it mounts with the app, the Applications
+      # link and the window layout, the signature holds, and the binary loads
+      # and runs.
       - name: Smoke test
         run: |
-          mkdir smoke
-          tar -C smoke -xzf dist/*.tar.gz
-          app=$(echo smoke/*/Arakun.app)
+          mnt=$RUNNER_TEMP/smoke
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mnt" dist/*.dmg
+          trap 'hdiutil detach "$mnt"' EXIT
+          ls -la "$mnt"
+          app=$mnt/Arakun.app
+          [ "$(readlink "$mnt/Applications")" = /Applications ]
+          test -f "$mnt/.DS_Store"
+          test -f "$mnt/.VolumeIcon.icns"
+          ls "$mnt"/.background.*
+          # Extended attributes on the bundle, which codesign --strict refuses.
+          xattr -l "$app"
           codesign --verify --deep --strict "$app"
           test -f "$app/Contents/Resources/Assets.car"
+          test -f "$app/Contents/Resources/LICENSE"
           # Which images the icon catalog holds, for each macOS version and appearance.
           echo "::group::Assets.car"; xcrun assetutil --info "$app/Contents/Resources/Assets.car"; echo "::endgroup::"
           "$app/Contents/MacOS/arakun" --version
 
       # Ad-hoc signed. Where the notarize job runs, it replaces this artifact
-      # with the notarized archive under the same name, so a run never offers
+      # with the notarized image under the same name, so a run never offers
       # the ad-hoc app next to the signed one.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-arm64
-          path: dist/*.tar.gz
+          path: dist/*.dmg
           if-no-files-found: error
 
   # A job of its own so the signing certificate and the App Store Connect key
@@ -356,23 +384,42 @@ jobs:
           echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
           echo "identity=$identity" >> "$GITHUB_OUTPUT"
 
-      - name: Sign
+      # The app is signed and stapled inside the image, so the window layout
+      # tools/macos-dmg.py made stays as it is and this job needs no code from
+      # the repository. The image has free space for the bigger signature and
+      # the ticket.
+      - name: Open the image
+        id: image
+        run: |
+          rw=$RUNNER_TEMP/rw.dmg
+          hdiutil convert adhoc/*.dmg -format UDRW -o "$rw"
+          mnt=$RUNNER_TEMP/image
+          hdiutil attach -nobrowse -noautoopen -mountpoint "$mnt" "$rw"
+          echo "rw=$rw" >> "$GITHUB_OUTPUT"
+          echo "mnt=$mnt" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the app
         env:
           IDENTITY: ${{ steps.keychain.outputs.identity }}
           KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          APP: ${{ steps.image.outputs.mnt }}/Arakun.app
         run: |
-          mkdir work
-          tar -C work -xzf adhoc/*.tar.gz
-          app=$(echo work/*/Arakun.app)
           # Hardened runtime, which notarization requires, with no entitlements:
           # the build without the browser needs none (no JIT, no plugins). One
           # binary and no frameworks, so signing the bundle signs everything;
           # a CEF build would have to sign the framework and helpers first.
+          # Extended attributes first: codesign --strict refuses a bundle with
+          # Finder information on it.
+          xattr -cr "$APP"
           codesign --force --timestamp --options runtime \
-            --sign "$IDENTITY" --keychain "$KEYCHAIN" "$app"
-          codesign --verify --strict --verbose=2 "$app"
+            --sign "$IDENTITY" --keychain "$KEYCHAIN" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
 
-      - name: Notarize
+      # The API key, and notarize(), which submits a file, waits, prints
+      # Apple's log and staples the ticket. It runs twice: for the app, so it
+      # opens offline once it is copied out of the image, and for the image.
+      - name: Notary credentials
+        id: notarize
         env:
           API_KEY: ${{ secrets.APPLE_API_KEY }}
           API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -384,33 +431,72 @@ jobs:
           }
           key=$RUNNER_TEMP/AuthKey.p8
           printf '%s\n' "$API_KEY" > "$key"
-          app=$(echo work/*/Arakun.app)
-          # notarytool takes a zip, not a tar.gz. The ticket is stapled to the
-          # app afterwards, so this zip is thrown away.
-          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
-          auth=(--key "$key" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID")
-          # Goes on after a refusal, to print the log below; the status decides.
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" "${auth[@]}" \
-            --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary.json" || true
-          cat "$RUNNER_TEMP/notary.json"
-          id=$(plutil -extract id raw "$RUNNER_TEMP/notary.json")
-          status=$(plutil -extract status raw "$RUNNER_TEMP/notary.json")
-          # The log says why Apple refused, and lists warnings when it accepts.
-          xcrun notarytool log "$id" "${auth[@]}" || true
-          rm "$key"
-          [ "$status" = Accepted ] || { echo "::error::notarization ended with status $status"; exit 1; }
-          # The ticket in the app lets Gatekeeper check it offline.
-          xcrun stapler staple "$app"
-          xcrun stapler validate "$app"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          cat > "$RUNNER_TEMP/notarize.sh" <<'EOF'
+          # notarize FILE STAPLE: submits FILE and staples the ticket to STAPLE.
+          notarize() {
+            auth=(--key "$KEY" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID")
+            # Goes on after a refusal, to print the log below; the status decides.
+            xcrun notarytool submit "$1" "${auth[@]}" \
+              --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary.json" || true
+            cat "$RUNNER_TEMP/notary.json"
+            id=$(plutil -extract id raw "$RUNNER_TEMP/notary.json")
+            status=$(plutil -extract status raw "$RUNNER_TEMP/notary.json")
+            # The log says why Apple refused, and lists warnings when it accepts.
+            xcrun notarytool log "$id" "${auth[@]}" || true
+            [ "$status" = Accepted ] || { echo "::error::notarization of $1 ended with status $status"; exit 1; }
+            # The ticket lets Gatekeeper check it offline.
+            xcrun stapler staple "$2"
+            xcrun stapler validate "$2"
+          }
+          EOF
+
+      - name: Notarize the app
+        env:
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          KEY: ${{ steps.notarize.outputs.key }}
+          APP: ${{ steps.image.outputs.mnt }}/Arakun.app
+        run: |
+          . "$RUNNER_TEMP/notarize.sh"
+          # notarytool takes a zip, not a bare app; the ticket goes on the app
+          # in the image, so this zip is thrown away.
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+          notarize "$RUNNER_TEMP/notarize.zip" "$APP"
 
       - name: Package
         env:
-          # Keeps tar from adding ._* files for extended attributes.
-          COPYFILE_DISABLE: "1"
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          RW: ${{ steps.image.outputs.rw }}
+          MNT: ${{ steps.image.outputs.mnt }}
         run: |
-          name=$(basename work/*)
+          # What macOS leaves on a volume it mounted writable.
+          rm -rf "$MNT/.fseventsd" "$MNT/.Trashes"
+          # Spotlight can hold the volume for a moment.
+          hdiutil detach "$MNT" || { sleep 5; hdiutil detach -force "$MNT"; }
           mkdir dist
-          tar -C work -czf "dist/$name.tar.gz" "$name"
+          dmg="dist/$(basename adhoc/*.dmg)"
+          hdiutil convert "$RW" -format ULFO -o "$dmg"
+          # The image's own signature, which Gatekeeper checks on a download.
+          codesign --timestamp --sign "$IDENTITY" --keychain "$KEYCHAIN" "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+
+      - name: Notarize the image
+        env:
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          KEY: ${{ steps.notarize.outputs.key }}
+        run: |
+          . "$RUNNER_TEMP/notarize.sh"
+          dmg=$(echo dist/*.dmg)
+          notarize "$dmg" "$dmg"
+
+      - name: Remove the API key
+        if: always() && steps.notarize.outputs.key != ''
+        env:
+          KEY: ${{ steps.notarize.outputs.key }}
+        run: rm -f "$KEY"
 
       # Before the smoke test runs the binary: it comes from a job that ran
       # third-party build scripts, and must not find the signing key.
@@ -420,14 +506,22 @@ jobs:
           KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
         run: security delete-keychain "$KEYCHAIN"
 
-      # The archive as a user gets it: Gatekeeper accepts it as notarized (what
-      # it checks for a browser download), and the binary loads and runs.
+      # The image as a user gets it: Gatekeeper accepts the image and the app
+      # in it as notarized (what it checks for a browser download), and the
+      # binary loads and runs.
       - name: Smoke test
         run: |
-          mkdir smoke
-          tar -C smoke -xzf dist/*.tar.gz
-          app=$(echo smoke/*/Arakun.app)
+          dmg=$(echo dist/*.dmg)
+          # The ticket is stapled to the image itself, not only to the app.
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg" 2>&1 | tee spctl.txt
+          grep -q 'source=Notarized Developer ID' spctl.txt
+          mnt=$RUNNER_TEMP/smoke
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt"' EXIT
+          app=$mnt/Arakun.app
           codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app" 2>&1 | tee spctl.txt
           grep -q 'source=Notarized Developer ID' spctl.txt
           "$app/Contents/MacOS/arakun" --version
@@ -436,7 +530,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-arm64
-          path: dist/*.tar.gz
+          path: dist/*.dmg
           if-no-files-found: error
           overwrite: true
 
@@ -453,7 +547,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # macos-arm64 is the notarized archive: this job needs macos-notarize,
+      # macos-arm64 is the notarized image: this job needs macos-notarize,
       # which replaced the build job's ad-hoc artifact.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -465,9 +559,9 @@ jobs:
         run: |
           ls -l
           shopt -s nullglob
-          archives=(*.tar.gz *.zip)
+          archives=(*.tar.gz *.zip *.dmg)
           [ ${#archives[@]} -eq 3 ] || { echo "::error::expected 3 archives, found ${#archives[@]}"; exit 1; }
-          sha256sum *.tar.gz *.zip > SHA256SUMS
+          sha256sum "${archives[@]}" > SHA256SUMS
           cat SHA256SUMS
 
       # Signs which workflow run and commit built each archive, so
@@ -489,4 +583,5 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.dmg
             dist/SHA256SUMS

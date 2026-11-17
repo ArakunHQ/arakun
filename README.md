@@ -295,18 +295,19 @@ check it against `SHA256SUMS`, and install it for your user:
 | Linux | `~/.local/bin/arakun` | `rm ~/.local/bin/arakun` |
 | Windows | `%LOCALAPPDATA%\Programs\Arakun`, added to your user `PATH`, and a Start menu shortcut | delete that folder and the shortcut, and remove it from `PATH` |
 
-To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0`,
-or set `ARAKUN_VERSION=v0.1.0` (on Windows, `$env:ARAKUN_VERSION = "v0.1.0"`). There is
-no build for Intel Macs or Linux on ARM yet; build from source there.
+To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.2.1`,
+or set `ARAKUN_VERSION=v0.2.1` (on Windows, `$env:ARAKUN_VERSION = "v0.2.1"`). There is
+no build for Intel Macs or Linux on ARM yet; build from source there. `v0.1.0` has no
+macOS build; on macOS, install a later version.
 
 ### Manual download
 
-Download the archive for your platform from
+Download the archive or disk image for your platform from
 [GitHub Releases](https://github.com/arakunhq/arakun/releases) and check it against
 `SHA256SUMS`. Release builds are built without the browser feature.
 
-Each archive also has a build provenance attestation. It shows that this repository's
-release workflow built the archive, and from which commit. Check it with the
+Each download also has a build provenance attestation. It shows that this repository's
+release workflow built it, and from which commit. Check it with the
 [GitHub CLI](https://cli.github.com):
 
 ```sh
@@ -321,8 +322,10 @@ freetype).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`.
 
-**macOS:** `arakun-<version>-macos-arm64.tar.gz` holds `Arakun.app`, signed with a
-Developer ID and notarized by Apple. Move it to `Applications` and open it.
+**macOS:** open `arakun-<version>-macos-arm64.dmg` and drag `Arakun.app` into
+`Applications`. The app and the disk image are signed with a Developer ID and notarized by
+Apple. v0.2.1 has `arakun-v0.2.1-macos-arm64.tar.gz` instead: extract it and move
+`Arakun.app` to `Applications`. v0.1.0 has no macOS build.
 
 Arakun does not bundle the agents. Install the ones you want to use:
 

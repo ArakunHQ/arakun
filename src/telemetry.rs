@@ -6,7 +6,8 @@
 //! (panics with their stack trace, agent errors) and usage counts are two
 //! choices, kept in `app_dir/telemetry.json` and changed in Settings › Privacy.
 //! `DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the
-//! question; `ARAKUN_TELEMETRY=1` turns both on.
+//! question; `ARAKUN_TELEMETRY=1` turns both on. While the question is open,
+//! usage events wait in memory: sent if the answer is yes, dropped otherwise.
 //!
 //! Never a prompt, a reply or a file's contents. An agent's error is sent as
 //! a fixed category, not its text (`category`). A panic's message is the one
@@ -43,6 +44,8 @@ const HOST: &str = match option_env!("ARAKUN_POSTHOG_HOST") {
 const BATCH_EVERY: Duration = Duration::from_secs(5);
 /// Past this many queued events the oldest are dropped (PostHog unreachable).
 const MAX_QUEUE: usize = 500;
+/// Usage events kept while the first-launch question is open.
+const MAX_HELD: usize = 100;
 /// The frames nearest the panic that are kept.
 const MAX_FRAMES: usize = 64;
 /// How much of an error message is sent, after scrubbing.
@@ -73,6 +76,11 @@ impl Consent {
 static CRASHES: AtomicBool = AtomicBool::new(false);
 static USAGE: AtomicBool = AtomicBool::new(false);
 static STARTED: OnceLock<()> = OnceLock::new();
+/// Set while the first-launch question is open: usage events wait in memory
+/// for the answer, so the launch and the setup that come before it still count
+/// when the user says yes. A no, or quitting first, drops them unsent.
+static HOLDING: AtomicBool = AtomicBool::new(false);
+static LAUNCHED: OnceLock<std::time::Instant> = OnceLock::new();
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -172,6 +180,8 @@ pub fn env_override() -> Option<&'static str> {
 
 /// Starts sending what the user agreed to, if anything.
 pub fn init() {
+    let _ = LAUNCHED.set(std::time::Instant::now());
+    HOLDING.store(should_ask(), Ordering::Relaxed);
     apply(effective());
 }
 
@@ -181,7 +191,9 @@ pub fn init() {
 /// which then asks again.
 pub fn set_consent(choice: Consent) -> Result<(), String> {
     *lock(saved()) = Some(Some(choice));
-    apply(effective());
+    let now = effective();
+    apply(now);
+    release_held(now.usage);
     let path = consent_file();
     let bytes = serde_json::to_vec_pretty(&choice).unwrap_or_default();
     crate::durable::write(&path, &bytes).map_err(|e| {
@@ -211,14 +223,60 @@ fn apply(choice: Consent) {
 /// Queues a usage event. `props` must say nothing about the user's work: a
 /// kind, a count, a name Arakun itself gives.
 pub fn capture(event: &str, props: &[(&str, &str)]) {
-    if !USAGE.load(Ordering::Relaxed) {
+    capture_with(event, props, &[]);
+}
+
+/// `capture` with counts too, sent as numbers so PostHog can sum and
+/// average them.
+pub fn capture_with(event: &str, props: &[(&str, &str)], counts: &[(&str, u64)]) {
+    let usage = USAGE.load(Ordering::Relaxed);
+    if !usage && !HOLDING.load(Ordering::Relaxed) {
         return;
     }
-    let props = props
+    let mut map: Map<String, Value> = props
         .iter()
         .map(|(k, v)| (k.to_string(), Value::from(*v)))
         .collect();
-    enqueue(event_json(event, props));
+    for (k, v) in counts {
+        map.insert(k.to_string(), Value::from(*v));
+    }
+    let event = event_json(event, map);
+    if usage {
+        enqueue(event);
+    } else {
+        hold(event);
+    }
+}
+
+fn held() -> &'static Mutex<Vec<Value>> {
+    static HELD: OnceLock<Mutex<Vec<Value>>> = OnceLock::new();
+    HELD.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn hold(event: Value) {
+    let mut held = lock(held());
+    if held.len() < MAX_HELD {
+        held.push(event);
+    }
+}
+
+/// The first answer is in: what waited for it is queued, or dropped.
+fn release_held(send: bool) {
+    HOLDING.store(false, Ordering::Relaxed);
+    let held = std::mem::take(&mut *lock(held()));
+    if send {
+        for event in held {
+            enqueue(event);
+        }
+    }
+}
+
+/// Counts the quit with how long Arakun was open, then sends what is queued,
+/// waiting at most a couple of seconds.
+pub fn quit() {
+    let minutes = LAUNCHED.get().map_or(0, |t| t.elapsed().as_secs() / 60);
+    capture_with(events::APP_QUIT, &[], &[("minutes_open", minutes)]);
+    flush();
 }
 
 /// Reports an error Arakun handled, such as an agent that stopped with one:
@@ -245,9 +303,8 @@ pub fn error(kind: &'static str, message: &str, props: &[(&str, &str)]) {
     enqueue(event_json("$exception", map));
 }
 
-/// Sends what is queued, waiting at most a couple of seconds; call before the
-/// process ends.
-pub fn flush() {
+/// Sends what is queued, waiting at most a couple of seconds.
+fn flush() {
     if STARTED.get().is_none() {
         return;
     }
@@ -336,6 +393,8 @@ pub mod events {
     pub const ENVIRONMENT_CREATED: &str = "environment created";
     pub const VIEW_OPENED: &str = "view opened";
     pub const BROWSER_TAB_OPENED: &str = "browser tab opened";
+    pub const ONBOARDING_FINISHED: &str = "onboarding finished";
+    pub const APP_QUIT: &str = "app quit";
 }
 
 // ---- events -----------------------------------------------------------------
@@ -366,11 +425,31 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
     ] {
         props.insert(k.into(), v);
     }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
     json!({
         "event": name,
         "distinct_id": install_id(),
         "properties": props,
+        // When it happened: an event can wait for the first answer, or for
+        // the next batch, before it is sent.
+        "timestamp": timestamp(now),
     })
+}
+
+/// `unix_ms` as RFC 3339 in UTC, as PostHog's capture API takes it.
+fn timestamp(unix_ms: u64) -> String {
+    let secs = (unix_ms / 1000) as i64;
+    let (y, m, d) = crate::platform::civil_from_days(secs.div_euclid(86_400));
+    let s = secs.rem_euclid(86_400);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
+        s / 3600,
+        s / 60 % 60,
+        s % 60,
+        unix_ms % 1000
+    )
 }
 
 /// A random id for this install, made on first use. Deleting the file starts
@@ -867,6 +946,30 @@ mod tests {
         assert!(in_app("<arakun::shell::Shell as gpui::Render>::render"));
         assert!(!in_app("core::slice::index::slice_index_fail"));
         assert!(!in_app("gpui::app::App::update"));
+    }
+
+    #[test]
+    fn timestamps_are_rfc3339_utc() {
+        assert_eq!(timestamp(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(timestamp(1_763_390_096_789), "2025-11-17T14:34:56.789Z");
+        assert_eq!(timestamp(951_782_400_000), "2000-02-29T00:00:00.000Z");
+    }
+
+    #[test]
+    fn held_events_go_out_only_after_a_yes() {
+        // The only test that touches the held list and the queue.
+        let event = |n: u64| json!({"event": "app launched", "n": n});
+        hold(event(1));
+        release_held(false);
+        assert!(lock(held()).is_empty());
+        assert!(lock(&queue().events).is_empty());
+
+        hold(event(2));
+        release_held(true);
+        assert!(lock(held()).is_empty());
+        let queued = std::mem::take(&mut *lock(&queue().events));
+        assert_eq!(queued, vec![event(2)]);
+        assert!(!HOLDING.load(Ordering::Relaxed));
     }
 
     #[test]

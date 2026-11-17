@@ -221,6 +221,16 @@ impl Shell {
         let Some(o) = self.onboarding.take() else {
             return;
         };
+        let outcome = match (o.fresh, self.has_projects()) {
+            (false, _) => "reopened",
+            (true, true) => "project added",
+            (true, false) => "skipped",
+        };
+        // The step it ended on shows where people who skip leave.
+        crate::telemetry::capture(
+            crate::telemetry::events::ONBOARDING_FINISHED,
+            &[("outcome", outcome), ("step", o.step().label())],
+        );
         cx.background_spawn(async { onboarding::set_done() })
             .detach();
         if self.has_projects() {

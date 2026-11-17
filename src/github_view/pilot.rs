@@ -745,6 +745,8 @@ impl GitHubView {
                         });
                     }
                     Err(e) => {
+                        // Nothing was said: no "Le dijiste…" for it.
+                        this.answers.forget(&id);
                         this.pilot_notes
                             .insert(id.clone(), format!("Your answer wasn't sent: {e}"));
                     }

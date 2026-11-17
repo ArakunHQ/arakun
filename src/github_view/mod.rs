@@ -275,12 +275,8 @@ pub struct GitHubView {
     more_open: bool,
     /// Folded groups the user asked to show past their first rows.
     fold_full: HashSet<&'static str>,
-    /// Decisions answered from the sheet, by item id: the words of the
-    /// answer, until the board stops asking.
-    decision_sent: HashMap<String, String>,
-    /// The decision answered last on each pull request (by `queue::key_of`):
-    /// its item id, so the answer still shows once pilot moved on.
-    answered_on: HashMap<String, String>,
+    /// Decisions answered from the sheet, until the board is done with them.
+    answers: sheet::Answers,
     /// A task for pilot on its way from the composer.
     task_sending: bool,
     /// Where the header menu opened, while it is open.
@@ -464,6 +460,9 @@ impl GitHubView {
             };
             this.pilot_open.retain(|id| shown.contains(id));
             this.pilot_notes.retain(|id, _| shown.contains(id));
+            if let Some(b) = pilot.read(cx).board() {
+                this.answers.settle(b);
+            }
             // The sheet answers the board's question with the same line.
             let asked = this
                 .board_pr(cx)
@@ -487,8 +486,7 @@ impl GitHubView {
             done_open: false,
             more_open: false,
             fold_full: HashSet::new(),
-            decision_sent: HashMap::new(),
-            answered_on: HashMap::new(),
+            answers: sheet::Answers::default(),
             task_sending: false,
             menu_at: None,
             focus_at: None,

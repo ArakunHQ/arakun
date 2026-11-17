@@ -3,6 +3,8 @@
 //! comes next, the checks, the stack), what is going on, pilot's question
 //! with its own answers, then the tabs over the composer.
 
+use std::collections::HashMap;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, FontWeight, Hsla,
@@ -618,9 +620,9 @@ impl GitHubView {
         let sending = self.pilot_sending.contains(&id);
         let failed = self.pilot_notes.get(&id).cloned();
         let sent = self
-            .decision_sent
-            .get(&id)
-            .cloned()
+            .answers
+            .sent(&id)
+            .map(str::to_string)
             .filter(|_| failed.is_none() && !sending);
         let mut buttons = div()
             .flex()
@@ -794,11 +796,10 @@ impl GitHubView {
     /// After pilot took the answer and dropped the question: what was said.
     fn answered_line(&self, b: &BoardPr) -> Option<AnyElement> {
         let key = crate::github::queue::key_of(&b.item_ref()?);
-        let id = self.answered_on.get(&key)?;
+        let (id, texto) = self.answers.on(&key)?;
         if self.pilot_notes.contains_key(id) || self.pilot_sending.contains(id) {
             return None;
         }
-        let texto = self.decision_sent.get(id)?;
         Some(
             div()
                 .flex()
@@ -824,11 +825,8 @@ impl GitHubView {
 
     /// Remembers what the user told pilot, to show it after the question goes.
     pub(super) fn note_decision_answer(&mut self, id: &str, texto: String) {
-        self.decision_sent.insert(id.to_string(), texto);
-        if let Some(item) = self.item() {
-            self.answered_on
-                .insert(crate::github::queue::key_of(&item), id.to_string());
-        }
+        let key = self.item().map(|i| crate::github::queue::key_of(&i));
+        self.answers.note(id, key, texto);
     }
 
     /// The tabs under the head: what pilot did, the conversation, checks, files.
@@ -1280,9 +1278,167 @@ fn que_pasa(body: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
+/// The board's pull request with the key `key` (`queue::key_of`).
+fn board_pr_by_key<'a>(b: &'a board::Board, key: &str) -> Option<&'a BoardPr> {
+    b.prs.iter().find(|p| {
+        p.item_ref()
+            .is_some_and(|r| crate::github::queue::key_of(&r) == key)
+    })
+}
+
+/// pilot's last move on a pull request, to tell when it made a new one.
+fn last_move(p: &BoardPr) -> Option<(String, String)> {
+    p.ultimo_pilot
+        .as_ref()
+        .map(|u| (u.at.clone(), u.texto.clone()))
+}
+
+/// The decisions answered from the sheet, kept only while the board needs
+/// them: while pilot still asks (it hasn't read the answer yet), then as the
+/// "Le dijiste…" line until pilot moves on.
+#[derive(Default)]
+pub(super) struct Answers {
+    /// The words of each answer, by item id.
+    sent: HashMap<String, String>,
+    /// The decision answered last on each pull request (by `queue::key_of`).
+    on: HashMap<String, String>,
+    /// Answers whose question a board read no longer asked, with pilot's
+    /// last move at that read. A newer move, or the same question back,
+    /// ends them.
+    gone: HashMap<String, Option<(String, String)>>,
+}
+
+impl Answers {
+    /// The user told pilot `texto` about `id`, on the pull request `key`.
+    pub(super) fn note(&mut self, id: &str, key: Option<String>, texto: String) {
+        self.sent.insert(id.to_string(), texto);
+        self.gone.remove(id);
+        if let Some(key) = key {
+            self.on.insert(key, id.to_string());
+        }
+    }
+
+    /// The answer didn't go through, or pilot asks again: the buttons come back.
+    pub(super) fn forget(&mut self, id: &str) {
+        self.sent.remove(id);
+        self.gone.remove(id);
+        self.on.retain(|_, i| i != id);
+    }
+
+    /// What was answered to `id`.
+    pub(super) fn sent(&self, id: &str) -> Option<&str> {
+        self.sent.get(id).map(String::as_str)
+    }
+
+    /// The answer on the pull request `key`: its item id and words.
+    pub(super) fn on(&self, key: &str) -> Option<(&str, &str)> {
+        let id = self.on.get(key)?;
+        Some((id.as_str(), self.sent.get(id)?.as_str()))
+    }
+
+    /// Takes in a board read: forgets what it is done with.
+    pub(super) fn settle(&mut self, b: &board::Board) {
+        let ids: Vec<String> = self.sent.keys().cloned().collect();
+        for id in ids {
+            let asked = b
+                .find_decision(&id)
+                .is_some_and(|p| p.open_decision().is_some());
+            match (asked, self.gone.contains_key(&id)) {
+                // Asked again after a read without it: a new question.
+                (true, true) => self.forget(&id),
+                // Still asked: pilot hasn't taken the answer yet.
+                (true, false) | (false, true) => {}
+                (false, false) => {
+                    let then = self
+                        .on
+                        .iter()
+                        .find(|(_, i)| **i == id)
+                        .and_then(|(k, _)| board_pr_by_key(b, k))
+                        .and_then(last_move);
+                    self.gone.insert(id, then);
+                }
+            }
+        }
+        // The line goes once the pull request leaves the board, asks
+        // something else, or shows a newer move by pilot.
+        let gone = &self.gone;
+        self.on.retain(|key, id| {
+            let Some(p) = board_pr_by_key(b, key) else {
+                return false;
+            };
+            if p.open_decision().is_some_and(|d| d.item != *id) {
+                return false;
+            }
+            gone.get(id).is_none_or(|then| *then == last_move(p))
+        });
+        let (on, gone) = (&self.on, &self.gone);
+        self.sent
+            .retain(|id, _| !gone.contains_key(id) || on.values().any(|i| i == id));
+        let sent = &self.sent;
+        self.gone.retain(|id, _| sent.contains_key(id));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A board with pull request #7, asking `asks` when given, pilot's last
+    /// move at `moved`.
+    fn board_with(asks: Option<&str>, moved: &str) -> board::Board {
+        let decision = asks.map_or(serde_json::Value::Null, |id| {
+            serde_json::json!({"item": id, "pregunta": "¿Sigo?",
+                "opciones": [{"id": "si", "texto": "Sí"}]})
+        });
+        let json = serde_json::json!({"prs": [{
+            "repo": "o/r", "number": 7, "decision": decision,
+            "ultimo_pilot": {"texto": "algo", "at": moved},
+        }]});
+        board::parse_board(json.to_string().as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn an_answer_lasts_until_the_board_is_done_with_it() {
+        let key = Some("o/r#7".to_string());
+        let mut a = Answers::default();
+        a.note("d1", key.clone(), "Sí".into());
+        // pilot hasn't read it yet: the answer stands.
+        a.settle(&board_with(Some("d1"), "t0"));
+        assert_eq!(a.sent("d1"), Some("Sí"));
+        // The question went: the line shows, again on the same read.
+        let gone = board_with(None, "t1");
+        a.settle(&gone);
+        a.settle(&gone);
+        assert_eq!(a.on("o/r#7"), Some(("d1", "Sí")));
+        // A newer move by pilot ends the line.
+        a.settle(&board_with(None, "t2"));
+        assert_eq!(a.on("o/r#7"), None);
+        assert_eq!(a.sent("d1"), None);
+
+        // The same question back after it went: the buttons return.
+        let mut a = Answers::default();
+        a.note("d1", key.clone(), "Sí".into());
+        a.settle(&board_with(None, "t1"));
+        a.settle(&board_with(Some("d1"), "t1"));
+        assert_eq!(a.sent("d1"), None);
+
+        // Another question on the pull request, or the pull request gone.
+        let mut a = Answers::default();
+        a.note("d1", key.clone(), "Sí".into());
+        a.settle(&board_with(Some("d2"), "t1"));
+        assert_eq!(a.on("o/r#7"), None);
+        let mut a = Answers::default();
+        a.note("d1", key.clone(), "Sí".into());
+        a.settle(&board::Board::default());
+        assert_eq!(a.sent("d1"), None);
+
+        // A send that failed leaves nothing behind.
+        let mut a = Answers::default();
+        a.note("d1", key, "Sí".into());
+        a.forget("d1");
+        assert_eq!(a.sent("d1"), None);
+        assert_eq!(a.on("o/r#7"), None);
+    }
 
     #[test]
     fn a_task_goes_only_on_your_own_pull_with_the_admin_key() {

@@ -117,6 +117,7 @@ build with the browser.
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
+| Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).

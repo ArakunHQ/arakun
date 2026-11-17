@@ -639,8 +639,13 @@ impl Shell {
             // Open, the user's height; closed, as tall as its header, from the
             // layout itself: a fixed number here pushed the chips to the bottom.
             .when(dock_open, |d| d.h(px(self.dock_height)))
-            .when(self.dock_drag, |d| {
-                d.border_1().border_color(theme::border_strong())
+            // Always there, so the content doesn't move by a pixel when a
+            // drag starts; seen only while dragging.
+            .border_1()
+            .border_color(if self.dock_drag {
+                theme::border_strong()
+            } else {
+                gpui::transparent_black()
             })
             .child(header)
             .when(dock_open, |d| d.child(body).child(handle))

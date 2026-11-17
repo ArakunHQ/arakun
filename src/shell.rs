@@ -2289,8 +2289,10 @@ impl Render for Shell {
         }
         let body: AnyElement = if has_projects {
             // The tabs sit on the window, above the sheet: only the work itself
-            // is a surface.
+            // is a surface. The title bar moves the window itself, so a press
+            // anywhere here must not reach the root's handler as well.
             div()
+                .map(crate::ui::stop_window_move)
                 .flex()
                 .flex_col()
                 .flex_1()
@@ -2300,7 +2302,6 @@ impl Render for Shell {
                 .child(
                     ui::card()
                         .id("main-card")
-                        .map(crate::ui::stop_window_move)
                         .relative()
                         .flex_1()
                         .min_h_0()

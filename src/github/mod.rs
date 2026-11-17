@@ -558,6 +558,19 @@ fn gh_out(args: &[&str]) -> Result<Vec<u8>, Problem> {
     Ok(out.stdout)
 }
 
+/// [`gh_out`], killing `gh` after `timeout`: for background work that must
+/// not wait on a hung call.
+fn gh_out_within(args: &[&str], timeout: Duration) -> Result<Vec<u8>, Problem> {
+    let mut cmd = git::gh(&std::env::temp_dir());
+    cmd.args(args);
+    let out = crate::headless::sandbox::run_with_timeout(cmd, None, timeout)
+        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
+    if !out.status.success() {
+        return Err(problem(&String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(out.stdout)
+}
+
 /// The newest notifications: the unread ones, or with `all` the read ones too.
 /// Also how long GitHub asks clients to wait before the next read, when it says.
 pub fn list(all: bool) -> Result<(Vec<Notification>, Option<Duration>), Problem> {

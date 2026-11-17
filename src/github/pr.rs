@@ -583,13 +583,19 @@ fn open_thread_ids(answer: &Value) -> (Vec<String>, Option<String>) {
 
 /// Resolves every review thread still open on a merged pull request at
 /// `host` (`github.com`, or an Enterprise host). Returns how many it resolved;
-/// the first failure stops it.
+/// the first failure stops it. Each `gh` call has [`GH_TIMEOUT`], so a hung one
+/// can't hold up the next check.
 pub fn resolve_open_threads(host: &str, item: &ItemRef) -> Result<usize, Problem> {
-    resolve_open_threads_with(host, item, super::read_only(), super::gh_out)
+    resolve_open_threads_with(host, item, super::read_only(), |args| {
+        super::gh_out_within(args, GH_TIMEOUT)
+    })
 }
 
-/// The most pages of threads read: 5,000 threads.
-const THREAD_PAGES_MAX: usize = 50;
+const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The most pages of threads read: 10,000 threads. One with more fails rather
+/// than claim the rest are resolved.
+const THREAD_PAGES_MAX: usize = 100;
 
 fn resolve_open_threads_with(
     host: &str,
@@ -603,7 +609,7 @@ fn resolve_open_threads_with(
         return Ok(0);
     }
     let (owner, name) = item.repo.split_once('/').unwrap_or((&item.repo, ""));
-    let mut ids = Vec::new();
+    let mut resolved = 0;
     let mut after: Option<String> = None;
     for _ in 0..THREAD_PAGES_MAX {
         let mut args = vec![
@@ -626,25 +632,32 @@ fn resolve_open_threads_with(
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = run(&args)?;
         let (page, next) = open_thread_ids(&serde_json::from_slice(&out).map_err(unexpected)?);
-        ids.extend(page);
+        // Resolved page by page: a resolved thread keeps its place in the
+        // list, so the cursor still points to the next page.
+        for id in &page {
+            run(&[
+                "api",
+                "graphql",
+                "--hostname",
+                host,
+                "-f",
+                &format!("query={RESOLVE_THREAD}"),
+                "-f",
+                &format!("id={id}"),
+            ])?;
+            resolved += 1;
+        }
         match next {
             Some(n) => after = Some(n),
-            None => break,
+            None => return Ok(resolved),
         }
     }
-    for id in &ids {
-        run(&[
-            "api",
-            "graphql",
-            "--hostname",
-            host,
-            "-f",
-            &format!("query={RESOLVE_THREAD}"),
-            "-f",
-            &format!("id={id}"),
-        ])?;
-    }
-    Ok(ids.len())
+    Err(Problem::Other(format!(
+        "{}#{} has more than {} review threads",
+        item.repo,
+        item.number,
+        THREAD_PAGES_MAX * 100
+    )))
 }
 
 /// The pull request with its inline comments. Three reads run at once: the
@@ -3122,22 +3135,36 @@ mod tests {
             let after = args.contains(&"after=c1");
             Ok(match calls.len() {
                 1 => one.clone().into_bytes(),
-                2 if after => two.clone().into_bytes(),
+                3 if after => two.clone().into_bytes(),
                 _ => b"{}".to_vec(),
             })
         })
         .unwrap();
         assert_eq!(n, 2);
-        // Two pages read, then T2 and T3 resolved, all on the pull request's host.
+        // Each page read, then its open threads resolved, all on the pull
+        // request's host.
         assert_eq!(calls.len(), 4);
         assert!(calls.iter().all(|c| c[2..4] == ["--hostname", "ghe.corp"]));
-        assert!(calls[2].iter().any(|a| a == "id=T2"));
+        assert!(calls[1].iter().any(|a| a == "id=T2"));
         assert!(calls[3].iter().any(|a| a == "id=T3"));
         assert!(
             open_thread_ids(&serde_json::json!({"data": null}))
                 .0
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn too_many_pages_fail_instead_of_claiming_success() {
+        let item = ItemRef::parse("o/r#5").unwrap();
+        let endless = r#"{"data": {"repository": {"pullRequest": {"reviewThreads": {"pageInfo": {"hasNextPage": true, "endCursor": "c"}, "nodes": []}}}}}"#;
+        let mut calls = 0;
+        let done = resolve_open_threads_with("github.com", &item, false, |_| {
+            calls += 1;
+            Ok(endless.as_bytes().to_vec())
+        });
+        assert!(done.is_err());
+        assert_eq!(calls, THREAD_PAGES_MAX);
     }
 
     #[test]

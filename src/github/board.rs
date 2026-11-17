@@ -423,7 +423,11 @@ pub enum CardPlace {
 }
 
 pub fn card_place(b: &Board, card: &super::pilot::Item) -> CardPlace {
-    if b.find_decision(&card.id).is_some() {
+    // A question counts as the board's only where its row can open: an
+    // entry that names no pull request has no row, so the card shows.
+    if b.find_decision(&card.id)
+        .is_some_and(|p| p.item_ref().is_some())
+    {
         return CardPlace::Question;
     }
     match card.item_ref() {
@@ -458,6 +462,12 @@ pub fn parse_board(bytes: &[u8]) -> Result<Board, String> {
         serde_json::from_slice(bytes).map_err(|e| format!("unexpected answer: {e}"))?;
     b.prs.retain(|p| p.number > 0);
     for p in &mut b.prs {
+        // One identity for every lookup: an entry named only by its address
+        // gets the repository (and number) that address names.
+        if let Some(r) = p.item_ref() {
+            p.repo = r.repo;
+            p.number = r.number;
+        }
         if let Some(d) = &mut p.decision {
             d.opciones
                 .retain(|o| !o.id.trim().is_empty() && !o.texto.trim().is_empty());
@@ -692,6 +702,15 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_named_by_its_address_is_found_by_its_repository() {
+        let b = parse_board(
+            br#"{"prs": [{"number": 7, "url": "https://github.com/ArakunHQ/arakun/pull/7"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(b.find("arakunhq/arakun", 7).map(|p| p.number), Some(7));
+    }
+
+    #[test]
     fn every_card_has_a_place_with_a_board() {
         use super::super::pilot::{Item, Kind};
         let card = |id: &str, kind: Kind, repo: &str, number: u64| Item {
@@ -738,6 +757,21 @@ mod tests {
         );
         // The question is already in te_necesita; the rest add to it.
         assert_eq!(extra_cards(&b, cards.iter()), 3);
+        // A question on an entry that names no pull request has no row to
+        // open: its card stays in view.
+        let nowhere = Board {
+            prs: vec![BoardPr {
+                number: 8,
+                decision: Some(Decision {
+                    item: "q2".into(),
+                    ..Decision::default()
+                }),
+                ..BoardPr::default()
+            }],
+            ..Board::default()
+        };
+        let q2 = card("q2", Kind::NeedsYou, "", 0);
+        assert_eq!(card_place(&nowhere, &q2), CardPlace::Loose);
         // The headline and the badge both count te_necesita and those cards.
         let q = crate::github::queue::Queue::default();
         assert_eq!(waiting(&b, &q, cards.iter()), 4);

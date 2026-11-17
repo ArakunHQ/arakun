@@ -461,13 +461,17 @@ impl GitHubView {
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::text_subtle())
                             .child(place)
-                            // The focus filters the queue; the board is one repository.
-                            .when(!on_board, |d| {
+                            // The focus filters the review queue, not the board
+                            // (one repository): with a board, what shows under
+                            // "More on GitHub".
+                            .map(|d| {
                                 d.cursor_pointer()
                                     .hover(|s| s.text_color(theme::text()))
-                                    .tooltip(ui::tip(
-                                        "Choose which organizations and repositories show",
-                                    ))
+                                    .tooltip(ui::tip(if on_board {
+                                        "Choose which organizations and repositories show under More on GitHub"
+                                    } else {
+                                        "Choose which organizations and repositories show"
+                                    }))
                                     .child(
                                         icon("arrow-down01", 11.).text_color(theme::text_subtle()),
                                     )

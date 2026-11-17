@@ -178,7 +178,12 @@ impl Shell {
             GitHubViewEvent::Open(url) => self.open_url(url.clone(), window, cx),
             // The sheet over this window closed: the window takes the keys back.
             GitHubViewEvent::Closed => {
-                window.focus(&self.focus, cx);
+                // The composer of a session, or what the tab in front takes.
+                if self.has_projects() {
+                    self.focus_active_content(window, cx);
+                } else {
+                    window.focus(&self.focus, cx);
+                }
                 cx.notify();
             }
             GitHubViewEvent::Ask { title, prompt } => {

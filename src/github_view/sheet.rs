@@ -24,10 +24,12 @@ use crate::ui::{self, PillKind, Type, Typography as _, icon};
 
 /// What the composer's "Ask pilot" does with `text` on pull request
 /// `number`, or why it can't: pilot takes tasks only on the user's own pull
-/// requests in its repository, and only with the admin token.
+/// requests in its repository, only while they are open (as the palette
+/// offers them), and only with the admin token.
 pub(super) fn task_for(
     text: &str,
     number: Option<u64>,
+    open: bool,
     mine: bool,
     in_repo: bool,
     admin: bool,
@@ -36,6 +38,9 @@ pub(super) fn task_for(
     let Some(n) = number else {
         return Err("Open a pull request to ask pilot for something.");
     };
+    if !open {
+        return Err("pilot works only on open pull requests.");
+    }
     if !in_repo {
         return Err("pilot works only in ArakunHQ/arakun.");
     }
@@ -229,33 +234,17 @@ impl GitHubView {
                 }
             }
             (None, None) => {
-                top = top.child(match problem {
-                    Some(p) => div()
-                        .flex()
-                        .flex_col()
-                        .gap(crate::ui::sp(10.))
-                        .child(ui::text(
-                            Type::Body,
-                            theme::text_muted(),
-                            format!(
-                                "Couldn't read {}: {}",
-                                item.as_ref().map(ItemRef::label).unwrap_or_default(),
-                                p.text()
-                            ),
-                        ))
-                        .child(
-                            ui::button("gh-retry", "Try again", ui::ButtonKind::Outline, true)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(item) = this.item() {
-                                        this.github.update(cx, |g, cx| g.fetch_item(item, cx));
-                                    }
-                                })),
-                        )
-                        .into_any_element(),
+                top = top.child(match &problem {
+                    Some(p) => self.detail_problem(item.as_ref(), p, cx),
                     None => ui::loading("gh-item-loading", "Reading the pull request…")
                         .into_any_element(),
                 });
             }
+        }
+        // A pull request pilot follows still shows where it stands, but the
+        // tabs below need GitHub's read: say why it failed, with a retry.
+        if let (Some(_), None, Some(p)) = (&board, &details, &problem) {
+            top = top.child(self.detail_problem(item.as_ref(), p, cx));
         }
         let content = div()
             .flex()
@@ -281,6 +270,38 @@ impl GitHubView {
             .child(self.render_composer(&board, cx))
             .into_any_element();
         self.sheet_frame(item, &board, reading, content, cx)
+    }
+
+    /// Why GitHub's read of `item` failed, and "Try again".
+    fn detail_problem(
+        &self,
+        item: Option<&ItemRef>,
+        p: &crate::github::Problem,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .child(ui::text(
+                Type::Body,
+                theme::text_muted(),
+                format!(
+                    "Couldn't read {}: {}",
+                    item.map(ItemRef::label).unwrap_or_default(),
+                    p.text()
+                ),
+            ))
+            .child(
+                ui::button("gh-retry", "Try again", ui::ButtonKind::Outline, true).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        if let Some(item) = this.item() {
+                            this.github.update(cx, |g, cx| g.fetch_item(item, cx));
+                        }
+                    }),
+                ),
+            )
+            .into_any_element()
     }
 
     /// The bar and the confirm strip around the sheet's content.
@@ -1117,7 +1138,15 @@ impl GitHubView {
         } else {
             text.as_str()
         };
-        task_for(probe, item.map(|i| i.number), mine, in_repo, admin)
+        // Merged or closed: no task. Unread yet, the board's word stands.
+        let open = item
+            .as_ref()
+            .and_then(|i| match self.github.read(cx).details(i) {
+                Some(Details::Pull(p)) => Some(p.open()),
+                _ => None,
+            })
+            .unwrap_or(true);
+        task_for(probe, item.map(|i| i.number), open, mine, in_repo, admin)
     }
 
     /// "Ask pilot": what is in the box goes to pilot as a task on
@@ -1132,7 +1161,7 @@ impl GitHubView {
         let text = self.comment.read(cx).text().to_string();
         let task = match self.task_check(&board, cx).and_then(|_| {
             let item = self.item();
-            task_for(&text, item.map(|i| i.number), true, true, true)
+            task_for(&text, item.map(|i| i.number), true, true, true, true)
         }) {
             Ok(t) => t,
             Err(why) => {
@@ -1552,7 +1581,15 @@ mod tests {
 
     #[test]
     fn a_task_goes_only_on_your_own_pull_with_the_admin_key() {
-        let ok = task_for("Arregla el test\ny súbelo", Some(175), true, true, true).unwrap();
+        let ok = task_for(
+            "Arregla el test\ny súbelo",
+            Some(175),
+            true,
+            true,
+            true,
+            true,
+        )
+        .unwrap();
         assert_eq!(ok.title, "Arregla el test");
         assert_eq!(ok.prompt, "Arregla el test\ny súbelo");
         assert_eq!(ok.target, TaskTarget::Pull(175));
@@ -1562,28 +1599,34 @@ mod tests {
         );
         // Each refusal says why.
         assert!(
-            task_for("x", Some(1), false, true, true)
+            task_for("x", Some(1), true, false, true, true)
                 .unwrap_err()
                 .contains("your pull requests")
         );
         assert_eq!(
-            task_for("x", Some(1), true, true, false).unwrap_err(),
+            task_for("x", Some(1), true, true, true, false).unwrap_err(),
             pilot::NO_ADMIN
         );
         assert!(
-            task_for("x", Some(1), true, false, true)
+            task_for("x", Some(1), true, true, false, true)
                 .unwrap_err()
                 .contains("ArakunHQ/arakun")
         );
         assert!(
-            task_for("  ", Some(1), true, true, true)
+            task_for("  ", Some(1), true, true, true, true)
                 .unwrap_err()
                 .contains("Write in the box")
         );
-        assert!(task_for("x", None, true, true, true).is_err());
+        assert!(task_for("x", None, true, true, true, true).is_err());
+        // Your own pull request, merged or closed: no task, and it says why.
+        assert!(
+            task_for("x", Some(1), false, true, true, true)
+                .unwrap_err()
+                .contains("open pull requests")
+        );
         // A long first line is cut as the palette cuts it.
         let long = "arregla el tab ".repeat(20);
-        let t = task_for(&long, Some(1), true, true, true).unwrap();
+        let t = task_for(&long, Some(1), true, true, true, true).unwrap();
         assert_eq!(t.title, crate::palette::cloud::title(&long));
         assert!(t.title.chars().count() <= 72 && t.title.ends_with('…'));
     }

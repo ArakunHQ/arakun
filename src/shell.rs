@@ -2103,6 +2103,8 @@ impl Shell {
         let prev = env.tabs.get(env.active_tab).map(|t| t.id);
         env.active_tab = index;
         env.settle_split(prev);
+        // Back and forward come here without `note_active_tab`.
+        self.unfloat_github(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
         cx.notify();

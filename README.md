@@ -324,7 +324,7 @@ check it against `SHA256SUMS` (and its signature, when a verifier is installed; 
 | Platform | Installs to | Uninstall |
 |---|---|---|
 | macOS | `~/Applications/Arakun.app`, linked as `~/.local/bin/arakun` | `rm -rf ~/Applications/Arakun.app ~/.local/bin/arakun` |
-| Linux | `~/.local/bin/arakun` | `rm ~/.local/bin/arakun` |
+| Linux | `~/.local/bin/arakun`, and the browser's runtime in `~/.local/share/arakun/cef` (`$XDG_DATA_HOME/arakun/cef` if set) | `rm -rf ~/.local/bin/arakun ~/.local/share/arakun/cef` |
 | Windows | `%LOCALAPPDATA%\Programs\Arakun`, added to your user `PATH`, and a Start menu shortcut | delete that folder and the shortcut, and remove it from `PATH` |
 
 To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.2.1`,

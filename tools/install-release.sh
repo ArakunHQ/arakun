@@ -248,14 +248,24 @@ main() {
     mkdir "$tmp/x"
     tar -C "$tmp/x" -xzf "$tmp/$file"
     [ -f "$tmp/x/$name/arakun" ] || die "the archive has no arakun binary"
+    # The browser's runtime goes where src/browser/loader.rs looks first: a cef folder
+    # next to the binary, from a manual install, else the data folder (where
+    # tools/install.sh keeps it too). Releases from before the browser have none.
+    cef=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef
+    if [ -f "$bindir/cef/libcef.so" ]; then cef=$bindir/cef; fi
+    swap_cef=
+    if [ -d "$tmp/x/$name/cef" ] && ! cmp -s "$tmp/x/$name/cef/archive.json" "$cef/archive.json"; then
+      swap_cef=1
+      # Chromium's child processes load the runtime again, so under a running Arakun
+      # they would get another CEF build than the window. The same build is left as is.
+      if pgrep -x -u "$(id -u)" arakun >/dev/null 2>&1; then
+        die "this release has a new browser runtime; quit Arakun (close this terminal too if it is Arakun's) and run the installer again"
+      fi
+    fi
     # A rename, so an Arakun that is running keeps its old binary.
     cp "$tmp/x/$name/arakun" "$bindir/.arakun.new"
     chmod 755 "$bindir/.arakun.new"
-    # Where src/browser/loader.rs and tools/install.sh keep it. Releases from before
-    # the browser have none. Swapped with renames, so a running Arakun keeps the
-    # libcef.so it loaded.
-    cef=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef
-    if [ -d "$tmp/x/$name/cef" ]; then
+    if [ -n "$swap_cef" ]; then
       mkdir -p "${cef%/*}"
       rm -rf "$cef.new" "$cef.old"
       mv "$tmp/x/$name/cef" "$cef.new"

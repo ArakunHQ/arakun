@@ -1,36 +1,13 @@
 //! The session composer: keys, mouse, input methods, completion, history,
-//! the blinking caret and how it is drawn.
+//! and how the caret is drawn.
 
 use super::*;
 
 /// The composer caret, in pixels.
 const CARET_WIDTH: f32 = 1.5;
 const CARET_HEIGHT: f32 = 16.;
-/// The caret stays whole this long after input before it starts to blink.
-const CARET_SOLID: Duration = Duration::from_millis(500);
-/// One blink: the caret shrinks to its middle and grows back, like VS Code's
-/// `expand` cursor.
-const CARET_PERIOD: Duration = Duration::from_millis(1000);
-/// Blinks before the caret stays still, as GTK's stops after ~10 s idle.
-const CARET_BLINKS: u32 = 10;
-/// How often the caret is redrawn while it shrinks or grows.
-const CARET_FRAME: Duration = Duration::from_millis(16);
-
-/// How much of the caret's height shows after `idle` without input: whole
-/// while held, then each half of a blink holds its end for a fifth and eases
-/// across the rest, as VS Code's `expand` keyframes do.
-fn caret_scale(idle: Duration) -> f32 {
-    let Some(t) = idle.checked_sub(CARET_SOLID) else {
-        return 1.;
-    };
-    if t >= CARET_PERIOD * CARET_BLINKS {
-        return 1.;
-    }
-    let p = (t.as_secs_f32() / CARET_PERIOD.as_secs_f32()).fract();
-    let half = if p < 0.5 { p * 2. } else { 2. - p * 2. };
-    let k = ((half - 0.2) / 0.6).clamp(0., 1.);
-    1. - k * k * (3. - 2. * k)
-}
+/// The line the placeholder sits on, which centers the caret before the text.
+const PLACEHOLDER_LINE: f32 = 22.;
 /// Space above and below the composer's text, kept around the caret when it scrolls.
 const COMPOSER_PAD: f32 = 12.;
 /// Rows the composer completion popup shows at most.
@@ -285,54 +262,7 @@ impl Shell {
 
     /// Input shows the caret and keeps it still until the next blink.
     fn hold_caret(&mut self) {
-        self.caret_scale = 1.;
-        self.caret_held = Instant::now();
-    }
-
-    /// Blinks the caret while the composer has focus in the active window.
-    pub(super) fn sync_blink(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.hold_caret();
-        if self.caret_blinking
-            || !self.composer_focus.is_focused(window)
-            || !window.is_window_active()
-        {
-            return;
-        }
-        self.caret_blinking = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let mut wait = CARET_SOLID;
-            loop {
-                cx.background_executor().timer(wait).await;
-                let next = this.update_in(cx, |this, window, cx| {
-                    if !this.composer_focus.is_focused(window) || !window.is_window_active() {
-                        this.caret_blinking = false;
-                        this.caret_scale = 1.;
-                        cx.notify();
-                        return None;
-                    }
-                    let idle = this.caret_held.elapsed();
-                    let scale = caret_scale(idle);
-                    if (scale - this.caret_scale).abs() > 0.001 {
-                        this.caret_scale = scale;
-                        cx.notify();
-                    }
-                    // Input moves `caret_held` without waking this loop, so the
-                    // waits stay short enough to notice it.
-                    Some(if idle < CARET_SOLID {
-                        (CARET_SOLID - idle).max(CARET_FRAME)
-                    } else if idle < CARET_SOLID + CARET_PERIOD * CARET_BLINKS {
-                        CARET_FRAME
-                    } else {
-                        Duration::from_millis(100)
-                    })
-                });
-                match next {
-                    Ok(Some(next)) => wait = next,
-                    _ => break,
-                }
-            }
-        })
-        .detach();
+        self.caret.borrow_mut().hold();
     }
 
     /// Up in an empty composer brings back the last prompt sent, and more Ups
@@ -1055,8 +985,8 @@ impl Shell {
         // into it as a glyph, which sat off the last letter by the glyph's side
         // bearings and could wrap onto a line of its own.
         let mut painted: Option<(TextLayout, usize)> = None;
-        let mut show_caret = false;
-        let caret_height = CARET_HEIGHT * self.caret_scale;
+        let mut show_caret = focused;
+        let caret = self.caret.clone();
         if draft.is_empty() {
             self.composer_layout.borrow_mut().take();
         }
@@ -1070,17 +1000,6 @@ impl Shell {
                 .relative()
                 .text_color(theme::text_faint())
                 .child("Ask, build, / for commands, @ for references...")
-                .when(focused && caret_height > 0.2, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .left(px(-1.))
-                            .top(px((22. - caret_height) / 2.))
-                            .w(px(CARET_WIDTH))
-                            .h(px(caret_height))
-                            .bg(theme::active()),
-                    )
-                })
                 .into_any_element()
         } else {
             let sel = draft.selection();
@@ -1114,7 +1033,7 @@ impl Shell {
             };
             let styled = StyledText::new(draft.to_string()).with_highlights(highlight);
             painted = Some((styled.layout().clone(), draft.head()));
-            show_caret = focused && sel.is_empty() && caret_height > 0.2;
+            show_caret = focused && sel.is_empty();
             styled.into_any_element()
         };
 
@@ -1282,23 +1201,46 @@ impl Shell {
                                     // The text is laid out and placed by now: keep it for
                                     // clicks and the IME, paint the caret, and bring the
                                     // caret into view after an edit.
-                                    let Some((layout, head)) = &painted else {
-                                        return;
+                                    let (at, line) = match &painted {
+                                        Some((layout, head)) => {
+                                            *layout_cell.borrow_mut() = Some(layout.clone());
+                                            let Some(at) = layout.position_for_index(*head) else {
+                                                caret.borrow_mut().hide();
+                                                return;
+                                            };
+                                            (at, layout.line_height())
+                                        }
+                                        // Empty: just before the placeholder.
+                                        None => (
+                                            bounds.origin + point(px(-1.), px(0.)),
+                                            px(PLACEHOLDER_LINE),
+                                        ),
                                     };
-                                    *layout_cell.borrow_mut() = Some(layout.clone());
-                                    let Some(at) = layout.position_for_index(*head) else {
-                                        return;
-                                    };
-                                    let line = layout.line_height();
                                     if show_caret {
-                                        let top = at.y + (line - px(caret_height)) / 2.;
-                                        window.paint_quad(fill(
-                                            Bounds::new(
-                                                point(at.x, top),
-                                                size(px(CARET_WIDTH), px(caret_height)),
-                                            ),
-                                            theme::active(),
-                                        ));
+                                        let (drawn, alpha) = caret.borrow_mut().frame(
+                                            at - bounds.origin,
+                                            window,
+                                            cx,
+                                        );
+                                        let drawn = bounds.origin + drawn;
+                                        window.paint_quad(
+                                            fill(
+                                                Bounds::new(
+                                                    point(
+                                                        drawn.x,
+                                                        drawn.y + (line - px(CARET_HEIGHT)) / 2.,
+                                                    ),
+                                                    size(px(CARET_WIDTH), px(CARET_HEIGHT)),
+                                                ),
+                                                crate::caret::faded(theme::active(), alpha),
+                                            )
+                                            .corner_radii(crate::caret::radius(CARET_WIDTH)),
+                                        );
+                                    } else {
+                                        caret.borrow_mut().hide();
+                                    }
+                                    if painted.is_none() {
+                                        return;
                                     }
                                     if reveal.take() {
                                         let view = scroll.bounds();
@@ -1630,27 +1572,5 @@ impl EntityInputHandler for Shell {
     ) -> Option<usize> {
         let ix = self.composer_index_at(point)?;
         Some(self.env().draft.byte_to_utf16(ix))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn caret_expands_like_vs_code() {
-        let at = |ms: u64| caret_scale(Duration::from_millis(ms));
-        assert_eq!(at(0), 1.);
-        assert_eq!(at(499), 1.);
-        // Each half holds its end for a fifth: whole, then gone at the middle.
-        assert_eq!(at(550), 1.);
-        assert!(at(700) < 1. && at(700) > 0.);
-        assert_eq!(at(1000), 0.);
-        assert_eq!(at(1050), 0.);
-        assert!((at(750) - at(1250)).abs() < 1e-4, "grows back as it shrank");
-        assert_eq!(at(1500), 1.);
-        // Still after the last blink.
-        assert_eq!(at(10_500), 1.);
-        assert_eq!(at(60_000), 1.);
     }
 }

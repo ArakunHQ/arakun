@@ -107,6 +107,8 @@ pub struct TextInput {
     redacted: bool,
     /// A caret of its own color, drawn 2 px wide (the palette's accent caret).
     caret: Option<gpui::Hsla>,
+    /// How the caret glides and blinks.
+    motion: crate::caret::Caret,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -129,6 +131,7 @@ impl TextInput {
             secret: false,
             redacted: false,
             caret: None,
+            motion: Default::default(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -191,6 +194,7 @@ impl TextInput {
         self.selected_range = at..at;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.motion.hold();
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -202,6 +206,7 @@ impl TextInput {
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.motion.hold();
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -505,6 +510,7 @@ impl EntityInputHandler for TextInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        self.motion.hold();
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -576,7 +582,8 @@ struct TextElement {
 
 struct PrepaintState {
     line: Option<ShapedLine>,
-    cursor: Option<PaintQuad>,
+    /// Where the caret belongs along the line, when nothing is selected.
+    cursor: Option<Pixels>,
     selection: Option<PaintQuad>,
     /// Horizontal shift that keeps the caret visible in long content.
     scroll: Pixels,
@@ -628,7 +635,6 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
-        let caret = input.caret;
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
@@ -698,26 +704,7 @@ impl Element for TextElement {
         let scroll = scroll.min(max_scroll).max(px(0.));
         let left = bounds.left() - scroll;
         let (selection, cursor) = if selected_range.is_empty() {
-            (
-                None,
-                Some(match caret {
-                    Some(color) => fill(
-                        Bounds::new(
-                            point(left + cursor_x, bounds.top() + px(1.)),
-                            size(px(2.), bounds.size.height - px(2.)),
-                        ),
-                        color,
-                    )
-                    .corner_radii(px(1.)),
-                    None => fill(
-                        Bounds::new(
-                            point(left + cursor_x, bounds.top() + px(2.)),
-                            size(px(1.5), bounds.size.height - px(4.)),
-                        ),
-                        theme::content(),
-                    ),
-                }),
-            )
+            (None, Some(cursor_x))
         } else {
             (
                 Some(fill(
@@ -768,10 +755,17 @@ impl Element for TextElement {
                 window,
                 cx,
             );
-            if focus_handle.is_focused(window)
-                && let Some(cursor) = prepaint.cursor.take()
-            {
-                window.paint_quad(cursor);
+            match prepaint.cursor.take() {
+                Some(x) if focus_handle.is_focused(window) => {
+                    let (caret, (at, alpha)) = self.input.update(cx, |input, cx| {
+                        (
+                            input.caret,
+                            input.motion.frame(point(x, px(0.)), window, cx),
+                        )
+                    });
+                    window.paint_quad(caret_quad(origin.x + at.x, bounds, caret, alpha));
+                }
+                _ => self.input.update(cx, |input, _| input.motion.hide()),
             }
             let text_bounds = Bounds::new(origin, bounds.size);
             let scroll = prepaint.scroll;
@@ -782,6 +776,27 @@ impl Element for TextElement {
             });
         });
     }
+}
+
+/// The caret at `x`: 2 px in its own `color`, or the thin one in the text color.
+fn caret_quad(
+    x: Pixels,
+    bounds: Bounds<Pixels>,
+    color: Option<gpui::Hsla>,
+    alpha: f32,
+) -> PaintQuad {
+    let (inset, width, color) = match color {
+        Some(color) => (1., 2., color),
+        None => (2., 1.5, theme::content()),
+    };
+    fill(
+        Bounds::new(
+            point(x, bounds.top() + px(inset)),
+            size(px(width), bounds.size.height - px(inset * 2.)),
+        ),
+        crate::caret::faded(color, alpha),
+    )
+    .corner_radii(crate::caret::radius(width))
 }
 
 impl Render for TextInput {

@@ -1,0 +1,77 @@
+name: Relay deploy
+
+# Deploys the hosted relay (relay/) and the phone page it serves (phone/) to
+# *.arakun.dev when a change to either lands on main, after the same tests the
+# CI's "Relay (types and tests)" job runs. Before this, the relay was deployed
+# by hand, so what ran could differ from main (#20).
+#
+# The `production` environment holds CLOUDFLARE_API_TOKEN, a token for the
+# CoderLabs account that can edit Workers scripts and routes and read KV; it can
+# also require a reviewer before a deploy. The settings live in relay/wrangler.toml
+# under [env.production]. The deploy's message names the commit it came from.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "relay/**"
+      - "phone/**"
+      - ".github/workflows/relay-deploy.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+# One deploy at a time, and never one cancelled half way. The group carries the
+# ref, so a manual run from another branch (skipped below) can't take the place
+# of a main deploy waiting in the queue.
+concurrency:
+  group: relay-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy the relay
+    # A manual run can pick any branch, and the environment lets every protected
+    # branch through (cla-signatures too), so only main may deploy.
+    if: github.ref == 'refs/heads/main'
+    runs-on: depot-ubuntu-24.04
+    environment:
+      name: production
+      url: https://arakun.dev
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      # The `if` above compares without case, so a branch named MAIN gets this
+      # far. The shell compares exactly, before anything is checked out.
+      - name: Only main deploys
+        working-directory: .
+        run: '[ "$GITHUB_REF" = "refs/heads/main" ] || { echo "::error::$GITHUB_REF is not refs/heads/main"; exit 1; }'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+      - name: phone e2e vectors
+        working-directory: phone
+        run: node --test "test/*.test.mjs"
+
+      # wrangler from package-lock.json, so the version is the one tested.
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 0156eeaadfaba2bf822554cefa9ea5d8
+          SHA: ${{ github.sha }}
+        run: npx wrangler deploy --env production --message "main $SHA"

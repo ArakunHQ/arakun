@@ -74,8 +74,8 @@ Then set `relay_base` in Arakun's `phone.json` to your Worker's base URL.
 3. Initial limits and the admin secret (without it, `/_admin` does not exist):
 
    ```sh
-   npx wrangler kv key put --binding CONFIG plans '{"free":{"phones":3,"burst":50,"daily":20000,"frame":262144}}'
-   npx wrangler secret put ADMIN_SECRET --name <label>
+   npx wrangler kv key put --binding CONFIG --env="" --remote plans '{"free":{"phones":3,"burst":50,"daily":20000,"frame":262144}}'
+   npx wrangler secret put ADMIN_SECRET --name <label> --env=""
    ```
 
    Any field missing from `plans.free` takes that same default.
@@ -84,9 +84,13 @@ Then set `relay_base` in Arakun's `phone.json` to your Worker's base URL.
    `node scripts/peers.mjs` to test without Arakun):
 
    ```sh
-   npx wrangler deploy --name <label>
+   npx wrangler deploy --name <label> --env=""
    node scripts/peers.mjs --base https://<label>.<account>.workers.dev
    ```
+
+   `--env=""` picks the top level of `wrangler.toml`. Without it, wrangler warns that
+   several environments are defined (`[env.production]` is `arakun.dev`'s own relay)
+   and none was picked, then deploys the top level anyway.
 
 ## Operating
 
@@ -99,9 +103,15 @@ Everything is tuned in KV without redeploying:
 | `blocked` | `["<label>", …]` | 403 for those labels |
 
 ```sh
-npx wrangler kv key put --binding CONFIG disabled "maintenance until 05:00 UTC"
-npx wrangler kv key delete --binding CONFIG disabled
+# arakun.dev's own relay ([env.production])
+npx wrangler kv key put --binding CONFIG --env production --remote disabled "maintenance until 05:00 UTC"
+npx wrangler kv key delete --binding CONFIG --env production --remote disabled
+# a self-hosted relay (the top level of wrangler.toml)
+npx wrangler kv key put --binding CONFIG --env="" --remote disabled "maintenance until 05:00 UTC"
+npx wrangler kv key delete --binding CONFIG --env="" --remote disabled
 ```
+
+Without `--remote`, wrangler v4 writes to local storage and the relay never sees it.
 
 With the admin secret:
 
@@ -124,7 +134,10 @@ A single Worker serves every computer:
 1. DNS: a proxied `*` record (CNAME, or AAAA `100::`).
 2. Worker route `*.<domain>/*`, excluding `www.<domain>/*` and `<domain>/*` so the
    landing page stays where it is.
-3. `npx wrangler deploy` under the normal name (`arakun-relay`).
+3. `npx wrangler deploy --env=""` under the normal name (`arakun-relay`). For `arakun.dev` itself
+   this is `[env.production]` in `wrangler.toml`, which `.github/workflows/relay-deploy.yml`
+   deploys when a change to `relay/` or `phone/` lands on `main` (or by hand from the
+   Actions tab). The deploy's message names the commit.
 4. A zone rate-limiting rule (one rule is free) on `/ws` and `/pc` per IP, so nobody can
    open labels or connections without limit.
 

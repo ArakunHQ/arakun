@@ -480,8 +480,15 @@ fn store_book(book: &Book) {
 // ---------------------------------------------------------------------------
 // The Worker
 
-fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+/// An agent for requests to `base`. Plain `http://` to this machine skips
+/// the proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`): it would carry
+/// the tokens off the machine unencrypted. `https://` keeps it.
+fn agent(base: &str) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder();
+    if local_http(base) {
+        config = config.proxy(None);
+    }
+    config
         .timeout_global(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
         .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
@@ -534,7 +541,7 @@ fn post_json(
     body: &serde_json::Value,
     admin: bool,
 ) -> Result<Vec<u8>, String> {
-    let mut res = agent()
+    let mut res = agent(base)
         .post(format!("{base}{path}"))
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -557,7 +564,7 @@ fn post_json(
 /// A read of `path` with the read token: the status and up to `limit` bytes.
 /// Never the token in an error: only the address.
 pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>), String> {
-    let mut res = agent()
+    let mut res = agent(&cfg.url)
         .get(format!("{}{path}", cfg.url))
         .header("Authorization", format!("Bearer {}", cfg.token))
         .call()
@@ -576,7 +583,7 @@ pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>)
 /// only the newest would keep those on show.
 pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
     let url = format!("{}/items", cfg.url);
-    let mut res = agent()
+    let mut res = agent(&cfg.url)
         .get(&url)
         .header("Authorization", format!("Bearer {}", cfg.token))
         .call()
@@ -596,7 +603,7 @@ pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
 
 /// Tells the Worker the user dealt with `id`. One it no longer knows is done too.
 pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
-    let res = agent()
+    let res = agent(&cfg.url)
         .post(format!("{}/items/{}/done", cfg.url, encode(id)))
         .header("Authorization", format!("Bearer {}", cfg.token))
         .send_empty()

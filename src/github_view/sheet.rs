@@ -817,16 +817,9 @@ impl GitHubView {
     /// One answer to pilot's question: it goes to `POST /items/<id>/answer`
     /// and the board is read again.
     fn answer_decision(&mut self, id: &str, o: Opcion, cx: &mut Context<Self>) {
-        if self.pilot.read(cx).config().is_none() {
-            self.pilot_notes.insert(
-                id.to_string(),
-                "No se envió: falta client.json de arakun-pilot.".into(),
-            );
-            cx.notify();
-            return;
+        if self.pilot_answer(id, Answer::Opcion(o.id), cx) {
+            self.note_decision_answer(id, o.texto);
         }
-        self.note_decision_answer(id, o.texto.clone());
-        self.pilot_answer(id, Answer::Opcion(o.id), cx);
     }
 
     /// Remembers what the user told pilot, to show it after the question goes.

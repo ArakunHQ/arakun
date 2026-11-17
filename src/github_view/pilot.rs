@@ -684,20 +684,32 @@ impl GitHubView {
             return;
         }
         let decision = self.board_pr(cx).and_then(|b| b.open_decision().cloned());
-        if decision.is_some_and(|d| d.item == id) {
-            self.note_decision_answer(&id, text.clone());
+        // Only words that went out: a refused or second send must not show.
+        if self.pilot_answer(&id, Answer::Texto(text.clone()), cx)
+            && decision.is_some_and(|d| d.item == id)
+        {
+            self.note_decision_answer(&id, text);
         }
-        self.pilot_answer(&id, Answer::Texto(text), cx);
     }
 
     /// Hands the answer to the agent. The card goes once the Worker took it;
-    /// on an error it stays, saying why.
-    pub(super) fn pilot_answer(&mut self, id: &str, answer: Answer, cx: &mut Context<Self>) {
+    /// on an error it stays, saying why. False when nothing was sent.
+    pub(super) fn pilot_answer(
+        &mut self,
+        id: &str,
+        answer: Answer,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(cfg) = self.pilot.read(cx).config().cloned() else {
-            return;
+            self.pilot_notes.insert(
+                id.to_string(),
+                "No se envió: falta client.json de arakun-pilot.".into(),
+            );
+            cx.notify();
+            return false;
         };
         if !self.pilot_sending.insert(id.to_string()) {
-            return;
+            return false;
         }
         self.pilot_notes.remove(id);
         cx.notify();
@@ -741,6 +753,7 @@ impl GitHubView {
             });
         })
         .detach();
+        true
     }
 
     /// "Looks good": the confirm strip for an approval of the commit the

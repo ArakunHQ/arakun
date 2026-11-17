@@ -516,21 +516,25 @@ arakun=target/release/arakun
 [ -x "$arakun" ] || arakun=$(command -v arakun)
 arakun=$(readlink -f "$arakun")
 if [ -x "$arakun" ]; then
-  sudo tee /etc/apparmor.d/arakun >/dev/null <<EOF
+  # One profile per binary, so a checkout's does not replace an installed one's.
+  profile=arakun-$(printf %s "$arakun" | cksum | cut -d' ' -f1)
+  sudo tee "/etc/apparmor.d/$profile" >/dev/null <<EOF
 abi <abi/4.0>,
 include <tunables/global>
 
-profile arakun $arakun flags=(unconfined) {
+profile $profile $arakun flags=(unconfined) {
   userns,
 }
 EOF
-  sudo apparmor_parser -r /etc/apparmor.d/arakun
+  sudo apparmor_parser -r "/etc/apparmor.d/$profile"
 else
   echo "no arakun found; run this in the checkout or put arakun on your PATH"
 fi
 ```
 
-The profile names the binary's path, so run this again if `arakun` moves.
+Each binary gets a profile of its own, `/etc/apparmor.d/arakun-<number>`, named after its
+path, so run this again if `arakun` moves. To remove one, run
+`sudo apparmor_parser -R /etc/apparmor.d/arakun-<number>` and delete the file.
 
 ### The server alone (no display)
 

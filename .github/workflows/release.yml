@@ -408,6 +408,9 @@ jobs:
           # the build without the browser needs none (no JIT, no plugins). One
           # binary and no frameworks, so signing the bundle signs everything;
           # a CEF build would have to sign the framework and helpers first.
+          # Extended attributes first: codesign --strict refuses a bundle with
+          # Finder information on it.
+          xattr -cr "$APP"
           codesign --force --timestamp --options runtime \
             --sign "$IDENTITY" --keychain "$KEYCHAIN" "$APP"
           codesign --verify --strict --verbose=2 "$APP"
@@ -468,10 +471,14 @@ jobs:
           RW: ${{ steps.image.outputs.rw }}
           MNT: ${{ steps.image.outputs.mnt }}
         run: |
-          hdiutil detach "$MNT"
+          # What macOS leaves on a volume it mounted writable.
+          rm -rf "$MNT/.fseventsd" "$MNT/.Trashes"
+          # Spotlight can hold the volume for a moment.
+          hdiutil detach "$MNT" || { sleep 5; hdiutil detach -force "$MNT"; }
           mkdir dist
           dmg="dist/$(basename adhoc/*.dmg)"
           hdiutil convert "$RW" -format ULFO -o "$dmg"
+          # The image's own signature, which Gatekeeper checks on a download.
           codesign --timestamp --sign "$IDENTITY" --keychain "$KEYCHAIN" "$dmg"
           codesign --verify --strict --verbose=2 "$dmg"
 
@@ -505,6 +512,8 @@ jobs:
       - name: Smoke test
         run: |
           dmg=$(echo dist/*.dmg)
+          # The ticket is stapled to the image itself, not only to the app.
+          xcrun stapler validate "$dmg"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg" 2>&1 | tee spctl.txt
           grep -q 'source=Notarized Developer ID' spctl.txt
           mnt=$RUNNER_TEMP/smoke

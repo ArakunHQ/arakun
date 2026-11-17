@@ -59,6 +59,161 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// Where the window was when the app last saved, so it opens there again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowState>,
+}
+
+/// The window's place and size in screen points, as `gpui::WindowBounds`.
+/// For a maximized or full screen window, the bounds are where it goes back to.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct WindowState {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maximized: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fullscreen: bool,
+    /// The display it was on (`PlatformDisplay::uuid`). macOS gives the bounds
+    /// relative to that display, so they mean nothing on another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+}
+
+impl WindowState {
+    /// The window as it is now, after `prev`. gpui on X11 reports neither full
+    /// screen nor the bounds to go back to, and macOS reports a zoomed window as
+    /// windowed, so the flags are read too. In either mode the bounds stay the
+    /// last ones of the plain window, which are the ones to go back to, as long
+    /// as it stays on the same display: bounds on one display are no place on
+    /// another, so after a move they are what gpui reports.
+    pub fn next(
+        prev: Option<&WindowState>,
+        bounds: gpui::WindowBounds,
+        maximized: bool,
+        fullscreen: bool,
+        display: Option<String>,
+    ) -> Self {
+        let mut now = Self::from_bounds(bounds);
+        now.fullscreen |= fullscreen;
+        now.maximized = (now.maximized || maximized) && !now.fullscreen;
+        if (now.fullscreen || now.maximized)
+            && let Some(prev) = prev
+            && prev.display == display
+        {
+            (now.x, now.y, now.w, now.h) = (prev.x, prev.y, prev.w, prev.h);
+        }
+        now.display = display;
+        now
+    }
+
+    pub fn from_bounds(bounds: gpui::WindowBounds) -> Self {
+        let (b, maximized, fullscreen) = match bounds {
+            gpui::WindowBounds::Windowed(b) => (b, false, false),
+            gpui::WindowBounds::Maximized(b) => (b, true, false),
+            gpui::WindowBounds::Fullscreen(b) => (b, false, true),
+        };
+        WindowState {
+            x: b.origin.x.into(),
+            y: b.origin.y.into(),
+            w: b.size.width.into(),
+            h: b.size.height.into(),
+            maximized,
+            fullscreen,
+            display: None,
+        }
+    }
+
+    pub fn to_bounds(&self) -> gpui::WindowBounds {
+        self.bounds_at(self.rect())
+    }
+
+    /// This window's mode, with `b` as its bounds.
+    pub fn bounds_at(&self, b: gpui::Bounds<gpui::Pixels>) -> gpui::WindowBounds {
+        if self.fullscreen {
+            gpui::WindowBounds::Fullscreen(b)
+        } else if self.maximized {
+            gpui::WindowBounds::Maximized(b)
+        } else {
+            gpui::WindowBounds::Windowed(b)
+        }
+    }
+
+    pub fn rect(&self) -> gpui::Bounds<gpui::Pixels> {
+        gpui::Bounds::new(
+            gpui::point(gpui::px(self.x), gpui::px(self.y)),
+            gpui::size(gpui::px(self.w), gpui::px(self.h)),
+        )
+    }
+
+    /// This window with its mode, centred in `visible`, a display's visible
+    /// area. It keeps its size where that fits and shrinks where it does not:
+    /// a window taller than the area would put its title bar off the screen.
+    pub fn centred_in(&self, visible: gpui::Bounds<gpui::Pixels>) -> gpui::WindowBounds {
+        let size = self.rect().size.min(&visible.size);
+        self.bounds_at(gpui::Bounds::centered_at(visible.center(), size))
+    }
+}
+
+/// Where a saved window opens.
+#[derive(Debug, PartialEq)]
+pub enum Place {
+    /// At its saved bounds, on this display.
+    At(gpui::DisplayId),
+    /// With its mode, centred on this display; see `WindowState::centred_in`.
+    Centred(gpui::DisplayId),
+}
+
+impl WindowState {
+    /// Where the window opens, given each connected display's id, uuid and
+    /// bounds, or `None` to open at the default size. Bounds count as shown
+    /// when 100×40 points of them, enough to grab the title bar, are on the
+    /// display. On the saved display but not shown there, the window is
+    /// centred on it: Wayland tells no window where it is, so the saved place
+    /// can be anywhere.
+    pub fn place(
+        &self,
+        displays: &[(gpui::DisplayId, Option<String>, gpui::Bounds<gpui::Pixels>)],
+    ) -> Option<Place> {
+        let rect = self.rect();
+        let shows = |b: &gpui::Bounds<gpui::Pixels>| {
+            let shown = b.intersect(&rect);
+            shown.size.width >= gpui::px(100.) && shown.size.height >= gpui::px(40.)
+        };
+        match &self.display {
+            Some(uuid) => {
+                let (id, _, b) = displays.iter().find(|(_, u, _)| u.as_ref() == Some(uuid))?;
+                Some(if shows(b) {
+                    Place::At(*id)
+                } else {
+                    Place::Centred(*id)
+                })
+            }
+            // Saved without its display: the one holding its centre, else any
+            // it shows on. Windows opens on the primary display without one.
+            None => {
+                let centre = rect.center();
+                displays
+                    .iter()
+                    .find(|(_, _, b)| b.contains(&centre) && shows(b))
+                    .or_else(|| displays.iter().find(|(_, _, b)| shows(b)))
+                    .map(|(id, _, _)| Place::At(*id))
+            }
+        }
+    }
+}
+
+/// The saved window, read without the rest of the state, which the shell
+/// loads later. Only the `window` field is kept.
+pub fn saved_window() -> Option<WindowState> {
+    #[derive(Deserialize)]
+    struct Only {
+        window: Option<WindowState>,
+    }
+    let bytes = std::fs::read(file()).ok()?;
+    serde_json::from_slice::<Only>(&bytes).ok()?.window
 }
 
 fn ui_zoom() -> u32 {
@@ -92,7 +247,7 @@ pub const PANEL_W: f32 = 260.;
 pub const SUBAGENTS_W: f32 = 360.;
 
 /// Window layout that is not tied to a project.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Layout {
     pub dock_open: bool,
     pub dock_height: f32,
@@ -110,6 +265,7 @@ pub struct Layout {
     /// Whether the rail's usage card shows Claude, Droid and OpenCode.
     pub rail_usage: [bool; 3],
     pub ui_zoom: u32,
+    pub window: Option<WindowState>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -451,6 +607,7 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().key().to_string(),
         island_off: !crate::island::enabled(),
+        window: layout.window,
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
 }
@@ -616,6 +773,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         } else {
             state.ui_zoom
         },
+        window: state.window,
     };
     // State from before `last_agent` was kept: the agent of the latest session.
     let latest = projects
@@ -727,6 +885,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
@@ -755,6 +914,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Comfortable,
             rail_usage: [true, false, true],
             ui_zoom: 100,
+            window: None,
         };
         let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert_eq!(layout.rail_usage, [true, false, true]);
@@ -790,6 +950,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(&[project], 0, layout);
         let state: State = serde_json::from_slice(&bytes).unwrap();
@@ -822,6 +983,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (mut projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
@@ -858,6 +1020,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
@@ -917,6 +1080,7 @@ mod tests {
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true],
             ui_zoom: 100,
+            window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
@@ -928,5 +1092,189 @@ mod tests {
         assert_eq!(split.dir, SplitDir::Down);
         assert!(split.focus_first);
         assert!((split.ratio - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_window_comes_back_where_it_was() {
+        let rect = gpui::Bounds::new(
+            gpui::point(gpui::px(40.), gpui::px(60.)),
+            gpui::size(gpui::px(1000.), gpui::px(700.)),
+        );
+        for bounds in [
+            gpui::WindowBounds::Windowed(rect),
+            gpui::WindowBounds::Maximized(rect),
+            gpui::WindowBounds::Fullscreen(rect),
+        ] {
+            let saved = WindowState::from_bounds(bounds);
+            let json = serde_json::to_string(&saved).unwrap();
+            let back: WindowState = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.to_bounds(), bounds);
+        }
+        let plain = serde_json::to_string(&WindowState::from_bounds(gpui::WindowBounds::Windowed(
+            rect,
+        )))
+        .unwrap();
+        assert!(!plain.contains("maximized") && !plain.contains("fullscreen"));
+        let old: State = serde_json::from_str("{}").unwrap();
+        assert!(old.window.is_none(), "older state files open centred");
+    }
+
+    #[test]
+    fn the_window_opens_on_the_display_it_was_saved_on() {
+        let px = gpui::px;
+        let rect = |x: f32, y: f32, w: f32, h: f32| {
+            gpui::Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(w), px(h)))
+        };
+        let (a, b) = (gpui::DisplayId::new(1), gpui::DisplayId::new(2));
+        // Two 1920×1080 displays side by side, as Windows and X11 give them.
+        let displays = [
+            (a, Some("uuid-a".to_string()), rect(0., 0., 1920., 1080.)),
+            (b, Some("uuid-b".to_string()), rect(1920., 0., 1920., 1080.)),
+        ];
+        let saved = |x: f32, display: Option<&str>| WindowState {
+            x,
+            y: 100.,
+            w: 1000.,
+            h: 640.,
+            maximized: false,
+            fullscreen: false,
+            display: display.map(str::to_string),
+        };
+        assert_eq!(
+            saved(2100., Some("uuid-b")).place(&displays),
+            Some(Place::At(b))
+        );
+        // Shown nowhere on its display (Wayland's kept origin): centred there.
+        assert_eq!(
+            saved(0., Some("uuid-b")).place(&displays),
+            Some(Place::Centred(b))
+        );
+        // Its display is gone: the default.
+        assert_eq!(saved(2100., Some("uuid-c")).place(&displays), None);
+        // No uuid: the display holding its centre, not the first one it touches.
+        assert_eq!(saved(1500., None).place(&displays), Some(Place::At(b)));
+        assert_eq!(saved(2100., None).place(&displays), Some(Place::At(b)));
+        assert_eq!(saved(100., None).place(&displays), Some(Place::At(a)));
+        assert_eq!(saved(9000., None).place(&displays), None);
+    }
+
+    #[test]
+    fn a_centred_window_keeps_its_size_and_mode_where_it_fits() {
+        let px = gpui::px;
+        let rect = |x: f32, y: f32, w: f32, h: f32| {
+            gpui::Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(w), px(h)))
+        };
+        // A 1280×800 display right of another, under a 25 point menu bar.
+        let visible = rect(1920., 25., 1280., 775.);
+        let saved = |w: f32, h: f32, maximized: bool| WindowState {
+            x: 0.,
+            y: 0.,
+            w,
+            h,
+            maximized,
+            fullscreen: false,
+            display: None,
+        };
+        assert_eq!(
+            saved(1000., 640., true).centred_in(visible),
+            gpui::WindowBounds::Maximized(rect(2060., 92.5, 1000., 640.))
+        );
+        // Wider and taller than the area: it fills it, title bar on screen.
+        assert_eq!(
+            saved(1600., 900., false).centred_in(visible),
+            gpui::WindowBounds::Windowed(visible)
+        );
+        // Only taller: it keeps its width.
+        assert_eq!(
+            saved(1000., 900., false).centred_in(visible),
+            gpui::WindowBounds::Windowed(rect(2060., 25., 1000., 775.))
+        );
+    }
+
+    #[test]
+    fn a_maximized_window_moved_to_another_display_takes_its_new_bounds() {
+        let rect = |x: f32| {
+            gpui::Bounds::new(
+                gpui::point(gpui::px(x), gpui::px(60.)),
+                gpui::size(gpui::px(1000.), gpui::px(700.)),
+            )
+        };
+        let on = |d: &str| Some(d.to_string());
+        // Maximized on display A, its plain bounds at x = 40.
+        let on_a = WindowState::next(
+            None,
+            gpui::WindowBounds::Maximized(rect(40.)),
+            true,
+            false,
+            on("a"),
+        );
+        // Windows moves it to display B at x = 1920 and reports its new place.
+        let on_b = WindowState::next(
+            Some(&on_a),
+            gpui::WindowBounds::Maximized(rect(1960.)),
+            true,
+            false,
+            on("b"),
+        );
+        assert_eq!(on_b.display, on("b"));
+        assert_eq!(on_b.to_bounds(), gpui::WindowBounds::Maximized(rect(1960.)));
+        // Still on B: those bounds stay.
+        let still = WindowState::next(
+            Some(&on_b),
+            gpui::WindowBounds::Maximized(rect(1920.)),
+            true,
+            false,
+            on("b"),
+        );
+        assert_eq!(still.rect(), rect(1960.));
+    }
+
+    #[test]
+    fn a_maximized_or_full_screen_window_keeps_its_plain_bounds() {
+        let plain = gpui::Bounds::new(
+            gpui::point(gpui::px(40.), gpui::px(60.)),
+            gpui::size(gpui::px(1000.), gpui::px(700.)),
+        );
+        let screen = gpui::Bounds::new(
+            gpui::point(gpui::px(0.), gpui::px(0.)),
+            gpui::size(gpui::px(1920.), gpui::px(1080.)),
+        );
+        let uuid = || Some("display-a".to_string());
+        let windowed = WindowState::next(
+            None,
+            gpui::WindowBounds::Windowed(plain),
+            false,
+            false,
+            uuid(),
+        );
+        assert_eq!(windowed.rect(), plain);
+        assert_eq!(windowed.display, uuid());
+        // X11: full screen only shows in the flag, with the screen as bounds.
+        let full = WindowState::next(
+            Some(&windowed),
+            gpui::WindowBounds::Windowed(screen),
+            false,
+            true,
+            uuid(),
+        );
+        assert!(full.fullscreen && !full.maximized);
+        assert_eq!(full.to_bounds(), gpui::WindowBounds::Fullscreen(plain));
+        // X11 maximized reports the maximized size; macOS zoom reports Windowed.
+        for bounds in [
+            gpui::WindowBounds::Maximized(screen),
+            gpui::WindowBounds::Windowed(screen),
+        ] {
+            let max = WindowState::next(Some(&windowed), bounds, true, false, uuid());
+            assert_eq!(max.to_bounds(), gpui::WindowBounds::Maximized(plain));
+        }
+        // Back to a plain window: its own bounds again.
+        let back = WindowState::next(
+            Some(&full),
+            gpui::WindowBounds::Windowed(plain),
+            false,
+            false,
+            uuid(),
+        );
+        assert_eq!(back.to_bounds(), gpui::WindowBounds::Windowed(plain));
     }
 }

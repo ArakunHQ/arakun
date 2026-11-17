@@ -306,6 +306,9 @@ pub struct Shell {
     focus: FocusHandle,
     composer_focus: FocusHandle,
     _activation: Subscription,
+    /// Where the window is, saved with the state so it reopens there.
+    window_state: Option<state::WindowState>,
+    _bounds: Subscription,
     _quit: [Subscription; 2],
     /// `arakun restart` asked to quit: save for the next arakun and launch it.
     restarting: bool,
@@ -748,6 +751,9 @@ impl Shell {
             focus,
             composer_focus,
             _activation: activation,
+            window_state: layout.window,
+            _bounds: cx
+                .observe_window_bounds(window, |this, window, cx| this.track_window(window, cx)),
             shown_browsers: Vec::new(),
             _control: None,
             _scheduler: None,
@@ -926,6 +932,21 @@ impl Shell {
         }
     }
 
+    /// Notes where the window is, for the next save.
+    fn track_window(&mut self, window: &Window, cx: &App) {
+        let display = window
+            .display(cx)
+            .and_then(|d| d.uuid().ok())
+            .map(|u| u.to_string());
+        self.window_state = Some(state::WindowState::next(
+            self.window_state.as_ref(),
+            window.window_bounds(),
+            window.is_maximized(),
+            window.is_fullscreen(),
+            display,
+        ));
+    }
+
     fn state_bytes(&self) -> Vec<u8> {
         let layout = state::Layout {
             dock_open: self.dock_open,
@@ -947,6 +968,7 @@ impl Shell {
                 account_view::rail_shows(crate::agent::AgentKind::OpenCode),
             ],
             ui_zoom: crate::ui_zoom::pct(),
+            window: self.window_state.clone(),
         };
         state::snapshot(&self.projects, self.active_project, layout)
     }
@@ -2246,6 +2268,15 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_inbox_seen();
+        // X11 can enter or leave full screen without moving the window, which
+        // tells no bounds observer; the frame drawn for it notices. So does the
+        // first frame of a window that has never been saved.
+        if self.window_state.as_ref().is_none_or(|w| {
+            w.fullscreen != window.is_fullscreen()
+                || w.maximized != (window.is_maximized() && !window.is_fullscreen())
+        }) {
+            self.track_window(window, cx);
+        }
         // When what had the keyboard leaves the screen (the composer when a page opens
         // over it), keys reach no element and every shortcut stops until a click.
         if !self.refocus_queued && self.has_projects() && !self.focus.contains_focused(window, cx) {

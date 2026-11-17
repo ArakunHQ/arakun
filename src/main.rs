@@ -111,6 +111,23 @@ fn bind<A: gpui::Action>(keys: &str, action: A, context: &str) -> KeyBinding {
     KeyBinding::new(&keys, action, Some(&context))
 }
 
+/// The saved window and the display to open it on; see `WindowState::place`.
+fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
+    let saved = state::saved_window()?;
+    let displays: Vec<_> = cx
+        .displays()
+        .iter()
+        .map(|d| (d.id(), d.uuid().ok().map(|u| u.to_string()), d.bounds()))
+        .collect();
+    Some(match saved.place(&displays)? {
+        state::Place::At(id) => (saved.to_bounds(), Some(id)),
+        state::Place::Centred(id) => {
+            let visible = cx.find_display(id)?.visible_bounds();
+            (saved.centred_in(visible), Some(id))
+        }
+    })
+}
+
 fn main() {
     browser::handle_subprocess();
     if control::run_cli() {
@@ -221,15 +238,30 @@ fn main() {
                 }
             })
             .detach();
+            let mut display_id = None;
             let bounds = match dev::size() {
                 // The test arakun fills its virtual screen, so screenshot pixels are window points.
-                Some((w, h)) => Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))),
-                None => Bounds::centered(None, size(px(1280.), px(800.)), cx),
+                Some((w, h)) => {
+                    WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))))
+                }
+                // Where it was last time, unless that screen is gone.
+                None => match saved_place(cx) {
+                    Some((bounds, display)) => {
+                        display_id = display;
+                        bounds
+                    }
+                    None => WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1280.), px(800.)),
+                        cx,
+                    )),
+                },
             };
             let shell = cx
                 .open_window(
                     WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        window_bounds: Some(bounds),
+                        display_id,
                         titlebar: Some(TitlebarOptions {
                             title: Some("Arakun".into()),
                             appears_transparent: true,

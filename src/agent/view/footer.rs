@@ -308,6 +308,9 @@ impl ThreadView {
             return None;
         }
         let paused = t.queue_paused();
+        let busy = t.is_busy();
+        // Prompts sent now go next; they need no button for it.
+        let now = t.sending_now();
         let button = |id: &'static str, glyph: Option<&'static str>, label: &'static str| {
             div()
                 .id(id)
@@ -486,7 +489,10 @@ impl ThreadView {
                                         .gap(crate::ui::sp(8.))
                                         .min_h(px(28.))
                                         .when(i > 0, |d| d.border_t_1().border_color(theme::stroke()))
-                                        .child(icon("list-end", 14.).text_color(theme::text_subtle()))
+                                        .child(
+                                            icon(if i < now { "arrow-up01" } else { "list-end" }, 14.)
+                                                .text_color(theme::text_subtle()),
+                                        )
                                         .child(
                                             div()
                                                 .flex_1()
@@ -495,6 +501,35 @@ impl ThreadView {
                                                 .text_color(theme::text_muted())
                                                 .child(text.replace('\n', " ")),
                                         )
+                                        .when(i >= now, |d| {
+                                            d.child(
+                                            div()
+                                                .id(("queue-now", i))
+                                                .group("queue-now")
+                                                .size(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(crate::ui::rad(8.))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(theme::fill_selected()))
+                                                .tooltip(crate::ui::tip(if busy {
+                                                    "Interrupt and send now"
+                                                } else {
+                                                    "Send now"
+                                                }))
+                                                .child(hover_icon(
+                                                    "arrow-up01",
+                                                    14.,
+                                                    theme::text_subtle(),
+                                                    theme::content(),
+                                                    "queue-now",
+                                                ))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.thread.update(cx, |t, cx| t.send_now(i, cx))
+                                                })),
+                                        )
+                                        })
                                         .child(
                                             div()
                                                 .id(("queue-del", i))

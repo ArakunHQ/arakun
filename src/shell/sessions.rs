@@ -459,6 +459,7 @@ impl Shell {
     pub(super) fn send_prompt(
         &mut self,
         text: String,
+        now: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -507,7 +508,13 @@ impl Shell {
             self.ensure_live(&path, &id, window, cx);
             self.user_took_over(&id);
             if let Some(thread) = self.active_thread(cx) {
-                thread.update(cx, |t, cx| t.send(text, cx));
+                thread.update(cx, |t, cx| {
+                    if now {
+                        t.interrupt_with(text, cx)
+                    } else {
+                        t.send(text, cx)
+                    }
+                });
             }
             if let Some(s) = self.session_mut(&path, &id) {
                 s.updated = model::unix_now();

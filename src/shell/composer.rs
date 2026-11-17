@@ -86,7 +86,10 @@ impl Shell {
                 "up" => Some(CompKey::Up),
                 "down" => Some(CompKey::Down),
                 "tab" => Some(CompKey::Accept),
-                "enter" if !k.modifiers.shift => Some(CompKey::Accept),
+                // Ctrl+Enter sends now, past the popup.
+                "enter" if !k.modifiers.shift && !crate::platform::command_key(&k.modifiers) => {
+                    Some(CompKey::Accept)
+                }
                 "escape" => Some(CompKey::Close),
                 _ => None,
             }
@@ -127,6 +130,12 @@ impl Shell {
         }
         if self.composer_flash.take().is_some() {
             cx.notify();
+        }
+        if ctrl_only && !m.shift && k.key == "enter" {
+            cx.stop_propagation();
+            self.completion = None;
+            self.submit_with(true, window, cx);
+            return;
         }
         if ctrl_only && k.key == "s" {
             cx.stop_propagation();
@@ -641,6 +650,12 @@ impl Shell {
     }
 
     pub(super) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit_with(false, window, cx)
+    }
+
+    /// Sends the draft; with `now`, a running turn is stopped for it instead of
+    /// the draft waiting in the queue.
+    fn submit_with(&mut self, now: bool, window: &mut Window, cx: &mut Context<Self>) {
         let env_path = self.env().path.clone();
         let mut text = self.env().draft.trim().to_string();
         let typed = text.clone();
@@ -705,7 +720,7 @@ impl Shell {
             cx.background_spawn(async move { crate::history::write(&bytes) })
                 .detach();
         }
-        self.send_prompt(text, window, cx);
+        self.send_prompt(text, now, window, cx);
     }
 
     /// The tab the composer writes to: the active tab, or the session showing beside it

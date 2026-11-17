@@ -516,6 +516,9 @@ pub struct Thread {
     permissions: VecDeque<PermissionRequest>,
     queue: Vec<String>,
     queue_paused: bool,
+    /// How many prompts at the front of the queue the user asked to send now: they
+    /// go once the interrupted turn stopped, even while the queue is paused.
+    urgent: usize,
     usage: Usage,
     turn_started: Option<Instant>,
     /// Session tokens when the turn started, to stamp the turn with what it used.
@@ -919,6 +922,7 @@ impl Thread {
         self.meta = t.meta;
         self.usage = t.usage;
         self.queue = t.queue;
+        self.urgent = self.urgent.min(self.queue.len());
         let shrank = t.entries.len() < old;
         if shrank || from < t.entries.len() {
             self.set_entries(t.entries);
@@ -978,6 +982,7 @@ impl Thread {
             permissions: VecDeque::new(),
             queue: Vec::new(),
             queue_paused: false,
+            urgent: 0,
             usage: Usage {
                 cost_estimate: kind == AgentKind::Claude
                     && std::env::var_os("ANTHROPIC_API_KEY").is_none(),
@@ -1092,6 +1097,11 @@ impl Thread {
 
     pub fn queue_paused(&self) -> bool {
         self.queue_paused
+    }
+
+    /// How many queued prompts go first once the interrupted turn stopped.
+    pub fn sending_now(&self) -> usize {
+        self.urgent
     }
 
     pub fn is_cancelling(&self) -> bool {
@@ -2023,6 +2033,8 @@ impl Thread {
             }
             self.meta_changed(cx);
             cx.emit(ThreadEvent::SubagentsChanged { spawned: None });
+            // A prompt sent now while the subagents stopped waits for this.
+            self.drain_queue(cx);
         }
     }
 
@@ -2392,17 +2404,18 @@ impl Thread {
         if let Some(prompt) = self.rethink.take() {
             return self.start_turn(prompt, true, cx);
         }
-        if self.queue_paused || self.queue.is_empty() {
+        let Some(next) = take_next(&mut self.queue, &mut self.urgent, self.queue_paused) else {
             return;
-        }
-        let next = self.queue.remove(0);
+        };
         self.meta_changed(cx);
         self.start_turn(next, true, cx);
     }
 
     /// Stops the running turn (`session/cancel`), and the subagents running in
-    /// the background with it. Queued prompts wait until resumed.
+    /// the background with it. Queued prompts wait until resumed, those sent
+    /// now too: they stay in the queue.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.urgent = 0;
         if !self.queue.is_empty() {
             self.queue_paused = true;
             self.meta_changed(cx);
@@ -2434,9 +2447,64 @@ impl Thread {
         cx.notify();
     }
 
+    /// Interrupts the running turn and sends this queued prompt as soon as it stopped,
+    /// after any sent now before it. It stays in the queue until then, so an error or a
+    /// restart in between does not lose it. The rest of the queue carries on after it,
+    /// unless it was paused already.
+    pub fn send_now(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.queue.len() {
+            return;
+        }
+        if ix >= self.urgent {
+            let prompt = self.queue.remove(ix);
+            put_next(&mut self.queue, &mut self.urgent, prompt);
+            self.meta_changed(cx);
+        }
+        self.stop_for_urgent(cx);
+    }
+
+    /// Like `send`, but a running turn is stopped first instead of the prompt
+    /// waiting in the queue behind it.
+    pub fn interrupt_with(&mut self, prompt: String, cx: &mut Context<Self>) {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        if !self.is_busy() {
+            return self.send(prompt, cx);
+        }
+        put_next(&mut self.queue, &mut self.urgent, prompt);
+        self.meta_changed(cx);
+        self.stop_for_urgent(cx);
+    }
+
+    /// Stops the running turn for the prompts sent now, or sends them if none runs.
+    fn stop_for_urgent(&mut self, cx: &mut Context<Self>) {
+        if self.cancelling && self.is_busy() {
+            // Already stopping: these go once it stopped.
+        } else if self.is_busy() {
+            let (paused, urgent) = (self.queue_paused, self.urgent);
+            self.cancel(cx);
+            // `cancel` pauses the queue and forgets what goes now, as Esc should.
+            (self.queue_paused, self.urgent) = (paused, urgent);
+            // A turn the agent took by itself stops at once.
+            if !self.is_busy() {
+                self.drain_queue(cx);
+            }
+        } else if matches!(self.status, ThreadStatus::Error(_)) && self.conn.is_none() {
+            self.connect(cx);
+        } else {
+            self.drain_queue(cx);
+        }
+        cx.notify();
+    }
+
     pub fn remove_queued(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.queue.len() {
             self.queue.remove(ix);
+            if ix < self.urgent {
+                self.urgent -= 1;
+            }
             if self.queue.is_empty() {
                 self.queue_paused = false;
             }
@@ -3590,6 +3658,22 @@ pub fn pr_url(text: &str) -> Option<String> {
     found
 }
 
+/// Queues a prompt sent now: after the others sent now, before the rest.
+fn put_next(queue: &mut Vec<String>, urgent: &mut usize, prompt: String) {
+    *urgent = (*urgent).min(queue.len());
+    queue.insert(*urgent, prompt);
+    *urgent += 1;
+}
+
+/// The next queued prompt to send: one sent now goes even while the queue is paused.
+fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Option<String> {
+    if queue.is_empty() || (paused && *urgent == 0) {
+        return None;
+    }
+    *urgent = urgent.saturating_sub(1);
+    Some(queue.remove(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3813,5 +3897,34 @@ mod tests {
             .collect();
         assert_eq!(counts, vec![(1, 1), (1, 1), (1, 1), (2, 0)]);
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    fn q(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn prompts_sent_now_keep_their_order_and_go_first() {
+        let (mut queue, mut urgent) = (q(&["later"]), 0);
+        put_next(&mut queue, &mut urgent, "first".into());
+        // A second interrupt before the turn stopped must not replace the first.
+        put_next(&mut queue, &mut urgent, "second".into());
+        assert_eq!(queue, q(&["first", "second", "later"]));
+        assert_eq!(urgent, 2);
+    }
+
+    #[test]
+    fn prompts_sent_now_go_through_a_paused_queue() {
+        let (mut queue, mut urgent) = (q(&["now", "waiting"]), 1);
+        assert_eq!(
+            take_next(&mut queue, &mut urgent, true).as_deref(),
+            Some("now")
+        );
+        assert_eq!(take_next(&mut queue, &mut urgent, true), None);
+        assert_eq!(queue, q(&["waiting"]));
+        assert_eq!(
+            take_next(&mut queue, &mut urgent, false).as_deref(),
+            Some("waiting")
+        );
     }
 }

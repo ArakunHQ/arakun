@@ -415,7 +415,7 @@ impl Palette {
                                 .flex()
                                 .items_center()
                                 .gap(crate::ui::sp(8.))
-                                .child(kit::spinner("answer-wait", 13., theme::accent()))
+                                .child(kit::spinner("answer-wait", 13., theme::working()))
                                 .child(div().child("Asking Claude…").with_animation(
                                     "answer-wait-label",
                                     Animation::new(Duration::from_millis(1400))

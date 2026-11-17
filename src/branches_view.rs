@@ -1042,7 +1042,7 @@ fn fix_prompt(map: &Map, b: &Branch, status: Status) -> Option<(String, String)>
     }
 }
 
-/// A live session's spinner: amber when it waits for you, green while it works.
+/// A live session's spinner: amber when it waits for you, blue while it works.
 fn session_color(s: SessionStatus) -> Hsla {
     match s {
         SessionStatus::NeedsInput => theme::needs_you(),

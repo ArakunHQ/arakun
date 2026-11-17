@@ -1505,7 +1505,7 @@ pub fn lead_icon(name: &str, tint: Tint) -> gpui::Div {
         .child(icon(name, 16.).text_color(tint.color()))
 }
 
-/// A working session: a ring with a turning arc in green.
+/// A working session: a ring with a turning arc in the working blue.
 pub fn lead_spinner(id: impl Into<ElementId>) -> AnyElement {
     use gpui::AnimationExt as _;
     div()
@@ -1516,7 +1516,7 @@ pub fn lead_spinner(id: impl Into<ElementId>) -> AnyElement {
         .size(px(16.))
         .child(
             icon("loading03", 15.)
-                .text_color(theme::success())
+                .text_color(theme::working())
                 .with_animation(
                     id,
                     gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat(),

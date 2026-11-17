@@ -163,17 +163,18 @@ impl Shell {
         };
         match view {
             View::Inbox => {
-                let waiting = self
-                    .inbox_items()
-                    .iter()
-                    .filter(|i| i.status != Status::Working)
-                    .count();
+                let items = self.inbox_items();
+                let count = |s| items.iter().filter(|i| i.status == s).count();
+                let (waiting, failed) = (count(Status::NeedsInput), count(Status::Error));
                 // A session waiting on the user outranks notices read later.
-                let unseen = self.unseen_notices();
+                // A failed one doesn't wait on the user, so it isn't amber.
+                let n = waiting + failed + self.unseen_notices();
                 if waiting > 0 {
-                    Some(needs_you(waiting + unseen))
+                    Some(needs_you(n))
+                } else if failed > 0 {
+                    Some(broken(n))
                 } else {
-                    (unseen > 0).then(|| quiet(unseen))
+                    (n > 0).then(|| quiet(n))
                 }
             }
             #[cfg(feature = "coderlabs")]

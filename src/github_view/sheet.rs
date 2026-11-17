@@ -22,7 +22,7 @@ use crate::github::queue::Details;
 use crate::theme;
 use crate::ui::{self, PillKind, Type, Typography as _, icon};
 
-/// What the composer's "Pedirle a pilot" does with `text` on pull request
+/// What the composer's "Ask pilot" does with `text` on pull request
 /// `number`, or why it can't: pilot takes tasks only on the user's own pull
 /// requests in its repository, and only with the admin token.
 pub(super) fn task_for(
@@ -34,19 +34,19 @@ pub(super) fn task_for(
 ) -> Result<TaskRequest, &'static str> {
     let text = text.trim();
     let Some(n) = number else {
-        return Err("Abre un PR para pedirle algo a pilot.");
+        return Err("Open a pull request to ask pilot for something.");
     };
     if !in_repo {
-        return Err("pilot trabaja solo en ArakunHQ/arakun.");
+        return Err("pilot works only in ArakunHQ/arakun.");
     }
     if !mine {
-        return Err("pilot solo acepta tareas en tus PRs; en los de otros, comenta.");
+        return Err("pilot takes tasks only on your pull requests; on others, comment.");
     }
     if !admin {
         return Err(pilot::NO_ADMIN);
     }
     if text.is_empty() {
-        return Err("Escribe en la caja qué le pides a pilot.");
+        return Err("Write in the box what you want pilot to do.");
     }
     Ok(TaskRequest {
         // The palette's cut: the same task gets the same title from either.
@@ -95,7 +95,7 @@ fn estado_chip(e: Estado) -> gpui::Div {
         .child(e.label())
 }
 
-/// A quiet part after a value: "· hace 12 min".
+/// A quiet part after a value: "· 12 min ago".
 fn after(text: impl Into<gpui::SharedString>) -> gpui::Div {
     div()
         .flex_none()
@@ -234,13 +234,13 @@ impl GitHubView {
                             Type::Body,
                             theme::text_muted(),
                             format!(
-                                "No pude leer {}: {}",
+                                "Couldn't read {}: {}",
                                 item.as_ref().map(ItemRef::label).unwrap_or_default(),
                                 p.text()
                             ),
                         ))
                         .child(
-                            ui::button("gh-retry", "Reintentar", ui::ButtonKind::Outline, true)
+                            ui::button("gh-retry", "Try again", ui::ButtonKind::Outline, true)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if let Some(item) = this.item() {
                                         this.github.update(cx, |g, cx| g.fetch_item(item, cx));
@@ -248,7 +248,8 @@ impl GitHubView {
                                 })),
                         )
                         .into_any_element(),
-                    None => ui::loading("gh-item-loading", "Leyendo el PR…").into_any_element(),
+                    None => ui::loading("gh-item-loading", "Reading the pull request…")
+                        .into_any_element(),
                 });
             }
         }
@@ -297,7 +298,7 @@ impl GitHubView {
             .into_any_element()
     }
 
-    /// "arakun / #151 · Te necesita", and the actions.
+    /// "arakun / #151 · Needs you", and the actions.
     fn sheet_bar(
         &self,
         item: Option<ItemRef>,
@@ -314,7 +315,7 @@ impl GitHubView {
         ) {
             (Some(b), _) => b.estado.label().to_string(),
             (None, Some(Details::Pull(p))) => super::item::pull_look(&p).2.to_string(),
-            (None, Some(Details::Issue(i))) => if i.open() { "Abierto" } else { "Cerrado" }.into(),
+            (None, Some(Details::Issue(i))) => if i.open() { "Open" } else { "Closed" }.into(),
             _ => String::new(),
         };
         let crumb = match &item {
@@ -375,7 +376,7 @@ impl GitHubView {
                     ui::key_pill(
                         "gh-changes",
                         None,
-                        "Pedir cambios",
+                        "Request changes",
                         None,
                         PillKind::Quiet,
                         !busy,
@@ -388,7 +389,7 @@ impl GitHubView {
                     ui::key_pill(
                         "gh-approve",
                         Some(("tick02", None)),
-                        "Aprobar",
+                        "Approve",
                         Some("A"),
                         PillKind::Normal,
                         !busy,
@@ -402,7 +403,7 @@ impl GitHubView {
                     ui::key_pill(
                         "gh-merge",
                         Some(("git-merge", None)),
-                        "Fusionar",
+                        "Merge",
                         None,
                         PillKind::Primary,
                         can,
@@ -414,23 +415,23 @@ impl GitHubView {
             })
             .child(
                 ui::icon_button("gh-open-web", "link-square02", 14.)
-                    .tooltip(ui::tip("Abrir en GitHub (O)"))
+                    .tooltip(ui::tip("Open on GitHub (O)"))
                     .on_click(cx.listener(|this, _, _, cx| this.open_on_github(cx))),
             )
             .when_some(url, |d, url| {
                 d.child(
                     ui::icon_button("gh-copy-link", "link01", 14.)
-                        .tooltip(ui::tip("Copiar enlace"))
+                        .tooltip(ui::tip("Copy link"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                            this.note = Some(Note::ok("Enlace copiado."));
+                            this.note = Some(Note::ok("Link copied."));
                             cx.notify();
                         })),
                 )
             })
             .child(
                 ui::icon_button("gh-sheet-close", "cancel01", 14.)
-                    .tooltip(ui::tip("Cerrar (Esc)"))
+                    .tooltip(ui::tip("Close (Esc)"))
                     .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx))),
             )
             .into_any_element()
@@ -444,7 +445,7 @@ impl GitHubView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let me = self.github.read(cx).me().unwrap_or_default().to_string();
-        let mut props = vec![Prop::new("cs-progress", "Estado", estado_chip(b.estado))];
+        let mut props = vec![Prop::new("cs-progress", "Status", estado_chip(b.estado))];
         let lt = &b.lo_tiene;
         if !lt.login.is_empty() || lt.tipo != Tipo::Otro {
             let who = Who {
@@ -453,7 +454,7 @@ impl GitHubView {
             };
             props.push(Prop::new(
                 "user",
-                "Lo tiene",
+                "Who has it",
                 div()
                     .flex()
                     .items_center()
@@ -465,7 +466,7 @@ impl GitHubView {
         if !b.siguiente.trim().is_empty() {
             props.push(Prop::new(
                 "arrow-right01",
-                "Siguiente paso",
+                "Next step",
                 div()
                     .text_color(theme::text())
                     .child(b.siguiente.trim().to_string()),
@@ -479,7 +480,7 @@ impl GitHubView {
             let when = board::hace(&u.at);
             props.push(Prop::new(
                 "clock01",
-                "Último de pilot",
+                "pilot's latest",
                 div()
                     .flex()
                     .flex_wrap()
@@ -496,11 +497,11 @@ impl GitHubView {
         if c.total > 0 {
             let (color, rest): (Hsla, String) = if !c.fallando.is_empty() {
                 let names = c.fallando.join(", ");
-                (theme::error().into(), format!("· falla {names}"))
+                (theme::error().into(), format!("· failing {names}"))
             } else if c.corriendo > 0 {
-                (theme::working(), "· corriendo".into())
+                (theme::working(), "· running".into())
             } else if c.pasaron >= c.total {
-                (theme::success().into(), "· todos pasaron".into())
+                (theme::success().into(), "· all passed".into())
             } else {
                 (theme::text_subtle(), String::new())
             };
@@ -517,7 +518,7 @@ impl GitHubView {
                         div()
                             .flex_none()
                             .text_color(theme::text())
-                            .child(format!("{} de {}", c.pasaron, c.total)),
+                            .child(format!("{} of {}", c.pasaron, c.total)),
                     )
                     .when(!rest.is_empty(), |d| d.child(after(rest).truncate())),
             ));
@@ -542,7 +543,7 @@ impl GitHubView {
             let t2 = base_title.clone();
             props.push(Prop::new(
                 "git-branch",
-                "Va encima de",
+                "Stacked on",
                 div()
                     .id("gh-stack-base")
                     .flex()
@@ -570,7 +571,7 @@ impl GitHubView {
         if let Some(al) = b.al_fusionar.as_ref().filter(|a| !a.trim().is_empty()) {
             props.push(Prop::new(
                 "git-merge",
-                "Al fusionar",
+                "On merge",
                 div().text_color(theme::text()).child(al.trim().to_string()),
             ));
         }
@@ -586,14 +587,14 @@ impl GitHubView {
         if !author.is_empty() && !author.eq_ignore_ascii_case(&me) {
             props.push(Prop::new(
                 "git-pull-request",
-                "Autor",
+                "Author",
                 div()
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(8.))
                     .child(self.face(&author, 20., cx))
                     .child(div().text_color(theme::text()).child(author.clone()))
-                    .when(b.draft, |d| d.child(after("· borrador"))),
+                    .when(b.draft, |d| d.child(after("· draft"))),
             ));
         }
         let mut list = div().flex().flex_col().gap(crate::ui::sp(8.));
@@ -650,7 +651,7 @@ impl GitHubView {
                     ui::key_pill(
                         "gh-decision-other",
                         None,
-                        "Otra respuesta…",
+                        "Other answer…",
                         None,
                         PillKind::Quiet,
                         !sending,
@@ -708,7 +709,7 @@ impl GitHubView {
                         .child(ui::text(
                             Type::Label,
                             theme::text_muted(),
-                            "Se lo estoy mandando a pilot…",
+                            "Sending it to pilot…",
                         )),
                 )
             })
@@ -723,7 +724,7 @@ impl GitHubView {
                         .child(ui::text(
                             Type::Label,
                             theme::text_muted(),
-                            format!("Le dijiste «{texto}». pilot sigue con eso."),
+                            format!("You told pilot “{texto}”. It's on it."),
                         )),
                 )
             })
@@ -764,13 +765,13 @@ impl GitHubView {
                         .ty(Type::Label)
                         .font_weight(FontWeight::NORMAL)
                         .text_color(theme::text_muted())
-                        .child("pilot no dejó respuestas listas."),
+                        .child("pilot left no ready answers."),
                 )
                 .child(
                     ui::key_pill(
                         "gh-decision-answer",
                         None,
-                        "Responder…",
+                        "Answer…",
                         None,
                         PillKind::Normal,
                         !sending,
@@ -794,7 +795,7 @@ impl GitHubView {
                 ui::key_pill(
                     "gh-decision-send",
                     None,
-                    "Enviar",
+                    "Send",
                     Some("↵"),
                     PillKind::Normal,
                     !sending,
@@ -823,7 +824,7 @@ impl GitHubView {
                 .child(ui::text(
                     Type::Label,
                     theme::text_muted(),
-                    format!("Le dijiste «{texto}». pilot sigue con eso."),
+                    format!("You told pilot “{texto}”. It's on it."),
                 ))
                 .into_any_element(),
         )
@@ -860,10 +861,10 @@ impl GitHubView {
         }
         let mut list: Vec<(Tab, &str, Option<String>)> = Vec::new();
         if board.is_some() {
-            list.push((Tab::Pilot, "Qué hizo pilot", None));
+            list.push((Tab::Pilot, "Pilot activity", None));
         }
         let talk = pull.map(|p| (p.comments.len() + p.reviews.len()).to_string());
-        list.push((Tab::Timeline, "Conversación", talk));
+        list.push((Tab::Timeline, "Conversation", talk));
         let checks = match (board, pull) {
             (Some(b), _) if b.checks.total > 0 => {
                 Some(format!("{}/{}", b.checks.pasaron, b.checks.total))
@@ -877,7 +878,7 @@ impl GitHubView {
         list.push((Tab::Checks, "Checks", checks));
         list.push((
             Tab::Files,
-            "Archivos",
+            "Files",
             pull.map(|p| p.changed_files.to_string()),
         ));
         let tab = self.tab;
@@ -916,7 +917,7 @@ impl GitHubView {
         Some(row.into_any_element())
     }
 
-    /// "Qué hizo pilot": the board's steps, then what comes next.
+    /// "Pilot activity": the board's steps, then what comes next.
     pub(super) fn render_pilot_steps(&self, b: &BoardPr) -> AnyElement {
         let mut col = div()
             .flex()
@@ -929,7 +930,7 @@ impl GitHubView {
                 .child(ui::text(
                     Type::Body,
                     theme::text_subtle(),
-                    "pilot no ha hecho nada en este PR todavía.",
+                    "pilot hasn't done anything on this pull request yet.",
                 ))
                 .into_any_element();
         }
@@ -1041,7 +1042,7 @@ impl GitHubView {
                                             })
                                             .into_any_element()
                                     })
-                                    .child("Pedirle a pilot")
+                                    .child("Ask pilot")
                                     .when_some(why_not, |d, why| d.tooltip(ui::tip_text(why)))
                                     // Even when it can't go, a click says why in the note.
                                     .on_click(cx.listener(|this, _, _, cx| this.ask_pilot(cx))),
@@ -1053,13 +1054,13 @@ impl GitHubView {
                                     .truncate()
                                     .ty(Type::Caption)
                                     .text_color(theme::text_faint())
-                                    .child("Enter publica · / para acciones"),
+                                    .child("Enter posts · / for actions"),
                             )
                             .child(
                                 ui::key_pill(
                                     "gh-comment-send",
                                     None,
-                                    if sending { "Enviando…" } else { "Comentar" },
+                                    if sending { "Sending…" } else { "Comment" },
                                     Some("⏎"),
                                     PillKind::Primary,
                                     !sending,
@@ -1071,7 +1072,7 @@ impl GitHubView {
             .into_any_element()
     }
 
-    /// Whether "Pedirle a pilot" can go with what is typed, and the task.
+    /// Whether "Ask pilot" can go with what is typed, and the task.
     fn task_check(&self, board: &Option<BoardPr>, cx: &App) -> Result<TaskRequest, &'static str> {
         let item = self.item().filter(|i| i.kind == ItemKind::Pull);
         let me = self.github.read(cx).me().unwrap_or_default();
@@ -1097,11 +1098,11 @@ impl GitHubView {
         task_for(probe, item.map(|i| i.number), mine, in_repo, admin)
     }
 
-    /// "Pedirle a pilot": what is in the box goes to pilot as a task on
+    /// "Ask pilot": what is in the box goes to pilot as a task on
     /// this pull request (`POST /tasks`), or the note says why it can't.
     fn ask_pilot(&mut self, cx: &mut Context<Self>) {
         if self.task_sending {
-            self.note = Some(Note::quiet("Ya le estoy mandando una tarea a pilot."));
+            self.note = Some(Note::quiet("Already sending pilot a task."));
             cx.notify();
             return;
         }
@@ -1138,10 +1139,10 @@ impl GitHubView {
                         let id = if id.is_empty() {
                             String::new()
                         } else {
-                            format!(" (tarea {id})")
+                            format!(" (task {id})")
                         };
                         this.note = Some(Note::ok(format!(
-                            "pilot recibió la tarea{id}: «{}». Lo verás en Qué hizo pilot.",
+                            "pilot got the task{id}: “{}”. You'll see it in Pilot activity.",
                             task.title
                         )));
                         // Text typed since, or for another item, stays.
@@ -1158,7 +1159,7 @@ impl GitHubView {
                         this.pilot.update(cx, |p, cx| p.refresh(cx));
                     }
                     Err(e) => {
-                        this.note = Some(Note::failed(format!("pilot no recibió la tarea: {e}")));
+                        this.note = Some(Note::failed(format!("pilot didn't get the task: {e}")));
                     }
                 }
                 cx.notify();
@@ -1211,7 +1212,7 @@ fn decision_button(
     }
 }
 
-/// One step of "Qué hizo pilot": its mark, its words, its time.
+/// One step of "Pilot activity": its mark, its words, its time.
 fn step_row(
     mark: &str,
     color: Hsla,
@@ -1255,7 +1256,7 @@ fn step_row(
         .when(!at.is_empty(), |d| {
             d.child(
                 super::mono(
-                    if live { "ahora".to_string() } else { at },
+                    if live { "now".to_string() } else { at },
                     if live {
                         theme::working()
                     } else {
@@ -1267,7 +1268,7 @@ fn step_row(
         })
 }
 
-/// "Qué pasa": pilot's words on where the pull request is.
+/// "What's going on": pilot's words on where the pull request is.
 fn que_pasa(body: AnyElement) -> AnyElement {
     div()
         .flex()
@@ -1282,23 +1283,23 @@ fn que_pasa(body: AnyElement) -> AnyElement {
                 .font_weight(FontWeight::NORMAL)
                 .text_color(theme::text_subtle())
                 .child(icon("left-to-right-list-bullet", 13.).text_color(theme::text_faint()))
-                .child("Qué pasa")
+                .child("What's going on")
                 .child(div().flex_1())
                 .child(icon("sparkles", 11.).text_color(theme::working()))
-                .child("lo escribe pilot"),
+                .child("written by pilot"),
         )
         .child(body)
         .into_any_element()
 }
 
-/// Whether the bar offers "Aprobar" and "Pedir cambios": on someone else's
+/// Whether the bar offers "Approve" and "Request changes": on someone else's
 /// open pull request, pilot following it or not. A `Listo` one offers
-/// "Fusionar" instead.
+/// "Merge" instead.
 fn offers_review(listo: bool, open: bool, mine: bool) -> bool {
     !listo && open && !mine
 }
 
-/// Whether the bar offers "Fusionar": a `Listo` pull request, only to its
+/// Whether the bar offers "Merge": a `Listo` pull request, only to its
 /// author or to whom the board says has it. The author merges, not pilot
 /// and not a reviewer.
 fn offers_merge(b: &BoardPr, me: &str, mine: bool) -> bool {
@@ -1324,7 +1325,7 @@ fn last_move(p: &BoardPr) -> Option<(String, String)> {
 
 /// The decisions answered from the sheet, kept only while the board needs
 /// them: while pilot still asks (it hasn't read the answer yet), then as the
-/// "Le dijiste…" line until pilot moves on.
+/// "You told pilot…" line until pilot moves on.
 #[derive(Default)]
 pub(super) struct Answers {
     /// The words of each answer, by item id.
@@ -1526,7 +1527,7 @@ mod tests {
         assert!(
             task_for("x", Some(1), false, true, true)
                 .unwrap_err()
-                .contains("tus PRs")
+                .contains("your pull requests")
         );
         assert_eq!(
             task_for("x", Some(1), true, true, false).unwrap_err(),
@@ -1540,7 +1541,7 @@ mod tests {
         assert!(
             task_for("  ", Some(1), true, true, true)
                 .unwrap_err()
-                .contains("Escribe")
+                .contains("Write in the box")
         );
         assert!(task_for("x", None, true, true, true).is_err());
         // A long first line is cut as the palette cuts it.

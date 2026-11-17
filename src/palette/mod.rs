@@ -2133,7 +2133,7 @@ impl Palette {
         self.confirm = None;
         // Marked rows would turn Enter into their bulk action.
         self.marked.clear();
-        self.input.update(cx, |i, cx| i.set_text("nube: ", cx));
+        self.input.update(cx, |i, cx| i.set_text("cloud: ", cx));
         cx.notify();
     }
 
@@ -2182,7 +2182,7 @@ impl Palette {
             Ok(req) => {
                 self.cloud_sending = true;
                 self.cloud_sent_draft = Some((self.query(cx), branch));
-                self.show_note("Mandando al agente de la nube…", true, cx);
+                self.show_note("Sending to the cloud agent…", true, cx);
                 cx.emit(PaletteEvent::CloudTask(req));
             }
             Err(e) => self.show_note(e, false, cx),

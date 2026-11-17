@@ -412,12 +412,12 @@ impl Group {
 
     pub fn label(self) -> &'static str {
         match self {
-            Group::NeedsReview => "Te piden revisión",
-            Group::Mentions => "Te mencionan",
-            Group::Yours => "Tus PRs",
-            Group::Ready => "Listo para fusionar",
-            Group::Other => "Otros",
-            Group::Done => "Hecho hoy",
+            Group::NeedsReview => "Needs your review",
+            Group::Mentions => "Mentions",
+            Group::Yours => "Your pull requests",
+            Group::Ready => "Ready to merge",
+            Group::Other => "Other",
+            Group::Done => "Done today",
         }
     }
 }

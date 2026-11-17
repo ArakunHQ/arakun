@@ -571,14 +571,14 @@ pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>)
         .get(format!("{}{path}", cfg.url))
         .header("Authorization", format!("Bearer {}", cfg.token))
         .call()
-        .map_err(|e| format!("no pude llegar a {}: {e}", cfg.url))?;
+        .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
     let status = res.status().as_u16();
     let bytes = res
         .body_mut()
         .with_config()
         .limit(limit)
         .read_to_vec()
-        .map_err(|e| format!("el Worker cortó la respuesta: {e}"))?;
+        .map_err(|e| format!("the Worker cut the answer short: {e}"))?;
     Ok((status, bytes))
 }
 
@@ -845,7 +845,7 @@ impl Pilot {
                         };
                         let board = board.join().unwrap_or_else(|_| {
                             Err(super::board::BoardProblem::Failed(
-                                "la lectura del tablero falló".into(),
+                                "reading the board failed".into(),
                             ))
                         });
                         (told, read, board)

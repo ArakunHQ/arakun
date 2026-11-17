@@ -140,9 +140,9 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **CI and checks.** GitHub Actions runs for each project, with jobs, annotations and
   the failing log, read through the `gh` CLI.
-- **Bandeja.** The GitHub tab opens on one line that says how many things need you,
-  then a quiet list grouped by where each pull request stands (Te necesita, Atorado,
-  Pilot trabajando, Esperando CI, Esperando a otros, Listo para fusionar), stacked pull
+- **Queue.** The GitHub tab opens on one line that says how many things need you,
+  then a quiet list grouped by where each pull request stands (Needs you, Stuck,
+  pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull
   requests under their base, and what was merged today folded at the bottom. With
   arakun-pilot (below) the list is its board; without it, the review queue: pull
   requests whose review is asked of you, mentions and assignments, your own open pull
@@ -152,7 +152,7 @@ terminal-only. The status line and keybindings from your settings don't apply in
 - **Pull request sheet.** A row opens a sheet on the right with where the pull request
   stands, who has it, what comes next, the checks and the stack, then tabs for what
   pilot did, the conversation, checks and files. The box at the bottom comments (Enter
-  or "Comentar"), and says why when a comment doesn't go out. Approve, request changes
+  or "Comment"), and says why when a comment doesn't go out. Approve, request changes
   and merge ask a second time, and an approval or a merge stops if new commits came
   after you looked.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
@@ -170,18 +170,18 @@ terminal-only. The status line and keybindings from your settings don't apply in
   starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
   The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
   and `[::1]`, so the tokens never cross a network unencrypted. The board fills the
-  Bandeja; the queue's rows pilot doesn't follow fold under "Más en GitHub". When pilot
+  queue; the rows pilot doesn't follow fold under "More on GitHub". When pilot
   asks you something, the sheet shows the question with one button per answer and
-  "Otra respuesta…" for your own words ("Responder…" when there are no ready answers;
+  "Other answer…" for your own words ("Answer…" when there are no ready answers;
   `POST <url>/items/<id>/answer`), and the notice in
   the island opens that sheet over whatever window is in front (Esc gives it back).
   Without a board, the notice opens the pull request's sheet, which doesn't show the
-  question: answer it on pilot's card in the Bandeja. On your own pull requests, "Pedirle a pilot" in the sheet sends what you
+  question: answer it on pilot's card in the queue. On your own pull requests, "Ask pilot" in the sheet sends what you
   typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
-  While the Worker has no board, its cards show at the top of the queue under "Tu
-  agente", with approve and request changes going through the same second click. What you saw and dealt with is
-  kept in `pilot.json` next to the state. Ctrl+K "Mandar al agente de la nube…" (or type
-  `nube: <task>`) hands it new work, on the open pull request of yours picked in the tab
+  While the Worker has no board, its cards show at the top of the queue under "Your
+  agent", with approve and request changes going through the same second click. What you saw and dealt with is
+  kept in `pilot.json` next to the state. Ctrl+K "Send to the cloud agent…" (or type
+  `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
   or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
   too. On that card `Tab` switches between your pull request and a new branch (see
   [Keyboard shortcuts](#keyboard-shortcuts)).
@@ -712,7 +712,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
   a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
   (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
-  agent. On a cloud task card (`nube: <task>`), `Enter` sends it, `Tab` switches
+  agent. On a cloud task card (`cloud: <task>`), `Enter` sends it, `Tab` switches
   between the open pull request and a new branch (only when there is a pull request),
   and `Esc` cancels. A question offers a short answer from Claude Haiku through Claude Code, on
   your Claude account or the key or endpoint Claude Code is set up with: `Enter` on the offer asks, and nothing is sent

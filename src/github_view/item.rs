@@ -134,15 +134,19 @@ impl GitHubView {
                 _ => String::new(),
             };
             let (question, verb, needs_body) = match c {
-                Confirm::Approve => ("¿Aprobar este PR?".to_string(), "Aprobar".to_string(), true),
+                Confirm::Approve => (
+                    "Approve this pull request?".to_string(),
+                    "Approve".to_string(),
+                    true,
+                ),
                 Confirm::RequestChanges => (
-                    "¿Pedir cambios?".to_string(),
-                    "Pedir cambios".to_string(),
+                    "Request changes?".to_string(),
+                    "Request changes".to_string(),
                     true,
                 ),
                 Confirm::Merge(m) => (
                     format!(
-                        "¿{} {} en {base}?",
+                        "{} {} into {base}?",
                         super::merge_label(m),
                         crate::github::pr::short_sha(&self.confirm_head)
                     ),
@@ -150,8 +154,8 @@ impl GitHubView {
                     false,
                 ),
                 Confirm::Close => (
-                    "¿Cerrar este issue?".to_string(),
-                    "Cerrar issue".to_string(),
+                    "Close this issue?".to_string(),
+                    "Close issue".to_string(),
                     false,
                 ),
                 Confirm::PostDraft => {
@@ -196,11 +200,7 @@ impl GitHubView {
                         ui::key_pill(
                             "gh-confirm-yes",
                             None,
-                            if busy {
-                                "Enviando…".to_string()
-                            } else {
-                                verb
-                            },
+                            if busy { "Sending…".to_string() } else { verb },
                             None,
                             PillKind::Primary,
                             !busy,
@@ -208,18 +208,11 @@ impl GitHubView {
                         .on_click(cx.listener(move |this, _, _, cx| this.run_confirm(c, cx))),
                     )
                     .child(
-                        ui::key_pill(
-                            "gh-confirm-no",
-                            None,
-                            "Cancelar",
-                            None,
-                            PillKind::Quiet,
-                            true,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.confirm = None;
-                            cx.notify();
-                        })),
+                        ui::key_pill("gh-confirm-no", None, "Cancel", None, PillKind::Quiet, true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm = None;
+                                cx.notify();
+                            })),
                     )
                     .children(self.note.as_ref().filter(|n| !n.ok).map(|n| {
                         div()
@@ -691,7 +684,7 @@ impl GitHubView {
             None
         };
         let can_merge = why_not.is_none() && method.is_some() && self.busy.is_none();
-        let label = method.map_or("Fusionar", super::merge_label);
+        let label = method.map_or("Merge", super::merge_label);
         let merge_btn = ui::key_pill(
             "gh-merge",
             Some(("git-merge", None)),
@@ -743,7 +736,7 @@ impl GitHubView {
         }
         let g = self.github.read(cx);
         let Some(details) = g.details(&item) else {
-            return ui::loading("gh-body-loading", "Leyendo el PR…").into_any_element();
+            return ui::loading("gh-body-loading", "Reading the pull request…").into_any_element();
         };
         let tab = if matches!(details, Details::Issue(_)) {
             Tab::Timeline

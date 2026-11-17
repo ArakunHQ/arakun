@@ -656,7 +656,7 @@ impl GitHubView {
         cx.notify();
     }
 
-    /// "Otra respuesta…": a line under the card for the user's own words.
+    /// "Other answer…": a line under the card for the user's own words.
     pub(super) fn pilot_open_other(
         &mut self,
         id: &str,
@@ -703,7 +703,7 @@ impl GitHubView {
         let Some(cfg) = self.pilot.read(cx).config().cloned() else {
             self.pilot_notes.insert(
                 id.to_string(),
-                "No se envió: falta client.json de arakun-pilot.".into(),
+                "Not sent: arakun-pilot's client.json is missing.".into(),
             );
             cx.notify();
             return false;
@@ -737,7 +737,7 @@ impl GitHubView {
                                 cx.notify();
                             });
                         });
-                        this.pilot_sent = Some(("Enviado: el agente sigue con eso.".into(), clear));
+                        this.pilot_sent = Some(("Sent: the agent is on it.".into(), clear));
                         this.pilot.update(cx, |p, cx| {
                             p.answered(&id, cx);
                             // The board moves on with the answer: read it again.
@@ -745,7 +745,7 @@ impl GitHubView {
                         });
                     }
                     Err(e) => {
-                        // Nothing was said: no "Le dijiste…" for it.
+                        // Nothing was said: no "You told pilot…" for it.
                         this.answers.forget(&id);
                         this.pilot_notes
                             .insert(id.clone(), format!("Your answer wasn't sent: {e}"));
@@ -867,7 +867,7 @@ impl GitHubView {
         match c {
             Confirm::Approve => self.write(
                 "approve",
-                "Visto bueno enviado.".into(),
+                "Approved.".into(),
                 move |i| pinned_job(i, Verdict::Approve, &body, &head),
                 after,
                 cx,

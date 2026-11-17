@@ -20,7 +20,7 @@ use crate::ui::{self, Type, Typography as _, icon};
 
 /// The list's widest column: past it the rows would be hard to follow.
 const LIST_MAX_W: f32 = 1180.;
-/// The most rows a folded group shows once open: "Hecho hoy" runs to dozens.
+/// The most rows a folded group shows once open: "Done today" runs to dozens.
 const FOLD_MAX: usize = 20;
 
 /// An estado's color: amber only for what needs the user, blue for work in
@@ -91,7 +91,7 @@ pub(super) struct Section {
     pub rows: Vec<Row>,
     /// None: always open. Some(open) folds behind its line.
     pub fold: Option<bool>,
-    /// The folded line's words after the count ("último: #148 …").
+    /// The folded line's words after the count ("last: #148 …").
     pub hint: String,
 }
 
@@ -159,11 +159,11 @@ fn board_sections(b: &Board, now_open: bool, unread: &HashSet<String>) -> Vec<Se
     if !done.is_empty() {
         let hint = done
             .first()
-            .map(|r| format!("último: {}", r.hint()))
+            .map(|r| format!("last: {}", r.hint()))
             .unwrap_or_default();
         out.push(Section {
             id: "hecho",
-            label: "Hecho hoy".into(),
+            label: "Done today".into(),
             color: theme::success().into(),
             rows: done,
             fold: Some(now_open),
@@ -236,7 +236,7 @@ impl GitHubView {
                 let hint = rows
                     .first()
                     .filter(|_| done)
-                    .map(|r| format!("último: {}", r.hint()))
+                    .map(|r| format!("last: {}", r.hint()))
                     .unwrap_or_default();
                 out.push(Section {
                     id: group_id(group),
@@ -274,7 +274,7 @@ impl GitHubView {
                 at,
                 Section {
                     id: "mas",
-                    label: "Más en GitHub".into(),
+                    label: "More on GitHub".into(),
                     color: theme::text_subtle(),
                     rows: more,
                     fold: Some(self.more_open),
@@ -393,18 +393,18 @@ impl GitHubView {
             .into_any_element()
     }
 
-    /// "1 cosa te necesita · pilot lleva 4 PRs", over where it is read from.
+    /// "1 thing needs you · pilot has 4 PRs", over where it is read from.
     fn render_verdict(&self, cx: &mut Context<Self>) -> AnyElement {
         let g = self.github.read(cx);
         let (need, rest, texto) = match self.board(cx) {
             Some(b) => {
-                // What waits in "Más en GitHub" needs the user too.
+                // What waits in "More on GitHub" needs the user too.
                 let need = board::needs_you(b, g.queue());
                 let lleva = b.verdict.pilot_lleva as usize;
                 let rest = match lleva {
                     0 => String::new(),
-                    1 => "pilot lleva 1 PR".to_string(),
-                    n => format!("pilot lleva {n} PRs"),
+                    1 => "pilot has 1 PR".to_string(),
+                    n => format!("pilot has {n} PRs"),
                 };
                 // pilot's words count only its pull requests: with more
                 // waiting elsewhere, the count speaks instead.
@@ -419,23 +419,23 @@ impl GitHubView {
                 let q = g.queue();
                 let rest = match q.tracked() {
                     0 => String::new(),
-                    n => format!("{n} en GitHub"),
+                    n => format!("{n} on GitHub"),
                 };
                 (q.on_you, rest, String::new())
             }
         };
         let counted = match need {
-            0 => "Nada te necesita".to_string(),
-            1 => "1 cosa te necesita".to_string(),
-            n => format!("{n} cosas te necesitan"),
+            0 => "Nothing needs you".to_string(),
+            1 => "1 thing needs you".to_string(),
+            n => format!("{n} things need you"),
         };
         // pilot's own words win: "Nada te necesita · pilot lleva 2 PRs".
         let (head, rest, texto) = verdict_parts(&texto, counted, rest);
         let place = match g.focus() {
             _ if self.board(cx).is_some() => pilot::REPO.to_string(),
-            [] => "Todos los repositorios".to_string(),
+            [] => "All repositories".to_string(),
             [one] => one.clone(),
-            many => format!("{} lugares", many.len()),
+            many => format!("{} places", many.len()),
         };
         let busy = g.busy();
         let on_board = self.board(cx).is_some();
@@ -464,7 +464,7 @@ impl GitHubView {
                                 d.cursor_pointer()
                                     .hover(|s| s.text_color(theme::text()))
                                     .tooltip(ui::tip(
-                                        "Elige qué organizaciones y repositorios se ven",
+                                        "Choose which organizations and repositories show",
                                     ))
                                     .child(
                                         icon("arrow-down01", 11.).text_color(theme::text_subtle()),
@@ -496,7 +496,7 @@ impl GitHubView {
                             .into_any_element()
                     } else {
                         ui::icon_button("gh-menu", "more-horizontal", 15.)
-                            .tooltip(ui::tip("Actualizar, marcar leído, avisos"))
+                            .tooltip(ui::tip("Refresh, mark read, alerts"))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -575,21 +575,22 @@ impl GitHubView {
         if let Some(BoardProblem::Failed(e)) = self.pilot.read(cx).board_problem() {
             out.push(line(
                 "gh-board-problem",
-                format!("No pude leer el tablero de pilot: {e}"),
+                format!("Couldn't read pilot's board: {e}"),
             ));
         }
         let g = self.github.read(cx);
         match g.problem().or(g.search_problem()) {
             Some(Problem::NoGh) => out.push(line(
                 "gh-problem",
-                "No encuentro gh. Instálalo (cli.github.com) y corre `gh auth login`.".into(),
+                "GitHub CLI not found. Install it (cli.github.com), then run `gh auth login`."
+                    .into(),
             )),
             Some(Problem::SignedOut) => out.push(line(
                 "gh-problem",
-                "gh no tiene sesión: corre `gh auth login` y actualiza.".into(),
+                "Not signed in to GitHub. Run `gh auth login` in a terminal, then refresh.".into(),
             )),
             Some(Problem::Other(e)) => {
-                out.push(line("gh-problem", format!("No pude leer GitHub: {e}")))
+                out.push(line("gh-problem", format!("Couldn't read GitHub: {e}")))
             }
             None => {}
         }
@@ -603,12 +604,12 @@ impl GitHubView {
                 && self.pilot.read(cx).board_problem().is_none()
                 && self.pilot.read(cx).config().is_some());
         if loading {
-            return ui::loading("gh-loading", "Leyendo tu bandeja…").into_any_element();
+            return ui::loading("gh-loading", "Reading your queue…").into_any_element();
         }
         ui::text(
             Type::Body,
             theme::text_subtle(),
-            "Nada en marcha. Lo que pilot lleve y lo que te pidan se ve aquí.",
+            "Nothing going on. What pilot works on and what people ask of you shows up here.",
         )
         .into_any_element()
     }
@@ -717,7 +718,7 @@ impl GitHubView {
                     .text_color(theme::text_faint())
                     .cursor_pointer()
                     .hover(|st| st.text_color(theme::text()))
-                    .child(format!("Ver {past} más"))
+                    .child(format!("Show {past} more"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.fold_full.insert(id);
                         cx.notify();
@@ -906,7 +907,7 @@ mod tests {
             ]
         );
         assert_eq!(s.last().unwrap().fold, Some(false));
-        assert!(s.last().unwrap().hint.starts_with("último: #183"));
+        assert!(s.last().unwrap().hint.starts_with("last: #183"));
         // Only what needs the user is amber.
         assert_eq!(s[0].color, theme::needs_you());
         assert!(s[1..].iter().all(|s| s.color != theme::needs_you()));
@@ -926,8 +927,8 @@ mod tests {
     fn the_verdict_takes_pilots_words() {
         let c = || {
             (
-                "1 cosa te necesita".to_string(),
-                "pilot lleva 2 PRs".to_string(),
+                "1 thing needs you".to_string(),
+                "pilot has 2 PRs".to_string(),
             )
         };
         let (a, b) = c();

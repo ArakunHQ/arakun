@@ -53,21 +53,21 @@ impl Estado {
     /// The group's heading in the Bandeja.
     pub fn group_label(self) -> &'static str {
         match self {
-            Estado::TeNecesita => "Te necesita",
-            Estado::PilotTrabajando => "Pilot trabajando",
-            Estado::Esperando => "Esperando a otros",
-            Estado::EsperandoCi => "Esperando CI",
-            Estado::Listo => "Listo para fusionar",
-            Estado::Atorado => "Atorado",
-            Estado::Otro => "Otros",
+            Estado::TeNecesita => "Needs you",
+            Estado::PilotTrabajando => "pilot is on it",
+            Estado::Esperando => "Waiting on others",
+            Estado::EsperandoCi => "Waiting on CI",
+            Estado::Listo => "Ready to merge",
+            Estado::Atorado => "Stuck",
+            Estado::Otro => "Other",
         }
     }
 
     /// The chip and the breadcrumb.
     pub fn label(self) -> &'static str {
         match self {
-            Estado::Esperando => "Esperando",
-            Estado::Listo => "Listo",
+            Estado::Esperando => "Waiting",
+            Estado::Listo => "Ready",
             other => other.group_label(),
         }
     }
@@ -97,10 +97,10 @@ pub struct LoTiene {
 }
 
 impl LoTiene {
-    /// The name to show: "Tú" for the user, else the name or the login.
+    /// The name to show: "You" for the user, else the name or the login.
     pub fn shown(&self) -> String {
         match self.tipo {
-            Tipo::Tu => "Tú".into(),
+            Tipo::Tu => "You".into(),
             Tipo::Pilot if self.nombre.is_empty() => "pilot".into(),
             Tipo::Ci if self.nombre.is_empty() => "CI".into(),
             _ if !self.nombre.trim().is_empty() => self.nombre.trim().to_string(),
@@ -175,7 +175,7 @@ pub enum PasoTipo {
     Otro,
 }
 
-/// One line of "Qué hizo pilot".
+/// One line of "Pilot activity".
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct Paso {
     #[serde(default, deserialize_with = "or_default")]
@@ -386,7 +386,7 @@ impl Board {
 }
 
 /// The queue's rows pilot doesn't follow, done ones aside: review requests
-/// elsewhere, mentions, issues. The Bandeja folds them under "Más en GitHub".
+/// elsewhere, mentions, issues. The Bandeja folds them under "More on GitHub".
 pub fn outside<'a>(
     b: &'a Board,
     q: &'a super::queue::Queue,
@@ -426,7 +426,7 @@ pub fn noticed<'a>(
 /// as on the cards, and pull requests without a number.
 pub fn parse_board(bytes: &[u8]) -> Result<Board, String> {
     let mut b: Board =
-        serde_json::from_slice(bytes).map_err(|e| format!("respuesta inesperada: {e}"))?;
+        serde_json::from_slice(bytes).map_err(|e| format!("unexpected answer: {e}"))?;
     b.prs.retain(|p| p.number > 0);
     for p in &mut b.prs {
         if let Some(d) = &mut p.decision {
@@ -452,7 +452,7 @@ pub fn fetch(cfg: Option<&Config>) -> Result<Board, BoardProblem> {
     if let Some(path) = std::env::var_os(FIXTURE_ENV) {
         let bytes = std::fs::read(&path).map_err(|e| {
             BoardProblem::Failed(format!(
-                "no pude leer {}: {e}",
+                "could not read {}: {e}",
                 std::path::Path::new(&path).display()
             ))
         })?;
@@ -470,20 +470,24 @@ pub fn fetch(cfg: Option<&Config>) -> Result<Board, BoardProblem> {
     }
 }
 
-/// "hace 12 min", "hace 1 h 20 min", "hace 3 d"; empty for an unknown time.
+/// "now", "12 min ago", "1 h 20 min ago", "3 d ago"; empty for an unknown time.
 pub fn hace(at: &str) -> String {
     let Some(t) = crate::ci::parse_time(at) else {
         return String::new();
     };
     let s = crate::model::unix_now().saturating_sub(t);
-    format!("hace {}", span(s))
+    if s < 60 {
+        span(s)
+    } else {
+        format!("{} ago", span(s))
+    }
 }
 
-/// A short span in Spanish: "ahora", "12 min", "1 h 20 min", "3 d".
+/// A short span: "now", "12 min", "1 h 20 min", "3 d".
 pub fn span(secs: u64) -> String {
     let (m, h, d) = (secs / 60, secs / 3600, secs / 86_400);
     match secs {
-        0..60 => "ahora".into(),
+        0..60 => "now".into(),
         60..3600 => format!("{m} min"),
         3600..86_400 if m % 60 == 0 => format!("{h} h"),
         3600..86_400 => format!("{h} h {} min", m % 60),
@@ -696,7 +700,7 @@ mod tests {
         assert_eq!(p.line(), "Subió 1 commit");
         p.siguiente = "Rik revisa la ronda 2".into();
         assert_eq!(p.line(), "Rik revisa la ronda 2");
-        assert_eq!(span(30), "ahora");
+        assert_eq!(span(30), "now");
         assert_eq!(span(4800), "1 h 20 min");
         assert_eq!(span(3 * 86_400 + 5), "3 d");
     }

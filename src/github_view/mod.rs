@@ -79,7 +79,7 @@ pub enum GitHubViewEvent {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
-    /// "Qué hizo pilot": the board's timeline.
+    /// "Pilot activity": the board's timeline.
     Pilot,
     Timeline,
     Files,
@@ -210,17 +210,15 @@ fn same_item(a: Option<&ItemRef>, b: Option<&ItemRef>) -> bool {
 /// The note for a comment held back while the write `what` runs.
 fn busy_note(what: &str) -> String {
     let what = match what {
-        "comment" => "el comentario anterior",
-        "post-draft" => "la revisión del borrador",
-        "request-changes" => "el pedido de cambios",
-        "approve" => "la aprobación",
-        "merge" => "la fusión",
-        "close" => "el cierre",
+        "comment" => "the last comment",
+        "post-draft" => "the draft review",
+        "request-changes" => "the change request",
+        "approve" => "the approval",
+        "merge" => "the merge",
+        "close" => "the close",
         other => other,
     };
-    format!(
-        "Todavía se está enviando {what}: este comentario no salió. Dale Enter otra vez cuando termine."
-    )
+    format!("Still sending {what}: this comment wasn't sent yet. Press Enter again once it's done.")
 }
 
 /// What the last action did, shown in the card.
@@ -269,9 +267,9 @@ pub struct GitHubView {
     /// tab's list isn't drawn, and closing it hands the window back.
     floating: bool,
     tab: Tab,
-    /// "Hecho hoy" is unfolded.
+    /// "Done today" is unfolded.
     done_open: bool,
-    /// "Más en GitHub" (the queue's rows pilot doesn't follow) is unfolded.
+    /// "More on GitHub" (the queue's rows pilot doesn't follow) is unfolded.
     more_open: bool,
     /// Folded groups the user asked to show past their first rows.
     fold_full: HashSet<&'static str>,
@@ -415,7 +413,7 @@ const NEWLINE: &str = "⏎";
 impl GitHubView {
     pub fn new(github: Entity<GitHub>, pilot: Entity<Pilot>, cx: &mut Context<Self>) -> Self {
         let watch_input = cx.new(|cx| TextInput::new("organization or owner/repo", cx));
-        let comment = cx.new(|cx| TextInput::new("Comenta en el PR, o / para acciones", cx));
+        let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
         let pilot_input = cx.new(|cx| TextInput::new("Your answer for the agent", cx));
         let subs = vec![
@@ -786,7 +784,7 @@ impl GitHubView {
         .detach();
     }
 
-    /// "Qué hizo pilot" is listed only while the board has the pull request:
+    /// "Pilot activity" is listed only while the board has the pull request:
     /// once it goes (a 404, other settings), the conversation shows instead.
     fn settle_tab(&mut self, cx: &App) {
         self.tab = listed_tab(self.tab, self.board_pr(cx).is_some());
@@ -1005,7 +1003,7 @@ impl GitHubView {
                             text: about(
                                 here,
                                 &item,
-                                "Solo lectura en el Arakun de prueba: no se envió nada.".into(),
+                                "Read-only in the test Arakun: nothing was sent.".into(),
                             ),
                         });
                     }
@@ -1053,24 +1051,20 @@ impl GitHubView {
             CommentSend::NoItem => {
                 return hold(
                     self,
-                    "No salió: abre un PR o un issue para comentar.".into(),
+                    "Pick a pull request or issue to comment on.".into(),
                     cx,
                 );
             }
             CommentSend::Empty => {
-                return hold(
-                    self,
-                    "No salió: la caja está vacía. Escribe el comentario primero.".into(),
-                    cx,
-                );
+                return hold(self, "Write a comment first.".into(), cx);
             }
             CommentSend::Busy(what) => return hold(self, busy_note(what), cx),
-            CommentSend::Sending => return hold(self, "Enviando este comentario…".into(), cx),
+            CommentSend::Sending => return hold(self, "Sending this comment…".into(), cx),
             // Text typed for another item is never sent to this one.
             CommentSend::Elsewhere(other) => {
                 self.switch_comment(cx);
                 let text = format!(
-                    "No salió: ese texto era para {}. Quedó ahí como borrador.",
+                    "Not sent: that text was written for {}. It's kept there as a draft.",
                     other.label()
                 );
                 return hold(self, text, cx);
@@ -1083,7 +1077,7 @@ impl GitHubView {
         let on = self.item();
         self.write(
             "comment",
-            "Comentario publicado.".into(),
+            "Comment posted.".into(),
             move |item| pr::comment(item, &body).map(|_| ()),
             // The input stays usable while gh works: keep anything typed since,
             // or meant for another item.
@@ -1132,7 +1126,7 @@ impl GitHubView {
                 self.note = Some(Note {
                     ok: false,
                     quiet: true,
-                    text: format!("No salió: «{text}» no es una acción. Acciones aquí: {list}"),
+                    text: format!("Not sent: “{text}” is not an action. Actions here: {list}"),
                 });
                 cx.notify();
                 return;
@@ -1273,12 +1267,12 @@ impl GitHubView {
                 if head != self.head(cx) {
                     self.confirm = None;
                     self.note = Some(Note::failed(
-                        "Llegaron commits nuevos después de que pediste fusionar. Míralos y vuelve a fusionar.",
+                        "New commits arrived after you asked to merge. Look at them, then merge again.",
                     ));
                     cx.notify();
                     return;
                 }
-                let done = format!("{} en {base}.", merged_label(m));
+                let done = format!("{} into {base}.", merged_label(m));
                 self.write("merge", done, move |i| pr::merge(i, m, &head), clear, cx)
             }
             Confirm::Close => self.write("close", "Closed.".into(), pr::close, clear, cx),
@@ -2430,9 +2424,9 @@ fn body_style() -> MdStyle {
 
 fn merged_label(m: MergeMethod) -> &'static str {
     match m {
-        MergeMethod::Squash => "Fusionado (squash)",
-        MergeMethod::Merge => "Fusionado",
-        MergeMethod::Rebase => "Fusionado (rebase)",
+        MergeMethod::Squash => "Squashed and merged",
+        MergeMethod::Merge => "Merged",
+        MergeMethod::Rebase => "Rebased and merged",
     }
 }
 
@@ -2474,9 +2468,9 @@ fn draft_question(draft: &Draft, stale: bool, posts_as: Verdict) -> (String, Str
 
 fn merge_label(m: MergeMethod) -> &'static str {
     match m {
-        MergeMethod::Squash => "Fusionar (squash)",
-        MergeMethod::Merge => "Fusionar",
-        MergeMethod::Rebase => "Fusionar (rebase)",
+        MergeMethod::Squash => "Squash and merge",
+        MergeMethod::Merge => "Merge",
+        MergeMethod::Rebase => "Rebase and merge",
     }
 }
 
@@ -2550,8 +2544,8 @@ impl Render for GitHubView {
             return root.child(
                 ui::empty_state(
                     "github",
-                    "GitHub está apagado",
-                    "ARAKUN_GITHUB=off está puesto.",
+                    "GitHub is turned off",
+                    "ARAKUN_GITHUB=off is set.",
                     None,
                 )
                 .flex_1()
@@ -3177,7 +3171,7 @@ mod tests {
         assert!(!same_item(Some(&a), Some(&b)));
         assert!(!same_item(Some(&a), None));
         assert!(same_item(None, None));
-        assert!(busy_note("comment").contains("el comentario anterior"));
-        assert!(busy_note("merge").contains("no salió"));
+        assert!(busy_note("comment").contains("the last comment"));
+        assert!(busy_note("merge").contains("wasn't sent"));
     }
 }

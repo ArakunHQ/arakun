@@ -1903,6 +1903,8 @@ impl Thread {
         // A retry resends `last_prompt`, which already carries it.
         let handoff = self.handoff.as_ref().filter(|_| push_user);
         let first_here = handoff.is_some();
+        // A retry resends a first prompt that already carried it.
+        let carries_handoff = first_here || (!push_user && self.handoff_sent);
         let text = match handoff {
             Some(h) => {
                 self.handoff_sent = true;
@@ -1994,7 +1996,7 @@ impl Thread {
                 let cancelled = Ok(json!({"stopReason": "cancelled"}));
                 let _ = this.update(cx, |t, cx| {
                     // The agent never got the handoff: the next prompt carries it.
-                    if first_here && t.prompt_seq == seq {
+                    if carries_handoff && t.prompt_seq == seq {
                         t.handoff_sent = false;
                     }
                     t.prompt_done(seq, cancelled, cx)

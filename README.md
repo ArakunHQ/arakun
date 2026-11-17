@@ -312,7 +312,7 @@ irm https://arakun.dev/install.ps1 | iex
 
 The scripts ([tools/install-release.sh](tools/install-release.sh) and
 [tools/install-release.ps1](tools/install-release.ps1)) download the latest release,
-check it against `SHA256SUMS`, and install it for your user:
+check it against `SHA256SUMS` and its signature, and install it for your user:
 
 | Platform | Installs to | Uninstall |
 |---|---|---|
@@ -328,9 +328,9 @@ macOS build; on macOS, install a later version.
 ### Updates
 
 A release build keeps itself up to date. Every 6 hours it asks GitHub for the latest
-release. When there is a newer one, it downloads it, checks it against `SHA256SUMS`, and
-puts it next to the installed app. The update is installed when you quit Arakun, so the
-next start runs it. Settings › General › Updates shows the version, has **Check now**,
+release. When there is a newer one, it downloads it, checks it against the release's
+signed `SHA256SUMS`, and puts it next to the installed app. The update is installed when
+you quit Arakun, so the next start runs it. Settings › General › Updates shows the version, has **Check now**,
 and on Linux and macOS **Restart now**. Turn **Update automatically** off there to stop
 the checks; `ARAKUN_UPDATES=0` turns them off for one run.
 
@@ -353,17 +353,31 @@ package manager installed, is left alone: update it the way it was installed. A 
 from source never updates itself: a release would take away the browser. Pull and build
 it again instead.
 
-What is checked: the download matches the checksum in the release's `SHA256SUMS`, and
-the new binary starts and says the version it should. This catches a broken or cut-short
-download. It does not prove who made the release, since `SHA256SUMS` comes from the same
-place. The install scripts trust the same thing. To check where a release came from, use
-`gh attestation verify` (see [Manual download](#manual-download)).
+What is checked: `SHA256SUMS` is signed with Arakun's release key, the download matches
+the checksum in it, and the new binary starts and says the version it should. The
+signature shows the release was made by someone who holds that key, which only the
+release workflow can use: someone who can change a release on GitHub but has no key
+can't make the updater install anything. A missing or bad signature stops the update.
+The public key is built into Arakun and is
+[assets/release-key.pub](assets/release-key.pub).
+
+The install scripts check the signature too, with `minisign` if it is installed, else
+with OpenSSL 3 (the Linux script only). Without either they check only the checksum,
+and say so. Releases up to v0.3.0 are not signed; the scripts check only their
+checksums.
 
 ### Manual download
 
 Download the archive or disk image for your platform from
 [GitHub Releases](https://github.com/arakunhq/arakun/releases) and check it against
-`SHA256SUMS`. Release builds are built without the browser feature.
+`SHA256SUMS`. Release builds are built without the browser feature. To check that
+`SHA256SUMS` is signed with Arakun's release key (releases after v0.3.0), download
+`SHA256SUMS.minisig` next to it and run
+[minisign](https://jedisct1.github.io/minisign/):
+
+```sh
+minisign -Vm SHA256SUMS -P RWQ7q+QH/F3LkpvPC4VUQF5guWk5BUJhsveIDg6zNfdGH7EEMu+W7at7
+```
 
 Each download also has a build provenance attestation. It shows that this repository's
 release workflow built it, and from which commit. Check it with the

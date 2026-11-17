@@ -18,6 +18,8 @@ function Install-Arakun {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
     $repo = 'arakunhq/arakun'
+    # The minisign key release.yml signs SHA256SUMS with: assets/release-key.pub.
+    $releaseKey = 'RWQ7q+QH/F3LkpvPC4VUQF5guWk5BUJhsveIDg6zNfdGH7EEMu+W7at7'
 
     # PROCESSOR_ARCHITEW6432 is set in a 32-bit PowerShell on 64-bit Windows.
     $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -44,6 +46,25 @@ function Install-Arakun {
         $sums = Join-Path $tmp 'SHA256SUMS'
         Invoke-WebRequest -UseBasicParsing -Uri "$base/$name.zip" -OutFile $zip
         Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS" -OutFile $sums
+
+        # Before any checksum in it is trusted. Every release after v0.3.0 is
+        # signed. Windows has no Ed25519 of its own, so this needs minisign.
+        $parsed = $null
+        $plain = ($version.TrimStart('v') -split '-', 2)[0]
+        if ([version]::TryParse($plain, [ref]$parsed) -and $parsed -le [version]'0.3.0') {
+            Write-Host "arakun: $version is from before releases were signed; only its checksum is checked"
+        } else {
+            $sig = Join-Path $tmp 'SHA256SUMS.minisig'
+            Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS.minisig" -OutFile $sig
+            $minisign = Get-Command minisign -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($minisign) {
+                & $minisign.Source -V -q -P $releaseKey -m $sums -x $sig | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "arakun: SHA256SUMS is not signed with Arakun's release key; nothing was installed" }
+                Write-Host "arakun: SHA256SUMS is signed with Arakun's release key"
+            } else {
+                Write-Host "arakun: warning: the signature of SHA256SUMS was not checked; install minisign to check it"
+            }
+        }
 
         $want = $null
         foreach ($line in Get-Content $sums) {

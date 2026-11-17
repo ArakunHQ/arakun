@@ -32,6 +32,11 @@ To install the latest release, run this in PowerShell; it puts `arakun.exe` in
 irm https://arakun.dev/install.ps1 | iex
 ```
 
+Windows has no built-in way to check the signature of the release's `SHA256SUMS`, so
+the script checks it only when [minisign](https://jedisct1.github.io/minisign/) is on
+your `PATH`. Without it, it checks only the checksum and says so. Arakun's own updater
+always checks the signature.
+
 ## Requirements
 
 - **Rust via rustup**, with the `x86_64-pc-windows-msvc` host. rustup installs the version

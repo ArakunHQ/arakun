@@ -343,7 +343,9 @@ jobs:
     name: Notarize (macOS arm64)
     needs: macos
     if: github.event_name != 'pull_request'
-    runs-on: depot-macos-15
+    # Same image as the build job. Depot's macOS 15 runners left this job
+    # queued with no runner.
+    runs-on: depot-macos-26
     environment: release
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

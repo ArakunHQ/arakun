@@ -115,9 +115,10 @@ jobs:
     name: Tag
     if: inputs.version != ''
     runs-on: depot-ubuntu-24.04
-    # Two runs for the same version would race to move its tag.
+    # Shared with the publish job, so the tag never moves while a run checks
+    # it and publishes, and two runs for one version never race to move it.
     concurrency:
-      group: release-tag-${{ inputs.version }}
+      group: release-tag-v${{ inputs.version }}
     # Holds the app's key, and takes main only:
     #
     #   RELEASE_TAGGER_CLIENT_ID     (variable) the app's client ID
@@ -805,6 +806,10 @@ jobs:
     runs-on: depot-ubuntu-24.04
     # For the release signing key, below.
     environment: release-signing
+    # The tag job's group: it waits until this job has checked the tag and
+    # published, and then refuses to move a released tag.
+    concurrency:
+      group: release-tag-${{ github.ref_name }}
     permissions:
       contents: write
       # For the provenance attestation. Only this job gets them: it runs no code

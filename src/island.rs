@@ -311,6 +311,21 @@ fn window_kind(keys: bool) -> gpui::WindowKind {
     })
 }
 
+/// Windows has no layer shell to anchor the island to the top edge: it is a
+/// topmost window placed at the top center of the display's work area, so a
+/// taskbar moved to the top stays visible. `None` without displays.
+#[cfg(windows)]
+pub fn top_center(cx: &App, display: Option<gpui::DisplayId>) -> Option<Bounds<Pixels>> {
+    let screen = display
+        .and_then(|id| cx.find_display(id))
+        .or_else(|| cx.primary_display())?;
+    let area = screen.visible_bounds();
+    Some(Bounds {
+        origin: point(area.center().x - px(WIN_W / 2.), area.origin.y),
+        size: size(px(WIN_W), px(WIN_H)),
+    })
+}
+
 /// macOS: a panel above the menu bar that doesn't activate the app; `adopt`
 /// makes the rest of it. Elsewhere `supported` says no and the island never
 /// opens, so this just has to build.

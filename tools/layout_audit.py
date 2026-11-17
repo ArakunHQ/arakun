@@ -11,7 +11,8 @@ It reports, by the source line that built each box:
 - radius: a box near a rounded corner of its container whose own corner is not
   the container's minus the gap between them (use ui::nested);
 - inset: a chip in a bar sitting farther from the side than from the top
-  (use ui::BAR_INSET / ICON_INSET);
+  (use ui::BAR_INSET / ICON_INSET); a chip at the far end, as far from that
+  side as from the top, is fine;
 - clip: a child as tall as a bordered parent, so the border cuts its edge.
 It exits 1 when it finds a problem, and 2 when a file is not a whole dump with
 drawn boxes in it, so a broken run never passes as a clean one.
@@ -138,7 +139,10 @@ for _f in FILES:
         x,y,w,h=c['b']; px_,py,pw,ph=P['b']
         # inset: chip-like child near the left edge of a bar, vertically
         # centered; round icon buttons and pills too (only corners skip them)
-        top=y-py; bot=(py+ph)-(y+h); left=x-px_
+        top=y-py; bot=(py+ph)-(y+h); left=x-px_; right=(px_+pw)-(x+w)
+        # A child at the far end, as far from that side as from the top (the
+        # thumb of a switch that is on), is placed by that side, not the left.
+        if right<left and abs(right-top)<=2: return
         if ph<=64 and abs(top-bot)<=1.5 and 0<=left<20 and top>0 and abs(left-top)>2:
             add(c['at'],'inset',f"{left:g}px from the side but {top:g}px from top/bottom of {P['at']}")
     for i,c in enumerate(d):

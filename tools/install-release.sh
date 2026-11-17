@@ -3,10 +3,15 @@
 #
 #   curl -fsSL https://arakun.dev/install | sh
 #   curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0
+#   curl -fsSL https://arakun.dev/install-server | sh
 #
 # macOS (Apple silicon): ~/Applications/Arakun.app, and ~/.local/bin/arakun linking into it.
 # Linux (x86_64):        ~/.local/bin/arakun, and the browser's CEF runtime in
 #                        ${XDG_DATA_HOME:-~/.local/share}/arakun/cef.
+# --server (Linux x86_64): only ~/.local/bin/arakun-server, the server without
+#                        the window. arakun.dev/install-server serves this script
+#                        with `main "$@"` at the end changed to `main --server "$@"`,
+#                        so keep that line as it is.
 # ARAKUN_VERSION pins a release, like --version. Windows: tools/install-release.ps1.
 #
 # Everything runs from main at the end, so a download cut short runs nothing.
@@ -111,6 +116,7 @@ check_glibc() {
 
 main() {
   version=${ARAKUN_VERSION:-}
+  server=
   while [ $# -gt 0 ]; do
     case $1 in
       --version)
@@ -119,9 +125,11 @@ main() {
         shift
         ;;
       --version=*) version=${1#--version=} ;;
+      --server) server=1 ;;
       -h | --help)
         # Not read from $0: under `curl | sh` there is no file.
-        echo "usage: install-release.sh [--version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
+        echo "usage: install-release.sh [--server] [--version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
+        echo "  --server  install arakun-server (Linux x86_64), the server without the window"
         return 0
         ;;
       *) die "unknown option $1" ;;
@@ -138,6 +146,8 @@ main() {
       if [ "$arch" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then
         arch=arm64
       fi
+      # The app carries the server: `arakun server`.
+      [ -z "$server" ] || die "arakun-server is built for Linux only; on a Mac, install the app and run 'arakun server'"
       [ "$arch" = arm64 ] || die "Intel Macs have no release build; build from source (see README.md)"
       # The disk image, or the archive for a release from before there was one.
       command -v tar >/dev/null || die "tar is needed"
@@ -169,6 +179,7 @@ main() {
   fi
 
   name=arakun-$version-$platform
+  if [ -n "$server" ]; then name=arakun-server-$version-$platform; fi
   file=$name.$ext
   base=https://github.com/$repo/releases/download/$version
   tmp=$(mktemp -d)
@@ -202,9 +213,13 @@ main() {
     ext=tar.gz file=$name.tar.gz
     want=$(listed "$file" "$tmp/SHA256SUMS")
   fi
+  if [ -z "$want" ] && [ -n "$server" ]; then
+    die "$version has no arakun-server build; the first release with one is the one after v0.4.0"
+  fi
   [ -n "$want" ] || die "$version has no $platform build (it is not listed in SHA256SUMS)"
 
-  say "downloading Arakun $version for $platform"
+  if [ -n "$server" ]; then what=arakun-server; else what=Arakun; fi
+  say "downloading $what $version for $platform"
   curl -fSL --progress-bar -o "$tmp/$file" "$base/$file" ||
     die "could not download $base/$file"
   have=$(sha256 "$tmp/$file")
@@ -213,7 +228,17 @@ main() {
   bindir=$HOME/.local/bin
   mkdir -p "$bindir"
 
-  if [ "$platform" = macos-arm64 ]; then
+  if [ -n "$server" ]; then
+    mkdir "$tmp/x"
+    tar -C "$tmp/x" -xzf "$tmp/$file"
+    [ -f "$tmp/x/$name/arakun-server" ] || die "the archive has no arakun-server binary"
+    # A rename, so a server that is running keeps its old binary until it restarts.
+    cp "$tmp/x/$name/arakun-server" "$bindir/.arakun-server.new"
+    chmod 755 "$bindir/.arakun-server.new"
+    mv -f "$bindir/.arakun-server.new" "$bindir/arakun-server"
+    say "installed arakun-server in $bindir"
+    uninstall="rm ~/.local/bin/arakun-server"
+  elif [ "$platform" = macos-arm64 ]; then
     apps=$HOME/Applications
     app=$apps/Arakun.app
     mkdir -p "$apps"
@@ -293,11 +318,12 @@ main() {
     fi
   fi
 
+  if [ -n "$server" ]; then bin=arakun-server; else bin=arakun; fi
   case :$PATH: in
     *:"$bindir":*)
-      found=$(command -v arakun || true)
-      if [ -n "$found" ] && [ "$found" != "$bindir/arakun" ]; then
-        say "warning: 'arakun' runs $found, which comes before $bindir on your PATH"
+      found=$(command -v "$bin" || true)
+      if [ -n "$found" ] && [ "$found" != "$bindir/$bin" ]; then
+        say "warning: '$bin' runs $found, which comes before $bindir on your PATH"
       fi
       ;;
     *)
@@ -319,6 +345,15 @@ main() {
       ;;
   esac
 
+  if [ -n "$server" ]; then
+    say "done. Run 'arakun-server serve' to start it, or 'arakun-server service install' to keep it running."
+    # Root's `service install` writes a system unit; anyone else's, a user unit.
+    if [ "$(id -u)" = 0 ]; then systemctl=systemctl; else systemctl="systemctl --user"; fi
+    say "if it already runs as a service, restart it on the new binary: $systemctl restart arakun-server"
+    say "(a server in another folder, ARAKUN_SERVER_DIR, is the unit arakun-server-<folder>)"
+    say "to uninstall: $uninstall"
+    return 0
+  fi
   # Ubuntu 23.10 and later: Chromium's sandbox needs an AppArmor profile (README.md).
   if [ "$os" = Linux ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
     say "browser tabs need an AppArmor profile on this system; see"

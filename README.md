@@ -387,6 +387,22 @@ or set `ARAKUN_VERSION=v0.2.1` (on Windows, `$env:ARAKUN_VERSION = "v0.2.1"`). T
 no build for Intel Macs or Linux on ARM yet; build from source there. `v0.1.0` has no
 macOS build; on macOS, install a later version.
 
+**The server alone (Linux x86_64):** for a machine with no display, such as a VPS, install
+only [`arakun-server`](#the-server-alone-no-display):
+
+```sh
+curl -fsSL https://arakun.dev/install-server | sh
+curl -fsSL https://arakun.dev/install | sh -s -- --server    # the same
+```
+
+It is the install script with `--server`: it checks the release the same way and installs
+`~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It takes
+`--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
+again for a new release, then restart the service if it runs as one:
+`systemctl --user restart arakun-server`. A server in another folder
+(`ARAKUN_SERVER_DIR`) is the unit `arakun-server-<folder>`, and a service installed as
+root needs `systemctl` without `--user`.
+
 ### Updates
 
 A release build keeps itself up to date. Every 6 hours it asks GitHub for the latest
@@ -612,8 +628,9 @@ cargo build --release --locked -p arakun-server
 ```
 
 Build it on its own, as above. Built in the same command as the app, Cargo gives both
-the same GPUI, with the display code in it. Releases do not carry it yet: build it on
-the machine, or copy the binary from one with the same glibc.
+the same GPUI, with the display code in it. On Linux x86_64 you can also install the
+release build instead: `curl -fsSL https://arakun.dev/install-server | sh` (see
+[Install](#install)).
 
 ### Install for your user (Linux)
 

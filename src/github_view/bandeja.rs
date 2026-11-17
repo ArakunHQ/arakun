@@ -62,7 +62,7 @@ pub(super) struct Row {
 
 impl Row {
     /// The key the picked entry is matched on.
-    fn key(&self) -> String {
+    pub(super) fn key(&self) -> String {
         match (&self.entry, &self.item) {
             (Some(e), _) => e.key(),
             (None, Some(i)) => crate::github::queue::key_of(i),
@@ -269,8 +269,9 @@ impl GitHubView {
         out
     }
 
-    /// The rows J and K walk, as entries: every open group's.
-    pub(super) fn walkable(&self, cx: &App) -> Vec<Entry> {
+    /// The rows J and K walk: every open group's that opens something. Only
+    /// the one stepped to looks its entry up.
+    pub(super) fn walkable(&self, cx: &App) -> Vec<Row> {
         self.sections(cx)
             .into_iter()
             .filter(|s| s.fold != Some(false))
@@ -278,7 +279,7 @@ impl GitHubView {
                 let cap = self.fold_cap(&s);
                 s.rows.into_iter().take(cap)
             })
-            .filter_map(|r| self.row_entry(&r, cx))
+            .filter(|r| r.entry.is_some() || r.item.is_some())
             .collect()
     }
 
@@ -293,7 +294,7 @@ impl GitHubView {
     }
 
     /// The entry a row opens.
-    fn row_entry(&self, r: &Row, cx: &App) -> Option<Entry> {
+    pub(super) fn row_entry(&self, r: &Row, cx: &App) -> Option<Entry> {
         r.entry
             .clone()
             .or_else(|| Some(self.entry_for(r.item.as_ref()?, &r.title, cx)))
@@ -718,7 +719,6 @@ impl GitHubView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let face = r.who.as_ref().map(|w| self.who_face(w, 20., cx));
-        let entry = self.row_entry(&r, cx);
         let number = r
             .item
             .as_ref()
@@ -793,8 +793,10 @@ impl GitHubView {
                     .justify_end()
                     .child(super::mono(r.since.clone(), theme::text_faint())),
             )
+            // The entry is looked up on the click, not on every frame: a
+            // board row's means a walk through the whole queue.
             .on_click(cx.listener(move |this, _, window, cx| {
-                if let Some(e) = entry.clone() {
+                if let Some(e) = this.row_entry(&r, cx) {
                     this.select(e, true, cx);
                 }
                 window.focus(&this.focus, cx);

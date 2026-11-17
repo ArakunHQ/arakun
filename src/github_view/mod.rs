@@ -801,13 +801,15 @@ impl GitHubView {
         let at = self
             .picked
             .as_ref()
-            .and_then(|p| rows.iter().position(|e| e.key() == p.key()));
+            .and_then(|p| rows.iter().position(|r| r.key() == p.key()));
         let next = match at {
             Some(i) => (i as isize + by).clamp(0, rows.len() as isize - 1) as usize,
             None => 0,
         };
         let open = opens_on_step(self.sheet_open);
-        self.select(rows[next].clone(), open, cx);
+        if let Some(entry) = self.row_entry(&rows[next], cx) {
+            self.select(entry, open, cx);
+        }
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {

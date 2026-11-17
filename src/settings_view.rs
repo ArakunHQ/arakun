@@ -888,18 +888,36 @@ impl SettingsDialog {
                     cx.notify();
                 }))
                 .into_any_element(),
-                row(
-                    "Usage and crash reports",
-                    "Sends crashes, agent errors and counts such as sessions started to Arakun's PostHog, under a random id. Never prompts, replies, files or project names. DO_NOT_TRACK=1 also turns it off.",
-                    switch(crate::telemetry::switched_on()).into_any_element(),
-                )
-                .id("set-telemetry")
-                .cursor_pointer()
-                .on_click(cx.listener(|_, _, _, cx| {
-                    crate::telemetry::set_allowed(!crate::telemetry::switched_on());
-                    cx.notify();
-                }))
-                .into_any_element(),
+                {
+                    let c = crate::telemetry::consent().unwrap_or_default();
+                    row(
+                        "Crash reports",
+                        "Sends crashes and agent errors to Arakun's PostHog, under a random id. Paths, links, emails and anything shaped like a key are removed first.",
+                        switch(c.crashes).into_any_element(),
+                    )
+                    .id("set-crash-reports")
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::telemetry::set_consent(crate::telemetry::Consent { crashes: !c.crashes, ..c });
+                        cx.notify();
+                    }))
+                    .into_any_element()
+                },
+                {
+                    let c = crate::telemetry::consent().unwrap_or_default();
+                    row(
+                        "Usage counts",
+                        "Counts such as sessions started, with the agent's name. Never prompts, replies, files, URLs or project names. DO_NOT_TRACK=1 turns both off.",
+                        switch(c.usage).into_any_element(),
+                    )
+                    .id("set-usage-counts")
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::telemetry::set_consent(crate::telemetry::Consent { usage: !c.usage, ..c });
+                        cx.notify();
+                    }))
+                    .into_any_element()
+                },
             ]),
             Section::Appearance => self.render_appearance(cx),
             Section::Account => group(vec![

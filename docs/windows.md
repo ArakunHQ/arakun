@@ -111,7 +111,7 @@ build with the browser.
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
-| Usage and crash reports: the random install id, and the marker that turns them off (Settings › General) | `telemetry-id`, `telemetry-off` in `%LOCALAPPDATA%\arakun\` |
+| Crash reports and usage counts: the random install id, and your answer (Settings › General) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).

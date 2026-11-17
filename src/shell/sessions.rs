@@ -334,7 +334,7 @@ impl Shell {
                         && let ThreadStatus::Error(msg) = thread.read(cx).status()
                     {
                         let agent = thread.read(cx).kind().id();
-                        crate::telemetry::error("agent error", &msg, &[("agent", agent)]);
+                        crate::telemetry::error("AgentError", &msg, &[("agent", agent)]);
                     }
                     s.status = status;
                     s.updated = model::unix_now();

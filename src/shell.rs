@@ -171,6 +171,8 @@ enum Modal {
     Automations(Entity<crate::automations_view::AutomationsDialog>),
     /// Rename, remove or import sessions (`session_actions`).
     Session(gpui::AnyView),
+    /// The first-launch question about crash reports and usage counts.
+    Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -1618,6 +1620,35 @@ impl Shell {
         }
     }
 
+    /// Asks once, on first launch, whether to send crash reports and usage
+    /// counts; nothing is sent before the answer.
+    pub fn ask_telemetry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() || !crate::telemetry::should_ask() {
+            return;
+        }
+        use crate::telemetry_dialog::{DETAILS_URL, TelemetryDialog, TelemetryEvent};
+        let dialog = cx.new(|cx| TelemetryDialog::new(window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, ev: &TelemetryEvent, window, cx| match ev {
+                TelemetryEvent::Answered(yes) => {
+                    crate::telemetry::set_consent(if *yes {
+                        crate::telemetry::Consent::ALL
+                    } else {
+                        crate::telemetry::Consent::NONE
+                    });
+                    this.close_modal(window, cx);
+                }
+                // The desktop browser: the dialog stays open over the app.
+                TelemetryEvent::OpenDetails => cx.open_url(DETAILS_URL),
+                TelemetryEvent::Dismissed => this.close_modal(window, cx),
+            },
+        );
+        self.modal = Some((Modal::Telemetry(dialog), sub));
+        cx.notify();
+    }
+
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A second dialog would read the palettes before the open one's
         // pending save lands, then save over that edit.
@@ -2381,6 +2412,7 @@ impl Render for Shell {
             Modal::Settings(e) => e.clone().into_any_element(),
             Modal::Automations(e) => e.clone().into_any_element(),
             Modal::Session(v) => v.clone().into_any_element(),
+            Modal::Telemetry(e) => e.clone().into_any_element(),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let context_menu = self.menu.as_ref().map(|m| {

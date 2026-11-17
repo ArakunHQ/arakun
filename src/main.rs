@@ -82,6 +82,7 @@ mod team;
 #[cfg(feature = "team")]
 mod team_view;
 mod telemetry;
+mod telemetry_dialog;
 mod terminal;
 mod theme;
 mod ui;
@@ -138,11 +139,9 @@ fn main() {
     control::export_env();
     platform::detach_own_console();
     // After the CLI: `arakun <command>` runs in agents' shells and reports nothing.
+    // Sends only what the user agreed to; the first launch asks (`ask_telemetry`).
     telemetry::init();
-    telemetry::capture(
-        telemetry::events::APP_LAUNCHED,
-        &[("os", std::env::consts::OS)],
-    );
+    telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);
     let started = std::time::Instant::now();
     gpui::Application::with_platform(ui_zoom::platform())
         .with_assets(assets::Assets)
@@ -287,6 +286,7 @@ fn main() {
                 )
                 .unwrap();
             let _ = shell.update(cx, |shell, window, cx| {
+                shell.ask_telemetry(window, cx);
                 shell.sync_island(window, cx);
                 #[cfg(feature = "team")]
                 shell.sync_team(window, cx);

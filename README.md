@@ -196,26 +196,29 @@ it shows in `github/avatars/` (each downloaded again after a week).
 
 ### Usage and crash reports
 
-Release builds send crash reports and anonymous usage counts to Arakun's PostHog
-project, so we can see what breaks and what gets used:
+Arakun sends nothing until you say so. On first launch it asks whether to send crash
+reports and anonymous usage counts to Arakun's PostHog project, so we can see what
+breaks and what gets used. Settings › General has a switch for each:
 
-- **Crashes:** the panic message and its stack trace.
-- **Agent errors:** the first line of the error and the agent's name.
-- **Counts:** app launched, session started (with the agent), agent turn finished,
-  project added, environment created, a built-in view opened (with its name) and a
-  browser tab opened. Each carries Arakun's version, the OS and the CPU architecture.
+- **Crash reports:** a panic's message and stack trace, and the first line of an
+  agent's error with the agent's name.
+- **Usage counts:** app launched, session started (with the agent), agent turn
+  finished, project added, environment created, a built-in view opened (with its name)
+  and a browser tab opened.
 
-Arakun never sends prompts, replies, file contents, URLs, project names or paths. Your
-home folder is replaced with `~` in anything it sends. Every event carries a random id
-kept in `telemetry-id` in Arakun's data folder (`~/.local/share/arakun` on Linux and
-macOS, `%LOCALAPPDATA%\arakun` on Windows). It is not tied to any account; delete the
-file to get a new one.
+Each event carries Arakun's version, the OS and the CPU architecture. Arakun never
+sends prompts, replies, file contents, URLs or project names. Before an error message
+leaves your machine, Arakun replaces your home folder with `~` and removes paths, links,
+emails and anything shaped like a key or token. Events carry a random id kept in
+`telemetry-id` in Arakun's data folder (`~/.local/share/arakun` on Linux and macOS,
+`%LOCALAPPDATA%\arakun` on Windows); it is not tied to any account, PostHog makes no
+person profile from it and no location from your IP, and deleting the file starts a
+new one. Your answer is kept in `telemetry.json` in the same folder.
 
-Turn it off in Settings › General › Usage and crash reports, which leaves a
-`telemetry-off` file in that folder. Setting `DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0`
-also turns it off. Debug builds send nothing unless `ARAKUN_TELEMETRY=1` is set, and
-the test Arakun of `arakun dev` never does. A build made with `ARAKUN_POSTHOG_KEY=`
-(empty) sends nothing at all.
+`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the question;
+`ARAKUN_TELEMETRY=1` turns both on. Debug builds send nothing unless
+`ARAKUN_TELEMETRY=1` is set, and the test Arakun of `arakun dev` never does. A build
+made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
 
 ## Platform status
 

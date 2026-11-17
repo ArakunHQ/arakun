@@ -518,11 +518,13 @@ arakun=$(readlink -f "$arakun")
 if [ -x "$arakun" ]; then
   # One profile per binary, so a checkout's does not replace an installed one's.
   profile=arakun-$(printf %s "$arakun" | cksum | cut -d' ' -f1)
+  # Quoted, with AppArmor's pattern characters escaped, for paths with spaces.
+  attach=$(printf %s "$arakun" | sed 's/[][\\*?{}^"]/\\&/g')
   sudo tee "/etc/apparmor.d/$profile" >/dev/null <<EOF
 abi <abi/4.0>,
 include <tunables/global>
 
-profile $profile $arakun flags=(unconfined) {
+profile $profile "$attach" flags=(unconfined) {
   userns,
 }
 EOF

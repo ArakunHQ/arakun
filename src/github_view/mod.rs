@@ -466,6 +466,7 @@ impl GitHubView {
             if let Some(b) = pilot.read(cx).board() {
                 this.answers.settle(b);
             }
+            this.settle_tab(cx);
             // The sheet answers the board's question with the same line.
             let asked = this
                 .board_pr(cx)
@@ -658,6 +659,8 @@ impl GitHubView {
             } else {
                 Tab::Timeline
             };
+        } else {
+            self.settle_tab(cx);
             self.confirm = None;
             self.pilot_act = None;
             self.editing_draft = false;
@@ -781,6 +784,12 @@ impl GitHubView {
             });
         })
         .detach();
+    }
+
+    /// "Qué hizo pilot" is listed only while the board has the pull request:
+    /// once it goes (a 404, other settings), the conversation shows instead.
+    fn settle_tab(&mut self, cx: &App) {
+        self.tab = listed_tab(self.tab, self.board_pr(cx).is_some());
     }
 
     fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
@@ -2389,6 +2398,15 @@ fn opens_on_step(sheet_open: bool) -> bool {
     sheet_open
 }
 
+/// The tab to show: Pilot only while the board has the pull request, else
+/// the conversation, which every pull request lists.
+fn listed_tab(tab: Tab, on_board: bool) -> Tab {
+    match tab {
+        Tab::Pilot if !on_board => Tab::Timeline,
+        t => t,
+    }
+}
+
 /// The result of a write, naming its item when another one is picked now.
 fn about(here: bool, item: &ItemRef, text: String) -> String {
     if here {
@@ -3056,6 +3074,13 @@ mod tests {
         assert_eq!(without_html("``a ` <!-- b``<!-- c -->d"), "``a ` <!-- b``d");
         // A lone backtick is text, and a comment after it still goes.
         assert_eq!(without_html("it` <!-- c -->x"), "it` x");
+    }
+
+    #[test]
+    fn the_pilot_tab_goes_with_the_board() {
+        assert_eq!(listed_tab(Tab::Pilot, true), Tab::Pilot);
+        assert_eq!(listed_tab(Tab::Pilot, false), Tab::Timeline);
+        assert_eq!(listed_tab(Tab::Files, false), Tab::Files);
     }
 
     #[test]

@@ -147,6 +147,14 @@ impl WindowState {
             gpui::size(gpui::px(self.w), gpui::px(self.h)),
         )
     }
+
+    /// This window with its mode, centred in `visible`, a display's visible
+    /// area. It keeps its size where that fits and shrinks where it does not:
+    /// a window taller than the area would put its title bar off the screen.
+    pub fn centred_in(&self, visible: gpui::Bounds<gpui::Pixels>) -> gpui::WindowBounds {
+        let size = self.rect().size.min(&visible.size);
+        self.bounds_at(gpui::Bounds::centered_at(visible.center(), size))
+    }
 }
 
 /// Where a saved window opens.
@@ -154,7 +162,7 @@ impl WindowState {
 pub enum Place {
     /// At its saved bounds, on this display.
     At(gpui::DisplayId),
-    /// With its size and mode, centred on this display.
+    /// With its mode, centred on this display; see `WindowState::centred_in`.
     Centred(gpui::DisplayId),
 }
 
@@ -1148,6 +1156,39 @@ mod tests {
         assert_eq!(saved(2100., None).place(&displays), Some(Place::At(b)));
         assert_eq!(saved(100., None).place(&displays), Some(Place::At(a)));
         assert_eq!(saved(9000., None).place(&displays), None);
+    }
+
+    #[test]
+    fn a_centred_window_keeps_its_size_and_mode_where_it_fits() {
+        let px = gpui::px;
+        let rect = |x: f32, y: f32, w: f32, h: f32| {
+            gpui::Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(w), px(h)))
+        };
+        // A 1280×800 display right of another, under a 25 point menu bar.
+        let visible = rect(1920., 25., 1280., 775.);
+        let saved = |w: f32, h: f32, maximized: bool| WindowState {
+            x: 0.,
+            y: 0.,
+            w,
+            h,
+            maximized,
+            fullscreen: false,
+            display: None,
+        };
+        assert_eq!(
+            saved(1000., 640., true).centred_in(visible),
+            gpui::WindowBounds::Maximized(rect(2060., 92.5, 1000., 640.))
+        );
+        // Wider and taller than the area: it fills it, title bar on screen.
+        assert_eq!(
+            saved(1600., 900., false).centred_in(visible),
+            gpui::WindowBounds::Windowed(visible)
+        );
+        // Only taller: it keeps its width.
+        assert_eq!(
+            saved(1000., 900., false).centred_in(visible),
+            gpui::WindowBounds::Windowed(rect(2060., 25., 1000., 775.))
+        );
     }
 
     #[test]

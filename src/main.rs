@@ -122,8 +122,8 @@ fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
     Some(match saved.place(&displays)? {
         state::Place::At(id) => (saved.to_bounds(), Some(id)),
         state::Place::Centred(id) => {
-            let centred = Bounds::centered(Some(id), saved.rect().size, cx);
-            (saved.bounds_at(centred), Some(id))
+            let visible = cx.find_display(id)?.visible_bounds();
+            (saved.centred_in(visible), Some(id))
         }
     })
 }

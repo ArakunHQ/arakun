@@ -113,12 +113,16 @@ fn spinner(phase: u32, size: f32, color: Hsla) -> AnyElement {
         .child(
             icon("circle", size)
                 .absolute()
+                .top_0()
+                .left_0()
                 .text_color(color)
                 .opacity(0.25),
         )
         .child(
             icon("spinner-arc", size)
                 .absolute()
+                .top_0()
+                .left_0()
                 .text_color(color)
                 .with_transformation(Transformation::rotate(radians(angle))),
         )
@@ -126,7 +130,8 @@ fn spinner(phase: u32, size: f32, color: Hsla) -> AnyElement {
 }
 
 /// Three dots in a wave in front of the live header: the agent is working.
-/// Still dots when the window is in the background, so nothing ticks there.
+/// Still while it waits for the user, since nothing is working then, and when
+/// the window is in the background, so nothing ticks there.
 fn working_dots(phase: u32, animate: bool, color: Hsla) -> AnyElement {
     const DOT: f32 = 5.;
     const LIFT: f32 = 2.;

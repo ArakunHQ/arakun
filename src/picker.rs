@@ -360,43 +360,21 @@ impl FolderPicker {
     /// Clones on the background executor; the picker stays open with a notice
     /// until it is done, then adds the clone like any other repository.
     fn clone_and_pick(&mut self, source: CloneSource, dest: PathBuf, cx: &mut Context<Self>) {
-        if dest.exists() {
-            // Cloned before: add that copy rather than fail or clone it twice. Only
-            // the same repository, though: `~/code/app` may hold another `app`.
-            let origin = dest
-                .join(".git")
-                .exists()
-                .then(|| crate::git::origin_url(&dest))
-                .flatten();
-            match origin.as_deref().and_then(parse_clone_source) {
-                Some(found) if found.same_repo(&source) => self.pick(dest, cx),
-                Some(found) => {
-                    self.error = Some(
-                        format!("{} already holds {}", pretty_path(&dest), found.label).into(),
-                    );
-                    cx.notify();
-                }
-                None => {
-                    self.error = Some(format!("{} already exists", pretty_path(&dest)).into());
-                    cx.notify();
-                }
-            }
-            return;
-        }
         self.error = None;
         self.cloning = Some(source.label.clone());
         cx.notify();
         cx.spawn(async move |this, cx| {
             let target = dest.clone();
+            // Git runs here, off the UI thread: the clone, or reading the origin of
+            // a folder that is already there.
             let result = cx
-                .background_spawn(async move {
-                    crate::git::clone(&source.url, source.on_github, &target)
-                })
+                .background_spawn(async move { clone_or_reuse(&source, &target) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.cloning = None;
                 match result {
-                    Ok(()) => this.add_root(dest, cx),
+                    Ok(Cloned::New) => this.add_root(dest, cx),
+                    Ok(Cloned::Before) => this.pick(dest, cx),
                     Err(e) => {
                         this.error = Some(e.to_string().into());
                         cx.notify();
@@ -871,7 +849,10 @@ fn parse_clone_source(query: &str) -> Option<CloneSource> {
     }
     // The first argument: flags (and the values of those that take one) and a
     // target folder after it are ignored.
-    let mut words = q.split_whitespace();
+    // A pasted command may quote its arguments (`git clone "https://…"`).
+    let mut words = q
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c| c == '"' || c == '\''));
     let token = loop {
         let word = words.next()?;
         if TAKES_VALUE.contains(&word) {
@@ -961,6 +942,33 @@ fn parse_clone_source(query: &str) -> Option<CloneSource> {
         name,
         shorthand: false,
     })
+}
+
+/// What `clone_or_reuse` found at the destination.
+enum Cloned {
+    /// Cloned just now.
+    New,
+    /// Already there, a clone of the same repository.
+    Before,
+}
+
+/// Clones `source` into `dest`, or reuses `dest` when it already holds that
+/// repository: `~/code/app` may hold another `app`, so its origin must match.
+fn clone_or_reuse(source: &CloneSource, dest: &Path) -> anyhow::Result<Cloned> {
+    if !dest.exists() {
+        crate::git::clone(&source.url, source.on_github, dest)?;
+        return Ok(Cloned::New);
+    }
+    let origin = dest
+        .join(".git")
+        .exists()
+        .then(|| crate::git::origin_url(dest))
+        .flatten();
+    match origin.as_deref().and_then(parse_clone_source) {
+        Some(found) if found.same_repo(source) => Ok(Cloned::Before),
+        Some(found) => anyhow::bail!("{} already holds {}", pretty_path(dest), found.label),
+        None => anyhow::bail!("{} already exists", pretty_path(dest)),
+    }
 }
 
 /// Options of `git clone` and `gh repo clone` whose value is the next word.
@@ -1346,6 +1354,8 @@ mod tests {
             https
         );
         assert_eq!(gh("gh repo clone o/r -- --depth 1").1, "o/r");
+        assert_eq!(gh(r#"git clone "https://github.com/o/r" 'my dir'"#), https);
+        assert_eq!(gh("gh repo clone 'o/r'").1, "o/r");
         // Neither does a query string or a fragment.
         assert_eq!(gh("https://github.com/o/r?tab=readme-ov-file"), https);
         assert_eq!(gh("https://github.com/o/r#readme"), https);
@@ -1414,6 +1424,33 @@ mod tests {
         let gitlab = source("https://gitlab.com/g/app.git");
         assert!(gitlab.same_repo(&source("https://gitlab.com/g/app")));
         assert!(!gitlab.same_repo(&source("https://gitlab.com/h/app")));
+    }
+
+    #[test]
+    fn an_existing_folder_is_reused_only_when_its_origin_matches() {
+        let dest = std::env::temp_dir().join(format!("arakun-reuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::create_dir_all(&dest).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["remote", "add", "origin", "git@github.com:owner-a/app.git"],
+        ] {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dest)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success());
+        }
+        let source = |q: &str| parse_clone_source(q).unwrap();
+        assert!(matches!(
+            clone_or_reuse(&source("https://github.com/owner-a/app"), &dest),
+            Ok(Cloned::Before)
+        ));
+        let other = clone_or_reuse(&source("https://github.com/owner-b/app"), &dest);
+        assert!(other.is_err_and(|e| e.to_string().ends_with("already holds owner-a/app")));
+        let _ = std::fs::remove_dir_all(&dest);
     }
 
     #[test]

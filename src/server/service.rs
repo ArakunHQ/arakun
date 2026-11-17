@@ -131,7 +131,12 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
     args.push("serve".into());
     args.extend(flags.iter().cloned());
     let root = system_unit();
-    let env = service_env(|key| std::env::var_os(key), root);
+    let env = service_env(|key| std::env::var_os(key), root)?;
+    text("this program's path", &exe)?;
+    text("the server's folder", &dir())?;
+    if let Some(file) = file_path(&service_name()) {
+        text("the service file's path", &file)?;
+    }
     if root && !only_root_writes(&exe) {
         return Err(format!(
             "a system service runs {} as root at every boot, so it must be owned by root, \
@@ -142,15 +147,7 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
             exe.display()
         ));
     }
-    // What it keeps decides what a root server does: no one else may change it.
-    // Both folders, as either variable can move one without the other.
-    let kept = [dir(), crate::platform::data_home()];
-    if root
-        && let Some(found) = kept
-            .iter()
-            .filter_map(|d| d.ancestors().find(|p| p.exists()))
-            .find(|p| !only_root_writes(p))
-    {
+    if root && let Some(found) = changed_by_others(&kept()) {
         return Err(format!(
             "a system service runs as root, and {} can be changed by other users; \
              unset XDG_DATA_HOME and ARAKUN_SERVER_DIR, or point them at a folder only root can write to",
@@ -166,10 +163,54 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
     })
 }
 
+/// The folders whose contents decide what a root server does: its own, the
+/// data folder and the app's folder in it (the agents' adapters). Each, as
+/// either variable can move one without the others.
+fn kept() -> [PathBuf; 3] {
+    [
+        dir(),
+        crate::platform::data_home(),
+        crate::platform::app_dir(),
+    ]
+}
+
+/// The first of `folders` that someone other than root could change: the
+/// closest part of it that exists, as one that does not yet can only be made
+/// by whoever may write to that part.
+fn changed_by_others(folders: &[PathBuf]) -> Option<PathBuf> {
+    folders
+        .iter()
+        .filter_map(|d| d.ancestors().find(|p| p.exists()))
+        .find(|p| !only_root_writes(p))
+        .map(Path::to_path_buf)
+}
+
+/// `path` with its symlinks resolved, as far as it exists; the rest is joined
+/// on as it was named. None for a path with `..` in it.
+fn resolve(path: &Path) -> Option<PathBuf> {
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let found = path.ancestors().find(|p| p.exists())?;
+    let rest = path.strip_prefix(found).ok()?;
+    let resolved = crate::platform::canonicalize(found).ok()?;
+    // Joining an empty rest would add a trailing slash.
+    Some(match rest.as_os_str().is_empty() {
+        true => resolved,
+        false => resolved.join(rest),
+    })
+}
+
 /// The variables the service gets from the installing shell (read with `get`):
 /// the `PATH` its agents are found on, and what `dir()` depends on, so the
 /// service uses the folder and socket the commands look for.
-fn service_env(get: impl Fn(&str) -> Option<OsString>, root: bool) -> Vec<(String, String)> {
+fn service_env(
+    get: impl Fn(&str) -> Option<OsString>,
+    root: bool,
+) -> Result<Vec<(String, String)>, String> {
     let mut env = Vec::new();
     if let Some(path) = get("PATH") {
         // Shells that source their profile twice repeat entries.
@@ -187,18 +228,52 @@ fn service_env(get: impl Fn(&str) -> Option<OsString>, root: bool) -> Vec<(Strin
                     .filter(|c| only_root_writes(c)),
                 true => None,
             })
+            // The unit file is text: a folder it cannot name exactly is left out,
+            // not written as some other folder.
+            .filter(|d| d.to_str().is_some())
             .filter(|d| seen.insert(d.clone()));
-        if let Ok(path) = std::env::join_paths(dirs) {
-            env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+        if let Some(path) = std::env::join_paths(dirs)
+            .ok()
+            .and_then(|p| p.into_string().ok())
+        {
+            env.push(("PATH".to_string(), path));
         }
     }
     // `dir()` ignores a relative one of either, and so does the service.
     for key in ["XDG_DATA_HOME", "ARAKUN_SERVER_DIR"] {
-        if let Some(value) = get(key).filter(|v| Path::new(v).is_absolute()) {
-            env.push((key.to_string(), value.to_string_lossy().into_owned()));
-        }
+        let Some(value) = get(key).filter(|v| Path::new(v).is_absolute()) else {
+            continue;
+        };
+        let value = PathBuf::from(value);
+        // A root service keeps the folder it checked, not a name whose
+        // symlinks someone could repoint before the next start.
+        let value = if root {
+            resolve(&value)
+                .filter(|r| changed_by_others(std::slice::from_ref(r)).is_none())
+                .ok_or_else(|| {
+                    format!(
+                        "a system service runs as root, and {key}={} can be changed by other \
+                         users; unset it, or point it at a folder only root can write to",
+                        value.display()
+                    )
+                })?
+        } else {
+            value
+        };
+        env.push((key.to_string(), text(key, &value)?.to_string()));
     }
-    env
+    Ok(env)
+}
+
+/// `path` as the unit file must hold it: exactly, so not when it is not UTF-8.
+/// Written with its bad bytes replaced, it would name another folder.
+fn text<'a>(what: &str, path: &'a Path) -> Result<&'a str, String> {
+    path.to_str().ok_or_else(|| {
+        format!(
+            "{what} ({}) is not valid UTF-8, and the service file could not name it exactly",
+            path.display()
+        )
+    })
 }
 
 /// Whether this installs a system unit: Linux, as root.
@@ -337,8 +412,8 @@ fn file_path(name: &str) -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         Some(home.join(format!("Library/LaunchAgents/{name}.plist")))
     } else if cfg!(target_os = "linux") {
-        // Not XDG_CONFIG_HOME: the user's systemd reads its own environment,
-        // not this shell's, and finds ~/.config either way.
+        // Not XDG_CONFIG_HOME: the user's systemd reads its own environment, not
+        // this shell's. `start` enables the file by its path, wherever it looks.
         Some(home.join(format!(".config/systemd/user/{name}.service")))
     } else {
         None
@@ -355,7 +430,8 @@ fn file_text(spec: &Spec) -> String {
 
 /// The systemd unit: a user unit, or with `system` one for the whole machine.
 fn unit(spec: &Spec, system: bool) -> String {
-    let mut exec = vec![exec_quote(&spec.exe.to_string_lossy())];
+    // systemd expands `$` in the arguments, not in the program's own path.
+    let mut exec = vec![systemd_quote(&spec.exe.to_string_lossy())];
     exec.extend(spec.args.iter().map(|a| exec_quote(a)));
     let env: String = spec
         .env
@@ -520,9 +596,11 @@ fn start(name: &str, file: &Path) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = file;
+        // By its path: a user's systemd with its own XDG_CONFIG_HOME does not look
+        // in ~/.config, and enabling a file by path links it in where it does.
+        let _ = name;
         systemctl(&["daemon-reload"])?;
-        systemctl(&["enable", "--now", name]).map(|_| ())
+        systemctl(&["enable", "--now", &file.to_string_lossy()]).map(|_| ())
     }
 }
 
@@ -532,15 +610,26 @@ fn stop(name: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     for domain in domains() {
         let target = format!("{domain}/{name}");
-        let loaded = || manage("launchctl", &["print", &target]).is_ok();
-        if !loaded() {
+        // Only an answer of "no" is "not loaded": a launchctl that cannot be
+        // started says nothing, and the plist must stay.
+        let loaded = || {
+            crate::platform::command("launchctl")
+                .args(["print", &target])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .map_err(|e| format!("launchctl: {e}"))
+        };
+        if !loaded()? {
             continue;
         }
         manage("launchctl", &["bootout", &target])?;
         // bootout returns before the agent is gone, and a bootstrap until then
         // fails with "Input/output error".
         let asked = Instant::now();
-        while loaded() {
+        while loaded()? {
             if asked.elapsed() > START_WAIT {
                 return Err(format!("launchd still has {target} loaded"));
             }
@@ -785,8 +874,14 @@ mod tests {
         let mut spec = sample();
         spec.args.push("$HOME/${X}".into());
         spec.env.push(("A".into(), "$B".into()));
+        spec.exe = PathBuf::from("/opt/$tools/arakun-server");
         let text = unit(&spec, false);
         assert!(text.contains(" \"$$HOME/$${X}\"\n"), "{text}");
+        // The program's own path is not expanded, so it keeps its one `$`.
+        assert!(
+            text.contains("ExecStart=\"/opt/$tools/arakun-server\" "),
+            "{text}"
+        );
         assert!(text.contains("Environment=\"A=$B\"\n"), "{text}");
     }
 
@@ -803,7 +898,7 @@ mod tests {
             Some(OsString::from(value))
         };
         assert_eq!(
-            service_env(shell, false),
+            service_env(shell, false).unwrap(),
             vec![
                 ("PATH".into(), "/usr/bin:/home/me/.local/bin".into()),
                 ("XDG_DATA_HOME".into(), "/home/me/data".into()),
@@ -811,7 +906,7 @@ mod tests {
         );
         let other = |key: &str| (key == "ARAKUN_SERVER_DIR").then(|| OsString::from("/srv/a"));
         assert_eq!(
-            service_env(other, false),
+            service_env(other, false).unwrap(),
             vec![("ARAKUN_SERVER_DIR".into(), "/srv/a".into())]
         );
     }
@@ -859,6 +954,84 @@ mod tests {
         }
         let _ = std::fs::remove_dir(&mine);
         assert!(!only_root_writes(Path::new("/no/such/path")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_service_keeps_only_folders_root_alone_can_change() {
+        // The app's folder in the data folder counts, not only the data folder.
+        assert!(kept().contains(&crate::platform::app_dir()));
+        let mine = std::env::temp_dir().join(format!("arakun-kept-{}", std::process::id()));
+        std::fs::create_dir_all(&mine).unwrap();
+        if !is_root() {
+            let found = changed_by_others(&[PathBuf::from("/"), mine.join("arakun")]);
+            assert_eq!(found, Some(mine.clone()));
+            let dir = mine.display().to_string();
+            let shell = |key: &str| (key == "XDG_DATA_HOME").then(|| OsString::from(&dir));
+            assert!(service_env(shell, true).is_err());
+        }
+        let _ = std::fs::remove_dir(&mine);
+        assert_eq!(changed_by_others(&[PathBuf::from("/")]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_the_unit_cannot_hold_exactly_is_refused_not_mangled() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bad = || OsString::from_vec(b"/srv/server-\xff".to_vec());
+        let dir = |key: &str| (key == "ARAKUN_SERVER_DIR").then(bad);
+        let e = service_env(dir, false).unwrap_err();
+        assert!(
+            e.contains("ARAKUN_SERVER_DIR") && e.contains("UTF-8"),
+            "{e}"
+        );
+        // On PATH such a folder is left out; the rest stays.
+        let path = |key: &str| {
+            (key == "PATH").then(|| OsString::from_vec(b"/usr/bin:/opt/\xff/bin:/bin".to_vec()))
+        };
+        assert_eq!(
+            service_env(path, false).unwrap(),
+            vec![("PATH".into(), "/usr/bin:/bin".into())]
+        );
+    }
+
+    /// The root case from review: a UTF-8 symlink that resolves to a folder whose
+    /// name is not. What a root unit would keep is the resolved path, and that is
+    /// refused. (The ownership check needs a root-owned target, so this covers
+    /// resolving and the UTF-8 check.)
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_name_that_is_not_utf8_is_refused_once_resolved() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let base = std::env::temp_dir().join(format!("arakun-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join(std::ffi::OsStr::from_bytes(b"server-\xff"));
+        // macOS (APFS) refuses such names; Linux allows them, and CI runs there.
+        if std::fs::create_dir(&target).is_ok() {
+            let alias = base.join("alias");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            assert!(text("ARAKUN_SERVER_DIR", &alias).is_ok());
+            let resolved = resolve(&alias.join("data")).unwrap();
+            assert!(resolved.as_os_str().as_bytes().contains(&0xff));
+            let e = text("ARAKUN_SERVER_DIR", &resolved).unwrap_err();
+            assert!(e.contains("UTF-8"), "{e}");
+            let _ = std::fs::remove_file(&alias);
+            let _ = std::fs::remove_dir(&target);
+        }
+        let _ = std::fs::remove_dir(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolving_follows_what_exists_and_refuses_dot_dot() {
+        let tmp = crate::platform::canonicalize(std::env::temp_dir()).unwrap();
+        assert_eq!(
+            resolve(&std::env::temp_dir().join("arakun-not-there/server")),
+            Some(tmp.join("arakun-not-there/server"))
+        );
+        assert_eq!(resolve(Path::new("/srv/../etc")), None);
+        // A folder that exists comes back as it is, without a trailing slash.
+        assert_eq!(resolve(&std::env::temp_dir()), Some(tmp));
     }
 
     #[test]

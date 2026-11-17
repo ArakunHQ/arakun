@@ -502,6 +502,28 @@ The default `browser` feature needs CEF at build time and at run time.
   also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
   [docs/windows.md](docs/windows.md).
 
+### Browser tabs on Ubuntu
+
+Chromium keeps web pages in a sandbox built on user namespaces. Ubuntu 23.10 and later
+block those for programs that have no AppArmor profile allowing them. There Arakun does not
+start the browser, and a browser tab says why. To allow it, give `arakun` a profile like
+the one Ubuntu ships for Chrome (`/etc/apparmor.d/chrome`), then restart Arakun:
+
+```sh
+arakun=$(readlink -f "$(command -v arakun)")
+sudo tee /etc/apparmor.d/arakun >/dev/null <<EOF
+abi <abi/4.0>,
+include <tunables/global>
+
+profile arakun $arakun flags=(unconfined) {
+  userns,
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/arakun
+```
+
+The profile names the binary's path, so run this again if `arakun` moves.
+
 ### The server alone (no display)
 
 `arakun-server` is the [server](#server) built without the window. It needs none of the

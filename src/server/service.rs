@@ -143,9 +143,13 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
         ));
     }
     // What it keeps decides what a root server does: no one else may change it.
+    // Both folders, as either variable can move one without the other.
+    let kept = [dir(), crate::platform::data_home()];
     if root
-        && let Some(found) = dir().ancestors().find(|p| p.exists())
-        && !only_root_writes(found)
+        && let Some(found) = kept
+            .iter()
+            .filter_map(|d| d.ancestors().find(|p| p.exists()))
+            .find(|p| !only_root_writes(p))
     {
         return Err(format!(
             "a system service runs as root, and {} can be changed by other users; \

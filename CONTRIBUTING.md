@@ -21,8 +21,10 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
 
 ## Contributor License Agreement
 
-First-time contributors are asked to sign our [CLA](CLA.md). A bot comments on
-your first pull request, and signing is a single reply:
+First-time contributors are asked to sign our [CLA](CLA.md). That includes anyone
+named in a `Co-authored-by` line, except coding agents such as Claude Code. A bot
+comments on your first pull request, and signing is a reply with only this
+sentence:
 
 ```
 I have read the CLA Document and I hereby sign the CLA

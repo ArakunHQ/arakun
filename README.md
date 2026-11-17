@@ -88,7 +88,8 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   notifications are marked read, and the environment's sessions from before the merge
   stop asking for you; agents that are idle and not open in a tab stop. The GitHub tab
   also marks read the notifications of every merged pull request it reads. Each merge is
-  settled once, within a week of it, and noted in `~/.local/share/arakun/settled.json`.
+  settled once, within a week of it; threads that fail to resolve are tried again at the
+  next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.
   On by default; turn off Settings › Branches › Settle threads after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on

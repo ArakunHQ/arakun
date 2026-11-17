@@ -86,6 +86,11 @@ impl ItemRef {
         (at == host || at.strip_prefix("www.") == Some(host.as_str())).then_some(item)
     }
 
+    /// The host of a web or API address, with the item it names.
+    pub fn host_and_item(url: &str) -> Option<(String, Self)> {
+        Self::split_url(url)
+    }
+
     fn split_url(url: &str) -> Option<(String, Self)> {
         let url = url.trim();
         let url = url
@@ -544,19 +549,19 @@ fn fetch_thread_states(item: &ItemRef) -> Result<HashMap<u64, ThreadState>, Prob
     ))
 }
 
-/// The id of every review thread still open, to resolve them. Only the first
-/// 100 threads are read: the merge counts as settled anyway, and a pull
-/// request with more is rare.
-const OPEN_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){\
-pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved}}}}}";
+/// One page of review threads, with where the next page starts.
+const OPEN_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){\
+pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
 
 const RESOLVE_THREAD: &str =
     "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}";
 
-/// The ids of the threads in an answer to `OPEN_THREADS_QUERY` that aren't resolved.
-fn open_thread_ids(answer: &Value) -> Vec<String> {
-    answer
-        .pointer("/data/repository/pullRequest/reviewThreads/nodes")
+/// The ids of the threads in one answer to `OPEN_THREADS_QUERY` that aren't
+/// resolved, and the cursor of the next page when there is one.
+fn open_thread_ids(answer: &Value) -> (Vec<String>, Option<String>) {
+    let threads = answer.pointer("/data/repository/pullRequest/reviewThreads");
+    let ids = threads
+        .and_then(|t| t.get("nodes"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -566,35 +571,73 @@ fn open_thread_ids(answer: &Value) -> Vec<String> {
                 .unwrap_or(false)
         })
         .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect()
+        .collect();
+    let next = threads
+        .and_then(|t| t.get("pageInfo"))
+        .filter(|p| p.get("hasNextPage").and_then(Value::as_bool) == Some(true))
+        .and_then(|p| p.get("endCursor"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    (ids, next)
 }
 
-/// Resolves every review thread still open on a pull request, for one that was
-/// merged. Returns how many it resolved; the first failure stops it.
-pub fn resolve_open_threads(item: &ItemRef) -> Result<usize, Problem> {
+/// Resolves every review thread still open on a merged pull request at
+/// `host` (`github.com`, or an Enterprise host). Returns how many it resolved;
+/// the first failure stops it.
+pub fn resolve_open_threads(host: &str, item: &ItemRef) -> Result<usize, Problem> {
+    resolve_open_threads_with(host, item, super::read_only(), super::gh_out)
+}
+
+/// The most pages of threads read: 5,000 threads.
+const THREAD_PAGES_MAX: usize = 50;
+
+fn resolve_open_threads_with(
+    host: &str,
+    item: &ItemRef,
+    read_only: bool,
+    mut run: impl FnMut(&[&str]) -> Result<Vec<u8>, Problem>,
+) -> Result<usize, Problem> {
     // A test build shares the person's real gh session: it must not change
     // threads on GitHub.
-    if super::read_only() {
+    if read_only {
         return Ok(0);
     }
     let (owner, name) = item.repo.split_once('/').unwrap_or((&item.repo, ""));
-    let out = super::gh_out(&[
-        "api",
-        "graphql",
-        "-f",
-        &format!("query={OPEN_THREADS_QUERY}"),
-        "-f",
-        &format!("owner={owner}"),
-        "-f",
-        &format!("name={name}"),
-        "-F",
-        &format!("number={}", item.number),
-    ])?;
-    let ids = open_thread_ids(&serde_json::from_slice(&out).map_err(unexpected)?);
+    let mut ids = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..THREAD_PAGES_MAX {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".into(),
+            "--hostname".into(),
+            host.into(),
+            "-f".into(),
+            format!("query={OPEN_THREADS_QUERY}"),
+            "-f".into(),
+            format!("owner={owner}"),
+            "-f".into(),
+            format!("name={name}"),
+            "-F".into(),
+            format!("number={}", item.number),
+        ];
+        if let Some(a) = &after {
+            args.extend(["-f".into(), format!("after={a}")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = run(&args)?;
+        let (page, next) = open_thread_ids(&serde_json::from_slice(&out).map_err(unexpected)?);
+        ids.extend(page);
+        match next {
+            Some(n) => after = Some(n),
+            None => break,
+        }
+    }
     for id in &ids {
-        super::gh_out(&[
+        run(&[
             "api",
             "graphql",
+            "--hostname",
+            host,
             "-f",
             &format!("query={RESOLVE_THREAD}"),
             "-f",
@@ -3057,17 +3100,56 @@ mod tests {
     }
 
     #[test]
-    fn only_open_threads_are_resolved() {
-        let answer: Value = serde_json::from_str(
-            r#"{"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-              {"id": "T1", "isResolved": true},
-              {"id": "T2", "isResolved": false},
-              {"id": "T3"}
-            ]}}}}}"#,
-        )
+    fn only_open_threads_are_resolved_on_every_page() {
+        let page = |nodes: &str, next: Option<&str>| {
+            let info = match next {
+                Some(c) => format!(r#"{{"hasNextPage": true, "endCursor": "{c}"}}"#),
+                None => r#"{"hasNextPage": false, "endCursor": null}"#.to_string(),
+            };
+            format!(
+                r#"{{"data": {{"repository": {{"pullRequest": {{"reviewThreads": {{"pageInfo": {info}, "nodes": [{nodes}]}}}}}}}}}}"#
+            )
+        };
+        let one = page(
+            r#"{"id": "T1", "isResolved": true}, {"id": "T2", "isResolved": false}"#,
+            Some("c1"),
+        );
+        let two = page(r#"{"id": "T3"}"#, None);
+        let item = ItemRef::parse("o/r#5").unwrap();
+        let mut calls: Vec<Vec<String>> = Vec::new();
+        let n = resolve_open_threads_with("ghe.corp", &item, false, |args| {
+            calls.push(args.iter().map(|a| a.to_string()).collect());
+            let after = args.contains(&"after=c1");
+            Ok(match calls.len() {
+                1 => one.clone().into_bytes(),
+                2 if after => two.clone().into_bytes(),
+                _ => b"{}".to_vec(),
+            })
+        })
         .unwrap();
-        assert_eq!(open_thread_ids(&answer), ["T2", "T3"]);
-        assert!(open_thread_ids(&serde_json::json!({"data": null})).is_empty());
+        assert_eq!(n, 2);
+        // Two pages read, then T2 and T3 resolved, all on the pull request's host.
+        assert_eq!(calls.len(), 4);
+        assert!(calls.iter().all(|c| c[2..4] == ["--hostname", "ghe.corp"]));
+        assert!(calls[2].iter().any(|a| a == "id=T2"));
+        assert!(calls[3].iter().any(|a| a == "id=T3"));
+        assert!(
+            open_thread_ids(&serde_json::json!({"data": null}))
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_test_build_resolves_nothing() {
+        let item = ItemRef::parse("o/r#5").unwrap();
+        let mut ran = false;
+        let n = resolve_open_threads_with("github.com", &item, true, |_| {
+            ran = true;
+            Ok(Vec::new())
+        });
+        assert_eq!(n, Ok(0));
+        assert!(!ran);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! (`crate::settle`): its review threads resolved, its notifications read, and
 //! the environment's sessions no longer asking for attention.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -14,13 +15,35 @@ use crate::settle::{self, Book, Merged};
 
 /// Each check asks GitHub once per environment: not more often than this.
 const EVERY: Duration = Duration::from_secs(180);
+/// Checks that try again to resolve a merge's threads before giving up on them.
+const TRIES: u32 = 5;
 
 #[derive(Default)]
 pub(super) struct Watch {
     last: Option<Instant>,
+    /// A check is asking GitHub or resolving threads.
     busy: bool,
-    /// Read from disk on the first check.
+    /// Read from disk on the first check. A merge goes in once its threads are
+    /// resolved, or once [`TRIES`] checks failed to.
     book: Option<Book>,
+    /// Merges whose sessions and notifications were settled in this run, while
+    /// their threads may still be waiting for another try.
+    local: HashSet<String>,
+    /// Failed tries to resolve each merge's threads.
+    tries: HashMap<String, u32>,
+}
+
+impl Watch {
+    /// After a try to resolve `url`'s threads: whether the merge is done with.
+    fn tried(&mut self, url: &str, ok: bool) -> bool {
+        if ok {
+            self.tries.remove(url);
+            return true;
+        }
+        let n = self.tries.entry(url.to_string()).or_default();
+        *n += 1;
+        *n >= TRIES
+    }
 }
 
 impl Shell {
@@ -50,58 +73,88 @@ impl Shell {
             let found: Vec<(PathBuf, Merged)> = cx
                 .background_spawn(async move {
                     envs.into_iter()
-                        .filter_map(|(path, branch)| {
-                            settle::merged_pr(&path, &branch).map(|m| (path, m))
+                        .flat_map(|(path, branch)| {
+                            settle::merged_prs(&path, &branch)
+                                .into_iter()
+                                .map(move |m| (path.clone(), m))
                         })
                         .collect()
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                this.settle.busy = false;
-                // Turned off while GitHub was asked.
-                if !settle::on() {
-                    return;
-                }
-                let now = unix_now();
-                let book = this.settle.book.get_or_insert_with(Book::load);
-                let fresh: Vec<(PathBuf, Merged)> = found
+            let Ok(threads) = this.update(cx, |this, cx| this.settle_found(found, cx)) else {
+                return;
+            };
+            let results: Vec<(String, bool)> = cx
+                .background_spawn(async move {
+                    threads
+                        .into_iter()
+                        .map(|(url, host, item)| {
+                            let done = pr::resolve_open_threads(&host, &item);
+                            if let Err(e) = &done {
+                                eprintln!(
+                                    "arakun: could not resolve the threads of {}#{}: {}",
+                                    item.repo,
+                                    item.number,
+                                    e.text()
+                                );
+                            }
+                            (url, done.is_ok())
+                        })
+                        .collect()
+                })
+                .await;
+            let _ = this.update(cx, |this, _| {
+                let w = &mut this.settle;
+                w.busy = false;
+                let done: Vec<String> = results
                     .into_iter()
-                    .filter(|(_, m)| m.recent(now) && !book.has(&m.url))
+                    .filter_map(|(url, ok)| w.tried(&url, ok).then_some(url))
                     .collect();
-                if fresh.is_empty() {
-                    return;
-                }
-                for (_, m) in &fresh {
-                    book.add(&m.url);
-                }
-                book.store();
-                for (path, m) in fresh {
-                    this.settle_merge(&path, &m, cx);
+                if let Some(book) = w.book.as_mut().filter(|_| !done.is_empty()) {
+                    for url in &done {
+                        book.add(url);
+                    }
+                    book.store();
                 }
             });
         })
         .detach();
     }
 
-    fn settle_merge(&mut self, path: &Path, m: &Merged, cx: &mut Context<Self>) {
-        self.settle_sessions(path, m.merged_secs(), cx);
-        let Some(item) = pr::ItemRef::from_url(&m.url) else {
-            return;
-        };
-        let key = queue::key_of(&item);
-        self.github.update(cx, |g, cx| g.settle_merged(&key, cx));
-        cx.background_spawn(async move {
-            if let Err(e) = pr::resolve_open_threads(&item) {
-                eprintln!(
-                    "arakun: could not resolve the threads of {}#{}: {}",
-                    item.repo,
-                    item.number,
-                    e.text()
-                );
+    /// Settles here what GitHub found merged and not settled yet, and returns
+    /// the threads still to resolve: (pull request URL, host, item).
+    fn settle_found(
+        &mut self,
+        found: Vec<(PathBuf, Merged)>,
+        cx: &mut Context<Self>,
+    ) -> Vec<(String, String, pr::ItemRef)> {
+        // Turned off while GitHub was asked.
+        if !settle::on() {
+            self.settle.busy = false;
+            return Vec::new();
+        }
+        let now = unix_now();
+        let book = self.settle.book.get_or_insert_with(Book::load);
+        let fresh: Vec<(PathBuf, Merged)> = found
+            .into_iter()
+            .filter(|(_, m)| m.recent(now) && !book.has(&m.url))
+            .collect();
+        let mut threads = Vec::new();
+        for (path, m) in fresh {
+            let Some((host, item)) = pr::ItemRef::host_and_item(&m.url) else {
+                continue;
+            };
+            if self.settle.local.insert(m.url.clone()) {
+                self.settle_sessions(&path, m.merged_secs(), cx);
+                let key = queue::key_of(&item);
+                self.github.update(cx, |g, cx| g.settle_merged(&key, cx));
+                cx.notify();
             }
-        })
-        .detach();
-        cx.notify();
+            if !threads.iter().any(|(u, _, _)| *u == m.url) {
+                threads.push((m.url, host, item));
+            }
+        }
+        threads
     }
 
     /// The environment's sessions from before the merge stop asking for
@@ -149,6 +202,17 @@ fn settled_status(status: Status, updated: u64, merged_at: u64, open: bool) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_merge_is_done_once_resolved_or_after_its_last_try() {
+        let mut w = Watch::default();
+        for _ in 1..TRIES {
+            assert!(!w.tried("u", false));
+        }
+        assert!(w.tried("u", false));
+        assert!(w.tried("v", true));
+        assert!(!w.tries.contains_key("v"));
+    }
 
     #[test]
     fn only_sessions_from_before_the_merge_settle() {

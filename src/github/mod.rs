@@ -4,7 +4,7 @@
 //! rule and the watch list (`github.json` next to arakun's state) decide which
 //! of those deserve a notice.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::pin;
@@ -35,6 +35,8 @@ const POLL_IDLE: Duration = Duration::from_secs(300);
 const DETAILS_AT_ONCE: usize = 3;
 /// How far back a mention still counts.
 const MENTIONS_DAYS: i32 = 30;
+/// Merged pull requests whose notifications are kept settled.
+const MERGED_MAX: usize = 200;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct Notification {
@@ -854,6 +856,9 @@ pub struct GitHub {
     poll_wake: mpsc::UnboundedSender<()>,
     /// People shown elsewhere in the tab (the agent's cards).
     extra_people: Vec<String>,
+    /// Merged pull requests (`queue::key_of`) whose notifications are marked
+    /// read as they come, newest last.
+    merged: VecDeque<String>,
     _poll: Task<()>,
 }
 
@@ -930,6 +935,7 @@ impl GitHub {
             avatars_busy: false,
             poll_wake,
             extra_people: Vec::new(),
+            merged: VecDeque::new(),
             _poll: poll,
         }
     }
@@ -1108,6 +1114,10 @@ impl GitHub {
                             this.all_loaded = true;
                             this.settle_all();
                         }
+                        // A merged pull request's news is settled, not shown.
+                        this.settle_all_merged(cx);
+                        let mut fresh = fresh;
+                        fresh.retain(|n| this.unread.iter().any(|u| u.id == n.id));
                         if !fresh.is_empty() {
                             cx.emit(GitHubEvent::New(fresh));
                         }
@@ -1571,11 +1581,32 @@ impl GitHub {
 
     /// Marks read the unread notifications of a merged pull request (`key`,
     /// as `queue::key_of`), when settling after a merge is on.
+    /// Kept, so the next inbox reads mark again a notification whose mark
+    /// failed, or one that comes after.
     pub fn settle_merged(&mut self, key: &str, cx: &mut Context<Self>) {
         if !crate::settle::on() {
             return;
         }
+        if !self.merged.iter().any(|k| k == key) {
+            self.merged.push_back(key.to_string());
+            while self.merged.len() > MERGED_MAX {
+                self.merged.pop_front();
+            }
+        }
         let ids = notifications_of(&self.unread, key);
+        self.mark_all_read(ids, cx);
+    }
+
+    /// Marks read the unread notifications of every merged pull request seen.
+    fn settle_all_merged(&mut self, cx: &mut Context<Self>) {
+        if !crate::settle::on() {
+            return;
+        }
+        let ids: Vec<String> = self
+            .merged
+            .iter()
+            .flat_map(|k| notifications_of(&self.unread, k))
+            .collect();
         self.mark_all_read(ids, cx);
     }
 

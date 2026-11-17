@@ -859,9 +859,8 @@ impl GitHubView {
             return None;
         }
         let mut list: Vec<(Tab, &str, Option<String>)> = Vec::new();
-        if let Some(b) = board {
+        if board.is_some() {
             list.push((Tab::Pilot, "Qué hizo pilot", None));
-            let _ = b;
         }
         let talk = pull.map(|p| (p.comments.len() + p.reviews.len()).to_string());
         list.push((Tab::Timeline, "Conversación", talk));
@@ -981,8 +980,8 @@ impl GitHubView {
     /// "Comentar"), or a task for pilot on the user's own.
     fn render_composer(&self, board: &Option<BoardPr>, cx: &mut Context<Self>) -> AnyElement {
         let sending = self.busy == Some("comment");
-        let can_task = self.task_check(board, cx).is_ok();
         let why_not = self.task_check(board, cx).err();
+        let can_task = why_not.is_none();
         div()
             .flex()
             .flex_col()

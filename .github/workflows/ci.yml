@@ -323,14 +323,14 @@ jobs:
 
   # macOS builds other code (cfg(target_os = "macos"), no /proc, BSD tools), so
   # Linux passing says little about it. No runner-usage step: it supports only
-  # Linux and Windows.
+  # Linux and Windows, and Depot's macOS runners come in one size (8 CPUs).
   clippy-macos:
     name: Clippy (macOS)
     needs: changes
     permissions:
       contents: read
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: macos-latest
+    runs-on: depot-macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -354,7 +354,7 @@ jobs:
     permissions:
       contents: read
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: macos-latest
+    runs-on: depot-macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

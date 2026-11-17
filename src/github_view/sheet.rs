@@ -268,9 +268,18 @@ impl GitHubView {
         if let (Some(_), None, Some(p)) = (&board, &details, &problem) {
             top = top.child(self.detail_problem(item.as_ref(), p, cx));
         }
-        if details.is_some() || board.is_some() {
-            top = top.child(self.details_toggle(folded, short, cx));
-        }
+        // Under the details' scroll, not in it: unfolded ones can be folded
+        // again without scrolling to their end.
+        let toggle = (details.is_some() || board.is_some()).then(|| {
+            div()
+                .flex()
+                .flex_none()
+                .px(crate::ui::sp(28.))
+                // Open details scroll and end mid-row: keep the toggle off them.
+                .when(!folded, |d| d.pt(crate::ui::sp(10.)))
+                .pb(crate::ui::sp(12.))
+                .child(self.details_toggle(folded, short, cx))
+        });
         let content = div()
             .flex()
             .flex_col()
@@ -287,6 +296,7 @@ impl GitHubView {
                     .overflow_y_scroll()
                     .child(top),
             )
+            .children(toggle)
             .children(self.sheet_tabs(&board, details.as_ref(), cx))
             .child(super::Pane::cached(
                 &self.body_pane,

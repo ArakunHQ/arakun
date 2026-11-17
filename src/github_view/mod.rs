@@ -203,6 +203,12 @@ fn comment_send(
     }
 }
 
+/// Whether two references name the same item. A queue refresh may read it
+/// again under another repo case or kind.
+fn same_item(a: Option<&ItemRef>, b: Option<&ItemRef>) -> bool {
+    a.map(crate::github::queue::key_of) == b.map(crate::github::queue::key_of)
+}
+
 /// The note for a comment held back while the write `what` runs.
 fn busy_note(what: &str) -> String {
     let what = match what {
@@ -1000,7 +1006,9 @@ impl GitHubView {
             // The input stays usable while gh works: keep anything typed since,
             // or meant for another item.
             move |this, cx| {
-                if this.item() == on && this.comment.read(cx).text() == text {
+                if same_item(this.item().as_ref(), on.as_ref())
+                    && this.comment.read(cx).text() == text
+                {
                     this.comment.update(cx, |i, cx| i.set_text("", cx))
                 } else if let Some(on) = &on {
                     // Put away when another item was picked: it was sent.
@@ -2777,6 +2785,11 @@ mod tests {
             comment_send("hi", None, Some(&a), None),
             CommentSend::NoItem
         );
+        // Read again while the comment was sent: the input still clears.
+        assert!(same_item(Some(&a), Some(&again)));
+        assert!(!same_item(Some(&a), Some(&b)));
+        assert!(!same_item(Some(&a), None));
+        assert!(same_item(None, None));
         assert!(busy_note("comment").contains("the last comment"));
         assert!(busy_note("merge").contains("wasn't sent"));
     }

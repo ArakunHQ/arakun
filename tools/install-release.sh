@@ -31,6 +31,11 @@ latest_tag() {
   printf '%s\n' "$tag"
 }
 
+# The checksum SHA256SUMS ($2) lists for the file $1, or nothing.
+listed() {
+  awk -v f="$1" '$2 == f || $2 == "*" f { print $1 }' "$2"
+}
+
 sha256() {
   if command -v sha256sum >/dev/null; then
     sha256sum "$1" | cut -d' ' -f1
@@ -83,6 +88,8 @@ main() {
         arch=arm64
       fi
       [ "$arch" = arm64 ] || die "Intel Macs have no release build; build from source (see README.md)"
+      # The disk image, or the archive for a release from before there was one.
+      command -v tar >/dev/null || die "tar is needed"
       platform=macos-arm64 ext=dmg
       ;;
     Linux)
@@ -112,16 +119,22 @@ main() {
   tmp=$(mktemp -d)
   mnt=
   # Detaches the disk image too, if the script stops while it is attached.
-  trap 'if [ -n "$mnt" ]; then hdiutil detach -quiet "$mnt" || true; fi; rm -rf "$tmp"' EXIT
+  trap 'if [ -n "$mnt" ]; then hdiutil detach -quiet -force "$mnt" || true; fi; rm -rf "$tmp"' EXIT
+
+  # First, since it says which files the release has.
+  curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" ||
+    die "could not download $base/SHA256SUMS (is there a release $version?)"
+  want=$(listed "$file" "$tmp/SHA256SUMS")
+  # Releases up to v0.2.1 have the macOS app in a tar.gz and no disk image.
+  if [ -z "$want" ] && [ "$ext" = dmg ]; then
+    ext=tar.gz file=$name.tar.gz
+    want=$(listed "$file" "$tmp/SHA256SUMS")
+  fi
+  [ -n "$want" ] || die "$version has no $platform build (it is not listed in SHA256SUMS)"
 
   say "downloading Arakun $version for $platform"
   curl -fSL --progress-bar -o "$tmp/$file" "$base/$file" ||
-    die "could not download $base/$file (does $version have a $platform build?)"
-  curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" ||
-    die "could not download $base/SHA256SUMS"
-
-  want=$(awk -v f="$file" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")
-  [ -n "$want" ] || die "$file is not listed in SHA256SUMS"
+    die "could not download $base/$file"
   have=$(sha256 "$tmp/$file")
   [ "$have" = "$want" ] || die "checksum mismatch for $file (expected $want, got $have)"
 
@@ -129,18 +142,31 @@ main() {
   mkdir -p "$bindir"
 
   if [ "$platform" = macos-arm64 ]; then
-    mnt=$tmp/mnt
-    hdiutil attach -quiet -readonly -nobrowse -noautoopen -mountpoint "$mnt" "$tmp/$file" ||
-      die "could not open $file"
-    [ -d "$mnt/Arakun.app" ] || die "the disk image has no Arakun.app"
     apps=$HOME/Applications
     app=$apps/Arakun.app
     mkdir -p "$apps"
-    # Copied next to the old app first, so the swap is two renames on one disk.
+    # Put next to the old app first, so the swap is two renames on one disk.
     rm -rf "$apps/.Arakun.app.new"
-    ditto "$mnt/Arakun.app" "$apps/.Arakun.app.new"
-    hdiutil detach -quiet "$mnt" || true
-    mnt=
+    if [ "$ext" = dmg ]; then
+      hdiutil attach -quiet -readonly -nobrowse -noautoopen -mountpoint "$tmp/mnt" "$tmp/$file" ||
+        die "could not open $file"
+      mnt=$tmp/mnt
+      [ -d "$mnt/Arakun.app" ] || die "the disk image has no Arakun.app"
+      ditto "$mnt/Arakun.app" "$apps/.Arakun.app.new"
+      # Before the old app goes: a failure here leaves it in place. The image is
+      # read-only, so forcing it loses nothing. $mnt stays set on failure, and the
+      # EXIT trap tries once more.
+      hdiutil detach -quiet "$mnt" || hdiutil detach -quiet -force "$mnt" || {
+        rm -rf "$apps/.Arakun.app.new"
+        die "could not detach the disk image at $mnt; nothing was installed"
+      }
+      mnt=
+    else
+      mkdir "$tmp/x"
+      tar -C "$tmp/x" -xzf "$tmp/$file"
+      [ -d "$tmp/x/$name/Arakun.app" ] || die "the archive has no Arakun.app"
+      mv "$tmp/x/$name/Arakun.app" "$apps/.Arakun.app.new"
+    fi
     rm -rf "$app"
     mv "$apps/.Arakun.app.new" "$app"
     ln -sfn "$app/Contents/MacOS/arakun" "$bindir/arakun"

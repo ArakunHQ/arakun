@@ -53,7 +53,7 @@ pub(super) struct MarketState {
     pub(super) rows: Rows,
     /// What the rows were laid out for, how many there were, and whether the
     /// top row (notes, the needs-you banner) was one of them.
-    rows_for: std::cell::RefCell<Option<(RowsKey, usize, bool)>>,
+    rows_for: std::cell::RefCell<Synced>,
     pub(super) last_width: std::cell::Cell<f32>,
     pub(super) check_pending: std::cell::Cell<bool>,
 }
@@ -577,7 +577,7 @@ impl ExtensionsView {
         } else {
             0
         };
-        let top = self.render_notes().is_some() || self.needy().next().is_some();
+        let top = self.top_signature();
 
         let main: AnyElement = if loading || items.is_empty() {
             // No list now: the next one starts over, even for the same search.
@@ -614,7 +614,7 @@ impl ExtensionsView {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .children(top.then(|| self.render_top(cx)))
+                .children(top.is_some().then(|| self.render_top(cx)))
                 .child(self.render_head(items.len(), loading, cx))
                 .child(
                     div()
@@ -627,7 +627,7 @@ impl ExtensionsView {
                 .into_any_element()
         } else {
             let mut rows = Vec::new();
-            if top {
+            if top.is_some() {
                 rows.push(Row::Top);
             }
             if featured > 0 {
@@ -685,7 +685,7 @@ impl ExtensionsView {
             .children(detail)
     }
 
-    fn sync_rows(&self, key: RowsKey, total: usize, top: bool) {
+    fn sync_rows(&self, key: RowsKey, total: usize, top: Option<u64>) {
         sync_rows(
             &self.ms.rows.0,
             &mut self.ms.rows_for.borrow_mut(),
@@ -784,6 +784,24 @@ impl ExtensionsView {
                 })
                 .into_any_element(),
         }
+    }
+
+    /// What the top row says, as a hash, or None when there is no top row:
+    /// when it changes the row is measured again.
+    fn top_signature(&self) -> Option<u64> {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let first = self.needy().next();
+        if self.error.is_none() && self.notice.is_none() && first.is_none() {
+            return None;
+        }
+        let mut h = DefaultHasher::new();
+        self.error.hash(&mut h);
+        self.notice.hash(&mut h);
+        first
+            .map(|s| (&s.name, health_label(&s.health)))
+            .hash(&mut h);
+        self.needy().count().hash(&mut h);
+        Some(h.finish())
     }
 
     /// Claude Code's MCP servers that need you, as last read.
@@ -1513,27 +1531,29 @@ pub(super) struct RowsKey {
     featured: usize,
 }
 
+/// What the rows were last laid out for: the key, how many there were, and
+/// the top row's `top_signature` (None without one).
+type Synced = Option<(RowsKey, usize, Option<u64>)>;
+
 /// Keeps the list's rows in step: a new filter starts over at the top. The top
 /// row coming or going (a notice after Install, the banner) and "Load more"
-/// only splice, so the list keeps its place.
-fn sync_rows(
-    list: &ListState,
-    last: &mut Option<(RowsKey, usize, bool)>,
-    key: RowsKey,
-    total: usize,
-    top: bool,
-) {
+/// only splice, and a top row that says something else is measured again, so
+/// the list keeps its place.
+fn sync_rows(list: &ListState, last: &mut Synced, key: RowsKey, total: usize, top: Option<u64>) {
     match last.as_ref() {
         Some((k, n, had_top)) if *k == key => {
             let mut n = *n;
-            if *had_top != top {
-                if top {
+            match (had_top, top) {
+                (None, Some(_)) => {
                     list.splice(0..0, 1);
                     n += 1;
-                } else {
+                }
+                (Some(_), None) => {
                     list.splice(0..1, 0);
                     n -= 1;
                 }
+                (Some(a), Some(b)) if *a != b => list.remeasure_items(0..1),
+                _ => {}
             }
             if n != total {
                 let keep = n.min(total).saturating_sub(1);
@@ -1546,7 +1566,7 @@ fn sync_rows(
 }
 
 /// Drops what the rows were laid out for, so the next `sync_rows` resets.
-fn forget_rows(last: &mut Option<(RowsKey, usize, bool)>) {
+fn forget_rows(last: &mut Synced) {
     *last = None;
 }
 
@@ -1998,7 +2018,7 @@ mod tests {
     }
 
     /// The list scrolled to row `ix`, its rows synced once.
-    fn scrolled(total: usize, top: bool, ix: usize) -> (ListState, Option<(RowsKey, usize, bool)>) {
+    fn scrolled(total: usize, top: Option<u64>, ix: usize) -> (ListState, Synced) {
         let list = ListState::new(0, ListAlignment::Top, px(400.));
         let mut last = None;
         sync_rows(&list, &mut last, key(""), total, top);
@@ -2012,8 +2032,8 @@ mod tests {
     #[test]
     fn a_notice_appearing_keeps_the_place() {
         // Install on a card further down clears the notice, then sets one.
-        let (list, mut last) = scrolled(12, false, 7);
-        sync_rows(&list, &mut last, key(""), 13, true);
+        let (list, mut last) = scrolled(12, None, 7);
+        sync_rows(&list, &mut last, key(""), 13, Some(1));
         assert_eq!(list.item_count(), 13);
         assert_eq!(
             list.logical_scroll_top().item_ix,
@@ -2021,15 +2041,15 @@ mod tests {
             "same card, one row lower"
         );
         assert_eq!(list.logical_scroll_top().offset_in_item, px(30.));
-        sync_rows(&list, &mut last, key(""), 12, false);
+        sync_rows(&list, &mut last, key(""), 12, None);
         assert_eq!(list.item_count(), 12);
         assert_eq!(list.logical_scroll_top().item_ix, 7);
     }
 
     #[test]
     fn load_more_keeps_the_place() {
-        let (list, mut last) = scrolled(10, true, 6);
-        sync_rows(&list, &mut last, key(""), 15, true);
+        let (list, mut last) = scrolled(10, Some(1), 6);
+        sync_rows(&list, &mut last, key(""), 15, Some(1));
         assert_eq!(list.item_count(), 15);
         assert_eq!(list.logical_scroll_top().item_ix, 6);
     }
@@ -2038,16 +2058,26 @@ mod tests {
     fn a_search_back_from_no_results_starts_at_the_top() {
         // Scrolled down, a search with no matches draws no list, then the
         // first words come back: same key, but not the old place.
-        let (list, mut last) = scrolled(10, false, 6);
+        let (list, mut last) = scrolled(10, None, 6);
         forget_rows(&mut last);
-        sync_rows(&list, &mut last, key(""), 10, false);
+        sync_rows(&list, &mut last, key(""), 10, None);
         assert_eq!(list.logical_scroll_top().item_ix, 0);
     }
 
     #[test]
+    fn a_new_notice_beside_the_banner_keeps_the_place() {
+        // The banner stays; Install adds a notice above it, so only its height changes.
+        let (list, mut last) = scrolled(10, Some(1), 6);
+        sync_rows(&list, &mut last, key(""), 10, Some(2));
+        assert_eq!(list.item_count(), 10);
+        assert_eq!(list.logical_scroll_top().item_ix, 6);
+        assert_eq!(last.as_ref().map(|l| l.2), Some(Some(2)));
+    }
+
+    #[test]
     fn a_new_search_starts_at_the_top() {
-        let (list, mut last) = scrolled(10, false, 6);
-        sync_rows(&list, &mut last, key("github"), 4, false);
+        let (list, mut last) = scrolled(10, None, 6);
+        sync_rows(&list, &mut last, key("github"), 4, None);
         assert_eq!(list.item_count(), 4);
         assert_eq!(list.logical_scroll_top().item_ix, 0);
     }

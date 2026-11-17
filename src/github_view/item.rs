@@ -48,7 +48,7 @@ pub(super) fn check_color(s: CheckState) -> Hsla {
     match s {
         CheckState::Passed => theme::success().into(),
         CheckState::Failed => theme::error().into(),
-        CheckState::Running => theme::accent(),
+        CheckState::Running => theme::working(),
         CheckState::Skipped => theme::border_strong(),
     }
 }
@@ -504,8 +504,8 @@ impl GitHubView {
             let busy = self.busy.is_some();
             return Some(
                 strip()
-                    .bg(theme::accent().opacity(0.06))
-                    .child(icon("alert-circle", 14.).text_color(theme::accent()))
+                    .bg(theme::needs_you().opacity(0.06))
+                    .child(icon("alert-circle", 14.).text_color(theme::needs_you()))
                     .child(
                         div()
                             .flex_none()
@@ -636,7 +636,7 @@ impl GitHubView {
                     .child(
                         ui::key_pill(
                             "gh-notice-ask",
-                            Some(("sparkles", Some(theme::accent()))),
+                            Some(("sparkles", Some(theme::text_subtle()))),
                             "Hand to an agent",
                             None,
                             PillKind::Normal,
@@ -690,8 +690,8 @@ impl GitHubView {
                     .items_center()
                     .gap(crate::ui::sp(8.))
                     .min_w_0()
-                    .text_color(theme::accent())
-                    .child(dot(theme::accent()))
+                    .text_color(theme::needs_you())
+                    .child(dot(theme::needs_you()))
                     .child(div().truncate().child(format!("You · {why}")))
             }
             WaitingOn::Author => div()
@@ -1064,7 +1064,7 @@ impl GitHubView {
         .when_some(why_not.clone(), |b, why| b.tooltip(ui::tip_text(why)));
         let agent = ui::key_pill(
             "gh-agent",
-            Some(("sparkles", Some(theme::accent()))),
+            Some(("sparkles", Some(theme::text_subtle()))),
             "Review with agent",
             Some("R"),
             PillKind::Normal,
@@ -1477,7 +1477,7 @@ fn reviewer_look(s: pr::ReviewerState) -> (&'static str, Hsla) {
         pr::ReviewerState::Approved => ("tick02", theme::success().into()),
         pr::ReviewerState::ChangesRequested => ("alert-circle", theme::error().into()),
         pr::ReviewerState::Commented => ("comment01", theme::text_muted()),
-        pr::ReviewerState::Requested => ("clock01", theme::accent()),
+        pr::ReviewerState::Requested => ("clock01", theme::needs_you()),
     }
 }
 

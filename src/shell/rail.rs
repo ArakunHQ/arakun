@@ -9,8 +9,8 @@ const ENV_GAP: f32 = 2.;
 pub(super) fn status_dot(status: Status) -> impl IntoElement {
     let color = match status {
         Status::Idle => theme::mix(0.25),
-        Status::Working => theme::accent(),
-        Status::NeedsInput => theme::warn().into(),
+        Status::Working => theme::working(),
+        Status::NeedsInput => theme::needs_you(),
         Status::Error => theme::diff_del().into(),
     };
     div().size(px(6.)).rounded_full().bg(color).flex_none()

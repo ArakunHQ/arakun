@@ -126,10 +126,10 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
         .justify_center()
         .size(px(size))
         .rounded_full()
-        .bg(theme::accent())
+        .bg(theme::fill_selected())
         .text_size(px(size * 0.45))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme::on_accent())
+        .text_color(theme::text())
         .child(letter)
 }
 
@@ -152,17 +152,18 @@ impl Shell {
         };
         match view {
             View::Inbox => {
-                let waiting = self
-                    .inbox_items()
-                    .iter()
-                    .filter(|i| i.status != Status::Working)
-                    .count();
+                let items = self.inbox_items();
+                let count = |s| items.iter().filter(|i| i.status == s).count();
+                let (waiting, failed) = (count(Status::NeedsInput), count(Status::Error));
                 // A session waiting on the user outranks notices read later.
-                let unseen = self.unseen_notices();
+                // A failed one doesn't wait on the user, so it isn't amber.
+                let n = waiting + failed + self.unseen_notices();
                 if waiting > 0 {
-                    Some(loud(waiting + unseen, theme::accent()))
+                    Some(loud(n, theme::needs_you()))
+                } else if failed > 0 {
+                    Some(loud(n, theme::error().into()))
                 } else {
-                    (unseen > 0).then(|| quiet(unseen))
+                    (n > 0).then(|| quiet(n))
                 }
             }
             #[cfg(feature = "coderlabs")]
@@ -185,7 +186,7 @@ impl Shell {
                 .map(|n| loud(n, theme::error().into())),
             View::GitHub => self.github_badge(cx).map(|(n, wanted)| {
                 if wanted {
-                    loud(n, theme::accent())
+                    loud(n, theme::needs_you())
                 } else {
                     quiet(n)
                 }

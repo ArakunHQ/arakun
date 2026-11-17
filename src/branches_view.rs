@@ -58,6 +58,13 @@ pub struct SessionInfo {
 }
 
 impl EnvInfo {
+    /// The live session the branch row shows: one that needs you first, else
+    /// one at work.
+    fn live_session(&self) -> Option<&SessionInfo> {
+        let find = |st: SessionStatus| self.sessions.iter().find(|s| s.status == st);
+        find(SessionStatus::NeedsInput).or_else(|| find(SessionStatus::Working))
+    }
+
     fn working(&self) -> bool {
         self.sessions
             .iter()
@@ -771,7 +778,7 @@ impl BranchesView {
                                 d.child(ui::spinner(
                                     SharedString::from(format!("bs-spin-{}", s.id)),
                                     10.,
-                                    theme::accent(),
+                                    theme::working(),
                                 ))
                             })
                             .on_click(cx.listener(move |_, _, _, cx| {
@@ -890,10 +897,7 @@ impl BranchesView {
 fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
     if let Some(e) = env
-        && let Some(s) = e
-            .sessions
-            .iter()
-            .find(|s| matches!(s.status, SessionStatus::Working | SessionStatus::NeedsInput))
+        && let Some(s) = e.live_session()
     {
         out.push(
             div()
@@ -904,7 +908,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
                 .child(ui::spinner(
                     SharedString::from(format!("bw-{}", s.id)),
                     10.,
-                    theme::accent(),
+                    session_color(s.status),
                 ))
                 .into_any_element(),
         );
@@ -1038,12 +1042,20 @@ fn fix_prompt(map: &Map, b: &Branch, status: Status) -> Option<(String, String)>
     }
 }
 
+/// A live session's spinner: amber when it waits for you, blue while it works.
+fn session_color(s: SessionStatus) -> Hsla {
+    match s {
+        SessionStatus::NeedsInput => theme::needs_you(),
+        _ => theme::working(),
+    }
+}
+
 fn status_color(s: Status) -> Hsla {
     match s {
         Status::Conflict | Status::Failing => theme::danger().into(),
         Status::Ready => theme::success().into(),
         Status::Review => theme::pr_open().into(),
-        Status::Working => theme::accent(),
+        Status::Working => theme::working(),
         Status::Local => theme::warn().into(),
         Status::Merged => theme::pr_merged().into(),
         Status::Idle => theme::mix(0.35),
@@ -1553,6 +1565,39 @@ mod tests {
             who: Who::Person,
             pushed: true,
         }
+    }
+
+    #[test]
+    fn a_session_that_needs_you_is_not_drawn_as_working() {
+        assert_eq!(session_color(SessionStatus::NeedsInput), theme::needs_you());
+        assert_eq!(session_color(SessionStatus::Working), theme::working());
+    }
+
+    #[test]
+    fn a_branch_shows_the_session_that_needs_you_first() {
+        let session = |id: &str, status| SessionInfo {
+            id: id.to_string().into(),
+            title: SharedString::default(),
+            agent: Agent::Claude,
+            status,
+        };
+        let mut env = EnvInfo {
+            project: 0,
+            env: 0,
+            path: PathBuf::new(),
+            name: SharedString::default(),
+            branch: String::new(),
+            sessions: vec![
+                session("idle", SessionStatus::Idle),
+                session("busy", SessionStatus::Working),
+                session("asks", SessionStatus::NeedsInput),
+            ],
+        };
+        assert_eq!(env.live_session().map(|s| s.id.as_ref()), Some("asks"));
+        env.sessions.pop();
+        assert_eq!(env.live_session().map(|s| s.id.as_ref()), Some("busy"));
+        env.sessions.pop();
+        assert!(env.live_session().is_none());
     }
 
     #[test]

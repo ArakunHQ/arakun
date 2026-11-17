@@ -1078,7 +1078,7 @@ impl Shell {
                             .top(px((22. - caret_height) / 2.))
                             .w(px(CARET_WIDTH))
                             .h(px(caret_height))
-                            .bg(theme::accent()),
+                            .bg(theme::active()),
                     )
                 })
                 .into_any_element()
@@ -1123,16 +1123,16 @@ impl Shell {
             .track_focus(&self.composer_focus)
             .on_key_down(cx.listener(Self::composer_key))
             .drag_over::<drag::DraggedSession>(|s, _, _, _| {
-                s.border_color(theme::accent())
-                    .bg(theme::accent().opacity(0.06))
+                s.border_color(theme::active())
+                    .bg(theme::active().opacity(0.06))
             })
             .on_drop(cx.listener(|this, d: &drag::DraggedSession, window, cx| {
                 this.drop_session_on_composer(d, window, cx)
             }))
             // Files dropped from a file manager: images as pictures, the rest as mentions.
             .drag_over::<gpui::ExternalPaths>(|s, _, _, _| {
-                s.border_color(theme::accent())
-                    .bg(theme::accent().opacity(0.06))
+                s.border_color(theme::active())
+                    .bg(theme::active().opacity(0.06))
             })
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
@@ -1297,7 +1297,7 @@ impl Shell {
                                                 point(at.x, top),
                                                 size(px(CARET_WIDTH), px(caret_height)),
                                             ),
-                                            theme::accent(),
+                                            theme::active(),
                                         ));
                                     }
                                     if reveal.take() {
@@ -1400,7 +1400,7 @@ impl Shell {
                                         "composer-model",
                                         fast.then(|| {
                                             icon("flash", 12.)
-                                                .text_color(theme::accent())
+                                                .text_color(theme::text_subtle())
                                                 .into_any_element()
                                         }),
                                         label,

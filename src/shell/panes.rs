@@ -274,8 +274,8 @@ impl Shell {
                     .border_2()
                     .border_color(gpui::transparent_black())
                     .drag_over::<drag::DraggedTab>(|s, _, _, _| {
-                        s.bg(theme::accent().opacity(0.12))
-                            .border_color(theme::accent().opacity(0.55))
+                        s.bg(theme::active().opacity(0.12))
+                            .border_color(theme::active().opacity(0.55))
                     })
                     .on_drop(cx.listener(move |this, d: &drag::DraggedTab, window, cx| {
                         this.place_tab(d.id, first, window, cx)
@@ -327,14 +327,14 @@ impl Shell {
                             .justify_center()
                             .rounded(crate::ui::rad(ui::RADIUS_LG))
                             .border_2()
-                            .border_color(theme::accent().opacity(0.25))
+                            .border_color(theme::active().opacity(0.25))
                             .bg(theme::background().opacity(0.4))
                             .text_size(px(ui::TEXT_MD))
                             .text_color(theme::text_subtle())
                             .child("Drop to open beside")
                             .drag_over::<crate::zoom::DraggedImage>(|s, _, _, _| {
-                                s.bg(theme::accent().opacity(0.12))
-                                    .border_color(theme::accent().opacity(0.55))
+                                s.bg(theme::active().opacity(0.12))
+                                    .border_color(theme::active().opacity(0.55))
                             })
                             .on_drop(cx.listener(
                                 move |this, d: &crate::zoom::DraggedImage, window, cx| {
@@ -469,7 +469,7 @@ impl Shell {
                             .left_0()
                             .right_0()
                             .h(px(2.))
-                            .bg(theme::accent().opacity(0.6)),
+                            .bg(theme::active().opacity(0.6)),
                     )
                 })
                 .when(!focused, |d| {
@@ -489,7 +489,7 @@ impl Shell {
             .flex_1()
             .map(|d| if row { d.h_full() } else { d.w_full() });
         let line_color = if self.split_drag {
-            theme::accent()
+            theme::active()
         } else {
             theme::stroke()
         };

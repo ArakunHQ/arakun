@@ -66,8 +66,9 @@ fn red() -> Hsla {
     theme::error().into()
 }
 
+/// What waits on the user: a permission, a question.
 fn amber() -> Hsla {
-    theme::warn().into()
+    theme::needs_you()
 }
 
 fn fmt_elapsed(ms: u64) -> String {
@@ -1150,10 +1151,10 @@ impl ThreadView {
                     .px(crate::ui::sp(10.))
                     .py(crate::ui::sp(6.))
                     .rounded(crate::ui::rad(12.))
-                    .bg(amber().opacity(0.08))
+                    .bg(theme::fill_raised())
                     .text_size(px(crate::ui::TEXT_MD))
                     .text_color(theme::text_muted())
-                    .child(spinner(self.phase, 12., amber()))
+                    .child(spinner(self.phase, 12., theme::text_subtle()))
                     .child(div().min_w_0().truncate().child(retry.to_string())),
             );
         }

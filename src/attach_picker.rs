@@ -384,7 +384,7 @@ impl AttachPicker {
         }
         let color = match item.kind {
             Kind::Folder => theme::mix(0.55),
-            Kind::Image => theme::accent().opacity(0.8),
+            Kind::Image => theme::text_muted(),
             Kind::File => theme::mix(0.5),
         };
         base.child(icon(icon_for(item), size * 0.5).text_color(color))
@@ -401,7 +401,7 @@ impl AttachPicker {
                 .into_any_element()
         } else if chosen {
             icon("checkmark-circle02", 16.)
-                .text_color(theme::accent())
+                .text_color(theme::text_muted())
                 .into_any_element()
         } else {
             icon("circle", 16.)
@@ -420,9 +420,7 @@ impl AttachPicker {
             .rounded(crate::ui::rad(ui::RADIUS))
             .cursor_pointer()
             .when(at_cursor, |d| d.bg(theme::selection()))
-            .when(!at_cursor && chosen, |d| {
-                d.bg(theme::accent().opacity(0.08))
-            })
+            .when(!at_cursor && chosen, |d| d.bg(theme::fill_hover()))
             .when(!at_cursor && !chosen, |d| d.hover(|s| s.bg(theme::hover())))
             .child(tile)
             .child(
@@ -639,7 +637,11 @@ impl AttachPicker {
                 theme::warn().into(),
                 "Over 5 MB: only the path is sent.",
             )),
-            Kind::Image => Some(("image01", theme::accent(), "Sent along with your prompt.")),
+            Kind::Image => Some((
+                "image01",
+                theme::text_muted(),
+                "Sent along with your prompt.",
+            )),
             Kind::File => Some(("attachment01", theme::mix(0.5), "Added as an @ mention.")),
             Kind::Folder => None,
         };

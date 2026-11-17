@@ -171,7 +171,7 @@ impl GitHubView {
                         )),
                 )
                 .when(*cut, |d| {
-                    d.child(ui::text(Type::Caption, theme::accent(), "The diff was too large to read whole: the files after the last one here are missing."))
+                    d.child(ui::text(Type::Caption, theme::text_muted(), "The diff was too large to read whole: the files after the last one here are missing."))
                 })
                 .into_any_element();
         }
@@ -357,7 +357,7 @@ impl GitHubView {
             let (name, color) = match c.state {
                 CheckState::Passed => ("tick02", theme::success().into()),
                 CheckState::Failed => ("cancel01", theme::error().into()),
-                CheckState::Running => ("loading03", theme::accent()),
+                CheckState::Running => ("loading03", theme::working()),
                 CheckState::Skipped => ("minus-sign", theme::text_subtle()),
             };
             let url = c.url.clone();
@@ -455,7 +455,7 @@ impl GitHubView {
                                     )),
                             ),
                     )
-                    .when(fresh, |d| d.child(ui::tag("new", theme::accent())))
+                    .when(fresh, |d| d.child(ui::tag("new", theme::text_muted())))
                     .child(
                         super::mono(c.short_oid().to_string(), theme::text_subtle()).flex_none(),
                     ),

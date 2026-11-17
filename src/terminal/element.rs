@@ -235,6 +235,7 @@ struct CursorInfo {
     col: usize,
     shape: CursorShape,
     wide: bool,
+    color: Hsla,
     text: Option<(String, Hsla, bool, bool)>,
 }
 
@@ -256,7 +257,7 @@ pub struct Prepaint {
     rects: Vec<Bounds<Pixels>>,
     rect_colors: Vec<Hsla>,
     selection: Vec<Bounds<Pixels>>,
-    cursor: Option<(Bounds<Pixels>, CursorShape, Option<ShapedLine>)>,
+    cursor: Option<(Bounds<Pixels>, CursorShape, Hsla, Option<ShapedLine>)>,
     ime_bounds: Bounds<Pixels>,
     marked: Option<ShapedLine>,
 }
@@ -300,6 +301,18 @@ fn font_index(bold: bool, italic: bool) -> usize {
 
 fn is_default_bg(color: Color) -> bool {
     matches!(color, Color::Named(NamedColor::Background))
+}
+
+/// The cursor's fill and the color of the glyph cut out of it. The cursor is the
+/// content color, but on a cell already painted near that color (default colors
+/// under SGR inverse) it would vanish, so there the two swap.
+fn cursor_colors(cell_bg: Hsla) -> (Hsla, Hsla) {
+    let (on, off) = (theme::active(), theme::background());
+    if theme::contrast(cell_bg, on) >= theme::contrast(cell_bg, off) {
+        (on, off)
+    } else {
+        (off, on)
+    }
 }
 
 /// Builds runs and rects for the visible rows. Called with the terminal locked, so it
@@ -440,6 +453,16 @@ fn build_frame(term: &super::model::AlacTerm, focused: bool) -> Frame {
         .then(|| {
             let cell = &grid[cursor_point];
             let wide = cell.flags.contains(Flags::WIDE_CHAR);
+            let bg = if cell.flags.contains(Flags::INVERSE) {
+                cell.fg
+            } else {
+                cell.bg
+            };
+            let (color, glyph) = cursor_colors(if is_default_bg(bg) {
+                theme::background()
+            } else {
+                resolver.resolve(bg)
+            });
             let text = (cell.c != ' ' && cell.c != '\0' && !cell.flags.contains(Flags::HIDDEN))
                 .then(|| {
                     let mut s = cell.c.to_string();
@@ -448,7 +471,7 @@ fn build_frame(term: &super::model::AlacTerm, focused: bool) -> Frame {
                     }
                     (
                         s,
-                        theme::background(),
+                        glyph,
                         cell.flags.contains(Flags::BOLD),
                         cell.flags.contains(Flags::ITALIC),
                     )
@@ -462,6 +485,7 @@ fn build_frame(term: &super::model::AlacTerm, focused: bool) -> Frame {
                     CursorShape::HollowBlock
                 },
                 wide,
+                color,
                 text,
             }
         });
@@ -672,7 +696,7 @@ impl Element for TerminalElement {
                 }
                 _ => Bounds::new(o, size(width, line_height)),
             };
-            (bounds, c.shape, text)
+            (bounds, c.shape, c.color, text)
         });
 
         let marked = self.marked_text.as_ref().map(|text| {
@@ -760,15 +784,14 @@ impl Element for TerminalElement {
                     theme::background(),
                 ));
                 let _ = marked.paint(o, line_height, TextAlign::Left, None, window, cx);
-            } else if let Some((rect, shape, text)) = &p.cursor {
-                let accent = theme::accent();
+            } else if let Some((rect, shape, color, text)) = &p.cursor {
                 match shape {
                     CursorShape::HollowBlock => {
-                        window.paint_quad(outline(*rect, accent, BorderStyle::Solid))
+                        window.paint_quad(outline(*rect, *color, BorderStyle::Solid))
                     }
                     _ if !self.cursor_on => {}
                     CursorShape::Block => {
-                        window.paint_quad(fill(*rect, accent));
+                        window.paint_quad(fill(*rect, *color));
                         if let Some(text) = text {
                             let _ = text.paint(
                                 rect.origin,
@@ -780,7 +803,7 @@ impl Element for TerminalElement {
                             );
                         }
                     }
-                    _ => window.paint_quad(fill(*rect, accent)),
+                    _ => window.paint_quad(fill(*rect, *color)),
                 }
             }
         });
@@ -818,5 +841,25 @@ impl TerminalElement {
                 cx.stop_propagation();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cursor_stays_visible_on_an_inverse_cell() {
+        // A plain cell: the cursor is the content color, the glyph is cut out.
+        assert_eq!(
+            cursor_colors(theme::background()),
+            (theme::active(), theme::background())
+        );
+        // Default colors under SGR inverse paint the cell in the content color,
+        // so the cursor takes the background color instead.
+        assert_eq!(
+            cursor_colors(theme::content()),
+            (theme::background(), theme::active())
+        );
     }
 }

@@ -847,6 +847,25 @@ pub fn on_accent() -> Hsla {
     if is_light() { content() } else { background() }
 }
 
+/// Something waiting on the user: a question from an agent, a review that's
+/// theirs. The one thing the accent means, so it stands out wherever it is.
+pub fn needs_you() -> Hsla {
+    accent()
+}
+
+/// An agent at work, a check still running: the stars' blue that work in
+/// progress takes, so it can't be read as done (green) or as needing you
+/// (the accent).
+pub fn working() -> Hsla {
+    link().into()
+}
+
+/// A caret, a switch that's on, where a drag would land: the content color,
+/// so the accent keeps meaning "needs you".
+pub fn active() -> Hsla {
+    content()
+}
+
 /// Selected text: a light night blue, so amber stays for the accent,
 /// search hits and notes.
 pub fn text_selection() -> Hsla {
@@ -988,6 +1007,12 @@ mod tests {
         );
         assert!(near(p.accent(), 0xffb547), "accent {:06x}", hex(p.accent()));
         assert_eq!(hex(warn()), 0xfde047);
+    }
+
+    #[test]
+    fn work_in_progress_is_not_drawn_as_done() {
+        assert_eq!(hex(working()), hex(link()));
+        assert_ne!(hex(working()), hex(success()));
     }
 
     #[test]

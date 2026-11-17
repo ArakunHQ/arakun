@@ -745,7 +745,10 @@ impl GitHubView {
                         format!("pushed {} commits", run.len())
                     };
                     let extra = if fresh {
-                        vec![ui::tag("new since your review", theme::accent()).into_any_element()]
+                        vec![
+                            ui::tag("new since your review", theme::text_muted())
+                                .into_any_element(),
+                        ]
                     } else {
                         Vec::new()
                     };
@@ -771,7 +774,7 @@ impl GitHubView {
                                     .px(crate::ui::sp(14.))
                                     .h(px(30.))
                                     .child(icon("git-commit", 14.).text_color(if new {
-                                        theme::accent()
+                                        theme::text_muted()
                                     } else {
                                         theme::text_faint()
                                     }))
@@ -965,12 +968,12 @@ impl GitHubView {
                 let (text, color) = if posts_as != draft.verdict {
                     (
                         format!("approves {sha} · new commits since: posts as a comment"),
-                        theme::accent(),
+                        theme::attention().into(),
                     )
                 } else if stale {
                     (
                         format!("written for {sha} · new commits since"),
-                        theme::accent(),
+                        theme::attention().into(),
                     )
                 } else {
                     (format!("written for {sha}"), theme::text_faint())
@@ -985,7 +988,7 @@ impl GitHubView {
             } else {
                 self.markdown_as_written("gh-draft-body", &draft.body, body_style())
             };
-            let accent = theme::accent();
+            let accent = theme::text_subtle();
             (
                 ui::icon_chip("sparkles", RAIL, Some(accent)).into_any_element(),
                 div()

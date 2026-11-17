@@ -108,7 +108,7 @@ pub fn default_rgb(index: usize) -> Rgb {
             hsla_to_rgb(theme::content())
         }
         i if i == NamedColor::Background as usize => hsla_to_rgb(theme::background()),
-        i if i == NamedColor::Cursor as usize => hsla_to_rgb(theme::accent()),
+        i if i == NamedColor::Cursor as usize => hsla_to_rgb(theme::active()),
         i if (NamedColor::DimBlack as usize..=NamedColor::DimWhite as usize).contains(&i) => {
             dim(rgb_of(ansi()[i - NamedColor::DimBlack as usize]))
         }

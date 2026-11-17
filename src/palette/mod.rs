@@ -308,7 +308,7 @@ impl Palette {
     pub fn new(seed: Seed, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
             TextInput::new("Search, run a command or ask an agent…", cx)
-                .caret_color(crate::theme::accent())
+                .caret_color(crate::theme::active())
         });
         let sub = cx.subscribe_in(&input, window, |this: &mut Self, _, ev, window, cx| {
             this.on_input(*ev, window, cx)

@@ -1273,7 +1273,7 @@ impl SettingsDialog {
                 .rounded(crate::ui::rad(ui::RADIUS_LG))
                 .border_1()
                 .border_color(if on {
-                    theme::accent().opacity(0.55)
+                    theme::active().opacity(0.55)
                 } else {
                     theme::stroke()
                 })
@@ -1302,7 +1302,7 @@ impl SettingsDialog {
                                 .child(p.name.clone()),
                         )
                         .when(on, |d| {
-                            d.child(icon("tick02", 13.).text_color(theme::accent()))
+                            d.child(icon("tick02", 13.).text_color(theme::active()))
                         }),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.use_palette(&id, cx)))
@@ -1684,7 +1684,7 @@ impl SettingsDialog {
                     "shape-radius-slider",
                     s.radius / 2.,
                     track(),
-                    theme::accent(),
+                    theme::active(),
                     &self.pane_scroll,
                     setter(|s, t| s.radius = (t * 2. * 20.).round() / 20.),
                 ),
@@ -1704,7 +1704,7 @@ impl SettingsDialog {
                     "shape-space-slider",
                     s.space - 0.6,
                     track(),
-                    theme::accent(),
+                    theme::active(),
                     &self.pane_scroll,
                     setter(|s, t| s.space = ((0.6 + t) * 20.).round() / 20.),
                 ),
@@ -1724,7 +1724,7 @@ impl SettingsDialog {
                     "shape-gap-slider",
                     s.window_gap / 20.,
                     track(),
-                    theme::accent(),
+                    theme::active(),
                     &self.pane_scroll,
                     setter(|s, t| s.window_gap = (t * 20.).round()),
                 ),
@@ -2139,12 +2139,12 @@ fn tile(name: &str, size: f32, lit: bool) -> gpui::Div {
             ui::RADIUS
         }))
         .bg(if lit {
-            theme::accent().opacity(0.14)
+            theme::active().opacity(0.14)
         } else {
             theme::mix(0.05)
         })
         .child(icon(name, size * 0.5).text_color(if lit {
-            theme::accent()
+            theme::active()
         } else {
             theme::mix(0.55)
         }))

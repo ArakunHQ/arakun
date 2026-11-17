@@ -209,7 +209,7 @@ impl Shell {
                     div()
                         .text_size(px(ui::TEXT_XS))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::accent())
+                        .text_color(theme::text())
                         .child(agent.label()),
                 )
             })
@@ -336,7 +336,7 @@ impl Shell {
                                         })
                                     })
                                     .drag_over::<drag::DraggedSession>(|s, _, _, _| {
-                                        s.bg(theme::accent().opacity(0.10))
+                                        s.bg(theme::active().opacity(0.10))
                                     })
                                     .on_drop(cx.listener(
                                         move |this, d: &drag::DraggedSession, _, cx| {
@@ -370,8 +370,8 @@ pub(super) fn session_card(
     let (status, color): (SharedString, Hsla) = match s.status {
         Status::Idle => (model::age(s.updated), theme::mix(0.45)),
         Status::Error => ("Error".into(), theme::diff_del().into()),
-        Status::Working => ("Working...".into(), theme::accent()),
-        Status::NeedsInput => ("Need approval".into(), theme::warn().into()),
+        Status::Working => ("Working...".into(), theme::working()),
+        Status::NeedsInput => ("Need approval".into(), theme::needs_you()),
     };
     div()
         .id(("session", i))
@@ -446,7 +446,7 @@ pub(super) fn session_card(
                             .rounded(crate::ui::rad(4.))
                             .text_color(theme::text_subtle())
                             .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
-                            .child(icon("git-pull-request", 11.).text_color(theme::accent()))
+                            .child(icon("git-pull-request", 11.).text_color(theme::text_faint()))
                             .child(format!("#{number}"))
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();

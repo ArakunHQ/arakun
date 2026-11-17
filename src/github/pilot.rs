@@ -707,6 +707,8 @@ pub struct Pilot {
     /// No book on disk yet: the first read doesn't pop anything.
     fresh_book: bool,
     busy: bool,
+    /// A refresh was asked for while a read was going.
+    again: bool,
     problem: Option<String>,
     /// The last board read, kept while a later read fails.
     board: Option<super::board::Board>,
@@ -734,6 +736,7 @@ impl Pilot {
             fresh_book: book.is_none(),
             book: book.unwrap_or_default(),
             busy: false,
+            again: false,
             problem: None,
             board: None,
             board_problem: None,
@@ -788,7 +791,13 @@ impl Pilot {
     /// Reads the settings again and, when there are some, the new items.
     /// Handled items the Worker missed are told first.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.busy || super::GitHub::disabled() {
+        if super::GitHub::disabled() {
+            return;
+        }
+        if self.busy {
+            // A read already going may have started before an answer: one
+            // more follows it.
+            self.again = true;
             return;
         }
         let config = load_config();
@@ -811,15 +820,27 @@ impl Pilot {
         cx.spawn(async move |this, cx| {
             let (told, read, board) = cx
                 .background_spawn(async move {
-                    let board = super::board::fetch(config.as_ref());
-                    let Some(cfg) = config else {
-                        return (Vec::new(), Ok(Vec::new()), board);
-                    };
-                    let told: Vec<String> = untold
-                        .into_iter()
-                        .filter(|id| tell_done(&cfg, id).is_ok())
-                        .collect();
-                    (told, fetch(&cfg), board)
+                    // The board and the items side by side: a slow one
+                    // doesn't hold the other up.
+                    std::thread::scope(|s| {
+                        let board = s.spawn(|| super::board::fetch(config.as_ref()));
+                        let (told, read) = match &config {
+                            None => (Vec::new(), Ok(Vec::new())),
+                            Some(cfg) => {
+                                let told: Vec<String> = untold
+                                    .into_iter()
+                                    .filter(|id| tell_done(cfg, id).is_ok())
+                                    .collect();
+                                (told, fetch(cfg))
+                            }
+                        };
+                        let board = board.join().unwrap_or_else(|_| {
+                            Err(super::board::BoardProblem::Failed(
+                                "la lectura del tablero falló".into(),
+                            ))
+                        });
+                        (told, read, board)
+                    })
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -856,6 +877,9 @@ impl Pilot {
                     }
                 }
                 cx.notify();
+                if std::mem::take(&mut this.again) {
+                    this.refresh(cx);
+                }
             });
         })
         .detach();

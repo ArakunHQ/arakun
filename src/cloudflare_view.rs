@@ -530,6 +530,7 @@ impl CloudflareView {
             Agent::Claude => "Starts a Claude Code session with what Arakun sees",
             Agent::Droid => "Starts a Droid session with what Arakun sees",
             Agent::OpenCode => "Starts an OpenCode session with what Arakun sees",
+            Agent::Codex => "Starts a Codex session with what Arakun sees",
             Agent::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
         ui::button_with(
@@ -647,6 +648,7 @@ impl CloudflareView {
             Agent::Claude => "Cloudflare MCP for Claude Code",
             Agent::Droid => "Cloudflare MCP for Droid",
             Agent::OpenCode => "Cloudflare MCP for OpenCode",
+            Agent::Codex => "Cloudflare MCP for Codex",
             Agent::WorkersAi => "Cloudflare MCP",
         })
         .child(
@@ -2243,6 +2245,7 @@ fn agent_name(agent: Agent) -> &'static str {
         Agent::Claude => "Claude",
         Agent::Droid => "Droid",
         Agent::OpenCode => "OpenCode",
+        Agent::Codex => "Codex",
         Agent::WorkersAi => "Workers AI",
     }
 }

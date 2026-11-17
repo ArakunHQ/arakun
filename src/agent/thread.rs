@@ -639,9 +639,12 @@ fn parse_choices(list: Option<&Value>, id_key: &str) -> Vec<Choice> {
 /// The ACP config option a composer setting is, if the agent offers it.
 pub fn acp_option(config: &[ConfigOption], s: Setting) -> Option<&ConfigOption> {
     let category = s.acp_category()?;
-    config
-        .iter()
-        .find(|o| o.category.as_deref() == Some(category) || o.id == category)
+    config.iter().find(|o| {
+        o.category.as_deref() == Some(category)
+            || o.id == category
+            // Codex files fast mode under `model_config`, with this id.
+            || (s == Setting::Fast && o.id == "fast-mode")
+    })
 }
 
 /// An ACP config option in the shape the composer menus use.
@@ -1547,8 +1550,8 @@ impl Thread {
         let cwd = self.cwd.display().to_string();
         let resume = self.session_id.clone();
         let have_history = self.suppress_replay;
-        // Droid gets the arakun hint on its command line and OpenCode in its
-        // environment (`launch::resolve`); Claude's adapter takes it here.
+        // Droid gets the arakun hint on its command line, OpenCode and Codex in
+        // their environment (`launch::resolve`); Claude's adapter takes it here.
         let meta = match (self.kind, launch::agent_hint(Some(&self.cwd))) {
             (AgentKind::Claude, Some(hint)) => json!({"systemPrompt": {"append": hint}}),
             _ => json!({}),
@@ -1681,6 +1684,13 @@ impl Thread {
                 // What a new session starts with is OpenCode's default; a reopened one has its own.
                 if fresh && t.kind == AgentKind::OpenCode {
                     super::catalog::remember_opencode_options(&v["configOptions"]);
+                }
+                if fresh && t.kind == AgentKind::Codex {
+                    let raw = v["configOptions"].clone();
+                    cx.background_spawn(async move {
+                        super::catalog::remember_codex_options(&raw)
+                    })
+                    .detach();
                 }
                 t.session_ready(id, &v, cx)
             });

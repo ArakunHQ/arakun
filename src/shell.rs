@@ -1700,14 +1700,22 @@ impl Shell {
                 }
                 SettingsEvent::ClaudeSignIn => {
                     this.close_modal(window, cx);
-                    if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude)
-                    {
-                        this.spawn_terminal_command(Some(cmd), true, window, cx);
-                    }
+                    this.sign_in(crate::agent::AgentKind::Claude, window, cx);
                 }
                 SettingsEvent::ClaudeSignOut => {
                     this.close_modal(window, cx);
                     if let Some(cmd) = crate::agent::logout_command(crate::agent::AgentKind::Claude)
+                    {
+                        this.spawn_terminal_command(Some(cmd), true, window, cx);
+                    }
+                }
+                SettingsEvent::CodexSignIn => {
+                    this.close_modal(window, cx);
+                    this.sign_in(crate::agent::AgentKind::Codex, window, cx);
+                }
+                SettingsEvent::CodexSignOut => {
+                    this.close_modal(window, cx);
+                    if let Some(cmd) = crate::agent::logout_command(crate::agent::AgentKind::Codex)
                     {
                         this.spawn_terminal_command(Some(cmd), true, window, cx);
                     }
@@ -2728,7 +2736,7 @@ pub(crate) fn agent_icon(agent: Agent, size: f32) -> AnyElement {
             .into_any_element(),
         Agent::Droid => ui::factory_logo(size).into_any_element(),
         Agent::OpenCode => ui::opencode_logo(size).into_any_element(),
-        Agent::WorkersAi => agent.kind().icon(size),
+        Agent::Codex | Agent::WorkersAi => agent.kind().icon(size),
     }
 }
 

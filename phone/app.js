@@ -1889,6 +1889,7 @@ const AGENTS = [
   ["claude", "Claude Code"],
   ["droid", "Droid"],
   ["opencode", "OpenCode"],
+  ["codex", "Codex"],
 ];
 
 // The New session form starts on the place used last, with the agent that place picks.

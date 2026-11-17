@@ -690,6 +690,7 @@ impl Daemon {
             if agent::which("opencode").is_some() {
                 catalog::refresh_opencode();
             }
+            catalog::refresh_codex();
         }));
         let account = cx.new(Account::new);
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
@@ -2146,7 +2147,7 @@ impl Daemon {
 }
 
 fn unknown_agent(agent: &str) -> String {
-    format!("unknown agent {agent}: claude, droid, opencode or workers-ai")
+    format!("unknown agent {agent}: claude, droid, opencode, codex or workers-ai")
 }
 
 /// What a session waits on the user for, with the command that answers it.
@@ -2231,14 +2232,15 @@ fn draft_choices(
             }
             Some(agent::setting_options(&settings, &catalog.models, s))
         }
-        AgentKind::Claude | AgentKind::OpenCode => {
-            let options = if agent == AgentKind::Claude {
-                catalog::claude_options()
-            } else {
-                catalog::opencode_options()
+        AgentKind::Claude | AgentKind::OpenCode | AgentKind::Codex => {
+            let options = match agent {
+                AgentKind::Claude => catalog::claude_options(),
+                AgentKind::Codex => catalog::codex_options(),
+                _ => catalog::opencode_options(),
             };
-            // OpenCode's reasoning levels are per model: the cached ones are the default model's.
-            if agent == AgentKind::OpenCode
+            // OpenCode's and Codex's reasoning levels are per model: the cached
+            // ones are the default model's.
+            if agent != AgentKind::Claude
                 && s == Setting::Effort
                 && let Some(model) = pick(Setting::Model)
                 && agent::acp_option(&options, Setting::Model).is_some_and(|o| o.current != model)

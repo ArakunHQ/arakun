@@ -488,6 +488,7 @@ pub fn effort_name(id: &str) -> String {
         "high" => "High".into(),
         "xhigh" => "Extra high".into(),
         "max" => "Max".into(),
+        "ultra" => "Ultra".into(),
         other => other.to_string(),
     }
 }

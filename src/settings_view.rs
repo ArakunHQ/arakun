@@ -27,6 +27,8 @@ pub enum SettingsEvent {
     OpenCodeSignIn,
     OpenCodeGoSignIn,
     OpenCodeSignOut,
+    CodexSignIn,
+    CodexSignOut,
     OpenUsage,
     OpenGallery,
     RailUsage(crate::agent::AgentKind, bool),
@@ -52,6 +54,7 @@ enum Section {
     Claude,
     Droid,
     OpenCode,
+    Codex,
     Voice,
     #[cfg(feature = "coderlabs")]
     CoderSpace,
@@ -66,6 +69,7 @@ impl Section {
         Section::Claude,
         Section::Droid,
         Section::OpenCode,
+        Section::Codex,
         Section::Voice,
         #[cfg(feature = "coderlabs")]
         Section::CoderSpace,
@@ -80,6 +84,7 @@ impl Section {
             Section::Claude => "Claude",
             Section::Droid => "Droid",
             Section::OpenCode => "OpenCode",
+            Section::Codex => "Codex",
             Section::Voice => "Voice",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "CoderSpace",
@@ -95,6 +100,7 @@ impl Section {
             Section::Claude => "sparkles",
             Section::Droid => "bot",
             Section::OpenCode => "computer-terminal01",
+            Section::Codex => "file-code",
             Section::Voice => "volume-high",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "check-list",
@@ -110,6 +116,7 @@ impl Section {
             Section::Claude => "Claude Code's sign-in and what your plan has left.",
             Section::Droid => "What Droid loads in the visible environment.",
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
+            Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
             Section::Voice => "Droid's questions, read aloud with an ElevenLabs voice.",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "Your pending tasks, inside Arakun.",
@@ -137,6 +144,7 @@ impl Section {
             }
             Section::Droid => "skills mcp servers extensions",
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
+            Section::Codex => "codex openai chatgpt gpt api key sign in logout",
             Section::Voice => {
                 "elevenlabs speech speak tts read aloud audio sound api key questions"
             }
@@ -240,6 +248,10 @@ pub struct SettingsDialog {
     claude_access: Option<claude_auth::Access>,
     /// The providers OpenCode has credentials for.
     opencode: Vec<String>,
+    /// How Codex is signed in, if it is.
+    codex: Option<&'static str>,
+    /// The variable with Codex's API key, when the environment has one.
+    codex_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -402,6 +414,8 @@ impl SettingsDialog {
             claude: None,
             claude_access: None,
             opencode: crate::agent::opencode_providers(),
+            codex: crate::agent::codex_sign_in(),
+            codex_env: crate::agent::codex_env_key(),
             input,
             section,
             voice,
@@ -653,6 +667,16 @@ impl SettingsDialog {
         self.select(shown[next], cx);
     }
 
+    /// A sign-in in `~/.codex` comes first, as it does for the adapter; a key
+    /// only in the environment is named by its variable, never shown.
+    fn codex_status(&self) -> String {
+        match (self.codex, self.codex_env) {
+            (Some(how), _) => format!("Signed in · {how}"),
+            (None, Some(var)) => format!("API key · {var}"),
+            (None, None) => "Not signed in".into(),
+        }
+    }
+
     /// The line under a section's name in the list.
     fn summary(&self, s: Section) -> String {
         let on_off = |b: bool| if b { "on" } else { "off" };
@@ -681,6 +705,7 @@ impl SettingsDialog {
             Section::Droid => "Skills and MCP servers".into(),
             Section::OpenCode if self.opencode.is_empty() => "No providers signed in".into(),
             Section::OpenCode => self.opencode.join(", "),
+            Section::Codex => self.codex_status(),
             Section::Voice => match (self.voice.enabled, self.voice_key) {
                 (false, _) => "Read aloud off".into(),
                 (true, Some(false)) => "On · needs an API key".into(),
@@ -982,6 +1007,31 @@ impl SettingsDialog {
                         .into_any_element(),
                 )
                 .into_any_element(),
+                ])
+            }
+            Section::Codex => {
+                let signed_in = self.codex.is_some();
+                group(vec![
+                    row(
+                        self.codex_status(),
+                        if signed_in {
+                            "The same sign-in the codex CLI uses; Arakun reads it from ~/.codex."
+                        } else if self.codex_env.is_some() {
+                            "Sessions use the API key in the environment. Sign in to use your ChatGPT plan instead."
+                        } else {
+                            "Runs codex login in a terminal; approve the sign-in with ChatGPT in the browser. CODEX_API_KEY or OPENAI_API_KEY works too."
+                        },
+                        if signed_in {
+                            ui::button("set-codex-out", "Sign out", ButtonKind::Danger, true)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CodexSignOut)))
+                                .into_any_element()
+                        } else {
+                            ui::button("set-codex-in", "Sign in", ButtonKind::Outline, true)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CodexSignIn)))
+                                .into_any_element()
+                        },
+                    )
+                    .into_any_element(),
                 ])
             }
             Section::Voice => self.render_voice(cx),

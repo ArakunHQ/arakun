@@ -1266,6 +1266,14 @@ impl Shell {
             "Opens a terminal with OpenCode's login.",
             Target::SignIn(crate::agent::AgentKind::OpenCode),
         );
+        add(
+            "signin-codex",
+            "square-lock02",
+            "Sign in to Codex",
+            &[],
+            "Opens a terminal with Codex's ChatGPT login.",
+            Target::SignIn(crate::agent::AgentKind::Codex),
+        );
     }
 
     fn palette_settings(&self, items: &mut Vec<Item>) {
@@ -1387,11 +1395,7 @@ impl Shell {
                 self.open_tasks_tab(window, cx);
                 self.tasks_view.update(cx, |v, cx| v.select_task(&id, cx));
             }
-            Target::SignIn(kind) => {
-                if let Some(cmd) = crate::agent::login_command(kind) {
-                    self.spawn_terminal_command(Some(cmd), true, window, cx);
-                }
-            }
+            Target::SignIn(kind) => self.sign_in(kind, window, cx),
             Target::View(View::Automations) => self.open_automations(false, window, cx),
             Target::View(v) => {
                 self.open_view(v, gpui::point(gpui::px(0.), gpui::px(0.)), window, cx)

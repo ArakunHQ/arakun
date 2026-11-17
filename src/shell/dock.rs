@@ -69,6 +69,67 @@ impl Shell {
         self.spawn_terminal_in(&cwd, command, focus, window, cx);
     }
 
+    /// Opens `kind`'s sign-in in a terminal. Codex's CLI comes with its adapter,
+    /// so before any session ran it is installed first, off the main thread. A
+    /// notice says why when nothing can open: terminals need a project.
+    pub(super) fn sign_in(
+        &mut self,
+        kind: crate::agent::AgentKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::island::AlertKind;
+        let title = format!("Sign in to {}", kind.label());
+        if !self.has_projects() {
+            self.notify(
+                AlertKind::Warning,
+                &title,
+                "Open a project first: the sign-in runs in one of its terminals.",
+                None,
+                cx,
+            );
+            return;
+        }
+        if let Some(cmd) = crate::agent::login_command(kind) {
+            self.spawn_terminal_command(Some(cmd), true, window, cx);
+            return;
+        }
+        if kind != crate::agent::AgentKind::Codex {
+            let body = format!("{} was not found. Install it first.", kind.label());
+            self.notify(AlertKind::Failure, &title, &body, None, cx);
+            return;
+        }
+        self.notify(
+            AlertKind::Info,
+            &title,
+            "Installing Codex first; the sign-in opens when it is done.",
+            None,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let installed = cx
+                .background_spawn(async move { crate::agent::install_codex() })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let cmd = installed.and_then(|()| {
+                    crate::agent::login_command(kind)
+                        .ok_or_else(|| anyhow::anyhow!("the codex CLI is still missing"))
+                });
+                match cmd {
+                    Ok(cmd) => this.spawn_terminal_command(Some(cmd), true, window, cx),
+                    Err(e) => this.notify(
+                        AlertKind::Failure,
+                        &title,
+                        &format!("Installing Codex failed: {e:#}"),
+                        None,
+                        cx,
+                    ),
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Runs `command` in a new terminal of `env_path`; it prints `[exit N]`
     /// when done and keeps the output on screen until Enter opens a shell,
     /// even when the command calls `exit` or is stopped with Ctrl+C. The

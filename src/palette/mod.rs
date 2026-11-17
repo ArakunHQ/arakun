@@ -2181,7 +2181,7 @@ impl Palette {
         match cloud::request(&task, &seed, self.cloud_to_pull, &branch) {
             Ok(req) => {
                 self.cloud_sending = true;
-                self.cloud_sent_draft = Some((self.query(cx), branch));
+                self.cloud_sent_draft = Some((self.query(cx), branch, self.cloud_to_pull));
                 self.show_note("Sending to the cloud agent…", true, cx);
                 cx.emit(PaletteEvent::CloudTask(req));
             }

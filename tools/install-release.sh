@@ -347,7 +347,10 @@ main() {
 
   if [ -n "$server" ]; then
     say "done. Run 'arakun-server serve' to start it, or 'arakun-server service install' to keep it running."
-    say "if it already runs as a service, restart it on the new binary: systemctl --user restart arakun-server"
+    # Root's `service install` writes a system unit; anyone else's, a user unit.
+    if [ "$(id -u)" = 0 ]; then systemctl=systemctl; else systemctl="systemctl --user"; fi
+    say "if it already runs as a service, restart it on the new binary: $systemctl restart arakun-server"
+    say "(a server in another folder, ARAKUN_SERVER_DIR, is the unit arakun-server-<folder>)"
     say "to uninstall: $uninstall"
     return 0
   fi

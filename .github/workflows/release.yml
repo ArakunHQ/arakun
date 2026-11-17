@@ -361,11 +361,9 @@ jobs:
             echo "::error::arakun links libcef.so at startup"
             exit 1
           fi
-          # Made for machines with no display: it must not need its libraries.
-          if objdump -p "$server" | grep -E 'NEEDED.*(libX|libxcb|libwayland|libxkbcommon|libcef)'; then
-            echo "::error::arakun-server links a display library"
-            exit 1
-          fi
+          # Made for machines with no display: it must not need their libraries,
+          # directly or through another library. The check ci.yml runs on its build.
+          tools/check-server-libs.sh "$server"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

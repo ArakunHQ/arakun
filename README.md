@@ -392,13 +392,16 @@ only [`arakun-server`](#the-server-alone-no-display):
 
 ```sh
 curl -fsSL https://arakun.dev/install-server | sh
+curl -fsSL https://arakun.dev/install | sh -s -- --server    # the same
 ```
 
-It is the same script with `--server`: it checks the release the same way and installs
+It is the install script with `--server`: it checks the release the same way and installs
 `~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It takes
 `--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
-again for a new release, then `systemctl --user restart arakun-server` if it runs as a
-service (without `--user` for a service installed as root).
+again for a new release, then restart the service if it runs as one:
+`systemctl --user restart arakun-server`. A server in another folder
+(`ARAKUN_SERVER_DIR`) is the unit `arakun-server-<folder>`, and a service installed as
+root needs `systemctl` without `--user`.
 
 ### Updates
 

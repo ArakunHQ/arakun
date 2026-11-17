@@ -141,9 +141,10 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
         let dirs = std::env::split_paths(&path)
             .filter_map(|d| match root {
                 false => Some(d),
-                true if d.is_absolute() && only_root_writes(&d) => {
-                    crate::platform::canonicalize(&d).ok()
-                }
+                // Resolved once, and that path checked: what is checked is what runs.
+                true if d.is_absolute() => crate::platform::canonicalize(&d)
+                    .ok()
+                    .filter(|c| only_root_writes(c)),
                 true => None,
             })
             .filter(|d| seen.insert(d.clone()));

@@ -550,8 +550,8 @@ pub struct Thread {
     stuck: Option<Stuck>,
     /// Patterns the user chose to keep going past this turn.
     stuck_dismissed: Vec<String>,
-    /// Sent once the turn "Stop and rethink" cancelled has stopped.
-    rethink: Option<String>,
+    /// Sent once the cancelled turn has stopped: "Stop and rethink" or "Send now".
+    after_stop: Option<String>,
     /// A check arakun offers to set up for a project that has none, until answered.
     check_offer: Option<String>,
     check_offered: bool,
@@ -1000,7 +1000,7 @@ impl Thread {
             retry_status: None,
             stuck: None,
             stuck_dismissed: Vec::new(),
-            rethink: None,
+            after_stop: None,
             check_offer: None,
             check_offered: false,
             turn_tree: None,
@@ -1914,7 +1914,7 @@ impl Thread {
         self.cancelling = false;
         self.stuck = None;
         self.stuck_dismissed.clear();
-        self.rethink = None;
+        self.after_stop = None;
         self.set_status(ThreadStatus::Working, cx);
         let images = attach::images(&text, &self.cwd);
         let first = first_here
@@ -2389,7 +2389,7 @@ impl Thread {
         if self.status != ThreadStatus::Idle || self.applying_config {
             return;
         }
-        if let Some(prompt) = self.rethink.take() {
+        if let Some(prompt) = self.after_stop.take() {
             return self.start_turn(prompt, true, cx);
         }
         if self.queue_paused || self.queue.is_empty() {
@@ -2434,6 +2434,37 @@ impl Thread {
         cx.notify();
     }
 
+    /// Interrupts the running turn and sends this queued prompt as soon as it stopped.
+    /// The rest of the queue carries on after it, unless it was paused already.
+    pub fn send_now(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.queue.len() {
+            return;
+        }
+        let prompt = self.queue.remove(ix);
+        if self.queue.is_empty() {
+            self.queue_paused = false;
+        }
+        self.meta_changed(cx);
+        self.interrupt_with(prompt, cx);
+    }
+
+    /// Like `send`, but a running turn is stopped first instead of the prompt
+    /// waiting in the queue behind it.
+    pub fn interrupt_with(&mut self, prompt: String, cx: &mut Context<Self>) {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        if !self.is_busy() {
+            return self.send(prompt, cx);
+        }
+        let paused = self.queue_paused;
+        self.after_stop = Some(prompt);
+        self.cancel(cx);
+        self.queue_paused = paused;
+        cx.notify();
+    }
+
     pub fn remove_queued(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.queue.len() {
             self.queue.remove(ix);
@@ -2456,7 +2487,7 @@ impl Thread {
         let Some(stuck) = self.stuck.take() else {
             return;
         };
-        self.rethink = Some(stuck.prompt());
+        self.after_stop = Some(stuck.prompt());
         if self.is_busy() {
             self.cancel(cx);
         } else {

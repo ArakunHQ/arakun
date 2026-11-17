@@ -672,7 +672,9 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
 - `Ctrl+Shift+H` turns [redacted mode](#redacted-mode) on or off
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
-  recalls earlier prompts; paste or drop images to attach them
+  recalls earlier prompts; paste or drop images to attach them. While the agent works,
+  `Enter` queues the message, `Ctrl+Enter` stops the turn and sends it now, and `Esc`
+  stops the turn. A queued message has a button to send it now too
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `O` open on
   GitHub; `Enter` sends a comment, `/` in the comment box lists the actions. In

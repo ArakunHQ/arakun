@@ -308,6 +308,7 @@ impl ThreadView {
             return None;
         }
         let paused = t.queue_paused();
+        let busy = t.is_busy();
         let button = |id: &'static str, glyph: Option<&'static str>, label: &'static str| {
             div()
                 .id(id)
@@ -494,6 +495,33 @@ impl ThreadView {
                                                 .truncate()
                                                 .text_color(theme::text_muted())
                                                 .child(text.replace('\n', " ")),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(("queue-now", i))
+                                                .group("queue-now")
+                                                .size(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(crate::ui::rad(8.))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(theme::fill_selected()))
+                                                .tooltip(crate::ui::tip(if busy {
+                                                    "Interrupt and send now"
+                                                } else {
+                                                    "Send now"
+                                                }))
+                                                .child(hover_icon(
+                                                    "arrow-up01",
+                                                    14.,
+                                                    theme::text_subtle(),
+                                                    theme::content(),
+                                                    "queue-now",
+                                                ))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.thread.update(cx, |t, cx| t.send_now(i, cx))
+                                                })),
                                         )
                                         .child(
                                             div()

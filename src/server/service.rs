@@ -995,6 +995,32 @@ mod tests {
         );
     }
 
+    /// The root case from review: a UTF-8 symlink that resolves to a folder whose
+    /// name is not. What a root unit would keep is the resolved path, and that is
+    /// refused. (The ownership check needs a root-owned target, so this covers
+    /// resolving and the UTF-8 check.)
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_name_that_is_not_utf8_is_refused_once_resolved() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let base = std::env::temp_dir().join(format!("arakun-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join(std::ffi::OsStr::from_bytes(b"server-\xff"));
+        // macOS (APFS) refuses such names; Linux allows them, and CI runs there.
+        if std::fs::create_dir(&target).is_ok() {
+            let alias = base.join("alias");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            assert!(text("ARAKUN_SERVER_DIR", &alias).is_ok());
+            let resolved = resolve(&alias.join("data")).unwrap();
+            assert!(resolved.as_os_str().as_bytes().contains(&0xff));
+            let e = text("ARAKUN_SERVER_DIR", &resolved).unwrap_err();
+            assert!(e.contains("UTF-8"), "{e}");
+            let _ = std::fs::remove_file(&alias);
+            let _ = std::fs::remove_dir(&target);
+        }
+        let _ = std::fs::remove_dir(&base);
+    }
+
     #[cfg(unix)]
     #[test]
     fn resolving_follows_what_exists_and_refuses_dot_dot() {

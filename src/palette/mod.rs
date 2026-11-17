@@ -319,9 +319,10 @@ pub struct Palette {
     cloud_to_pull: bool,
     /// A task is on its way: Enter doesn't send it twice.
     cloud_sending: bool,
-    /// The task's text and branch as sent: only those are cleared once the
-    /// Worker took it, so a next task typed meanwhile stays.
-    cloud_sent_draft: Option<(String, String)>,
+    /// The task's text, branch and destination as sent: only those are
+    /// cleared once the Worker took it, so a next task typed or pointed
+    /// elsewhere meanwhile stays.
+    cloud_sent_draft: Option<(String, String, bool)>,
     _sub: Subscription,
     _cloud_sub: Subscription,
 }
@@ -2180,7 +2181,7 @@ impl Palette {
         match cloud::request(&task, &seed, self.cloud_to_pull, &branch) {
             Ok(req) => {
                 self.cloud_sending = true;
-                self.cloud_sent_draft = Some((self.query(cx), branch));
+                self.cloud_sent_draft = Some((self.query(cx), branch, self.cloud_to_pull));
                 self.show_note("Sending to the cloud agent…", true, cx);
                 cx.emit(PaletteEvent::CloudTask(req));
             }
@@ -2202,6 +2203,7 @@ impl Palette {
                 let now = (
                     self.query(cx),
                     self.cloud_branch.read(cx).text().to_string(),
+                    self.cloud_to_pull,
                 );
                 if sent.as_ref() == Some(&now) {
                     // Sent from the branch field, which goes with the card.

@@ -1390,8 +1390,17 @@ impl GitHubView {
         match k.key.as_str() {
             "j" | "down" => self.step(1, cx),
             "k" | "up" => self.step(-1, cx),
-            "a" if pull && !mine => self.ask_confirm(Confirm::Approve, cx),
-            "c" if self.item().is_some() => window.focus(&self.comment.focus_handle(cx), cx),
+            // Both act in the sheet, so it opens first: the confirmation and
+            // the comment box are not on the list.
+            "a" if pull && !mine => {
+                self.sheet_open = true;
+                self.ask_confirm(Confirm::Approve, cx);
+            }
+            "c" if self.item().is_some() => {
+                self.sheet_open = true;
+                window.focus(&self.comment.focus_handle(cx), cx);
+                cx.notify();
+            }
             "r" if pull => self.review_with_agent(cx),
             "u" if self.item().is_some() => self.catch_up(cx),
             "s" if self.item().is_some() => self.summarize(cx),

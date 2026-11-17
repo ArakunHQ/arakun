@@ -454,12 +454,15 @@ impl GitHubView {
         let card_pane = Pane::new(&me, |this, cx| this.render_sheet(cx), cx);
         let body_pane = Pane::new(&me, |this, cx| this.render_body(cx), cx);
         let pilot_sub = cx.observe(&pilot, |this, pilot, cx| {
-            let (people, shown) = {
+            let (people, shown, open) = {
                 let p = pilot.read(cx);
-                (p.people(), p.shown_ids())
+                (p.people(), p.shown_ids(), p.open_decisions())
             };
             this.pilot_open.retain(|id| shown.contains(id));
-            this.pilot_notes.retain(|id, _| shown.contains(id));
+            // The board's questions aren't always shown cards (an answer
+            // hides its card): a failed answer's note stays while asked.
+            this.pilot_notes
+                .retain(|id, _| shown.contains(id) || open.contains(id));
             if let Some(b) = pilot.read(cx).board() {
                 this.answers.settle(b);
             }

@@ -928,6 +928,14 @@ impl Pilot {
     pub fn shown_ids(&self) -> HashSet<String> {
         self.shown().map(|i| i.id.clone()).collect()
     }
+
+    /// The item ids of the board's open questions.
+    pub fn open_decisions(&self) -> HashSet<String> {
+        self.board
+            .as_ref()
+            .map(super::board::Board::asking)
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

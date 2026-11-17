@@ -316,6 +316,14 @@ impl Board {
             .find(|p| p.number == number && p.repo.eq_ignore_ascii_case(repo))
     }
 
+    /// The item ids of the questions it asks now.
+    pub fn asking(&self) -> std::collections::HashSet<String> {
+        self.prs
+            .iter()
+            .filter_map(|p| p.open_decision().map(|d| d.item.clone()))
+            .collect()
+    }
+
     /// The pull request whose decision is the item `id`.
     pub fn find_decision(&self, id: &str) -> Option<&BoardPr> {
         self.prs.iter().find(|p| {
@@ -513,6 +521,8 @@ mod tests {
         let d = p.open_decision().unwrap();
         assert!(d.opciones.iter().all(|o| !o.texto.is_empty()));
         assert_eq!(b.find_decision(&d.item).map(|p| p.number), Some(151));
+        // Its question is what a failed answer's note is kept for.
+        assert!(b.asking().contains(&d.item));
         assert!(!b.hecho_hoy.is_empty());
     }
 

@@ -294,10 +294,12 @@ fn claude_defaults(mut options: Vec<ConfigOption>) -> Vec<ConfigOption> {
     options
 }
 
-/// Asks the Claude Code adapter for its options when none are cached: a session
-/// that never gets a prompt, so it costs no tokens. Blocking; run it off the main thread.
+/// Asks the Claude Code adapter for its options when none are cached and it is
+/// installed: a session that never gets a prompt, so it costs no tokens. Never
+/// installs it; the user agrees to that in a session. Blocking; run it off the
+/// main thread.
 pub fn refresh_claude() {
-    if !claude_options().is_empty() {
+    if !claude_options().is_empty() || launch::adapter_install(AgentKind::Claude).is_some() {
         return;
     }
     match fetch_options(AgentKind::Claude) {
@@ -311,7 +313,7 @@ pub fn refresh_claude() {
 fn fetch_options(kind: AgentKind) -> Result<(String, Value)> {
     let cwd = std::env::temp_dir().join(format!("arakun-{}-options", kind.id()));
     std::fs::create_dir_all(&cwd)?;
-    let spec = launch::resolve(kind, Some(&cwd), &|_| {})?;
+    let spec = launch::resolve(kind, Some(&cwd), false, &|_| {})?;
     let mut child = crate::platform::command(&spec.program)
         .args(&spec.args)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
@@ -545,11 +547,12 @@ pub fn remember_codex_options(raw: &Value) {
     }
 }
 
-/// Asks Codex for its options when none are cached and it is installed: a
-/// session that never gets a prompt, so it costs no tokens. Blocking; run it
+/// Asks Codex for its options when none are cached and its adapter is
+/// installed: a session that never gets a prompt, so it costs no tokens. Never
+/// installs the adapter; the user agrees to that in a session. Blocking; run it
 /// off the main thread.
 pub fn refresh_codex() {
-    if !codex_options().is_empty() || launch::codex_cli().is_none() {
+    if !codex_options().is_empty() || launch::adapter_install(AgentKind::Codex).is_some() {
         return;
     }
     match fetch_options(AgentKind::Codex) {

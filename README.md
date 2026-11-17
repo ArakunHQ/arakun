@@ -287,7 +287,8 @@ Developer ID and notarized by Apple. Move it to `Applications` and open it.
 
 Arakun does not bundle the agents. Install the ones you want to use:
 
-- Claude Code: Node.js with `npm` (Arakun installs the ACP adapter) and a `claude`
+- Claude Code: Node.js with `npm` (Arakun installs the ACP adapter in
+  `~/.local/share/arakun/agents`, or `%LOCALAPPDATA%\arakun\agents` on Windows) and a `claude`
   that is signed in or set up with an API key or another endpoint (`ANTHROPIC_BASE_URL`,
   such as a gateway or CLIProxyAPI) in `~/.claude/settings.json` or the environment.
 - Droid: Factory's `droid` CLI.
@@ -299,6 +300,11 @@ Arakun does not bundle the agents. Install the ones you want to use:
   `ARAKUN_CODEX_ACP` runs another adapter command instead.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+
+The first session with Claude Code or Codex asks before it installs the adapter, and shows
+the package, the folder and the npm command, so you can run it yourself instead. Once an
+adapter is installed, Arakun updates it to the pinned version without asking.
+`ARAKUN_CLAUDE_ACP` and `ARAKUN_CODEX_ACP` start another adapter instead.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`

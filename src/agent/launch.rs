@@ -314,6 +314,12 @@ pub fn which(name: &str) -> Option<PathBuf> {
     crate::platform::find_in(search_path(), name)
 }
 
+/// Whether an override variable names a program. A blank one is ignored, so it
+/// must not skip the install prompt either.
+fn names_program(raw: Option<&str>) -> bool {
+    raw.is_some_and(|r| r.split_whitespace().next().is_some())
+}
+
 fn from_override(var: &str) -> Option<Result<LaunchSpec>> {
     let raw = std::env::var(var).ok()?;
     let mut parts = raw.split_whitespace();
@@ -578,15 +584,140 @@ fn claude_adapter_bin() -> PathBuf {
     npm_bin(&agents_dir(), "claude-agent-acp")
 }
 
-/// Resolves how to start `kind` in ACP mode. Blocking: on the first Claude launch
-/// this runs `npm install` into [`agents_dir`]. `progress` gets a short status line.
-/// `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP` and `ARAKUN_CODEX_ACP`
-/// replace the command.
+/// An ACP adapter that has to be installed with npm before `kind` can start.
+/// [`resolve`] returns it as its error until the user agrees, so they see what
+/// goes where first. The adapter being there is the remembered answer: updates
+/// and repairs of an installed one don't ask again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdapterInstall {
+    pub kind: AgentKind,
+    pub package: &'static str,
+    pub dir: PathBuf,
+}
+
+/// The flags [`npm_install`] adds. `--include=optional` beats an `omit=optional`
+/// in the user's npm config: the Claude Code and Codex binaries are optional
+/// dependencies.
+const NPM_FLAGS: [&str; 4] = [
+    "--include=optional",
+    "--no-audit",
+    "--no-fund",
+    "--loglevel=error",
+];
+
+impl AdapterInstall {
+    /// The command arakun runs, for the user to read or run by hand.
+    pub fn command(&self) -> String {
+        let dir = shell_quote(&self.dir.display().to_string());
+        format!(
+            "npm install --prefix {dir} {} {}",
+            NPM_FLAGS[..3].join(" "),
+            self.package
+        )
+    }
+
+    /// The variable that starts another adapter instead.
+    pub fn override_var(&self) -> &'static str {
+        match self.kind {
+            AgentKind::Codex => "ARAKUN_CODEX_ACP",
+            _ => "ARAKUN_CLAUDE_ACP",
+        }
+    }
+}
+
+/// Every line stands alone: hosts without the install prompt (the server, the
+/// island) show this text as it is.
+impl std::fmt::Display for AdapterInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "{} needs its ACP adapter, which is not installed yet.",
+            self.kind.label()
+        )?;
+        writeln!(f, "Package: {}", self.package)?;
+        writeln!(f, "Folder: {}", self.dir.display())?;
+        writeln!(f, "Command: {}", self.command())?;
+        write!(
+            f,
+            "Install it from the session in Arakun, or run the command yourself and retry. \
+             {} starts another adapter instead.",
+            self.override_var()
+        )
+    }
+}
+
+impl std::error::Error for AdapterInstall {}
+
+/// `arg` as one word for the user's shell, so a folder with spaces, `$` or quotes
+/// in it stays that folder when they paste the command.
+fn shell_quote(arg: &str) -> String {
+    // A backslash separates folders on Windows but escapes in sh.
+    let safe = if cfg!(windows) {
+        "\\/._-+:,@"
+    } else {
+        "/._-+:,@"
+    };
+    let plain = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || safe.contains(c));
+    if plain {
+        arg.to_string()
+    } else if cfg!(windows) {
+        // cmd and PowerShell both take double quotes, and a Windows path can't hold one.
+        format!("\"{arg}\"")
+    } else {
+        // Nothing expands inside single quotes; a quote itself ends, is escaped
+        // and starts again.
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
+/// What has to be installed before `kind` can start, if anything: only the
+/// Claude and Codex adapters, and only when no override replaces them.
+pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
+    let (var, bin, package, dir) = match kind {
+        AgentKind::Claude => (
+            "ARAKUN_CLAUDE_ACP",
+            claude_adapter_bin(),
+            CLAUDE_ACP_PACKAGE,
+            agents_dir(),
+        ),
+        AgentKind::Codex => (
+            "ARAKUN_CODEX_ACP",
+            codex_adapter_bin(),
+            CODEX_ACP_PACKAGE,
+            codex_dir(),
+        ),
+        AgentKind::Droid | AgentKind::OpenCode | AgentKind::WorkersAi => return None,
+    };
+    if names_program(std::env::var(var).ok().as_deref()) || is_executable(&bin) {
+        return None;
+    }
+    Some(AdapterInstall { kind, package, dir })
+}
+
+/// Resolves how to start `kind` in ACP mode. Blocking: with `install`, a missing
+/// Claude or Codex adapter is installed with npm into [`agents_dir`]; without it,
+/// the error is an [`AdapterInstall`] that says what would be. `progress` gets a
+/// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`
+/// and `ARAKUN_CODEX_ACP` replace the command.
 pub fn resolve(
     kind: AgentKind,
     cwd: Option<&Path>,
+    install: bool,
     progress: &dyn Fn(String),
 ) -> Result<LaunchSpec> {
+    if let Some(needed) = adapter_install(kind) {
+        if !install {
+            return Err(needed.into());
+        }
+        progress(format!(
+            "Installing {} into {}…",
+            needed.package,
+            needed.dir.display()
+        ));
+    }
     let mut spec = match kind {
         AgentKind::Droid => match from_override("ARAKUN_DROID") {
             Some(spec) => spec?,
@@ -606,10 +737,10 @@ pub fn resolve(
                 let bin = claude_adapter_bin();
                 // One repair per run: when an antivirus keeps deleting the binary,
                 // reinstalling on every session start would only make each one slow.
-                if !is_executable(&bin)
-                    || (!claude_binary_ok() && !REPAIR_TRIED.swap(true, Ordering::Relaxed))
-                {
-                    progress("Installing the Claude Code ACP adapter…".into());
+                if !is_executable(&bin) {
+                    install_claude_adapter()?;
+                } else if !claude_binary_ok() && !REPAIR_TRIED.swap(true, Ordering::Relaxed) {
+                    progress("Repairing the Claude Code ACP adapter…".into());
                     install_claude_adapter()?;
                 } else if !claude_adapter_current() && !UPGRADE_TRIED.swap(true, Ordering::Relaxed)
                 {
@@ -661,7 +792,6 @@ pub fn resolve(
                 None => {
                     let bin = codex_adapter_bin();
                     if !is_executable(&bin) {
-                        progress("Installing the Codex ACP adapter…".into());
                         install_codex_adapter()?;
                     } else if !adapter_current(&codex_dir(), CODEX_ACP_PACKAGE)
                         && !CODEX_UPGRADE_TRIED.swap(true, Ordering::Relaxed)
@@ -820,19 +950,12 @@ fn install_codex_adapter() -> Result<()> {
     Ok(())
 }
 
-/// `--include=optional` beats an `omit=optional` in the user's npm config: the
-/// Claude Code and Codex binaries are optional dependencies.
 fn npm_install(npm: &Path, dir: &Path, package: &str, kind: AgentKind) -> Result<()> {
     let out = crate::platform::command(npm)
         .args(["install", "--prefix"])
         .arg(dir)
-        .args([
-            "--include=optional",
-            "--no-audit",
-            "--no-fund",
-            "--loglevel=error",
-            package,
-        ])
+        .args(NPM_FLAGS)
+        .arg(package)
         .env("PATH", child_path_env())
         .stdin(Stdio::null())
         .output()
@@ -858,6 +981,67 @@ fn npm_install(npm: &Path, dir: &Path, package: &str, kind: AgentKind) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_install_says_what_where_and_how() {
+        let plan = AdapterInstall {
+            kind: AgentKind::Codex,
+            package: CODEX_ACP_PACKAGE,
+            dir: PathBuf::from("/data/arakun/agents/codex"),
+        };
+        assert_eq!(
+            plan.command(),
+            format!(
+                "npm install --prefix /data/arakun/agents/codex --include=optional --no-audit --no-fund {CODEX_ACP_PACKAGE}"
+            )
+        );
+        let text = plan.to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[0],
+            "Codex needs its ACP adapter, which is not installed yet."
+        );
+        assert_eq!(lines[1], format!("Package: {CODEX_ACP_PACKAGE}"));
+        assert_eq!(lines[2], "Folder: /data/arakun/agents/codex");
+        assert!(lines[4].contains("ARAKUN_CODEX_ACP"));
+        // The thread finds the plan in the error `resolve` returns.
+        let err: anyhow::Error = plan.clone().into();
+        assert_eq!(err.downcast_ref::<AdapterInstall>(), Some(&plan));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_install_folder_stays_one_word_in_the_shell() {
+        assert_eq!(shell_quote("/home/a/.local/share"), "/home/a/.local/share");
+        assert_eq!(shell_quote("/Users/a b/x"), "'/Users/a b/x'");
+        assert_eq!(shell_quote("/home/a$b/x"), "'/home/a$b/x'");
+        assert_eq!(shell_quote("/home/a\\b/x"), "'/home/a\\b/x'");
+        assert_eq!(shell_quote("/home/o'neil/x"), r"'/home/o'\''neil/x'");
+        let plan = AdapterInstall {
+            kind: AgentKind::Claude,
+            package: CLAUDE_ACP_PACKAGE,
+            dir: PathBuf::from("/Users/a b/Library/Application Support/arakun/agents"),
+        };
+        assert!(plan.command().starts_with(
+            "npm install --prefix '/Users/a b/Library/Application Support/arakun/agents' "
+        ));
+        assert_eq!(plan.override_var(), "ARAKUN_CLAUDE_ACP");
+    }
+
+    #[test]
+    fn a_blank_override_still_asks_before_installing() {
+        assert!(!names_program(None));
+        assert!(!names_program(Some("")));
+        assert!(!names_program(Some("  \t")));
+        assert!(names_program(Some("my-adapter --flag")));
+    }
+
+    #[test]
+    fn only_the_npm_adapters_are_installed() {
+        for kind in [AgentKind::Droid, AgentKind::OpenCode, AgentKind::WorkersAi] {
+            assert_eq!(adapter_install(kind), None);
+        }
+    }
 
     #[test]
     fn codex_auth_reads_only_the_mode() {

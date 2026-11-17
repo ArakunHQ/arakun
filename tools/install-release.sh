@@ -259,8 +259,17 @@ main() {
       # Chromium's child processes load the runtime again, so under a running Arakun
       # they would get another CEF build than the window. The same build is left as
       # is, and with none installed yet a running Arakun has none loaded.
-      if [ -f "$cef/libcef.so" ] && pgrep -x -u "$(id -u)" arakun >/dev/null 2>&1; then
-        die "this release has a new browser runtime; quit Arakun (close this terminal too if it is Arakun's) and run the installer again"
+      if [ -f "$cef/libcef.so" ]; then
+        # pgrep exits 1 when nothing matches; anything else means it could not tell.
+        command -v pgrep >/dev/null ||
+          die "pgrep is needed to check that Arakun is not running (it comes with procps)"
+        running=0
+        pgrep -x -u "$(id -u)" arakun >/dev/null 2>&1 || running=$?
+        case $running in
+          0) die "this release has a new browser runtime; quit Arakun (close this terminal too if it is Arakun's) and run the installer again" ;;
+          1) ;;
+          *) die "could not check whether Arakun is running (pgrep exited $running)" ;;
+        esac
       fi
     fi
     # A rename, so an Arakun that is running keeps its old binary.

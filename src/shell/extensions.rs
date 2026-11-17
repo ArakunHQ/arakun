@@ -34,6 +34,17 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let ExtensionsEvent::Toggled(view, on) = *ev {
+            // Turned on, it shows where the user would look for it, even if
+            // they took it out of their layout before.
+            if on {
+                self.change_sidebar(cx, |s| {
+                    s.place(view);
+                });
+            }
+            cx.notify();
+            return;
+        }
         if !self.has_projects() {
             return;
         }
@@ -43,6 +54,7 @@ impl Shell {
                 self.run_in_terminal(&env_path, command, true, window, cx);
             }
             ExtensionsEvent::Open(path) => self.open_file_beside(&env_path, path, None, window, cx),
+            ExtensionsEvent::Toggled(..) => {}
         }
     }
 }

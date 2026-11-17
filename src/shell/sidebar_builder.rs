@@ -655,7 +655,11 @@ impl Shell {
                 "Projects".into(),
                 None,
             ));
+        // Extensions that are off are added in the Marketplace, not here.
         for &v in View::ALL {
+            if !self.rail_shows(&Piece::view(v), cx) {
+                continue;
+            }
             let note = self.sidebar.is_new(v).then_some("New");
             col = col.child(piece_row(
                 format!("sb-p-{}", view_id(v)).into(),
@@ -665,6 +669,20 @@ impl Shell {
                 note,
             ));
         }
+        col = col.child(
+            piece_row(
+                "sb-p-more".into(),
+                None,
+                "store01",
+                "More in Marketplace…".into(),
+                None,
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.open_extensions_tab(window, cx);
+                this.extensions_view
+                    .update(cx, |v, cx| v.show_extensions(cx));
+            })),
+        );
         col = col
             .child(panel_title("Your own"))
             .child(
@@ -968,7 +986,10 @@ impl Shell {
             );
         let mut body = div().flex().flex_col().gap(crate::ui::sp(1.));
         for (ii, item) in section.items.iter().enumerate() {
-            body = body.child(self.render_builder_item((si, ii), item, cx));
+            // An extension that is off keeps its place for when it is back on.
+            if self.rail_shows(&item.piece, cx) {
+                body = body.child(self.render_builder_item((si, ii), item, cx));
+            }
         }
         let end = section.items.len();
         body = body.child(

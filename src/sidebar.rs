@@ -65,6 +65,25 @@ impl View {
         View::Team,
     ];
 
+    /// Views that stay out of the rail until turned on in the Marketplace.
+    /// The rest are the core every sidebar can hold.
+    pub const EXTENSIONS: &[View] = &[
+        View::GitHub,
+        View::Notes,
+        View::Memory,
+        View::Usage,
+        View::Cloudflare,
+        View::PostHog,
+        View::Isometric,
+        View::Phone,
+        View::Servers,
+        View::Automations,
+    ];
+
+    pub fn is_extension(self) -> bool {
+        View::EXTENSIONS.contains(&self)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             View::Inbox => "Inbox",
@@ -119,8 +138,7 @@ impl View {
         }
     }
 
-    /// One line for the block library.
-    #[allow(dead_code)] // the builder does not list views with a blurb yet
+    /// One line on what the view is, for the Marketplace.
     pub fn blurb(self) -> &'static str {
         match self {
             View::Inbox => "Sessions waiting for you, and past notifications",
@@ -895,6 +913,35 @@ impl Sidebar {
         (s < self.sections.len()).then(|| self.sections.remove(s))
     }
 
+    /// Puts a view the rail does not hold at the end of the segment with the
+    /// most views, else of the first scrolling one. False when it is there.
+    pub fn place(&mut self, view: View) -> bool {
+        let piece = Piece::view(view);
+        if self.has(&piece) {
+            return false;
+        }
+        let views = |s: &Section| {
+            s.items
+                .iter()
+                .filter(|i| matches!(i.piece, Piece::View { .. }))
+                .count()
+        };
+        // On a tie the first segment wins: max_by_key would take the last.
+        let most = self
+            .sections
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| views(s) > 0)
+            .min_by_key(|(i, s)| (std::cmp::Reverse(views(s)), *i))
+            .map(|(i, _)| i);
+        let Some(s) = most.or_else(|| self.sections.iter().position(|s| s.mode == Mode::Scroll))
+        else {
+            return false;
+        };
+        let end = self.sections[s].items.len();
+        self.insert(Item::new(piece), (s, end))
+    }
+
     /// One of each unique piece.
     fn tidy(&mut self) {
         let mut seen: Vec<Piece> = Vec::new();
@@ -923,10 +970,94 @@ fn shift(to: Path, removed: Path) -> Path {
 }
 
 fn file() -> PathBuf {
+    near_state("sidebar.json")
+}
+
+fn near_state(name: &str) -> PathBuf {
     match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("sidebar.json"),
-        None => crate::state::data_dir().join("sidebar.json"),
+        Some(state) => state.with_file_name(name),
+        None => crate::state::data_dir().join(name),
     }
+}
+
+/// The extension views turned on in the Marketplace. Kept apart from the
+/// layout, so a template or an undo in the builder leaves them as they are.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Extensions {
+    #[serde(default)]
+    pub on: Vec<View>,
+}
+
+impl Extensions {
+    /// The saved choice. The first time, it keeps what `layout` already
+    /// shows for someone who used Arakun before, so an update hides nothing,
+    /// and starts with none on a new install. The choice is saved at once.
+    pub fn load(layout: &Sidebar) -> Self {
+        if let Some(saved) = std::fs::read(extensions_file())
+            .ok()
+            .and_then(|b| Self::parse(&b))
+        {
+            return saved;
+        }
+        let first = Self::first(layout, crate::state::exists());
+        first.save();
+        first
+    }
+
+    pub fn save(&self) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
+            let _ = crate::durable::write(&extensions_file(), &bytes);
+        }
+    }
+
+    /// Skips views this version does not know.
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        let on = v
+            .get("on")?
+            .as_array()?
+            .iter()
+            .filter_map(|x| serde_json::from_value::<View>(x.clone()).ok())
+            .filter(|v| v.is_extension())
+            .collect();
+        Some(Extensions { on })
+    }
+
+    fn first(layout: &Sidebar, used_before: bool) -> Self {
+        let on = if used_before {
+            View::EXTENSIONS
+                .iter()
+                .copied()
+                .filter(|v| layout.has(&Piece::view(*v)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Extensions { on }
+    }
+
+    /// Whether the rail shows `view`: always for the core, and for an
+    /// extension once it is on.
+    pub fn shows(&self, view: View) -> bool {
+        !view.is_extension() || self.on.contains(&view)
+    }
+
+    /// Turns an extension on or off. False when nothing changed.
+    pub fn set(&mut self, view: View, on: bool) -> bool {
+        if !view.is_extension() || self.on.contains(&view) == on {
+            return false;
+        }
+        if on {
+            self.on.push(view);
+        } else {
+            self.on.retain(|v| *v != view);
+        }
+        true
+    }
+}
+
+fn extensions_file() -> PathBuf {
+    near_state("extensions.json")
 }
 
 #[cfg(test)]
@@ -1077,6 +1208,86 @@ mod tests {
                 p.label()
             );
         }
+    }
+
+    #[test]
+    fn the_core_views_are_not_extensions() {
+        for v in [View::Inbox, View::Runs, View::Branches, View::Extensions] {
+            assert!(!v.is_extension(), "{}", v.label());
+        }
+        assert!(View::EXTENSIONS.iter().all(|v| View::ALL.contains(v)));
+    }
+
+    #[test]
+    fn an_update_keeps_the_extensions_a_rail_had() {
+        let mut layout = small();
+        layout.insert(Item::new(Piece::view(View::Cloudflare)), (1, 0));
+        let before = Extensions::first(&layout, true);
+        assert_eq!(before.on, [View::Cloudflare]);
+        assert!(before.shows(View::Cloudflare));
+        assert!(!before.shows(View::PostHog));
+        // The core shows whether or not anything is on.
+        assert!(before.shows(View::Runs));
+
+        let new = Extensions::first(&Sidebar::default(), false);
+        assert!(new.on.is_empty());
+        assert!(View::EXTENSIONS.iter().all(|v| !new.shows(*v)));
+        assert!(new.shows(View::Extensions));
+    }
+
+    #[test]
+    fn extensions_turn_on_and_off_once() {
+        let mut e = Extensions::default();
+        assert!(e.set(View::PostHog, true));
+        assert!(!e.set(View::PostHog, true));
+        assert!(!e.set(View::Runs, true), "the core is not an extension");
+        assert_eq!(e.on, [View::PostHog]);
+        assert!(e.set(View::PostHog, false));
+        assert!(e.on.is_empty());
+    }
+
+    #[test]
+    fn saved_extensions_skip_what_this_version_lacks() {
+        let e = Extensions::parse(br#"{"on":["cloudflare","teleporter","runs"]}"#).unwrap();
+        assert_eq!(e.on, [View::Cloudflare]);
+        assert_eq!(
+            Extensions::parse(br#"{"on":[]}"#),
+            Some(Extensions::default())
+        );
+        assert_eq!(Extensions::parse(b"{}"), None);
+    }
+
+    #[test]
+    fn a_view_turned_on_lands_beside_the_other_views() {
+        let mut s = small();
+        assert!(s.place(View::Cloudflare));
+        // A and B hold one view each; the first of them wins.
+        assert_eq!(
+            names(&s),
+            [
+                "A[Search,Inbox,Cloudflare]",
+                "B[Projects,Runs]",
+                "C[Settings]"
+            ]
+        );
+        assert!(!s.place(View::Cloudflare), "already there");
+        // With no view anywhere, it goes to the first scrolling segment.
+        let mut bare = Sidebar {
+            style: Style::default(),
+            sections: vec![
+                Section::new("A", Mode::Fixed, vec![Piece::Search]),
+                Section::new("B", Mode::Scroll, vec![Piece::projects()]),
+            ],
+            known: View::ALL.to_vec(),
+        };
+        assert!(bare.place(View::Notes));
+        assert_eq!(names(&bare), ["A[Search]", "B[Projects,Notes]"]);
+        let mut none = Sidebar {
+            style: Style::default(),
+            sections: vec![],
+            known: vec![],
+        };
+        assert!(!none.place(View::Notes));
     }
 
     #[test]

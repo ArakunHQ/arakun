@@ -291,6 +291,21 @@ impl Shell {
         self.change_sidebar(cx, f);
     }
 
+    /// Whether the rail draws a piece: a view that is an extension only once
+    /// it is turned on in the Marketplace.
+    pub(super) fn rail_shows(&self, piece: &Piece, cx: &App) -> bool {
+        match piece {
+            Piece::View { view } => self.extensions_view.read(cx).shows(*view),
+            _ => true,
+        }
+    }
+
+    /// A segment that holds only extensions that are off draws nothing, not
+    /// even its title.
+    pub(super) fn rail_section_hidden(&self, section: &Section, cx: &App) -> bool {
+        !section.items.is_empty() && section.items.iter().all(|i| !self.rail_shows(&i.piece, cx))
+    }
+
     pub(super) fn hide_rail_item(&mut self, path: crate::sidebar::Path, cx: &mut Context<Self>) {
         self.menu = None;
         self.edit_sidebar(cx, |s| {
@@ -323,7 +338,7 @@ impl Shell {
             );
         };
         for (si, section) in self.sidebar.sections.iter().enumerate() {
-            if narrow && section.hide_in_icons {
+            if (narrow && section.hide_in_icons) || self.rail_section_hidden(section, cx) {
                 continue;
             }
             let el = self.render_section(si, section, cx);
@@ -387,7 +402,7 @@ impl Shell {
                 .items
                 .iter()
                 .filter_map(|i| match i.piece {
-                    Piece::View { view } => self
+                    Piece::View { view } if self.rail_shows(&i.piece, cx) => self
                         .view_badge(view, cx)
                         .filter(|b| b.urgent)
                         .map(|b| b.count),
@@ -500,6 +515,9 @@ impl Shell {
         item: &Item,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if !self.rail_shows(&item.piece, cx) {
+            return None;
+        }
         let narrow = self.rail_narrow();
         let style = self.sidebar.style;
         let badge = match &item.piece {

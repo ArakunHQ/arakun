@@ -4,7 +4,9 @@
 //! scope, plugins (with a switch), skills and permission rules
 //! (`agent::claude_ext`). For Droid, it is its plugins (Claude SEO with an
 //! install button), MCP servers and skills, each with a switch
-//! (`agent::extensions`, `agent::plugins`).
+//! (`agent::extensions`, `agent::plugins`). Arakun's own extensions, tabs the
+//! sidebar shows only once they are on here, have a page of their own
+//! (`sidebar::Extensions`).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -23,6 +25,7 @@ use crate::agent::extensions::{self, Extensions};
 use crate::agent::plugins::{self, Plugins, Runtime};
 use crate::input::{InputEvent, TextInput};
 use crate::logos;
+use crate::sidebar::{self, View};
 use crate::theme;
 use crate::ui::Typography as _;
 use crate::ui::{self, ButtonKind, Tone, Type, icon};
@@ -45,6 +48,8 @@ pub enum ExtensionsEvent {
     Run(String),
     /// A file to show beside the chat.
     Open(PathBuf),
+    /// An extension was turned on or off: the sidebar shows it, or not.
+    Toggled(View, bool),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -62,6 +67,8 @@ enum Kind {
     Permissions,
     /// Plugins and MCP servers to add.
     Marketplace,
+    /// Arakun's own extensions: tabs for the sidebar.
+    Arakun,
 }
 
 /// A way out for a server that needs you.
@@ -221,12 +228,15 @@ pub struct ExtensionsView {
     _droid_task: Option<Task<()>>,
     _plugins_task: Option<Task<()>>,
     _query: Subscription,
+
+    /// The extensions turned on, which the sidebar shows.
+    views: sidebar::Extensions,
 }
 
 impl EventEmitter<ExtensionsEvent> for ExtensionsView {}
 
 impl ExtensionsView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(views: sidebar::Extensions, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| TextInput::new("Search plugins and MCP servers…", cx));
         let sub = cx.subscribe(&query, |this, input, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => {
@@ -291,6 +301,25 @@ impl ExtensionsView {
             _droid_task: None,
             _plugins_task: None,
             _query: sub,
+            views,
+        }
+    }
+
+    /// Whether the sidebar shows `view`: the core always, an extension once on.
+    pub fn shows(&self, view: View) -> bool {
+        self.views.shows(view)
+    }
+
+    /// Opens the page of Arakun's own extensions.
+    pub fn show_extensions(&mut self, cx: &mut Context<Self>) {
+        self.set_kind(Kind::Arakun, cx);
+    }
+
+    fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
+        if self.views.set(view, on) {
+            self.views.save();
+            cx.emit(ExtensionsEvent::Toggled(view, on));
+            cx.notify();
         }
     }
 
@@ -1981,6 +2010,20 @@ const SERVER_COLS: [Col; 5] = [
         width: Some(ACTIONS_W),
     },
 ];
+const VIEW_COLS: [Col; 3] = [
+    Col {
+        label: "Name",
+        width: None,
+    },
+    Col {
+        label: "Status",
+        width: Some(STATUS_W),
+    },
+    Col {
+        label: "",
+        width: Some(ACTIONS_W),
+    },
+];
 const PLUGIN_COLS: [Col; 5] = [
     Col {
         label: "Name",
@@ -2495,13 +2538,14 @@ impl ExtensionsView {
             Kind::Plugins => "Filter plugins…",
             Kind::Skills => "Filter skills…",
             Kind::Permissions => "Filter permission rules…",
+            Kind::Arakun => "Filter extensions…",
         };
         self.query.update(cx, |q, cx| q.set_placeholder(hint, cx));
         cx.notify();
     }
 
-    /// The column at the left: whose things, what there is to add, what is
-    /// installed, and in Discover its categories.
+    /// The column at the left: Arakun's own extensions, then whose things,
+    /// what there is to add, what is installed, and in Discover its categories.
     fn render_nav(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let which = self.which;
         let mut agents = ui::segmented().w_full();
@@ -2529,7 +2573,24 @@ impl ExtensionsView {
             .py(crate::ui::sp(16.))
             .border_r_1()
             .border_color(theme::border_subtle())
-            .child(div().flex_none().pb(crate::ui::sp(12.)).child(agents));
+            .child(nav_heading("Arakun", false))
+            .child(
+                market::nav_row(
+                    "ext-arakun",
+                    "dashboard-square01",
+                    "Extensions",
+                    Some(self.views.on.len()),
+                    self.kind == Kind::Arakun,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.set_kind(Kind::Arakun, cx))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .pt(crate::ui::sp(16.))
+                    .pb(crate::ui::sp(12.))
+                    .child(agents),
+            );
 
         if which == Which::Claude {
             nav = nav.child(nav_heading("Discover", false));
@@ -2618,6 +2679,97 @@ impl ExtensionsView {
         nav
     }
 
+    /// Arakun's extensions, each with a switch. On, it shows in the sidebar.
+    fn render_views(&self, cx: &mut Context<Self>) -> Div {
+        let words = self.words(cx);
+        let rows: Vec<AnyElement> = View::EXTENSIONS
+            .iter()
+            .copied()
+            .filter(|v| {
+                let hay = format!("{} {}", v.label(), v.blurb()).to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .map(|v| self.view_row(v, cx).into_any_element())
+            .collect();
+        let rows = if rows.is_empty() {
+            vec![empty_row("No extension matches.").into_any_element()]
+        } else {
+            rows
+        };
+        let on = self.views.on.len();
+        section(
+            "Extensions",
+            "Tabs you can add to the sidebar. Turned off, they stay out of it.",
+            Some(
+                div()
+                    .ty(Type::Caption)
+                    .text_color(theme::text_subtle())
+                    .child(format!("{on} of {} on", View::EXTENSIONS.len()))
+                    .into_any_element(),
+            ),
+            table(&VIEW_COLS, rows),
+        )
+    }
+
+    fn view_row(&self, view: View, cx: &mut Context<Self>) -> Stateful<Div> {
+        let on = self.views.shows(view);
+        row_base(
+            SharedString::from(format!("ext-view-{}", view.label())),
+            ROW_H,
+        )
+        .child(
+            cell(None)
+                .gap(crate::ui::sp(12.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(32.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::fill_raised())
+                        .when(!on, |d| d.opacity(0.55))
+                        .child(icon(view.icon(), 16.).text_color(theme::text_subtle())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .gap(crate::ui::sp(1.))
+                        .child(
+                            div()
+                                .truncate()
+                                .ty(Type::Body)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if on {
+                                    theme::text()
+                                } else {
+                                    theme::text_muted()
+                                })
+                                .child(view.label()),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .ty(Type::Caption)
+                                .text_color(theme::text_subtle())
+                                .child(view.blurb()),
+                        ),
+                ),
+        )
+        .child(cell(Some(STATUS_W)).child(if on {
+            status_pill("On", Tone::Success)
+        } else {
+            status_pill("Off", Tone::Neutral)
+        }))
+        .child(cell(Some(ACTIONS_W)).justify_end().child(ui::switch(on)))
+        .on_click(cx.listener(move |this, _, _, cx| this.set_view(view, !on, cx)))
+    }
+
     /// The last error and what the last action did.
     fn render_notes(&self) -> Option<Div> {
         (self.error.is_some() || self.notice.is_some()).then(|| {
@@ -2666,6 +2818,7 @@ impl Render for ExtensionsView {
 
         let market = which == Which::Claude && self.kind == Kind::Marketplace;
         let body: AnyElement = match which {
+            _ if self.kind == Kind::Arakun => self.render_views(cx).into_any_element(),
             Which::Claude if market => div().into_any_element(),
             Which::Claude => match &self.claude {
                 Some(x) => self.render_claude(x, cx).into_any_element(),
@@ -2717,9 +2870,11 @@ impl Render for ExtensionsView {
                             .truncate()
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
-                            .child(format!(
-                                "Plugins and MCP servers for your agents in {place}"
-                            )),
+                            .child(if self.kind == Kind::Arakun {
+                                "Tabs for the sidebar, on every project".to_string()
+                            } else {
+                                format!("Plugins and MCP servers for your agents in {place}")
+                            }),
                     ),
             )
             .child(

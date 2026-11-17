@@ -53,6 +53,11 @@ fn badge_pill(b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
     }
 }
 
+/// The number on the Inbox button. Two characters at most fit its corner.
+fn inbox_count_label(n: usize) -> String {
+    if n > 9 { "9+".into() } else { n.to_string() }
+}
+
 pub(super) fn view_id(view: View) -> &'static str {
     match view {
         View::Inbox => "nav-inbox",
@@ -350,8 +355,28 @@ impl Shell {
             .gap(crate::ui::sp(1.))
             .px(crate::ui::sp(8.));
         if !folded {
+            // Narrowed, every piece is one icon in a column, so Inbox keeps its row.
+            let pair = if narrow {
+                None
+            } else {
+                section.inbox_by_search()
+            };
             for (ii, item) in section.items.iter().enumerate() {
-                if let Some(el) = self.render_item((si, ii), item, cx) {
+                let el = match pair {
+                    Some((_, inbox)) if inbox == ii => continue,
+                    Some((search, inbox)) if search == ii => {
+                        self.render_item((si, ii), item, cx).map(|search| {
+                            self.render_search_with_inbox(
+                                search,
+                                (si, inbox),
+                                &section.items[inbox],
+                                cx,
+                            )
+                        })
+                    }
+                    _ => self.render_item((si, ii), item, cx),
+                };
+                if let Some(el) = el {
                     body = body.child(el);
                 }
             }
@@ -716,6 +741,140 @@ impl Shell {
         Some(el)
     }
 
+    /// Search with Inbox as a square button at its end, for when the user
+    /// put the two next to each other.
+    fn render_search_with_inbox(
+        &self,
+        search: AnyElement,
+        path: crate::sidebar::Path,
+        inbox: &Item,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(6.))
+            .child(div().flex_1().min_w_0().child(search))
+            .children(self.render_inbox_button(path, inbox, cx))
+            .into_any_element()
+    }
+
+    /// The Inbox as a button the height of a rail row, with its count on
+    /// the corner.
+    fn render_inbox_button(
+        &self,
+        path: crate::sidebar::Path,
+        item: &Item,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let style = self.sidebar.style;
+        let badge = if style.badges {
+            self.view_badge(View::Inbox, cx)
+        } else {
+            None
+        };
+        if item.only_when_busy && badge.is_none() {
+            return None;
+        }
+        let open = matches!(
+            self.menu,
+            Some(ContextMenu {
+                target: MenuTarget::Inbox,
+                ..
+            })
+        );
+        let lead: AnyElement = match &item.emoji {
+            Some(e) => div()
+                .text_size(px(ui::TEXT_MD))
+                .child(e.clone())
+                .into_any_element(),
+            None => icon(item.piece.icon(), 15.)
+                .text_color(if open {
+                    theme::content()
+                } else {
+                    theme::text_subtle()
+                })
+                .into_any_element(),
+        };
+        let mark = badge.and_then(|b| self.inbox_mark(b, item.badge));
+        Some(
+            div()
+                .id(view_id(View::Inbox))
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(style.density.row_h()))
+                .rounded(crate::ui::rad(8.))
+                .bg(if open {
+                    theme::fill_selected()
+                } else {
+                    theme::fill_hover()
+                })
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::fill_selected()))
+                // Open, the tooltip would sit over the Inbox's own title.
+                .when(!open, |d| d.tooltip(ui::tip_text(item.name())))
+                .child(lead)
+                .children(mark)
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, window, cx| {
+                    this.open_view(View::Inbox, ev.position(), window, cx)
+                }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.menu = Some(ContextMenu {
+                            target: MenuTarget::RailBlock(path.0, Some(path.1)),
+                            at: ev.position,
+                        });
+                        cx.notify();
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The Inbox button's badge: a filled count on its top-right corner,
+    /// ringed in the rail's ground so it stands off the button.
+    fn inbox_mark(&self, b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
+        let ground = match self.sidebar.style.variant {
+            crate::sidebar::Variant::Flush => theme::window_bg(),
+            _ => theme::sidebar(),
+        };
+        let mark = div()
+            .absolute()
+            .rounded_full()
+            .border_2()
+            .border_color(ground)
+            .bg(b.color());
+        match mode {
+            BadgeMode::Off => None,
+            BadgeMode::Urgent if !b.urgent => None,
+            BadgeMode::Dot => Some(mark.top(px(-2.)).right(px(-2.)).size(px(10.))),
+            _ => Some(
+                mark.top(px(-5.))
+                    .right(px(-5.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .h(px(17.))
+                    .min_w(px(17.))
+                    .px(crate::ui::sp(3.))
+                    .font_family(theme::FONT_MONO)
+                    .text_size(px(ui::TEXT_XS))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if b.color == Some(theme::needs_you()) {
+                        theme::on_accent()
+                    } else {
+                        theme::background()
+                    })
+                    .child(inbox_count_label(b.count)),
+            ),
+        }
+    }
+
     pub(super) fn render_usage_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let seats = crate::agent::plan::latest_seats();
         account_view::rail_card(
@@ -851,5 +1010,17 @@ impl Shell {
                 })),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_inbox_count_stops_at_nine() {
+        assert_eq!(inbox_count_label(1), "1");
+        assert_eq!(inbox_count_label(9), "9");
+        assert_eq!(inbox_count_label(10), "9+");
     }
 }

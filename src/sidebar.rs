@@ -497,6 +497,22 @@ impl Section {
         }
     }
 
+    /// Where Inbox sits right before or after Search: the two then share a
+    /// row, Inbox as a small button at the end of the search box. Returns
+    /// the index of Search, then of Inbox.
+    pub fn inbox_by_search(&self) -> Option<(usize, usize)> {
+        let search = self.items.iter().position(|i| i.piece == Piece::Search)?;
+        let is_inbox = |i: usize| {
+            self.items
+                .get(i)
+                .is_some_and(|it| it.piece == Piece::view(View::Inbox))
+        };
+        [search + 1, search.wrapping_sub(1)]
+            .into_iter()
+            .find(|&i| is_inbox(i))
+            .map(|inbox| (search, inbox))
+    }
+
     fn titled(mut self) -> Self {
         self.show_title = true;
         self
@@ -579,7 +595,6 @@ impl Preset {
             #[cfg(feature = "team")]
             View::Team,
         ];
-        let top = Section::new("Top", Mode::Fixed, vec![Piece::Search]);
         let projects = Section::new("Projects", Mode::Scroll, vec![Piece::projects()])
             .titled()
             .with_action(TitleAction::AddProject);
@@ -684,9 +699,24 @@ impl Preset {
                     account(vec![Piece::Settings]),
                 ]
             }
+            // Inbox sits by Search, where it shares the search box's row.
             Preset::Everything => vec![
-                top,
-                Section::new("Views", Mode::Scroll, views(View::ALL)),
+                Section::new(
+                    "Top",
+                    Mode::Fixed,
+                    vec![Piece::Search, Piece::view(View::Inbox)],
+                ),
+                Section::new(
+                    "Views",
+                    Mode::Scroll,
+                    views(
+                        &View::ALL
+                            .iter()
+                            .copied()
+                            .filter(|v| *v != View::Inbox)
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
                 projects,
                 account(vec![Piece::Usage, Piece::Settings]),
             ],
@@ -1047,5 +1077,26 @@ mod tests {
                 p.label()
             );
         }
+    }
+
+    #[test]
+    fn inbox_joins_search_only_when_next_to_it() {
+        let sec = |pieces| Section::new("A", Mode::Fixed, pieces);
+        let inbox = || Piece::view(View::Inbox);
+        let runs = || Piece::view(View::Runs);
+        assert_eq!(
+            sec(vec![Piece::Search, inbox()]).inbox_by_search(),
+            Some((0, 1))
+        );
+        assert_eq!(
+            sec(vec![runs(), inbox(), Piece::Search]).inbox_by_search(),
+            Some((2, 1))
+        );
+        assert_eq!(
+            sec(vec![Piece::Search, runs(), inbox()]).inbox_by_search(),
+            None
+        );
+        assert_eq!(sec(vec![Piece::Search]).inbox_by_search(), None);
+        assert_eq!(sec(vec![inbox()]).inbox_by_search(), None);
     }
 }

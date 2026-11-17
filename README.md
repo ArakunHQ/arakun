@@ -153,8 +153,10 @@ it shows in `github/avatars/` (each downloaded again after a week).
   (`arakun island-host`) and needs a compositor with the wlr-layer-shell protocol.
 - **Notification history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
-  grouped by day. Click one to open what it is about. The Inbox's badge counts the
-  unread ones; they count as read when you close it. Arakun keeps the last 300 in
+  grouped by day. Click one to open what it is about. The Inbox is the button at the end
+  of the search box when it sits next to Search in the sidebar (as in every preset), and
+  a row of its own anywhere else. Its badge counts the unread ones (9+ past nine); they
+  count as read when you close it. Arakun keeps the last 300 in
   `notices.json` next to its state. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
   prompts and answer the agent. Phones reach the computer over the local network (the

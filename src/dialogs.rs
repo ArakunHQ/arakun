@@ -225,7 +225,7 @@ impl Focusable for CreateEnvDialog {
 
 /// A random name is taken when its worktree folder exists: the new one would get a
 /// `-2` folder that no longer matches it.
-fn folder_taken(project: &str, name: &str) -> bool {
+pub(crate) fn folder_taken(project: &str, name: &str) -> bool {
     workspaces_root()
         .join(project)
         .join(name.replace('/', "-"))

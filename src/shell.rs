@@ -118,6 +118,7 @@ gpui::actions!(
         NewSession,
         AddProject,
         NewEnvironment,
+        NewEnvironmentWithOptions,
         CloseTab,
         NewTerminal,
         NewBrowserTab,
@@ -212,6 +213,13 @@ enum MenuTarget {
     ProjectSwitch,
 }
 
+/// An environment made with one click, shown while its worktree is made.
+struct PendingEnv {
+    /// The project's repository.
+    repo: std::path::PathBuf,
+    name: String,
+}
+
 struct ContextMenu {
     target: MenuTarget,
     at: gpui::Point<Pixels>,
@@ -250,6 +258,8 @@ pub struct Shell {
     /// Set while a side card's gap handle is being dragged.
     side_drag: Option<SideDrag>,
     env_menu_open: bool,
+    /// Environments made with one click whose worktree is not there yet.
+    pending_envs: Vec<PendingEnv>,
     /// Where the environment menu was opened from below (the composer); `None`
     /// anchors it under the panel header.
     env_menu_at: Option<gpui::Point<Pixels>>,
@@ -754,6 +764,7 @@ impl Shell {
             dock_drag: false,
             side_drag: None,
             env_menu_open: false,
+            pending_envs: Vec::new(),
             env_menu_at: None,
             composer_layout: Rc::default(),
             composer_scroll: ScrollHandle::new(),
@@ -1303,6 +1314,84 @@ impl Shell {
         );
         self.modal = Some((Modal::CreateEnv(dialog), sub));
         cx.notify();
+    }
+
+    /// A new environment without asking: a random branch from the current
+    /// commit, as the dialog would fill in. Its row shows at once and the
+    /// worktree follows; the agent names the branch after the first prompt.
+    fn quick_create_env(&mut self, pi: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.env_menu_open = false;
+        let Some(project) = self.projects.get(pi) else {
+            return;
+        };
+        let (repo, project_name) = (project.path.clone(), project.name.clone());
+        let pending: Vec<String> = self
+            .pending_envs
+            .iter()
+            .filter(|p| p.repo == repo)
+            .map(|p| p.name.clone())
+            .collect();
+        let name = crate::env_name::random(|n| {
+            pending.iter().any(|p| p == n) || crate::dialogs::folder_taken(&project_name, n)
+        });
+        self.pending_envs.push(PendingEnv {
+            repo: repo.clone(),
+            name: name.clone(),
+        });
+        cx.notify();
+        let (key, shown) = (repo.clone(), name.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let made = cx
+                .background_spawn(async move {
+                    // A branch can already have the random name; git would
+                    // check it out instead. Pick another then, and once more
+                    // if git refuses the first.
+                    let local = git::branches(&repo).map(|b| b.local).unwrap_or_default();
+                    let taken = |n: &str, also: &str| {
+                        n == also
+                            || local.iter().any(|b| b == n)
+                            || crate::dialogs::folder_taken(&project_name, n)
+                    };
+                    let mut name = name;
+                    if local.contains(&name) {
+                        name = crate::env_name::random(|n| taken(n, ""));
+                    }
+                    let mut result = Err(anyhow::anyhow!("not tried"));
+                    for _ in 0..2 {
+                        let path = crate::model::worktree_path(&project_name, &name);
+                        result = git::add_worktree(&repo, &path, &name, None, true)
+                            .map(|()| (path, name.clone()));
+                        if result.is_ok() {
+                            break;
+                        }
+                        name = crate::env_name::random(|n| taken(n, &name));
+                    }
+                    result
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.pending_envs
+                    .retain(|p| !(p.repo == key && p.name == shown));
+                match made {
+                    // The project can have moved in the list since.
+                    Ok((path, branch)) => {
+                        if let Some(pi) = this.projects.iter().position(|p| p.path == key) {
+                            this.environment_created(pi, path, branch, true, window, cx);
+                        }
+                    }
+                    Err(e) => this.notify(
+                        crate::island::AlertKind::Failure,
+                        "Could not create the environment",
+                        &e.to_string(),
+                        None,
+                        cx,
+                    ),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Shows the new worktree right away and lets `git worktree list` fill in details.
@@ -2723,9 +2812,16 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ToggleRedacted, _, cx| this.toggle_redacted(cx)))
             .on_action(cx.listener(|this, _: &NewEnvironment, window, cx| {
                 if this.has_projects() {
-                    this.open_create_env(this.active_project, window, cx)
+                    this.quick_create_env(this.active_project, window, cx)
                 }
             }))
+            .on_action(
+                cx.listener(|this, _: &NewEnvironmentWithOptions, window, cx| {
+                    if this.has_projects() {
+                        this.open_create_env(this.active_project, window, cx)
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.has_projects() {
                     let i = this.env().active_tab;

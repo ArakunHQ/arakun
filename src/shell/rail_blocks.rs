@@ -368,14 +368,17 @@ impl Shell {
     fn render_section(&self, si: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.rail_narrow();
         let folded = section.collapsible && section.collapsed && !narrow;
+        // Narrowed, the rail is a column of icons already.
+        let in_row = section.row && !narrow;
         let mut body = div()
             .flex()
-            .flex_col()
+            .when(in_row, |d| d.flex_row().flex_wrap().items_center())
+            .when(!in_row, |d| d.flex_col())
             .gap(crate::ui::sp(1.))
             .px(crate::ui::sp(8.));
         if !folded {
-            // Narrowed, every piece is one icon in a column, so Inbox keeps its row.
-            let pair = if narrow {
+            // Narrowed or in a row, every piece is one icon, so Inbox keeps its own.
+            let pair = if narrow || in_row {
                 None
             } else {
                 section.inbox_by_search()
@@ -384,7 +387,7 @@ impl Shell {
                 let el = match pair {
                     Some((_, inbox)) if inbox == ii => continue,
                     Some((search, inbox)) if search == ii => {
-                        self.render_item((si, ii), item, cx).map(|search| {
+                        self.render_item((si, ii), item, false, cx).map(|search| {
                             self.render_search_with_inbox(
                                 search,
                                 (si, inbox),
@@ -393,7 +396,7 @@ impl Shell {
                             )
                         })
                     }
-                    _ => self.render_item((si, ii), item, cx),
+                    _ => self.render_item((si, ii), item, in_row, cx),
                 };
                 if let Some(el) = el {
                     body = body.child(el);
@@ -517,12 +520,14 @@ impl Shell {
         &self,
         path: crate::sidebar::Path,
         item: &Item,
+        in_row: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         if !self.rail_shows(&item.piece, cx) {
             return None;
         }
-        let narrow = self.rail_narrow();
+        // In a row, a piece is drawn as it is when the rail is narrowed: its icon alone.
+        let narrow = self.rail_narrow() || in_row;
         let style = self.sidebar.style;
         let badge = match &item.piece {
             Piece::View { view } if style.badges => self.view_badge(*view, cx),
@@ -559,6 +564,7 @@ impl Shell {
                 .px(crate::ui::sp(8.))
                 .rounded(crate::ui::rad(8.))
                 .w_full()
+                .when(in_row, |d| d.w(px(style.density.row_h())).flex_none())
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
                 .cursor_pointer()
@@ -606,7 +612,7 @@ impl Shell {
                             div()
                                 .absolute()
                                 .top(px(5.))
-                                .right(px(10.))
+                                .right(px(if in_row { 5. } else { 10. }))
                                 .size(px(7.))
                                 .rounded_full()
                                 .bg(badge.map_or(theme::text_faint(), |b| b.color())),
@@ -763,6 +769,8 @@ impl Shell {
                     .child(text.to_uppercase())
                     .into_any_element()
             }
+            // In a row it pushes what follows to the end.
+            Piece::Spacer if in_row => div().flex_1().into_any_element(),
             Piece::Spacer => div().h(px(16.)).into_any_element(),
         };
         Some(el)

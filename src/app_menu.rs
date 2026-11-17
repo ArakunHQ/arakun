@@ -63,7 +63,11 @@ pub fn install(cx: &mut App) {
                 MenuItem::action("New Browser Tab", shell::NewBrowserTab),
                 MenuItem::separator(),
                 MenuItem::action("Add Project…", shell::AddProject),
-                MenuItem::action("New Environment…", shell::NewEnvironment),
+                MenuItem::action("New Environment", shell::NewEnvironment),
+                MenuItem::action(
+                    "New Environment with Options…",
+                    shell::NewEnvironmentWithOptions,
+                ),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", shell::CloseTab),
             ],

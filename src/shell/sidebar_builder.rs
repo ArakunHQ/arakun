@@ -1600,6 +1600,9 @@ impl Shell {
                     |s| s.collapsed = !s.collapsed,
                 ))
             })
+            .child(toggle("sb-sec-row", "Icons in a row", sec.row, |s| {
+                s.row = !s.row
+            }))
             .child(toggle("sb-sec-line", "Line above", sec.line_above, |s| {
                 s.line_above = !s.line_above
             }))

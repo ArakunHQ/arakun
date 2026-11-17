@@ -65,7 +65,12 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 ### Workspace
 
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
-  checkout plus git worktrees). Every environment has its own tabs, sessions, terminals
+  checkout plus git worktrees). The default sidebar shows the open project, with the
+  others in its dropdown, and its environments as a flat list: a status dot, the name,
+  and one signal (Needs you, CI failed, or the diff). The **+** on Environments, or
+  `Ctrl+Shift+N`, makes an environment at once on a random branch from the current
+  commit; `Alt`+click on it, or File › New Environment with Options…, asks for the
+  branch and where to start from. Every environment has its own tabs, sessions, terminals
   and draft prompt. The Workspace panel shows Sessions, an Explorer and the uncommitted
   Changes; the Branches tab draws every live branch against the default one.
 
@@ -748,6 +753,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 - `Ctrl+T` new session, `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs; `Alt+Up` / `Alt+Down` switch environments
+- `Ctrl+Shift+N` new environment, at once on a random branch
 - `Ctrl+F` search the conversation
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for

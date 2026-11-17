@@ -154,6 +154,85 @@ fn swap_comment(
         .unwrap_or_default()
 }
 
+/// What Enter or Ctrl+Enter in the comment input does with its text.
+#[derive(Debug, PartialEq, Eq)]
+enum CommentSend {
+    /// Post it as a comment on the item shown.
+    Post,
+    /// A `/` action: run it.
+    Command,
+    /// Nothing to send: no item, or no text.
+    NoItem,
+    Empty,
+    /// Another write is running; the text stays in the input.
+    Busy(&'static str),
+    /// This very text is the comment being posted.
+    Sending,
+    /// The text was typed for this other item: it stays that one's draft.
+    Elsewhere(ItemRef),
+}
+
+/// Decides what sending `text`, typed for `typed_for`, does while `shown`
+/// is the item on screen and `busy` names a write still running.
+/// `posting` is the last comment sent and its item: while a comment write
+/// runs, the text left in the input is often that one, not a new comment.
+/// `typed_for` may lag behind `shown` (a queue refresh swaps the entry for
+/// a fresh one): the same pull request or issue by `queue::key_of` counts
+/// as the one shown, and so does no item at all, since nothing else would
+/// keep that text.
+fn comment_send(
+    text: &str,
+    shown: Option<&ItemRef>,
+    typed_for: Option<&ItemRef>,
+    busy: Option<&'static str>,
+    posting: Option<(&ItemRef, &str)>,
+) -> CommentSend {
+    let Some(shown) = shown else {
+        return CommentSend::NoItem;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return CommentSend::Empty;
+    }
+    if let Some(other) = typed_for
+        && crate::github::queue::key_of(other) != crate::github::queue::key_of(shown)
+    {
+        return CommentSend::Elsewhere(other.clone());
+    }
+    if text.starts_with('/') {
+        return CommentSend::Command;
+    }
+    match busy {
+        Some("comment")
+            if posting.is_some_and(|(on, sent)| {
+                same_item(Some(on), Some(shown)) && sent.trim() == text
+            }) =>
+        {
+            CommentSend::Sending
+        }
+        Some(what) => CommentSend::Busy(what),
+        None => CommentSend::Post,
+    }
+}
+
+/// Whether two references name the same item. A queue refresh may read it
+/// again under another repo case or kind.
+fn same_item(a: Option<&ItemRef>, b: Option<&ItemRef>) -> bool {
+    a.map(crate::github::queue::key_of) == b.map(crate::github::queue::key_of)
+}
+
+/// The note for a comment held back while the write `what` runs.
+fn busy_note(what: &str) -> String {
+    let what = match what {
+        "comment" => "the last comment",
+        "post-draft" => "the draft review",
+        "request-changes" => "the change request",
+        "approve" => "the approval",
+        other => other,
+    };
+    format!("Still sending {what}: this comment wasn't sent yet. Press Enter again once it's done.")
+}
+
 /// What the last action did, shown in the card.
 struct Note {
     ok: bool,
@@ -216,6 +295,9 @@ pub struct GitHubView {
     confirm_draft: Option<Draft>,
     editing_draft: bool,
     busy: Option<&'static str>,
+    /// The comment last sent and its item, to tell a second Enter on it
+    /// from a new comment. Read only while the "comment" write runs.
+    posting: Option<(ItemRef, String)>,
     note: Option<Note>,
     draft: Option<Draft>,
     diffs: HashMap<String, Diff>,
@@ -307,7 +389,7 @@ const NEWLINE: &str = "⏎";
 impl GitHubView {
     pub fn new(github: Entity<GitHub>, cx: &mut Context<Self>) -> Self {
         let watch_input = cx.new(|cx| TextInput::new("organization or owner/repo", cx));
-        let comment = cx.new(|cx| TextInput::new("Comment, or type / for actions", cx));
+        let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
         let subs = vec![
             cx.observe(&github, |this, _, cx| this.on_github_changed(cx)),
@@ -320,8 +402,7 @@ impl GitHubView {
                 _ => {}
             }),
             cx.subscribe(&comment, |this, _, ev: &InputEvent, cx| match ev {
-                InputEvent::SubmitAlt => this.send_comment(cx),
-                InputEvent::Submit => this.submit_command(cx),
+                InputEvent::Submit | InputEvent::SubmitAlt => this.send_comment(cx),
                 InputEvent::Cancel => {
                     this.comment.update(cx, |i, cx| i.set_text("", cx));
                 }
@@ -375,6 +456,7 @@ impl GitHubView {
             confirm_draft: None,
             editing_draft: false,
             busy: None,
+            posting: None,
             note: None,
             draft: None,
             diffs: HashMap::new(),
@@ -890,20 +972,56 @@ impl GitHubView {
         .detach();
     }
 
+    /// Enter or Ctrl+Enter in the comment input: posts the comment, runs a
+    /// `/` action, or says in the card why nothing was sent.
     fn send_comment(&mut self, cx: &mut Context<Self>) {
-        // Text typed for another item is never sent to this one.
-        if self.comment_for != self.item() {
-            self.switch_comment(cx);
-            return;
-        }
         let text = self.comment.read(cx).text().to_string();
-        if text.trim().is_empty() || self.item().is_none() {
-            return;
+        let shown = self.item();
+        let hold = |this: &mut Self, text: String, cx: &mut Context<Self>| {
+            this.note = Some(Note {
+                ok: false,
+                quiet: true,
+                text,
+            });
+            cx.notify();
+        };
+        let posting = self.posting.as_ref().map(|(on, t)| (on, t.as_str()));
+        match comment_send(
+            &text,
+            shown.as_ref(),
+            self.comment_for.as_ref(),
+            self.busy,
+            posting,
+        ) {
+            CommentSend::Post => {}
+            CommentSend::Command => {
+                self.comment_for = shown;
+                self.submit_command(cx);
+                return;
+            }
+            CommentSend::NoItem => {
+                return hold(
+                    self,
+                    "Pick a pull request or issue to comment on.".into(),
+                    cx,
+                );
+            }
+            CommentSend::Empty => return hold(self, "Write a comment first.".into(), cx),
+            CommentSend::Busy(what) => return hold(self, busy_note(what), cx),
+            CommentSend::Sending => return hold(self, "Sending this comment…".into(), cx),
+            // Text typed for another item is never sent to this one.
+            CommentSend::Elsewhere(other) => {
+                self.switch_comment(cx);
+                let text = format!(
+                    "Not sent: that text was written for {}. It's kept there as a draft.",
+                    other.label()
+                );
+                return hold(self, text, cx);
+            }
         }
-        if text.trim_start().starts_with('/') {
-            self.submit_command(cx);
-            return;
-        }
+        // The same item, maybe read again: the text is for the one shown.
+        self.comment_for = shown.clone();
+        self.posting = shown.map(|on| (on, text.clone()));
         let body = text.clone();
         let on = self.item();
         self.write(
@@ -913,7 +1031,9 @@ impl GitHubView {
             // The input stays usable while gh works: keep anything typed since,
             // or meant for another item.
             move |this, cx| {
-                if this.item() == on && this.comment.read(cx).text() == text {
+                if same_item(this.item().as_ref(), on.as_ref())
+                    && this.comment.read(cx).text() == text
+                {
                     this.comment.update(cx, |i, cx| i.set_text("", cx))
                 } else if let Some(on) = &on {
                     // Put away when another item was picked: it was sent.
@@ -927,18 +1047,10 @@ impl GitHubView {
         );
     }
 
-    /// Enter in the command bar: a `/` action, or a reminder of how to send.
+    /// A `/` action typed in the comment input.
     fn submit_command(&mut self, cx: &mut Context<Self>) {
         let text = self.comment.read(cx).text().trim().to_string();
         let Some(cmd) = text.strip_prefix('/') else {
-            if !text.is_empty() {
-                self.note = Some(Note {
-                    ok: false,
-                    quiet: true,
-                    text: crate::platform::shortcut_label("Ctrl+Enter sends the comment."),
-                });
-                cx.notify();
-            }
             return;
         };
         let pull = self.item().is_some_and(|i| i.kind == ItemKind::Pull);
@@ -2904,5 +3016,61 @@ mod tests {
         // Nothing picked any more: A's text is kept for later.
         assert_eq!(swap_comment(&mut drafts, Some(&a), None, "x".into()), "");
         assert_eq!(drafts.len(), 1);
+    }
+
+    #[test]
+    fn a_comment_goes_out_or_says_why() {
+        let item = |repo: &str, number, kind| ItemRef {
+            repo: repo.into(),
+            number,
+            kind,
+        };
+        let a = item("o/r", 1, ItemKind::Pull);
+        let b = item("o/r", 2, ItemKind::Pull);
+        let send = |text, typed_for, busy| comment_send(text, Some(&a), typed_for, busy, None);
+        assert_eq!(send("hi", Some(&a), None), CommentSend::Post);
+        // A queue refresh may leave the same pull request read again, under
+        // another case or kind: still the one shown.
+        let again = item("O/R", 1, ItemKind::Issue);
+        assert_eq!(send("hi", Some(&again), None), CommentSend::Post);
+        // Typed before anything was picked: nothing else would keep it.
+        assert_eq!(send("hi", None, None), CommentSend::Post);
+        assert_eq!(send(" /merge", Some(&a), None), CommentSend::Command);
+        assert_eq!(send("  ", Some(&a), None), CommentSend::Empty);
+        assert_eq!(
+            send("hi", Some(&a), Some("merge")),
+            CommentSend::Busy("merge")
+        );
+        assert_eq!(
+            send("hi", Some(&b), None),
+            CommentSend::Elsewhere(b.clone())
+        );
+        assert_eq!(
+            comment_send("hi", None, Some(&a), None, None),
+            CommentSend::NoItem
+        );
+        // A second Enter on the comment being posted: it is the one sent.
+        let sending = |text, on| comment_send(text, Some(&a), Some(&a), Some("comment"), on);
+        assert_eq!(sending("hi ", Some((&again, "hi"))), CommentSend::Sending);
+        assert_eq!(
+            sending("other", Some((&a, "hi"))),
+            CommentSend::Busy("comment")
+        );
+        assert_eq!(
+            sending("hi", Some((&b, "hi"))),
+            CommentSend::Busy("comment")
+        );
+        // Another write: the same text was posted earlier, not now.
+        assert_eq!(
+            comment_send("hi", Some(&a), Some(&a), Some("merge"), Some((&a, "hi"))),
+            CommentSend::Busy("merge")
+        );
+        // Read again while the comment was sent: the input still clears.
+        assert!(same_item(Some(&a), Some(&again)));
+        assert!(!same_item(Some(&a), Some(&b)));
+        assert!(!same_item(Some(&a), None));
+        assert!(same_item(None, None));
+        assert!(busy_note("comment").contains("the last comment"));
+        assert!(busy_note("merge").contains("wasn't sent"));
     }
 }

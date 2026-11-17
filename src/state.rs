@@ -455,6 +455,11 @@ pub fn onboarding_path() -> PathBuf {
     file().with_extension("onboarding.json")
 }
 
+/// Whether Arakun saved its state here before: not a first launch.
+pub fn exists() -> bool {
+    file().exists()
+}
+
 pub fn data_dir() -> PathBuf {
     crate::platform::app_dir()
 }

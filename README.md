@@ -184,7 +184,11 @@ it shows in `github/avatars/` (each downloaded again after a week).
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
   in `cliproxy-plan.json` next to it.
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
-  and permission rules the agents load now.
+  and permission rules the agents load now. Under Arakun › Extensions you turn on the
+  tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
+  Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. A new
+  install starts with none on; an update keeps the ones your sidebar already had. The
+  choice is kept in `extensions.json` next to the state.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours

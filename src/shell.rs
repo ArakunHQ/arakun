@@ -697,7 +697,9 @@ impl Shell {
             this.on_posthog_event(ev, window, cx)
         });
         let branches_view = cx.new(BranchesView::new);
-        let extensions_view = cx.new(ExtensionsView::new);
+        let sidebar = crate::sidebar::Sidebar::load();
+        let views = crate::sidebar::Extensions::load(&sidebar);
+        let extensions_view = cx.new(|cx| ExtensionsView::new(views, cx));
         let extensions_sub =
             cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| {
                 this.on_extensions_event(ev, window, cx)
@@ -798,7 +800,7 @@ impl Shell {
             _account: account_sub,
             rail_open: layout.rail_open,
             panel_open: layout.panel_open,
-            sidebar: crate::sidebar::Sidebar::load(),
+            sidebar,
             builder: Default::default(),
             rail_w: layout.rail_w,
             panel_w: layout.panel_w,

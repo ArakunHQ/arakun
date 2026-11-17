@@ -262,7 +262,11 @@ impl Shell {
             return;
         }
         match pin {
-            Pin::Url { url, .. } => self.open_browser_tab(url, window, cx),
+            // An edited pin keeps its text as typed: give it a scheme as the
+            // address bar would, for the desktop's browser.
+            Pin::Url { url, .. } => {
+                self.open_url(crate::browser::url::from_input(&url), window, cx)
+            }
             Pin::File { path, .. } => self.open_doc_tab(TabKind::File { path }, window, cx),
             Pin::Command { command, .. } => self.spawn_terminal_command(
                 Some(crate::platform::run_then_shell(&command)),

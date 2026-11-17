@@ -25,6 +25,8 @@ screenshot` read and showed it. Typing, clicking, downloads and DevTools were no
 
 Release builds for Windows (from GitHub Releases) contain only `arakun.exe`, built
 without the `browser` feature. For browser tabs, build from source as described here.
+A build without them opens the links you click in your own browser. Settings ›
+General › Open links in Arakun decides where they open once a build has browser tabs.
 To install the latest release, run this in PowerShell; it puts `arakun.exe` in
 `%LOCALAPPDATA%\Programs\Arakun` and adds that folder to your user `PATH`:
 
@@ -108,6 +110,7 @@ build with the browser.
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
+| Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |

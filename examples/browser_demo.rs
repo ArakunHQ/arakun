@@ -69,6 +69,8 @@ impl Demo {
                     log(format_args!("{state}"), cx)
                 }
                 BrowserEvent::FaviconChanged => log(format_args!("favicon"), cx),
+                // The demo has no settings to show.
+                BrowserEvent::OpenLinkSettings => {}
             },
         );
         self.tabs.push(Tab {

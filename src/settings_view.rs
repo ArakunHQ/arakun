@@ -212,15 +212,16 @@ impl Section {
         if query.is_empty() {
             return true;
         }
-        // The Updates card is in General in every build, so its words are
-        // added here rather than to each build's keyword list.
-        let updates = if self == Section::General {
-            "update updates automatic automatically auto version release upgrade"
+        // The Updates card and the link setting are in General in every build, so
+        // their words are added here rather than to each build's keyword list.
+        let general = if self == Section::General {
+            "update updates automatic automatically auto version release upgrade \
+             links open system default external"
         } else {
             ""
         };
         let text = format!(
-            "{} {} {} {updates}",
+            "{} {} {} {general}",
             self.title(),
             self.description(),
             self.keywords()
@@ -236,6 +237,15 @@ impl Section {
 
 /// The section the last dialog was left on.
 static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
+
+/// Makes the next dialog open on General, where the link setting is.
+pub fn start_on_general() {
+    let ix = Section::ALL
+        .iter()
+        .position(|s| *s == Section::General)
+        .unwrap_or(0);
+    LAST_SECTION.store(ix as u8, Ordering::Relaxed);
+}
 
 /// (group, keys, description)
 type Shortcut = (&'static str, &'static str, &'static str);
@@ -892,6 +902,22 @@ impl SettingsDialog {
                     titled(
                         "Browser",
                         vec![
+                            row(
+                                "Open links in Arakun",
+                                if crate::browser::ENABLED {
+                                    "Links from chats, the GitHub view and pins open in a browser tab. Off, they open in your own browser."
+                                } else {
+                                    "This build has no browser tabs, so leave it off: links then open in your own browser."
+                                },
+                                switch(crate::browser::links_in_arakun()).into_any_element(),
+                            )
+                            .id("set-links-in-arakun")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                crate::browser::set_links_in_arakun(!crate::browser::links_in_arakun());
+                                cx.notify();
+                            }))
+                            .into_any_element(),
                             row(
                                 "Agents drive any web page",
                                 "Click, type and run scripts in any tab, with your signed-in accounts. Off, they drive local pages and only read the rest.",
@@ -2697,6 +2723,13 @@ mod tests {
         assert_eq!(hue_at(0.), 0.);
         assert_eq!(hue_at(0.5), 180.);
         assert_eq!(hue_at(1.), 359.);
+    }
+
+    /// The link setting is in General in every build, whichever keyword list it has.
+    #[test]
+    fn searching_for_links_finds_general() {
+        assert!(Section::General.matches("open links"));
+        assert!(Section::General.matches("external browser"));
     }
 
     #[test]

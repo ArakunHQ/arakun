@@ -68,6 +68,8 @@ pub enum BrowserEvent {
     FaviconChanged,
     /// The page closed itself (`window.close()`); the view is now empty.
     CloseRequested,
+    /// Only the placeholder sends it: show the setting for where links open.
+    OpenLinkSettings,
 }
 
 /// A message the page logged (or an uncaught error), for `arakun page console`.
@@ -149,3 +151,66 @@ pub const ENABLED: bool = cfg!(all(
     feature = "browser",
     any(target_os = "linux", target_os = "macos", windows)
 ));
+
+/// Whether web links (from the chat, the GitHub view, pins…) open in an Arakun
+/// browser tab rather than the desktop's browser. Set in Settings → General.
+/// Without a choice, builds that can show pages keep links in Arakun, and the
+/// others send them out, where they can actually load.
+pub fn links_in_arakun() -> bool {
+    match LINKS_CHOICE.load(std::sync::atomic::Ordering::Relaxed) {
+        LINKS_ARAKUN => return true,
+        LINKS_SYSTEM => return false,
+        _ => {}
+    }
+    match std::fs::read_to_string(links_path()) {
+        Ok(choice) => parse_links_choice(&choice).unwrap_or(ENABLED),
+        Err(_) => ENABLED,
+    }
+}
+
+pub fn set_links_in_arakun(on: bool) {
+    // Kept in memory too, so the switch works for this run even when the file
+    // cannot be written.
+    let choice = if on { LINKS_ARAKUN } else { LINKS_SYSTEM };
+    LINKS_CHOICE.store(choice, std::sync::atomic::Ordering::Relaxed);
+    let path = links_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let text = if on { "arakun\n" } else { "system\n" };
+    if let Err(e) = std::fs::write(&path, text) {
+        eprintln!("arakun: where links open will not last past a restart: {e}");
+    }
+}
+
+/// The choice made in this run: [`LINKS_UNSET`] until the switch is used.
+static LINKS_CHOICE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(LINKS_UNSET);
+const LINKS_UNSET: u8 = 0;
+const LINKS_ARAKUN: u8 = 1;
+const LINKS_SYSTEM: u8 = 2;
+
+fn links_path() -> std::path::PathBuf {
+    crate::platform::app_dir().join("open-links")
+}
+
+fn parse_links_choice(text: &str) -> Option<bool> {
+    match text.trim() {
+        "arakun" => Some(true),
+        "system" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_links_choice;
+
+    #[test]
+    fn reads_the_links_choice() {
+        assert_eq!(parse_links_choice("arakun\n"), Some(true));
+        assert_eq!(parse_links_choice("system"), Some(false));
+        // Anything else falls back to what the build can do.
+        assert_eq!(parse_links_choice(""), None);
+        assert_eq!(parse_links_choice("chrome"), None);
+    }
+}

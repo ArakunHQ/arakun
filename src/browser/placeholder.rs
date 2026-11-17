@@ -6,7 +6,7 @@ use std::sync::Arc;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, RenderImage, SharedString,
-    Styled as _, Window, div,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
 use super::chrome::{self, Toolbar};
@@ -125,9 +125,45 @@ impl BrowserView {
     }
 }
 
+impl BrowserView {
+    /// Ways out of a tab that cannot show pages: this address in the desktop's
+    /// browser, and the setting that sends every link there.
+    fn actions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let url = self.url.clone();
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .pt(crate::ui::sp(4.))
+            .when(!url.is_empty(), |d| {
+                d.child(
+                    chrome::button("browser-open-system", "Open in your browser", true)
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                )
+            })
+            .child(
+                chrome::button("browser-link-settings", "Link settings", false)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(BrowserEvent::OpenLinkSettings))),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for BrowserView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let address_focused = self.address.read(cx).is_focused(window);
+        let why = if cfg!(target_os = "macos") {
+            "tools/install.sh builds Arakun with them."
+        } else if cfg!(windows) {
+            "A build with the `browser` cargo feature has them (see docs/windows.md)."
+        } else {
+            "Build Arakun with the `browser` cargo feature to get them."
+        };
+        let links = if super::links_in_arakun() {
+            "Turn off Open links in Arakun to send links to your own browser."
+        } else {
+            "Links you click open in your own browser."
+        };
         div()
             .key_context("Browser")
             .flex()
@@ -152,16 +188,9 @@ impl Render for BrowserView {
             ))
             .child(div().relative().flex_1().child(chrome::notice(
                 "globe",
-                "Browser tabs are not part of this build",
-                Some(
-                    if cfg!(target_os = "linux") {
-                        "Rebuild Arakun with the `browser` cargo feature (on by default)."
-                    } else {
-                        "Browser tabs need CEF, which Arakun wires up on Linux and Windows; macOS needs an app bundle Arakun does not build yet."
-                    }
-                    .into(),
-                ),
-                None,
+                "This build has no browser tabs",
+                Some(format!("{why} {links}").into()),
+                Some(self.actions(cx)),
             )))
     }
 }

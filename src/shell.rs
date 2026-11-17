@@ -1657,9 +1657,10 @@ impl Shell {
         cx.notify();
     }
 
-    /// In a arakun browser tab when there is an environment to hold it, else the desktop browser.
+    /// In a arakun browser tab when there is an environment to hold it and the user
+    /// keeps links in Arakun, else the desktop browser.
     fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.has_projects() {
+        if self.has_projects() && crate::browser::links_in_arakun() {
             self.open_browser_tab(url, window, cx);
         } else {
             cx.open_url(&url);

@@ -576,6 +576,7 @@ arakun-server approve <id>        # or deny: answer the permission it asks for
 arakun-server stop <id>           # stop its turn; follow-ups waiting behind it are dropped
 arakun-server devices             # paired devices; `unpair <device>` forgets one
 arakun-server status
+arakun-server service install   # keep it running; see Keep it running
 ```
 
 `arakun-server help` lists them all.
@@ -606,33 +607,35 @@ arakun-server status
   there after a restart, and the next message picks it up. Follow-ups that were
   waiting behind that turn run first, then the new message.
 
-To keep it running on Linux, put the binary where the unit below looks for it, and a
-systemd user unit is enough:
+### Keep it running
+
+`service install` runs `serve` as a service of your user: systemd on Linux, launchd on
+macOS. It starts the server now, again after a crash, and at boot (Linux) or login
+(macOS). `quit` stops it until the next boot or login. First put the binary somewhere
+that stays, not in `target/`:
 
 ```sh
 install -Dm755 target/release/arakun-server ~/.local/bin/arakun-server
+arakun-server service install     # takes serve's flags: --reach, --port, --relay
+arakun-server service status      # installed, running, and how it is reached
+arakun-server service logs -f     # what it prints (journalctl, or server.log on macOS)
+arakun-server service uninstall   # stop it and remove the service; the data stays
 ```
 
-```ini
-# ~/.config/systemd/user/arakun-server.service
-[Unit]
-Description=Arakun server
-
-[Service]
-ExecStart=%h/.local/bin/arakun-server serve
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
-
-```sh
-systemctl --user enable --now arakun-server
-loginctl enable-linger "$USER"     # keep it running while you are logged out
-```
-
-If a session says its agent was not found, give the unit the `PATH` your shell has
-(`Environment=PATH=...`).
+- **What it writes.** `~/.config/systemd/user/arakun-server.service` on Linux and
+  `~/Library/LaunchAgents/dev.arakun.server.plist` on macOS. `service install --print`
+  shows the file and installs nothing. Running `install` again rewrites the file and
+  restarts the server.
+- **Agents.** The service gets the `PATH` of the shell you install it from, so it finds
+  the same agents. If you install an agent somewhere else later, run `install` again.
+- **Logged out.** On Linux it turns on lingering (`loginctl enable-linger`), so the
+  server runs while you are logged out and starts at boot. If that needs root, it
+  prints the command to run. On macOS a user's agent runs from login, so a Mac that
+  nobody sits at needs automatic login.
+- **A second server.** With `ARAKUN_SERVER_DIR` set, the service is named after that
+  folder (`arakun-server-<folder>`) and keeps the variable.
+- **Windows** has no `service` command yet: start `arakun-server serve` from Task
+  Scheduler at logon.
 
 Tried on Linux and macOS.
 

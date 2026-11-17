@@ -433,7 +433,7 @@ pub fn run(opts: Options) -> i32 {
 
 /// The folder holds prompts, transcripts and the keys devices are let in
 /// with: only its user gets in.
-fn make_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(super) fn make_private_dir(dir: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

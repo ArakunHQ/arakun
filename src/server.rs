@@ -26,6 +26,8 @@
 pub mod daemon;
 #[path = "server/local.rs"]
 mod local;
+#[path = "server/service.rs"]
+mod service;
 #[path = "server/store.rs"]
 mod store;
 
@@ -121,6 +123,15 @@ Usage:
                              answer its question (one answer for each)
   {name} rm <id>             forget a session that is not working
 
+Keep it running (systemd on Linux, launchd on macOS):
+  {name} service install [--print] [serve flags]
+                             run `serve` as a service of your user: it starts
+                             now, after a failure, and at boot (Linux) or login
+                             (macOS). --print shows the file and installs nothing
+  {name} service status      whether it is installed and running
+  {name} service logs [-f]   what the server printed; -f follows it
+  {name} service uninstall   stop it and remove the service; nothing else goes
+
 A session is named by its id or the start of it. Agents use the logins of
 this machine: sign in to each one here first.
 ";
@@ -137,6 +148,7 @@ enum Command {
         id: String,
         timeout: Duration,
     },
+    Service(service::Action),
 }
 
 /// A flag's value, taken off the front of `rest` along with the flag.
@@ -310,6 +322,9 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
             [_id, _first, ..] => ask("answer", rest.to_vec()),
             _ => Err(usage("answer <id> <answer>…")),
         },
+        "service" => service::parse(rest)
+            .map(Command::Service)
+            .map_err(|()| usage(service::USAGE)),
         other => Err(format!(
             "unknown command `{} {other}` (see {} help)",
             name(),
@@ -389,6 +404,7 @@ pub fn cli(args: &[String]) -> i32 {
             Err(e) => fail(&e),
         },
         Command::Wait { id, timeout } => wait(&id, timeout),
+        Command::Service(action) => service::run(action),
     }
 }
 
@@ -606,6 +622,12 @@ mod tests {
         assert_eq!(parse(&args(&["pair"]), cwd), Ok(Command::Pair));
         assert_eq!(parse(&args(&["ls"]), cwd), sent("ls", &[]));
         assert!(parse(&args(&["ls", "all"]), cwd).is_err());
+        assert_eq!(
+            parse(&args(&["service", "status"]), cwd),
+            Ok(Command::Service(service::Action::Status))
+        );
+        let e = parse(&args(&["service"]), cwd).unwrap_err();
+        assert!(e.starts_with("usage: arakun server service install"), "{e}");
         let e = parse(&args(&["fly"]), cwd).unwrap_err();
         assert!(e.contains("unknown command `arakun server fly`"), "{e}");
         assert!(help().contains("arakun server serve"));

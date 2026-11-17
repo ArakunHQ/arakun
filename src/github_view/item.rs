@@ -61,6 +61,8 @@ pub(super) struct Prop {
     icon: &'static str,
     label: &'static str,
     value: AnyElement,
+    /// Shown when the sheet folds its details to one line.
+    key: bool,
 }
 
 impl Prop {
@@ -69,8 +71,45 @@ impl Prop {
             icon,
             label,
             value: value.into_any_element(),
+            key: false,
         }
     }
+
+    pub(super) fn key(mut self) -> Self {
+        self.key = true;
+        self
+    }
+}
+
+/// Key properties side by side on one wrapping line: the sheet's details
+/// folded, so a short window keeps its room for the tabs.
+pub(super) fn prop_line(props: Vec<Prop>) -> gpui::Div {
+    let mut line = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_x(crate::ui::sp(20.))
+        .gap_y(crate::ui::sp(8.));
+    for p in props.into_iter().filter(|p| p.key) {
+        let first = p.label == "Status";
+        line = line.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .min_w_0()
+                .when(!first, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .text_color(theme::text_subtle())
+                            .child(p.label),
+                    )
+                })
+                .child(p.value),
+        );
+    }
+    line
 }
 
 /// A property as a row: icon, name, value.
@@ -560,24 +599,27 @@ impl GitHubView {
         };
         // A merged or closed one waits on nobody and has nothing left to merge.
         let open = p.open();
-        let mut props = vec![Prop::new(icon_name, "Status", status_v)];
+        let mut props = vec![Prop::new(icon_name, "Status", status_v).key()];
         if open {
             props.push(Prop::new("clock01", "Waiting on", waiting_v));
         }
         props.push(Prop::new("user", "Author", author_v));
-        props.push(Prop::new("activity01", "Checks", checks_v));
+        props.push(Prop::new("activity01", "Checks", checks_v).key());
         if reviewers.is_empty() {
-            props.push(Prop::new("tick02", "Review", reviewers_v));
+            props.push(Prop::new("tick02", "Review", reviewers_v).key());
         } else {
             props.push(Prop::new("tick02", "Reviewers", reviewers_v));
-            props.push(Prop::new(
-                "checkmark-circle02",
-                "Review",
-                div().truncate().child(review_text),
-            ));
+            props.push(
+                Prop::new(
+                    "checkmark-circle02",
+                    "Review",
+                    div().truncate().child(review_text),
+                )
+                .key(),
+            );
         }
         if open {
-            props.push(Prop::new("git-merge", "Merge", merge_v));
+            props.push(Prop::new("git-merge", "Merge", merge_v).key());
         }
         props.push(Prop::new("file01", "Changes", changes_v));
         props.push(Prop::new("git-commit", "Commit", commit_v));
@@ -621,7 +663,8 @@ impl GitHubView {
                 icon_name,
                 "Status",
                 ui::state_pill(icon_name, status, color),
-            ),
+            )
+            .key(),
             Prop::new(
                 "user",
                 "Author",
@@ -633,7 +676,7 @@ impl GitHubView {
                     .child(self.face(&i.author.login, 20., cx))
                     .child(div().truncate().child(i.author.login.clone())),
             ),
-            Prop::new("user", "Assignees", assignees),
+            Prop::new("user", "Assignees", assignees).key(),
             Prop::new(
                 "comment01",
                 "Comments",

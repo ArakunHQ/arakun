@@ -268,6 +268,9 @@ pub struct GitHubView {
     /// tab's list isn't drawn, and closing it hands the window back.
     floating: bool,
     tab: Tab,
+    /// The sheet's details unfolded (Some(true)) or folded by the user;
+    /// None folds them on a short window.
+    details_open: Option<bool>,
     /// "Done today" is unfolded.
     done_open: bool,
     /// "More on GitHub" (the queue's rows pilot doesn't follow) is unfolded.
@@ -488,6 +491,7 @@ impl GitHubView {
             sheet_open: false,
             floating: false,
             tab: Tab::Timeline,
+            details_open: None,
             done_open: false,
             more_open: false,
             fold_full: HashSet::new(),
@@ -1409,6 +1413,7 @@ impl GitHubView {
             "r" if pull => self.review_with_agent(cx),
             "u" if self.item().is_some() => self.catch_up(cx),
             "s" if self.item().is_some() => self.summarize(cx),
+            "d" if self.sheet_open && self.item().is_some() => self.toggle_details(cx),
             "enter" if self.picked.is_some() && !self.sheet_open => {
                 self.sheet_open = true;
                 cx.notify();

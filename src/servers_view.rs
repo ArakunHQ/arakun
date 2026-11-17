@@ -925,7 +925,27 @@ impl ServersView {
             .child(head)
             .children(problem)
             .child(div().flex().flex_col().flex_1().min_h_0().child(body))
-            .children(self.render_asks(open, cx))
+            // A question with many options scrolls in its band rather
+            // than squeezing the transcript.
+            .children(self.render_asks(open, cx).map(|asks| {
+                // One scroll per question: the next starts at its top, not
+                // where the last was left.
+                let asked = match (&open.permission, &open.questions) {
+                    (Some(p), _) => format!("p:{}", p.title),
+                    (None, Some((id, _))) => format!("q:{id}:{}", self.answers.1.len()),
+                    (None, None) => String::new(),
+                };
+                div()
+                    .id(gpui::ElementId::Name(
+                        format!("servers-asks-{}-{asked}", open.session).into(),
+                    ))
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .max_h(gpui::relative(0.5))
+                    .overflow_y_scroll()
+                    .child(asks)
+            }))
             .child(
                 div()
                     .flex()

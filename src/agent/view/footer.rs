@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Queued messages shown before the queue scrolls: five rows.
+const QUEUE_LIST_H: f32 = 5. * 28.;
+
 impl ThreadView {
     pub(super) fn render_footer(&self, cx: &Context<Self>) -> AnyElement {
         let t = self.thread.read(cx);
@@ -283,7 +286,8 @@ impl ThreadView {
     pub fn queue_height(&self, cx: &App) -> f32 {
         let t = self.thread.read(cx);
         let background = !t.is_subagent_view() && !t.is_busy() && t.running_subagents() > 0;
-        let rows = t.queued().len()
+        // The queued messages scroll past five rows (`QUEUE_LIST_H`).
+        let rows = t.queued().len().min(5)
             + usize::from(t.stuck().is_some())
             + usize::from(t.check_offer().is_some())
             + usize::from(background);
@@ -482,7 +486,8 @@ impl ThreadView {
                                             ),
                                     )
                                 })
-                                .children(queue.iter().enumerate().map(|(i, text)| {
+                                // A long queue scrolls in place: the transcript above keeps its room.
+                                .child(div().id("queue-list").flex().flex_col().max_h(px(QUEUE_LIST_H)).overflow_y_scroll().children(queue.iter().enumerate().map(|(i, text)| {
                                     div()
                                         .flex()
                                         .items_center()
@@ -552,7 +557,7 @@ impl ThreadView {
                                                     this.thread.update(cx, |t, cx| t.remove_queued(i, cx))
                                                 })),
                                         )
-                                })),
+                                }))),
                         ),
                 )
                 .into_any_element(),

@@ -1,4 +1,4 @@
-//! "Tu agente": the cards arakun-pilot leaves (`crate::github::pilot`), at the
+//! "Your agent": the cards arakun-pilot leaves (`crate::github::pilot`), at the
 //! top of the queue. Their text is Spanish like the items, and every write to
 //! GitHub goes through the tab's own confirm strip, as the user, with `gh`.
 
@@ -70,7 +70,7 @@ fn opcion_kinds(opciones: &[Opcion]) -> Vec<PillKind> {
 fn moved_text(number: u64, read: &str, now: &str) -> String {
     let short = |s: &str| s.chars().take(7).collect::<String>();
     format!(
-        "#{number} tiene commits nuevos desde el resumen ({} → {}). No lo aprobé: revísalo otra vez.",
+        "#{number} has new commits since the summary ({} → {}). I didn't approve it: review it again.",
         short(read),
         short(now)
     )
@@ -116,7 +116,8 @@ impl GitHubView {
         if items.is_empty() && problem.is_none() && sent.is_none() {
             return Vec::new();
         }
-        let mut out = vec![super::queue::group_header("Tu agente", items.len()).into_any_element()];
+        let mut out =
+            vec![super::queue::group_header("Your agent", items.len()).into_any_element()];
         // The answered card is gone; this says where the answer went.
         if let Some(text) = sent {
             out.push(
@@ -154,7 +155,7 @@ impl GitHubView {
                             .truncate()
                             .ty(Type::Caption)
                             .text_color(theme::error())
-                            .child(format!("No pude leer a tu agente: {e}")),
+                            .child(format!("Couldn't reach your agent: {e}")),
                     )
                     .into_any_element(),
             );
@@ -199,7 +200,7 @@ impl GitHubView {
             .when(item.importante, |d| {
                 d.child(ui::state_pill(
                     "alert-circle",
-                    "Importante",
+                    "Important",
                     theme::attention(),
                 ))
             })
@@ -337,9 +338,9 @@ impl GitHubView {
                             .text_color(theme::text_subtle()),
                     )
                     .child(if n == 1 {
-                        "1 punto".to_string()
+                        "1 point".to_string()
                     } else {
-                        format!("{n} puntos")
+                        format!("{n} points")
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -374,7 +375,7 @@ impl GitHubView {
                                         .child(
                                             div().min_w_0().truncate().ty(Type::Mono).child(place),
                                         )
-                                        .tooltip(ui::tip("Ver los archivos del PR"))
+                                        .tooltip(ui::tip("See the pull request's files"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();
                                             if let Some(r) = &target {
@@ -404,7 +405,7 @@ impl GitHubView {
             ui::key_pill(
                 ("gh-pilot-see", ix),
                 None,
-                "Ver",
+                "See",
                 None,
                 PillKind::Normal,
                 pr_ref.is_some(),
@@ -441,7 +442,7 @@ impl GitHubView {
                         ui::key_pill(
                             ("gh-pilot-approve", ix),
                             Some(("tick02", None)),
-                            "Visto bueno",
+                            "Looks good",
                             None,
                             PillKind::Primary,
                             !busy && pr_ref.is_some(),
@@ -455,7 +456,7 @@ impl GitHubView {
                         ui::key_pill(
                             ("gh-pilot-changes", ix),
                             None,
-                            "Pedir cambios",
+                            "Request changes",
                             None,
                             PillKind::Normal,
                             !busy && pr_ref.is_some(),
@@ -505,7 +506,7 @@ impl GitHubView {
                         .font_weight(FontWeight::NORMAL)
                         .text_color(theme::text_subtle())
                         .hover(|s| s.text_color(theme::text()))
-                        .child("Otra respuesta…")
+                        .child("Other answer…")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             this.pilot_open_other(&other_id, window, cx);
@@ -513,7 +514,7 @@ impl GitHubView {
                 );
             }
             Kind::NeedsYou | Kind::Failed | Kind::Other => {
-                buttons = buttons.child(see).child(done("Listo", false, cx));
+                buttons = buttons.child(see).child(done("Done", false, cx));
             }
         }
         let mut foot = div()
@@ -543,7 +544,7 @@ impl GitHubView {
                         ui::key_pill(
                             ("gh-pilot-other-send", ix),
                             None,
-                            "Enviar",
+                            "Send",
                             Some("↵"),
                             PillKind::Normal,
                             !sending,
@@ -559,7 +560,7 @@ impl GitHubView {
             foot = foot.child(ui::text(
                 Type::Caption,
                 theme::text_subtle(),
-                "Enviando tu respuesta…",
+                "Sending your answer…",
             ));
         }
         if let Some(note) = self.pilot_notes.get(&id) {
@@ -637,7 +638,7 @@ impl GitHubView {
         cx.notify();
     }
 
-    /// "Otra respuesta…": a line under the card for the user's own words.
+    /// "Other answer…": a line under the card for the user's own words.
     fn pilot_open_other(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.pilot_other.as_deref() != Some(id) {
             self.pilot_other = Some(id.to_string());
@@ -647,7 +648,7 @@ impl GitHubView {
         cx.notify();
     }
 
-    /// Enter on the "Otra respuesta…" line.
+    /// Enter on the "Other answer…" line.
     pub(super) fn pilot_send_other(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.pilot_other.clone() else {
             return;
@@ -655,7 +656,7 @@ impl GitHubView {
         let text = self.pilot_input.read(cx).text().trim().to_string();
         if text.is_empty() {
             self.pilot_notes
-                .insert(id, "Escribe tu respuesta primero.".into());
+                .insert(id, "Write your answer first.".into());
             cx.notify();
             return;
         }
@@ -697,12 +698,12 @@ impl GitHubView {
                                 cx.notify();
                             });
                         });
-                        this.pilot_sent = Some(("Enviado: el agente sigue con eso.".into(), clear));
+                        this.pilot_sent = Some(("Sent: the agent is on it.".into(), clear));
                         this.pilot.update(cx, |p, cx| p.answered(&id, cx));
                     }
                     Err(e) => {
                         this.pilot_notes
-                            .insert(id.clone(), format!("No se envió tu respuesta: {e}"));
+                            .insert(id.clone(), format!("Your answer wasn't sent: {e}"));
                     }
                 }
                 cx.notify();
@@ -711,7 +712,7 @@ impl GitHubView {
         .detach();
     }
 
-    /// "Visto bueno": the confirm strip for an approval of the commit the
+    /// "Looks good": the confirm strip for an approval of the commit the
     /// agent read. A push since then cancels it.
     fn pilot_approve(&mut self, item: &Item, cx: &mut Context<Self>) {
         let Some(r) = item.item_ref() else { return };
@@ -719,7 +720,8 @@ impl GitHubView {
         if item.head.is_empty() {
             self.pilot_notes.insert(
                 item.id.clone(),
-                "El resumen no dice para qué commit es; apruébalo desde el PR.".into(),
+                "The summary doesn't say which commit it's for; approve it from the pull request."
+                    .into(),
             );
             cx.notify();
             return;
@@ -754,7 +756,7 @@ impl GitHubView {
         .detach();
     }
 
-    /// "Pedir cambios": the confirm strip with the agent's review in it, to
+    /// "Request changes": the confirm strip with the agent's review in it, to
     /// edit or send as it is.
     fn pilot_request_changes(&mut self, item: &Item, window: &mut Window, cx: &mut Context<Self>) {
         let Some(r) = item.item_ref() else { return };
@@ -771,7 +773,7 @@ impl GitHubView {
         });
     }
 
-    /// Ok, Listo, or a card's write that GitHub took: the card goes.
+    /// Ok, Done, or a card's write that GitHub took: the card goes.
     pub(super) fn pilot_finish(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.pilot_act.as_ref().is_some_and(|a| a.id == id) {
             self.pilot_act = None;
@@ -810,21 +812,21 @@ impl GitHubView {
         match c {
             Confirm::Approve => self.write(
                 "approve",
-                "Visto bueno enviado.".into(),
+                "Approved.".into(),
                 move |i| approve_job(i, &body, &head),
                 after,
                 cx,
             ),
             Confirm::RequestChanges => {
                 if body.trim().is_empty() {
-                    self.note = Some(Note::failed("Escribe qué debe cambiar."));
+                    self.note = Some(Note::failed("Say what should change."));
                     cx.notify();
                     return;
                 }
                 let pinned = !head.is_empty();
                 self.write(
                     "request-changes",
-                    "Cambios pedidos.".into(),
+                    "Changes requested.".into(),
                     move |i| {
                         if pinned {
                             pr::review_at(i, Verdict::RequestChanges, &body, &head)
@@ -840,7 +842,7 @@ impl GitHubView {
         }
     }
 
-    /// From the island's "Ver": the card in view, its pull request picked.
+    /// From the island's "See": the card in view, its pull request picked.
     pub fn reveal_pilot(&mut self, id: &str, cx: &mut Context<Self>) {
         let found = self.pilot.read(cx).find(id).cloned();
         self.queue_scroll.set_offset(gpui::Point::default());
@@ -854,8 +856,11 @@ impl GitHubView {
         let act = self.pilot_for(c)?;
         let n = act.item.number;
         Some(match c {
-            Confirm::Approve => (format!("¿Visto bueno a #{n}, como tú?"), "Aprobar".into()),
-            _ => (format!("¿Pedir cambios en #{n}?"), "Pedir cambios".into()),
+            Confirm::Approve => (format!("Approve #{n} as you?"), "Approve".into()),
+            _ => (
+                format!("Request changes on #{n}?"),
+                "Request changes".into(),
+            ),
         })
     }
 }
@@ -887,7 +892,7 @@ mod tests {
     fn a_moved_head_says_both_commits() {
         assert_eq!(
             moved_text(95, "40a1b2c3d4e5f6", "99ffeedd00112233"),
-            "#95 tiene commits nuevos desde el resumen (40a1b2c → 99ffeed). No lo aprobé: revísalo otra vez."
+            "#95 has new commits since the summary (40a1b2c → 99ffeed). I didn't approve it: review it again."
         );
     }
 }

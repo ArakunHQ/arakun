@@ -358,7 +358,7 @@ impl Shell {
                     let result = cx
                         .background_spawn(async move {
                             let cfg = pilot::load_config()
-                                .ok_or("no encontré el client.json de arakun-pilot")?;
+                                .ok_or("couldn't find arakun-pilot's client.json")?;
                             pilot::send_task(&cfg, &req)
                         })
                         .await;
@@ -369,17 +369,9 @@ impl Shell {
                         let _ = this.update(cx, |this, cx| {
                             let (kind, text) = match &result {
                                 Ok(id) => (AlertKind::Info, palette::cloud::sent_note(id)),
-                                Err(e) => (AlertKind::Warning, format!("No se mandó: {e}")),
+                                Err(e) => (AlertKind::Warning, format!("Not sent: {e}")),
                             };
-                            this.notify_from(
-                                kind,
-                                "Agente de la nube",
-                                &text,
-                                None,
-                                None,
-                                "github",
-                                cx,
-                            );
+                            this.notify_from(kind, "Cloud agent", &text, None, None, "github", cx);
                         });
                     }
                 })
@@ -1498,7 +1490,7 @@ impl Shell {
                 }
                 self.palette_ask(prompt, None, None, window, cx);
             }
-            // A pin of "Mandar al agente de la nube…": the palette, at its form.
+            // A pin of "Send to the cloud agent…": the palette, at its form.
             Target::CloudTask => {
                 self.open_palette(window, cx);
                 if let Some((Modal::Palette(p), _)) = &self.modal {
@@ -2085,19 +2077,19 @@ impl Shell {
     }
 }
 
-/// "Mandar al agente de la nube…", offered only when arakun-pilot is set up.
+/// "Send to the cloud agent…", offered only when arakun-pilot is set up.
 fn cloud_command(config: Option<&pilot::Config>) -> Option<Item> {
     let config = config?;
     let blurb = if config.admin_token.is_some() {
-        "Le pasa una tarea a arakun-pilot: trabaja en tu PR abierto o en una rama nueva, y el resultado llega como tarjeta. También: “nube: <tarea>”."
+        "Hands a task to arakun-pilot: it works on your open pull request or on a new branch, and the result comes back as a card. Also: “cloud: <task>”."
     } else {
-        "Le pasa una tarea a arakun-pilot. Necesita \"admin_token\" en su client.json."
+        "Hands a task to arakun-pilot. It needs \"admin_token\" in its client.json."
     };
     Some(
         Item::new(
             "command:cloud-task",
             Kind::Command,
-            "Mandar al agente de la nube…",
+            "Send to the cloud agent…",
             Target::CloudTask,
         )
         .icon("cloud-upload", Tint::Violet)

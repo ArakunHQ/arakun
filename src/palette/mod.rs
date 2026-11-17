@@ -110,7 +110,7 @@ pub struct Seed {
     pub clipboard: Option<String>,
     /// The local hour, for what the person opens at this time of day.
     pub hour: usize,
-    /// arakun-pilot, when its `client.json` exists: "nube: …" sends it work.
+    /// arakun-pilot, when its `client.json` exists: "cloud: …" sends it work.
     pub pilot: Option<cloud::PilotSeed>,
 }
 
@@ -215,7 +215,7 @@ pub enum Card {
     /// A merge to confirm: the pull request, its title and the head commit
     /// that Enter merges.
     Confirm(crate::github::pr::ItemRef, String, String),
-    /// "nube: …": the task for the cloud agent, and where it goes.
+    /// "cloud: …": the task for the cloud agent, and where it goes.
     Cloud(String),
 }
 
@@ -335,7 +335,7 @@ impl Palette {
             this.on_input(*ev, window, cx)
         });
         window.focus(&input.focus_handle(cx), cx);
-        let cloud_branch = cx.new(|cx| TextInput::new("pilot/nombre-de-la-rama", cx).mono());
+        let cloud_branch = cx.new(|cx| TextInput::new("pilot/branch-name", cx).mono());
         let cloud_sub = cx.subscribe_in(
             &cloud_branch,
             window,
@@ -2115,14 +2115,14 @@ impl Palette {
         self.seed.pilot.as_ref()?.pull.as_ref()
     }
 
-    /// "Mandar al agente de la nube…": the input becomes the task's line.
+    /// "Send to the cloud agent…": the input becomes the task's line.
     pub fn start_cloud(&mut self, cx: &mut Context<Self>) {
         self.scope = None;
         self.tab = Tab::All;
         self.pages.clear();
         self.menu = None;
         self.confirm = None;
-        self.input.update(cx, |i, cx| i.set_text("nube: ", cx));
+        self.input.update(cx, |i, cx| i.set_text("cloud: ", cx));
         cx.notify();
     }
 
@@ -2170,7 +2170,7 @@ impl Palette {
         match cloud::request(&task, &seed, self.cloud_to_pull, &branch) {
             Ok(req) => {
                 self.cloud_sending = true;
-                self.show_note("Mandando al agente de la nube…", true, cx);
+                self.show_note("Sending to the cloud agent…", true, cx);
                 cx.emit(PaletteEvent::CloudTask(req));
             }
             Err(e) => self.show_note(e, false, cx),
@@ -2195,7 +2195,7 @@ impl Palette {
                 self.cloud_branch.update(cx, |i, cx| i.set_text("", cx));
                 self.show_note(cloud::sent_note(&id), true, cx);
             }
-            Err(e) => self.show_note(format!("No se mandó: {e}"), false, cx),
+            Err(e) => self.show_note(format!("Not sent: {e}"), false, cx),
         }
     }
 }

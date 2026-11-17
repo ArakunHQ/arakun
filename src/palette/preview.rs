@@ -671,20 +671,20 @@ impl Palette {
             Card::Cloud(task) => {
                 let pilot = self.seed.pilot.clone().unwrap_or_default();
                 let place = match pilot.pull.as_ref().filter(|_| self.cloud_to_pull) {
-                    Some((n, t)) => format!("Trabaja en tu PR #{n} ({t}) y sube commits ahí."),
-                    None => "Abre una rama nueva desde main y deja un PR con el trabajo.".into(),
+                    Some((n, t)) => format!("Works on your pull request #{n} ({t}) and pushes commits there."),
+                    None => "Opens a new branch from main and leaves a pull request with the work.".into(),
                 };
                 vec![
-                    kit::preview_eyebrow("cloud-upload", "arakun-pilot · tarea").into_any_element(),
+                    kit::preview_eyebrow("cloud-upload", "arakun-pilot · task").into_any_element(),
                     kit::preview_title(if task.is_empty() {
-                        "Mandar al agente de la nube".to_string()
+                        "Send to the cloud agent".to_string()
                     } else {
                         cloud::title(task)
                     })
                     .into_any_element(),
                     kit::preview_text(place).into_any_element(),
                     kit::preview_text(
-                        "Corre en la nube, no en esta máquina. Cuando termine, el resultado llega como tarjeta en la pestaña GitHub.",
+                        "Runs in the cloud, not on this machine. When it's done, the result comes back as a card in the GitHub tab.",
                     )
                     .into_any_element(),
                 ]

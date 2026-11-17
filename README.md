@@ -158,15 +158,15 @@ terminal-only. The status line and keybindings from your settings don't apply in
   line under "Review queue" to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), its cards show at the top of the queue under "Tu agente":
-  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set;
+  (arakun-pilot), its cards show at the top of the queue under "Your agent":
+  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
   `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/items` every
   minute. Approve and request changes go through the same second click, with your own
   `gh`; an approval only goes to the commit the agent read. When the agent asks you
-  something with ready answers, they show as buttons on its card, with "Otra respuesta…"
+  something with ready answers, they show as buttons on its card, with "Other answer…"
   for your own words (`POST <url>/items/<id>/answer`). What you saw and dealt with is
-  kept in `pilot.json` next to the state. Ctrl+K "Mandar al agente de la nube…" (or type
-  `nube: <task>`) hands it new work, on the open pull request of yours picked in the tab
+  kept in `pilot.json` next to the state. Ctrl+K "Send to the cloud agent…" (or type
+  `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
   or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
   too.
 

@@ -1,16 +1,18 @@
-//! "Mandar al agente de la nube…": work for arakun-pilot typed in the
-//! palette ("nube: arregla el título de la pestaña"). It goes to the user's
+//! "Send to the cloud agent…": work for arakun-pilot typed in the
+//! palette ("cloud: fix the tab's title"). It goes to the user's
 //! open pull request picked in the GitHub tab, or to a new branch named
 //! after the text. The request itself lives in `crate::github::pilot`.
 
 use crate::github::pilot::{self, TaskRequest, TaskTarget};
 
 /// The words that start a task, lower case, longest first so "agente nube:"
-/// isn't read as "nube:" with "agente" in front.
+/// isn't read as "nube:" with "agente" in front. "cloud:" is the one the
+/// palette shows; the Spanish ones still work for those who learned them.
 const LEADS: &[&str] = &[
     "agente de la nube:",
-    "agente nube:",
     "mandar a la nube:",
+    "agente nube:",
+    "cloud:",
     "nube:",
 ];
 
@@ -27,7 +29,7 @@ pub struct PilotSeed {
     pub admin: bool,
 }
 
-/// The task in `q` ("nube: <task>"), possibly empty: the card shows from the
+/// The task in `q` ("cloud: <task>"), possibly empty: the card shows from the
 /// lead on, so it can say what to type.
 pub fn parse(q: &str) -> Option<&str> {
     let t = q.trim_start();
@@ -100,18 +102,18 @@ pub fn suggest_branch(text: &str) -> String {
     }
     out.truncate(SLUG_MAX);
     if out.is_empty() {
-        "pilot/tarea".into()
+        "pilot/task".into()
     } else {
         format!("pilot/{out}")
     }
 }
 
-/// Why git would refuse `name` as a new branch, in Spanish; None when it
+/// Why git would refuse `name` as a new branch; None when it
 /// takes it. The common cases of `git check-ref-format`, enough to catch a
 /// typo before it reaches the Worker.
 pub fn branch_problem(name: &str) -> Option<&'static str> {
     if name.is_empty() {
-        return Some("Ponle nombre a la rama.");
+        return Some("Give the branch a name.");
     }
     let bad_char = name
         .chars()
@@ -126,9 +128,9 @@ pub fn branch_problem(name: &str) -> Option<&'static str> {
         || name.ends_with(".lock")
         || name.split('/').any(|p| p.starts_with('.'));
     if bad {
-        return Some("Ese nombre de rama no vale: usa letras, números, - y /.");
+        return Some("That branch name won't work: use letters, numbers, - and /.");
     }
-    (name == "main").then_some("La tarea no puede ir directo a main.")
+    (name == "main").then_some("The task can't go straight to main.")
 }
 
 /// The request for `task`, or why it can't go yet. A task goes to the
@@ -142,7 +144,7 @@ pub fn request(
 ) -> Result<TaskRequest, String> {
     let prompt = task.trim();
     if prompt.is_empty() {
-        return Err("Escribe qué debe hacer el agente después de “nube:”.".into());
+        return Err("Write what the agent should do after “cloud:”.".into());
     }
     if !seed.admin {
         return Err(pilot::NO_ADMIN.into());
@@ -171,9 +173,9 @@ pub fn request(
 pub fn sent_note(id: &str) -> String {
     let id = id.trim();
     if id.is_empty() {
-        "Mandado al agente de la nube. El resultado llega como tarjeta en GitHub.".into()
+        "Sent to the cloud agent. The result comes back as a card in GitHub.".into()
     } else {
-        format!("Mandado al agente de la nube ({id}). El resultado llega como tarjeta en GitHub.")
+        format!("Sent to the cloud agent ({id}). The result comes back as a card in GitHub.")
     }
 }
 
@@ -183,7 +185,12 @@ mod tests {
 
     #[test]
     fn a_task_starts_with_its_lead() {
+        assert_eq!(parse("cloud: fix the title"), Some("fix the title"));
+        assert_eq!(parse("Cloud:fix"), Some("fix"));
+        assert_eq!(parse("cloud"), None);
+        // The Spanish leads from before still work.
         assert_eq!(parse("nube: arregla el título"), Some("arregla el título"));
+        assert_eq!(parse("Mandar a la nube: algo"), Some("algo"));
         assert_eq!(parse("Nube:arregla"), Some("arregla"));
         assert_eq!(
             parse("agente nube: sube la versión"),
@@ -191,6 +198,7 @@ mod tests {
         );
         assert_eq!(parse("Agente de la nube: algo"), Some("algo"));
         // The lead alone shows the card, which says what to type.
+        assert_eq!(parse("cloud:"), Some(""));
         assert_eq!(parse("nube:"), Some(""));
         assert_eq!(parse("nube"), None);
         assert_eq!(parse("la nube: algo"), None);
@@ -200,8 +208,8 @@ mod tests {
     #[test]
     fn the_card_shows_only_with_pilot_set_up() {
         let seed = PilotSeed::default();
-        assert_eq!(card_task("nube: x", Some(&seed)), Some("x"));
-        assert_eq!(card_task("nube: x", None), None);
+        assert_eq!(card_task("cloud: x", Some(&seed)), Some("x"));
+        assert_eq!(card_task("cloud: x", None), None);
         assert_eq!(card_task("arregla x", Some(&seed)), None);
     }
 
@@ -222,7 +230,7 @@ mod tests {
             suggest_branch("Arregla el título de la pestaña"),
             "pilot/arregla-el-titulo-de-la-pestana"
         );
-        assert_eq!(suggest_branch("¿¡ !?"), "pilot/tarea");
+        assert_eq!(suggest_branch("¿¡ !?"), "pilot/task");
         let long = suggest_branch(
             "agrega una opción para que las notificaciones de github suenen distinto",
         );

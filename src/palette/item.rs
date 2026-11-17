@@ -80,7 +80,7 @@ pub enum Target {
     FixError(ErrorText),
     /// Merge, behind the palette's own confirm.
     Merge(crate::github::pr::ItemRef),
-    /// "Mandar al agente de la nube…": the palette's own task form.
+    /// "Send to the cloud agent…": the palette's own task form.
     CloudTask,
     /// Rows that only show something.
     Nothing,

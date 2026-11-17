@@ -71,8 +71,8 @@ impl Shell {
         if new.len() > NOTICES_AT_ONCE {
             self.notify_from(
                 AlertKind::Info,
-                "Tu agente",
-                &format!("{} cosas te esperan en GitHub", new.len()),
+                "Your agent",
+                &format!("{} things wait for you on GitHub", new.len()),
                 Some(Open::GitHub(None)),
                 None,
                 "github",

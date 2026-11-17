@@ -126,11 +126,11 @@ pub enum Kind {
 impl Kind {
     pub fn label(self) -> &'static str {
         match self {
-            Kind::Brief => "Para revisar",
-            Kind::Fixed => "Arreglado",
-            Kind::NeedsYou => "Te necesita",
-            Kind::Failed => "Falló",
-            Kind::Other => "Aviso",
+            Kind::Brief => "To review",
+            Kind::Fixed => "Fixed",
+            Kind::NeedsYou => "Needs you",
+            Kind::Failed => "Failed",
+            Kind::Other => "Notice",
         }
     }
 }
@@ -148,10 +148,10 @@ pub enum Riesgo {
 impl Riesgo {
     pub fn label(self) -> &'static str {
         match self {
-            Riesgo::Bajo => "Riesgo bajo",
-            Riesgo::Medio => "Riesgo medio",
-            Riesgo::Alto => "Riesgo alto",
-            Riesgo::Otro => "Riesgo ?",
+            Riesgo::Bajo => "Low risk",
+            Riesgo::Medio => "Medium risk",
+            Riesgo::Alto => "High risk",
+            Riesgo::Otro => "Risk ?",
         }
     }
 }
@@ -278,13 +278,13 @@ impl Item {
         }
     }
 
-    /// The island notice: "Tu agente · #95" and the question, or the first
+    /// The island notice: "Your agent · #95" and the question, or the first
     /// sentence of the summary.
     pub fn notice(&self) -> (String, String) {
         let title = if self.number > 0 {
-            format!("Tu agente · #{}", self.number)
+            format!("Your agent · #{}", self.number)
         } else {
-            "Tu agente".to_string()
+            "Your agent".to_string()
         };
         let text = if self.kind == Kind::NeedsYou && !self.pregunta.trim().is_empty() {
             self.pregunta.trim().to_string()
@@ -334,7 +334,7 @@ pub fn parse_items(bytes: &[u8]) -> Result<Vec<Item>, String> {
         },
     }
     let answer: Answer =
-        serde_json::from_slice(bytes).map_err(|e| format!("respuesta inesperada: {e}"))?;
+        serde_json::from_slice(bytes).map_err(|e| format!("unexpected answer: {e}"))?;
     let items = match answer {
         Answer::List(l) | Answer::Wrapped { items: l } => l,
     };
@@ -463,8 +463,8 @@ fn encode(s: &str) -> String {
 /// What a status means. Never the token: errors only name the address.
 fn status_problem(status: u16) -> String {
     match status {
-        401 | 403 => "el Worker rechazó la llave (revisa el token de client.json)".into(),
-        _ => format!("el Worker contestó {status}"),
+        401 | 403 => "the Worker refused the key (check the token in client.json)".into(),
+        _ => format!("the Worker answered {status}"),
     }
 }
 
@@ -472,7 +472,7 @@ fn status_problem(status: u16) -> String {
 /// it gave one: "la rama ya existe" helps more than a bare 409.
 fn write_problem(status: u16, body: &[u8], admin: bool) -> String {
     if admin && matches!(status, 401 | 403) {
-        return "el Worker rechazó la llave de admin (revisa admin_token en client.json)".into();
+        return "the Worker refused the admin key (check admin_token in client.json)".into();
     }
     let reason = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
@@ -498,7 +498,7 @@ fn post_json(
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .send(body.to_string())
-        .map_err(|e| format!("no pude llegar a {base}: {e}"))?;
+        .map_err(|e| format!("could not reach {base}: {e}"))?;
     let status = res.status().as_u16();
     let bytes = res
         .body_mut()
@@ -521,7 +521,7 @@ pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
         .get(&url)
         .header("Authorization", format!("Bearer {}", cfg.token))
         .call()
-        .map_err(|e| format!("no pude llegar a {}: {e}", cfg.url))?;
+        .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
     let status = res.status().as_u16();
     if status != 200 {
         return Err(status_problem(status));
@@ -531,7 +531,7 @@ pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
         .with_config()
         .limit(8 * 1024 * 1024)
         .read_to_vec()
-        .map_err(|e| format!("el Worker cortó la respuesta: {e}"))?;
+        .map_err(|e| format!("the Worker cut the answer short: {e}"))?;
     parse_items(&bytes)
 }
 
@@ -541,7 +541,7 @@ pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
         .post(format!("{}/items/{}/done", cfg.url, encode(id)))
         .header("Authorization", format!("Bearer {}", cfg.token))
         .send_empty()
-        .map_err(|e| format!("no pude llegar a {}: {e}", cfg.url))?;
+        .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
     match res.status().as_u16() {
         200..=299 | 404 => Ok(()),
         s => Err(status_problem(s)),
@@ -553,7 +553,7 @@ pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
 pub enum Answer {
     /// One of the item's `opciones`, by id.
     Opcion(String),
-    /// "Otra respuesta…": their own words.
+    /// "Other answer…": their own words.
     Texto(String),
 }
 
@@ -616,7 +616,7 @@ pub fn parse_task_id(bytes: &[u8]) -> Option<String> {
 }
 
 /// Why a task can't go with these settings: tasks take the admin token.
-pub const NO_ADMIN: &str = "Mandar tareas necesita \"admin_token\" en client.json de arakun-pilot.";
+pub const NO_ADMIN: &str = "Sending tasks needs \"admin_token\" in arakun-pilot's client.json.";
 
 /// Hands the agent new work. Ok with the task's id ("" when the Worker
 /// named none); its result comes back later as an item.
@@ -903,7 +903,7 @@ mod tests {
         let brief = item("a", "", Kind::Brief, true);
         assert_eq!(
             brief.notice(),
-            ("Tu agente · #95".to_string(), "Primera frase.".to_string())
+            ("Your agent · #95".to_string(), "Primera frase.".to_string())
         );
         let mut ask = item("b", "", Kind::NeedsYou, false);
         ask.pregunta = "¿Le contesto a Rik que no?".into();
@@ -1117,13 +1117,13 @@ mod tests {
     fn refused_writes_say_why_without_the_token() {
         assert_eq!(
             write_problem(409, br#"{"error": "la rama ya existe"}"#, true),
-            "el Worker contestó 409 (la rama ya existe)"
+            "the Worker answered 409 (la rama ya existe)"
         );
         assert!(write_problem(403, b"", true).contains("admin_token"));
-        assert!(write_problem(401, b"", false).contains("token de client.json"));
+        assert!(write_problem(401, b"", false).contains("token in client.json"));
         assert_eq!(
             write_problem(500, b"<html>", false),
-            "el Worker contestó 500"
+            "the Worker answered 500"
         );
         // A task without the admin token never leaves.
         let cfg = parse_config(br#"{"url": "http://127.0.0.1:9", "token": "t"}"#).unwrap();

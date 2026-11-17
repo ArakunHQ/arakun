@@ -350,12 +350,12 @@ pub struct GitHubView {
     pilot_act: Option<pilot::PilotAct>,
     /// Why a card's action didn't go, by item id.
     pilot_notes: HashMap<String, String>,
-    /// The card whose "Otra respuesta…" line is open.
+    /// The card whose "Other answer…" line is open.
     pilot_other: Option<String>,
     pilot_input: Entity<TextInput>,
     /// Cards whose answer is on its way.
     pilot_sending: HashSet<String>,
-    /// "Enviado…" after an answer went, until its timer clears it.
+    /// "Sent…" after an answer went, until its timer clears it.
     pilot_sent: Option<(String, gpui::Task<()>)>,
     _pilot_sub: Subscription,
     _subs: Vec<Subscription>,
@@ -410,7 +410,7 @@ impl GitHubView {
         let watch_input = cx.new(|cx| TextInput::new("organization or owner/repo", cx));
         let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
-        let pilot_input = cx.new(|cx| TextInput::new("Tu respuesta para el agente", cx));
+        let pilot_input = cx.new(|cx| TextInput::new("Your answer for the agent", cx));
         let subs = vec![
             cx.subscribe(&pilot_input, |this, _, ev: &InputEvent, cx| match ev {
                 InputEvent::Submit => this.pilot_send_other(cx),

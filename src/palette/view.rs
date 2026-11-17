@@ -603,13 +603,13 @@ impl Palette {
         let to_pull = self.cloud_to_pull && pilot.pull.is_some();
         let (title, sub) = if task.is_empty() {
             (
-                "Mandar al agente de la nube".to_string(),
-                "Escribe la tarea después de “nube:”.".to_string(),
+                "Send to the cloud agent".to_string(),
+                "Write the task after “cloud:”.".to_string(),
             )
         } else {
             (
                 cloud::title(task),
-                "Para el agente de la nube (arakun-pilot)".to_string(),
+                "For the cloud agent (arakun-pilot)".to_string(),
             )
         };
         let mut targets = div()
@@ -617,7 +617,7 @@ impl Palette {
             .flex_wrap()
             .items_center()
             .gap(crate::ui::sp(6.))
-            .child(caption("Va a", theme::text_subtle()));
+            .child(caption("Goes to", theme::text_subtle()));
         if let Some((n, t)) = &pilot.pull {
             targets = targets.child(
                 kit::chip(
@@ -632,7 +632,7 @@ impl Palette {
             );
         }
         targets = targets.child(
-            kit::chip("palette-cloud-branch", "Rama nueva", !to_pull).on_click(cx.listener(
+            kit::chip("palette-cloud-branch", "New branch", !to_pull).on_click(cx.listener(
                 |this, _, _, cx| {
                     cx.stop_propagation();
                     this.set_cloud_target(false, cx);
@@ -655,7 +655,7 @@ impl Palette {
                         .child(icon("git-branch", 13.).text_color(theme::text_subtle()))
                         .child(div().flex_1().min_w_0().child(self.cloud_branch.clone())),
                 )
-                .child(caption("desde main", theme::text_subtle()))
+                .child(caption("from main", theme::text_subtle()))
         });
         div()
             .flex()
@@ -896,12 +896,12 @@ impl Palette {
             }
             Some(Card::Cloud(_)) => {
                 return f
-                    .child(kit::footer_hint(&["↵"], "mandar"))
+                    .child(kit::footer_hint(&["↵"], "send"))
                     .when(self.cloud_pull().is_some(), |d| {
-                        d.child(kit::footer_hint(&["Tab"], "PR o rama nueva"))
+                        d.child(kit::footer_hint(&["Tab"], "PR or new branch"))
                     })
-                    .child(kit::footer_hint(&["Esc"], "cancelar"))
-                    .child(right("Nada sale hasta que des Enter".into()))
+                    .child(kit::footer_hint(&["Esc"], "cancel"))
+                    .child(right("Nothing goes until you press Enter".into()))
                     .into_any_element();
             }
             Some(Card::Confirm(..)) => {

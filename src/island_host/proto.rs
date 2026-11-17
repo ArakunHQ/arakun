@@ -18,6 +18,11 @@ pub enum ToIsland {
     Hello {
         pid: u32,
     },
+    /// An agent outside Arakun changed (`arakun island hook`, `arakun island session`).
+    #[cfg(windows)]
+    Session {
+        update: super::external::Update,
+    },
     /// What every session is up to, sent when it changes.
     Feed {
         feed: Feed,

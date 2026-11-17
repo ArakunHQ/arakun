@@ -222,6 +222,29 @@ Manager (Windows Credentials, Generic Credentials).
   since they don't run on Windows, and no notifications from other apps. After a
   change of the display's scale in Settings, the island keeps its old size until it
   restarts: Windows doesn't tell it about the change.
+- **Agents outside Arakun on the island (Windows only for now):** Claude Code running
+  in another terminal or an editor can show on the island through its hooks.
+  `arakun island hook` reads the JSON a hook gets on stdin. It lists the session while
+  it works, and shows a card when it waits for you or finishes. It never fails the
+  hook, even when the island is not running. Add this to `~\.claude\settings.json`,
+  with your own path to `arakun.exe`:
+
+  ```json
+  {
+    "hooks": {
+      "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "PostToolUse": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "Notification": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "Stop": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "SessionEnd": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }]
+    }
+  }
+  ```
+
+  `arakun island hook <name>` shows another name than "Claude Code". Any other agent
+  can tell the island by hand:
+  `arakun island session <id> <working|waiting|done|error|ended> [project] [doing]`.
+  "Ver" on such a card only puts it away, since Arakun has nothing to open for it.
 
 ## Not available on Windows
 

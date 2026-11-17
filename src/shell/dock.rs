@@ -13,7 +13,9 @@ impl Shell {
             return;
         }
         crate::ui_zoom::set_pct(pct);
-        window.bounds_changed(cx);
+        // Deferred: the bounds observer (`track_window`) updates this Shell,
+        // which is mid-update here, and GPUI aborts on the nested update.
+        window.defer(cx, |window, cx| window.bounds_changed(cx));
         self.save(cx);
         cx.notify();
     }

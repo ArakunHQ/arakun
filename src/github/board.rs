@@ -402,6 +402,18 @@ pub fn needs_you(b: &Board, q: &super::queue::Queue) -> usize {
     b.verdict.te_necesita as usize + elsewhere
 }
 
+/// The new cards worth a notice. With a board the tab shows no cards, only
+/// the board's questions, so only a card that is one of them gets a notice:
+/// the others would point at nothing the user can find.
+pub fn noticed<'a>(
+    b: Option<&Board>,
+    new: &'a [super::pilot::Item],
+) -> Vec<&'a super::pilot::Item> {
+    new.iter()
+        .filter(|i| b.is_none_or(|b| b.find_decision(&i.id).is_some()))
+        .collect()
+}
+
 /// What `GET /board` answered, cleaned: options without an id or words go,
 /// as on the cards, and pull requests without a number.
 pub fn parse_board(bytes: &[u8]) -> Result<Board, String> {
@@ -634,6 +646,32 @@ mod tests {
         };
         assert_eq!(outside(&b, &q).count(), 2);
         assert_eq!(needs_you(&b, &q), 2);
+    }
+
+    #[test]
+    fn with_a_board_only_its_questions_get_a_notice() {
+        use super::super::pilot::{Item, Kind};
+        let card = |id: &str, kind: Kind| Item {
+            id: id.into(),
+            kind,
+            ..Item::default()
+        };
+        let new = [card("q1", Kind::NeedsYou), card("b1", Kind::Brief)];
+        let b = Board {
+            prs: vec![BoardPr {
+                number: 7,
+                decision: Some(Decision {
+                    item: "q1".into(),
+                    ..Decision::default()
+                }),
+                ..BoardPr::default()
+            }],
+            ..Board::default()
+        };
+        let ids = |v: Vec<&Item>| v.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(noticed(Some(&b), &new)), ["q1"]);
+        // Without a board the tab shows every card.
+        assert_eq!(ids(noticed(None, &new)), ["q1", "b1"]);
     }
 
     #[test]

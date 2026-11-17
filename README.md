@@ -208,9 +208,10 @@ breaks and what gets used. Settings › General has a switch for each:
   and a browser tab opened.
 
 Each event carries Arakun's version, the OS and the CPU architecture. Arakun never
-sends prompts, replies, file contents, URLs or project names. Before a panic's message
-leaves your machine, Arakun replaces your home folder with `~` and removes paths, links,
-emails and anything shaped like a key or token. Events carry a random id kept in
+sends prompts, replies or file contents. A panic's message is the one text that is
+sent: before it leaves your machine, Arakun replaces your home folder with `~` and
+removes paths, links, emails and anything shaped like a key or token. Its other words
+are sent as they are, so a crash message can still name something it was working on. Events carry a random id kept in
 `telemetry-id` in Arakun's data folder (`~/.local/share/arakun` on Linux and macOS,
 `%LOCALAPPDATA%\arakun` on Windows); it is not tied to any account, PostHog makes no
 person profile from it and no location from your IP, and deleting the file starts a

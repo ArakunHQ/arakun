@@ -8,10 +8,10 @@
 //! `DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the
 //! question; `ARAKUN_TELEMETRY=1` turns both on.
 //!
-//! Never a prompt, a reply, a file's contents, a URL or a project's name.
-//! An agent's error is sent as a fixed category, not its text (`category`);
-//! a panic's message loses URLs, paths, emails and anything shaped like a
-//! secret before it leaves the machine (`scrub`). Every event carries a random id
+//! Never a prompt, a reply or a file's contents. An agent's error is sent as
+//! a fixed category, not its text (`category`). A panic's message is the one
+//! text sent: it loses URLs, paths, emails and anything shaped like a secret
+//! before it leaves the machine (`scrub`), and its other words go as they are. Every event carries a random id
 //! kept in `app_dir/telemetry-id`, not tied to any account, and creates no
 //! person profile. Debug builds, tests and `arakun dev` send nothing.
 //!
@@ -145,14 +145,28 @@ pub fn should_ask() -> bool {
     !blocked() && env() == EnvChoice::Unset && consent().is_none()
 }
 
-/// What this process sends.
-fn effective() -> Consent {
+/// What this process sends, which Settings shows.
+pub fn effective() -> Consent {
     if blocked() {
         Consent::NONE
     } else if env() == EnvChoice::On {
         Consent::ALL
     } else {
         consent().unwrap_or(Consent::NONE)
+    }
+}
+
+/// The variable that decides instead of the user's answer, if one does.
+pub fn env_override() -> Option<&'static str> {
+    match env() {
+        EnvChoice::Unset => None,
+        EnvChoice::Off
+            if std::env::var("DO_NOT_TRACK")
+                .is_ok_and(|v| !v.trim().is_empty() && v.trim() != "0") =>
+        {
+            Some("DO_NOT_TRACK")
+        }
+        _ => Some("ARAKUN_TELEMETRY"),
     }
 }
 
@@ -177,10 +191,12 @@ pub fn set_consent(choice: Consent) -> Result<(), String> {
 }
 
 fn apply(choice: Consent) {
-    // What was queued while a choice was on is not sent once it is off.
-    lock(&queue().events).retain(|e| allowed(e, choice));
+    // The flags first, so nothing can be queued under the old choice after
+    // the queue is cleaned below.
     CRASHES.store(choice.crashes, Ordering::Relaxed);
     USAGE.store(choice.usage, Ordering::Relaxed);
+    // What was queued while a choice was on is not sent once it is off.
+    lock(&queue().events).retain(|e| allowed(e, choice));
     if (choice.crashes || choice.usage) && STARTED.set(()).is_ok() {
         install_panic_hook();
         if let Err(e) = std::thread::Builder::new()
@@ -482,8 +498,7 @@ fn install_panic_hook() {
     }));
 }
 
-#[allow(deprecated)] // PanicHookInfo is only a rename of PanicInfo.
-fn panic_event(info: &std::panic::PanicInfo<'_>) -> Value {
+fn panic_event(info: &std::panic::PanicHookInfo<'_>) -> Value {
     let message = info
         .payload()
         .downcast_ref::<&str>()
@@ -493,7 +508,9 @@ fn panic_event(info: &std::panic::PanicInfo<'_>) -> Value {
     let home = home();
     let mut props = Map::new();
     if let Some(at) = info.location() {
-        props.insert("$exception_panic_file".into(), at.file().into());
+        // A dependency's file is under the cargo home, in the user's home.
+        let file = at.file().replacen(&home, "~", 1);
+        props.insert("$exception_panic_file".into(), file.into());
         props.insert("$exception_panic_line".into(), at.line().into());
         props.insert("$exception_panic_column".into(), at.column().into());
     }
@@ -645,8 +662,11 @@ fn redact(word: &str) -> Option<String> {
         && !name.contains(['/', '\\'])
     {
         let sep = &word[name.len()..name.len() + 1];
-        let value = redact(value)?;
-        return Some(format!("{name}{sep}{value}"));
+        // `key="value"`, as in JSON bodies: the quotes stay, the value goes.
+        let inner = value.trim_start_matches(|c| "([{<\"'`".contains(c));
+        let quotes = &value[..value.len() - inner.len()];
+        let value = redact(inner)?;
+        return Some(format!("{name}{sep}{quotes}{value}"));
     }
     if word.contains('@') && word.contains('.') && !word.starts_with('@') {
         return Some("<email>".into());
@@ -738,6 +758,17 @@ mod tests {
         assert_eq!(
             scrub("token=ghp_0123456789abcdefghij expired", HOME),
             "token=<secret> expired"
+        );
+        assert_eq!(
+            scrub(r#"token="ghp_0123456789abcdefghij" expired"#, HOME),
+            r#"token="<secret>" expired"#
+        );
+        assert_eq!(
+            scrub(
+                r#"body {"api_key":"sk-ant-api03-AbCdEf123456789xyz"}"#,
+                HOME
+            ),
+            r#"body {"api_key":"<secret>"}"#
         );
         assert_eq!(
             scrub("GET https://api.acme.internal/v1?key=1 failed", HOME),

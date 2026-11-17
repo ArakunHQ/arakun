@@ -892,36 +892,8 @@ impl SettingsDialog {
                     cx.notify();
                 }))
                 .into_any_element(),
-                {
-                    let c = crate::telemetry::consent().unwrap_or_default();
-                    row(
-                        "Crash reports",
-                        "Sends crashes and agent errors to Arakun's PostHog, under a random id. Paths, links, emails and anything shaped like a key are removed first.",
-                        switch(c.crashes).into_any_element(),
-                    )
-                    .id("set-crash-reports")
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.telemetry_error = crate::telemetry::set_consent(crate::telemetry::Consent { crashes: !c.crashes, ..c }).err().map(Into::into);
-                        cx.notify();
-                    }))
-                    .into_any_element()
-                },
-                {
-                    let c = crate::telemetry::consent().unwrap_or_default();
-                    row(
-                        "Usage counts",
-                        "Counts such as sessions started, with the agent's name. Never prompts, replies, files, URLs or project names. DO_NOT_TRACK=1 turns both off.",
-                        switch(c.usage).into_any_element(),
-                    )
-                    .id("set-usage-counts")
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.telemetry_error = crate::telemetry::set_consent(crate::telemetry::Consent { usage: !c.usage, ..c }).err().map(Into::into);
-                        cx.notify();
-                    }))
-                    .into_any_element()
-                },
+                self.telemetry_row(true, cx),
+                self.telemetry_row(false, cx),
             ];
                 if let Some(e) = &self.telemetry_error {
                     rows.push(
@@ -1141,6 +1113,63 @@ impl SettingsDialog {
     }
 
     /// Puts `id` in use across the app and remembers it.
+    /// The Crash reports (`crashes`) or Usage counts switch. It shows what is
+    /// sent; when an environment variable decides that, it says which and
+    /// does not change.
+    fn telemetry_row(&self, crashes: bool, cx: &mut Context<Self>) -> AnyElement {
+        use crate::telemetry::{self, Consent};
+        let saved = telemetry::consent().unwrap_or_default();
+        let locked = telemetry::env_override();
+        let shown = if locked.is_some() {
+            telemetry::effective()
+        } else {
+            saved
+        };
+        let (title, hint, on) = if crashes {
+            (
+                "Crash reports",
+                "Crashes, with their stack trace, and the kind of error when an agent stops, sent to Arakun's PostHog under a random id. Paths, links, emails and key-like values are removed from a crash's message; its other words are sent.",
+                shown.crashes,
+            )
+        } else {
+            (
+                "Usage counts",
+                "Counts such as sessions started, with the agent's name. Never prompts, replies, files or URLs.",
+                shown.usage,
+            )
+        };
+        let hint: SharedString = match locked {
+            Some(var) => format!("{hint} Set by {var} in the environment.").into(),
+            None => hint.into(),
+        };
+        row(title, hint, switch(on).into_any_element())
+            .id(if crashes {
+                "set-crash-reports"
+            } else {
+                "set-usage-counts"
+            })
+            .when(locked.is_none(), |d| d.cursor_pointer())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if locked.is_some() {
+                    return;
+                }
+                let choice = if crashes {
+                    Consent {
+                        crashes: !saved.crashes,
+                        ..saved
+                    }
+                } else {
+                    Consent {
+                        usage: !saved.usage,
+                        ..saved
+                    }
+                };
+                this.telemetry_error = telemetry::set_consent(choice).err().map(Into::into);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn use_palette(&mut self, id: &str, cx: &mut Context<Self>) {
         self.palettes.current = id.to_string();
         self.confirm_delete = false;

@@ -90,7 +90,7 @@ impl Render for TelemetryDialog {
                     )
                     .child(point(
                         "alert-circle",
-                        "Crashes, and the kind of error when an agent stops: never paths, links or keys.",
+                        "Crashes with their stack trace, and the kind of error when an agent stops. A crash's message loses paths, links and keys; its other words are sent.",
                     ))
                     .child(point(
                         "activity01",
@@ -98,7 +98,7 @@ impl Render for TelemetryDialog {
                     ))
                     .child(point(
                         "view-off",
-                        "Never prompts, replies, files, URLs or project names. A random id, not your account.",
+                        "Never prompts, replies or files. A random id, not your account.",
                     ))
                     .child(
                         div()

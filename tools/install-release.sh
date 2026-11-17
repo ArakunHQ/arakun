@@ -125,7 +125,7 @@ main() {
   curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" ||
     die "could not download $base/SHA256SUMS (is there a release $version?)"
   want=$(listed "$file" "$tmp/SHA256SUMS")
-  # Releases up to v0.2.1 have the macOS app in a tar.gz and no disk image.
+  # v0.2.1 has the macOS app in a tar.gz and no disk image.
   if [ -z "$want" ] && [ "$ext" = dmg ]; then
     ext=tar.gz file=$name.tar.gz
     want=$(listed "$file" "$tmp/SHA256SUMS")

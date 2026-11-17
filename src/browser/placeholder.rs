@@ -152,18 +152,12 @@ impl BrowserView {
 impl Render for BrowserView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let address_focused = self.address.read(cx).is_focused(window);
-        let (title, why) = if cfg!(target_os = "macos") {
-            ("The built-in browser is not on Mac yet", "")
+        let why = if cfg!(target_os = "macos") {
+            "The Mac download comes without them; tools/install.sh builds Arakun with them."
         } else if cfg!(windows) {
-            (
-                "Browser tabs are not in this build",
-                "Windows releases do not include the browser yet.",
-            )
+            "The Windows download comes without them; a build from source has them."
         } else {
-            (
-                "Browser tabs are not in this build",
-                "Build Arakun with the `browser` cargo feature to get them.",
-            )
+            "Build Arakun with the `browser` cargo feature to get them."
         };
         let links = if super::links_in_arakun() {
             "Turn off Open links in Arakun to send links to your own browser."
@@ -194,8 +188,8 @@ impl Render for BrowserView {
             ))
             .child(div().relative().flex_1().child(chrome::notice(
                 "globe",
-                title,
-                Some(format!("{why} {links}").trim_start().to_string().into()),
+                "This build has no browser tabs",
+                Some(format!("{why} {links}").into()),
                 Some(self.actions(cx)),
             )))
     }

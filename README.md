@@ -84,8 +84,8 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   the optional `browser` cargo feature. Agents can drive pages on localhost through
   `arakun page` (screenshot, console, click, type, eval). Links you click open in a
   browser tab; turn off Settings › General › Open links in Arakun to open them in your
-  own browser instead. Builds without the browser (macOS, Windows releases) do that
-  from the start.
+  own browser instead. Builds without the browser, such as the release downloads, do
+  that from the start.
 
 ### Agents
 

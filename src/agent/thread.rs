@@ -505,6 +505,10 @@ pub struct Thread {
     auth_hint: Option<String>,
     /// The last failure was the agent saying it is not signed in.
     needs_login: bool,
+    /// The last failure was an adapter that is not installed yet.
+    needs_install: Option<launch::AdapterInstall>,
+    /// The user agreed to install the agent's adapter.
+    install_approved: bool,
     modes: Option<(String, Vec<Choice>)>,
     models: Option<(String, Vec<Choice>)>,
     config: Vec<ConfigOption>,
@@ -963,6 +967,8 @@ impl Thread {
             caps: Caps::default(),
             auth_hint: None,
             needs_login: false,
+            needs_install: None,
+            install_approved: false,
             modes: None,
             models: None,
             config: Vec::new(),
@@ -1482,18 +1488,20 @@ impl Thread {
         self.permissions.clear();
         self.native.questions.clear();
         self.needs_login = false;
+        self.needs_install = None;
         self.status_detail = Some(format!("Starting {}…", self.kind.label()).into());
         self.set_status(ThreadStatus::Connecting, cx);
         let kind = self.kind;
         let native = self.backend == Backend::Native;
         let cwd = self.cwd.clone();
+        let install = self.install_approved;
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
                 if native {
                     return launch::resolve_droid_native(Some(&cwd));
                 }
-                launch::resolve(kind, Some(&cwd), &|line| {
+                launch::resolve(kind, Some(&cwd), install, &|line| {
                     let _ = progress_tx.unbounded_send(line);
                 })
             });
@@ -1512,7 +1520,10 @@ impl Thread {
             progress.await;
             let _ = this.update(cx, |t, cx| match spec {
                 Ok(spec) => t.launch(spec, cx),
-                Err(e) => t.fail(format!("{e:#}"), cx),
+                Err(e) => {
+                    t.needs_install = e.downcast_ref::<launch::AdapterInstall>().cloned();
+                    t.fail(format!("{e:#}"), cx)
+                }
             });
         }));
     }
@@ -1750,6 +1761,19 @@ impl Thread {
 
     pub fn needs_login(&self) -> bool {
         self.needs_login && matches!(self.status, ThreadStatus::Error(_))
+    }
+
+    /// The adapter the session waits for, while it waits for the user to agree.
+    pub fn needs_install(&self) -> Option<&launch::AdapterInstall> {
+        self.needs_install
+            .as_ref()
+            .filter(|_| matches!(self.status, ThreadStatus::Error(_)))
+    }
+
+    /// The user agreed to install the adapter [`Self::needs_install`] names.
+    pub fn install_adapter(&mut self, cx: &mut Context<Self>) {
+        self.install_approved = true;
+        self.connect(cx);
     }
 
     /// Asks whoever hosts the thread to run the agent's sign-in in a terminal.

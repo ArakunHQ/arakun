@@ -20,6 +20,7 @@ impl ThreadView {
                         .unwrap_or_else(|| format!("Starting {}…", t.kind().label()).into()),
                 )
                 .into_any_element(),
+            ThreadStatus::Error(_) if t.needs_install().is_some() => self.render_install(cx),
             ThreadStatus::Error(message) => {
                 let mut lines = message.lines();
                 let headline = lines.next().unwrap_or("").to_string();
@@ -141,6 +142,156 @@ impl ThreadView {
             // Room for the raccoon perched on the composer.
             _ => div().h(px(40.)).into_any_element(),
         }
+    }
+
+    /// Asks before the first npm install of the agent's adapter: what, where and
+    /// the command, which the user can also copy and run themselves.
+    fn render_install(&self, cx: &Context<Self>) -> AnyElement {
+        let t = self.thread.read(cx);
+        let Some(plan) = t.needs_install() else {
+            return div().into_any_element();
+        };
+        let command = plan.command();
+        let copied = markdown::was_copied(&command);
+        let rows = [
+            ("Package", plan.package.to_string()),
+            ("Folder", plan.dir.display().to_string()),
+            ("Command", command.clone()),
+        ];
+        let button = |id: &'static str, glyph: &'static str, label: &'static str, primary: bool| {
+            let (bg, fg, hover) = if primary {
+                (theme::content(), theme::background(), theme::mix(0.8))
+            } else {
+                (
+                    theme::fill_selected(),
+                    theme::text_muted(),
+                    theme::mix(0.18),
+                )
+            };
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(6.))
+                .h(px(24.))
+                .px(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(8.))
+                .bg(bg)
+                .text_color(fg)
+                .text_size(px(crate::ui::TEXT_SM))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(icon(glyph, 12.).text_color(fg))
+                .child(label)
+        };
+        div()
+            .px(crate::ui::sp(16.))
+            .pt(crate::ui::sp(8.))
+            .pb(crate::ui::sp(40.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(8.))
+                    .p(crate::ui::sp(12.))
+                    .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
+                    .border_1()
+                    .border_color(theme::stroke())
+                    .bg(theme::raised())
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(crate::ui::sp(8.))
+                            .child(
+                                div()
+                                    .pt(crate::ui::sp(3.))
+                                    .child(icon("download04", 14.).text_color(theme::text_subtle())),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(crate::ui::TEXT_MD))
+                                    .line_height(px(20.))
+                                    .text_color(theme::text_muted())
+                                    .child(format!(
+                                        "{} needs its ACP adapter. Arakun can install it with npm:",
+                                        t.kind().label()
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("install-plan")
+                            .flex()
+                            .flex_col()
+                            .gap(crate::ui::sp(2.))
+                            .pl(crate::ui::sp(22.))
+                            .text_size(px(crate::ui::TEXT_XS))
+                            .line_height(px(17.))
+                            .children(rows.into_iter().map(|(label, value)| {
+                                div()
+                                    .flex()
+                                    .gap(crate::ui::sp(8.))
+                                    .child(
+                                        div()
+                                            .w(px(60.))
+                                            .flex_none()
+                                            .text_color(theme::text_faint())
+                                            .child(label),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .font_family(theme::FONT_MONO)
+                                            .text_color(theme::text_subtle())
+                                            .child(value),
+                                    )
+                            })),
+                    )
+                    .child(
+                        div()
+                            .pl(crate::ui::sp(22.))
+                            .text_size(px(crate::ui::TEXT_XS))
+                            .line_height(px(17.))
+                            .text_color(theme::text_faint())
+                            .child(format!(
+                                "To install it yourself, run the command, then Retry. {} starts another adapter instead.",
+                                plan.override_var()
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(crate::ui::sp(8.))
+                            .pl(crate::ui::sp(22.))
+                            .child(button("install-adapter", "download04", "Install", true).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.thread.update(cx, |t, cx| t.install_adapter(cx))
+                                }),
+                            ))
+                            .child(
+                                button(
+                                    "install-copy",
+                                    if copied { "tick02" } else { "copy01" },
+                                    if copied { "Copied" } else { "Copy command" },
+                                    false,
+                                )
+                                .on_click(move |_, window, cx| {
+                                    markdown::copy_with_feedback(&command, window, cx)
+                                }),
+                            )
+                            .child(button("install-retry", "refresh01", "Retry", false).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.thread.update(cx, |t, cx| t.retry(cx))
+                                }),
+                            )),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// How tall `render_queue`'s card is, 0 without one: the raccoon sits on

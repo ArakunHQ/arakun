@@ -88,13 +88,15 @@ impl Shell {
         if !self.terminal_possible(&title, "sign-in", cx) {
             return;
         }
-        self.notify(
-            AlertKind::Info,
-            &title,
-            "Installing Codex first; the sign-in opens when it is done.",
-            None,
-            cx,
-        );
+        let what = match crate::agent::adapter_install(kind) {
+            Some(plan) => format!(
+                "Installing {} into {} with npm first; the sign-in opens when it is done.",
+                plan.package,
+                plan.dir.display()
+            ),
+            None => "Installing Codex first; the sign-in opens when it is done.".to_string(),
+        };
+        self.notify(AlertKind::Info, &title, &what, None, cx);
         cx.spawn_in(window, async move |this, cx| {
             let installed = cx
                 .background_spawn(async move { crate::agent::install_codex() })

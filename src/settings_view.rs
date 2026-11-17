@@ -181,7 +181,7 @@ impl Section {
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts links open system default external"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
@@ -212,15 +212,16 @@ impl Section {
         if query.is_empty() {
             return true;
         }
-        // The Updates card is in General in every build, so its words are
-        // added here rather than to each build's keyword list.
-        let updates = if self == Section::General {
-            "update updates automatic automatically auto version release upgrade"
+        // The Updates card and the link setting are in General in every build, so
+        // their words are added here rather than to each build's keyword list.
+        let general = if self == Section::General {
+            "update updates automatic automatically auto version release upgrade \
+             links open system default external"
         } else {
             ""
         };
         let text = format!(
-            "{} {} {} {updates}",
+            "{} {} {} {general}",
             self.title(),
             self.description(),
             self.keywords()
@@ -2722,6 +2723,13 @@ mod tests {
         assert_eq!(hue_at(0.), 0.);
         assert_eq!(hue_at(0.5), 180.);
         assert_eq!(hue_at(1.), 359.);
+    }
+
+    /// The link setting is in General in every build, whichever keyword list it has.
+    #[test]
+    fn searching_for_links_finds_general() {
+        assert!(Section::General.matches("open links"));
+        assert!(Section::General.matches("external browser"));
     }
 
     #[test]

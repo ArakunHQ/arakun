@@ -75,6 +75,9 @@ libc = "0.2"
 # .cef-sdk) -> run tools/install-cef.sh once. Windows: the build downloads CEF into
 # .cef-sdk and copies its runtime next to arakun.exe; libcef.dll is delay-loaded (build.rs).
 cef = { version = "=156.3.0", default-features = false, optional = true }
+# Only for build.rs, which reads where CEF is (DEP_CEF_DLL_WRAPPER_CEF_DIR) and copies its
+# runtime next to arakun.exe on Windows. Keep it at the version `cef` uses.
+cef-dll-sys = { version = "=156.3.0", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Metal shaders compiled when the window opens: precompiling them needs the full Xcode
@@ -111,7 +114,7 @@ members = ["server"]
 
 [features]
 default = ["browser"]
-browser = ["dep:cef"]
+browser = ["dep:cef", "dep:cef-dll-sys"]
 # The private team hub (src/team*, src/team_view*, src/shell/team.rs). Not in the public build.
 team = []
 # CoderLabs/owner-only parts (Lab, site analytics, X log, CoderSpace tasks, OKC, voice call,

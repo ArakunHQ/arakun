@@ -1401,7 +1401,17 @@ fn without_html(text: &str) -> String {
             .position(breaks)
             .map_or(lines.len(), |n| i + n);
         let para: Vec<&str> = lines[i..end].iter().map(|(l, _)| l.as_str()).collect();
-        out.extend(html_paragraph(&para));
+        // Blocks next to each other each leave a blank line: one is enough,
+        // and the paragraph's own ends have one already.
+        let blank = |l: &String| l.trim_matches([' ', '>']).is_empty();
+        let mut md = html_paragraph(&para);
+        md.dedup_by(|b, a| blank(a) && a == b);
+        let gone = md.iter().position(|l| !blank(l)).unwrap_or(md.len());
+        md.drain(..gone);
+        while md.last().is_some_and(blank) {
+            md.pop();
+        }
+        out.extend(md);
         i = end;
     }
     out.join("\n")
@@ -1427,34 +1437,28 @@ fn unquote(line: &str, max: usize) -> (&str, usize) {
 /// break with it (a `<summary>` over lines), the lines no longer match
 /// those in, so each line is read on its own instead.
 fn html_paragraph(para: &[&str]) -> Vec<String> {
-    // A line that held only tags is gone, not a blank line: a blank line
-    // would end a list or a table around it.
-    // So is one left with only the `>` of its block quotes.
-    let keep = |line: &str, md: String| {
-        let bare = |s: &str| s.trim_matches([' ', '\t', '>']).is_empty();
-        (!md.trim().is_empty() && !(bare(&md) && !bare(line))).then_some(md)
-    };
     let spans = multiline_spans(para);
     if para.len() > 1 && para.iter().any(|l| l.contains('<')) {
         // Read in one go, a bold or a link around a code span over lines
         // stays open over it; html_inline keeps code spans as they are.
+        // It also knows which list an `<li>` on a later line is in.
         let md = html_inline(&para.join("\n"), false, 0);
         let pieces: Vec<&str> = md.split('\n').collect();
         if pieces.len() == para.len() {
             return para
                 .iter()
                 .zip(pieces)
-                .filter_map(|(line, md)| keep(line, line_end(line, md)))
+                .flat_map(|(line, md)| md_lines(line, md))
                 .collect();
         }
     }
     para.iter()
         .zip(spans)
-        .filter_map(|(line, spans)| {
+        .flat_map(|(line, spans)| {
             if line.contains('<') {
-                keep(line, html_line(line, &spans))
+                md_lines(line, &html_line(line, &spans))
             } else {
-                Some(line.to_string())
+                vec![line.to_string()]
             }
         })
         .collect()
@@ -1814,6 +1818,7 @@ fn code_span(text: &str) -> String {
 /// become images, and layout tags go with what they hold left in place. A
 /// summary is bold; inside it only its text counts. Code spans stay as they
 /// are, and so do the `keep` ranges (parts of code spans over lines).
+/// Block tags leave the marks that [`md_lines`] writes out.
 fn html_line(line: &str, keep: &[(usize, usize)]) -> String {
     let mut md = String::with_capacity(line.len());
     let mut at = 0;
@@ -1823,24 +1828,125 @@ fn html_line(line: &str, keep: &[(usize, usize)]) -> String {
         at = to;
     }
     md.push_str(&html_inline(&line[at..], false, 0));
-    line_end(line, &md)
+    md
 }
 
-/// Stands for `<hr>` until the lines are split: its own line breaks would
-/// shift the lines of a paragraph.
-const RULE: char = '\0';
+// Marks html_inline leaves until the lines are split: line breaks of their
+// own would shift the lines of a paragraph.
 
-/// The markdown `md` made from `line`, with the rule written out. A tag
-/// taken from the start leaves no indent the line didn't have: indented
-/// text reads as code. Line breaks (from `<hr>`) stay.
-fn line_end(line: &str, md: &str) -> String {
-    let md = md.replace(RULE, "\n\n---\n\n");
-    if line.starts_with(char::is_whitespace) {
+/// Stands for `<hr>`.
+const RULE: char = '\0';
+/// Stands for a blank line, where a block (`<p>`, `<blockquote>`, a list,
+/// a heading) starts or ends.
+const BREAK: char = '\u{1}';
+/// Stands for a line break before a list item, when text came before it.
+const LINE: char = '\u{2}';
+/// One space of a nested list item's indent: the spaces a new line starts
+/// with are dropped, these are not.
+const NEST: char = '\u{3}';
+
+/// The markdown lines `md` stands for, made from `line`. A tag taken from
+/// the start leaves no indent the line didn't have: indented text reads as
+/// code. A line that held only tags is gone, not a blank line: a blank line
+/// would end a list or a table around it. So is one left with only the `>`
+/// of its block quotes. Blank lines come only from the marks of block tags.
+fn md_lines(line: &str, md: &str) -> Vec<String> {
+    let bare = |s: &str| s.trim_matches([' ', '\t', '>']).is_empty();
+    let md = if line.starts_with(char::is_whitespace) {
         md
     } else {
-        md.trim_start_matches([' ', '\t']).to_string()
+        md.trim_start_matches([' ', '\t'])
+    };
+    // A table row can't break over lines: its blocks run on, a space apart.
+    let row = unquote(line, usize::MAX).0.trim_start().starts_with('|');
+    if row || !md.contains([RULE, BREAK, LINE]) {
+        let md = md.replace([RULE, BREAK, LINE, NEST], " ");
+        let gone = md.trim().is_empty() || (bare(&md) && !bare(line));
+        return if gone { Vec::new() } else { vec![md] };
     }
+    // Each new line stays in the block quotes and the list item `line` is in.
+    let (inner, _) = unquote(line, usize::MAX);
+    let quote = &line[..line.len() - inner.len()];
+    let lead = quote.len() + list_lead(inner);
+    let cont = format!("{quote}{}", " ".repeat(lead - quote.len()));
+    let blank = quote.trim_end();
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    // Whether `cur` is a new line that has no text yet.
+    let mut fresh = false;
+    // Only the quote markers or the list marker the line starts with: a
+    // block there starts the item, not a line after it.
+    let only_lead = |cur: &str| {
+        lead > quote.len()
+            && line
+                .get(..lead)
+                .is_some_and(|l| cur.trim_end() == l.trim_end())
+    };
+    let end_line = |cur: &mut String, out: &mut Vec<String>| {
+        if !bare(cur) {
+            out.push(cur.trim_end().replace(NEST, " "));
+        }
+        cur.clear();
+    };
+    let blank_line = |out: &mut Vec<String>| {
+        if out.last().is_none_or(|l| l != blank) {
+            out.push(blank.to_string());
+        }
+    };
+    for piece in md.split_inclusive([RULE, BREAK, LINE]) {
+        let (text, mark) = match piece.chars().last() {
+            Some(c @ (RULE | BREAK | LINE)) => (&piece[..piece.len() - 1], Some(c)),
+            _ => (piece, None),
+        };
+        if !fresh {
+            cur.push_str(text);
+        } else if !text.trim().is_empty() {
+            cur = format!("{cont}{}", text.trim_start_matches([' ', '\t']));
+            fresh = false;
+        }
+        let Some(mark) = mark else { continue };
+        if mark != RULE && only_lead(&cur) {
+            continue;
+        }
+        end_line(&mut cur, &mut out);
+        if mark != LINE {
+            blank_line(&mut out);
+        }
+        if mark == RULE {
+            out.push(format!("{cont}---"));
+            blank_line(&mut out);
+        }
+        fresh = true;
+    }
+    end_line(&mut cur, &mut out);
+    out
 }
+
+/// How wide the list marker `line` starts with is, with the spaces before
+/// and after it: the indent of the lines that go on in its item.
+fn list_lead(line: &str) -> usize {
+    let t = line.trim_start_matches(' ');
+    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let marker = match t.as_bytes().get(digits) {
+        Some(b'-' | b'*' | b'+') if digits == 0 => 1,
+        Some(b'.' | b')') if (1..=9).contains(&digits) => digits + 1,
+        _ => return 0,
+    };
+    let after = &t[marker..];
+    let space = after.len() - after.trim_start_matches(' ').len();
+    if space == 0 && !after.is_empty() {
+        return 0;
+    }
+    line.len() - t.len() + marker + space.clamp(1, 4)
+}
+
+/// The heading level of a tag name: 2 for `h2`.
+fn heading_level(name: &str) -> Option<usize> {
+    let level = name.strip_prefix('h')?.parse().ok()?;
+    (1..=6).contains(&level).then_some(level)
+}
+
+const HEADING_ENDS: [&str; 6] = ["</h1>", "</h2>", "</h3>", "</h4>", "</h5>", "</h6>"];
 
 /// How deep a summary or link is read inside another. Deeper ones lose
 /// their tags only: each level reads the rest of the line again.
@@ -1858,6 +1964,9 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
     let mut open: Vec<(&'static str, usize)> = Vec::new();
     // Closing tags not found in what is left of the line.
     let mut missing: Vec<&'static str> = Vec::new();
+    // The open lists, inside out: an ordered one's next number, and how
+    // wide its last item's marker was (a nested item is indented by it).
+    let mut lists: Vec<(Option<u32>, usize)> = Vec::new();
     let mut rest = line;
     while let Some(at) = rest.find(['<', '`']) {
         out.push_str(&rest[..at]);
@@ -1988,6 +2097,63 @@ fn html_inline(line: &str, plain: bool, depth: u8) -> String {
             // Blank lines around it: after a line of text, `---` would make
             // that line a heading.
             ("hr", _) => out.push(RULE),
+            // Blocks only where a line can start: not in a link or a
+            // summary. In a list item they stay in the item.
+            ("ul" | "ol", false) if depth == 0 => {
+                if lists.is_empty() {
+                    out.push(BREAK);
+                }
+                let start = tag_attr(attrs, "start").and_then(|s| s.trim().parse().ok());
+                lists.push(((name == "ol").then(|| start.unwrap_or(1)), 0));
+            }
+            ("ul" | "ol", true) if depth == 0 => {
+                lists.pop();
+                if lists.is_empty() {
+                    out.push(BREAK);
+                }
+            }
+            ("li", false) if depth == 0 => {
+                let outer = lists.len().saturating_sub(1);
+                let indent: usize = lists[..outer].iter().map(|(_, w)| w).sum();
+                let marker = match lists.last_mut() {
+                    Some((Some(n), w)) => {
+                        let m = format!("{n}. ");
+                        *n = n.saturating_add(1);
+                        *w = m.len();
+                        m
+                    }
+                    Some((None, w)) => {
+                        *w = 2;
+                        "- ".into()
+                    }
+                    None => "- ".into(),
+                };
+                out.push(LINE);
+                out.extend(std::iter::repeat_n(NEST, indent));
+                out.push_str(&marker);
+            }
+            // The next item or the line's end keeps the words apart.
+            ("li", true) if depth == 0 && (rest.is_empty() || rest.starts_with(['<', '\n'])) => {}
+            ("p" | "blockquote", _) if depth == 0 && lists.is_empty() => out.push(BREAK),
+            (h, false) if depth == 0 && lists.is_empty() && heading_level(h).is_some() => {
+                let level = heading_level(h).unwrap_or(1);
+                out.push(BREAK);
+                if let Some(end) = close_in(HEADING_ENDS[level - 1]) {
+                    // One line: its line breaks go after it, so the lines
+                    // of a paragraph stay where they were.
+                    let inner = html_inline(&rest[..end], false, depth + 1);
+                    let text = inner.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !text.is_empty() {
+                        out.push_str(&format!("{} {text}", "#".repeat(level)));
+                        out.push(BREAK);
+                    }
+                    out.extend(std::iter::repeat_n('\n', inner.matches('\n').count()));
+                    rest = &rest[end + HEADING_ENDS[level - 1].len()..];
+                }
+            }
+            (h, true) if depth == 0 && lists.is_empty() && heading_level(h).is_some() => {
+                out.push(BREAK)
+            }
             _ => gap(&mut out),
         }
     }
@@ -2414,7 +2580,8 @@ mod tests {
             concat!(
                 "**Merge Risk: Moderate · up to 8b9cb**\n\n",
                 "**Failed checks: 1 warning**\n\n",
-                "**Review info**\n",
+                // A heading, though only bold in it.
+                "###### **Review info**\n\n",
                 "See [the docs](<https://docs.coderabbit.ai>) and **this**.\n",
                 // An icon that counts keeps its words.
                 "**Pre-merge checks: Passed 4 · Failed 1**",
@@ -2463,7 +2630,7 @@ mod tests {
         // `<hr>` after text: not a heading underline.
         assert_eq!(
             without_html("Some text.\n<hr>\nMore."),
-            "Some text.\n\n\n---\n\n\nMore."
+            "Some text.\n\n---\n\nMore."
         );
         assert_eq!(without_html("foo<hr>bar"), "foo\n\n---\n\nbar");
         // Superscripts and subscripts stay in their word.
@@ -2563,7 +2730,7 @@ mod tests {
         );
         assert_eq!(
             without_html("- a <a href=\"x\">two\n  lines</a>\n- b<hr>c"),
-            "- a [two\n  lines](<x>)\n- b\n\n---\n\nc"
+            "- a [two\n  lines](<x>)\n- b\n\n  ---\n\n  c"
         );
         // A picture over lines keeps its lines, so a link over lines next
         // to it keeps its destination.
@@ -2603,6 +2770,78 @@ mod tests {
             without_html("<a href=\"x\">see `a\n<b>b</b>`</a>"),
             "[see `a\n<b>b</b>`](<x>)"
         );
+    }
+
+    #[test]
+    fn html_lists_headings_and_blocks_read_as_markdown() {
+        // Release notes as Dependabot writes them (shortened).
+        let body = concat!(
+            "Bumps x11rb from 0.13.2 to 0.14.0.\n",
+            "<details>\n",
+            "<summary>Changelog</summary>\n",
+            "<p><em>Sourced from <a href=\"https://c\">x11rb's changelog</a>.</em></p>\n",
+            "<blockquote>\n",
+            "<h1>Version 0.14.0</h1>\n",
+            "<p>Fixes:</p>\n",
+            "<ul>\n",
+            "<li>Fix <code>CUT_BUFFER0</code> names. The code previously\n",
+            "used <code>CUT_BUFFE_R0</code>.</li>\n",
+            "<li>Add <code>Foo::bar</code></li>\n",
+            "</ul>\n",
+            "</blockquote>\n",
+            "</details>",
+        );
+        assert_eq!(
+            without_html(body),
+            concat!(
+                "Bumps x11rb from 0.13.2 to 0.14.0.\n",
+                "**Changelog**\n\n",
+                "*Sourced from [x11rb's changelog](<https://c>).*\n\n",
+                "# Version 0.14.0\n\n",
+                "Fixes:\n\n",
+                "- Fix `CUT_BUFFER0` names. The code previously\n",
+                "used `CUT_BUFFE_R0`.\n",
+                "- Add `Foo::bar`",
+            )
+        );
+        // Blocks, not one paragraph.
+        use pulldown_cmark::{Event, Parser, Tag};
+        let md = without_html(body);
+        let starts: Vec<&str> = Parser::new(&md)
+            .filter_map(|e| match e {
+                Event::Start(Tag::Paragraph) => Some("p"),
+                Event::Start(Tag::Heading { .. }) => Some("h"),
+                Event::Start(Tag::Item) => Some("li"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts, ["p", "p", "h", "p", "li", "li"], "{md}");
+        // On one line, nested, and numbered from `start`.
+        assert_eq!(
+            without_html("<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>after"),
+            "- a\n  - b\n- c\n\nafter"
+        );
+        assert_eq!(
+            without_html("<ol start=\"3\"><li>x</li><li>y</li></ol>"),
+            "3. x\n4. y"
+        );
+        let last = format!("<ol start=\"{}\"><li>x</li><li>y</li></ol>", u32::MAX);
+        assert!(without_html(&last).ends_with(". y"));
+        assert_eq!(
+            without_html("<h2>Title <code>x</code></h2>Text"),
+            "## Title `x`\n\nText"
+        );
+        // A block in a list item stays in it, and so do the lines after.
+        assert_eq!(without_html("<ul><li><p>a</p><p>b</p></li></ul>"), "- a b");
+        assert_eq!(without_html("- <p>a</p>b"), "- a\n\n  b");
+        assert_eq!(without_html("> <p>a</p><p>b</p>"), "> a\n>\n> b");
+        // In a link or a summary a block is only a gap.
+        assert_eq!(
+            without_html("<a href=\"x\"><h3>docs</h3></a>"),
+            "[docs](<x>)"
+        );
+        // A table row stays one line.
+        assert_eq!(without_html("| <p>a</p> | b |"), "|  a  | b |");
     }
 
     #[test]

@@ -257,8 +257,9 @@ main() {
     if [ -d "$tmp/x/$name/cef" ] && ! cmp -s "$tmp/x/$name/cef/archive.json" "$cef/archive.json"; then
       swap_cef=1
       # Chromium's child processes load the runtime again, so under a running Arakun
-      # they would get another CEF build than the window. The same build is left as is.
-      if pgrep -x -u "$(id -u)" arakun >/dev/null 2>&1; then
+      # they would get another CEF build than the window. The same build is left as
+      # is, and with none installed yet a running Arakun has none loaded.
+      if [ -f "$cef/libcef.so" ] && pgrep -x -u "$(id -u)" arakun >/dev/null 2>&1; then
         die "this release has a new browser runtime; quit Arakun (close this terminal too if it is Arakun's) and run the installer again"
       fi
     fi

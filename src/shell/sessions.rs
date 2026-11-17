@@ -329,6 +329,13 @@ impl Shell {
                 if let Some(s) = self.session_mut(env_path, id)
                     && s.status != status
                 {
+                    // Once per failure: the status only changes back after a new turn.
+                    if status == Status::Error
+                        && let ThreadStatus::Error(msg) = thread.read(cx).status()
+                    {
+                        let agent = thread.read(cx).kind().id();
+                        crate::telemetry::error("AgentError", &msg, &[("agent", agent)]);
+                    }
                     s.status = status;
                     s.updated = model::unix_now();
                     cx.notify();
@@ -336,6 +343,10 @@ impl Shell {
             }
             ThreadEvent::Finished { stop_reason } => {
                 let t = thread.read(cx);
+                crate::telemetry::capture(
+                    crate::telemetry::events::TURN_FINISHED,
+                    &[("agent", t.kind().id()), ("stop_reason", stop_reason)],
+                );
                 let (status, (added, removed), meta) = (status_of(t), t.diff_stats(), t.meta());
                 let transcript = t.transcript(cx);
                 let mut turns: Vec<crate::memory::Turn> = Vec::new();
@@ -635,6 +646,10 @@ impl Shell {
                 self.note_active_tab();
             }
         }
+        crate::telemetry::capture(
+            crate::telemetry::events::SESSION_STARTED,
+            &[("agent", agent.key())],
+        );
         let env_path = env_path.to_path_buf();
         // Every way a session starts (the composer, automations, `arakun agent new`) passes here.
         self.name_after_first_prompt(&env_path, &text, agent.kind(), cx);

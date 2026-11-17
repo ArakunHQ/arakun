@@ -133,7 +133,7 @@ impl Section {
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts telemetry analytics usage crash reports privacy posthog"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system"
@@ -286,6 +286,8 @@ pub struct SettingsDialog {
     /// Who names the branch of a new environment after its first prompt.
     namer: env_name::Namer,
     namer_input: Entity<TextInput>,
+    /// Why the last crash report or usage count choice could not be saved.
+    telemetry_error: Option<SharedString>,
     _subs: [Subscription; 8],
 }
 
@@ -426,6 +428,7 @@ impl SettingsDialog {
             voice_busy: false,
             namer,
             namer_input,
+            telemetry_error: None,
             palettes,
             share_input,
             palette_note: None,
@@ -787,7 +790,8 @@ impl SettingsDialog {
                     ),
             );
         let body: AnyElement = match s {
-            Section::General => group(vec![
+            Section::General => {
+                let mut rows = vec![
                 {
                     let mut chips = div().flex().flex_none().items_center().gap(crate::ui::sp(6.));
                     for (i, agent) in crate::agent::AgentKind::ALL.into_iter().enumerate() {
@@ -888,7 +892,22 @@ impl SettingsDialog {
                     cx.notify();
                 }))
                 .into_any_element(),
-            ]),
+                self.telemetry_row(true, cx),
+                self.telemetry_row(false, cx),
+            ];
+                if let Some(e) = &self.telemetry_error {
+                    rows.push(
+                        div()
+                            .px(crate::ui::sp(12.))
+                            .py(crate::ui::sp(10.))
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::error())
+                            .child(e.clone())
+                            .into_any_element(),
+                    );
+                }
+                group(rows)
+            }
             Section::Appearance => self.render_appearance(cx),
             Section::Account => group(vec![
                 row(
@@ -1094,6 +1113,63 @@ impl SettingsDialog {
     }
 
     /// Puts `id` in use across the app and remembers it.
+    /// The Crash reports (`crashes`) or Usage counts switch. It shows what is
+    /// sent; when an environment variable decides that, it says which and
+    /// does not change.
+    fn telemetry_row(&self, crashes: bool, cx: &mut Context<Self>) -> AnyElement {
+        use crate::telemetry::{self, Consent};
+        let saved = telemetry::consent().unwrap_or_default();
+        let locked = telemetry::env_override();
+        let shown = if locked.is_some() {
+            telemetry::effective()
+        } else {
+            saved
+        };
+        let (title, hint, on) = if crashes {
+            (
+                "Crash reports",
+                "Crashes, with their stack trace, and the kind of error when an agent stops, sent to Arakun's PostHog under a random id. Paths, links, emails and key-like values are removed from a crash's message; its other words are sent.",
+                shown.crashes,
+            )
+        } else {
+            (
+                "Usage counts",
+                "Counts such as sessions started, with the agent's name. Never prompts, replies, files or URLs.",
+                shown.usage,
+            )
+        };
+        let hint: SharedString = match locked {
+            Some(var) => format!("{hint} Set by {var} in the environment.").into(),
+            None => hint.into(),
+        };
+        row(title, hint, switch(on).into_any_element())
+            .id(if crashes {
+                "set-crash-reports"
+            } else {
+                "set-usage-counts"
+            })
+            .when(locked.is_none(), |d| d.cursor_pointer())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if locked.is_some() {
+                    return;
+                }
+                let choice = if crashes {
+                    Consent {
+                        crashes: !saved.crashes,
+                        ..saved
+                    }
+                } else {
+                    Consent {
+                        usage: !saved.usage,
+                        ..saved
+                    }
+                };
+                this.telemetry_error = telemetry::set_consent(choice).err().map(Into::into);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn use_palette(&mut self, id: &str, cx: &mut Context<Self>) {
         self.palettes.current = id.to_string();
         self.confirm_delete = false;

@@ -196,6 +196,34 @@ it shows in `github/avatars/` (each downloaded again after a week).
   Wide). The defaults (100%, 100%, 8 px) look as before. These are kept in
   `palettes.json` too.
 
+### Usage and crash reports
+
+Arakun sends nothing until you say so. On first launch it asks whether to send crash
+reports and anonymous usage counts to Arakun's PostHog project, so we can see what
+breaks and what gets used. Settings › General has a switch for each:
+
+- **Crash reports:** a panic's message and stack trace, and when an agent stops with
+  an error, the agent's name and a fixed category such as "rate limited" or "not
+  signed in", never the error's text.
+- **Usage counts:** app launched, session started (with the agent), agent turn
+  finished, project added, environment created, a built-in view opened (with its name)
+  and a browser tab opened.
+
+Each event carries Arakun's version, the OS and the CPU architecture. Arakun never
+sends prompts, replies or file contents. A panic's message is the one text that is
+sent: before it leaves your machine, Arakun replaces your home folder with `~` and
+removes paths, links, emails and anything shaped like a key or token. Its other words
+are sent as they are, so a crash message can still name something it was working on. Events carry a random id kept in
+`telemetry-id` in Arakun's data folder (`~/.local/share/arakun` on Linux and macOS,
+`%LOCALAPPDATA%\arakun` on Windows); it is not tied to any account, PostHog makes no
+person profile from it and no location from your IP, and deleting the file starts a
+new one. Your answer is kept in `telemetry.json` in the same folder.
+
+`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the question;
+`ARAKUN_TELEMETRY=1` turns both on. Debug builds send nothing unless
+`ARAKUN_TELEMETRY=1` is set, and the test Arakun of `arakun dev` never does. A build
+made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
+
 ## Platform status
 
 | Platform | Status | Notes |

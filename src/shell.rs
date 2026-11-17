@@ -171,6 +171,8 @@ enum Modal {
     Automations(Entity<crate::automations_view::AutomationsDialog>),
     /// Rename, remove or import sessions (`session_actions`).
     Session(gpui::AnyView),
+    /// The first-launch question about crash reports and usage counts.
+    Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -866,6 +868,8 @@ impl Shell {
                     this.save_transcripts(cx);
                     // Notices are saved off the UI thread: let the last one land.
                     crate::notices::flush();
+                    // Up to 2 s for usage events still queued.
+                    crate::telemetry::flush();
                     crate::control::cleanup();
                     if this.restarting
                         && let Err(e) = crate::platform::relaunch()
@@ -1190,6 +1194,7 @@ impl Shell {
             Some(i) => i,
             None => {
                 self.projects.push(state::new_project(&path));
+                crate::telemetry::capture(crate::telemetry::events::PROJECT_ADDED, &[]);
                 self.projects.len() - 1
             }
         };
@@ -1265,6 +1270,10 @@ impl Shell {
         let Some(project) = self.projects.get_mut(pi) else {
             return;
         };
+        crate::telemetry::capture(
+            crate::telemetry::events::ENVIRONMENT_CREATED,
+            &[("auto_name", if auto_name { "true" } else { "false" })],
+        );
         if project.env_index(&path).is_none() {
             project
                 .environments
@@ -1349,6 +1358,10 @@ impl Shell {
         let index = match env.tabs.iter().position(|t| is(&t.kind)) {
             Some(i) => i,
             None => {
+                crate::telemetry::capture(
+                    crate::telemetry::events::VIEW_OPENED,
+                    &[("view", title)],
+                );
                 let mut tab = Tab::new(title, kind);
                 tab.preview = true;
                 let active = env.active_tab;
@@ -1605,6 +1618,39 @@ impl Shell {
         } else {
             cx.open_url(&url);
         }
+    }
+
+    /// Asks once, on first launch, whether to send crash reports and usage
+    /// counts; nothing is sent before the answer.
+    pub fn ask_telemetry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() || !crate::telemetry::should_ask() {
+            return;
+        }
+        use crate::telemetry_dialog::{DETAILS_URL, TelemetryDialog, TelemetryEvent};
+        let dialog = cx.new(|cx| TelemetryDialog::new(window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, ev: &TelemetryEvent, window, cx| match ev {
+                TelemetryEvent::Answered(yes) => {
+                    let choice = if *yes {
+                        crate::telemetry::Consent::ALL
+                    } else {
+                        crate::telemetry::Consent::NONE
+                    };
+                    // Followed for this run either way; unsaved, it asks again next launch.
+                    if let Err(e) = crate::telemetry::set_consent(choice) {
+                        eprintln!("arakun: {e}");
+                    }
+                    this.close_modal(window, cx);
+                }
+                // The desktop browser: the dialog stays open over the app.
+                TelemetryEvent::OpenDetails => cx.open_url(DETAILS_URL),
+                TelemetryEvent::Dismissed => this.close_modal(window, cx),
+            },
+        );
+        self.modal = Some((Modal::Telemetry(dialog), sub));
+        cx.notify();
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2371,6 +2417,7 @@ impl Render for Shell {
             Modal::Settings(e) => e.clone().into_any_element(),
             Modal::Automations(e) => e.clone().into_any_element(),
             Modal::Session(v) => v.clone().into_any_element(),
+            Modal::Telemetry(e) => e.clone().into_any_element(),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let context_menu = self.menu.as_ref().map(|m| {

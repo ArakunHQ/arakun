@@ -925,7 +925,18 @@ impl ServersView {
             .child(head)
             .children(problem)
             .child(div().flex().flex_col().flex_1().min_h_0().child(body))
-            .children(self.render_asks(open, cx))
+            // A question with many options scrolls in its band rather
+            // than squeezing the transcript.
+            .children(self.render_asks(open, cx).map(|asks| {
+                div()
+                    .id("servers-asks")
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .max_h(gpui::relative(0.5))
+                    .overflow_y_scroll()
+                    .child(asks)
+            }))
             .child(
                 div()
                     .flex()

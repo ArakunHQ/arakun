@@ -13,7 +13,22 @@ use gpui::{
 };
 
 use super::bandeja::{Who, estado_color};
-use super::item::{Prop, prop_row};
+use super::item::{Prop, prop_line, prop_row};
+
+/// Below this height the sheet folds its details to their key line.
+const SHEET_TALL: f32 = 1000.;
+
+/// Properties one per row, or only the key ones on one line when folded.
+fn prop_list(props: Vec<Prop>, folded: bool) -> gpui::Div {
+    if folded {
+        return prop_line(props);
+    }
+    let mut list = div().flex().flex_col().gap(crate::ui::sp(8.));
+    for p in props {
+        list = list.child(prop_row(p));
+    }
+    list
+}
 use super::{Confirm, GitHubView, GitHubViewEvent, Note, Tab};
 use crate::github::board::{self, BoardPr, Estado, PasoTipo, Tipo};
 use crate::github::pilot::{self, Answer, Opcion, TaskRequest, TaskTarget};
@@ -179,6 +194,10 @@ impl GitHubView {
         let problem = item.as_ref().and_then(|i| g.detail_problem(i).cloned());
         let reading = item.as_ref().is_some_and(|i| g.fetching(i));
 
+        // A short sheet folds its details to one line, so the tabs under
+        // them keep most of the height.
+        let short = self.size.get().1 < SHEET_TALL;
+        let folded = self.details_open.map_or(short, |open| !open);
         let mut top = div()
             .flex()
             .flex_col()
@@ -199,8 +218,12 @@ impl GitHubView {
         }
         match (&board, &details) {
             (Some(b), _) => {
-                top = top.child(self.board_props(b, details.as_ref(), cx));
-                if let Some(q) = b.que_pasa.as_ref().filter(|q| !q.trim().is_empty()) {
+                top = top.child(self.board_props(b, details.as_ref(), folded, cx));
+                if let Some(q) = b
+                    .que_pasa
+                    .as_ref()
+                    .filter(|q| !folded && !q.trim().is_empty())
+                {
                     // pilot writes markdown: `code` and **bold** read as such.
                     let body = self.markdown(
                         "gh-que-pasa",
@@ -227,11 +250,7 @@ impl GitHubView {
                     Details::Pull(p) => self.pull_props(p, cx),
                     Details::Issue(i) => self.issue_props(i, cx),
                 };
-                let mut list = div().flex().flex_col().gap(crate::ui::sp(8.));
-                for p in props {
-                    list = list.child(prop_row(p));
-                }
-                top = top.child(list);
+                top = top.child(prop_list(props, folded));
                 if let Details::Pull(p) = d {
                     top = top.child(self.pull_actions(p, cx));
                 }
@@ -249,6 +268,9 @@ impl GitHubView {
         if let (Some(_), None, Some(p)) = (&board, &details, &problem) {
             top = top.child(self.detail_problem(item.as_ref(), p, cx));
         }
+        if details.is_some() || board.is_some() {
+            top = top.child(self.details_toggle(folded, short, cx));
+        }
         let content = div()
             .flex()
             .flex_col()
@@ -261,7 +283,7 @@ impl GitHubView {
                     .flex_col()
                     .flex_none()
                     // The tabs keep room under a long head.
-                    .max_h(relative(0.62))
+                    .max_h(relative(0.45))
                     .overflow_y_scroll()
                     .child(top),
             )
@@ -273,6 +295,33 @@ impl GitHubView {
             .child(self.render_composer(&board, cx))
             .into_any_element();
         self.sheet_frame(item, &board, reading, content, cx)
+    }
+
+    /// "All details" under folded details, "Fewer details" under unfolded
+    /// ones; the choice holds for the next pull request too.
+    fn details_toggle(&self, folded: bool, short: bool, cx: &mut Context<Self>) -> AnyElement {
+        let (label, glyph) = if folded {
+            ("All details", "arrow-down01")
+        } else {
+            ("Fewer details", "arrow-up01")
+        };
+        div()
+            .id("gh-details-toggle")
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(6.))
+            .ty(Type::Caption)
+            .text_color(theme::text_subtle())
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme::text()))
+            .child(label)
+            .child(icon(glyph, 12.).text_color(theme::text_faint()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // Back to automatic once it matches what the height picks.
+                this.details_open = if folded == short { Some(folded) } else { None };
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     /// Why GitHub's read of `item` failed, and "Try again".
@@ -470,26 +519,30 @@ impl GitHubView {
         &self,
         b: &BoardPr,
         details: Option<&Details>,
+        folded: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let me = self.github.read(cx).me().unwrap_or_default().to_string();
-        let mut props = vec![Prop::new("cs-progress", "Status", estado_chip(b.estado))];
+        let mut props = vec![Prop::new("cs-progress", "Status", estado_chip(b.estado)).key()];
         let lt = &b.lo_tiene;
         if !lt.login.is_empty() || lt.tipo != Tipo::Otro {
             let who = Who {
                 login: lt.login.clone(),
                 tipo: lt.tipo,
             };
-            props.push(Prop::new(
-                "user",
-                "Who has it",
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .child(self.who_face(&who, 20., cx))
-                    .child(div().text_color(theme::text()).child(lt.shown())),
-            ));
+            props.push(
+                Prop::new(
+                    "user",
+                    "Who has it",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .child(self.who_face(&who, 20., cx))
+                        .child(div().text_color(theme::text()).child(lt.shown())),
+                )
+                .key(),
+            );
         }
         if !b.siguiente.trim().is_empty() {
             props.push(Prop::new(
@@ -533,23 +586,26 @@ impl GitHubView {
             } else {
                 (theme::text_subtle(), String::new())
             };
-            props.push(Prop::new(
-                "check-list",
-                "Checks",
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .min_w_0()
-                    .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(theme::text())
-                            .child(format!("{} of {}", c.pasaron, c.total)),
-                    )
-                    .when(!rest.is_empty(), |d| d.child(after(rest).truncate())),
-            ));
+            props.push(
+                Prop::new(
+                    "check-list",
+                    "Checks",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .min_w_0()
+                        .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme::text())
+                                .child(format!("{} of {}", c.pasaron, c.total)),
+                        )
+                        .when(!rest.is_empty(), |d| d.child(after(rest).truncate())),
+                )
+                .key(),
+            );
         }
         if let Some(base) = b.va_encima_de.filter(|n| *n > 0) {
             let base_title = self
@@ -625,11 +681,7 @@ impl GitHubView {
                     .when(b.draft, |d| d.child(after("· draft"))),
             ));
         }
-        let mut list = div().flex().flex_col().gap(crate::ui::sp(8.));
-        for p in props {
-            list = list.child(prop_row(p));
-        }
-        list.into_any_element()
+        prop_list(props, folded).into_any_element()
     }
 
     /// pilot's question with one button per answer, each with its own words.

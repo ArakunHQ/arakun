@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Queued messages shown before the queue scrolls: five rows.
+const QUEUE_LIST_H: f32 = 5. * 28.;
+
 impl ThreadView {
     pub(super) fn render_footer(&self, cx: &Context<Self>) -> AnyElement {
         let t = self.thread.read(cx);
@@ -479,7 +482,8 @@ impl ThreadView {
                                             ),
                                     )
                                 })
-                                .children(queue.iter().enumerate().map(|(i, text)| {
+                                // A long queue scrolls in place: the transcript above keeps its room.
+                                .child(div().id("queue-list").flex().flex_col().max_h(px(QUEUE_LIST_H)).overflow_y_scroll().children(queue.iter().enumerate().map(|(i, text)| {
                                     div()
                                         .flex()
                                         .items_center()
@@ -517,7 +521,7 @@ impl ThreadView {
                                                     this.thread.update(cx, |t, cx| t.remove_queued(i, cx))
                                                 })),
                                         )
-                                })),
+                                }))),
                         ),
                 )
                 .into_any_element(),

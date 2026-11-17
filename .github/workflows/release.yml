@@ -5,10 +5,29 @@ name: Release
 # attestation.
 #
 # To release: set `version` in Cargo.toml and server/Cargo.toml, merge that,
-# then push the tag (`git tag v1.2.3 && git push origin v1.2.3`). Do not create
-# the release on GitHub by hand: the publish job makes it as a draft, uploads
-# the archives and then publishes it. A release published before that has no
-# archives, and with immutable releases on it can no longer take any.
+# then run this workflow on main with that version:
+#
+#   gh workflow run release.yml --ref main -f version=1.2.3
+#
+# The tag job tags main's commit as v1.2.3, and that tag starts the run that
+# builds, signs and publishes. If that run fails, merge the fix and run the
+# same command again: as long as v1.2.3 has no published release, the tag job
+# moves the tag to the new commit, so nobody has to force-push a tag. Pushing
+# a tag by hand still works too.
+#
+# A release waits for approval twice, from a required reviewer of the
+# environment: the tag job (`release-tagging`) and the publish job
+# (`release-signing`). Approve each under "Review deployments" on the run.
+#
+# The tag job pushes with a token from the release tagger GitHub App, the
+# only actor besides admins that the `releases` tag ruleset lets create or
+# move v* tags. The workflow token cannot (GitHub does not accept GitHub
+# Actions as a bypass actor there), and tags it pushed would start no workflow.
+#
+# Do not create the release on GitHub by hand: the publish job makes it as a
+# draft, uploads the archives and then publishes it. A release published before
+# that has no archives, and with immutable releases on it can no longer take
+# any.
 #
 # - The version job fails a tag that is not `v` plus the version in
 #   Cargo.toml, since `arakun --version` and the crash reports print that
@@ -20,7 +39,7 @@ name: Release
 # - A dry run (a pull request that changes this file, or a manual run) builds,
 #   smoke-tests and uploads the archives as `arakun-dev-<short sha>-…`, and
 #   does not publish. Only a pushed tag publishes; a manual run never does,
-#   even on a tag.
+#   even on a tag. A manual run with `version` only tags.
 # - Linux x86_64, Windows x86_64 (MSVC) and macOS arm64. No Intel Mac build.
 # - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it,
 #   in a disk image made by tools/macos-dmg.py that opens as a branded window
@@ -70,6 +89,11 @@ on:
       - tools/Arakun.icon/**
       - assets/brand/dmg-background*.png
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release this version: tag main's commit as v<version> (empty: dry run)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -85,8 +109,86 @@ env:
   ARAKUN_RELEASE_BUILD: "1"
 
 jobs:
+  # A manual run with `version`: tags main, and the tag starts the release run.
+  # Every other job skips in this run.
+  tag:
+    name: Tag
+    if: inputs.version != ''
+    runs-on: depot-ubuntu-24.04
+    # Shared with the publish job, so the tag never moves while a run checks
+    # it and publishes, and two runs for one version never race to move it.
+    concurrency:
+      group: release-tag-v${{ inputs.version }}
+    # Holds the app's key, and takes main only:
+    #
+    #   RELEASE_TAGGER_CLIENT_ID     (variable) the app's client ID
+    #   RELEASE_TAGGER_PRIVATE_KEY   (secret) a private key of the app
+    #
+    # The app needs Contents: read and write on this repository, and is the
+    # bypass actor on the `releases` tag ruleset.
+    environment: release-tagging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::run this on main (--ref main), not $GITHUB_REF; a release is cut from main"
+            exit 1
+          fi
+          app=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          if [ "$VERSION" != "$app" ]; then
+            echo "::error::version $VERSION is not the version in main's Cargo.toml ($app); merge the version bump first"
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          client-id: ${{ vars.RELEASE_TAGGER_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_TAGGER_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Tag
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: v${{ inputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          # A published release is immutable, so its tag must not move. A
+          # draft is left by a run that failed while publishing; the next run
+          # takes it over.
+          published=$(gh api --paginate "repos/$GH_REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\" and (.draft | not)) | .html_url")
+          if [ -n "$published" ]; then
+            echo "::error::$TAG is already released ($published); bump the version for a new release"
+            exit 1
+          fi
+
+          # An annotated tag, like one made by hand, so `git describe` finds it.
+          object=$(gh api "repos/$GH_REPO/git/tags" -f tag="$TAG" -f message="Arakun $TAG" \
+            -f object="$SHA" -f type=commit --jq .sha)
+          if old=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha 2>/dev/null); then
+            if [ "$old" = "$SHA" ]; then
+              echo "::error::$TAG already points at $SHA; re-run its failed release run instead"
+              exit 1
+            fi
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$object" -F force=true >/dev/null
+            echo "::notice::moved $TAG from $old to $SHA"
+          else
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" >/dev/null
+            echo "::notice::created $TAG at $SHA"
+          fi
+          echo "::notice::the release runs on the tag: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/release.yml?query=branch%3A$TAG"
+
   ci:
     name: CI
+    if: inputs.version == ''
     uses: $/.github/workflows/ci.yml
     # A called workflow gets at most what its caller job allows; the "What
     # changed" job in ci.yml lists a pull request's files.
@@ -98,6 +200,7 @@ jobs:
   # compares the tag.
   version:
     name: Version
+    if: inputs.version == ''
     runs-on: depot-ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -703,6 +806,10 @@ jobs:
     runs-on: depot-ubuntu-24.04
     # For the release signing key, below.
     environment: release-signing
+    # The tag job's group: it waits until this job has checked the tag and
+    # published, and then refuses to move a released tag.
+    concurrency:
+      group: release-tag-${{ github.ref_name }}
     permissions:
       contents: write
       # For the provenance attestation. Only this job gets them: it runs no code
@@ -779,6 +886,21 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS
+
+      # The tag job moves a tag that has no published release yet. A run still
+      # building the old commit must then not publish its archives under it.
+      - name: Check the tag still points at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          now=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          if [ "$now" != "$SHA" ]; then
+            echo "::error::$TAG moved to $now while this run built $SHA; the run on the new commit publishes it"
+            exit 1
+          fi
 
       # zizmor would have `gh release create` here. Moving over changes how a
       # re-run treats a release that already exists, which only a real tag can

@@ -125,7 +125,7 @@ export class Channel extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server, [`u:${who.githubId}`]);
     server.serializeAttachment(who);
     // Everyone, the new socket included, hears who is on the channel now.
-    this.presence();
+    this.presenceSoon();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -142,7 +142,7 @@ export class Channel extends DurableObject<Env> {
     this.kicks.set(githubId, (this.kicks.get(githubId) ?? 0) + 1);
     const sockets = this.ctx.getWebSockets(`u:${githubId}`);
     for (const ws of sockets) this.close(ws, CLOSE_FORBIDDEN, "removed from the team");
-    if (sockets.length > 0) this.presence();
+    if (sockets.length > 0) this.presenceSoon();
     return sockets.length;
   }
 
@@ -258,23 +258,45 @@ export class Channel extends DurableObject<Env> {
   // The compatibility date is after 2026-04-07, so the runtime answers a
   // client's close by itself. The others hear who is left.
   override async webSocketClose(ws: WebSocket): Promise<void> {
-    this.presence(ws);
+    await this.presence(ws);
   }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
     this.close(ws, 1011, "error");
-    this.presence(ws);
+    await this.presence(ws);
   }
 
-  /// Sends every open socket the GitHub IDs with a socket open on this
-  /// channel, sorted, once each. `gone` is a socket that is closing and may
-  /// still be listed. The server already knows who is connected; this only
-  /// tells the members, and nothing of what they write.
-  private presence(gone?: WebSocket): void {
-    const open = this.ctx.getWebSockets().filter((ws) => ws !== gone && ws.readyState === WebSocket.OPEN);
-    const here = [...new Set(open.map((ws) => (ws.deserializeAttachment() as Who | null)?.githubId ?? 0))].filter((id) => id > 0).sort((a, b) => a - b);
+  /// presence() without waiting for it, for callers that answer first.
+  private presenceSoon(): void {
+    this.ctx.waitUntil(this.presence());
+  }
+
+  /// Sends the GitHub IDs with a socket open on this channel, sorted, once
+  /// each, to every open socket that passes the same check as a send's
+  /// recipients. `gone` is a socket that is closing and may still be listed.
+  /// The server already knows who is connected; this only tells the members,
+  /// and nothing of what they write.
+  private async presence(gone?: WebSocket): Promise<void> {
+    const open = () => this.ctx.getWebSockets().filter((ws) => ws !== gone && ws.readyState === WebSocket.OPEN);
+    const first = open()[0]?.deserializeAttachment() as Who | null | undefined;
+    if (!first) return;
+    const checked = new Set(open().map(sessionOf));
+    let allowed: Set<string>;
+    try {
+      allowed = await this.allowed(first.teamId, [...checked]);
+    } catch (e) {
+      console.error("presence check failed:", e);
+      return;
+    }
+    // Read again after the check, so the list that goes out is the current
+    // one. A socket that failed the check is neither told nor listed; the
+    // next send closes it. One admitted during the check passed its own just
+    // now, and its own presence() tells it.
+    const current = open().filter((ws) => !checked.has(sessionOf(ws)) || allowed.has(sessionOf(ws)));
+    const here = [...new Set(current.map((ws) => (ws.deserializeAttachment() as Who | null)?.githubId ?? 0))].filter((id) => id > 0).sort((a, b) => a - b);
     const out = JSON.stringify({ type: "presence", here });
-    for (const ws of open) {
+    for (const ws of current) {
+      if (!allowed.has(sessionOf(ws))) continue;
       try {
         ws.send(out);
       } catch {

@@ -282,8 +282,9 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
     (`id` is null when the frame had none);
   - `{ "type": "presence", "here": [66887635, ...] }` to every socket on the
     channel when one opens or closes: the GitHub IDs with a socket open on this
-    channel, sorted, each once. A new socket gets one right away. Clients ignore
-    a `type` they don't know.
+    channel, sorted, each once. A new socket gets one right away. A socket whose
+    session ended, or whose user is no longer a member or lost the `teams` flag,
+    gets none and is not listed. Clients ignore a `type` they don't know.
 - A frame is at most 96 KiB. Each device may send about 60 messages every 10
   seconds; more are refused. The count is kept in each Cloudflare location on its
   own and catches up with a delay, so a few more can get through.

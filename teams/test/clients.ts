@@ -136,6 +136,11 @@ export class Presence {
   private got: number[][] = [];
   private waiting: (() => void)[] = [];
 
+  /// How many lists arrived so far.
+  get count(): number {
+    return this.got.length;
+  }
+
   push(v: unknown): void {
     this.got.push(v as number[]);
     for (const w of this.waiting.splice(0)) w();

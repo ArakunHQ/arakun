@@ -307,6 +307,28 @@ describe("presence", () => {
     a.ws.close();
   });
 
+  it("tells nobody whose session ended or who lost the flag, and leaves them out", async () => {
+    const t = await team();
+    const out = await join(t);
+    const unflagged = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const b = await openChannel(out.user, out.device, t.teamId, t.channelId);
+    const c = await openChannel(unflagged.user, unflagged.device, t.teamId, t.channelId);
+    const all = [t.owner.user.id, out.user.id, unflagged.user.id].sort((x, y) => x - y);
+    await b.inbox.here.until(all);
+    await c.inbox.here.until(all);
+    expect((await api(out.user, "POST", "/auth/logout")).status).toBe(204);
+    await expectJson(call("DELETE", `/admin/users/${unflagged.user.id}/flags/teams`, ADMIN), 200);
+    const [bSeen, cSeen] = [b.inbox.here.count, c.inbox.here.count];
+
+    const a2 = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    await a2.inbox.here.until([t.owner.user.id]);
+    await a.inbox.here.until([t.owner.user.id]);
+    expect(b.inbox.here.count).toBe(bSeen);
+    expect(c.inbox.here.count).toBe(cSeen);
+    for (const s of [a, a2, b, c]) s.ws.close();
+  });
+
   it("drops a removed member", async () => {
     const t = await team();
     const m = await join(t);

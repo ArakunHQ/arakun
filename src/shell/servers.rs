@@ -299,6 +299,18 @@ fn follow_in(
     }
 }
 
+/// The folder name of a server's repository at `repo`, as the server names
+/// it (`store::repo_name`): without a bare repository's `.git`. The path is
+/// the server's, which may be Windows' while this is not, or the other way.
+fn repo_folder(repo: &str) -> Option<&str> {
+    let last = repo
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    (!name.is_empty() && !name.ends_with(':')).then_some(name)
+}
+
 /// Takes `server`'s session `id` out of what is followed. Another server's
 /// session may have the same id: it stays.
 fn unfollow(following: &mut Vec<Following>, server: &str, id: &str) -> Vec<Following> {
@@ -1582,11 +1594,7 @@ impl Shell {
         } else {
             &row.repo
         };
-        // As the server names it (`store::repo_name`): without a bare
-        // repository's `.git`.
-        let name = Path::new(repo).file_name()?.to_string_lossy();
-        let name = name.strip_suffix(".git").unwrap_or(&name);
-        (!name.is_empty()).then(|| name.to_string().into())
+        repo_folder(repo).map(|n| n.to_string().into())
     }
 
     /// The branch of a server's environment, renamed there. The app shows the
@@ -2455,6 +2463,16 @@ mod tests {
         let followed = follow_in(&mut list, Watcher::Phone(7), fresh, true);
         assert!(followed.displaced.is_empty());
         assert_eq!(list.len(), 3);
+    }
+
+    #[test]
+    fn a_servers_repository_is_named_by_its_own_paths() {
+        assert_eq!(repo_folder("/home/me/code/app"), Some("app"));
+        assert_eq!(repo_folder("/srv/git-files/app.git"), Some("app"));
+        assert_eq!(repo_folder("C:\\code\\app"), Some("app"));
+        assert_eq!(repo_folder("D:\\git\\app.git\\"), Some("app"));
+        assert_eq!(repo_folder("C:\\"), None);
+        assert_eq!(repo_folder("/"), None);
     }
 
     #[test]

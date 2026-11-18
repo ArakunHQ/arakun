@@ -72,14 +72,17 @@ pub fn take_reports() -> Vec<Unreadable> {
 fn reject(path: &Path, why: &str, now: u64) {
     eprintln!("arakun: could not read {}: {why}", path.display());
     let kept = set_aside(path, now);
-    if kept.is_none() {
-        BLOCKED
+    // A file that stays stuck is read again on every refresh (the memory
+    // list): say so once, not each time.
+    let new = kept.is_some()
+        || BLOCKED
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get_or_insert_with(HashSet::new)
             .insert(path.to_path_buf());
+    if new {
+        report(path, kept);
     }
-    report(path, kept);
 }
 
 fn report(path: &Path, kept: Option<PathBuf>) {
@@ -257,6 +260,8 @@ pub(crate) mod tests {
         for n in 0..ASIDE_NAMES {
             std::fs::write(aside(n), "older").unwrap();
         }
+        reject(&path, "test", 42);
+        // Read again while still stuck: told once.
         reject(&path, "test", 42);
         assert!(!clear(&path, 42));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "torn");

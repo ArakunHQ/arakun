@@ -40,9 +40,12 @@ pub const HELLO: u8 = 0x01;
 pub const DATA: u8 = 0x02;
 pub const CONTROL: u8 = 0x03;
 
-/// How much of a message or a response body goes in one frame: with base64
-/// and the envelope a piece stays under the relay's frame limit (256 KiB).
+/// How much of a message or a response body goes in one piece: with base64
+/// and the envelope a piece stays under `WHOLE`.
 const CHUNK: usize = 160 * 1024;
+/// The longest message that goes out whole: sealed, it stays under the
+/// relay's frame limit (256 KiB). A `res` piece fits, so it is not split again.
+const WHOLE: usize = 250 * 1024;
 /// The most a `req` body may carry, like `MAX_BODY` over TCP.
 const MAX_REQ_BODY: usize = 4096;
 
@@ -935,20 +938,26 @@ fn respond(
 /// follow; the phone joins them and reads the message as if it came whole.
 /// The pieces of one message go out together, so they need no name.
 fn say(ws: &mut Socket, channel: u32, session: &mut Session, text: &str) -> Result<(), Ended> {
-    if text.len() <= CHUNK {
+    if text.len() <= WHOLE {
         return send_frame(ws, DATA, channel, &session.seal(text.as_bytes()));
     }
-    let last = text.len().div_ceil(CHUNK) - 1;
-    for (i, piece) in text.as_bytes().chunks(CHUNK).enumerate() {
-        let part = json!({ "part": { "body": B64.encode(piece), "more": i < last } });
-        send_frame(
-            ws,
-            DATA,
-            channel,
-            &session.seal(part.to_string().as_bytes()),
-        )?;
+    for part in parts(text, CHUNK) {
+        send_frame(ws, DATA, channel, &session.seal(part.as_bytes()))?;
     }
     Ok(())
+}
+
+/// `text` as `{part: {body, more}}` messages that each carry `chunk` of its
+/// bytes; `phone/relay.js` joins them (`joiner`).
+fn parts(text: &str, chunk: usize) -> Vec<String> {
+    let last = text.len().div_ceil(chunk).saturating_sub(1);
+    text.as_bytes()
+        .chunks(chunk)
+        .enumerate()
+        .map(|(i, piece)| {
+            json!({ "part": { "body": B64.encode(piece), "more": i < last } }).to_string()
+        })
+        .collect()
 }
 
 /// What a `bye` from the relay means for the next attempt.
@@ -1115,6 +1124,8 @@ mod tests {
 
     /// The most the relay takes in one frame's payload (`relay/src/limits.ts`).
     const RELAY_FRAME: usize = 256 * 1024;
+    // Sealing adds a counter and a tag; the relay counts those too.
+    const _: () = assert!(WHOLE + 64 <= RELAY_FRAME);
 
     /// A relay of our own on the loopback: accepts one computer at a time.
     struct FakeRelay {
@@ -1438,7 +1449,8 @@ mod tests {
             let mut status = 0;
             let mut out = Vec::new();
             loop {
-                let msg = self.hear(ws);
+                // As it came: a `res` piece is small enough to go whole.
+                let msg = self.hear_frame(ws);
                 let res = &msg["res"];
                 assert_eq!(res["id"], 9);
                 if let Some(s) = res["status"].as_u64() {
@@ -1602,6 +1614,44 @@ mod tests {
         assert_eq!(phone.hear(&mut ws)["text"], text);
         client.send(5, r#"{"type":"usage"}"#.into());
         assert_eq!(phone.hear_frame(&mut ws)["type"], "usage");
+    }
+
+    #[test]
+    fn a_piece_of_either_kind_goes_out_whole() {
+        // The largest `res` piece and the largest `part`: neither is split again.
+        let body = B64.encode(vec![0xff; CHUNK]);
+        let res = json!({ "res": { "id": u64::MAX, "body": body, "more": true, "status": 200, "type": "application/octet-stream; charset=utf-8" } });
+        assert!(res.to_string().len() <= WHOLE);
+        let text = "x".repeat(CHUNK * 2);
+        assert!(parts(&text, CHUNK).iter().all(|p| p.len() <= WHOLE));
+    }
+
+    /// What `phone/relay.js` is checked against: `WRITE_VECTORS=1 cargo test
+    /// phone::relay::tests::part_vectors` writes it; the plain run checks Rust
+    /// still splits the same way, so a change on either side shows up.
+    const PART_VECTORS: &str = "phone/test/vectors/part.json";
+
+    #[test]
+    fn part_vectors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PART_VECTORS);
+        // Letters of two, three and four bytes, cut where a piece ends inside one.
+        let message = json!({ "type": "entries", "text": "aé€😀 ".repeat(8) }).to_string();
+        let cases: Vec<Value> = [7, 64, 4096]
+            .into_iter()
+            .map(|chunk| json!({ "chunk": chunk, "parts": parts(&message, chunk) }))
+            .collect();
+        if std::env::var_os("WRITE_VECTORS").is_some() {
+            let v = json!({
+                "note": "Written by `WRITE_VECTORS=1 cargo test phone::relay::tests::part_vectors`; checked by phone/test/relay.test.mjs.",
+                "message": message,
+                "cases": cases,
+            });
+            std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap() + "\n").unwrap();
+            return;
+        }
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["message"], message);
+        assert_eq!(v["cases"], json!(cases));
     }
 
     #[test]

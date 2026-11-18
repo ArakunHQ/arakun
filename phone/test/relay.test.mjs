@@ -1,5 +1,6 @@
 // phone/relay.js joining the pieces of a message the computer split for the
-// relay (`say` in src/phone/relay.rs). Run with `node --test phone/test/`.
+// relay (`say` in src/phone/relay.rs), against the pieces Rust wrote
+// (vectors/part.json). Run with `node --test phone/test/`.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -10,6 +11,17 @@ import vm from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", file), "utf8"), { filename: file });
 const { E2E, RELAY } = globalThis;
+const vectors = JSON.parse(readFileSync(join(here, "vectors", "part.json"), "utf8"));
+
+test("the pieces the computer makes join into its message", () => {
+  for (const c of vectors.cases) {
+    const joined = RELAY.joiner();
+    const got = c.parts.map((p) => joined(JSON.parse(p).part));
+    assert.ok(got.slice(0, -1).every((m) => m === null), `chunk ${c.chunk}`);
+    assert.deepEqual(got.at(-1), JSON.parse(vectors.message), `chunk ${c.chunk}`);
+  }
+  assert.ok(vectors.cases[0].parts.length > 1);
+});
 
 /// What the computer does: the message's bytes in pieces of `size`.
 function pieces(msg, size) {

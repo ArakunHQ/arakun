@@ -1117,6 +1117,19 @@ impl Shell {
     /// the environment remembers it, so its next session starts the same.
     pub(super) fn choose_setting(&mut self, s: Setting, value: &str, cx: &mut Context<Self>) {
         let agent = self.composer_agent();
+        // Picking the model a running session is on: the next session gets
+        // its reasoning level too. Another session may have left the
+        // environment a different model, and that pick would then clear it.
+        let live_effort = (s == Setting::Model && self.composer_thread().is_some())
+            .then(|| {
+                let on = |s| self.setting_choices(s, cx).map(|(v, _)| v);
+                on(Setting::Model)
+                    .is_some_and(|m| m == value)
+                    .then(|| on(Setting::Effort))
+                    .flatten()
+            })
+            .flatten()
+            .filter(|v| !v.is_empty());
         if let Some(thread) = self.composer_thread() {
             thread.update(cx, |t, cx| t.set_setting(s, value, cx));
         } else if self.composer_in_session() {
@@ -1125,6 +1138,9 @@ impl Shell {
         if self.has_projects() {
             let path = self.env().path.clone();
             self.remember_setting(&path, agent, s, value, cx);
+            if let Some(effort) = live_effort {
+                self.remember_setting(&path, agent, Setting::Effort, &effort, cx);
+            }
         }
         cx.notify();
     }
@@ -1144,6 +1160,9 @@ impl Shell {
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
+        // What OpenCode takes from the pick made anywhere, until this
+        // environment has a model of its own.
+        let inherited = (agent == model::Agent::OpenCode).then(|| opencode_draft(env));
         let draft = match agent {
             model::Agent::Droid => &mut env.draft_settings,
             model::Agent::Claude => &mut env.claude_settings,
@@ -1158,6 +1177,16 @@ impl Shell {
         // the same model again keeps it.
         if s == Setting::Model && changed {
             draft.retain(|(d, _)| *d != Setting::Effort);
+        } else if s == Setting::Model
+            && let Some(effort) = inherited
+                .into_iter()
+                .flatten()
+                .find(|(d, _)| *d == Setting::Effort)
+            && !draft.iter().any(|(d, _)| *d == Setting::Effort)
+        {
+            // With a model of its own the environment stops taking that
+            // pick, and its reasoning level would go with it.
+            draft.push(effort);
         }
         // Other environments' next OpenCode sessions start on this model too.
         if agent == model::Agent::OpenCode && matches!(s, Setting::Model | Setting::Effort) {

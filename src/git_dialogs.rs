@@ -260,6 +260,310 @@ impl Render for CommitDialog {
 
 // ---------------------------------------------------------------------------
 
+pub enum PullRequestEvent {
+    /// The pull request was opened: its address (empty when gh named none).
+    Created(String),
+    Dismissed,
+}
+
+/// Opening a pull request for the checked-out branch: the title and where it
+/// merges, with the description GitHub's own form would start with.
+pub struct PullRequestDialog {
+    dir: PathBuf,
+    remote: String,
+    branch: String,
+    /// The branch has commits GitHub doesn't: they are pushed first.
+    needs_push: bool,
+    plan: git::PrPlan,
+    title: Entity<TextInput>,
+    base: Entity<TextInput>,
+    draft: bool,
+    /// Some(on the web) while it is being opened.
+    busy: Option<bool>,
+    error: Option<SharedString>,
+    _subs: Vec<Subscription>,
+}
+
+impl EventEmitter<PullRequestEvent> for PullRequestDialog {}
+
+impl PullRequestDialog {
+    pub fn new(
+        dir: PathBuf,
+        remote: String,
+        branch: String,
+        needs_push: bool,
+        plan: git::PrPlan,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let title = cx.new(|cx| {
+            let mut input = TextInput::new("What the pull request does", cx);
+            input.set_text(plan.title.clone(), cx);
+            input
+        });
+        let base = cx.new(|cx| {
+            let mut input = TextInput::new("main", cx).mono();
+            input.set_text(plan.base.clone(), cx);
+            input
+        });
+        let follow = |this: &mut Self,
+                      _: &Entity<TextInput>,
+                      ev: &InputEvent,
+                      _: &mut Window,
+                      cx: &mut Context<Self>| match ev {
+            InputEvent::Submit => this.submit(false, cx),
+            InputEvent::Cancel => {
+                if this.busy.is_none() {
+                    cx.emit(PullRequestEvent::Dismissed);
+                }
+            }
+            InputEvent::Changed => {
+                this.error = None;
+                cx.notify();
+            }
+            _ => {}
+        };
+        let subs = vec![
+            cx.subscribe_in(&title, window, follow),
+            cx.subscribe_in(&base, window, follow),
+        ];
+        window.focus(&title.focus_handle(cx), cx);
+        Self {
+            dir,
+            remote,
+            branch,
+            needs_push,
+            plan,
+            title,
+            base,
+            draft: true,
+            busy: None,
+            error: None,
+            _subs: subs,
+        }
+    }
+
+    /// Opens the pull request here, or (`web`) GitHub's form for it, where
+    /// the description can be written at length.
+    fn submit(&mut self, web: bool, cx: &mut Context<Self>) {
+        let title = self.title.read(cx).text().trim().to_string();
+        let base = self.base.read(cx).text().trim().to_string();
+        if self.busy.is_some() || (!web && (title.is_empty() || base.is_empty())) {
+            return;
+        }
+        self.busy = Some(web);
+        self.error = None;
+        cx.notify();
+        let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
+        let (needs_push, draft, body) = (self.needs_push, self.draft, self.plan.body.clone());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    if needs_push {
+                        // A read-only Arakun sends nothing, the branch included.
+                        if crate::github::read_only() {
+                            anyhow::bail!("{}", crate::github::pr::READ_ONLY);
+                        }
+                        git::push(&dir, &remote, &branch)?;
+                    }
+                    if web {
+                        git::pr_create_web(&dir, &branch).map(|()| None)
+                    } else {
+                        git::pr_create(&dir, &branch, &base, &title, &body, draft).map(Some)
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = None;
+                match result {
+                    Ok(Some(url)) => cx.emit(PullRequestEvent::Created(url)),
+                    // The browser has it now.
+                    Ok(None) => cx.emit(PullRequestEvent::Dismissed),
+                    Err(e) => {
+                        // The push may have gone through: the next try skips it
+                        // only when it did, and pushing twice is harmless.
+                        this.error = Some(e.to_string().into());
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+impl Focusable for PullRequestDialog {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.title.focus_handle(cx)
+    }
+}
+
+/// A labeled text box of a dialog.
+fn labeled(label: &'static str, input: &Entity<TextInput>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(crate::ui::sp(6.))
+        .child(ui::text(ui::Type::Label, theme::text_muted(), label))
+        .child(
+            ui::field()
+                .bg(theme::background())
+                .child(div().flex_1().min_w_0().child(input.clone())),
+        )
+}
+
+impl Render for PullRequestDialog {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use ui::Typography as _;
+        let free = self.busy.is_none();
+        let ready = free
+            && !self.title.read(cx).text().trim().is_empty()
+            && !self.base.read(cx).text().trim().is_empty();
+        let commits = match self.plan.commits {
+            0 => String::new(),
+            1 => "1 commit · ".into(),
+            n => format!("{n} commits · "),
+        };
+        let about = format!(
+            "{commits}{}{}",
+            self.branch,
+            if self.needs_push {
+                " is pushed first"
+            } else {
+                ""
+            }
+        );
+        let body_label = if self.plan.template {
+            "Description (the repository's template)"
+        } else {
+            "Description (from the commits)"
+        };
+        let body = if self.plan.body.trim().is_empty() {
+            ui::text(
+                ui::Type::Caption,
+                theme::text_subtle(),
+                "Empty. Write it on GitHub once the pull request is open.",
+            )
+        } else {
+            div()
+                .ty(ui::Type::Mono)
+                .text_color(theme::text_muted())
+                .child(self.plan.body.clone())
+        };
+        let create = if self.draft {
+            "Create draft"
+        } else {
+            "Create pull request"
+        };
+        ui::modal_panel("pull-request", 520.)
+            .child(ui::modal_header(
+                "Create pull request",
+                Some(about.into()),
+                ui::close_button("pull-request-close").on_click(cx.listener(|this, _, _, cx| {
+                    if this.busy.is_none() {
+                        cx.emit(PullRequestEvent::Dismissed)
+                    }
+                })),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(16.))
+                    .p(crate::ui::sp(16.))
+                    .child(labeled("Title", &self.title))
+                    .child(labeled("Merge into", &self.base))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(crate::ui::sp(6.))
+                            .child(ui::text(ui::Type::Label, theme::text_muted(), body_label))
+                            .child(
+                                div()
+                                    .id("pull-request-body")
+                                    .max_h(px(180.))
+                                    .overflow_y_scroll()
+                                    .px(crate::ui::sp(10.))
+                                    .py(crate::ui::sp(8.))
+                                    .rounded(crate::ui::rad(ui::RADIUS))
+                                    .border_1()
+                                    .border_color(theme::border())
+                                    .bg(theme::fill_raised())
+                                    .child(body),
+                            )
+                            .child(ui::text(
+                                ui::Type::Caption,
+                                theme::text_faint(),
+                                "Edit it on GitHub afterwards, or open GitHub's form to write it first.",
+                            )),
+                    )
+                    .child(
+                        ui::switch_row("pull-request-draft", "Open as a draft", self.draft)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.busy.is_none() {
+                                    this.draft = !this.draft;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .when_some(self.error.clone(), |d, e| d.child(error_box(e)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap(crate::ui::sp(8.))
+                            .child(
+                                ui::button(
+                                    "pull-request-web",
+                                    if self.busy == Some(true) {
+                                        "Opening…"
+                                    } else {
+                                        "Open GitHub's form"
+                                    },
+                                    ButtonKind::Ghost,
+                                    free,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.submit(true, cx))),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                ui::button("pull-request-cancel", "Cancel", ButtonKind::Ghost, free)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if this.busy.is_none() {
+                                            cx.emit(PullRequestEvent::Dismissed)
+                                        }
+                                    })),
+                            )
+                            .child(
+                                ui::button(
+                                    "pull-request-create",
+                                    if self.busy == Some(false) {
+                                        "Creating…"
+                                    } else {
+                                        create
+                                    },
+                                    ButtonKind::Primary,
+                                    ready,
+                                )
+                                .when(self.busy == Some(false), |d| {
+                                    d.child(ui::spinner(
+                                        "pull-request-spin",
+                                        12.,
+                                        theme::background(),
+                                    ))
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| this.submit(false, cx))),
+                            ),
+                    ),
+            )
+    }
+}
+
+// ---------------------------------------------------------------------------
+
 type Action = Box<dyn FnOnce() -> Result<()> + Send>;
 
 /// A yes/no dialog that runs its action in the background and keeps the error on

@@ -944,6 +944,202 @@ pub fn pr_create_web(dir: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// A commit a new pull request would bring: its subject and the rest of
+/// its message.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrCommit {
+    pub subject: String,
+    pub body: String,
+}
+
+/// What the "Create pull request" dialog opens with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrPlan {
+    /// The branch it would merge into.
+    pub base: String,
+    pub title: String,
+    pub body: String,
+    /// Commits the base doesn't have; 0 when git couldn't tell.
+    pub commits: usize,
+    /// The body is the repository's pull request template.
+    pub template: bool,
+}
+
+/// The branch a remote calls its default (`origin/HEAD`); `main` when the
+/// clone doesn't know.
+pub fn default_base(dir: &Path, remote: &str) -> String {
+    let head = format!("refs/remotes/{remote}/HEAD");
+    read(dir, &["symbolic-ref", "--short", &head])
+        .ok()
+        .and_then(|out| {
+            let name = out.trim().strip_prefix(&format!("{remote}/"))?.to_string();
+            (!name.is_empty()).then_some(name)
+        })
+        .unwrap_or_else(|| "main".into())
+}
+
+/// The commits on HEAD that `remote/base` doesn't have, oldest first.
+fn pr_commits(dir: &Path, remote: &str, base: &str) -> Vec<PrCommit> {
+    let range = format!("{remote}/{base}..HEAD");
+    let Ok(out) = read(
+        dir,
+        &["log", "--reverse", "--format=%s%x1f%b%x1e", &range, "--"],
+    ) else {
+        return Vec::new();
+    };
+    parse_pr_commits(&out)
+}
+
+fn parse_pr_commits(out: &str) -> Vec<PrCommit> {
+    out.split('\u{1e}')
+        .filter_map(|entry| {
+            let (subject, body) = entry.trim_start_matches('\n').split_once('\u{1f}')?;
+            Some(PrCommit {
+                subject: subject.trim().to_string(),
+                body: body.trim().to_string(),
+            })
+        })
+        .filter(|c| !c.subject.is_empty())
+        .collect()
+}
+
+/// Where GitHub looks for a pull request template, in its order.
+const PR_TEMPLATES: [&str; 6] = [
+    ".github/pull_request_template.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "pull_request_template.md",
+    "PULL_REQUEST_TEMPLATE.md",
+    "docs/pull_request_template.md",
+    "docs/PULL_REQUEST_TEMPLATE.md",
+];
+
+/// The repository's pull request template as committed on HEAD: what GitHub
+/// itself would fill in.
+fn pr_template(dir: &Path) -> Option<String> {
+    PR_TEMPLATES
+        .iter()
+        .find_map(|path| show_file(dir, "HEAD", path))
+        .filter(|text| !text.trim().is_empty())
+}
+
+/// The title and body a pull request of `commits` starts with, as GitHub
+/// fills its own form: one commit gives both; several give the first one's
+/// subject and the list of them. A template replaces the body.
+pub fn pr_fill(commits: &[PrCommit], template: Option<&str>, branch: &str) -> (String, String) {
+    let title = match commits.first() {
+        Some(c) => c.subject.clone(),
+        // No commits known: the branch name reads better than nothing.
+        None => branch
+            .rsplit('/')
+            .next()
+            .unwrap_or(branch)
+            .replace(['-', '_'], " "),
+    };
+    let body = match (template, commits) {
+        (Some(t), _) => t.trim_end().to_string(),
+        (None, [one]) => one.body.clone(),
+        (None, many) => many
+            .iter()
+            .map(|c| format!("- {}", c.subject))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    (title, body)
+}
+
+/// Reads what a new pull request for `branch` starts with.
+pub fn pr_plan(dir: &Path, remote: &str, branch: &str) -> PrPlan {
+    let base = default_base(dir, remote);
+    let commits = pr_commits(dir, remote, &base);
+    let template = pr_template(dir);
+    let (title, body) = pr_fill(&commits, template.as_deref(), branch);
+    PrPlan {
+        base,
+        title,
+        body,
+        commits: commits.len(),
+        template: template.is_some(),
+    }
+}
+
+/// The arguments of `gh pr create`; the body goes through stdin.
+fn pr_create_args(branch: &str, base: &str, title: &str, draft: bool) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "pr",
+        "create",
+        "--head",
+        branch,
+        "--base",
+        base,
+        "--title",
+        title,
+        "--body-file",
+        "-",
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect();
+    if draft {
+        args.push("--draft".into());
+    }
+    args
+}
+
+/// Opens a pull request for `branch` into `base` and returns its address.
+pub fn pr_create(
+    dir: &Path,
+    branch: &str,
+    base: &str,
+    title: &str,
+    body: &str,
+    draft: bool,
+) -> Result<String> {
+    use std::io::Write as _;
+    let (title, base) = (title.trim(), base.trim());
+    if crate::github::read_only() {
+        bail!("{}", crate::github::pr::READ_ONLY);
+    }
+    if title.is_empty() {
+        bail!("Give the pull request a title.");
+    }
+    // A name that starts with `-` would read as a flag.
+    if base.is_empty() || base.starts_with('-') || branch.starts_with('-') {
+        bail!("Name the branch to merge into.");
+    }
+    let mut child = gh(dir)
+        .args(pr_create_args(branch, base, title, draft))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("could not run gh")?;
+    if let Some(mut pipe) = child.stdin.take() {
+        // gh may give up before it reads everything; what it wrote says why.
+        let _ = pipe.write_all(body.as_bytes());
+    }
+    let out = child.wait_with_output().context("could not run gh")?;
+    if !out.status.success() {
+        let err = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "{}",
+            if err.trim().is_empty() {
+                "gh pr create failed"
+            } else {
+                err.trim()
+            }
+        );
+    }
+    // gh prints the new pull request's address last.
+    let text = String::from_utf8_lossy(&out.stdout);
+    let url = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with("https://") || l.starts_with("http://"))
+        .unwrap_or_default();
+    Ok(url.to_string())
+}
+
 /// Prints the nice value of the shell that runs it. Tests check that what
 /// arakun spawns runs at a lower priority; /proc is read first because `ps`
 /// prints "-" for a process under SCHED_IDLE.
@@ -954,6 +1150,75 @@ pub(crate) const NICE_OF_SHELL: &str =
 #[cfg(test)]
 mod tests {
     use std::process::Command;
+
+    #[test]
+    fn a_pull_request_starts_from_its_commits() {
+        use super::{PrCommit, parse_pr_commits, pr_create_args, pr_fill};
+        // As `git log --format=%s%x1f%b%x1e` prints them.
+        let log = "fix(terminal): keep the tab name\u{1f}It was lost on resize.\n\nSecond paragraph.\n\u{1e}\n\
+test: cover the resize\u{1f}\u{1e}\n";
+        let commits = parse_pr_commits(log);
+        assert_eq!(
+            commits,
+            [
+                PrCommit {
+                    subject: "fix(terminal): keep the tab name".into(),
+                    body: "It was lost on resize.\n\nSecond paragraph.".into(),
+                },
+                PrCommit {
+                    subject: "test: cover the resize".into(),
+                    body: String::new(),
+                },
+            ]
+        );
+        assert!(parse_pr_commits("").is_empty());
+
+        // One commit is the whole pull request; several are listed.
+        assert_eq!(
+            pr_fill(&commits[..1], None, "pr/tab-name"),
+            (
+                "fix(terminal): keep the tab name".into(),
+                "It was lost on resize.\n\nSecond paragraph.".into()
+            )
+        );
+        assert_eq!(
+            pr_fill(&commits, None, "pr/tab-name"),
+            (
+                "fix(terminal): keep the tab name".into(),
+                "- fix(terminal): keep the tab name\n- test: cover the resize".into()
+            )
+        );
+        // The repository's template is the body, as on GitHub's own form.
+        assert_eq!(
+            pr_fill(&commits, Some("## Problem\n\n"), "pr/tab-name").1,
+            "## Problem"
+        );
+        // Nothing known about the commits: the branch names it.
+        assert_eq!(
+            pr_fill(&[], None, "pr/tab-name_fix"),
+            ("tab name fix".into(), String::new())
+        );
+
+        // The title is one argument whatever it holds; the body isn't one at all.
+        let args = pr_create_args("pr/x", "main", "fix: `$(rm -rf ~)` \"q\"", true);
+        assert_eq!(
+            args,
+            [
+                "pr",
+                "create",
+                "--head",
+                "pr/x",
+                "--base",
+                "main",
+                "--title",
+                "fix: `$(rm -rf ~)` \"q\"",
+                "--body-file",
+                "-",
+                "--draft"
+            ]
+        );
+        assert!(!pr_create_args("pr/x", "main", "t", false).contains(&"--draft".to_string()));
+    }
 
     /// A repository on `env/brave-otter` with one commit, and a `taken` branch.
     fn repo() -> std::path::PathBuf {

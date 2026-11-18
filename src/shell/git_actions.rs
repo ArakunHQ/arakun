@@ -13,7 +13,9 @@ use gpui::{
 
 use super::{ContextMenu, MenuTarget, Modal, PanelTab, Shell, panel_empty, plural};
 use crate::git::{self, ChangeKind};
-use crate::git_dialogs::{CommitDialog, ConfirmDialog, GitDialogEvent};
+use crate::git_dialogs::{
+    CommitDialog, ConfirmDialog, GitDialogEvent, PullRequestDialog, PullRequestEvent,
+};
 use crate::model::{GitOp, TabKind, pretty_path};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
@@ -127,9 +129,9 @@ impl Shell {
         self.run_git_op(path, GitOp::Pull, move || git::pull(&dir), cx);
     }
 
-    /// Opens the branch's pull request, or pushes if needed and opens GitHub's
-    /// prefilled "new pull request" page.
-    fn git_pull_request(&mut self, cx: &mut Context<Self>) {
+    /// Opens the branch's pull request, or the dialog that creates one. What
+    /// the dialog starts with is read from the clone first.
+    fn git_pull_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let env = self.env();
         if let Some(pr) = env.pr.as_ref() {
             cx.open_url(&pr.url);
@@ -139,20 +141,78 @@ impl Shell {
         let (Some(remote), Some(branch), true) = (s.remote, s.branch, s.gh) else {
             return;
         };
+        if env.git_busy.is_some() || self.modal.is_some() {
+            return;
+        }
         let needs_push = !s.published || s.ahead > 0;
         let path = env.path.clone();
+        // Busy while the clone is read, so a second click opens nothing.
+        if let Some(env) = self.find_env_mut(&path) {
+            env.git_busy = Some(GitOp::PullRequest);
+        }
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let (dir, r, b) = (path.clone(), remote.clone(), branch.clone());
+            let plan = cx
+                .background_spawn(async move { git::pr_plan(&dir, &r, &b) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.show_pull_request(path, remote, branch, needs_push, plan, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn show_pull_request(
+        &mut self,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+        needs_push: bool,
+        plan: git::PrPlan,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(env) = self.find_env_mut(&path) {
+            env.git_busy = None;
+        }
+        cx.notify();
+        if self.modal.is_some() {
+            return;
+        }
         let dir = path.clone();
-        self.run_git_op(
-            path,
-            GitOp::PullRequest,
-            move || {
-                if needs_push {
-                    git::push(&dir, &remote, &branch)?;
+        let dialog =
+            cx.new(|cx| PullRequestDialog::new(dir, remote, branch, needs_push, plan, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &PullRequestEvent, window, cx| {
+                // Either way the branch may have been pushed.
+                if let Some(env) = this.find_env_mut(&path) {
+                    env.pr_checked = None;
+                    env.git_error = None;
                 }
-                git::pr_create_web(&dir, &branch)
+                this.refresh_status(&path, cx);
+                this.close_modal(window, cx);
+                let PullRequestEvent::Created(url) = ev else {
+                    return;
+                };
+                // The new pull request shows in the GitHub tab; one on a host
+                // that tab doesn't read opens its page.
+                match crate::github::pr::ItemRef::from_url(url) {
+                    Some(item) => {
+                        this.open_github_tab(window, cx);
+                        this.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+                    }
+                    None if !url.is_empty() => cx.open_url(url),
+                    None => {}
+                }
             },
-            cx,
         );
+        self.menu = None;
+        self.modal = Some((Modal::PullRequest(dialog), sub));
+        cx.notify();
     }
 
     pub(super) fn toggle_stage(&mut self, change: git::Change, cx: &mut Context<Self>) {
@@ -429,9 +489,9 @@ impl Shell {
                     busy == Some(GitOp::PullRequest),
                     enabled,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     if enabled {
-                        this.git_pull_request(cx)
+                        this.git_pull_request(window, cx)
                     }
                 })),
             );

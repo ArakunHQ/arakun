@@ -600,12 +600,7 @@ impl Shell {
                 p.environments.get(p.active_env).map(|e| e.path.clone()),
             )
         });
-        for p in &mut self.projects {
-            let open = p.environments.get(p.active_env).map(|e| e.path.clone());
-            p.environments
-                .retain(|e| e.remote.is_none() || keep.get(&e.path) == Some(&p.path));
-            p.active_env = open.and_then(|o| p.env_index(&o)).unwrap_or(0);
-        }
+        let mut moving = take_misplaced(&mut self.projects, &keep);
         self.projects
             .retain(|p| !p.is_remote() || !p.environments.is_empty());
 
@@ -626,11 +621,15 @@ impl Shell {
             let ei = match p.env_index(&env_path) {
                 Some(ei) => ei,
                 None => {
-                    let main = !place.repo.is_empty() && place.repo == place.path;
-                    let branch = (!place.branch.is_empty()).then(|| place.branch.clone());
-                    let mut env = Environment::new(env_path.clone(), branch, main);
-                    env.agent = model::Agent::from_key(&place.agent);
-                    env.remote = Some(remote.clone());
+                    // Moved here from another project: its tabs and draft come along.
+                    let env = moving.remove(&env_path).unwrap_or_else(|| {
+                        let main = !place.repo.is_empty() && place.repo == place.path;
+                        let branch = (!place.branch.is_empty()).then(|| place.branch.clone());
+                        let mut env = Environment::new(env_path.clone(), branch, main);
+                        env.agent = model::Agent::from_key(&place.agent);
+                        env.remote = Some(remote.clone());
+                        env
+                    });
                     p.environments.push(env);
                     p.environments.len() - 1
                 }
@@ -643,8 +642,12 @@ impl Shell {
             sync_sessions(env, sessions);
         }
 
+        // An environment on screen that moved to another project is followed there.
         if let Some((path, env)) = active
-            && let Some(pi) = self.projects.iter().position(|p| p.path == path)
+            && let Some(pi) = env
+                .as_ref()
+                .and_then(|e| self.projects.iter().position(|p| p.env_index(e).is_some()))
+                .or_else(|| self.projects.iter().position(|p| p.path == path))
         {
             self.active_project = pi;
             if let Some(ei) = env.and_then(|e| self.projects[pi].env_index(&e)) {
@@ -1215,6 +1218,32 @@ impl Shell {
     }
 }
 
+/// Takes each server environment out of a project `keep` no longer puts it in.
+/// One that belongs in another project now is handed back, so it moves there
+/// with its tabs and draft; one the servers no longer list is dropped.
+fn take_misplaced(
+    projects: &mut [Project],
+    keep: &HashMap<PathBuf, PathBuf>,
+) -> HashMap<PathBuf, Environment> {
+    let mut moving = HashMap::new();
+    for p in projects {
+        let open = p.environments.get(p.active_env).map(|e| e.path.clone());
+        let misplaced = p
+            .environments
+            .extract_if(.., |e| {
+                e.remote.is_some() && keep.get(&e.path) != Some(&p.path)
+            })
+            .collect::<Vec<_>>();
+        for env in misplaced {
+            if keep.contains_key(&env.path) {
+                moving.insert(env.path.clone(), env);
+            }
+        }
+        p.active_env = open.and_then(|o| p.env_index(&o)).unwrap_or(0);
+    }
+    moving
+}
+
 /// Brings an environment's sessions in line with the server's list, newest
 /// first. A session with a tab open stays until its tab closes.
 fn sync_sessions(env: &mut Environment, rows: Vec<SessionRow>) {
@@ -1418,6 +1447,40 @@ mod tests {
         let (b, _) = project_for(&place("/srv/notes", "/srv/notes", ""), "s1", &locals);
         let (c, _) = project_for(&bare, "s2", &locals);
         assert!(a == b && a != c);
+    }
+
+    #[test]
+    fn a_server_folder_that_changes_project_moves_with_its_draft() {
+        let remote_env = |place: &str| {
+            let path = Remote::env_path("s1", place);
+            let mut env = Environment::new(path, None, false);
+            env.remote = Some(Remote {
+                server: "s1".into(),
+                machine: "box".into(),
+                place: place.into(),
+            });
+            env
+        };
+        let local = PathBuf::from("/home/me/code/app");
+        let theirs = Remote::project_path("s1/srv/app");
+        let mut old = crate::state::new_project(&theirs);
+        old.environments = vec![remote_env("/srv/app"), remote_env("/srv/gone")];
+        old.environments[0].draft.set("half a prompt");
+        old.active_env = 1;
+        let mut projects = vec![crate::state::new_project(&local), old];
+        let moved = Remote::env_path("s1", "/srv/app");
+        // A local project with the same origin was added: the folder is its now.
+        let keep = HashMap::from([(moved.clone(), local.clone())]);
+
+        let mut moving = take_misplaced(&mut projects, &keep);
+        assert!(projects[1].environments.is_empty());
+        assert_eq!(projects[1].active_env, 0);
+        // The local project's own folder stays where it is.
+        assert_eq!(projects[0].environments.len(), 1);
+        let env = moving.remove(&moved).expect("handed back to be moved");
+        assert_eq!(&*env.draft, "half a prompt");
+        // A folder no server lists any more is not kept for anywhere.
+        assert!(moving.is_empty());
     }
 
     #[test]

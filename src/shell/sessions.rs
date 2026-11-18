@@ -1170,24 +1170,13 @@ impl Shell {
             model::Agent::Codex => &mut env.codex_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
-        let changed = value_changed(shown.as_deref(), draft, s, value);
-        draft.retain(|(d, _)| *d != s);
-        draft.push((s, value.to_string()));
-        // A model change may drop the effort picked for the old model. Picking
-        // the same model again keeps it.
-        if s == Setting::Model && changed {
-            draft.retain(|(d, _)| *d != Setting::Effort);
-        } else if s == Setting::Model
-            && let Some(effort) = inherited
-                .into_iter()
-                .flatten()
-                .find(|(d, _)| *d == Setting::Effort)
-            && !draft.iter().any(|(d, _)| *d == Setting::Effort)
-        {
-            // With a model of its own the environment stops taking that
-            // pick, and its reasoning level would go with it.
-            draft.push(effort);
-        }
+        put_in_draft(
+            draft,
+            shown.as_deref(),
+            inherited.unwrap_or_default(),
+            s,
+            value,
+        );
         // Other environments' next OpenCode sessions start on this model too.
         if agent == model::Agent::OpenCode && matches!(s, Setting::Model | Setting::Effort) {
             let model_settings = opencode_draft(env)
@@ -1923,6 +1912,36 @@ pub(super) fn codex_draft(env: &model::Environment) -> Vec<(Setting, String)> {
     draft
 }
 
+/// Puts the pick of `value` for `s` in an agent's `draft`. `shown` is the
+/// value the menu showed, and `inherited` what the draft takes from elsewhere
+/// until it has a model of its own (OpenCode's last pick).
+fn put_in_draft(
+    draft: &mut Vec<(Setting, String)>,
+    shown: Option<&str>,
+    inherited: Vec<(Setting, String)>,
+    s: Setting,
+    value: &str,
+) {
+    let changed = value_changed(shown, draft, s, value);
+    draft.retain(|(d, _)| *d != s);
+    draft.push((s, value.to_string()));
+    if s != Setting::Model {
+        return;
+    }
+    let has_effort = |draft: &[(Setting, String)]| draft.iter().any(|(d, _)| *d == Setting::Effort);
+    if changed {
+        // A model change may drop the effort picked for the old model. Picking
+        // the same model again keeps it.
+        draft.retain(|(d, _)| *d != Setting::Effort);
+    } else if !has_effort(draft)
+        && let Some(effort) = inherited.into_iter().find(|(d, _)| *d == Setting::Effort)
+    {
+        // With a model of its own the environment stops taking that pick,
+        // and its reasoning level would go with it.
+        draft.push(effort);
+    }
+}
+
 /// Whether picking `value` for `s` changes it: against the value the menu
 /// shows (`shown`), or against the draft when the agent has no choices yet.
 fn value_changed(
@@ -1968,6 +1987,24 @@ mod tests {
         let (a, b) = (notification_tag(""), notification_tag(""));
         assert!(a.starts_with("open:none:"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn reselecting_an_inherited_model_keeps_its_reasoning_level() {
+        let (m, e) = (Setting::Model, Setting::Effort);
+        let pick = vec![(m, "gpt".to_string()), (e, "high".to_string())];
+        // The environment has no settings of its own and shows the pick's model.
+        let mut draft = Vec::new();
+        put_in_draft(&mut draft, Some("gpt"), pick.clone(), m, "gpt");
+        // The draft is also what is written back as the pick made anywhere.
+        assert_eq!(draft, pick);
+        // Another model: the level went with the old one.
+        put_in_draft(&mut draft, Some("gpt"), pick.clone(), m, "other");
+        assert_eq!(draft, [(m, "other".to_string())]);
+        // A level of its own is not replaced by the inherited one.
+        let mut draft = vec![(e, "low".to_string())];
+        put_in_draft(&mut draft, Some("gpt"), pick, m, "gpt");
+        assert_eq!(draft, [(e, "low".to_string()), (m, "gpt".to_string())]);
     }
 
     #[test]

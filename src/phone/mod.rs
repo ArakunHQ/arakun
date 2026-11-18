@@ -146,6 +146,17 @@ pub enum ClientMsg {
         #[serde(default)]
         from: usize,
     },
+    /// Makes a folder already on the server one sessions can start in. `~/`
+    /// stands for the home folder there. Answered with `place_added`.
+    AddPlace {
+        path: String,
+    },
+    /// Clones a repository on the server and makes its folder a place: a URL,
+    /// a `git clone` line or a GitHub `owner/repo`. Answered with `place_added`
+    /// once the clone is done.
+    Clone {
+        url: String,
+    },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
     /// Whether the page is on the phone's screen. A page in the background

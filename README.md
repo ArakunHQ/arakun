@@ -756,10 +756,14 @@ The link is good for two minutes and pairs one device. There are two ways to use
   same tabs, with the same composer, as sessions here: send, stop, approve and answer
   go to the server. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. The app keeps what pairing gave it in `servers.json` next to its state, which
-  only your user can read. "Forget" on a server removes it there and has the server
-  forget the app. A server that cannot be reached at that moment keeps the app in its
-  list: remove it there with `arakun-server unpair <device>`.
+  yet. The folder button on a server in the Servers tab (or right-click a server's
+  environment) clones a repository there, with that machine's git and its logins, into
+  the folder that holds most of its folders (else `~/code`), or adds a folder it already
+  has, as `arakun-server add` does. The app keeps what pairing gave it in `servers.json`
+  next to its state, which only your user can read. "Forget" on a server removes it
+  there and has the server forget the app. A server that cannot be reached at that
+  moment keeps the app in its list: remove it there with
+  `arakun-server unpair <device>`.
 - **On a phone, or in any browser.** Open the link. It is the page the Phone tab pairs
   phones with: it lists the sessions, reads them live, and notifies you when one
   finishes or needs you.

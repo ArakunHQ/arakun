@@ -5,8 +5,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
@@ -22,6 +22,10 @@ pub enum ServersEvent {
     CancelPairing,
     /// Forget a server; it is told to forget this app too.
     Forget(String),
+    /// Makes a folder already on the server one sessions can start in.
+    AddPlace { server: String, path: String },
+    /// Clones a repository on the server, into a folder sessions can start in.
+    Clone { server: String, url: String },
     /// Open one of a server's sessions in its project.
     Open { server: String, session: String },
 }
@@ -92,6 +96,8 @@ pub struct ServersState {
     pub servers: Vec<ServerRow>,
     /// A pairing is under way.
     pub pairing: bool,
+    /// The server a folder is being added to or cloned on, until it is done.
+    pub adding: Option<String>,
     /// What went wrong last, until something else happens.
     pub error: Option<String>,
 }
@@ -103,6 +109,8 @@ enum Pane {
     Overview,
     /// The form to pair with a server.
     Add,
+    /// The form to clone a repository on this server, or add one of its folders.
+    AddPlace(String),
 }
 
 /// The list of servers, as wide as a sidebar.
@@ -112,6 +120,9 @@ pub struct ServersView {
     state: ServersState,
     pane: Pane,
     link: Entity<TextInput>,
+    /// What to clone on a server, and a folder already there.
+    clone_url: Entity<TextInput>,
+    folder: Entity<TextInput>,
     /// "Forget" was pressed once on this server; the next press counts.
     confirm_forget: Option<String>,
     focus: FocusHandle,
@@ -132,15 +143,29 @@ fn tone(status: Status) -> (Tone, &'static str) {
 impl ServersView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let link = cx.new(|cx| TextInput::new("https://…", cx).mono().redacted());
-        let inputs = vec![cx.subscribe(&link, |this, _, ev: &InputEvent, cx| {
-            if *ev == InputEvent::Submit {
-                this.pair(cx);
-            }
-        })];
+        let clone_url =
+            cx.new(|cx| TextInput::new("https://github.com/owner/repo or owner/repo", cx));
+        let folder = cx.new(|cx| TextInput::new("~/code/app", cx).mono());
+        let on_submit = |cx: &mut Context<Self>,
+                         input: &Entity<TextInput>,
+                         act: fn(&mut Self, &mut Context<Self>)| {
+            cx.subscribe(input, move |this, _, ev: &InputEvent, cx| {
+                if *ev == InputEvent::Submit {
+                    act(this, cx);
+                }
+            })
+        };
+        let inputs = vec![
+            on_submit(cx, &link, Self::pair),
+            on_submit(cx, &clone_url, Self::clone_repo),
+            on_submit(cx, &folder, Self::add_folder),
+        ];
         Self {
             state: ServersState::default(),
             pane: Pane::Add,
             link,
+            clone_url,
+            folder,
             confirm_forget: None,
             focus: cx.focus_handle(),
             _inputs: inputs,
@@ -163,8 +188,58 @@ impl ServersView {
         if state.servers.is_empty() {
             self.pane = Pane::Add;
         }
+        if let Pane::AddPlace(id) = &self.pane
+            && !state.servers.iter().any(|s| s.id == *id)
+        {
+            self.pane = Pane::Overview;
+        }
         self.state = state;
         cx.notify();
+    }
+
+    /// The form to clone a repository on `server`, or add one of its folders.
+    pub fn add_place(&mut self, server: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.pane = Pane::AddPlace(server.to_string());
+        window.focus(&self.clone_url.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// The server added the folder it was asked for, which the shell opens.
+    pub fn place_added(&mut self, server: &str, cx: &mut Context<Self>) {
+        if self.pane != Pane::AddPlace(server.to_string()) {
+            return;
+        }
+        self.clone_url.update(cx, |i, cx| i.set_text("", cx));
+        self.folder.update(cx, |i, cx| i.set_text("", cx));
+        self.pane = Pane::Overview;
+        cx.notify();
+    }
+
+    fn server(&self, id: &str) -> Option<&ServerRow> {
+        self.state.servers.iter().find(|s| s.id == id)
+    }
+
+    /// The server the add-folder form is for, when it can be asked now.
+    fn adding_to(&self) -> Option<String> {
+        let Pane::AddPlace(id) = &self.pane else {
+            return None;
+        };
+        let server = self.server(id)?;
+        (server.reach == Reach::Connected && self.state.adding.is_none()).then(|| id.clone())
+    }
+
+    fn clone_repo(&mut self, cx: &mut Context<Self>) {
+        let url = self.clone_url.read(cx).text().trim().to_string();
+        if let Some(server) = self.adding_to().filter(|_| !url.is_empty()) {
+            cx.emit(ServersEvent::Clone { server, url });
+        }
+    }
+
+    fn add_folder(&mut self, cx: &mut Context<Self>) {
+        let path = self.folder.read(cx).text().trim().to_string();
+        if let Some(server) = self.adding_to().filter(|_| !path.is_empty()) {
+            cx.emit(ServersEvent::AddPlace { server, path });
+        }
     }
 
     fn pair(&mut self, cx: &mut Context<Self>) {
@@ -223,6 +298,16 @@ impl ServersView {
                     .text_color(theme::content())
                     .child(crate::redact::text(&server.name).into_owned()),
             )
+            .when(connected, |d| {
+                let id = server.id.clone();
+                d.child(
+                    ui::icon_button(("servers-add-place", ix), "folder01", 13.)
+                        .tooltip(ui::tip("Clone a repository or add a folder"))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.add_place(&id, window, cx)),
+                        ),
+                )
+            })
             .child(
                 ui::icon_button(("servers-forget", ix), "delete02", 13.)
                     .tooltip(ui::tip("Forget this server"))
@@ -329,6 +414,79 @@ impl ServersView {
                 d.child(
                     ui::text(Type::Caption, theme::text_faint(), "No sessions yet.").px(ui::sp(8.)),
                 )
+            })
+            .into_any_element()
+    }
+
+    // ---- a folder to work in ------------------------------------------------
+
+    fn render_add_place(&self, server: &ServerRow, cx: &mut Context<Self>) -> AnyElement {
+        let connected = server.reach == Reach::Connected;
+        let busy = self.state.adding.as_deref() == Some(server.id.as_str());
+        let ready = connected && self.state.adding.is_none();
+        let row = |field: Entity<TextInput>, icon_name: &'static str| {
+            ui::field()
+                .flex_1()
+                .child(icon(icon_name, 14.).text_color(theme::text_subtle()))
+                .child(field)
+        };
+        let part = |label: &'static str| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(ui::sp(8.))
+                .child(Self::label(label))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(16.))
+            .p(ui::sp(ui::PAGE_PAD))
+            .max_w(px(620.))
+            .child(ui::page_title(
+                format!("A folder on {}", crate::redact::text(&server.name)),
+                Some(
+                    "Sessions start in the folders a server offers. Clone a repository there, or add one it already has."
+                        .into_any_element(),
+                ),
+            ))
+            .child(
+                part("Clone a repository, with that machine's git and its logins:").child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .child(row(self.clone_url.clone(), "git-branch"))
+                        .child(
+                            ui::button(
+                                "servers-clone",
+                                if busy { "Working…" } else { "Clone" },
+                                ButtonKind::Primary,
+                                ready,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.clone_repo(cx))),
+                        ),
+                ),
+            )
+            .child(
+                part("Or add a folder already on it, as a whole path or from ~/:").child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .child(row(self.folder.clone(), "folder01"))
+                        .child(
+                            ui::button("servers-add-folder", "Add", ButtonKind::Outline, ready)
+                                .on_click(cx.listener(|this, _, _, cx| this.add_folder(cx))),
+                        ),
+                ),
+            )
+            .when(!connected, |d| {
+                d.child(ui::text(
+                    Type::Caption,
+                    theme::text_faint(),
+                    "The server is not connected right now.",
+                ))
             })
             .into_any_element()
     }
@@ -464,6 +622,10 @@ impl Render for ServersView {
 
         let pane = match &self.pane {
             Pane::Add => self.render_add(cx),
+            Pane::AddPlace(id) => match self.server(id).cloned() {
+                Some(server) => self.render_add_place(&server, cx),
+                None => div().into_any_element(),
+            },
             Pane::Overview => ui::empty_state(
                 "computer",
                 "Your servers' work is in your projects",

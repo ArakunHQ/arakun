@@ -27,6 +27,7 @@ use crate::agent::{
     self, AgentKind, Entry, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, Transcript,
     catalog, workers_ai,
 };
+use crate::clone_source;
 use crate::model::{Status, unix_now};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
@@ -1595,7 +1596,58 @@ impl Daemon {
                     self.hidden.insert(client);
                 }
             }
+            ClientMsg::AddPlace { path } => {
+                let added = device_path(&path);
+                self.place_added(client, added, cx);
+            }
+            ClientMsg::Clone { url } => {
+                let Some(source) = clone_source::parse_clone_source(&url) else {
+                    self.transport.send(
+                        client,
+                        wire::error(
+                            "That is not a repository to clone: give its URL or owner/repo.",
+                        ),
+                    );
+                    return;
+                };
+                let home = crate::platform::home();
+                let parent = clone_source::clone_parent(
+                    self.store.places.iter().map(|p| p.path.as_path()),
+                    &home,
+                );
+                let dest = parent.join(&source.name);
+                // A clone takes as long as the network: the server answers
+                // everyone else meanwhile.
+                cx.spawn(async move |this, cx| {
+                    let done = cx
+                        .background_executor()
+                        .spawn(async move { clone_into(&source, &dest).map(|()| dest) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| this.place_added(client, done, cx));
+                })
+                .detach();
+            }
             ClientMsg::Ping => {}
+        }
+    }
+
+    /// A folder a device asked for is a place now, or why it is not. The
+    /// inbox goes out first, so the device knows the place it is told of.
+    fn place_added(
+        &mut self,
+        client: ClientId,
+        path: Result<PathBuf, String>,
+        cx: &mut Context<Self>,
+    ) {
+        match path.and_then(|p| self.add_place(&p, "").map(|_| p)) {
+            Ok(path) => {
+                self.sync_inbox(cx);
+                self.transport.send(
+                    client,
+                    json!({ "type": "place_added", "path": path }).to_string(),
+                );
+            }
+            Err(e) => self.transport.send(client, wire::error(&e)),
         }
     }
 
@@ -2273,9 +2325,81 @@ fn draft_choices(
     }
 }
 
+/// A folder a device named: its whole path, or one from `~/`, which stands
+/// for the home folder here. It must exist; links are followed, as the CLI does.
+fn device_path(typed: &str) -> Result<PathBuf, String> {
+    let typed = typed.trim();
+    let path = match typed.strip_prefix('~') {
+        Some("") => crate::platform::home(),
+        Some(rest) if rest.starts_with('/') => crate::platform::home().join(&rest[1..]),
+        _ => PathBuf::from(typed),
+    };
+    if !path.is_absolute() {
+        return Err("Give the folder's whole path, or one from ~/.".into());
+    }
+    path.canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Clones `source` into `dest`, or takes `dest` as it is when it already holds
+/// that repository. A failed clone leaves nothing behind.
+fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        let origin = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dest)
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        return match origin.as_deref().and_then(clone_source::parse_clone_source) {
+            Some(found) if found.same_repo(source) => Ok(()),
+            Some(found) => Err(format!("{} already holds {}", dest.display(), found.label)),
+            None => Err(format!("{} already exists", dest.display())),
+        };
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let out = std::process::Command::new("git")
+        .args(["clone", "--quiet", "--", &source.url])
+        .arg(dest)
+        // Nobody is at this machine to type a password: fail instead of waiting.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let _ = std::fs::remove_dir_all(dest);
+    let why = String::from_utf8_lossy(&out.stderr);
+    Err(format!(
+        "git clone failed: {}",
+        why.lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or("no reason given")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_names_a_folder_by_its_whole_path_or_from_home() {
+        let home = crate::platform::home().canonicalize().unwrap();
+        assert_eq!(device_path("~").unwrap(), home);
+        assert_eq!(device_path(" ~/ ").unwrap(), home);
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        assert_eq!(device_path(&dir.display().to_string()).unwrap(), dir);
+        // Relative to what? The server has no folder the device stands in.
+        assert!(device_path("code/app").unwrap_err().contains("whole path"));
+        assert!(device_path("~nobody/app").is_err());
+        assert!(device_path("/no/such/folder/here").is_err());
+    }
 
     #[test]
     fn the_address_line_says_what_is_in_the_way() {

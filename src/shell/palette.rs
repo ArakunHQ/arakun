@@ -125,14 +125,14 @@ impl Shell {
         dirs.dedup();
         self.repo_slugs_read = Some(cx.spawn(async move |this, cx| {
             let read = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task_or_default(async move {
                     dirs.into_iter()
                         .map(|d| {
                             let slug = repo_slug(&d);
                             (d, slug)
                         })
                         .collect::<std::collections::HashMap<_, _>>()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.repo_slugs == read {
@@ -327,9 +327,9 @@ impl Shell {
                             "its latest commit isn't loaded yet; open it in the GitHub tab".into(),
                         ))
                     } else {
-                        cx.background_spawn(async move {
+                        cx.background_spawn(crate::guard::task(async move {
                             pr::merge(&it, pr::MergeMethod::Squash, &head)
-                        })
+                        }))
                         .await
                     };
                     let (text, ok) = match result {
@@ -356,11 +356,11 @@ impl Shell {
                 cx.spawn_in(window, async move |this, cx| {
                     // Read again: the admin token is only taken when a task goes.
                     let result = cx
-                        .background_spawn(async move {
+                        .background_spawn(crate::guard::task(async move {
                             let cfg = pilot::load_config()
                                 .ok_or("couldn't find arakun-pilot's client.json")?;
                             pilot::send_task(&cfg, &req)
-                        })
+                        }))
                         .await;
                     let shown = weak
                         .update_in(cx, |p, window, cx| p.cloud_sent(result.clone(), window, cx));
@@ -1811,7 +1811,9 @@ impl Shell {
                                 };
                                 let it = item.clone();
                                 let sent = cx
-                                    .background_spawn(async move { pr::merge(&it, method, &head) })
+                                    .background_spawn(crate::guard::task(async move {
+                                        pr::merge(&it, method, &head)
+                                    }))
                                     .await;
                                 // A merge that GitHub refused was already told.
                                 this.update(cx, |this, cx| {

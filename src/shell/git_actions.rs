@@ -49,7 +49,9 @@ impl Shell {
         let path = path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
-            let pr = cx.background_spawn(async move { git::pr_view(&p) }).await;
+            let pr = cx
+                .background_spawn(crate::guard::task(async move { git::pr_view(&p) }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(env) = this.find_env_mut(&path)
                     && env.sync.branch.as_deref() == Some(branch.as_str())
@@ -82,7 +84,9 @@ impl Shell {
         env.git_error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { job() }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(env) = this.find_env_mut(&path) {
                     env.git_busy = None;
@@ -156,13 +160,13 @@ impl Shell {
         let dir = path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     if change.fully_staged() {
                         git::unstage(&dir, &change.path)
                     } else {
                         git::stage(&dir, &change.path)
                     }
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(env) = this.find_env_mut(&path) {
@@ -273,7 +277,7 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (m, b) = (main.clone(), branch.clone());
             let plan = cx
-                .background_spawn(async move { git::merge_plan(&m, &b) })
+                .background_spawn(crate::guard::task(async move { git::merge_plan(&m, &b) }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.show_merge(pi, main, branch, plan, dirty_here, window, cx)

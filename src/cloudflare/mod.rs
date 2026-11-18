@@ -82,6 +82,12 @@ pub enum LoadError {
     Failed(String),
 }
 
+impl From<crate::guard::Panicked> for LoadError {
+    fn from(panicked: crate::guard::Panicked) -> Self {
+        LoadError::Failed(panicked.to_string())
+    }
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Day {
     pub requests: u64,

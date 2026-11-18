@@ -24,14 +24,14 @@ impl Shell {
     ) {
         cx.spawn(async move |this, cx| {
             let listed = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     dirs.into_iter()
                         .map(|d| {
                             let entries = explorer::list_dir(&d);
                             (d, entries)
                         })
                         .collect::<Vec<_>>()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(env) = this.find_env_mut(&env_path) {
@@ -168,12 +168,12 @@ impl Shell {
             let file = path.clone();
             cx.spawn(async move |this, cx| {
                 let doc = cx
-                    .background_spawn(async move {
+                    .background_spawn(crate::guard::task(async move {
                         match crate::sheet::read(&file) {
                             Ok(book) => Document::Sheet(Arc::new(book)),
                             Err(e) => Document::Failed(e.into()),
                         }
-                    })
+                    }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     if let Some(env) = this.find_env_mut(&env_path)
@@ -194,7 +194,7 @@ impl Shell {
             let k = kind.clone();
             let ep = env_path.clone();
             let doc = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let result: Result<(String, Vec<SharedString>), String> = match &k {
                         TabKind::File { path } => explorer::read_lines(path)
                             .map(|lines| (path.display().to_string(), lines)),
@@ -243,7 +243,7 @@ impl Shell {
                         }
                         Err(e) => Document::Failed(e.into()),
                     }
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(env) = this.find_env_mut(&env_path)

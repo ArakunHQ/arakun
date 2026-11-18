@@ -262,11 +262,11 @@ impl ImportDialog {
         let p = path.clone();
         cx.spawn(async move |this, cx| {
             let found = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let mut found = catalog::agent_sessions(&p);
                     found.retain(|s| !known.contains(&s.id));
                     found
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;

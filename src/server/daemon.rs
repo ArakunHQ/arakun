@@ -675,7 +675,7 @@ impl Daemon {
         // when no earlier run cached them.
         // An agent that is not installed here has nothing to say, and would
         // only put its absence in the log.
-        tasks.push(cx.background_spawn(async {
+        tasks.push(cx.background_spawn(crate::guard::task(async {
             if catalog::droid_native() && agent::droid_bin().is_ok() {
                 catalog::refresh();
             }
@@ -686,7 +686,7 @@ impl Daemon {
                 catalog::refresh_opencode();
             }
             catalog::refresh_codex();
-        }));
+        })));
         let account = cx.new(Account::new);
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
         Daemon {

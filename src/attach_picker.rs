@@ -129,7 +129,7 @@ impl AttachPicker {
         this.refilter(cx);
         cx.spawn(async move |this, cx| {
             let items = cx
-                .background_spawn(async move { project_items(&env_path) })
+                .background_spawn(crate::guard::task(async move { project_items(&env_path) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.project = Some(items);
@@ -138,7 +138,9 @@ impl AttachPicker {
         })
         .detach();
         cx.spawn(async move |this, cx| {
-            let items = cx.background_spawn(async move { recent_images() }).await;
+            let items = cx
+                .background_spawn(crate::guard::task(async move { recent_images() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.images = Some(items);
                 this.refilter(cx);
@@ -317,7 +319,9 @@ impl AttachPicker {
                 let decode = p.clone();
                 let max = if large { PREVIEW_PX } else { THUMB_PX };
                 let result = cx
-                    .background_spawn(async move { decode_thumb(&decode, max) })
+                    .background_spawn(crate::guard::task(
+                        async move { decode_thumb(&decode, max) },
+                    ))
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     let map = if large {

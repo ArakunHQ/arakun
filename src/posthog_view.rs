@@ -146,7 +146,9 @@ impl PostHogView {
         self._scan = Some(cx.spawn(async move |this, cx| {
             let scanned = root.clone();
             let keys = cx
-                .background_spawn(async move { posthog::scan::keys(&scanned) })
+                .background_spawn(crate::guard::task(
+                    async move { posthog::scan::keys(&scanned) },
+                ))
                 .await;
             this.update(cx, |this, cx| {
                 if this.root.as_ref() == Some(&root) {
@@ -286,9 +288,9 @@ impl PostHogView {
         self._load = Some(cx.spawn(async move |this, cx| {
             let project = p.clone();
             let got = cx
-                .background_spawn(
-                    async move { posthog::load_overview(s, &project, previous.as_ref()) },
-                )
+                .background_spawn(crate::guard::task(async move {
+                    posthog::load_overview(s, &project, previous.as_ref())
+                }))
                 .await;
             this.update(cx, |this, cx| {
                 this.loading = false;
@@ -318,7 +320,9 @@ impl PostHogView {
         let sessions = self.sessions.clone();
         self._dir = Some(cx.spawn(async move |this, cx| {
             let dir = cx
-                .background_spawn(async move { posthog::load_directory(&sessions) })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    posthog::load_directory(&sessions)
+                }))
                 .await;
             this.update(cx, |this, cx| {
                 this.dir_loading = false;

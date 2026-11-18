@@ -497,6 +497,12 @@ pub enum BoardProblem {
     Failed(String),
 }
 
+impl From<crate::guard::Panicked> for BoardProblem {
+    fn from(panicked: crate::guard::Panicked) -> Self {
+        BoardProblem::Failed(panicked.to_string())
+    }
+}
+
 /// Reads the board: the fixture file when `ARAKUN_PILOT_BOARD` names one,
 /// else the Worker with the read token.
 pub fn fetch(cfg: Option<&Config>) -> Result<Board, BoardProblem> {

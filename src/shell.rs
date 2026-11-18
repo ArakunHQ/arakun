@@ -1033,11 +1033,11 @@ impl Shell {
 
     fn save(&self, cx: &mut Context<Self>) {
         let bytes = self.state_bytes();
-        cx.background_spawn(async move {
+        cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = state::write(&bytes) {
                 eprintln!("arakun: could not save state: {e}");
             }
-        })
+        }))
         .detach();
         // Whatever changed the saved state may show in the phones' inbox.
         if self.phone.is_some() {
@@ -1099,7 +1099,9 @@ impl Shell {
         let gen_ = *gen_;
         cx.spawn(async move |this, cx| {
             let r = root.clone();
-            let trees = cx.background_spawn(async move { git::worktrees(&r) }).await;
+            let trees = cx
+                .background_spawn(crate::guard::task(async move { git::worktrees(&r) }))
+                .await;
             let paths = this
                 .update(cx, |this, cx| {
                     if this.refresh_gen.get(&root) != Some(&gen_) {
@@ -1134,7 +1136,9 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let p = path.clone();
             let (changes, sync) = cx
-                .background_spawn(async move { (git::status(&p), git::sync(&p)) })
+                .background_spawn(crate::guard::task(async move {
+                    (git::status(&p), git::sync(&p))
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Ok(sync) = sync
@@ -1257,7 +1261,9 @@ impl Shell {
         let path = self.env().path.clone();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
-            let fetched = cx.background_spawn(async move { git::fetch(&p) }).await;
+            let fetched = cx
+                .background_spawn(crate::guard::task(async move { git::fetch(&p) }))
+                .await;
             if fetched.is_ok() {
                 let _ = this.update(cx, |this, cx| this.refresh_status(&path, cx));
             }
@@ -1400,7 +1406,7 @@ impl Shell {
         let (key, shown) = (repo.clone(), name.clone());
         cx.spawn_in(window, async move |this, cx| {
             let made = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     // A branch can already have the random name; git would
                     // check it out instead. Pick another then, and once more
                     // if git refuses the first.
@@ -1425,7 +1431,7 @@ impl Shell {
                         name = crate::env_name::random(|n| taken(n, &name));
                     }
                     result
-                })
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.pending_envs

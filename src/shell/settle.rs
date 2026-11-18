@@ -71,7 +71,7 @@ impl Shell {
         self.settle.busy = true;
         cx.spawn(async move |this, cx| {
             let found: Vec<(PathBuf, Merged)> = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     envs.into_iter()
                         .flat_map(|(path, branch)| {
                             settle::merged_prs(&path, &branch)
@@ -79,13 +79,13 @@ impl Shell {
                                 .map(move |m| (path.clone(), m))
                         })
                         .collect()
-                })
+                }))
                 .await;
             let Ok(threads) = this.update(cx, |this, cx| this.settle_found(found, cx)) else {
                 return;
             };
             let results: Vec<(String, bool)> = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     threads
                         .into_iter()
                         .map(|(url, host, item)| {
@@ -101,7 +101,7 @@ impl Shell {
                             (url, done.is_ok())
                         })
                         .collect()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, _| {
                 let w = &mut this.settle;

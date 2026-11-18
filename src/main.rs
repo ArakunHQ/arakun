@@ -20,6 +20,7 @@ mod cloudflare_view;
 #[cfg(feature = "coderlabs")]
 mod coderspace;
 mod control;
+mod crash;
 #[cfg(test)]
 mod design_lint;
 mod dev;
@@ -35,6 +36,7 @@ mod git;
 mod git_dialogs;
 mod github;
 mod github_view;
+mod guard;
 mod headless;
 mod highlight;
 mod history;
@@ -144,6 +146,7 @@ fn main() {
     control::export_env();
     platform::detach_own_console();
     // After the CLI: `arakun <command>` runs in agents' shells and reports nothing.
+    crash::install();
     // Sends only what the user agreed to; the first launch asks (`ask_telemetry`).
     telemetry::init();
     telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);

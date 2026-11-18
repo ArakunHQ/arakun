@@ -389,7 +389,7 @@ impl Shell {
                 }
                 let path = state::transcript_path(id);
                 let key = id.to_string();
-                cx.background_spawn(async move {
+                cx.background_spawn(crate::guard::task(async move {
                     if let Err(e) = write_transcript(&path, &transcript) {
                         eprintln!("arakun: could not save {}: {e}", path.display());
                     }
@@ -399,7 +399,7 @@ impl Shell {
                     {
                         eprintln!("arakun: could not remember the session: {e}");
                     }
-                })
+                }))
                 .detach();
                 self.save(cx);
                 self.check_after_turn(env_path, id, thread, stop_reason, window, cx);
@@ -447,9 +447,9 @@ impl Shell {
             let transcript = t.transcript(cx);
             session.meta = Some(t.meta());
             let path = state::transcript_path(id);
-            cx.background_spawn(async move {
+            cx.background_spawn(crate::guard::task(async move {
                 let _ = write_transcript(&path, &transcript);
-            })
+            }))
             .detach();
             live.thread.update(cx, |t, _| t.shutdown());
         }
@@ -570,9 +570,9 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let d = dir.clone();
             let staged = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     crate::git::stage_only(&d, &files).map_err(|e| e.to_string())
-                })
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.refresh_status(&dir, cx);
@@ -810,9 +810,9 @@ impl Shell {
         } else {
             // Nothing was said yet: a fresh session of `agent` and nothing to keep.
             let path = state::transcript_path(&old_id);
-            cx.background_spawn(async move {
+            cx.background_spawn(crate::guard::task(async move {
                 let _ = std::fs::remove_file(path);
-            })
+            }))
             .detach();
             Thread::start(agent.kind(), env_path.clone(), None, cx)
         };
@@ -901,16 +901,17 @@ impl Shell {
         let droid = catalog::droid_native();
         cx.spawn(async move |this, cx| {
             if droid {
-                cx.background_spawn(async { catalog::refresh() }).await;
+                cx.background_spawn(crate::guard::task_or_default(async { catalog::refresh() }))
+                    .await;
                 let _ = this.update(cx, |_, cx| cx.notify());
             }
-            cx.background_spawn(async { catalog::refresh_claude() })
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_claude() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
-            cx.background_spawn(async { catalog::refresh_opencode() })
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_opencode() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
-            cx.background_spawn(async { catalog::refresh_codex() })
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_codex() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
@@ -1393,11 +1394,11 @@ impl Shell {
             return;
         };
         let (path, transcript) = (state::transcript_path(id), thread.read(cx).transcript(cx));
-        cx.background_spawn(async move {
+        cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = write_transcript(&path, &transcript) {
                 eprintln!("arakun: could not save {}: {e}", path.display());
             }
-        })
+        }))
         .detach();
     }
 
@@ -1528,14 +1529,14 @@ impl Shell {
             crate::headless::begin_discard(id);
             crate::headless::set_shown(id, false);
         }
-        cx.background_spawn(async move {
+        cx.background_spawn(crate::guard::task(async move {
             for path in paths {
                 let _ = std::fs::remove_file(path);
             }
             if let Some(id) = headless {
                 crate::headless::discard(&id);
             }
-        })
+        }))
         .detach();
         forget_alerts(id);
         self.save(cx);

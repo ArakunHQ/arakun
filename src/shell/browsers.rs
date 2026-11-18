@@ -195,14 +195,14 @@ impl Shell {
         }
         cx.spawn(async move |_, cx| {
             let servers = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let mut up: Vec<Server> = candidates
                         .into_iter()
                         .filter(|s| port_open(s.port))
                         .collect();
                     up.sort_by_key(|s| s.port);
                     up
-                })
+                }))
                 .await;
             let info = HomeInfo {
                 branch,

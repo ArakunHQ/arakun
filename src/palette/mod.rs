@@ -446,7 +446,9 @@ impl Palette {
         };
         cx.spawn(async move |this, cx| {
             let files = cx
-                .background_spawn(async move { sources::list_files(&root) })
+                .background_spawn(crate::guard::task(
+                    async move { sources::list_files(&root) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.files = Some(Arc::new(files));
@@ -467,14 +469,14 @@ impl Palette {
         };
         cx.spawn(async move |this, cx| {
             let (memory, docs) = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let memory = sources::memory_stores(&root);
                     let docs: Vec<_> = memory
                         .iter()
                         .map(|(_, s)| crate::memory::index(&s.items))
                         .collect();
                     (memory, docs)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.memory = memory;
@@ -496,7 +498,9 @@ impl Palette {
         self.indexing = true;
         cx.spawn(async move |this, cx| {
             let symbols = cx
-                .background_spawn(async move { sources::index_symbols(&root, &files) })
+                .background_spawn(crate::guard::task(async move {
+                    sources::index_symbols(&root, &files)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.symbols = Some(Arc::new(symbols));
@@ -777,7 +781,8 @@ impl Palette {
         self.frecency
             .record(key, crate::memory::now(), self.seed.hour);
         let f = self.frecency.clone();
-        cx.background_spawn(async move { f.save() }).detach();
+        cx.background_spawn(crate::guard::task(async move { f.save() }))
+            .detach();
     }
 
     fn ask_merge(
@@ -1279,9 +1284,9 @@ impl Palette {
             // Held here: when typing or closing drops this task, the process stops.
             let (rx, _job) = answer::start_rule(sentence.clone(), titles);
             let result = cx
-                .background_spawn(
-                    async move { rx.recv().unwrap_or_else(|_| Err("stopped".into())) },
-                )
+                .background_spawn(crate::guard::task(async move {
+                    rx.recv().unwrap_or_else(|_| Err("stopped".into()))
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.reading_rule.as_deref() != Some(sentence.as_str()) {
@@ -1678,7 +1683,7 @@ impl Palette {
         }
         cx.spawn(async move |this, cx| {
             let counts: Vec<(String, usize)> = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     missing
                         .into_iter()
                         .map(|(key, path)| {
@@ -1686,7 +1691,7 @@ impl Palette {
                             (key, n)
                         })
                         .collect()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 for (key, n) in counts {
@@ -2091,10 +2096,10 @@ impl Palette {
             cx.spawn(async move |this, cx| {
                 let k = key.clone();
                 let snip = cx
-                    .background_spawn(async move {
+                    .background_spawn(crate::guard::task(async move {
                         let start = k.1.map(|l| l.saturating_sub(2).max(1));
                         sources::snippet(&k.0, start, 9)
-                    })
+                    }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.reading.remove(&key);

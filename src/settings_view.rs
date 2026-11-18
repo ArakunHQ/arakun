@@ -494,7 +494,9 @@ impl SettingsDialog {
             );
         cx.spawn(async move |this, cx| {
             let (plan, access) = cx
-                .background_spawn(async move { (plan::refresh(), claude_auth::access()) })
+                .background_spawn(crate::guard::task(async move {
+                    (plan::refresh(), claude_auth::access())
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.claude = plan;
@@ -505,7 +507,9 @@ impl SettingsDialog {
         .detach();
         cx.spawn(async move |this, cx| {
             let set = cx
-                .background_spawn(async move { voice::api_key().is_some() })
+                .background_spawn(crate::guard::task(
+                    async move { voice::api_key().is_some() },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_key = Some(set);
@@ -583,7 +587,9 @@ impl SettingsDialog {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let saved = cx
-                .background_spawn(async move { voice::store_api_key(&key) })
+                .background_spawn(crate::guard::task(
+                    async move { voice::store_api_key(&key) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -611,7 +617,7 @@ impl SettingsDialog {
         }
         self.voice_busy = true;
         cx.spawn(async move |this, cx| {
-            cx.background_spawn(async move { voice::clear_api_key() })
+            cx.background_spawn(crate::guard::task(async move { voice::clear_api_key() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -665,11 +671,11 @@ impl SettingsDialog {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let wav = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let key = voice::api_key()
                         .ok_or_else(|| "Save your ElevenLabs API key first.".to_string())?;
                     voice::fetch(&key, &id, tone, voice::sample(lang), lang)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -1298,7 +1304,9 @@ impl SettingsDialog {
                     }
                     update::set_status(Status::Checking);
                     cx.spawn(async move |this, cx| {
-                        cx.background_spawn(async { update::check() }).await.ok();
+                        cx.background_spawn(crate::guard::task(async { update::check() }))
+                            .await
+                            .ok();
                         this.update(cx, |_, cx| cx.notify()).ok();
                     })
                     .detach();
@@ -1325,7 +1333,7 @@ impl SettingsDialog {
         let set = |to: Channel, cx: &mut Context<Self>| {
             cx.spawn(async move |this, cx| {
                 let saved = cx
-                    .background_spawn(async move { update::set_channel(to) })
+                    .background_spawn(crate::guard::task(async move { update::set_channel(to) }))
                     .await;
                 if let Err(e) = saved {
                     eprintln!("arakun: the update channel will not last past a restart: {e}");

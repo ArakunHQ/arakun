@@ -19,6 +19,8 @@ mod durable;
 #[allow(dead_code)]
 #[path = "../../src/fetch.rs"]
 mod fetch;
+#[path = "../../src/guard.rs"]
+mod guard;
 #[allow(dead_code)]
 #[path = "../../src/headless/sandbox.rs"]
 mod sandbox;

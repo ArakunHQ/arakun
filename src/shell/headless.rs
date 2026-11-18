@@ -63,12 +63,12 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 let found = cx
-                    .background_spawn(async {
+                    .background_spawn(crate::guard::task(async {
                         headless::list()
                             .into_iter()
                             .map(|m| (modified(&m.id), m))
                             .collect::<Vec<_>>()
-                    })
+                    }))
                     .await;
                 if this
                     .update_in(cx, |this, window, cx| this.sync_headless(found, window, cx))

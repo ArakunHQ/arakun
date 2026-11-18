@@ -222,6 +222,13 @@ pub enum Document {
     Failed(SharedString),
 }
 
+/// A load that panicked shows as one that failed.
+impl crate::guard::Fallback for Document {
+    fn fallback(panicked: crate::guard::Panicked) -> Self {
+        Document::Failed(panicked.to_string().into())
+    }
+}
+
 /// A loaded document: its lines and, for known languages, per-line color spans.
 pub struct Doc {
     pub lines: Vec<SharedString>,

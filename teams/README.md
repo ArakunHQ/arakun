@@ -153,12 +153,14 @@ npx wrangler d1 migrations apply arakun-teams-dev --remote
 ```
 
 Two rate limits are set in `wrangler.toml` under `[[ratelimits]]`: `POST /auth/github`
-(about 10 a minute per client IP) and the messages each device sends on channel
-sockets (about 60 every 10 seconds). Rate limits with the same `namespace_id` in one
-account share their counters, so production and the test Worker have different ids,
-and each id must be unique among the account's rate limits. Cloudflare counts each
-one in each location on its own, and its counters catch up with a delay, so both are
-approximate: a client can get a few more.
+(about 10 a minute per client IP, `namespace_id` 1001 in production, 1003 in the
+top-level Worker) and the messages each device sends on channel sockets (about 60
+every 10 seconds, `namespace_id` 1002 in production, 1004 in the top-level Worker).
+Rate limits with the same `namespace_id` in one account share their counters for
+the same key, so a device sending through the test Worker would use up its
+production allowance; give a new rate limit an id nothing else in the account uses.
+Cloudflare counts each location on its own, and its counters catch up with a
+delay, so both are approximate: a client can get a few more.
 
 The compatibility date is after 2026-04-07, so the runtime answers a WebSocket
 client's close by itself; `src/channel.ts` relies on that. `relay/` has its own date.

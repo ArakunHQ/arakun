@@ -8,7 +8,8 @@ members and chat come later, on the same database.
 teams/
   src/index.ts     routes; every error is JSON: { "error": "..." }
   src/auth.ts      POST /auth/github, GET /me, POST /auth/logout, sessions
-  src/admin.ts     PUT|DELETE /admin/users/<github_id>/flags/<flag>
+  src/admin.ts     PUT|DELETE /admin/users/<github_id>/flags/<flag>,
+                   DELETE /admin/users/<github_id>/sessions
   migrations/      the D1 tables, applied in order by wrangler
   test/            Vitest inside workerd, with real D1 and a fake GitHub
 ```
@@ -161,6 +162,14 @@ npx wrangler d1 execute arakun-teams --env production --remote --command "
     VALUES (<id>, 'teams', unixepoch()) ON CONFLICT DO NOTHING;"
 ```
 
+To sign a user out everywhere, as when a session token may have leaked (they can
+sign in again; take their flags away to keep them out):
+
+```sh
+curl -fsS -X DELETE -H "Authorization: Bearer $ADMIN_SECRET" \
+  "https://<teams host>/admin/users/<id>/sessions"
+```
+
 To see who has which flag:
 
 ```sh
@@ -179,6 +188,7 @@ Times are Unix seconds.
 | `POST /auth/logout` with the session | `204`, and the session is gone. `401` if it was not valid. |
 | `PUT /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {github_id, flags}`. |
 | `DELETE /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Takes it away: `200 {github_id, flags}`. |
+| `DELETE /admin/users/<github_id>/sessions` with `ADMIN_SECRET` | Ends all the user's sessions: `200 {github_id, closed}`, with how many ended. |
 | `GET /healthz` | `200 {"ok": true}` |
 
 The admin endpoints answer `401` without the exact secret and `400` for a bad ID or

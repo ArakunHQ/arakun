@@ -518,10 +518,16 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
          ON CONFLICT DO NOTHING`,
       )
       .bind(teamId, githubId, t, team.keyed_epoch, theirs.size),
+    // Before the pending row goes: it still being there means this batch added
+    // the member. An approval that lost to another one writes nothing.
+    ...envelopes.map((e) =>
+      db
+        .prepare(insertEnvelope("AND EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?6)"))
+        .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, githubId),
+    ),
     db
       .prepare("DELETE FROM pending WHERE team_id = ?1 AND github_id = ?2 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)")
       .bind(teamId, githubId),
-    ...envelopes.map((e) => storeEnvelope(db, e, t)),
   ]);
   if (done[0]!.meta.changes === 1) return Response.json({ github_id: githubId, role: "member" });
   const [still, count] = await db.batch([

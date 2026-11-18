@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { b64url, ulid } from "../src/util";
 import { api, envelope, expectJson, makeDevice, newKey, register, seal, signText, team, user, join } from "./clients";
 import { nowSeconds } from "./helpers";
@@ -296,6 +296,33 @@ describe("teams", () => {
     expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
     await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`), 404);
     await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/approve`, { device: t.owner.device, body: { envelopes: [] } }), 404);
+  });
+
+  it("lets an approval that lost to another one write no envelope", async () => {
+    const t = await team();
+    const u = await user(2002, "twice");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "twice" } }), 201);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
+    const path = `/teams/${t.teamId}/pending/2002/approve`;
+    const won = await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device);
+    const lost = await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device);
+    // The other approval commits after this one read the request, before its batch.
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === 3) {
+        raced = true;
+        await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { envelopes: [won] } }), 200);
+      }
+      return batch(statements);
+    });
+    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { envelopes: [lost] } }), 404);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    const theirs = await expectJson<Record<string, unknown>[]>(api(u, "GET", `/teams/${t.teamId}/envelopes`, { device: d }), 200);
+    expect(theirs).toEqual([{ ...won, made_at: expect.any(Number) }]);
   });
 
   it("lists a team's open invites to its admins, newest first, and lets them withdraw one", async () => {

@@ -243,6 +243,8 @@ after a week).
   the island go on. On Hyprland the window waits in the special workspace `arakun`, on
   Sway in the scratchpad, and elsewhere it is minimized. Run `arakun` (or `arakun show`,
   or open it from the app launcher) to bring it back, and `arakun quit` to quit.
+  A desktop other than Hyprland and Sway may not raise a minimized window when asked
+  (GNOME and KDE on Wayland can refuse); click Arakun in the dock or task bar then.
 - **Notification history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
   grouped by day. Click one to open what it is about. The Inbox is the button at the end

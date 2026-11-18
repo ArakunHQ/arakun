@@ -46,11 +46,13 @@ fn hide(window: &mut Window) {
     HIDDEN.store(true, Ordering::Relaxed);
     let pid = std::process::id();
     match Desktop::current() {
-        Desktop::Hyprland => hyprland(vec![Dispatch::Move {
-            workspace: format!("special:{SPECIAL}"),
-            follow: false,
-            pid,
-        }]),
+        Desktop::Hyprland => hyprland(move || {
+            vec![Dispatch::Move {
+                workspace: format!("special:{SPECIAL}"),
+                follow: false,
+                pid,
+            }]
+        }),
         Desktop::Sway => swaymsg(pid, "move scratchpad"),
         Desktop::Other => window.minimize_window(),
     }
@@ -62,7 +64,8 @@ pub fn show(window: &mut Window) {
     if HIDDEN.swap(false, Ordering::Relaxed) {
         match Desktop::current() {
             // To the workspace the user is on now, not the one it was closed on.
-            Desktop::Hyprland => {
+            // Asking for it waits on hyprctl, so that happens off the UI thread too.
+            Desktop::Hyprland => hyprland(move || {
                 let mut steps = Vec::new();
                 if let Some(ws) = active_workspace() {
                     steps.push(Dispatch::Move {
@@ -72,8 +75,8 @@ pub fn show(window: &mut Window) {
                     });
                 }
                 steps.push(Dispatch::Focus { pid });
-                hyprland(steps);
-            }
+                steps
+            }),
             Desktop::Sway => swaymsg(pid, "scratchpad show, floating disable"),
             Desktop::Other => {}
         }
@@ -167,10 +170,11 @@ fn accepted(out: &std::process::Output) -> bool {
 }
 
 /// Runs the dispatches in order, off the UI thread: each in the Lua syntax
-/// first, then the older one if hyprctl turns that down.
-fn hyprland(steps: Vec<Dispatch>) {
+/// first, then the older one if hyprctl turns that down. `steps` runs there
+/// too, so it may ask hyprctl what to dispatch.
+fn hyprland(steps: impl FnOnce() -> Vec<Dispatch> + Send + 'static) {
     std::thread::spawn(move || {
-        for step in steps {
+        for step in steps() {
             let run = |args: &[&str]| {
                 std::process::Command::new("hyprctl")
                     .arg("dispatch")

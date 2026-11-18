@@ -412,6 +412,20 @@ impl PullRequestDialog {
             cx.notify();
             return;
         }
+        // No plan for this base: this clone doesn't have the branch (not
+        // fetched, or misspelled), so the description shown is another
+        // base's. GitHub's own form reads it there.
+        if !web && base != self.plan.base {
+            self.error = Some(
+                format!(
+                    "This clone has no {}/{base} to read the commits from. Fetch it, or open GitHub's form.",
+                    self.remote
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
         self.busy = Some(web);
         self.error = None;
         cx.notify();
@@ -420,6 +434,15 @@ impl PullRequestDialog {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move {
+                    // The push state below is the checkout's: of another
+                    // branch it would say nothing about this one.
+                    let on = git::current_branch(&dir);
+                    if on.as_deref() != Some(branch.as_str()) {
+                        anyhow::bail!(
+                            "The folder is on {} now. Check out {branch} to create its pull request.",
+                            on.as_deref().unwrap_or("no branch")
+                        );
+                    }
                     // Read again: a commit made while the dialog was open
                     // would stay behind, and gh pushes nothing with --head.
                     // Not knowing is no reason to skip the push.

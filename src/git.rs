@@ -980,9 +980,7 @@ fn remote_owner(url: &str) -> Option<String> {
 /// An explicit `--head` turns off gh's own look for the fork, and a bare
 /// name is then looked up in the base repository. Slow: asks `gh`.
 pub fn pr_head(dir: &Path, remote: &str, branch: &str) -> String {
-    let pushed_to = stdout(git(dir).args(["remote", "get-url", remote]))
-        .ok()
-        .and_then(|url| remote_owner(&url));
+    let pushed_to = push_owner(dir, remote);
     let base_owner = gh(dir)
         .args(["repo", "view", "--json", "owner", "--jq", ".owner.login"])
         .output()
@@ -991,6 +989,13 @@ pub fn pr_head(dir: &Path, remote: &str, branch: &str) -> String {
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .filter(|owner| !owner.is_empty());
     qualified_head(pushed_to.as_deref(), base_owner.as_deref(), branch)
+}
+
+/// The owner of the repository a push to `remote` goes to: its push
+/// address, which can be a fork while it fetches from upstream.
+fn push_owner(dir: &Path, remote: &str) -> Option<String> {
+    let url = stdout(git(dir).args(["remote", "get-url", "--push", remote])).ok()?;
+    remote_owner(&url)
 }
 
 fn qualified_head(pushed_to: Option<&str>, base_owner: Option<&str>, branch: &str) -> String {
@@ -1382,6 +1387,41 @@ test: cover the resize\u{1f}\u{1e}\n";
             assert!(ok.success());
         }
         dir
+    }
+
+    #[test]
+    fn the_head_owner_is_the_one_a_push_goes_to() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            let ok = super::unpinned(&mut Command::new("git"))
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success(), "{args:?}");
+        };
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/ArakunHQ/arakun.git",
+        ]);
+        assert_eq!(
+            super::push_owner(&dir, "origin").as_deref(),
+            Some("ArakunHQ")
+        );
+        // Fetches from upstream, pushes to a fork.
+        git(&[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@github.com:me/arakun.git",
+        ]);
+        assert_eq!(super::push_owner(&dir, "origin").as_deref(), Some("me"));
+        assert_eq!(super::push_owner(&dir, "nowhere"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

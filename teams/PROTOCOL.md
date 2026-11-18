@@ -4,7 +4,9 @@ The contract between the `teams/` Worker and the clients (the desktop app now, t
 phone later). The server stores and forwards; it never holds a key that opens team
 content. Everything below "the server sees" is metadata we accept showing.
 
-Version: `v1`. Every encrypted object carries `"v": 1`.
+Version: `v1`. Envelopes and `Sealed` objects carry `"v": 1`. A message on the wire
+has no `v`, and the server drops fields it does not know, so a client must not expect
+one on the messages it receives.
 
 ## Words
 
@@ -48,7 +50,13 @@ does not leak), and admin endpoints need `owner` or `admin` (`403`).
   by one of the same user's existing devices: `sig` = ECDSA by that device over the
   UTF-8 bytes of `arakun-teams/v1/device|<github_id>|<sig_pub>|<enc_pub>`. The
   server checks it (`400` if wrong), and so does every client before trusting the
-  device. This is what stops the server from adding a device of its own.
+  device. This stops the server from adding a later device of its own.
+- It does not make the first device trustworthy: the server could register one in
+  the user's name. Clients trust a user's first device on first use: they pin it
+  the first time they see that user, and show its fingerprint for an optional
+  check with the person through another channel. If a user's first device later
+  differs from the pinned one, or a fingerprint check fails, the client does not
+  seal a team key to any of that user's devices and warns the user instead.
 - Answer: `201 { "device_id": "..." }`. Registering the same `sig_pub` again
   answers `200` with the same ID; `409` if another account has it.
 - At most 20 devices per user (`409`).
@@ -97,10 +105,13 @@ without it, `403` if it is not one of the caller's devices.
    `{ "envelopes": [Envelope, ...] }`. The server checks there is one envelope per
    (device, epoch) it expects, stores them, and makes the user a `member`:
    `200 { github_id, role: "member" }`. It expects every device of the new member
-   and every epoch from the lowest one given through the newest epoch with
-   envelopes, so an admin may leave out old epochs but never a device. While a
-   rotation is pending, the rotation then covers the new member too. `409` if the
-   team has no key yet. `.../reject` drops the request: `204`.
+   and every epoch with a key (one that has envelopes) from the lowest one given
+   through the newest, so an admin may leave out old epochs but never a device. An
+   epoch that two removals skipped has no key and is left out. While a rotation is
+   pending, the rotation then covers the new member too. `409` if the team has no
+   key yet, has 25 members already, or its newest key or the new member's devices
+   changed since the admin read them (fetch them again and retry). `.../reject`
+   drops the request: `204`.
 
 The approval happens on the admin's device because only it holds the team key;
 the server cannot approve anyone.
@@ -122,14 +133,24 @@ An envelope carries one epoch's team key to one device:
   the same info string as associated data.
 - `sig` = ECDSA by the sender's `sig` key over the UTF-8 bytes of
   `arakun-teams/v1/envelope|<team_id>|<epoch>|<device_id>|<eph_pub>|<nonce>|<ct>`.
-  The recipient checks that the sender is a device of an admin of the team.
+  When it opens an envelope, the recipient checks that the sender is a device of a
+  current owner or admin of the team, and refuses it otherwise. The server keeps an
+  envelope after its sender leaves, so a device can find one it refuses; it then
+  asks an admin, whose device seals that epoch again for it (an upload replaces an
+  envelope whose sender is no longer an admin's device).
 - `PUT /teams/<team_id>/envelopes` `{ "envelopes": [...] }` (admin) stores them →
   `200 { stored, epoch, rotation_pending }`. At most 500 per request. Each
   envelope's `from` is the calling device and its `sig` must check out; each
   recipient is a device of a member; its epoch already has envelopes or is the
   current one. The first upload for the current epoch must cover every device of
-  every member at once, and it ends the rotation. Uploading the same (device,
-  epoch) again replaces it.
+  every member at once, and it ends the rotation. The server checks that coverage
+  again as it stores them, and answers `409` if a removal started a newer epoch,
+  another device made this epoch's key first (fetch it), or a member or device was
+  added in between (fetch the devices and retry). An upload replaces an envelope
+  for the same (device, epoch) only if the same device sent the old one, or its
+  sender is no longer an admin's device. `stored` counts what was written: a device
+  that made a new key and sees fewer than it sent must fetch the key in use. At most
+  25 members per team, so a rotation fits in one request.
 - `GET /teams/<team_id>/envelopes` (with `X-Arakun-Device`) returns the caller
   device's envelopes for every epoch, oldest first.
 
@@ -209,10 +230,13 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
     for every stored message, the sender's own included (that is its ack);
   - `{ "type": "error", "id": "<message id>", "error": "..." }` when one is refused
     (`id` is null when the frame had none).
-- A frame is at most 96 KiB. Each device may send 60 messages every 10 seconds;
-  more are refused.
-- The server closes a socket with `4403` when its user is removed or is found not
-  to be a member on `send`.
+- A frame is at most 96 KiB. Each device may send about 60 messages every 10
+  seconds; more are refused. The count is kept in each Cloudflare location on its
+  own and catches up with a delay, so a few more can get through.
+- The server closes a socket with `4403` when its user is removed. On every
+  message it also checks each socket on the channel, sender and recipients: one
+  whose session ended (logout or expiry), whose user is no longer a member, or who
+  lost the `teams` flag is closed with `4403` and gets nothing more.
 
 `seq` is the channel's order, set by the server. History, for a client that was
 away: `GET /teams/<team_id>/channels/<channel_id>/messages?after=<seq>&limit=200`

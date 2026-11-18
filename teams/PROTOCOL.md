@@ -216,6 +216,12 @@ already read, and once the rotation ends, never what comes after.
   (admin) → `201 { channel_id }`. Names are encrypted with the team key
   (`Sealed`, below), of the epoch a message would use now (`400` otherwise). At
   most 500 channels per team; `409` for that or an ID in use.
+- `PUT /teams/<team_id>/channels/<channel_id>` `{ "name_ct": Sealed }` (admin) →
+  `200 { channel_id }` seals a channel's name again, with the same rule on its
+  epoch, or renames it. `404` if the team has no such channel, `409` if the
+  team's newest key changed meanwhile. After it makes a new key, the admin's
+  device seals every channel's name again with it, so a member approved without
+  the older epochs can read every name.
 - Messages live in one Durable Object per channel.
 
 `Sealed` is anything encrypted with a team key:

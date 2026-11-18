@@ -88,6 +88,7 @@ const ROUTES: [string, RegExp, Handler][] = [
   ["GET", /^\/teams\/([^/]+)\/envelopes$/, getEnvelopes],
   ["DELETE", /^\/teams\/([^/]+)\/members\/([^/]+)$/, removeMember],
   ["POST", /^\/teams\/([^/]+)\/channels$/, createChannel],
+  ["PUT", /^\/teams\/([^/]+)\/channels\/([^/]+)$/, renameChannel],
   ["GET", /^\/teams\/([^/]+)\/channels\/([^/]+)\/ws$/, openSocket],
   ["GET", /^\/teams\/([^/]+)\/channels\/([^/]+)\/messages$/, history],
 ];
@@ -804,6 +805,32 @@ async function createChannel(c: Ctx, teamId: string): Promise<Response> {
   if (result.meta.changes === 1) return Response.json({ channel_id: channelId }, { status: 201 });
   const exists = await db.prepare("SELECT 1 FROM channels WHERE team_id = ? AND channel_id = ?").bind(teamId, channelId).first();
   return error(409, exists ? "a channel with this ID exists" : `at most ${MAX_CHANNELS} channels per team`);
+}
+
+/// Seals a channel's name again: after a rotation, so members approved
+/// without the older epochs can read it, or to rename it.
+async function renameChannel(c: Ctx, teamId: string, channelId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  if (!ULID.test(channelId)) return notFound();
+  const body = await jsonBody(c.request, 8192);
+  const name = parseSealedName(isObject(body) ? body["name_ct"] : null);
+  if (typeof name === "string") return error(400, name);
+  if (!epochAllowed(name.epoch, team.keyed_epoch)) return error(400, `name_ct: ${epochRefused(name.epoch, team.epoch, team.keyed_epoch)}`);
+  const db = c.env.DB;
+  // Only while that epoch is still the newest with envelopes, and never back
+  // to an older epoch than the stored name's.
+  const result = await db
+    .prepare(
+      `UPDATE channels SET name_ct = ?3 WHERE team_id = ?1 AND channel_id = ?2
+         AND json_extract(name_ct, '$.epoch') <= ?4 AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?4`,
+    )
+    .bind(teamId, channelId, JSON.stringify(name), name.epoch)
+    .run();
+  if (result.meta.changes === 1) return Response.json({ channel_id: channelId });
+  const exists = await db.prepare("SELECT 1 FROM channels WHERE team_id = ? AND channel_id = ?").bind(teamId, channelId).first();
+  return exists ? error(409, "the team's key changed: fetch it and seal the name again") : notFound();
 }
 
 /// The checks a channel's socket and history share: member, device, channel.

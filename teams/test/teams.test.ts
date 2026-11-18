@@ -827,6 +827,28 @@ describe("channels", () => {
     expect(got.channels.find((c) => c.channel_id === id)?.name_ct).toEqual(name_ct);
   });
 
+  it("can have their name sealed again with the new key, for members without the old one", async () => {
+    const t = await team();
+    const m = await join(t);
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const key2 = newKey();
+    const envelopes = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
+    await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: t.owner.device, body: { envelopes } }), 200);
+    // A newcomer gets epoch 2 only, so the name sealed in epoch 1 is closed to them.
+    const c = await join({ ...t, keys: new Map([[2, key2]]) });
+    const ad = `arakun-teams/v1/channel|${t.teamId}|${t.channelId}|${t.channelId}`;
+    const path = `/teams/${t.teamId}/channels/${t.channelId}`;
+    const name_ct = await seal(key2, 2, ad, "general");
+    // Only admins, only the newest key, only a channel of the team.
+    await expectJson(api(m.user, "PUT", path, { body: { name_ct } }), 403);
+    await expectJson(api(t.owner.user, "PUT", path, { body: { name_ct: await seal(t.keys.get(1)!, 1, ad, "general") } }), 400);
+    await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/channels/${ulid()}`, { body: { name_ct } }), 404);
+    expect(await expectJson(api(t.owner.user, "PUT", path, { body: { name_ct } }), 200)).toEqual({ channel_id: t.channelId });
+    const got = await expectJson<{ channels: { channel_id: string; name_ct: unknown }[] }>(api(c.user, "GET", `/teams/${t.teamId}`), 200);
+    expect(got.channels).toEqual([{ channel_id: t.channelId, name_ct, created_at: expect.any(Number) }]);
+  });
+
   it("are at most 500 per team", async () => {
     const t = await team();
     const name_ct = await seal(t.keys.get(1)!, 1, "x", "n");

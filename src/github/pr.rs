@@ -1173,18 +1173,49 @@ fn rerun_cmd(item: &ItemRef, run: u64) -> Result<Cmd, Problem> {
     })
 }
 
-/// Starts the failed jobs of each of `runs` again (`rerunnable`). Stops at
-/// the first run GitHub refuses.
+/// Starts the failed jobs of each of `runs` again (`rerunnable`).
 pub fn rerun_failed(item: &ItemRef, runs: &[u64]) -> Result<(), Problem> {
     if runs.is_empty() {
         return Err(invalid("No failed run to start again."));
     }
-    for run in runs {
-        act_with(super::read_only(), rerun_cmd(item, *run), |cmd| {
+    rerun_each(runs, |run| {
+        act_with(super::read_only(), rerun_cmd(item, run), |cmd| {
             gh_run_within(cmd, CHECK_WAIT)
-        })?;
+        })
+        .map(|_| ())
+    })
+}
+
+/// Tries every run, also after one fails: the runs don't depend on each
+/// other. When none starts, the first problem is the answer (no `gh`, signed
+/// out); when some do, the answer says which started and which didn't.
+fn rerun_each(
+    runs: &[u64],
+    mut start: impl FnMut(u64) -> Result<(), Problem>,
+) -> Result<(), Problem> {
+    let mut started: Vec<String> = Vec::new();
+    let mut failed: Vec<(u64, Problem)> = Vec::new();
+    for run in runs {
+        match start(*run) {
+            Ok(()) => started.push(run.to_string()),
+            Err(problem) => failed.push((*run, problem)),
+        }
     }
-    Ok(())
+    if failed.is_empty() {
+        return Ok(());
+    }
+    if started.is_empty() {
+        return Err(failed.remove(0).1);
+    }
+    let failed: Vec<String> = failed
+        .iter()
+        .map(|(run, problem)| format!("run {run} ({})", problem.text()))
+        .collect();
+    Err(Problem::Other(format!(
+        "Started run {} again, but not {}.",
+        started.join(", "),
+        failed.join(", ")
+    )))
 }
 
 /// The prompt that hands a pull request's failed checks to an agent.
@@ -3553,6 +3584,33 @@ mod tests {
             CheckState::Running
         );
         assert_eq!(checks_summary(&Pull::default()), ChecksSummary::default());
+    }
+
+    #[test]
+    fn a_run_that_fails_does_not_stop_the_runs_after_it() {
+        let mut tried = Vec::new();
+        let result = rerun_each(&[7, 8, 9], |run| {
+            tried.push(run);
+            if run == 8 {
+                Err(Problem::Other("it is still running".into()))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(tried, [7, 8, 9]);
+        let Err(Problem::Other(text)) = result else {
+            panic!("the failure of run 8 is reported");
+        };
+        assert_eq!(
+            text,
+            "Started run 7, 9 again, but not run 8 (it is still running)."
+        );
+        // Nothing started: the problem itself, such as a missing gh.
+        assert!(matches!(
+            rerun_each(&[7, 8], |_| Err(Problem::NoGh)),
+            Err(Problem::NoGh)
+        ));
+        assert!(rerun_each(&[7, 8], |_| Ok(())).is_ok());
     }
 
     #[test]

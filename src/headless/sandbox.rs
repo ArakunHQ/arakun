@@ -643,6 +643,9 @@ pub fn run_with_timeout(
         }
         if start.elapsed() > timeout {
             tree.kill();
+            // The tree may not hold the child (on Windows the job object can
+            // fail to take it), and the wait below would then never end.
+            let _ = child.kill();
             let _ = child.wait();
             return Err(format!("timed out after {}s", timeout.as_secs()));
         }

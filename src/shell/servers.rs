@@ -2115,6 +2115,18 @@ impl Shell {
                 }
                 true
             }
+            // Settle threads is asked from the sidebar: said there too. The
+            // refusal names `settle_env` itself, so it is about that.
+            _ if older_server_refused(&message, &["settle_env"]) => {
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not settle the threads",
+                    "This server runs an older Arakun. Update it to settle threads from here.",
+                    None,
+                    cx,
+                );
+                true
+            }
             _ if link.new_env.contains_key(id) && older_server_refused(&message, &["new_env"]) => {
                 link.adding.remove(id);
                 if let Some(new) = link.new_env.remove(id) {
@@ -2386,6 +2398,16 @@ fn empty_transcript(agent: AgentKind, title: &str) -> Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_server_refusing_a_settle_is_told_apart() {
+        let refused =
+            "bad message: unknown variant `settle_env`, expected one of `open`, `delete_env`";
+        assert!(older_server_refused(refused, &["settle_env"]));
+        // Named only among the ones it expected: about something else.
+        let other = "bad message: unknown variant `rename_branch`, expected one of `settle_env`";
+        assert!(!older_server_refused(other, &["settle_env"]));
+    }
 
     #[test]
     fn a_place_is_asked_to_go_only_once_at_a_time() {

@@ -1145,10 +1145,12 @@ impl Shell {
             model::Agent::Codex => &mut env.codex_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
+        let changed = !draft.iter().any(|(d, v)| *d == s && v == value);
         draft.retain(|(d, _)| *d != s);
         draft.push((s, value.to_string()));
-        // A model change may drop the effort picked for the old model.
-        if s == Setting::Model {
+        // A model change may drop the effort picked for the old model. Picking
+        // the same model again keeps it.
+        if s == Setting::Model && changed {
             draft.retain(|(d, _)| *d != Setting::Effort);
         }
         // Other environments' next OpenCode sessions start on this model too.

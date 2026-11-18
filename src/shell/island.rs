@@ -163,13 +163,13 @@ fn farewell(linked: bool, enabled: bool) -> Option<ToIsland> {
 
 /// One request to the island, off this thread: it waits for the answer.
 fn tell_once(msg: ToIsland) {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     std::thread::spawn(move || {
         if let Err(e) = crate::island_host::proto::request(&msg) {
             eprintln!("arakun: island: {e}");
         }
     });
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let _ = msg;
 }
 

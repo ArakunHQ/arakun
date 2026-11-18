@@ -1049,9 +1049,9 @@ impl Repo {
 
     /// Marks a job's log as being read, and gives the read's generation for
     /// `finish_log`; `None` when it is read, being read or failed. A failed read
-    /// stays until the user tries again or the run changes (`clear_logs`): the
-    /// Logs tab asks on every render, and reading again each time calls `gh` in a
-    /// loop and uses up the GitHub rate limit.
+    /// stays until the user tries again or the run's page is read again
+    /// (`clear_logs`): the Logs tab asks on every render, and reading again each
+    /// time calls `gh` in a loop and uses up the GitHub rate limit.
     fn start_log(&mut self, job: u64) -> Option<u64> {
         if self.logs.contains_key(&job) {
             return None;
@@ -1060,10 +1060,15 @@ impl Repo {
         Some(self.logs_gen)
     }
 
-    /// Keeps a read's result, unless the logs were cleared since it started: an
-    /// old failure would otherwise stay until the user tries again.
+    /// Keeps a read's result. A read that started before the logs were last
+    /// cleared keeps only a log, and only where no newer one is: a running run's
+    /// page is read again every few seconds, so a slow read must still count, but
+    /// its failure is old and would otherwise stay until the user tries again.
     fn finish_log(&mut self, job: u64, generation: u64, load: Load<Arc<Vec<LogLine>>>) {
-        if generation == self.logs_gen {
+        let keep = generation == self.logs_gen
+            || matches!(load, Load::Ready(_))
+                && matches!(self.logs.get(&job), None | Some(Load::Loading));
+        if keep {
             self.logs.insert(job, load);
         }
     }
@@ -1769,12 +1774,29 @@ mod tests {
     }
 
     #[test]
-    fn a_log_read_from_before_a_clear_is_dropped() {
+    fn a_log_read_from_before_a_clear_keeps_only_a_log() {
         let mut repo = Repo::default();
         let old = repo.start_log(7).unwrap();
         repo.clear_logs();
         repo.finish_log(7, old, Load::Failed("not there yet".into()));
         assert!(repo.start_log(7).is_some(), "the old failure doesn't stay");
+
+        // A slow read that ends after the page of a running run is read again.
+        let mut repo = Repo::default();
+        let old = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        repo.finish_log(7, old, Load::Ready(Arc::default()));
+        assert!(matches!(repo.log(7), Some(Load::Ready(_))));
+
+        // It doesn't replace the newer read's log.
+        let newer = Arc::new(Vec::new());
+        let mut repo = Repo::default();
+        let old = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        let generation = repo.start_log(7).unwrap();
+        repo.finish_log(7, generation, Load::Ready(newer.clone()));
+        repo.finish_log(7, old, Load::Ready(Arc::default()));
+        assert!(matches!(repo.log(7), Some(Load::Ready(l)) if Arc::ptr_eq(l, &newer)));
     }
 
     #[test]

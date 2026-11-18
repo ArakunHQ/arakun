@@ -290,7 +290,7 @@ impl Shell {
                     .tooltip(ui::tip("Workspace panel"))
                     .hover(|s| s.bg(theme::fill_selected()))
                     .child(
-                        icon("layout-align-right", 14.).text_color(if self.panel_open {
+                        icon("layout-align-right", 14.).text_color(if self.panel_shown() {
                             theme::content()
                         } else {
                             theme::mix(0.45)
@@ -313,8 +313,20 @@ impl Shell {
                 d.child(self.render_rail_narrow_header(window, cx))
             })
             .when(!narrow, |d| d.child(header))
-            .children(self.render_pinned_block(cx))
-            .children(self.render_rail_sections(cx))
+            .child(
+                // Below the header everything scrolls together once the
+                // window is too short for the fixed sections and the
+                // environments' least height (`RAIL_SCROLL_MIN_H`).
+                div()
+                    .id("rail-body")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(self.render_pinned_block(cx))
+                    .children(self.render_rail_sections(cx)),
+            )
             .pb(crate::ui::sp(4.))
     }
 

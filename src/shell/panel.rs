@@ -84,6 +84,8 @@ impl Shell {
                 div()
                     .flex()
                     .flex_1()
+                    // Or its labels' full widths hold it open past the panel.
+                    .min_w_0()
                     .items_center()
                     .h(px(28.))
                     .p(crate::ui::sp(2.))

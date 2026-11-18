@@ -357,6 +357,12 @@ pub struct Shell {
     /// this frame: the dragged ones, narrowed when the window is too small to
     /// leave the work in the middle `MAIN_MIN_W` (see `fit_sides`).
     side_fit: Cell<[f32; 3]>,
+    /// The workspace panel and the subagents column, open but left out this
+    /// frame because the window is too narrow for them (see `crowd_out`).
+    side_crowded: Cell<[bool; 2]>,
+    /// Which of the two the user asked for last: on a narrow window it stays
+    /// and the other gives way.
+    side_prefer: SideCard,
     /// The Subagents panel, between the chat and the Workspace panel.
     subagents_open: bool,
     subagents_w: f32,
@@ -507,6 +513,47 @@ const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
 const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
 /// How narrow the work between the side cards may get before they give way.
 const MAIN_MIN_W: f32 = 420.;
+/// Below this, even at their narrowest the side cards leave too little for
+/// the work, and the workspace panel or subagents column is left out. A
+/// 1366x768 laptop at 125% scale, or a window snapped to half a screen, is
+/// that narrow.
+const MAIN_FLOOR_W: f32 = 320.;
+
+/// The workspace panel or the subagents column.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SideCard {
+    Panel,
+    Subagents,
+}
+
+/// Which of the open panel and subagents column to leave out so the cards'
+/// narrowest widths fit in `room`. The one not preferred goes first. The rail
+/// always stays: it holds the projects and the way back to everything else.
+/// Each card is its minimum width plus its handle; a closed one is `None`.
+fn crowd_out(
+    room: f32,
+    rail: f32,
+    panel: Option<f32>,
+    subagents: Option<f32>,
+    prefer: SideCard,
+) -> [bool; 2] {
+    let mut out = [false; 2];
+    let mut need = rail + panel.unwrap_or(0.) + subagents.unwrap_or(0.);
+    let order = match prefer {
+        SideCard::Panel => [(1, subagents), (0, panel)],
+        SideCard::Subagents => [(0, panel), (1, subagents)],
+    };
+    for (i, w) in order {
+        if need <= room {
+            break;
+        }
+        if let Some(w) = w {
+            out[i] = true;
+            need -= w;
+        }
+    }
+    out
+}
 
 /// Side card widths that leave `room` for the cards together. Each one gives
 /// up width in proportion to how far it is above its own minimum, and none
@@ -824,6 +871,8 @@ impl Shell {
             rail_w: layout.rail_w,
             panel_w: layout.panel_w,
             side_fit: Cell::new([layout.rail_w, layout.panel_w, layout.subagents_w]),
+            side_crowded: Cell::new([false; 2]),
+            side_prefer: SideCard::Panel,
             subagents_open: layout.subagents_open,
             subagents_w: layout
                 .subagents_w
@@ -1949,7 +1998,16 @@ impl Shell {
     }
 
     fn toggle_panel(&mut self, cx: &mut Context<Self>) {
+        // Left out for room, a click brings it back in the subagents' place.
+        if self.panel_open && self.side_crowded.get()[0] {
+            self.side_prefer = SideCard::Panel;
+            cx.notify();
+            return;
+        }
         self.panel_open = !self.panel_open;
+        if self.panel_open {
+            self.side_prefer = SideCard::Panel;
+        }
         self.save(cx);
         cx.notify();
     }
@@ -2031,16 +2089,26 @@ impl Shell {
     fn fit_side_cards(&self, window: &Window) {
         let has_projects = self.has_projects();
         let rail = self.rail_shown();
-        let panel = has_projects && self.panel_open;
-        let subagents = has_projects && self.subagents_open;
+        let viewport_w = window.viewport_size().width.as_f32();
         let rail_card = match (rail, self.rail_narrow()) {
             (false, _) => (0., 0.),
             (true, true) => (rail_blocks::RAIL_ICONS_W, rail_blocks::RAIL_ICONS_W),
             (true, false) => (self.rail_w, RAIL_W_RANGE.start),
         };
+        // Each card's narrowest, with the handle beside it.
+        let crowded = crowd_out(
+            viewport_w - 2. * gap() - MAIN_FLOOR_W,
+            if rail { rail_card.1 + gap() } else { 0. },
+            (has_projects && self.panel_open).then(|| PANEL_W_RANGE.start + gap()),
+            (has_projects && self.subagents_open).then(|| SUBAGENTS_W_RANGE.start + gap()),
+            self.side_prefer,
+        );
+        self.side_crowded.set(crowded);
+        let panel = self.panel_shown();
+        let subagents = self.subagents_shown();
         let shown = [rail, panel, subagents].iter().filter(|s| **s).count() as f32;
         // The window's padding at both sides, and one handle beside each card.
-        let room = window.viewport_size().width.as_f32() - (2. + shown) * gap() - MAIN_MIN_W;
+        let room = viewport_w - (2. + shown) * gap() - MAIN_MIN_W;
         let [r, p, s] = fit_sides(
             room,
             [
@@ -2062,6 +2130,16 @@ impl Shell {
             if panel { p } else { self.panel_w },
             if subagents { s } else { self.subagents_w },
         ]);
+    }
+
+    /// The workspace panel is open and the window has room for it this frame.
+    fn panel_shown(&self) -> bool {
+        self.has_projects() && self.panel_open && !self.side_crowded.get()[0]
+    }
+
+    /// The subagents column is open and the window has room for it this frame.
+    pub(super) fn subagents_shown(&self) -> bool {
+        self.has_projects() && self.subagents_open && !self.side_crowded.get()[1]
     }
 
     /// The gap between two cards doubles as the resize handle for the side card.
@@ -2094,6 +2172,7 @@ impl Shell {
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {
         self.panel_tab = PanelTab::Changes;
+        self.side_prefer = SideCard::Panel;
         if !self.panel_open {
             self.panel_open = true;
             self.save(cx);
@@ -2770,7 +2849,7 @@ impl Render for Shell {
                                     && this.sidebar.style.side == crate::sidebar::Side::Right;
                                 let right = window_w
                                     - gap()
-                                    - if this.panel_open {
+                                    - if this.panel_shown() {
                                         this.panel_width() + gap()
                                     } else {
                                         0.
@@ -2950,11 +3029,11 @@ impl Render for Shell {
                             .child(self.side_handle(SideDrag::Rail, cx))
                     })
                     .child(body)
-                    .when(chrome && has_projects && self.subagents_open, |d| {
+                    .when(chrome && self.subagents_shown(), |d| {
                         d.child(self.side_handle(SideDrag::Subagents, cx))
                             .child(self.render_subagents(cx))
                     })
-                    .when(chrome && has_projects && self.panel_open, |d| {
+                    .when(chrome && self.panel_shown(), |d| {
                         d.child(self.side_handle(SideDrag::Panel, cx))
                             .child(self.render_panel(cx))
                     })
@@ -3304,6 +3383,37 @@ mod tests {
         );
         // A card already narrower than its minimum (icons) keeps its width.
         assert_eq!(fit_sides(0., [(52., 52.)]), [52.]);
+    }
+
+    #[test]
+    fn a_narrow_window_leaves_out_a_side_card() {
+        let (rail, panel, sub) = (168., Some(208.), Some(268.));
+        // 1366x768 at 125%: all three fit at their narrowest.
+        let room = 1093. - 16. - MAIN_FLOOR_W;
+        assert_eq!(
+            crowd_out(room, rail, panel, sub, SideCard::Panel),
+            [false; 2]
+        );
+        // The smallest window: the one not asked for last goes.
+        let room = 800. - 16. - MAIN_FLOOR_W;
+        assert_eq!(
+            crowd_out(room, rail, panel, sub, SideCard::Panel),
+            [false, true]
+        );
+        assert_eq!(
+            crowd_out(room, rail, panel, sub, SideCard::Subagents),
+            [true, false]
+        );
+        // Too narrow for either: both go, and the rail stays.
+        assert_eq!(
+            crowd_out(100., rail, panel, sub, SideCard::Panel),
+            [true, true]
+        );
+        // A closed card is never counted or left out.
+        assert_eq!(
+            crowd_out(room, rail, None, sub, SideCard::Panel),
+            [false, false]
+        );
     }
 
     #[test]

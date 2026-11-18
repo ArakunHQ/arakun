@@ -1514,6 +1514,10 @@ impl Daemon {
                     .unwrap_or(place.agent);
                 let text = text.trim().to_string();
                 if text.is_empty() {
+                    // Answered all the same: the app pairs each answer with
+                    // its oldest start, so a silent one would shift the rest.
+                    self.transport
+                        .send(client, error_about("start", "the prompt is empty"));
                     return;
                 }
                 // The place remembers them, as it does on the desktop: the

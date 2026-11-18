@@ -73,6 +73,22 @@ pub(super) fn same_diff(started: &mut String, now: &str) -> Result<(), &'static 
     )
 }
 
+/// Takes the comments that went out as `sent` from the pending ones of
+/// `key`. Comments written while it was sent stay, and so does a whole new
+/// batch on another commit, even one with the same words on the same line.
+pub(super) fn forget_sent(pending: &mut HashMap<String, Pending>, key: &str, sent: &Pending) {
+    let Some(now) = pending.get_mut(key) else {
+        return;
+    };
+    if now.head != sent.head {
+        return;
+    }
+    now.comments.retain(|c| !sent.comments.contains(c));
+    if now.comments.is_empty() {
+        pending.remove(key);
+    }
+}
+
 /// "1 pending comment", "3 pending comments".
 pub(super) fn pending_label(n: usize) -> String {
     if n == 1 {
@@ -141,10 +157,20 @@ impl GitHubView {
                 Writing::Reply(_) => "Reply to the thread",
                 Writing::Line { .. } => "Comment on this line",
             };
+            // From one line to another the words come along: after a push
+            // the line they were started on may be gone from the diff, and
+            // picking another one is how to place them.
+            let moved = matches!(
+                (&self.writing, &what),
+                (Some(Writing::Line { .. }), Writing::Line { .. })
+            );
             self.thread_input.update(cx, |i, cx| {
-                i.set_text("", cx);
+                if !moved {
+                    i.set_text("", cx);
+                }
                 i.set_placeholder(placeholder, cx);
             });
+            self.writing_box += 1;
             if matches!(what, Writing::Line { .. }) {
                 self.writing_head = self.shown_head();
             }
@@ -183,6 +209,7 @@ impl GitHubView {
                     return;
                 }
                 let sent = self.thread_input.read(cx).text().to_string();
+                let sent_from = self.writing_box;
                 self.write(
                     "reply",
                     "Reply posted.".into(),
@@ -193,6 +220,7 @@ impl GitHubView {
                         // box stays open while it is sent, so more may have
                         // been typed.
                         if this.writing == Some(Writing::Reply(id))
+                            && this.writing_box == sent_from
                             && this.thread_input.read(cx).text() == sent
                         {
                             this.stop_writing(cx);
@@ -258,12 +286,7 @@ impl GitHubView {
             },
             move |item| pr::review_lines(item, &pending.head, &pending.comments),
             move |this, _| {
-                // Comments written while it was sent stay pending.
-                if this.pending.get(&key) == Some(&sent) {
-                    this.pending.remove(&key);
-                } else if let Some(p) = this.pending.get_mut(&key) {
-                    p.comments.retain(|c| !sent.comments.contains(c));
-                }
+                forget_sent(&mut this.pending, &key, &sent);
                 this.relayout();
             },
             cx,
@@ -642,6 +665,29 @@ mod tests {
             Ok(())
         );
         assert_eq!(pending["o/r#1"].head, "bbb");
+    }
+
+    #[test]
+    fn only_what_was_sent_leaves_the_pending_comments() {
+        let batch = |head: &str, comments: &[LineComment]| Pending {
+            head: head.into(),
+            comments: comments.to_vec(),
+        };
+        let sent = batch("aaa", &[on(1, "x")]);
+        // Nothing changed while it was sent: the list is gone.
+        let mut pending = HashMap::from([("k".to_string(), sent.clone())]);
+        forget_sent(&mut pending, "k", &sent);
+        assert!(pending.is_empty());
+        // One more was written meanwhile: it stays.
+        let mut pending =
+            HashMap::from([("k".to_string(), batch("aaa", &[on(1, "x"), on(2, "y")]))]);
+        forget_sent(&mut pending, "k", &sent);
+        assert_eq!(pending["k"].comments, [on(2, "y")]);
+        // Removed, then written again on the next commit with the same words:
+        // that one is new and was not sent.
+        let mut pending = HashMap::from([("k".to_string(), batch("bbb", &[on(1, "x")]))]);
+        forget_sent(&mut pending, "k", &sent);
+        assert_eq!(pending["k"], batch("bbb", &[on(1, "x")]));
     }
 
     #[test]

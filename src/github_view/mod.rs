@@ -340,6 +340,9 @@ pub struct GitHubView {
     writing: Option<threads::Writing>,
     /// The commit whose diff the line comment being written was started on.
     writing_head: String,
+    /// Counts the boxes opened: a request that ends tells its own box from
+    /// a later one on the same thread.
+    writing_box: u64,
     thread_input: Entity<TextInput>,
     /// Comments on lines of the diff not sent yet, by `queue::key_of`.
     pending: HashMap<String, threads::Pending>,
@@ -553,6 +556,7 @@ impl GitHubView {
             unfolded_lines: HashSet::new(),
             writing: None,
             writing_head: String::new(),
+            writing_box: 0,
             thread_input,
             pending: HashMap::new(),
             checks_open: HashSet::new(),

@@ -1366,21 +1366,52 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
-        // In a server's environment, or a project only servers have: the
-        // new one is made on that server.
-        if let Some(from) = project
-            .environments
-            .get(project.active_env)
-            .filter(|e| e.remote.is_some())
-            .map(|_| project.active_env)
-            .or_else(|| project.is_remote().then_some(0))
-        {
-            self.servers_new_env(pi, from, cx);
+        // This computer, unless only servers have the project, and each
+        // connected server with it; the open environment's machine first picked.
+        let mut machines = Vec::new();
+        if !project.is_remote() {
+            machines.push(crate::dialogs::Machine {
+                server: None,
+                label: "This computer".into(),
+            });
+        }
+        for e in &project.environments {
+            let Some(r) = &e.remote else { continue };
+            let known = machines
+                .iter()
+                .any(|m| m.server.as_ref().is_some_and(|(s, _)| *s == r.server));
+            if !known && self.server_reach(&r.server) == Some(crate::servers_view::Reach::Connected)
+            {
+                machines.push(crate::dialogs::Machine {
+                    server: Some((r.server.clone(), r.place.clone())),
+                    label: r.machine.clone(),
+                });
+            }
+        }
+        if machines.is_empty() {
+            self.notify(
+                crate::island::AlertKind::Warning,
+                "No server is connected",
+                "This project is only on servers, and none of them is connected right now.",
+                None,
+                cx,
+            );
             return;
         }
+        let open = project
+            .environments
+            .get(project.active_env)
+            .and_then(|e| e.remote.as_ref())
+            .map(|r| r.server.clone());
+        let pick = machines
+            .iter()
+            .position(|m| m.server.as_ref().map(|(s, _)| s) == open.as_ref())
+            .unwrap_or(0);
         let (repo, name) = (project.path.clone(), project.name.clone());
         let setup = project.setup.clone();
-        let dialog = cx.new(|cx| CreateEnvDialog::new(repo, name, setup, window, cx));
+        let dialog = cx.new(|cx| {
+            CreateEnvDialog::new(repo, name, setup, window, cx).with_machines(machines, pick)
+        });
         let sub = cx.subscribe_in(
             &dialog,
             window,
@@ -1393,6 +1424,17 @@ impl Shell {
                     let (path, branch, auto_name) = (path.clone(), branch.clone(), *auto_name);
                     this.close_modal(window, cx);
                     this.environment_created(pi, path, branch, auto_name, window, cx);
+                }
+                DialogEvent::CreateOnServer {
+                    server,
+                    from,
+                    branch,
+                    auto_name,
+                } => {
+                    let (server, from) = (server.clone(), from.clone());
+                    let (branch, auto_name) = (branch.clone(), *auto_name);
+                    this.close_modal(window, cx);
+                    this.servers_new_env_on(&server, &from, branch, auto_name, cx);
                 }
                 _ => this.close_modal(window, cx),
             },

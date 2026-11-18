@@ -754,8 +754,9 @@ The link is good for two minutes and pairs one device. There are two ways to use
   the machine's name. A folder whose repository you also have here (the same `origin`)
   joins that project; the others make projects of their own. Its sessions open in the
   same tabs, with the same composer, as sessions here: send, stop, approve and answer
-  go to the server. "New environment" while a server's environment is open (or in a
-  project only servers have) makes a worktree on that server, in
+  go to the server. "New environment" makes a worktree on a server too: Alt+click the
+  + and pick the machine, or right-click a server's environment. A plain + makes it on
+  the open environment's machine. It goes in
   `~/arakun-workspaces/<project>/<branch>` there, and its branch is named after the
   first prompt as it is here. A phone paired with this app sees and works in the
   servers' sessions too. Git, terminals and the file tree stay with this machine's folders;

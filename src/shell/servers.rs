@@ -97,9 +97,9 @@ pub(super) struct ServersLink {
     adding: HashSet<String>,
     /// A folder a server just added, by server and path: it opens once listed.
     added: Option<(String, String)>,
-    /// A new environment asked of a server, by server and branch: named after
-    /// its first prompt once it is here, as one made here is.
-    new_env: Option<(String, String)>,
+    /// A new environment asked of a server, by server and branch, and
+    /// whether its first prompt names it, as one made here is.
+    new_env: Option<(String, String, bool)>,
     /// A phone that started a session on a server, told its id once it has one.
     phone_start: Option<crate::phone::ClientId>,
     /// The id a pairing under way will carry once it works.
@@ -1043,7 +1043,9 @@ impl Shell {
         if let Some((pi, ei)) = found {
             let named = self.servers.as_mut().and_then(|link| {
                 link.added = None;
-                link.new_env.take_if(|(s, _)| *s == server).map(|(_, b)| b)
+                link.new_env
+                    .take_if(|(s, _, _)| *s == server)
+                    .and_then(|(_, b, auto)| auto.then_some(b))
             });
             let env = &mut self.projects[pi].environments[ei];
             if let Some(branch) = named.filter(|b| env.branch.as_ref() == b) {
@@ -1080,20 +1082,56 @@ impl Shell {
             .map(|e| e.branch.to_string())
             .collect();
         let branch = crate::env_name::random(|n| taken.iter().any(|t| t == n));
+        self.servers_new_env_on(&remote.server, &remote.place, branch, true, cx);
+    }
+
+    /// A worktree on `branch` made on `server`, of the repository its folder
+    /// `from` is a checkout of. With `auto_name`, the first prompt there names it.
+    pub(super) fn servers_new_env_on(
+        &mut self,
+        server: &str,
+        from: &str,
+        branch: String,
+        auto_name: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(link) = &mut self.servers else {
             return;
         };
-        let Some(conn) = link.conns.get(&remote.server) else {
-            return;
+        let machine = link
+            .saved
+            .iter()
+            .find(|s| s.id == server)
+            .map(Self::server_name)
+            .unwrap_or_default();
+        let problem = match link.conns.get(server) {
+            None => Some(format!("{machine} is not paired with this app any more.")),
+            Some(c) if c.reach != Reach::Connected => {
+                Some(format!("{machine} is not connected right now."))
+            }
+            // One at a time per server: its answer says only which folder.
+            _ if link.adding.is_some() => {
+                Some("Another folder is being made on a server; try again once it is there.".into())
+            }
+            _ => None,
         };
-        if conn.reach != Reach::Connected {
-            link.error = Some(format!("{} is not connected right now.", remote.machine));
+        if let Some(why) = problem {
+            self.notify(
+                crate::island::AlertKind::Warning,
+                "Could not make the environment",
+                &why,
+                None,
+                cx,
+            );
             return;
         }
+        let Some(conn) = link.conns.get(server) else {
+            return;
+        };
         conn.client
-            .send(&json!({ "type": "new_env", "from": remote.place, "branch": branch }));
-        link.adding = Some(remote.server.clone());
-        link.new_env = Some((remote.server, branch));
+            .send(&json!({ "type": "new_env", "from": from, "branch": branch }));
+        link.adding = Some(server.to_string());
+        link.new_env = Some((server.to_string(), branch, auto_name));
         self.sync_servers_view(cx);
     }
 

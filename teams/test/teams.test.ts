@@ -611,7 +611,8 @@ describe("envelopes", () => {
     await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
     const path = `/teams/${t.teamId}/envelopes`;
     const devices = [t.owner.device, second, m.device];
-    const first = await Promise.all(devices.map((d) => envelope(t.teamId, 2, newKey(), d, t.owner.device)));
+    const won = newKey();
+    const first = await Promise.all(devices.map((d) => envelope(t.teamId, 2, won, d, t.owner.device)));
     // The second device's new key, and the epoch-1 key it never had, sealed by itself.
     const key2 = newKey();
     const mixed = [...(await Promise.all(devices.map((d) => envelope(t.teamId, 2, key2, d, second)))), await envelope(t.teamId, 1, t.keys.get(1)!, second, second)];

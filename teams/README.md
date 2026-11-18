@@ -147,7 +147,8 @@ A flag can be granted before the user signs in for the first time. The user row 
 has an empty login until they do.
 
 With the admin endpoint, in a shell where `ADMIN_SECRET` holds the value you saved
-in step 3 (paste it; the variable is not set anywhere else):
+in step 3 (paste it; the variable is not set anywhere else). Run this in Bash or zsh:
+`read -s` hides what you paste, and `sh` (dash) has no `-s`.
 
 ```sh
 read -rs ADMIN_SECRET

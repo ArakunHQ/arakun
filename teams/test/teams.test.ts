@@ -4,6 +4,13 @@ import { b64url, ulid } from "../src/util";
 import { api, envelope, expectJson, makeDevice, newKey, register, seal, signText, team, user, join } from "./clients";
 import { nowSeconds } from "./helpers";
 
+/// The same bytes in base64url with the last character's lowest bit flipped.
+/// A 65-byte key leaves its two lowest bits unused, so the bytes do not change.
+function otherSpelling(text: string): string {
+  const abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  return text.slice(0, -1) + abc[abc.indexOf(text.at(-1)!) ^ 1];
+}
+
 describe("devices", () => {
   it("registers a user's first device without an endorsement, and again answers the same ID", async () => {
     const u = await user(1001, "octocat");
@@ -61,6 +68,9 @@ describe("devices", () => {
       { sig_pub: b64url(new Uint8Array(65).fill(4)), enc_pub: d.encPub, name: "x" },
       { sig_pub: d.sigPub, enc_pub: d.encPub.slice(0, -2), name: "x" },
       { sig_pub: d.sigPub + "=", enc_pub: d.encPub, name: "x" },
+      // The same 65 bytes, spelled with a low bit set that encodes nothing.
+      { sig_pub: otherSpelling(d.sigPub), enc_pub: d.encPub, name: "x" },
+      { sig_pub: d.sigPub, enc_pub: otherSpelling(d.encPub), name: "x" },
       { sig_pub: d.sigPub, enc_pub: d.encPub, name: "" },
       { sig_pub: d.sigPub, enc_pub: d.encPub, name: "a".repeat(101) },
       { sig_pub: d.sigPub, enc_pub: d.encPub, name: "tab\there" },

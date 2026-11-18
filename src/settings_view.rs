@@ -1284,7 +1284,7 @@ impl SettingsDialog {
         let busy = matches!(status, Status::Checking | Status::Downloading(_));
         let action = match &status {
             // Only Linux and macOS can start Arakun again by themselves.
-            Status::Ready(_) if cfg!(unix) => ui::button(
+            Status::Ready(tag) if cfg!(unix) && update::will_install(tag) => ui::button(
                 "set-update-restart",
                 "Restart now",
                 ButtonKind::Outline,
@@ -1320,11 +1320,19 @@ impl SettingsDialog {
         } else {
             "Builds of main from every night, before they are released. For maintainers and testers."
         };
+        // Off the UI thread: the write waits while another Arakun installs
+        // an update (update::channel_lock).
         let set = |to: Channel, cx: &mut Context<Self>| {
-            if let Err(e) = update::set_channel(to) {
-                eprintln!("arakun: the update channel will not last past a restart: {e}");
-            }
-            cx.notify();
+            cx.spawn(async move |this, cx| {
+                let saved = cx
+                    .background_spawn(async move { update::set_channel(to) })
+                    .await;
+                if let Err(e) = saved {
+                    eprintln!("arakun: the update channel will not last past a restart: {e}");
+                }
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+            .detach();
         };
         let switch_row = row("Nightly builds", hint, switch(on).into_any_element())
             .id("set-nightly")

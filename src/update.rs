@@ -158,6 +158,11 @@ impl Status {
                 Channel::Nightly => "This is the latest nightly build.".into(),
             },
             Status::Downloading(tag) => format!("Downloading Arakun {tag}…"),
+            // Downloaded for the nightly channel, which the user has left
+            // since: apply_locked drops it.
+            Status::Ready(tag) if !will_install(tag) => {
+                format!("Arakun {tag} was downloaded for nightly builds, so it is not installed.")
+            }
             Status::Ready(tag) => {
                 format!("Arakun {tag} is downloaded. It is installed when Arakun quits.")
             }
@@ -951,6 +956,11 @@ pub fn apply_staged() -> Result<Option<String>, String> {
 fn installable(tag: &str, channel: Channel, current: Version) -> bool {
     Version::parse(tag)
         .is_some_and(|v| v > current && (!v.is_nightly() || channel == Channel::Nightly))
+}
+
+/// Whether a staged `tag` would be installed at quit on the current channel.
+pub fn will_install(tag: &str) -> bool {
+    installable(tag, channel(), Version::current())
 }
 
 fn apply_locked() -> Result<Option<String>, String> {

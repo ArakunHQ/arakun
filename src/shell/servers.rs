@@ -386,6 +386,24 @@ fn in_the_clear(s: &Saved) -> bool {
     s.way == servers::Way::Direct && s.origin.starts_with("http://")
 }
 
+/// Whether building the link connects this server: at start, not over plain http.
+fn connects_now(s: &Saved, startup: bool) -> bool {
+    !startup || !in_the_clear(s)
+}
+
+/// The kept lists shown when the link is built: those of the servers it connects.
+fn seeded_inboxes(
+    saved: &[Saved],
+    inboxes: &HashMap<String, Value>,
+    startup: bool,
+) -> Vec<(String, Value)> {
+    saved
+        .iter()
+        .filter(|s| connects_now(s, startup))
+        .filter_map(|s| Some((s.id.clone(), inboxes.get(&s.id)?.clone())))
+        .collect()
+}
+
 /// Who asked a server for a session, and so hears its id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Asker {
@@ -704,9 +722,10 @@ impl Shell {
         let mut inboxes = servers::load_inboxes();
         // A server forgotten while it was kept is not shown again.
         inboxes.retain(|id, _| saved.iter().any(|s| s.id == *id));
+        let seeded = seeded_inboxes(&saved, &inboxes, startup);
         let conns = saved
             .iter()
-            .filter(|s| !startup || !in_the_clear(s))
+            .filter(|s| connects_now(s, startup))
             .map(|s| {
                 (
                     s.id.clone(),
@@ -719,7 +738,7 @@ impl Shell {
             conns,
             events,
             following: Vec::new(),
-            inboxes: inboxes.clone(),
+            inboxes,
             inboxes_unsaved: false,
             origins: HashMap::new(),
             starts: Starts::default(),
@@ -735,11 +754,14 @@ impl Shell {
             error: None,
             _listen: listen,
         });
-        for (id, inbox) in &inboxes {
+        for (id, inbox) in &seeded {
             self.servers_inbox(id, inbox);
         }
         // What they listed last shows until they answer, offline ones too.
-        self.sync_remote_projects(window, cx);
+        // Not run with nothing kept: it reads every local project's origin.
+        if !seeded.is_empty() {
+            self.sync_remote_projects(window, cx);
+        }
     }
 
     /// The name a server goes by.
@@ -2876,6 +2898,40 @@ mod tests {
             ticket: "t".into(),
         };
         assert!(!in_the_clear(&saved("http://10.0.0.2:7474", relay)));
+    }
+
+    #[test]
+    fn the_servers_tab_shows_what_a_plain_http_server_listed_last() {
+        let saved = |id: &str, origin: &str| Saved {
+            id: id.into(),
+            name: String::new(),
+            origin: origin.into(),
+            way: servers::Way::Direct,
+            device: "d".into(),
+            token: "t".into(),
+        };
+        let servers = [
+            saved("clear", "http://10.0.0.2:7474"),
+            saved("safe", "https://box.example"),
+            saved("new", "https://other.example"),
+        ];
+        let inbox = json!({ "places": [{ "path": "/srv/app" }], "sessions": [] });
+        let inboxes = HashMap::from([
+            ("clear".to_string(), inbox.clone()),
+            ("safe".to_string(), inbox.clone()),
+        ]);
+        let ids = |seeded: Vec<(String, Value)>| -> Vec<String> {
+            seeded.into_iter().map(|(id, _)| id).collect()
+        };
+        // At start the plain-http one is not connected, so nothing of it shows.
+        assert_eq!(ids(seeded_inboxes(&servers, &inboxes, true)), ["safe"]);
+        // Built from the Servers tab, it is, and its kept list shows.
+        assert_eq!(
+            ids(seeded_inboxes(&servers, &inboxes, false)),
+            ["clear", "safe"]
+        );
+        // Nothing kept: nothing to show, so local origins are not read.
+        assert!(seeded_inboxes(&servers, &HashMap::new(), false).is_empty());
     }
 
     #[test]

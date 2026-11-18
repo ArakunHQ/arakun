@@ -155,7 +155,7 @@ impl Shell {
         if self.env().remote.is_some()
             && let Some(id) = self.active_session_id()
         {
-            self.servers_follow(&path, &id, super::servers::Watcher::Desktop);
+            self.servers_follow(&path, &id, super::servers::Watcher::Desktop, cx);
         }
     }
 

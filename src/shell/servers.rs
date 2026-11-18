@@ -36,6 +36,9 @@ struct Conn {
     reach: Reach,
     sessions: Vec<SessionRow>,
     places: Vec<PlaceRow>,
+    /// It sends several sessions to one connection (`open` with `keep`), as
+    /// its inbox says. One from before sends the last one opened only.
+    watches_several: bool,
 }
 
 impl Conn {
@@ -45,6 +48,7 @@ impl Conn {
             reach: Reach::Connecting,
             sessions: Vec::new(),
             places: Vec::new(),
+            watches_several: false,
         }
     }
 }
@@ -80,6 +84,14 @@ struct Following {
     /// Who looks at it: the session in front here, phones through this app.
     /// It is followed while anyone does.
     by: Vec<Watcher>,
+}
+
+impl Following {
+    /// The whole session is asked for again, from its start, and read to the side.
+    fn read_again(&mut self) {
+        (self.asking, self.asked, self.again) = (true, 0, None);
+        (self.refill, self.broken) = (Some(Vec::new()), None);
+    }
 }
 
 /// Who a server's session is followed for.
@@ -223,6 +235,64 @@ fn let_go(
         .partition(|f| f.by.is_empty() && !kept(f));
     *following = stay;
     gone
+}
+
+/// What following a session asks of its server.
+struct Followed {
+    /// The session is asked for, whole: it is new here, or read again.
+    ask: bool,
+    /// What nobody looks at any more: its server stops sending it.
+    close: Vec<Following>,
+    /// What a server that sends one session at a time no longer sends,
+    /// since it sends this one in its place.
+    displaced: Vec<Following>,
+}
+
+/// `who` follows `fresh`'s session, and lets go of the one it looked at
+/// before. On a server that watches one session per connection
+/// (`several` false), the others it sent are given up.
+fn follow_in(
+    following: &mut Vec<Following>,
+    who: Watcher,
+    fresh: Following,
+    several: bool,
+) -> Followed {
+    let (server, session) = (fresh.server.clone(), fresh.session.clone());
+    let same = |f: &Following| f.server == server && f.session == session;
+    let close = let_go(following, who, Some((&server, &session)));
+    let displaced = if several {
+        Vec::new()
+    } else {
+        following
+            .extract_if(.., |f| f.server == server && !same(f))
+            .collect()
+    };
+    let ask = match following.iter_mut().find(|f| same(f)) {
+        Some(f) => {
+            if !f.by.contains(&who) {
+                f.by.push(who);
+            }
+            // One that could not be read is read again when someone opens
+            // it. Who else looks at it still does.
+            let again = f.broken.is_some();
+            if again {
+                f.read_again();
+            }
+            again
+        }
+        None => {
+            following.push(Following {
+                by: vec![who],
+                ..fresh
+            });
+            true
+        }
+    };
+    Followed {
+        ask,
+        close,
+        displaced,
+    }
 }
 
 /// Takes `server`'s session `id` out of what is followed. Another server's
@@ -944,7 +1014,13 @@ impl Shell {
     /// The server sends session `id`, of the environment at `env_path`, whole
     /// and then every change, for as long as `who` or anyone else looks at it.
     /// The one `who` looked at before is let go.
-    pub(super) fn servers_follow(&mut self, env_path: &Path, id: &str, who: Watcher) {
+    pub(super) fn servers_follow(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        who: Watcher,
+        cx: &mut Context<Self>,
+    ) {
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
             return;
         };
@@ -958,30 +1034,10 @@ impl Shell {
         let Some(link) = &mut self.servers else {
             return;
         };
-        let same = |f: &Following| f.server == remote.server && f.session == id;
-        // A session that could not be read is read again when it comes back on screen.
-        link.following.retain(|f| !(same(f) && f.broken.is_some()));
-        let had = link
-            .following
-            .iter()
-            .find(|f| same(f))
-            .map(|f| f.by.clone());
-        // What `who` looked at before, unless someone else still does.
-        let others = let_go(&mut link.following, who, Some((&remote.server, id)));
-        close_follows(link, others);
-        if let Some(mut by) = had {
-            if !by.contains(&who) {
-                by.push(who);
-            }
-            if let Some(f) = link.following.iter_mut().find(|f| same(f)) {
-                f.by = by;
-            }
-            return;
-        }
         let Some(conn) = link.conns.get(&remote.server) else {
             return;
         };
-        link.following.push(Following {
+        let fresh = Following {
             server: remote.server.clone(),
             session: id.to_string(),
             env_path: env_path.to_path_buf(),
@@ -995,14 +1051,46 @@ impl Shell {
             again: None,
             refill: Some(Vec::new()),
             broken: None,
-            by: vec![who],
-        });
+            by: Vec::new(),
+        };
+        let followed = follow_in(&mut link.following, who, fresh, conn.watches_several);
+        close_follows(link, followed.close);
         // Not connected: it is asked for when the server is back.
-        if conn.reach == Reach::Connected {
+        if followed.ask
+            && let Some(conn) = link.conns.get(&remote.server)
+            && conn.reach == Reach::Connected
+        {
             conn.client
                 .send(&json!({ "type": "open", "session": id, "keep": true }));
             conn.client
                 .send(&json!({ "type": "transcript", "session": id, "from": 0 }));
+        }
+        self.servers_displaced(&remote.machine, followed.displaced, cx);
+    }
+
+    /// Sessions an older server stopped sending, for one opened after them:
+    /// whoever looked at them is told, and follows them again by opening them.
+    fn servers_displaced(
+        &mut self,
+        machine: &str,
+        displaced: Vec<Following>,
+        cx: &mut Context<Self>,
+    ) {
+        let why = format!(
+            "{machine} sends one session at a time, and another was opened there. Update arakun-server on it to follow both."
+        );
+        for f in displaced {
+            for who in &f.by {
+                match who {
+                    Watcher::Desktop => {
+                        if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+                            let why = format!("{why} Open this session again to follow it.");
+                            thread.update(cx, |t, cx| t.post_notice(why, true, cx));
+                        }
+                    }
+                    Watcher::Phone(client) => self.phone_send(*client, wire::error(&why)),
+                }
+            }
         }
     }
 
@@ -1586,8 +1674,7 @@ impl Shell {
                     // heard. It is read to the side and swapped in when complete.
                     let back_to = link.following.iter_mut().filter(|f| back && f.server == id);
                     for f in back_to {
-                        (f.asking, f.asked, f.again) = (true, 0, None);
-                        (f.refill, f.broken) = (Some(Vec::new()), None);
+                        f.read_again();
                         conn.client
                             .send(&json!({ "type": "open", "session": f.session, "keep": true }));
                         conn.client.send(
@@ -1749,6 +1836,7 @@ impl Shell {
             return;
         };
         let rows = |key: &str| msg[key].as_array().cloned().unwrap_or_default();
+        conn.watches_several = msg["watch_several"] == true;
         conn.sessions = rows("sessions")
             .iter()
             .map(|s| SessionRow {
@@ -2281,6 +2369,54 @@ mod tests {
         let names: Vec<&str> = gone.iter().map(|f| f.session.as_str()).collect();
         assert_eq!(names, ["a", "b"]);
         assert!(following.is_empty());
+    }
+
+    #[test]
+    fn a_session_read_again_keeps_who_looks_at_it() {
+        let mut broken = following("s1", "a", vec![Watcher::Desktop, Watcher::Phone(7)]);
+        broken.broken = Some("the server stopped".into());
+        let mut list = vec![broken];
+        let fresh = following("s1", "a", Vec::new());
+        let followed = follow_in(&mut list, Watcher::Phone(8), fresh, true);
+        assert!(followed.ask, "read again");
+        assert!(followed.close.is_empty() && followed.displaced.is_empty());
+        assert_eq!(list.len(), 1);
+        assert!(list[0].broken.is_none() && list[0].refill.is_some());
+        let by = vec![Watcher::Desktop, Watcher::Phone(7), Watcher::Phone(8)];
+        assert_eq!(list[0].by, by);
+        // The last phone goes back to its inbox: the others still look.
+        assert!(let_go(&mut list, Watcher::Phone(8), None).is_empty());
+        // Opened again while it reads fine: nothing is asked again.
+        let fresh = following("s1", "a", Vec::new());
+        assert!(!follow_in(&mut list, Watcher::Phone(8), fresh, true).ask);
+    }
+
+    #[test]
+    fn an_older_server_follows_the_last_session_opened_only() {
+        let mut list = vec![following("old", "a", vec![Watcher::Desktop])];
+        list.push(following("new", "x", vec![Watcher::Phone(9)]));
+        // A phone opens `b` on the older server: it stops sending `a`.
+        let fresh = following("old", "b", Vec::new());
+        let followed = follow_in(&mut list, Watcher::Phone(7), fresh, false);
+        assert!(followed.ask && followed.close.is_empty());
+        let shown: Vec<&str> = followed
+            .displaced
+            .iter()
+            .map(|f| f.session.as_str())
+            .collect();
+        assert_eq!(shown, ["a"]);
+        let left: Vec<&str> = list.iter().map(|f| f.session.as_str()).collect();
+        assert_eq!(left, ["x", "b"]);
+        // The desktop shows `a` again: it is asked for again, in `b`'s place.
+        let fresh = following("old", "a", Vec::new());
+        let followed = follow_in(&mut list, Watcher::Desktop, fresh, false);
+        assert!(followed.ask);
+        assert_eq!(followed.displaced[0].session, "b");
+        // A newer server sends both.
+        let fresh = following("new", "y", Vec::new());
+        let followed = follow_in(&mut list, Watcher::Phone(7), fresh, true);
+        assert!(followed.displaced.is_empty());
+        assert_eq!(list.len(), 3);
     }
 
     #[test]

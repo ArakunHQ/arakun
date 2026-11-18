@@ -547,7 +547,7 @@ impl Shell {
                 if self.find_env(&env_path).is_some_and(|e| e.remote.is_some()) {
                     self.ensure_live(&env_path, &sid, window, cx);
                     let who = super::servers::Watcher::Phone(client);
-                    self.servers_follow(&env_path, &sid, who);
+                    self.servers_follow(&env_path, &sid, who, cx);
                 }
                 let reply = self.phone_session_json(&env_path, &sid, &pid, cx);
                 self.phone_send(client, reply);

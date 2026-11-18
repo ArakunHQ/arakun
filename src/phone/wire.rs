@@ -787,9 +787,22 @@ pub fn inbox_place(p: InboxPlace) -> Value {
 }
 
 /// `inbox`: every session, newest first, and the places.
-pub fn inbox(host: &str, mut sessions: Vec<Value>, places: Vec<Value>) -> String {
+pub fn inbox(host: &str, sessions: Vec<Value>, places: Vec<Value>) -> String {
+    inbox_value(host, sessions, places).to_string()
+}
+
+/// A server's `inbox`. It also says the server sends a device several
+/// sessions at once (`open` with `keep`): an app follows several there only
+/// then, since a server from before sends the last one opened alone.
+pub fn server_inbox(host: &str, sessions: Vec<Value>, places: Vec<Value>) -> String {
+    let mut inbox = inbox_value(host, sessions, places);
+    inbox["watch_several"] = json!(true);
+    inbox.to_string()
+}
+
+fn inbox_value(host: &str, mut sessions: Vec<Value>, places: Vec<Value>) -> Value {
     sessions.sort_by_key(|s| std::cmp::Reverse(s["updated"].as_u64().unwrap_or(0)));
-    json!({ "type": "inbox", "host": host, "sessions": sessions, "places": places }).to_string()
+    json!({ "type": "inbox", "host": host, "sessions": sessions, "places": places })
 }
 
 /// Settings with their value and choices, as the phone shows them.
@@ -917,6 +930,15 @@ mod tests {
             cwd: cwd.to_path_buf(),
             key: Some("k".into()),
         }
+    }
+
+    #[test]
+    fn only_a_servers_inbox_says_it_sends_several_sessions() {
+        let server: Value = serde_json::from_str(&server_inbox("h", vec![], vec![])).unwrap();
+        assert_eq!(server["watch_several"], true);
+        assert_eq!(server["type"], "inbox");
+        let desktop: Value = serde_json::from_str(&inbox("h", vec![], vec![])).unwrap();
+        assert!(desktop["watch_several"].is_null());
     }
 
     #[test]

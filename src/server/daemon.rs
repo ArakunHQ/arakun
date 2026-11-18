@@ -1228,7 +1228,7 @@ impl Daemon {
                 })
             })
             .collect();
-        wire::inbox(&phone::host_name(), sessions, places)
+        wire::server_inbox(&phone::host_name(), sessions, places)
     }
 
     fn inbox_changed(&mut self, cx: &mut Context<Self>) {

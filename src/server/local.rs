@@ -79,6 +79,12 @@ impl Drop for Listening {
     }
 }
 
+/// Commands from the user's own processes; each is one line and its reply.
+const CONNECTIONS: crate::accept::Limits = crate::accept::Limits {
+    total: 64,
+    per_peer: 64,
+};
+
 /// Listens on `path`; requests come out of the receiver, each with where its
 /// reply goes. Fails when another server already answers there.
 pub fn serve(path: &Path) -> Result<(Listening, mpsc::UnboundedReceiver<Incoming>), String> {
@@ -110,10 +116,16 @@ pub fn serve(path: &Path) -> Result<(Listening, mpsc::UnboundedReceiver<Incoming
     std::thread::Builder::new()
         .name("arakun-server-local".into())
         .spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let tx = tx.clone();
-                std::thread::spawn(move || answer(stream, tx));
-            }
+            crate::accept::serve(
+                listener.incoming(),
+                CONNECTIONS,
+                "arakun-server-local-conn",
+                || false,
+                |stream| {
+                    let tx = tx.clone();
+                    move || answer(stream, tx)
+                },
+            );
         })
         .map_err(|e| e.to_string())?;
     Ok((

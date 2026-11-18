@@ -1744,8 +1744,12 @@ impl Shell {
                         );
                     }
                 }
+                // The server may have started it and lost only the answer: a
+                // phone that asks again could run the prompt twice.
                 for client in waiting {
-                    let why = wire::error("the server went away before the session started");
+                    let why = wire::error(
+                        "the connection to the server dropped before it said whether the session started. Check its sessions before you try again",
+                    );
                     self.phone_send(client, why);
                 }
                 if let Some(new) = lost_env {

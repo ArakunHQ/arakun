@@ -94,6 +94,13 @@ jobs:
             local attempt out err rc
             err=$(mktemp)
             for attempt in 1 2 3 4; do
+              # Before every attempt, also the first: many slow calls that
+              # succeed must not use up the next head's time either.
+              if past_deadline; then
+                echo "Out of time for this head." >&2
+                rm -f "$err"
+                return 1
+              fi
               # timeout runs the gh program, not this function. A call that
               # hangs would otherwise use up the job's whole time limit.
               out=$(timeout 60 gh "$@" 2>"$err") && rc=0 || rc=$?
@@ -184,6 +191,9 @@ jobs:
               if [ "$current" = "$written" ]; then
                 return 0
               fi
+              # Reading the reviews can take long with many pull requests
+              # on one head.
+              past_deadline && return 1
               IFS=$'\t' read -r state description <<<"$current"
               # Not through the retrying gh: a retry would write a verdict
               # read before its wait. The caller runs update again instead.

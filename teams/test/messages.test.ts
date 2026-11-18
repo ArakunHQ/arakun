@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { b64url } from "../src/util";
+import { ADMIN, call } from "./helpers";
 import { api, envelope, expectJson, join, message, newKey, openChannel, team, type Socket, type TeamSetup } from "./clients";
 
 /// The next frame, which must be a stored message.
@@ -101,6 +102,23 @@ describe("channel sockets", () => {
     expect(await storedCount(t)).toBe(0);
   });
 
+  it("close a socket whose session ended or whose user lost the flag, before it gets anything", async () => {
+    const t = await team();
+    const out = await join(t);
+    const unflagged = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const b = await openChannel(out.user, out.device, t.teamId, t.channelId);
+    const c = await openChannel(unflagged.user, unflagged.device, t.teamId, t.channelId);
+    expect((await api(out.user, "POST", "/auth/logout")).status).toBe(204);
+    await expectJson(call("DELETE", `/admin/users/${unflagged.user.id}/flags/teams`, ADMIN), 200);
+
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "only for members"));
+    await stored(a);
+    expect(await b.inbox.next()).toEqual({ closed: { code: 4403, reason: "not a member of this team" } });
+    expect(await c.inbox.next()).toEqual({ closed: { code: 4403, reason: "not a member of this team" } });
+    a.ws.close();
+  });
+
   it("ignore trusted headers a client sends", async () => {
     const t = await team();
     const m = await join(t);
@@ -108,6 +126,7 @@ describe("channel sockets", () => {
       "X-Teams-Github-Id": String(t.owner.user.id),
       "X-Teams-Device-Id": t.owner.device.id,
       "X-Teams-Sig-Pub": t.owner.device.sigPub,
+      "X-Teams-Session-Hash": "0".repeat(64),
     });
     b.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "as the owner"));
     expect((await refused(b)).error).toMatch(/device/);
@@ -152,8 +171,10 @@ describe("rotation", () => {
     expect((await stored(a)).message).toMatchObject({ epoch: 1 });
     a.send(await message(t.teamId, t.channelId, t.owner.device, 3, newKey(), "future"));
     expect((await refused(a)).error).toBe("unknown epoch");
-
     const key2 = newKey();
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 2, key2, "current epoch, before its envelopes"));
+    expect((await stored(a)).message).toMatchObject({ epoch: 2 });
+
     const envelopes = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
     await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: t.owner.device, body: { envelopes } }), 200);
 

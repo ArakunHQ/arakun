@@ -25,8 +25,10 @@ envelopes and channels. Each channel's messages live in its own SQLite-backed
 Durable Object, named `<team_id>/<channel_id>`, which also holds the channel's
 sockets (with the hibernation API). The Worker checks the session, the flag, the
 membership and the device before it opens a socket on the object, and passes who
-is calling in headers it builds itself. On every message the object checks the
-signature and reads the sender's membership and the team's epoch from D1 again.
+is calling in headers it builds itself (the session as its SHA-256, never the
+token). On every message the object checks the signature, reads the team's epoch
+from D1 again, and checks every socket's session, membership and flag, so a socket
+that lost any of them is closed before it gets the message.
 
 ## How sign-in works
 
@@ -54,8 +56,8 @@ the SHA-256 of the session token.
 
 Users are keyed by their numeric GitHub ID, which stays when they rename their account.
 Flags are set per user on the server, and every team endpoint checks the `teams`
-flag there. Anyone can sign in; without a flag, `/me` answers `flags: []` and every
-team endpoint answers `403`.
+flag there. Anyone can sign in. If the `flags` that `/me` answers do not include
+`teams` (there may be other flags), every team endpoint answers `403`.
 
 ## Development
 
@@ -251,9 +253,9 @@ devices: `400` without it, `403` if it is someone else's.
 | `GET /invites` | anyone | `200 [{invite_id, team_id, team_name, invited_by_login, created_at, expires_at}]` |
 | `POST /invites/<invite_id>/accept` | the invitee, device | `200 {team_id, status: "pending"}`. `404` if expired or someone else's. |
 | `GET /teams/<team_id>/pending` | admin | `200 [{github_id, login, requested_at, devices}]` |
-| `POST /teams/<team_id>/pending/<github_id>/approve` `{envelopes}` | admin, device | `200 {github_id, role: "member"}`. `400` unless there is one envelope per device of theirs and epoch; `409` before the team's first key. |
+| `POST /teams/<team_id>/pending/<github_id>/approve` `{envelopes}` | admin, device | `200 {github_id, role: "member"}`. `400` unless there is one envelope per device of theirs and epoch with a key; `409` before the team's first key, at 25 members, or if the team's key or their devices changed meanwhile. |
 | `POST /teams/<team_id>/pending/<github_id>/reject` | admin | `204` |
-| `PUT /teams/<team_id>/envelopes` `{envelopes}` | admin, device | `200 {stored, epoch, rotation_pending}`. At most 500. |
+| `PUT /teams/<team_id>/envelopes` `{envelopes}` | admin, device | `200 {stored, epoch, rotation_pending}`; `stored` counts what was written. At most 500. `409` when a new key lost to a removal, another device's key or a new member or device. |
 | `GET /teams/<team_id>/envelopes` | member, device | `200 [Envelope]`, the device's own. |
 | `DELETE /teams/<team_id>/members/<github_id>` | admin, or the member themselves | `200 {epoch, rotation_pending: true}`. Their sockets close. `409` for the last owner. |
 | `POST /teams/<team_id>/channels` `{channel_id, name_ct}` | admin | `201 {channel_id}`. `409` for an ID in use or past 500 channels. |

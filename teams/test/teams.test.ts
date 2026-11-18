@@ -353,6 +353,68 @@ describe("envelopes", () => {
     // Epoch 3 does not exist yet.
     await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [await envelope(t.teamId, 3, newKey(), m.device, t.owner.device)] } }), 400);
   });
+
+  it("refuse an eph_pub that is not on the curve, even signed", async () => {
+    const t = await team();
+    const e = await envelope(t.teamId, 1, t.keys.get(1)!, t.owner.device, t.owner.device);
+    const off = new Uint8Array(65).fill(1);
+    off[0] = 4;
+    const eph_pub = b64url(off);
+    const sig = await signText(t.owner.device, `arakun-teams/v1/envelope|${t.teamId}|1|${t.owner.device.id}|${eph_pub}|${e["nonce"]}|${e["ct"]}`);
+    const res = await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: t.owner.device, body: { envelopes: [{ ...e, eph_pub, sig }] } }), 400);
+    expect(res.error).toMatch(/eph_pub/);
+  });
+
+  it("of a key made too late do not replace the key in use", async () => {
+    const t = await team();
+    const second = await makeDevice();
+    await expectJson(register(t.owner.user, second, t.owner.device, "desktop"), 201);
+    const m = await join(t);
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const path = `/teams/${t.teamId}/envelopes`;
+    const devices = [t.owner.device, second, m.device];
+    const won = newKey();
+    const first = await Promise.all(devices.map((d) => envelope(t.teamId, 2, won, d, t.owner.device)));
+    expect(await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: first } }), 200)).toMatchObject({ stored: 3, rotation_pending: false });
+    // The second device made its own key for epoch 2 before it saw the first.
+    const late = await Promise.all(devices.map((d) => envelope(t.teamId, 2, newKey(), d, second)));
+    expect(await expectJson(api(t.owner.user, "PUT", path, { device: second, body: { envelopes: late } }), 200)).toMatchObject({ stored: 0 });
+    const mine = await expectJson<{ epoch: number; from: string }[]>(api(m.user, "GET", path, { device: m.device }), 200);
+    expect(mine.find((e) => e.epoch === 2)).toEqual(first[2]);
+  });
+
+  it("are asked only for epochs with a key when two removals skipped one", async () => {
+    const t = await team();
+    const a = await join(t);
+    const b = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${a.user.id}`), 200);
+    expect(await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${b.user.id}`), 200)).toEqual({ epoch: 3, rotation_pending: true });
+    const path = `/teams/${t.teamId}/envelopes`;
+    const key3 = newKey();
+    await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [await envelope(t.teamId, 3, key3, t.owner.device, t.owner.device)] } }), 200);
+    // Epoch 2 was skipped: nothing may be sealed with it.
+    await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [await envelope(t.teamId, 2, newKey(), t.owner.device, t.owner.device)] } }), 400);
+    // A newcomer gets epochs 1 and 3, not 2.
+    t.keys.set(3, key3);
+    const c = await join(t);
+    const theirs = await expectJson<{ epoch: number }[]>(api(c.user, "GET", path, { device: c.device }), 200);
+    expect(theirs.map((e) => e.epoch)).toEqual([1, 3]);
+  });
+});
+
+describe("members", () => {
+  it("are at most 25 per team", async () => {
+    const t = await team();
+    const t0 = nowSeconds();
+    for (let i = 0; i < 24; i++) {
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO users (github_id, login, created_at, last_seen_at) VALUES (?, ?, ?, ?)").bind(9000 + i, `filler-${i}`, t0, t0),
+        env.DB.prepare("INSERT INTO members (team_id, github_id, role, joined_at) VALUES (?, ?, 'member', ?)").bind(t.teamId, 9000 + i, t0),
+      ]);
+    }
+    await expect(join(t)).rejects.toThrow(/expected 200, got 409.*at most 25 members/);
+  });
 });
 
 describe("channels", () => {

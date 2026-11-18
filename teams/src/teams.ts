@@ -26,16 +26,19 @@ import {
 const FLAG = "teams";
 const DEVICE_HEADER = "X-Arakun-Device";
 const MAX_DEVICES = 20;
+/// With 20 devices each, a rotation is at most 500 envelopes: one request.
+const MAX_MEMBERS = 25;
 const MAX_CHANNELS = 500;
 const MAX_NAME = 100;
 const INVITE_DAYS = 7;
-/// Per request: a rotation of 25 members with 20 devices each, or one new
+/// Per request: a rotation of MAX_MEMBERS with 20 devices each, or one new
 /// device's keys for 25 epochs. D1 runs them as one batch.
 const MAX_ENVELOPES = 500;
 const MAX_BODY = 1024 * 1024;
 const HISTORY_LIMIT = 200;
-/// GitHub logins: letters, digits and hyphens, at most 39.
-const LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+/// GitHub logins: letters, digits and hyphens, at most 39. Enterprise Managed
+/// Users also have an underscore, as sign-in allows.
+const LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
 
 type Role = "owner" | "admin" | "member";
 
@@ -324,12 +327,17 @@ async function accept(c: Ctx, inviteId: string): Promise<Response> {
   if (!inv || inv.login !== c.me.login.toLowerCase() || inv.expires_at <= now()) return error(404, "no such invite");
   const member = await db.prepare("SELECT 1 FROM members WHERE team_id = ? AND github_id = ?").bind(inv.team_id, c.me.githubId).first();
   if (member) return error(409, "already a member of this team");
-  await db.batch([
+  // The invite is checked again in the batch: one replaced or expired since
+  // the read above makes no pending row.
+  const t = now();
+  const valid = "FROM invites WHERE invite_id = ?1 AND login = ?2 AND expires_at > ?3";
+  const results = await db.batch([
     db
-      .prepare("INSERT INTO pending (team_id, github_id, invited_by, requested_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
-      .bind(inv.team_id, c.me.githubId, inv.invited_by, now()),
-    db.prepare("DELETE FROM invites WHERE invite_id = ?").bind(inviteId),
+      .prepare(`INSERT INTO pending (team_id, github_id, invited_by, requested_at) SELECT team_id, ?4, invited_by, ?3 ${valid} ON CONFLICT DO NOTHING`)
+      .bind(inviteId, inv.login, t, c.me.githubId),
+    db.prepare(`DELETE ${valid}`).bind(inviteId, inv.login, t),
   ]);
+  if (results[1]!.meta.changes !== 1) return error(404, "no such invite");
   return Response.json({ team_id: inv.team_id, status: "pending" });
 }
 
@@ -387,27 +395,48 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
     if (!theirs.has(e.device_id)) return error(400, `device ${e.device_id} is not one of the new member's`);
     if (e.epoch > team.keyed_epoch) return error(400, `epoch ${e.epoch} has no key yet`);
   }
-  // Every device, every epoch from the first one given through the newest
-  // with a key. An admin may leave out the oldest epochs, never a device.
+  // Every device, every epoch with a key from the first one given through the
+  // newest. An admin may leave out the oldest epochs, never a device. Two
+  // removals before a rotation skip an epoch, so the epochs with a key are
+  // the ones with envelopes, not every number in between.
   const first = Math.min(...envelopes.map((e) => e.epoch));
-  const expected = theirs.size * (team.keyed_epoch - first + 1);
-  if (envelopes.length !== expected) {
-    return error(400, `expected one envelope per device of the new member and epoch, ${first} to ${team.keyed_epoch}`);
+  const keyed = await keyedEpochs(db, teamId, first, team.keyed_epoch);
+  for (const e of envelopes) {
+    if (!keyed.has(e.epoch)) return error(400, `epoch ${e.epoch} has no key`);
+  }
+  if (envelopes.length !== theirs.size * keyed.size) {
+    return error(400, `expected one envelope per device of the new member and epoch with a key, ${first} to ${team.keyed_epoch}`);
   }
 
+  // The checks above hold at commit, or nobody is added: still pending, the
+  // same newest key, the same devices (they are never deleted, so the same
+  // count is the same set), and room in the team.
   const t = now();
-  await db.batch([
+  const done = await db.batch([
     db
       .prepare(
         `INSERT INTO members (team_id, github_id, role, joined_at)
-         SELECT ?1, ?2, 'member', ?3 WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2)
+         SELECT ?1, ?2, 'member', ?3
+         WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2)
+           AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?4
+           AND (SELECT COUNT(*) FROM devices WHERE github_id = ?2) = ?5
+           AND (SELECT COUNT(*) FROM members WHERE team_id = ?1) < ${MAX_MEMBERS}
          ON CONFLICT DO NOTHING`,
       )
-      .bind(teamId, githubId, t),
-    db.prepare("DELETE FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId),
+      .bind(teamId, githubId, t, team.keyed_epoch, theirs.size),
+    db
+      .prepare("DELETE FROM pending WHERE team_id = ?1 AND github_id = ?2 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)")
+      .bind(teamId, githubId),
     ...envelopes.map((e) => storeEnvelope(db, e, t)),
   ]);
-  return Response.json({ github_id: githubId, role: "member" });
+  if (done[0]!.meta.changes === 1) return Response.json({ github_id: githubId, role: "member" });
+  const [still, count] = await db.batch([
+    db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId),
+    db.prepare("SELECT COUNT(*) AS n FROM members WHERE team_id = ?").bind(teamId),
+  ]);
+  if (still!.results.length === 0) return error(404, "no such request");
+  if ((count!.results[0] as { n: number }).n >= MAX_MEMBERS) return error(409, `at most ${MAX_MEMBERS} members per team`);
+  return error(409, "the team's key or their devices changed: fetch them again and retry");
 }
 
 async function reject(c: Ctx, teamId: string, id: string): Promise<Response> {
@@ -439,6 +468,9 @@ async function signedEnvelopes(c: Ctx, teamId: string, from: Device): Promise<En
     const e = parseEnvelope(raw, teamId);
     if (typeof e === "string") return error(400, e);
     if (e.from !== from.device_id) return error(400, "envelopes come from the calling device");
+    // On the curve, or the recipient could not use it; the shape check above
+    // only looks at its length and first byte.
+    if (!(await isEncKey(e.eph_pub))) return error(400, "an envelope's eph_pub is not a P-256 public key");
     const slot = `${e.device_id}|${e.epoch}`;
     if (seen.has(slot)) return error(400, `two envelopes for device ${e.device_id} and epoch ${e.epoch}`);
     seen.add(slot);
@@ -451,16 +483,45 @@ async function signedEnvelopes(c: Ctx, teamId: string, from: Device): Promise<En
 }
 
 /// Stores an envelope only while its device belongs to a member, so a removal
-/// that lands first is not undone.
+/// that lands first is not undone. It replaces one only from the same sending
+/// device, or one whose sender is no longer a device of an admin (which
+/// recipients would refuse). So a device that made a key too late cannot
+/// overwrite the key that is in use.
 function storeEnvelope(db: D1Database, e: Envelope, t: number): D1PreparedStatement {
+  return db.prepare(insertEnvelope("")).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t);
+}
+
+function insertEnvelope(extra: string): string {
+  return `INSERT INTO envelopes (team_id, device_id, epoch, body, created_at)
+    SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (
+      SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?1 WHERE d.device_id = ?2) ${extra}
+    ON CONFLICT DO UPDATE SET body = excluded.body, created_at = excluded.created_at
+    WHERE json_extract(envelopes.body, '$.from') = json_extract(excluded.body, '$.from') OR NOT EXISTS (
+      SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = envelopes.team_id
+      WHERE d.device_id = json_extract(envelopes.body, '$.from') AND m.role IN ('owner', 'admin'))`;
+}
+
+/// An envelope of a new key, written only after the same batch made its epoch
+/// the keyed one, and only if no other device's key for that epoch is there.
+/// So a key never lands for an epoch a removal skipped, and a second rotation
+/// cannot replace the key that won.
+function storeNewKey(db: D1Database, e: Envelope, t: number): D1PreparedStatement {
   return db
     .prepare(
-      `INSERT INTO envelopes (team_id, device_id, epoch, body, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (
-         SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?1 WHERE d.device_id = ?2)
-       ON CONFLICT DO UPDATE SET body = excluded.body, created_at = excluded.created_at`,
+      insertEnvelope(`AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?3
+        AND NOT EXISTS (SELECT 1 FROM envelopes WHERE team_id = ?1 AND epoch = ?3 AND json_extract(body, '$.from') <> ?6)`),
     )
-    .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t);
+    .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, e.from);
+}
+
+/// The epochs from `lo` to `hi` that have a key: the ones with envelopes. A
+/// skipped epoch never gets any.
+async function keyedEpochs(db: D1Database, teamId: string, lo: number, hi: number): Promise<Set<number>> {
+  const { results } = await db
+    .prepare("SELECT DISTINCT epoch FROM envelopes WHERE team_id = ? AND epoch BETWEEN ? AND ?")
+    .bind(teamId, lo, hi)
+    .all<{ epoch: number }>();
+  return new Set(results.map((r) => r.epoch));
 }
 
 async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
@@ -479,11 +540,12 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
     .all<{ device_id: string }>();
   const memberDevices = new Set(results.map((d) => d.device_id));
   const newKey = team.epoch > team.keyed_epoch;
+  const keyed = await keyedEpochs(db, teamId, 1, team.keyed_epoch);
   const covered = new Set<string>();
   for (const e of envelopes) {
     if (!memberDevices.has(e.device_id)) return error(400, `device ${e.device_id} is not a member's device`);
-    if (e.epoch > team.keyed_epoch && e.epoch !== team.epoch) return error(400, `epoch ${e.epoch} is neither keyed nor the current one`);
     if (newKey && e.epoch === team.epoch) covered.add(e.device_id);
+    else if (!keyed.has(e.epoch)) return error(400, `epoch ${e.epoch} is neither keyed nor the current one`);
   }
   // A new key is all or nothing: once it exists the old epoch is refused, so a
   // device left out would be locked out of the team.
@@ -494,15 +556,34 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
 
   const t = now();
   const done = await db.batch([
-    ...envelopes.map((e) => storeEnvelope(db, e, t)),
-    // Only if no removal bumped the epoch since we read it.
+    // First, so the new key's envelopes below can see whether it won. Only if
+    // no removal bumped the epoch since we read it, no other device keyed it
+    // first, and every member device is still covered: an approval or a new
+    // device in between would otherwise be left without the key.
     ...(keying
-      ? [db.prepare("UPDATE teams SET keyed_epoch = ?1 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1").bind(team.epoch, teamId)]
+      ? [
+          db
+            .prepare(
+              `UPDATE teams SET keyed_epoch = ?1 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1 AND NOT EXISTS (
+                 SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?2
+                 WHERE d.device_id NOT IN (SELECT value FROM json_each(?3)))`,
+            )
+            .bind(team.epoch, teamId, JSON.stringify([...covered])),
+        ]
       : []),
+    ...envelopes.map((e) => (keying && e.epoch === team.epoch ? storeNewKey(db, e, t) : storeEnvelope(db, e, t))),
     db.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(teamId),
   ]);
   const after = done[done.length - 1]!.results[0] as { epoch: number; keyed_epoch: number };
-  return Response.json({ stored: envelopes.length, epoch: after.epoch, rotation_pending: after.keyed_epoch < after.epoch });
+  if (keying && done[0]!.meta.changes !== 1) {
+    if (after.epoch !== team.epoch) return error(409, `epoch ${team.epoch} was skipped: make a key for epoch ${after.epoch}`);
+    if (after.keyed_epoch >= team.epoch) return error(409, `another device made the key for epoch ${team.epoch}: fetch it`);
+    return error(409, "a member or device changed: fetch the devices again and retry");
+  }
+  // What was written, which is less than what was sent when another device's
+  // envelopes were there first.
+  const stored = done.slice(keying ? 1 : 0, -1).reduce((n, r) => n + r.meta.changes, 0);
+  return Response.json({ stored, epoch: after.epoch, rotation_pending: after.keyed_epoch < after.epoch });
 }
 
 async function getEnvelopes(c: Ctx, teamId: string): Promise<Response> {
@@ -535,18 +616,25 @@ async function removeMember(c: Ctx, teamId: string, id: string): Promise<Respons
   }
 
   const results = await db.batch([
-    db.prepare("DELETE FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
     // The removed member holds every key so far; the next one must be new.
-    db.prepare("UPDATE teams SET epoch = epoch + 1 WHERE team_id = ?").bind(teamId),
+    // Before the delete, and only if they are still a member, so two removals
+    // of the same member at once bump the epoch once.
+    db
+      .prepare("UPDATE teams SET epoch = epoch + 1 WHERE team_id = ?1 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)")
+      .bind(teamId, target),
+    db.prepare("DELETE FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
     db.prepare("DELETE FROM envelopes WHERE team_id = ? AND device_id IN (SELECT device_id FROM devices WHERE github_id = ?)").bind(teamId, target),
     db.prepare("SELECT epoch FROM teams WHERE team_id = ?").bind(teamId),
     db.prepare("SELECT channel_id FROM channels WHERE team_id = ?").bind(teamId),
   ]);
+  if (results[0]!.meta.changes !== 1) return notFound();
   const epoch = (results[3]!.results[0] as { epoch: number }).epoch;
-  // Their open sockets go now, not at their next send. Each send checks
-  // membership too, so a channel this misses still refuses them.
+  // Their open sockets go now, not at the next message. A kick that fails is
+  // not retried: every message checks each recipient and closes their socket
+  // before it delivers, so a missed socket never gets anything new.
   const channels = results[4]!.results as { channel_id: string }[];
-  await Promise.all(channels.map((ch) => channelStub(c.env, teamId, ch.channel_id).kick(target)));
+  const kicks = await Promise.allSettled(channels.map((ch) => channelStub(c.env, teamId, ch.channel_id).kick(target)));
+  for (const k of kicks) if (k.status === "rejected") console.error("kick failed:", k.reason);
   return Response.json({ epoch, rotation_pending: true });
 }
 
@@ -607,6 +695,8 @@ async function openSocket(c: Ctx, teamId: string, channelId: string): Promise<Re
     [TRUSTED.sigPub]: access.device.sig_pub,
     [TRUSTED.teamId]: teamId,
     [TRUSTED.channelId]: channelId,
+    // The session's hash, so the object can end the socket with the session.
+    [TRUSTED.session]: c.me.hash,
   });
   return channelStub(c.env, teamId, channelId).fetch("https://channel/ws", { headers });
 }

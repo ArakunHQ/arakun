@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use super::super::bot::{self, Answer, BotMeta, Range, RangeError, Run, RunState, Step, Verdict};
-use super::super::decisions::{self, Acceptance};
+use super::super::decisions::{self, Acceptance, Reversal};
 use super::super::hub::{Delivery, Msg};
 use super::{AVATAR, Pane, TeamsView, clock};
 use crate::model::Agent;
@@ -37,6 +37,8 @@ pub(super) struct BotState {
     pub rejected: HashSet<String>,
     /// Answers whose range holds a message edited after them, by answer ID.
     pub stale: HashMap<String, Stale>,
+    /// Answers whose decision a member reversed, by answer ID.
+    pub reversed: HashMap<String, Reversal>,
 }
 
 /// A message in an answer's range that was edited after the answer.
@@ -144,9 +146,15 @@ impl TeamsView {
             .filter(|m| m.body.kind == "bot")
             .filter_map(|m| Some((m.id.clone(), stale_of(messages, m)?)))
             .collect();
+        let reversed: HashMap<String, Reversal> = messages
+            .iter()
+            .filter(|m| m.delivery == Delivery::Sent && bot::meta(m).is_some())
+            .filter_map(|m| Some((m.id.clone(), decisions::reversal(messages, &m.id)?)))
+            .collect();
         let me = hub.me();
         BotState {
             stale,
+            reversed,
             draft,
             hint,
             runs,
@@ -846,6 +854,31 @@ impl TeamsView {
             .map(|a| decisions::title_of(&a.decision))
             .unwrap_or_default();
         let (t, id) = (team_id.to_string(), m.id.clone());
+        let reversed = bot.reversed.get(&m.id);
+        let (icon_name, color, line) = match reversed {
+            Some(r) => {
+                let why = if r.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", sentence(&r.reason))
+                };
+                (
+                    "undo",
+                    theme::attention(),
+                    format!("Reversed. {} reversed “{title}”.{why}", r.login),
+                )
+            }
+            None => (
+                "tick-double02",
+                theme::success(),
+                format!("Decided. {} accepted “{title}”.", names(&who)),
+            ),
+        };
+        let lead = if reversed.is_some() {
+            "Reversed.".len()
+        } else {
+            "Decided.".len()
+        };
         div()
             .flex()
             .items_center()
@@ -861,19 +894,19 @@ impl TeamsView {
             .ty(Type::Label)
             .font_weight(FontWeight::NORMAL)
             .text_color(theme::text_muted())
-            .child(icon("tick-double02", 14.).text_color(theme::success()))
+            .child(icon(icon_name, 14.).text_color(color))
             .child(
-                div().flex_1().min_w_0().child(
-                    gpui::StyledText::new(format!("Decided. {} accepted “{title}”.", names(&who)))
-                        .with_highlights([(
-                            0.."Decided.".len(),
-                            gpui::HighlightStyle {
-                                font_weight: Some(FontWeight::MEDIUM),
-                                color: Some(theme::text()),
-                                ..Default::default()
-                            },
-                        )]),
-                ),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(gpui::StyledText::new(line).with_highlights([(
+                        0..lead,
+                        gpui::HighlightStyle {
+                            font_weight: Some(FontWeight::MEDIUM),
+                            color: Some(theme::text()),
+                            ..Default::default()
+                        },
+                    )])),
             )
             .child(
                 ui::button(

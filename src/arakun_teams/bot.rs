@@ -704,6 +704,18 @@ pub fn accept_body(bot: &Msg) -> Body {
     }
 }
 
+/// The body that reverses the decision the bot message `bot_id` proposed.
+pub fn reverse_body(bot_id: &str, reason: String) -> Body {
+    Body {
+        kind: "decision_reverse".into(),
+        text: reason.trim().to_string(),
+        reply_to: Some(bot_id.to_string()),
+        mentions: Vec::new(),
+        bot: None,
+        decision: Some(serde_json::json!({ "of": bot_id })),
+    }
+}
+
 // ---- Claude Code -----------------------------------------------------------------
 
 /// The user's own Claude Code, run headless and read-only.
@@ -1077,6 +1089,30 @@ impl Hub {
         };
         self.bot.rejected.remove(bot_id);
         self.send_body(team_id, channel_id, accept_body(&bot), cx)
+    }
+
+    /// Sends a `decision_reverse` for the bot message `bot_id`, with an
+    /// optional reason. Any member may; the first one stands.
+    pub fn reverse_decision(
+        &mut self,
+        team_id: &str,
+        channel_id: &str,
+        bot_id: &str,
+        reason: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let known = self
+            .channels
+            .get(&channel_key(team_id, channel_id))
+            .is_some_and(|c| {
+                c.messages
+                    .iter()
+                    .any(|m| m.id == bot_id && meta(m).is_some())
+            });
+        if !known {
+            return false;
+        }
+        self.send_body(team_id, channel_id, reverse_body(bot_id, reason), cx)
     }
 
     /// Turns a proposed decision down, on this device only.

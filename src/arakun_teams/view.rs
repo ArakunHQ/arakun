@@ -169,8 +169,11 @@ pub struct TeamsView {
     pending_jump: Option<String>,
     /// The decision open in the Decisions panel, by its bot message ID.
     decision: Option<String>,
-    /// Decisions shows only the ones this user accepted or proposed.
-    decisions_mine: bool,
+    /// Which decisions the log shows.
+    decisions_filter: decisions_view::Filter,
+    /// The decision whose "Reverse it" was pressed: its reason field shows.
+    reversing: Option<String>,
+    reverse_reason: Entity<TextInput>,
     decision_query: Entity<TextInput>,
     /// The login typed to invite, as GitHub knows it.
     lookup: Option<(String, Lookup)>,
@@ -215,6 +218,7 @@ impl TeamsView {
         let device_code = cx.new(|cx| TextInput::new("arakun-device.…", cx).mono());
         let decision_query =
             cx.new(|cx| TextInput::new("Who decided what? Search a file, a word, a person", cx));
+        let reverse_reason = cx.new(|cx| TextInput::new("Why? (optional)", cx));
         let on = |cx: &mut Context<Self>,
                   input: &Entity<TextInput>,
                   act: fn(&mut Self, InputEvent, &mut Context<Self>)| {
@@ -262,6 +266,14 @@ impl TeamsView {
             }),
             on(cx, &device_code, |_, _, cx| cx.notify()),
             on(cx, &decision_query, |_, _, cx| cx.notify()),
+            on(cx, &reverse_reason, |this, ev, cx| match ev {
+                InputEvent::Submit => this.reverse_picked(cx),
+                InputEvent::Cancel => {
+                    this.reversing = None;
+                    cx.notify();
+                }
+                _ => cx.notify(),
+            }),
         ];
         Self {
             teams,
@@ -290,7 +302,9 @@ impl TeamsView {
             unfolded: HashSet::new(),
             pending_jump: None,
             decision: None,
-            decisions_mine: false,
+            decisions_filter: decisions_view::Filter::All,
+            reversing: None,
+            reverse_reason,
             decision_query,
             lookup: None,
             _lookup: None,
@@ -2647,7 +2661,11 @@ impl TeamsView {
         let mut runs_placed = vec![false; bot.runs.len()];
         for (i, m) in messages.iter().enumerate() {
             // An acceptance shows as the "Decided" line under its answer.
-            if m.body.kind == "decision_accept" || m.body.kind == "edit" {
+            // Acceptances and reversals show as the line under their answer.
+            if matches!(
+                m.body.kind.as_str(),
+                "decision_accept" | "decision_reverse" | "edit"
+            ) {
                 continue;
             }
             for (n, (notice, at)) in notices.iter().enumerate() {
@@ -2666,7 +2684,7 @@ impl TeamsView {
                 lines.push(Line::Joined);
             }
             lines.push(Line::Message(i));
-            if bot.decided.contains_key(&m.id) {
+            if bot.decided.contains_key(&m.id) || bot.reversed.contains_key(&m.id) {
                 lines.push(Line::Decided(i));
             }
             for (r, run) in bot.runs.iter().enumerate() {

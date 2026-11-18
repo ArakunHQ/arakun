@@ -1723,8 +1723,17 @@ impl Host {
         }
         let gated = self.waiting.as_ref().is_some_and(|(c, _)| c == NO_SANDBOX);
         if self.stopping.is_none() && !gated {
-            for text in take_inbox(&self.meta.id) {
-                self.thread.update(cx, |t, cx| t.send(text, cx));
+            for mut text in take_inbox(&self.meta.id) {
+                // Notes for the agent (a branch rename) arrive wrapped in the
+                // prompt: hand them over as notes, so the chat shows only the
+                // prompt.
+                let notes = crate::agent::chart::take_hints(&mut text);
+                self.thread.update(cx, |t, cx| {
+                    for note in notes {
+                        t.add_note(note);
+                    }
+                    t.send(text, cx)
+                });
                 self.dirty = true;
             }
         }

@@ -35,7 +35,8 @@ const INVITE_DAYS = 7;
 /// A pending user may remind a team's admins once per this many seconds.
 const REMIND_EVERY = 60 * 60;
 /// Per request: a rotation of MAX_MEMBERS with 20 devices each, or one new
-/// device's keys for 25 epochs. D1 runs them as one batch.
+/// device's keys for 500 epochs. D1 runs them as one batch. A larger grant of
+/// history goes in parts: the approval with the newest epochs, then uploads.
 const MAX_ENVELOPES = 500;
 const MAX_BODY = 1024 * 1024;
 const HISTORY_LIMIT = 200;

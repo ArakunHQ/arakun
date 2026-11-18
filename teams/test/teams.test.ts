@@ -750,6 +750,23 @@ describe("envelopes", () => {
     expect(theirs.map((e) => e.epoch)).toEqual([2]);
   });
 
+  it("of older epochs can be granted to a member after the approval, in parts", async () => {
+    const t = await team();
+    const m = await join(t);
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const path = `/teams/${t.teamId}/envelopes`;
+    const key2 = newKey();
+    const rotation = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
+    await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: rotation } }), 200);
+    // Approved with the newest epoch only, then given epoch 1 in its own upload.
+    const c = await join({ ...t, keys: new Map([[2, key2]]) });
+    const older = await envelope(t.teamId, 1, t.keys.get(1)!, c.device, t.owner.device);
+    expect(await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [older] } }), 200)).toMatchObject({ stored: 1 });
+    const theirs = await expectJson<{ epoch: number }[]>(api(c.user, "GET", path, { device: c.device }), 200);
+    expect(theirs.map((e) => e.epoch)).toEqual([1, 2]);
+  });
+
   it("are asked only for epochs with a key when two removals skipped one", async () => {
     const t = await team();
     const a = await join(t);

@@ -138,7 +138,10 @@ without it, `403` if it is not one of the caller's devices.
    `200 { github_id, role: "member" }`. It expects every device of the new member
    and every epoch with a key (one that has envelopes) from the lowest one given
    through the newest, so an admin may leave out old epochs but never a device. An
-   epoch that two removals skipped has no key and is left out. While a rotation is
+   epoch that two removals skipped has no key and is left out. A request holds at
+   most 500 envelopes; a grant of more (20 devices and over 25 epochs) goes in
+   parts: approve with the newest epochs, then upload the older ones for the new
+   member's devices with `PUT /teams/<team_id>/envelopes`, 500 at a time. While a rotation is
    pending, the rotation then covers the new member too. `409` if the team has no
    key yet, has 25 members already, or its newest key or the new member's devices
    changed since the admin read them (fetch them again and retry). `.../reject`

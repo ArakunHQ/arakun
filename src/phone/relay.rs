@@ -1714,12 +1714,13 @@ mod tests {
         let (mut stream, _) = relay.listener.accept().unwrap();
         let mut buf = [0u8; 4096];
         let _ = stream.read(&mut buf);
-        write!(
-            stream,
+        // One write: the client keeps only the body that came with the head,
+        // and `write!` would send them in pieces.
+        let response = format!(
             "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()
-        )
-        .unwrap();
+        );
+        stream.write_all(response.as_bytes()).unwrap();
     }
 
     #[test]

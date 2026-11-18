@@ -656,7 +656,8 @@ impl ReadBudget {
     }
 }
 
-/// What Clef is sent of a diff: all of it up to 14,000 bytes, or its head and tail.
+/// What Clef is sent of a diff: its first 14,000 bytes, or its head and tail
+/// when it is longer than about 20,000.
 fn diff_excerpt(diff: &str) -> String {
     let cut = (0..=diff.len().min(14_000))
         .rev()

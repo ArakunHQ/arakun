@@ -1038,6 +1038,49 @@ impl Shell {
                                     this.open_servers_tab(window, cx)
                                 })),
                         );
+                let env = &self.projects[pi].environments[ei];
+                let can_settle = env
+                    .sessions
+                    .iter()
+                    .any(|s| matches!(s.status, Status::NeedsInput | Status::Error));
+                let deletable = !env.is_checkout;
+                let settle = env.path.clone();
+                panel = panel
+                    .child(
+                        ui::menu_item(
+                            "cm-server-settle",
+                            "checkmark-circle02",
+                            "Settle threads",
+                            false,
+                            can_settle,
+                        )
+                        .when(can_settle, |d| {
+                            d.on_click(cx.listener(move |this, _, _, cx| {
+                                this.menu = None;
+                                this.servers_settle_env(&settle, cx);
+                                cx.notify();
+                            }))
+                        }),
+                    )
+                    .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
+                    .child(
+                        ui::menu_item(
+                            "cm-server-delete",
+                            "delete02",
+                            if deletable {
+                                "Delete environment…"
+                            } else {
+                                "Main checkout can't be deleted"
+                            },
+                            true,
+                            deletable,
+                        )
+                        .when(deletable, |d| {
+                            d.on_click(cx.listener(move |this, _, window, cx| {
+                                this.servers_delete_env(pi, ei, window, cx)
+                            }))
+                        }),
+                    );
             }
             MenuTarget::Env(pi, ei) => {
                 let env = self.projects.get(pi).and_then(|p| p.environments.get(ei));

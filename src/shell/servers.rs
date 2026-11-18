@@ -17,13 +17,14 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{Context, Entity, SharedString, Task, Window};
+use gpui::{AppContext as _, Context, Entity, SharedString, Task, Window};
 use serde_json::{Value, json};
 
 use super::{Modal, Shell};
 use crate::agent::{
     AgentKind, Entry, RemoteAction, SessionMeta, Thread, ThreadStatus, Transcript, Usage,
 };
+use crate::dialogs::{DeleteEnvDialog, DialogEvent};
 use crate::model::{self, Environment, Project, Remote, Session, Status, TabKind, unix_now};
 use crate::phone::{ClientId, wire};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
@@ -129,6 +130,9 @@ pub(super) struct ServersLink {
     /// until the server answers: they name the branch once it started, and
     /// go back in the composer if it did not. Each with its server.
     first_prompts: HashMap<u64, (String, FirstPrompt)>,
+    /// The environment a server was asked to delete, by server and place,
+    /// until it answers. The Delete environment dialog waits on it.
+    deleting: Option<(String, String)>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -699,6 +703,7 @@ impl Shell {
             added: None,
             new_env: HashMap::new(),
             first_prompts: HashMap::new(),
+            deleting: None,
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -802,6 +807,7 @@ impl Shell {
                 if link.added.as_ref().is_some_and(|(s, _)| s == id) {
                     link.added = None;
                 }
+                link.deleting.take_if(|(server, _)| server == id);
                 let new = link.new_env.remove(id);
                 // Its link stops without a word: the phones waiting on a start hear it here.
                 let waiting = link.starts.dropped(id);
@@ -1648,6 +1654,131 @@ impl Shell {
         true
     }
 
+    /// The sessions of a server's environment stop asking for attention, there.
+    pub(super) fn servers_settle_env(&mut self, env_path: &Path, cx: &mut Context<Self>) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        match self.connected(&remote.server) {
+            // The inbox brings the sessions back settled.
+            Some(client) => client.send(&json!({ "type": "settle_env", "place": remote.place })),
+            None => self.notify(
+                crate::island::AlertKind::Warning,
+                "Could not settle the threads",
+                &format!("{} is not connected right now.", remote.machine),
+                None,
+                cx,
+            ),
+        }
+    }
+
+    /// The connection to `server` when it is up.
+    fn connected(&self, server: &str) -> Option<&Client> {
+        let conn = self.servers.as_ref()?.conns.get(server)?;
+        (conn.reach == Reach::Connected).then_some(&conn.client)
+    }
+
+    /// The Delete environment dialog for a server's environment `ei` of
+    /// project `pi`. The server deletes the worktree; its answer closes the dialog.
+    pub(super) fn servers_delete_env(
+        &mut self,
+        pi: usize,
+        ei: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        let Some(env) = self.projects.get(pi).and_then(|p| p.environments.get(ei)) else {
+            return;
+        };
+        let Some(remote) = env.remote.clone().filter(|_| !env.is_checkout) else {
+            return;
+        };
+        let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
+        let place = PathBuf::from(&remote.place);
+        let machine = remote.machine.clone();
+        let dialog = cx.new(|cx| DeleteEnvDialog::remote(place, branch, machine, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, dialog, ev: &DialogEvent, window, cx| match ev {
+                DialogEvent::DeleteOnServer { delete_branch } => {
+                    if let Err(why) = this.servers_ask_delete(&remote, *delete_branch) {
+                        dialog.update(cx, |d, cx| d.failed(why, cx));
+                    }
+                }
+                _ => {
+                    if let Some(link) = &mut this.servers {
+                        link.deleting = None;
+                    }
+                    this.close_modal(window, cx);
+                }
+            },
+        );
+        self.modal = Some((Modal::DeleteEnv(dialog), sub));
+        cx.notify();
+    }
+
+    fn servers_ask_delete(&mut self, remote: &Remote, delete_branch: bool) -> Result<(), String> {
+        let Some(client) = self.connected(&remote.server) else {
+            return Err(format!("{} is not connected right now.", remote.machine));
+        };
+        client.send(&json!({
+            "type": "delete_env", "place": remote.place, "delete_branch": delete_branch,
+        }));
+        if let Some(link) = &mut self.servers {
+            link.deleting = Some((remote.server.clone(), remote.place.clone()));
+        }
+        Ok(())
+    }
+
+    fn delete_dialog(&self) -> Option<Entity<DeleteEnvDialog>> {
+        match &self.modal {
+            Some((Modal::DeleteEnv(d), _)) => Some(d.clone()),
+            _ => None,
+        }
+    }
+
+    /// The server answered a `delete_env`. The inbox came first, so a deleted
+    /// environment is already gone from the sidebar.
+    fn servers_env_deleted(
+        &mut self,
+        server: &str,
+        msg: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let asked = (server.to_string(), text(msg, "place"));
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        if link.deleting.as_ref() != Some(&asked) {
+            return;
+        }
+        link.deleting = None;
+        let error = msg["error"].as_str().map(str::to_string);
+        if msg["deleted"] != true {
+            if let Some(dialog) = self.delete_dialog() {
+                let why = error.unwrap_or_else(|| "The server did not delete it.".into());
+                dialog.update(cx, |d, cx| d.failed(why, cx));
+            }
+            return;
+        }
+        if self.delete_dialog().is_some() {
+            self.close_modal(window, cx);
+        }
+        if let Some(why) = error {
+            self.notify(
+                crate::island::AlertKind::Warning,
+                "The environment is deleted",
+                &why,
+                None,
+                cx,
+            );
+        }
+        self.ensure_terminal(window, cx);
+    }
+
     /// A session this app started on a server is in its inbox now: its tab opens.
     fn servers_open_started(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((server, id)) = self.servers.as_ref().and_then(|l| l.starting_id.clone()) else {
@@ -1742,6 +1873,8 @@ impl Shell {
                 if back {
                     settle_first_prompts(&mut link.first_prompts, &link.starts, id);
                 }
+                let lost_delete =
+                    !back && link.deleting.take_if(|(server, _)| server == id).is_some();
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for
@@ -1769,6 +1902,15 @@ impl Shell {
                     let why = "The connection dropped before the server said whether it made the environment. Check its environments before you try again.";
                     self.servers_new_env_failed(&new, why.into(), cx);
                 }
+                // Its answer would have come on the connection that dropped.
+                if lost_delete && let Some(dialog) = self.delete_dialog() {
+                    dialog.update(cx, |d, cx| {
+                        d.failed(
+                            "The server dropped before it answered. If the environment is still there, try again.".into(),
+                            cx,
+                        )
+                    });
+                }
             }
             Event::Message(msg) => {
                 if msg["type"] == "inbox" {
@@ -1781,6 +1923,8 @@ impl Shell {
                     }
                     // The server sends its inbox before this: the folder is here.
                     self.servers_open_added(window, cx);
+                } else if msg["type"] == "env_deleted" {
+                    self.servers_env_deleted(id, &msg, window, cx);
                 } else if msg["type"] == "place_failed" {
                     // What was being added is not coming: the form can ask again.
                     if link.adding.remove(id) {

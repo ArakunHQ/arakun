@@ -1825,6 +1825,51 @@ impl Daemon {
                 })
                 .detach();
             }
+            ClientMsg::SettleEnv { place } => {
+                let place = PathBuf::from(place);
+                if self.store.place(&place).is_none() {
+                    self.transport.send(
+                        client,
+                        wire::error("that folder is not one of this server's"),
+                    );
+                    return;
+                }
+                self.settle_place(&place, cx);
+                self.sync_inbox(cx);
+            }
+            ClientMsg::DeleteEnv {
+                place,
+                delete_branch,
+            } => {
+                let path = PathBuf::from(&place);
+                if let Err(e) = self.deletable(&path, cx) {
+                    self.transport
+                        .send(client, env_deleted(&place, false, Some(&e)));
+                    return;
+                }
+                let branch = delete_branch.then(|| store::branch(&path)).flatten();
+                cx.spawn(async move |this, cx| {
+                    let p = path.clone();
+                    let done = cx
+                        .background_executor()
+                        .spawn(async move { remove_worktree(&p, branch.as_deref()) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        // The folder is gone even when its branch stayed.
+                        let (deleted, error) = match done {
+                            Ok(branch_kept) => {
+                                this.forget_place(&path, cx);
+                                this.sync_inbox(cx);
+                                (true, branch_kept.map(|e| format!("The branch stayed: {e}")))
+                            }
+                            Err(e) => (false, Some(e)),
+                        };
+                        this.transport
+                            .send(client, env_deleted(&place, deleted, error.as_deref()));
+                    });
+                })
+                .detach();
+            }
             ClientMsg::Ping => {}
         }
     }
@@ -1859,6 +1904,87 @@ impl Daemon {
             });
         })
         .detach();
+    }
+
+    /// The place's sessions stop asking for attention, as the app settles an
+    /// environment's: they go idle and their agents stop. A turn still running
+    /// is left alone, and so is a question on a device's screen: it is the
+    /// user's to answer.
+    fn settle_place(&mut self, place: &Path, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self
+            .store
+            .sessions
+            .iter()
+            .filter(|s| s.place == place)
+            .map(|s| s.id.clone())
+            .collect();
+        for id in ids {
+            let asks = match self.live.get(&id).map(|l| l.thread.read(cx)) {
+                Some(t) if t.in_background() => continue,
+                Some(t) => match status_of(t) {
+                    Status::Working => continue,
+                    Status::NeedsInput if self.watched(&id) => continue,
+                    status => status == Status::NeedsInput,
+                },
+                None => false,
+            };
+            if let Some(s) = self.store.session_mut(&id) {
+                s.status = Status::Idle;
+            }
+            // Its agent waits on an answer nobody will give: it stops now,
+            // as the app's does.
+            if asks {
+                self.retire(&id, cx);
+            } else {
+                self.retire_if_unwatched(&id, cx);
+            }
+        }
+        self.save_store();
+        self.inbox_dirty = true;
+    }
+
+    /// Why the worktree at `place` cannot be deleted, if it cannot.
+    fn deletable(&self, place: &Path, cx: &App) -> Result<(), String> {
+        if self.store.place(place).is_none() {
+            return Err("that folder is not one of this server's".into());
+        }
+        removable(place)?;
+        let busy = self.store.sessions.iter().any(|s| {
+            s.place == place
+                && self.live.get(&s.id).is_some_and(|l| {
+                    let t = l.thread.read(cx);
+                    matches!(status_of(t), Status::Working | Status::NeedsInput)
+                        || t.in_background()
+                })
+        });
+        if busy {
+            return Err("a session there is still working; stop it first".into());
+        }
+        Ok(())
+    }
+
+    /// The place is gone from disk: it leaves the list, with its sessions,
+    /// which have no folder to go on in.
+    fn forget_place(&mut self, place: &Path, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self
+            .store
+            .sessions
+            .iter()
+            .filter(|s| s.place == place)
+            .map(|s| s.id.clone())
+            .collect();
+        for id in ids {
+            if let Some(live) = self.live.remove(&id) {
+                live.thread.update(cx, |t, _| t.shutdown());
+            }
+            self.watching.retain(|_, watched| *watched != id);
+            self.notified.remove(&id);
+            self.writer.forget(self.store.transcript_path(&id));
+            self.store.remove_session(&id);
+        }
+        self.store.remove_place(place);
+        self.save_store();
+        self.inbox_dirty = true;
     }
 
     /// A folder a device asked for is a place now, or why it is not. The
@@ -2913,6 +3039,35 @@ fn worktree_within(
 /// How long making a worktree, its hooks included, may take.
 const WORKTREE_LIMIT: Duration = Duration::from_secs(2 * 60);
 
+/// Removes the worktree at `place` and what is in it, then `branch` if given,
+/// as the app deletes an environment. Ok once the folder is gone; it carries
+/// why the branch stayed, when it did.
+fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>, String> {
+    let (root, _) = store::repo(place).ok_or("that folder is not in a git repository")?;
+    run_git(
+        git(&root)
+            .args(["worktree", "remove", "--force"])
+            .arg(place),
+    )?;
+    let _ = run_git(git(&root).args(["worktree", "prune"]));
+    Ok(branch.and_then(|b| run_git(git(&root).args(["branch", "-D", "--", b])).err()))
+}
+
+/// Whether the folder at `place` is a worktree a device may delete: never a
+/// repository's main folder, which holds the history of every worktree.
+fn removable(place: &Path) -> Result<(), String> {
+    match store::repo(place) {
+        Some((root, _)) if root != place => Ok(()),
+        Some(_) => Err("a repository's main folder is not deleted".into()),
+        None => Err("that folder is not a git worktree".into()),
+    }
+}
+
+/// The answer to `delete_env`: whether the folder is gone, and what went wrong.
+fn env_deleted(place: &str, deleted: bool, error: Option<&str>) -> String {
+    json!({ "type": "env_deleted", "place": place, "deleted": deleted, "error": error }).to_string()
+}
+
 /// Renames the branch at `place` from `from` to `to`, as long as `from` is
 /// still the one checked out there: one renamed by hand meanwhile stays.
 /// Whether it renamed it.
@@ -3413,6 +3568,50 @@ mod tests {
         ] {
             assert!(!plain_branch(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_deleted_worktree_takes_its_folder_and_maybe_its_branch() {
+        let dir = std::env::temp_dir().join(format!("arakun-server-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let main = dir.join("app");
+        std::fs::create_dir_all(&main).unwrap();
+        let git_ok = |d: &Path, args: &[&str]| {
+            run_git(
+                git(d)
+                    .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                    .args(args),
+            )
+            .unwrap()
+        };
+        git_ok(&main, &["init", "-q", "-b", "main"]);
+        git_ok(&main, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let main = main.canonicalize().unwrap();
+        for b in ["keep", "drop"] {
+            git_ok(
+                &main,
+                &["worktree", "add", "-q", "-b", b, &format!("../{b}")],
+            );
+        }
+        let (keep, drop) = (
+            dir.join("keep").canonicalize().unwrap(),
+            dir.join("drop").canonicalize().unwrap(),
+        );
+        // Only worktrees go, never the folder every one of them shares.
+        assert!(removable(&main).unwrap_err().contains("main folder"));
+        assert!(removable(&dir).unwrap_err().contains("not a git worktree"));
+        assert_eq!(removable(&keep), Ok(()));
+
+        // What is in a worktree goes with it, uncommitted or not.
+        std::fs::write(keep.join("notes.txt"), "draft").unwrap();
+        assert_eq!(remove_worktree(&keep, None), Ok(None));
+        assert_eq!(remove_worktree(&drop, Some("drop")), Ok(None));
+        assert!(!keep.exists() && !drop.exists());
+        let has = |b: &str| run_git(git(&main).args(["rev-parse", "--verify", "-q", b])).is_ok();
+        assert!(has("refs/heads/keep") && !has("refs/heads/drop"));
+        // Gone already: nothing to remove.
+        assert!(remove_worktree(&keep, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

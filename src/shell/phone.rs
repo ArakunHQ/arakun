@@ -582,7 +582,20 @@ impl Shell {
                     None => text,
                 };
                 self.ensure_live(&env_path, &sid, window, cx);
-                if let Some(thread) = self.phone_thread(&env_path, &sid) {
+                let server = self
+                    .find_env(&env_path)
+                    .and_then(|e| e.remote.as_ref())
+                    .map(|r| r.server.clone());
+                // A server's session: it goes there with who sent it, so one
+                // that does not get there is said to this phone, not put in
+                // the desktop's composer.
+                if let Some(server) = server {
+                    self.servers_phone_send(&server, &sid, &text, client, cx);
+                    if let Some(s) = self.session_mut(&env_path, &sid) {
+                        s.updated = crate::model::unix_now();
+                    }
+                    cx.notify();
+                } else if let Some(thread) = self.phone_thread(&env_path, &sid) {
                     thread.update(cx, |t, cx| t.send(text, cx));
                     if let Some(s) = self.session_mut(&env_path, &sid) {
                         s.updated = crate::model::unix_now();
@@ -895,6 +908,14 @@ impl Shell {
         if let Some((env_path, sid)) = self.phone_session(&id) {
             self.retire_if_hidden(&env_path, &sid, cx);
         }
+    }
+
+    /// Whether phone `client` looks at what phones call `pid`: a phone that
+    /// came later with the same id does not.
+    pub(super) fn phone_looks_at(&self, client: ClientId, pid: &str) -> bool {
+        self.phone
+            .as_ref()
+            .is_some_and(|link| link.watching.get(&client).is_some_and(|w| w == pid))
     }
 
     pub(super) fn phone_send(&self, client: ClientId, text: String) {

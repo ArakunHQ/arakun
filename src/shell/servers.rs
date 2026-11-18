@@ -174,6 +174,10 @@ fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
     gone
 }
 
+/// Said to a phone whose prompt did not reach a server's session.
+const PHONE_PROMPT_LOST: &str =
+    "the server was not connected, so your message did not reach it. Send it again once it is back";
+
 /// What the place of an older server's session starts with, whose folder is
 /// known by name only. Not an absolute path, so it never names a folder there.
 const GONE: &str = "gone:";
@@ -1115,6 +1119,33 @@ impl Shell {
         self.servers_send(&remote.server, id, msg, cx);
     }
 
+    /// A prompt phone `client` sent to `server`'s session `id`. One that
+    /// cannot go is said to that phone; it is not this app's to put back.
+    pub(super) fn servers_phone_send(
+        &mut self,
+        server: &str,
+        id: &str,
+        text: &str,
+        client: ClientId,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let connected = self
+            .servers
+            .as_ref()
+            .and_then(|l| l.conns.get(server))
+            .is_some_and(|c| c.reach == Reach::Connected);
+        if !connected {
+            self.phone_send(client, wire::error(PHONE_PROMPT_LOST));
+        }
+        // `phone` is this app's own: the server reads past it.
+        let msg = json!({ "type": "send", "text": text, "uploads": [], "phone": client });
+        self.servers_send(server, id, msg, cx);
+    }
+
     /// A message about session `id` to its server, or a word in the session
     /// on why it cannot go.
     fn servers_send(&mut self, server: &str, id: &str, mut msg: Value, cx: &mut Context<Self>) {
@@ -1278,6 +1309,13 @@ impl Shell {
             }
             Some("send") => {
                 let session = text(msg, "session");
+                // A phone's: told to that phone if it still looks at the session.
+                if let Some(client) = msg["phone"].as_u64() {
+                    if self.phone_looks_at(client, &phone_session_id(server, &session)) {
+                        self.phone_send(client, wire::error(PHONE_PROMPT_LOST));
+                    }
+                    return;
+                }
                 let Some(env) = self.server_session_env(server, &session) else {
                     return;
                 };

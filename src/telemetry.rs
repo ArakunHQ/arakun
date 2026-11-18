@@ -283,14 +283,15 @@ pub fn quit() {
 /// Reports an error Arakun handled, such as an agent that stopped with one:
 /// `kind` is its type in PostHog (`AgentError`). Only a fixed category of
 /// `message` is sent (`category`), never its text: an agent's error can hold
-/// a project's name or a credential no scrubbing would recognise.
-pub fn error(kind: &'static str, message: &str, props: &[(&str, &str)]) {
+/// a project's name or a credential no scrubbing would recognise. `props` must
+/// hold only fixed labels, numbers and flags for the same reason.
+pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) {
     if !CRASHES.load(Ordering::Relaxed) {
         return;
     }
     let mut map: Map<String, Value> = props
         .iter()
-        .map(|(k, v)| (k.to_string(), Value::from(*v)))
+        .map(|(k, v)| (k.to_string(), v.clone()))
         .collect();
     map.insert("$exception_level".into(), "error".into());
     map.insert(

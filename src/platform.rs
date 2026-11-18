@@ -384,11 +384,35 @@ fn is_bundled(exe: &Path) -> bool {
 /// Script Editor, so a click opens it: Arakun.app posts its own through gpui instead
 /// (`shell::sessions::send_notification`), and this is for a build run outside one.
 pub fn notify(title: &str, body: &str, critical: bool, icon: Option<&str>) {
+    if let Some(mut child) = spawn_notification(title, body, critical, icon) {
+        // Reaped off the main thread so no zombie is left behind.
+        std::thread::spawn(move || child.wait());
+    }
+}
+
+/// [`notify`] for a process about to exit: waits up to `limit` for the notification to
+/// be handed to the desktop, so the exit can't cut it off.
+pub fn notify_and_wait(title: &str, body: &str, limit: std::time::Duration) {
+    let Some(mut child) = spawn_notification(title, body, true, None) else {
+        return;
+    };
+    let until = std::time::Instant::now() + limit;
+    while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn spawn_notification(
+    title: &str,
+    body: &str,
+    critical: bool,
+    icon: Option<&str>,
+) -> Option<std::process::Child> {
     // The test arakun (`arakun dev`) shares the user's desktop session: its
     // notifications would land on the real desktop and pile up there.
     if std::env::var_os("ARAKUN_DEV").is_some() {
         eprintln!("arakun: notification (not shown in the test arakun): {title} · {body}");
-        return;
+        return None;
     }
     #[cfg(windows)]
     let mut cmd = {
@@ -434,12 +458,9 @@ pub fn notify(title: &str, body: &str, critical: bool, icon: Option<&str>) {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    match cmd.spawn() {
-        Ok(mut child) => {
-            std::thread::spawn(move || child.wait());
-        }
-        Err(e) => eprintln!("arakun: notification: {e}"),
-    }
+    cmd.spawn()
+        .inspect_err(|e| eprintln!("arakun: notification: {e}"))
+        .ok()
 }
 
 /// Starts playing a WAV file; the child ends when the sound does, and killing it stops

@@ -841,10 +841,6 @@ impl Shell {
                 .map(|l| l.thread.clone())
         });
         let in_session = session_id.is_some();
-        // A session another process runs can't be handed over from here.
-        let can_switch = !session_id
-            .as_ref()
-            .is_some_and(|id| crate::headless::shown(id));
         let busy = thread.as_ref().is_some_and(|t| t.read(cx).is_busy());
         use crate::agent::Setting;
         let model_label = self.setting_value_label(Setting::Model, cx);
@@ -1338,52 +1334,39 @@ impl Shell {
                             .items_center()
                             .gap(crate::ui::sp(4.))
                             .child(
+                                // One chip for the agent, its model and reasoning.
                                 chip(
-                                    "composer-agent",
-                                    Some(agent_icon(agent, 14.)),
-                                    agent.label().into(),
-                                    None,
-                                    can_switch,
+                                    "composer-model",
+                                    Some(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(crate::ui::sp(3.))
+                                            .child(agent_icon(agent, 14.))
+                                            .when(fast, |d| {
+                                                d.child(
+                                                    icon("flash", 12.)
+                                                        .text_color(theme::text_subtle()),
+                                                )
+                                            })
+                                            .into_any_element(),
+                                    ),
+                                    model_label.unwrap_or_else(|| agent.label().into()),
+                                    effort_label,
+                                    true,
                                 )
+                                .tooltip(ui::tip("Agent, model and reasoning"))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .when(can_switch, |d| {
-                                    d.on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                                .on_click(cx.listener(
+                                    |this, ev: &gpui::ClickEvent, _, cx| {
                                         this.open_composer_menu(
-                                            MenuTarget::AgentMenu,
+                                            MenuTarget::ModelMenu,
                                             ev.position(),
                                             cx,
                                         )
-                                    }))
-                                }),
+                                    },
+                                )),
                             )
-                            .when_some(model_label, |d, label| {
-                                d.child(
-                                    chip(
-                                        "composer-model",
-                                        fast.then(|| {
-                                            icon("flash", 12.)
-                                                .text_color(theme::text_subtle())
-                                                .into_any_element()
-                                        }),
-                                        label,
-                                        effort_label,
-                                        true,
-                                    )
-                                    .tooltip(ui::tip("Model and reasoning"))
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(cx.listener(
-                                        |this, ev: &gpui::ClickEvent, _, cx| {
-                                            this.open_composer_menu(
-                                                MenuTarget::ModelMenu,
-                                                ev.position(),
-                                                cx,
-                                            )
-                                        },
-                                    )),
-                                )
-                            })
                             .when_some(permissions, |d, (label, risky)| {
                                 d.child(
                                     chip(

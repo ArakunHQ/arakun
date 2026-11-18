@@ -587,8 +587,14 @@ fn cli(args: Vec<String>) -> Cli {
     }
 }
 
+#[cfg(not(windows))]
 pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|ver|luego|aprobar|rechazar] \
      | arakun island alert <title> [subtitle]";
+#[cfg(windows)]
+pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|ver|luego|aprobar|rechazar] \
+     | arakun island alert <title> [subtitle] \
+     | arakun island session <id> <working|waiting|done|error|ended> [project] [doing] \
+     | arakun island hook [agent]";
 
 /// `arakun island`'s state, or `alert` with its title and subtitle.
 fn island_args(rest: &[String]) -> Option<Vec<String>> {
@@ -624,6 +630,9 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
                 .cloned()
                 .collect(),
         ),
+        // `island_host::external` checks the rest.
+        #[cfg(windows)]
+        [first, ..] if first == "session" || first == "hook" => Some(rest.to_vec()),
         _ => None,
     }
 }
@@ -1419,6 +1428,18 @@ mod tests {
         assert_eq!(a(&["alert"]), None);
         assert_eq!(a(&["alert", "t", "s", "x"]), None);
         assert_eq!(a(&["dancing"]), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn island_takes_outside_sessions_on_windows() {
+        let a = |v: &[&str]| island_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(a(&["hook"]).map(|v| v.len()), Some(1));
+        assert_eq!(a(&["hook", "Codex"]).map(|v| v.len()), Some(2));
+        assert_eq!(
+            a(&["session", "s1", "done", "web"]).map(|v| v.len()),
+            Some(4)
+        );
     }
 
     #[test]

@@ -7,16 +7,57 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use gpui::{AppContext as _, Context, Entity, SharedString, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 
 use super::Shell;
 use crate::agent::catalog;
 use crate::agent::{
-    AgentKind, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
+    AgentKind, FailedAt, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
     ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
 use crate::state;
+
+/// Sends an agent's error to crash reports with where it failed. The folder
+/// check tells a deleted project apart from a broken agent.
+fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
+    use serde_json::Value;
+    let mut props = vec![
+        ("agent", Value::from(t.kind().id())),
+        ("cwd_exists", t.cwd().is_dir().into()),
+    ];
+    if let Some(version) = t.agent_title().and_then(agent_version) {
+        props.push(("agent_version", version.into()));
+    }
+    props.push(("stage", at.stage().into()));
+    if let Some(code) = at.code() {
+        props.push(("code", code.into()));
+    }
+    crate::telemetry::error("AgentError", msg, &props);
+}
+
+/// Sends `thread`'s failure if crash reports have not had it yet. `closing`
+/// sends a disconnect that still waits for its exit, which a thread about to
+/// shut down will never hear.
+pub(super) fn report_failure(thread: &Entity<Thread>, closing: bool, cx: &mut App) {
+    let Some(at) = thread.update(cx, |t, _| t.take_failure_report(closing)) else {
+        return;
+    };
+    if let ThreadStatus::Error(msg) = thread.read(cx).status() {
+        report_agent_error(thread.read(cx), at, &msg);
+    }
+}
+
+/// The version at the end of an agent's title ("Factory Droid 0.240.1"), and
+/// nothing else of it: the title is the agent's own text.
+fn agent_version(title: &str) -> Option<&str> {
+    let v = title.rsplit(' ').next()?.trim_start_matches('v');
+    (v.starts_with(|c: char| c.is_ascii_digit())
+        && v.len() <= 32
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
+    .then_some(v)
+}
 
 pub fn status_of(t: &Thread) -> Status {
     match t.status() {
@@ -326,16 +367,12 @@ impl Shell {
             }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
                 let status = status_of(thread.read(cx));
+                if status == Status::Error {
+                    report_failure(thread, false, cx);
+                }
                 if let Some(s) = self.session_mut(env_path, id)
                     && s.status != status
                 {
-                    // Once per failure: the status only changes back after a new turn.
-                    if status == Status::Error
-                        && let ThreadStatus::Error(msg) = thread.read(cx).status()
-                    {
-                        let agent = thread.read(cx).kind().id();
-                        crate::telemetry::error("AgentError", &msg, &[("agent", agent)]);
-                    }
                     s.status = status;
                     s.updated = model::unix_now();
                     cx.notify();
@@ -446,6 +483,7 @@ impl Shell {
                 let _ = write_transcript(&path, &transcript);
             }))
             .detach();
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
     }
@@ -720,8 +758,11 @@ impl Shell {
                     .retain(|(d, _)| *d != s && !(s == Setting::Model && *d == Setting::Effort));
                 claude_settings.push((s, v));
             }
-            claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         }
+        // The model first, also with nothing picked: an agent checks a
+        // reasoning level against the model it is on, and would skip one that
+        // only the remembered model has.
+        claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         thread.update(cx, |t, cx| {
             // Queued until the session exists, then sent with `initialize_session`
             // (Droid) or one by one before the first prompt (Claude, OpenCode, Codex).
@@ -775,6 +816,7 @@ impl Shell {
             if let Err(e) = write_transcript(&state::transcript_path(&old_id), &t.transcript(cx)) {
                 eprintln!("arakun: could not save {old_id}: {e}");
             }
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
         forget_alerts(&old_id);
@@ -1129,6 +1171,19 @@ impl Shell {
     /// the environment remembers it, so its next session starts the same.
     pub(super) fn choose_setting(&mut self, s: Setting, value: &str, cx: &mut Context<Self>) {
         let agent = self.composer_agent();
+        // Picking the model a running session is on: the next session gets
+        // its reasoning level too. Another session may have left the
+        // environment a different model, and that pick would then clear it.
+        let live_effort = (s == Setting::Model && self.composer_thread().is_some())
+            .then(|| {
+                let on = |s| self.setting_choices(s, cx).map(|(v, _)| v);
+                on(Setting::Model)
+                    .is_some_and(|m| m == value)
+                    .then(|| on(Setting::Effort))
+                    .flatten()
+            })
+            .flatten()
+            .filter(|v| !v.is_empty());
         if let Some(thread) = self.composer_thread() {
             thread.update(cx, |t, cx| t.set_setting(s, value, cx));
         } else if self.composer_in_session() {
@@ -1137,6 +1192,9 @@ impl Shell {
         if self.has_projects() {
             let path = self.env().path.clone();
             self.remember_setting(&path, agent, s, value, cx);
+            if let Some(effort) = live_effort {
+                self.remember_setting(&path, agent, Setting::Effort, &effort, cx);
+            }
         }
         cx.notify();
     }
@@ -1150,9 +1208,15 @@ impl Shell {
         value: &str,
         cx: &mut Context<Self>,
     ) {
+        // The value the menu shows: an agent still on its default model has
+        // none in its draft.
+        let shown = self.draft_choices(env_path, agent, s).map(|(v, _)| v);
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
+        // What OpenCode takes from the pick made anywhere, until this
+        // environment has a model of its own.
+        let inherited = (agent == model::Agent::OpenCode).then(|| opencode_draft(env));
         let draft = match agent {
             model::Agent::Droid => &mut env.draft_settings,
             model::Agent::Claude => &mut env.claude_settings,
@@ -1160,12 +1224,13 @@ impl Shell {
             model::Agent::Codex => &mut env.codex_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
-        draft.retain(|(d, _)| *d != s);
-        draft.push((s, value.to_string()));
-        // A model change may drop the effort picked for the old model.
-        if s == Setting::Model {
-            draft.retain(|(d, _)| *d != Setting::Effort);
-        }
+        put_in_draft(
+            draft,
+            shown.as_deref(),
+            inherited.unwrap_or_default(),
+            s,
+            value,
+        );
         // Other environments' next OpenCode sessions start on this model too.
         if agent == model::Agent::OpenCode && matches!(s, Setting::Model | Setting::Effort) {
             let model_settings = opencode_draft(env)
@@ -1176,12 +1241,117 @@ impl Shell {
         self.save(cx);
     }
 
-    /// Back to the agent's defaults, for the composer's session and the next ones.
-    pub(super) fn reset_settings(&mut self, cx: &mut Context<Self>) {
+    /// A setting's value and choices for `agent`: the composer's own, or what
+    /// the environment's next session of another agent starts with.
+    pub(super) fn agent_choices(
+        &self,
+        agent: model::Agent,
+        s: Setting,
+        cx: &gpui::App,
+    ) -> Option<(String, Vec<SettingOption>)> {
+        // An agent without levels (Droid before its catalog loads) has no choices.
+        let choices = if agent == self.composer_agent() {
+            self.setting_choices(s, cx)
+        } else if self.has_projects() {
+            self.draft_choices(&self.env().path, agent, s)
+        } else {
+            None
+        };
+        choices.filter(|(_, o)| !o.is_empty())
+    }
+
+    /// The label of `agent`'s value for a setting, as `setting_value_label`.
+    pub(super) fn agent_value_label(
+        &self,
+        agent: model::Agent,
+        s: Setting,
+        cx: &gpui::App,
+    ) -> Option<String> {
+        if agent == self.composer_agent() {
+            return self.setting_value_label(s, cx);
+        }
+        let (current, options) = self.agent_choices(agent, s, cx)?;
+        // Droid's short model name, as its chip shows it.
+        if agent == model::Agent::Droid
+            && let Some(settings) = self.draft_settings()
+        {
+            return Some(if settings.get(s).is_empty() {
+                "Default".into()
+            } else {
+                crate::agent::setting_label(&settings, &catalog::current().models, s)
+            });
+        }
+        let label = crate::agent::acp_label(s, &current, &options);
+        Some(if label.is_empty() {
+            "Default".into()
+        } else {
+            label
+        })
+    }
+
+    /// Whether the composer may move to another agent: a session another
+    /// process runs can't be handed over from here.
+    pub(super) fn can_switch_agent(&self) -> bool {
+        !matches!(
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind),
+            Some(TabKind::Session { id, .. }) if crate::headless::shown(id)
+        )
+    }
+
+    /// Moves the composer to `agent`: the next session's agent on the New
+    /// session tab, or a hand-over of the running one.
+    pub(super) fn switch_agent(
+        &mut self,
+        agent: model::Agent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if agent == self.composer_agent() || !self.can_switch_agent() {
+            return;
+        }
+        if self.composer_in_session() {
+            self.continue_with(agent, window, cx);
+        } else {
+            self.env_mut().agent = agent;
+            model::set_default_agent(agent);
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
+    /// Picks a setting of `agent`. For another agent than the composer's it is
+    /// remembered, so the switch to that agent starts with it. Only a model
+    /// pick switches a running session: handing it over stops its agent, which
+    /// a click meant for reasoning or fast mode should not do.
+    pub(super) fn pick_setting(
+        &mut self,
+        agent: model::Agent,
+        s: Setting,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if agent == self.composer_agent() {
+            self.choose_setting(s, value, cx);
+            return;
+        }
+        if !self.has_projects() || !self.can_switch_agent() {
+            return;
+        }
+        let path = self.env().path.clone();
+        self.remember_setting(&path, agent, s, value, cx);
+        if s == Setting::Model || !self.composer_in_session() {
+            self.switch_agent(agent, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Back to `agent`'s defaults, for the composer's session (when it is
+    /// `agent`'s) and the next ones.
+    pub(super) fn reset_settings(&mut self, agent: model::Agent, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
-        let agent = self.composer_agent();
         {
             let env = self.env_mut();
             // Only what the model menu shows; the permission level stays.
@@ -1199,7 +1369,10 @@ impl Shell {
             }
         }
         self.save(cx);
-        if let Some(thread) = self.composer_thread() {
+        if let Some(thread) = self
+            .composer_thread()
+            .filter(|_| agent == self.composer_agent())
+        {
             let defaults: Vec<(Setting, String)> = match agent {
                 model::Agent::Droid => {
                     let d = &catalog::current().defaults;
@@ -1521,6 +1694,7 @@ impl Shell {
             .find_env_mut(&path)
             .and_then(|env| env.session_index(id).map(|i| env.sessions.remove(i)));
         if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
         let mut paths = vec![state::transcript_path(id)];
@@ -1788,6 +1962,50 @@ pub(super) fn codex_draft(env: &model::Environment) -> Vec<(Setting, String)> {
     draft
 }
 
+/// Puts the pick of `value` for `s` in an agent's `draft`. `shown` is the
+/// value the menu showed, and `inherited` what the draft takes from elsewhere
+/// until it has a model of its own (OpenCode's last pick).
+fn put_in_draft(
+    draft: &mut Vec<(Setting, String)>,
+    shown: Option<&str>,
+    inherited: Vec<(Setting, String)>,
+    s: Setting,
+    value: &str,
+) {
+    let changed = value_changed(shown, draft, s, value);
+    draft.retain(|(d, _)| *d != s);
+    draft.push((s, value.to_string()));
+    if s != Setting::Model {
+        return;
+    }
+    let has_effort = |draft: &[(Setting, String)]| draft.iter().any(|(d, _)| *d == Setting::Effort);
+    if changed {
+        // A model change may drop the effort picked for the old model. Picking
+        // the same model again keeps it.
+        draft.retain(|(d, _)| *d != Setting::Effort);
+    } else if !has_effort(draft)
+        && let Some(effort) = inherited.into_iter().find(|(d, _)| *d == Setting::Effort)
+    {
+        // With a model of its own the environment stops taking that pick,
+        // and its reasoning level would go with it.
+        draft.push(effort);
+    }
+}
+
+/// Whether picking `value` for `s` changes it: against the value the menu
+/// shows (`shown`), or against the draft when the agent has no choices yet.
+fn value_changed(
+    shown: Option<&str>,
+    draft: &[(Setting, String)],
+    s: Setting,
+    value: &str,
+) -> bool {
+    match shown {
+        Some(shown) => shown != value,
+        None => !draft.iter().any(|(d, v)| *d == s && v == value),
+    }
+}
+
 /// The OpenCode settings an environment's next session starts with: its own
 /// picks, and where it has no model of its own, the model last picked anywhere.
 /// The model goes first: the reasoning levels on offer depend on it.
@@ -1811,6 +2029,18 @@ pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_version_keeps_only_the_version() {
+        use super::agent_version;
+        assert_eq!(agent_version("Factory Droid 0.240.1"), Some("0.240.1"));
+        assert_eq!(
+            agent_version("claude-code-acp v1.2.3-beta.1"),
+            Some("1.2.3-beta.1")
+        );
+        assert_eq!(agent_version("Acme internal build"), None);
+        assert_eq!(agent_version("x 1.0/../secret"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -1819,5 +2049,36 @@ mod tests {
         let (a, b) = (notification_tag(""), notification_tag(""));
         assert!(a.starts_with("open:none:"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn reselecting_an_inherited_model_keeps_its_reasoning_level() {
+        let (m, e) = (Setting::Model, Setting::Effort);
+        let pick = vec![(m, "gpt".to_string()), (e, "high".to_string())];
+        // The environment has no settings of its own and shows the pick's model.
+        let mut draft = Vec::new();
+        put_in_draft(&mut draft, Some("gpt"), pick.clone(), m, "gpt");
+        // The draft is also what is written back as the pick made anywhere.
+        assert_eq!(draft, pick);
+        // Another model: the level went with the old one.
+        put_in_draft(&mut draft, Some("gpt"), pick.clone(), m, "other");
+        assert_eq!(draft, [(m, "other".to_string())]);
+        // A level of its own is not replaced by the inherited one.
+        let mut draft = vec![(e, "low".to_string())];
+        put_in_draft(&mut draft, Some("gpt"), pick, m, "gpt");
+        assert_eq!(draft, [(e, "low".to_string()), (m, "gpt".to_string())]);
+    }
+
+    #[test]
+    fn picking_the_model_an_agent_is_on_by_default_changes_nothing() {
+        let m = Setting::Model;
+        // On its default model the draft has no model, only the level picked.
+        let draft = vec![(Setting::Effort, "medium".to_string())];
+        assert!(!value_changed(Some("sonnet"), &draft, m, "sonnet"));
+        assert!(value_changed(Some("sonnet"), &draft, m, "opus"));
+        // No choices loaded yet: the draft decides.
+        assert!(value_changed(None, &draft, m, "sonnet"));
+        let draft = vec![(m, "opus".to_string())];
+        assert!(!value_changed(None, &draft, m, "opus"));
     }
 }

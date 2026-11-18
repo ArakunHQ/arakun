@@ -236,12 +236,17 @@ after a week).
 
 ### Stay in the loop
 
-- **Dynamic Island** (Linux on Wayland, and macOS). A small overlay at the top of the
-  screen that shows what the agents of every project are doing: a dot per busy session, a
-  card when one finishes, fails or needs an answer. It runs as its own process
+- **Dynamic Island** (Linux on Wayland, macOS and Windows). A small overlay at the top of
+  the screen that shows what the agents of every project are doing: a dot per busy
+  session, a card when one finishes, fails or needs an answer. It runs as its own process
   (`arakun island-host`). On Linux it needs a compositor with the wlr-layer-shell
-  protocol. On a MacBook it grows out of the notch, or out of the screen's own Dynamic
-  Island on the models that have one, and sits on the built-in screen. On a Mac without
+  protocol. On Windows it sits at the top center of the main screen; see
+  [docs/windows.md](docs/windows.md). There it also shows agents that run outside
+  Arakun, such as Claude Code in another terminal: their hooks call
+  `arakun island hook`, and any other agent can use `arakun island session <id> <state>`.
+  The setup is in docs/windows.md. On a MacBook it grows out of the notch, or out of
+  the screen's own Dynamic Island on the models that have one, and sits on the built-in
+  screen. On a Mac without
   either it hangs from the top of the main screen. Turning it off in Settings ends that
   process. If it reads the cutout wrong, set
   `ARAKUN_ISLAND_EDGE` to `flat`, `notch:<width>x<height>` or
@@ -278,9 +283,11 @@ after a week).
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
   and permission rules the agents load now. Under Arakun › Extensions you turn on the
   tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
-  Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. A new
-  install starts with none on; an update keeps the ones your sidebar already had. The
-  choice is kept in `extensions.json` next to the state.
+  Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
+  palette and the sidebar builder list only the tabs that are on. A new install starts
+  with none on, except what you set up in the first-run setup: GitHub once the GitHub
+  CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
+  sidebar already had. The choice is kept in `extensions.json` next to the state.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours
@@ -333,9 +340,11 @@ reports and anonymous usage counts to Arakun's PostHog project, so we can see wh
 breaks and what gets used: as a step of the setup, or in a dialog when you skip the
 setup or already have a project. Settings › Privacy has a switch for each:
 
-- **Crash reports:** a panic's message and stack trace, and when an agent stops with
-  an error, the agent's name and a fixed category such as "rate limited" or "not
-  signed in", never the error's text.
+- **Crash reports:** a panic's message and stack trace. When an agent stops with an
+  error: the agent's name and version number, a fixed category such as "rate
+  limited" or "not signed in", the step that failed (such as starting the agent or
+  a turn), the agent's error code or exit code, and whether the session's folder
+  still exists. Never the error's text.
 - **Usage counts:** app launched, app quit (with the minutes it was open), setup
   finished (whether you added a project or skipped, and the step you were on),
   session started (with the agent), agent turn finished (with the agent, how it
@@ -371,7 +380,7 @@ made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
 |---|---|---|
 | Linux (x86_64) | Supported | Main platform. Wayland and X11. The Dynamic Island needs Wayland with wlr-layer-shell. |
 | Linux (arm64) | Beta | The same build as x86_64, for ARM machines such as Snapdragon laptops, Ampere and Graviton servers. Less tested. |
-| Windows 10/11 (x86_64) | Beta | No Dynamic Island yet. Browser tabs are barely tested. See [docs/windows.md](docs/windows.md). |
+| Windows 10/11 (x86_64) | Beta | Browser tabs are barely tested. See [docs/windows.md](docs/windows.md). |
 | macOS | Experimental | Release builds for Apple silicon. Little tested, browser tabs least of all. The Dynamic Island's shape around a notch and around the MacBook Pro's own Dynamic Island is not tested on those screens yet. |
 
 ## Install
@@ -526,7 +535,10 @@ it (or in `~/.local/share/arakun/cef`). Without that folder, everything but brow
 works. It needs glibc 2.35 or newer (Ubuntu 22.04+,
 Debian 12+, Fedora 36+); on older systems, build from source. You also need a Vulkan
 driver and the usual desktop libraries (libxkbcommon, Wayland or X11, fontconfig,
-freetype). On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile in
+freetype). Without a graphics driver it can use, as in a VM or remote desktop without a
+GPU, `arakun` prints `could not open its window` with what to install, and exits with
+code 1; started from a launcher, it shows the same as a desktop notification. Mesa's software Vulkan driver works without a GPU, only slower:
+`mesa-vulkan-drivers` on Debian, Ubuntu and Fedora, `vulkan-swrast` on Arch. On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile in
 [Browser tabs on Ubuntu](#browser-tabs-on-ubuntu).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`. Keep the
@@ -887,6 +899,13 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   recalls earlier prompts; paste or drop images to attach them. While the agent works,
   `Enter` queues the message, `Ctrl+Enter` stops the turn and sends it now, and `Esc`
   stops the turn. A queued message has a button to send it now too
+- In the composer's agent and model menu: `↑` / `↓` move through the right column,
+  `←` / `→` move between agents (on the Reasoning row they step the level), `Enter`
+  picks and `Esc` closes. In a running session, only a model pick, a click on an
+  agent row or Continue with hands the session to another agent; reasoning and fast
+  mode for another agent are kept for when you switch to it. Picking a different
+  model for that agent clears the reasoning level kept for it, so pick the level
+  again after the model
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `D` all or
   fewer details, `O` open on GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an

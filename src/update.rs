@@ -989,7 +989,12 @@ fn swap(install: &Install) -> std::io::Result<()> {
     if cfg!(target_os = "linux") {
         return std::fs::rename(&install.staged, &install.target);
     }
-    remove_any(&install.old)?;
+    // The island host can still run the .exe an earlier update left here (it
+    // outlives the app), and Windows won't delete it then. Moved aside, it is
+    // removed by a later start, once nothing runs it.
+    if remove_any(&install.old).is_err() {
+        std::fs::rename(&install.old, aside(&install.old))?;
+    }
     std::fs::rename(&install.target, &install.old)?;
     if let Err(e) = std::fs::rename(&install.staged, &install.target) {
         let _ = std::fs::rename(&install.old, &install.target);
@@ -1000,6 +1005,37 @@ fn swap(install: &Install) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A free name next to `old`, for an old .exe that can't be removed yet.
+fn aside(old: &Path) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut name = old.as_os_str().to_owned();
+    name.push(format!("-{nanos}"));
+    PathBuf::from(name)
+}
+
+/// Removes the old .exe an update left behind, and those moved `aside` while
+/// they still ran. One that still runs stays for the next start.
+fn remove_old(install: &Install) {
+    let _ = remove_any(&install.old);
+    let (Some(dir), Some(name)) = (install.old.parent(), install.old.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}-", name.to_string_lossy());
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        // Only the names `aside` makes: anything else is someone else's.
+        let file = entry.file_name();
+        let moved = file
+            .to_string_lossy()
+            .strip_prefix(&prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if moved {
+            let _ = remove_any(&entry.path());
+        }
+    }
+}
+
 /// Removes what an earlier update left behind: Windows' old .exe, and a
 /// download a crash or a quit cut short. Not while another updater runs.
 pub fn clean_up() {
@@ -1007,7 +1043,7 @@ pub fn clean_up() {
         return;
     }
     if let (Ok(Some(_lock)), Ok(install)) = (lock(), Install::here()) {
-        let _ = remove_any(&install.old);
+        remove_old(&install);
         let _ = remove_any(&install.incoming);
     }
 }
@@ -1393,6 +1429,77 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
         assert_eq!(std::fs::read_to_string(&install.target).unwrap(), "new");
         assert!(!install.staged.exists());
         assert!(!install.old.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The island host keeps running the old .exe after an update, so the next
+    /// update finds `.arakun.exe.old` still in use: Windows lets a running .exe
+    /// be renamed but not deleted.
+    #[cfg(windows)]
+    #[test]
+    fn a_swap_goes_on_while_the_old_exe_still_runs() {
+        let dir = std::env::temp_dir().join(format!("arakun-update-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let install = Install::for_exe(&dir.join("arakun.exe")).unwrap();
+        // A real program, so the file is locked the way a running arakun.exe is:
+        // a copy of cmd.exe, which waits for commands on its stdin.
+        let system = std::env::var_os("SystemRoot").unwrap();
+        let cmd = std::path::Path::new(&system)
+            .join("System32")
+            .join("cmd.exe");
+        std::fs::copy(&cmd, &install.target).unwrap();
+        let mut running = std::process::Command::new(&install.target)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::fs::write(&install.staged, "new").unwrap();
+        swap(&install).unwrap();
+        // The first update leaves the running .exe behind as `old`.
+        assert!(install.old.exists());
+        std::fs::write(&install.staged, "newer").unwrap();
+        let second = swap(&install);
+        let _ = running.kill();
+        let _ = running.wait();
+        second.unwrap();
+        assert_eq!(std::fs::read_to_string(&install.target).unwrap(), "newer");
+        assert!(!install.staged.exists());
+        // Once the old one has stopped, nothing of it is left.
+        remove_old(&install);
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("arakun.exe")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_old_files_the_updater_named_are_removed() {
+        let dir = std::env::temp_dir().join(format!("arakun-update-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let install = Install {
+            target: dir.join("arakun"),
+            staged: dir.join(".arakun.update"),
+            incoming: dir.join(".arakun.incoming"),
+            old: dir.join(".arakun.old"),
+        };
+        std::fs::write(&install.old, "old").unwrap();
+        std::fs::write(aside(&install.old), "older").unwrap();
+        // Someone else's, with a name that starts the same way.
+        std::fs::create_dir_all(dir.join(".arakun.old-backup")).unwrap();
+        std::fs::write(dir.join(".arakun.old-backup").join("keep"), "keep").unwrap();
+        std::fs::write(dir.join(".arakun.old-"), "keep").unwrap();
+        remove_old(&install);
+        let mut left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".arakun.old-", ".arakun.old-backup"]);
+        assert!(dir.join(".arakun.old-backup").join("keep").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

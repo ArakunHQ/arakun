@@ -928,6 +928,9 @@ pub struct CheckRun {
 /// `https://github.com/o/r/actions/runs/<run>/job/<job>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionsJob {
+    /// Lower case. A check's address may be on any site, so the job only
+    /// counts on the host `gh` talks to.
+    pub host: String,
     pub repo: String,
     pub run: u64,
     pub job: Option<u64>,
@@ -940,7 +943,10 @@ impl ActionsJob {
         // `host/owner/repo`: the last two parts name the repository.
         let mut parts = before.rsplitn(3, '/');
         let (name, owner) = (parts.next()?, parts.next()?);
-        parts.next()?;
+        let host = parts.next()?.to_ascii_lowercase();
+        if host.is_empty() || host.contains('/') {
+            return None;
+        }
         let repo = format!("{owner}/{name}");
         if !valid_repo(&repo) {
             return None;
@@ -952,25 +958,30 @@ impl ActionsJob {
             text[..end].parse().ok()
         };
         Some(ActionsJob {
+            host,
             repo,
             run: number(after)?,
             job: after.split_once("/job/").and_then(|(_, j)| number(j)),
         })
     }
 
-    /// Whether the job ran in `repo`: only those are read or run again.
-    pub fn in_repo(&self, repo: &str) -> bool {
-        self.repo.eq_ignore_ascii_case(repo)
+    /// Whether the job ran in `repo` on `host`, the host `gh` talks to
+    /// (`gh_host`): only those are read or run again. The same ids on
+    /// another host name another repository's job and run.
+    pub fn in_repo(&self, repo: &str, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        (self.host == host || self.host.strip_prefix("www.") == Some(host.as_str()))
+            && self.repo.eq_ignore_ascii_case(repo)
     }
 }
 
 impl CheckRun {
-    /// The Actions job of `repo` whose log says why this check failed.
-    pub fn failed_job(&self, repo: &str) -> Option<u64> {
+    /// The Actions job of `repo` on `host` whose log says why this check failed.
+    pub fn failed_job(&self, repo: &str, host: &str) -> Option<u64> {
         if self.state != CheckState::Failed {
             return None;
         }
-        self.actions.as_ref().filter(|a| a.in_repo(repo))?.job
+        self.actions.as_ref().filter(|a| a.in_repo(repo, host))?.job
     }
 }
 
@@ -1084,15 +1095,16 @@ pub fn checks_summary(pull: &Pull) -> ChecksSummary {
     sum
 }
 
-/// The Actions runs of `repo` that "Re-run failed" starts again: those with
-/// a failed check and none still running (GitHub refuses a run in progress).
-pub fn rerunnable(sum: &ChecksSummary, repo: &str) -> Vec<u64> {
+/// The Actions runs of `repo` on `host` that "Re-run failed" starts again:
+/// those with a failed check and none still running (GitHub refuses a run in
+/// progress).
+pub fn rerunnable(sum: &ChecksSummary, repo: &str, host: &str) -> Vec<u64> {
     let of = |state: CheckState| {
         sum.checks
             .iter()
             .filter(move |c| c.state == state)
             .filter_map(|c| c.actions.as_ref())
-            .filter(|a| a.in_repo(repo))
+            .filter(|a| a.in_repo(repo, host))
             .map(|a| a.run)
     };
     let running: Vec<u64> = of(CheckState::Running).collect();
@@ -1105,6 +1117,26 @@ pub fn rerunnable(sum: &ChecksSummary, repo: &str) -> Vec<u64> {
     runs
 }
 
+/// How long reading a job's log or starting a run again may take. A `gh`
+/// that hangs would keep the log on "Loading", or every other write waiting.
+const CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// [`gh_run`], killing `gh` after `timeout`.
+fn gh_run_within(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Problem> {
+    let mut gh = git::gh(&std::env::temp_dir());
+    gh.args(&cmd.args);
+    if cmd.stdin.is_none() {
+        gh.stdin(Stdio::null());
+    }
+    let input = cmd.stdin.as_ref().map(|t| t.as_bytes());
+    let out = crate::headless::sandbox::run_with_timeout(gh, input, timeout)
+        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
+    if !out.status.success() {
+        return Err(super::problem(&String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(out.stdout)
+}
+
 /// Log lines kept of a failing job: the end is where it failed.
 const CHECK_LOG_LINES: usize = 60;
 
@@ -1114,7 +1146,7 @@ pub fn check_log(item: &ItemRef, job: u64) -> Result<Vec<crate::ci::LogLine>, Pr
         return Err(invalid("Not a repository name."));
     }
     let path = format!("repos/{}/actions/jobs/{job}/logs", item.repo);
-    let out = super::gh_out(&["api", "--allow-escape-sequences", &path])?;
+    let out = super::gh_out_within(&["api", "--allow-escape-sequences", &path], CHECK_WAIT)?;
     let lines = crate::ci::parse_log(&String::from_utf8_lossy(&out));
     let mut end = crate::ci::failure_excerpt(&lines);
     if end.len() > CHECK_LOG_LINES {
@@ -1148,7 +1180,9 @@ pub fn rerun_failed(item: &ItemRef, runs: &[u64]) -> Result<(), Problem> {
         return Err(invalid("No failed run to start again."));
     }
     for run in runs {
-        act(rerun_cmd(item, *run))?;
+        act_with(super::read_only(), rerun_cmd(item, *run), |cmd| {
+            gh_run_within(cmd, CHECK_WAIT)
+        })?;
     }
     Ok(())
 }
@@ -3531,11 +3565,16 @@ mod tests {
             (a.repo.as_str(), a.run, a.job),
             ("ArakunHQ/arakun", 12, Some(34))
         );
-        assert!(a.in_repo("arakunhq/ARAKUN"));
-        assert!(!a.in_repo("ArakunHQ/other"));
+        assert!(a.in_repo("arakunhq/ARAKUN", "GitHub.com"));
+        assert!(!a.in_repo("ArakunHQ/other", "github.com"));
+        // The same repository name and ids on another host are another job.
+        assert!(!a.in_repo("ArakunHQ/arakun", "ghe.example"));
         // A run's own page names no job; another host still names its repository.
         let run = ActionsJob::from_url("https://ghe.example/o/r/actions/runs/7").unwrap();
         assert_eq!((run.repo.as_str(), run.run, run.job), ("o/r", 7, None));
+        // Enterprise stays valid when it is the host gh talks to.
+        assert!(run.in_repo("o/r", "ghe.example"));
+        assert!(!run.in_repo("o/r", "github.com"));
         for other in [
             "https://x/5",
             "https://cla.example/41",
@@ -3591,16 +3630,22 @@ mod tests {
             ..Default::default()
         };
         let sum = checks_summary(&p);
-        assert_eq!(rerunnable(&sum, "arakunhq/arakun"), [7]);
+        assert_eq!(rerunnable(&sum, "arakunhq/arakun", "github.com"), [7]);
+        assert!(rerunnable(&sum, "arakunhq/arakun", "ghe.example").is_empty());
         let jobs: Vec<(u64, &str)> = sum
             .checks
             .iter()
-            .filter_map(|c| Some((c.failed_job("ArakunHQ/arakun")?, c.name.as_str())))
+            .filter_map(|c| {
+                Some((
+                    c.failed_job("ArakunHQ/arakun", "github.com")?,
+                    c.name.as_str(),
+                ))
+            })
             .collect();
         // Not the job that passed, the one still running or the fork's.
         assert_eq!(jobs, [(70, "Clippy"), (71, "Tests"), (80, "Docs")]);
         // The fixture's only failure isn't an Actions job: nothing to start.
-        assert!(rerunnable(&checks_summary(&pull()), "ArakunHQ/arakun").is_empty());
+        assert!(rerunnable(&checks_summary(&pull()), "ArakunHQ/arakun", "github.com").is_empty());
 
         let pr = item(ItemKind::Pull);
         assert_eq!(

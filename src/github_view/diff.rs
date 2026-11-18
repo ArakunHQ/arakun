@@ -376,9 +376,12 @@ impl GitHubView {
     fn rerun_failed_checks(&mut self, cx: &mut Context<Self>) {
         let Some(item) = self.item() else { return };
         let runs = match self.github.read(cx).details(&item) {
-            Some(Details::Pull(p)) => pr::rerunnable(&pr::checks_summary(p), &item.repo),
+            Some(Details::Pull(p)) => {
+                pr::rerunnable(&pr::checks_summary(p), &item.repo, &pr::gh_host())
+            }
             _ => return,
         };
+        let started_on = item.clone();
         self.write(
             "rerun",
             "Failed jobs started again.".into(),
@@ -390,7 +393,12 @@ impl GitHubView {
                 Ok(())
             },
             // The jobs that start now are new ones: no log of theirs is open.
-            |this, _| this.checks_open.clear(),
+            // Another pull request selected since keeps the logs opened there.
+            move |this, _| {
+                if this.item().as_ref() == Some(&started_on) {
+                    this.checks_open.clear();
+                }
+            },
             cx,
         );
     }
@@ -399,6 +407,7 @@ impl GitHubView {
     fn fix_checks(&mut self, cx: &mut Context<Self>) {
         let Some(item) = self.item() else { return };
         let title = self.title(cx);
+        let host = pr::gh_host();
         let prompt = {
             let Some(Details::Pull(p)) = self.github.read(cx).details(&item) else {
                 return;
@@ -410,7 +419,7 @@ impl GitHubView {
                 .filter(|c| c.state == CheckState::Failed)
                 .map(|c| {
                     let log = match c
-                        .failed_job(&item.repo)
+                        .failed_job(&item.repo, &host)
                         .and_then(|j| self.check_logs.get(&j))
                     {
                         Some(CheckLog::Ready(lines)) => Some(&lines[..]),
@@ -436,7 +445,8 @@ impl GitHubView {
         cx: &Context<Self>,
     ) -> gpui::Div {
         let repo = self.item().map(|i| i.repo).unwrap_or_default();
-        let runs = pr::rerunnable(sum, &repo);
+        let host = pr::gh_host();
+        let runs = pr::rerunnable(sum, &repo, &host);
         let (can, why) = if !p.open() {
             (false, "The pull request is not open")
         } else if runs.is_empty() && sum.running > 0 {
@@ -551,6 +561,7 @@ impl GitHubView {
             .into_any_element();
         }
         let repo = self.item().map(|i| i.repo).unwrap_or_default();
+        let host = pr::gh_host();
         let mut list = div()
             .flex()
             .flex_col()
@@ -569,7 +580,7 @@ impl GitHubView {
             let url = c.url.clone();
             // A failed Actions job opens its log here; its page is one more
             // click, on the link at the end of the row.
-            let job = c.failed_job(&repo);
+            let job = c.failed_job(&repo, &host);
             let open = job.is_some_and(|j| self.checks_open.contains(&j));
             let link = (!url.is_empty()).then(|| {
                 let url = url.clone();

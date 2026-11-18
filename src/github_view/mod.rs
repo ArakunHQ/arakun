@@ -114,6 +114,13 @@ struct Diff {
     state: DiffState,
 }
 
+/// The end of a failed check's log, read when its row opens.
+enum CheckLog {
+    Loading,
+    Failed(String),
+    Ready(Rc<Vec<crate::ci::LogLine>>),
+}
+
 /// Whether a diff read at `read_at` still shows the pull request whose
 /// details say `head` and `base`: a push or a retarget makes it stale.
 /// Unknown details (not read yet) keep what there is.
@@ -217,6 +224,7 @@ fn busy_note(what: &str) -> String {
         "approve" => "the approval",
         "merge" => "the merge",
         "close" => "the close",
+        "rerun" => "the re-run",
         other => other,
     };
     format!("Still sending {what}: this comment wasn't sent yet. Press Enter again once it's done.")
@@ -320,6 +328,10 @@ pub struct GitHubView {
     folded: HashSet<usize>,
     /// Files of the open diff shown in full past the first lines.
     unfolded_lines: HashSet<usize>,
+    /// Failed checks whose log shows under them, by Actions job.
+    checks_open: HashSet<u64>,
+    /// The logs read so far, by Actions job.
+    check_logs: HashMap<u64, CheckLog>,
     /// Repository → the merge methods it allows; None while it is asked.
     merge_methods: HashMap<String, Option<Vec<MergeMethod>>>,
     /// Markdown already parsed, by its text.
@@ -518,6 +530,8 @@ impl GitHubView {
             diff_loads: 0,
             folded: HashSet::new(),
             unfolded_lines: HashSet::new(),
+            checks_open: HashSet::new(),
+            check_logs: HashMap::new(),
             merge_methods: HashMap::new(),
             md: RefCell::new(HashMap::new()),
             md_raw: RefCell::new(HashMap::new()),
@@ -671,6 +685,7 @@ impl GitHubView {
             self.note = None;
             self.folded.clear();
             self.unfolded_lines.clear();
+            self.checks_open.clear();
             self.expanded.clear();
             self.body_scroll = ScrollHandle::new();
         } else {

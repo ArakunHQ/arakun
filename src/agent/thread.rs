@@ -569,6 +569,8 @@ pub struct Thread {
     /// See [`Transcript::handoff`]; dropped once a turn that carried it ends well.
     handoff: Option<String>,
     handoff_sent: bool,
+    /// Context arakun adds to the next prompt the user sends, out of sight.
+    notes: Vec<String>,
     /// Subagents in the order they started (see `subagents.rs`).
     subagents: Vec<Subagent>,
     /// The session running this one as a subagent; set on the read-only
@@ -1014,6 +1016,7 @@ impl Thread {
             auto_allow: false,
             handoff: None,
             handoff_sent: false,
+            notes: Vec::new(),
             subagents: Vec::new(),
             parent: None,
             prompt_seq: 0,
@@ -1832,6 +1835,21 @@ impl Thread {
         self.conn.is_some() && self.session_id.is_some() && !self.applying_config
     }
 
+    /// Has the next prompt the user sends tell the agent `note`, without the
+    /// chat showing it.
+    pub fn add_note(&mut self, note: String) {
+        self.notes.push(note);
+    }
+
+    /// `text` with the notes waiting for the next prompt, each in a hint the
+    /// chat doesn't show. They go with this prompt only.
+    fn with_notes(&mut self, mut text: String) -> String {
+        for note in std::mem::take(&mut self.notes) {
+            text.push_str(&super::chart::hint(&note));
+        }
+        text
+    }
+
     /// Sends a prompt, or queues it while the agent is busy or still starting.
     pub fn send(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
@@ -1915,6 +1933,13 @@ impl Thread {
                 )
             }
             None => text,
+        };
+        // Added after the user entry, so the chat doesn't show them; `last_prompt`
+        // keeps them for a retry.
+        let text = if push_user {
+            self.with_notes(text)
+        } else {
+            text
         };
         self.turn_started = Some(Instant::now());
         if push_user || self.turn_tree.is_none() {
@@ -3706,6 +3731,21 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notes_go_with_the_next_prompt_only_and_stay_out_of_the_chat() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        t.add_note("(renamed from a to b)".into());
+        let sent = t.with_notes("fix it".into());
+        assert!(sent.starts_with("fix it"));
+        assert!(sent.contains("<arakun-hint>\n(renamed from a to b)\n</arakun-hint>"));
+        // What the chat shows of it, and what a replay shows.
+        let mut shown = sent.clone();
+        crate::agent::chart::strip_hint(&mut shown);
+        assert_eq!(shown, "fix it");
+        // Used up: the prompt after it goes out as typed.
+        assert_eq!(t.with_notes("and test it".into()), "and test it");
+    }
 
     #[test]
     fn an_install_approval_is_used_once() {

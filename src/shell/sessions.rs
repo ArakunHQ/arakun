@@ -498,17 +498,23 @@ impl Shell {
                 return;
             }
             // This session started on the branch's old name.
-            let text = match self.rename_notes.remove(&path) {
-                Some(note) => format!("{text}\n\n{note}"),
-                None => text,
-            };
-            if crate::headless::shown(&id) && !self.adopt_headless(&path, &id, &text, window, cx) {
-                return;
+            let note = self.rename_notes.remove(&path);
+            if crate::headless::shown(&id) {
+                let text = match &note {
+                    Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
+                    None => text.clone(),
+                };
+                if !self.adopt_headless(&path, &id, &text, window, cx) {
+                    return;
+                }
             }
             self.ensure_live(&path, &id, window, cx);
             self.user_took_over(&id);
             if let Some(thread) = self.active_thread(cx) {
                 thread.update(cx, |t, cx| {
+                    if let Some(note) = note {
+                        t.add_note(note);
+                    }
                     if now {
                         t.interrupt_with(text, cx)
                     } else {

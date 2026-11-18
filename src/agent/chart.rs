@@ -1881,12 +1881,47 @@ pub const AGENT_HINT: &str = "\n\n<arakun-hint>\n\
 - ![caption](path/to/image.png) shows a local image inline (paths relative to the project).
 Do not mention this note.)\n</arakun-hint>";
 
+/// Wraps `note` the way [`AGENT_HINT`] is, so the agent reads it but the chat
+/// never shows it.
+pub fn hint(note: &str) -> String {
+    format!("\n\n<arakun-hint>\n{note}\n</arakun-hint>")
+}
+
+/// Takes the hints out of `text` and returns what each one says, so a prompt
+/// that arrives with them already wrapped (a headless session's inbox) can
+/// hand them to [`Thread::add_note`](super::thread::Thread::add_note) instead.
+pub fn take_hints(text: &mut String) -> Vec<String> {
+    let mut notes = Vec::new();
+    while let Some(start) = text.find("<arakun-hint>") {
+        let body = start + "<arakun-hint>".len();
+        let (inner, end) = match text[body..].find("</arakun-hint>") {
+            Some(e) => (&text[body..body + e], body + e + "</arakun-hint>".len()),
+            None => (&text[body..], text.len()),
+        };
+        let inner = inner.trim();
+        if !inner.is_empty() {
+            notes.push(inner.to_string());
+        }
+        text.replace_range(start..end, "");
+    }
+    if !notes.is_empty() {
+        let keep = text.trim_end().len();
+        text.truncate(keep);
+    }
+    notes
+}
+
+/// Takes every hint out of a prompt, so the chat shows only what the user wrote.
 pub fn strip_hint(text: &mut String) {
-    if let Some(start) = text.find("<arakun-hint>") {
+    let mut found = false;
+    while let Some(start) = text.find("<arakun-hint>") {
         let end = text[start..]
             .find("</arakun-hint>")
             .map_or(text.len(), |e| start + e + "</arakun-hint>".len());
         text.replace_range(start..end, "");
+        found = true;
+    }
+    if found {
         let keep = text.trim_end().len();
         text.truncate(keep);
     }
@@ -1895,6 +1930,26 @@ pub fn strip_hint(text: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn takes_hints_out_as_notes() {
+        let mut text = format!("do it{}", hint("(renamed from a to b)"));
+        assert_eq!(take_hints(&mut text), ["(renamed from a to b)"]);
+        assert_eq!(text, "do it");
+        let mut text = "plain\n".to_string();
+        assert!(take_hints(&mut text).is_empty());
+        assert_eq!(text, "plain\n");
+    }
+
+    #[test]
+    fn strips_every_hint() {
+        let mut text = format!("do it{}{}", hint("(renamed)"), AGENT_HINT);
+        strip_hint(&mut text);
+        assert_eq!(text, "do it");
+        let mut text = "plain\n".to_string();
+        strip_hint(&mut text);
+        assert_eq!(text, "plain\n");
+    }
 
     #[test]
     fn json_and_line_charts() {

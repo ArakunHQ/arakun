@@ -66,7 +66,8 @@ If Arakun can't read one of its files there (`state.json`, `history.json`,
 `prompts.json`, the palette's to-dos, rules and pins, the sidebar layout or a memory
 store), say one written by a newer version or edited by hand, it renames it to
 `<name>.corrupt-<time>` and starts that part fresh, with a notice that says so. Nothing
-saves over the copy: rename it back for a version that can read it.
+saves over the copy. To restore it, quit Arakun first (it saves on quit), keep a second
+copy of it, rename it back, and start a version that can read it.
 
 ### Workspace
 

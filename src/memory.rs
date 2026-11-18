@@ -162,7 +162,33 @@ pub fn store_file(root: &Path, scope: Scope, project: &Path) -> PathBuf {
 /// A store that can't be read (one entry edited by hand without its `id`) is
 /// set aside, so `update` doesn't replace every memory with the new one.
 pub fn load(file: &Path) -> Store {
+    if !file.exists() {
+        return Store::default();
+    }
+    // Under the store's lock: a read that finds the file unreadable sets it
+    // aside, and must not move the fresh store an `update` in another process
+    // (`arakun mem`) just wrote in its place.
+    let lock = lock_store(file);
+    if let Err(e) = &lock {
+        eprintln!("arakun: reading {} without its lock: {e}", file.display());
+    }
+    load_locked(file)
+}
+
+/// `load` for a caller that already holds the store's lock.
+fn load_locked(file: &Path) -> Store {
     crate::stored::load(file).unwrap_or_default()
+}
+
+/// The store's lock file, locked; released when it closes.
+fn lock_store(file: &Path) -> std::io::Result<std::fs::File> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(file.with_extension("lock"))?;
+    lock.lock()?;
+    Ok(lock)
 }
 
 /// Runs `f` on the store in `file` under an exclusive lock and writes it back
@@ -175,14 +201,8 @@ pub fn update<T>(
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(file.with_extension("lock"))?;
-    // Released when `lock` closes.
-    lock.lock()?;
-    let mut store = load(file);
+    let _lock = lock_store(file)?;
+    let mut store = load_locked(file);
     if store.path.is_empty() {
         store.path = project.to_string();
     }

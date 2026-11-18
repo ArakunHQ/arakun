@@ -1206,9 +1206,13 @@ impl Shell {
                 .unwrap_or_else(|| r.path.display().to_string());
             let title = format!("Could not read {name}");
             let body = match &r.kept {
+                // The copy's name first: a long body is cut short on the island.
                 Some(kept) => format!(
-                    "Arakun went on without it and kept the old file as {}.",
-                    kept.display()
+                    "Kept as {}, in {}. Arakun went on without it.",
+                    kept.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    kept.parent().unwrap_or(std::path::Path::new("")).display()
                 ),
                 None => format!(
                     "It could not be moved aside either, so Arakun won't save over {}.",

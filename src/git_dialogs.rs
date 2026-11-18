@@ -284,6 +284,9 @@ pub struct PullRequestDialog {
     written_by: Option<AgentKind>,
     /// The agent is writing.
     writing: bool,
+    /// Counts the times the agent was asked: a reading of the commits
+    /// started before leaves the description to what the agent wrote since.
+    writes: u32,
     title: Entity<TextInput>,
     base: Entity<TextInput>,
     draft: bool,
@@ -362,6 +365,7 @@ impl PullRequestDialog {
             writer,
             written_by: None,
             writing: false,
+            writes: 0,
             title,
             base,
             draft: true,
@@ -382,6 +386,7 @@ impl PullRequestDialog {
             return;
         }
         self.planning = Some(base.clone());
+        let writes = self.writes;
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
         cx.spawn(async move |this, cx| {
             let onto = base.clone();
@@ -403,9 +408,12 @@ impl PullRequestDialog {
                     this.title.update(cx, |input, cx| input.set_text(title, cx));
                 }
                 // What was written for the other base, by an agent too, goes
-                // with it.
-                this.body = plan.body.clone();
-                this.written_by = None;
+                // with it. Not what the agent was asked for after this read
+                // began: that is for this base, and newer.
+                if this.writes == writes {
+                    this.body = plan.body.clone();
+                    this.written_by = None;
+                }
                 this.plan = plan;
                 cx.notify();
             });
@@ -522,6 +530,7 @@ impl PullRequestDialog {
             return;
         }
         self.writing = true;
+        self.writes += 1;
         self.error = None;
         cx.notify();
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
@@ -754,7 +763,8 @@ impl Render for PullRequestDialog {
                                         "Open GitHub's form"
                                     },
                                     ButtonKind::Ghost,
-                                    free,
+                                    // Nothing opens while the agent writes.
+                                    free && !self.writing,
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.submit(true, cx))),
                             )

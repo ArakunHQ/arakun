@@ -168,10 +168,9 @@ pub fn parse(reply: &str) -> Option<(String, String)> {
 /// Asks `agent` for the title and description. Blocks; run it in the background.
 pub fn write(agent: AgentKind, input: &Input) -> Result<(String, String)> {
     let reply = env_name::ask(agent, model(agent), prompt(input), TIMEOUT)?;
-    parse(&reply).ok_or_else(|| {
-        let start: String = reply.trim().chars().take(120).collect();
-        anyhow!("the agent's answer had no title: {start}")
-    })
+    // The answer itself stays out of the error: it was written from the
+    // diff, and may repeat anything in it.
+    parse(&reply).ok_or_else(|| anyhow!("the agent's answer had no title. Try again."))
 }
 
 #[cfg(test)]

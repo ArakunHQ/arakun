@@ -529,7 +529,7 @@ impl PullRequestDialog {
         let (for_base, old_title) = (base.clone(), self.title.read(cx).text().to_string());
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let input = crate::pr_writer::read(&dir, &remote, &base, &branch);
                     if input.commits.is_empty() && input.diff.trim().is_empty() {
                         anyhow::bail!(
@@ -537,7 +537,7 @@ impl PullRequestDialog {
                         );
                     }
                     crate::pr_writer::write(agent, &input)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.writing = false;

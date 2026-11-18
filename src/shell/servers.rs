@@ -127,8 +127,8 @@ pub(super) struct ServersLink {
     new_env: HashMap<String, NewEnv>,
     /// The first prompts of sessions asked of servers, by the start's `ref`,
     /// until the server answers: they name the branch once it started, and
-    /// go back in the composer if it did not.
-    first_prompts: HashMap<u64, FirstPrompt>,
+    /// go back in the composer if it did not. Each with its server.
+    first_prompts: HashMap<u64, (String, FirstPrompt)>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -309,6 +309,16 @@ fn repo_folder(repo: &str) -> Option<&str> {
         .next()?;
     let name = last.strip_suffix(".git").unwrap_or(last);
     (!name.is_empty() && !name.ends_with(':')).then_some(name)
+}
+
+/// `server`'s starts that wait on no answer any more: their first prompts
+/// go. Another server's stay, kept until its own drop is told back.
+fn settle_first_prompts(
+    first_prompts: &mut HashMap<u64, (String, FirstPrompt)>,
+    starts: &Starts,
+    server: &str,
+) {
+    first_prompts.retain(|r, (s, _)| s != server || starts.waiting(*r));
 }
 
 /// Takes `server`'s session `id` out of what is followed. Another server's
@@ -795,8 +805,7 @@ impl Shell {
                 let new = link.new_env.remove(id);
                 // Its link stops without a word: the phones waiting on a start hear it here.
                 let waiting = link.starts.dropped(id);
-                let starts = &link.starts;
-                link.first_prompts.retain(|r, _| starts.waiting(*r));
+                settle_first_prompts(&mut link.first_prompts, &link.starts, id);
                 self.sync_remote_projects(window, cx);
                 if let Some(new) = new {
                     let why = "The server was forgotten before it made the environment.";
@@ -1224,15 +1233,20 @@ impl Shell {
 
     /// Keeps the first prompt of the start `reference` until its server answers.
     pub(super) fn servers_first_prompt(&mut self, reference: u64, first: FirstPrompt) {
+        let Some(remote) = self.find_env(&first.env).and_then(|e| e.remote.clone()) else {
+            return;
+        };
         if let Some(link) = &mut self.servers {
-            link.first_prompts.insert(reference, first);
+            link.first_prompts.insert(reference, (remote.server, first));
         }
     }
 
     /// The start `reference` was answered: what it started with, if kept.
     fn take_first_prompt(&mut self, reference: Option<u64>) -> Option<FirstPrompt> {
         let link = self.servers.as_mut()?;
-        link.first_prompts.remove(&reference?)
+        link.first_prompts
+            .remove(&reference?)
+            .map(|(_, first)| first)
     }
 
     /// A first prompt that did not start its session goes back in the
@@ -1726,8 +1740,7 @@ impl Shell {
                 // went out is told back after this, by itself: its first
                 // prompt is kept for that until the server is back.
                 if back {
-                    let starts = &link.starts;
-                    link.first_prompts.retain(|r, _| starts.waiting(*r));
+                    settle_first_prompts(&mut link.first_prompts, &link.starts, id);
                 }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
@@ -1794,7 +1807,8 @@ impl Shell {
                     let answered = link.starts.answered_ref(id);
                     let first = answered
                         .as_ref()
-                        .and_then(|(_, r)| link.first_prompts.remove(r));
+                        .and_then(|(_, r)| link.first_prompts.remove(r))
+                        .map(|(_, first)| first);
                     // The branch is named after the first prompt that started, there as here.
                     if let Some(first) = first {
                         self.name_after_first_prompt(&first.env, &first.text, first.agent, cx);
@@ -2493,6 +2507,32 @@ mod tests {
         assert_eq!(repo_folder("D:\\git\\app.git\\"), Some("app"));
         assert_eq!(repo_folder("C:\\"), None);
         assert_eq!(repo_folder("/"), None);
+    }
+
+    #[test]
+    fn a_server_back_keeps_another_servers_untold_first_prompt() {
+        let first = |server: &str| {
+            let prompt = FirstPrompt {
+                env: PathBuf::new(),
+                text: "fix it".into(),
+                agent: AgentKind::Claude,
+                note: None,
+                desktop: true,
+            };
+            (server.to_string(), prompt)
+        };
+        let mut starts = Starts::default();
+        let mut prompts = HashMap::new();
+        prompts.insert(starts.sent("b", Asker::Desktop), first("b"));
+        let a = starts.sent("a", Asker::Desktop);
+        prompts.insert(a, first("a"));
+        // `b` drops; its start may come back undelivered after `a` is back.
+        starts.dropped("b");
+        settle_first_prompts(&mut prompts, &starts, "a");
+        assert_eq!(prompts.len(), 2, "b's prompt waits for its own word");
+        // `b` is back: what it was asked is over.
+        settle_first_prompts(&mut prompts, &starts, "b");
+        assert_eq!(prompts.keys().collect::<Vec<_>>(), [&a]);
     }
 
     #[test]

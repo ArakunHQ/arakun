@@ -92,7 +92,9 @@ describe("flags", () => {
   });
 
   it("belong to one user only", async () => {
-    await call("PUT", "/admin/users/1001/flags/teams", ADMIN);
+    const grant = await call("PUT", "/admin/users/1001/flags/teams", ADMIN);
+    expect(grant.status).toBe(200);
+    expect(await grant.json()).toEqual({ github_id: 1001, flags: ["teams"] });
     const other = await signIn(3003, "someone-else");
     expect(other.flags).toEqual([]);
     expect(await (await call("GET", "/me", as(other.session))).json()).toEqual({ github_id: 3003, login: "someone-else", flags: [] });

@@ -1,6 +1,7 @@
-import { env } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { ADMIN, as, call, github, nowSeconds, signIn, signInRequest } from "./helpers";
+import { session } from "../src/auth";
+import { ADMIN, as, call, freshIp, github, nowSeconds, signIn, signInRequest } from "./helpers";
 
 const DAY = 24 * 60 * 60;
 
@@ -76,6 +77,22 @@ describe("sign-in with GitHub", () => {
     const res = await signInRequest("gho_ok");
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: expect.any(String) });
+    // GitHub answers 422 when it is spammed, so it is not a clear no.
+    github.outage = 422;
+    expect((await signInRequest("gho_ok")).status).toBe(502);
+  });
+
+  it("does not follow a redirect with the client secret", async () => {
+    github.users.set("gho_ok", { id: 1001, login: "octocat" });
+    expect((await signInRequest("gho_ok")).status).toBe(200);
+    expect(github.calls[0]!.redirect).toBe("manual");
+    github.outage = 302;
+    expect((await signInRequest("gho_ok")).status).toBe(502);
+  });
+
+  it("accepts the underscore in an Enterprise Managed User's login", async () => {
+    const got = await signIn(1001, "mona-cat_octo");
+    expect(got.login).toBe("mona-cat_octo");
   });
 
   it("answers 502 when GitHub's answer has no usable ID or login", async () => {
@@ -93,6 +110,29 @@ describe("sign-in with GitHub", () => {
     }
     const notJson = await call("POST", "/auth/github");
     expect(notJson.status).toBe(400);
+    expect(github.calls).toHaveLength(0);
+  });
+
+  it("answers 413 for a big body, with or without a Content-Length", async () => {
+    const big = JSON.stringify({ access_token: "gho_ok", pad: "x".repeat(8192) });
+    const sized = await SELF.fetch("https://teams.test/auth/github", {
+      method: "POST",
+      headers: { "CF-Connecting-IP": freshIp() },
+      body: big,
+    });
+    expect(sized.status).toBe(413);
+    const bytes = new TextEncoder().encode(big);
+    const streamed = await SELF.fetch("https://teams.test/auth/github", {
+      method: "POST",
+      headers: { "CF-Connecting-IP": freshIp() },
+      body: new ReadableStream({
+        start(controller) {
+          for (let i = 0; i < bytes.length; i += 1024) controller.enqueue(bytes.slice(i, i + 1024));
+          controller.close();
+        },
+      }),
+    });
+    expect(streamed.status).toBe(413);
     expect(github.calls).toHaveLength(0);
   });
 
@@ -181,6 +221,16 @@ describe("sessions", () => {
     await signIn(1001, "octocat");
     const left = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions").first<{ n: number }>();
     expect(left?.n).toBe(1);
+  });
+
+  it("is not extended by logout", async () => {
+    const got = await signIn(1001, "octocat");
+    const t = nowSeconds();
+    await env.DB.prepare("UPDATE sessions SET expires_at = ?, last_used_at = ?").bind(t + DAY, t - 2 * DAY).run();
+    const req = new Request("https://teams.test/auth/logout", { method: "POST", headers: as(got.session) });
+    expect(await session(req, env, { renew: false })).not.toBeNull();
+    const row = await env.DB.prepare("SELECT expires_at, last_used_at FROM sessions").first();
+    expect(row).toEqual({ expires_at: t + DAY, last_used_at: t - 2 * DAY });
   });
 
   it("ends with logout, and only that session", async () => {

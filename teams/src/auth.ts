@@ -9,13 +9,16 @@
 // app's client secret, which lives only here as a Worker secret: the desktop
 // app's device flow has no secret.
 
-import { DAY, b64url, bearer, error, flagList, flagsQuery, hex, now, sha256, type Env } from "./util";
+import { DAY, b64url, bearer, bodyText, discard, error, flagList, flagsQuery, hex, now, sha256, type Env } from "./util";
 
 const SESSION_DAYS = 90;
 /// 32 bytes in base64url, as `signIn` makes them.
 const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 /// GitHub tokens are at most 255 characters; this leaves room for a change.
 const MAX_ACCESS_TOKEN = 1024;
+/// Room for the token and some JSON around it. Anyone can call sign-in, so the
+/// body is cut off here, before it is parsed.
+const MAX_SIGN_IN_BODY = 4096;
 const GITHUB_TIMEOUT_MS = 10_000;
 
 export interface Session {
@@ -36,6 +39,7 @@ export async function signIn(request: Request, env: Env): Promise<Response> {
   if (!success) return error(429, "too many sign-ins, try again in a minute");
 
   const token = await accessToken(request);
+  if (token === "too big") return error(413, "the body is too big");
   if (!token) return error(400, 'expected {"access_token": "..."}');
 
   if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return error(503, "sign-in is not set up");
@@ -75,7 +79,8 @@ export async function me(request: Request, env: Env): Promise<Response> {
 }
 
 export async function logout(request: Request, env: Env): Promise<Response> {
-  const s = await session(request, env);
+  // No renewal: a failed delete must not leave the session living longer.
+  const s = await session(request, env, { renew: false });
   if (!s) return error(401, "not signed in");
   await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(s.hash).run();
   return new Response(null, { status: 204 });
@@ -84,7 +89,7 @@ export async function logout(request: Request, env: Env): Promise<Response> {
 /// The session the request's bearer token names, if it is still valid. Every
 /// endpoint that needs a user goes through here, and team endpoints will check
 /// their flag after it.
-export async function session(request: Request, env: Env): Promise<Session | null> {
+export async function session(request: Request, env: Env, { renew = true } = {}): Promise<Session | null> {
   const token = bearer(request);
   if (!token || !SESSION_TOKEN.test(token)) return null;
   const hash = hex(await sha256(token));
@@ -99,27 +104,33 @@ export async function session(request: Request, env: Env): Promise<Session | nul
   if (!row) return null;
   const t = now();
   if (row.expires_at <= t) {
-    await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(hash).run();
+    // Only while it is still expired: a request that renewed it meanwhile wins.
+    await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ? AND expires_at <= ?").bind(hash, t).run();
     return null;
   }
-  // Extending on every request would write to D1 on every request.
-  if (t - row.last_used_at >= DAY) {
+  // Extending on every request would write to D1 on every request. The
+  // conditions keep two requests from renewing twice, and an older one from
+  // moving the times back.
+  if (renew && t - row.last_used_at >= DAY) {
     await env.DB.batch([
-      env.DB.prepare("UPDATE sessions SET expires_at = ?, last_used_at = ? WHERE token_hash = ?").bind(
+      env.DB.prepare("UPDATE sessions SET expires_at = ?, last_used_at = ? WHERE token_hash = ? AND last_used_at = ?").bind(
         t + SESSION_DAYS * DAY,
         t,
         hash,
+        row.last_used_at,
       ),
-      env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE github_id = ?").bind(t, row.github_id),
+      env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE github_id = ? AND last_seen_at < ?").bind(t, row.github_id, t),
     ]);
   }
   return { hash, githubId: row.github_id, login: row.login };
 }
 
-async function accessToken(request: Request): Promise<string | null> {
+async function accessToken(request: Request): Promise<string | "too big" | null> {
+  const text = await bodyText(request, MAX_SIGN_IN_BODY);
+  if (text === null) return "too big";
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(text);
   } catch {
     return null;
   }
@@ -136,6 +147,9 @@ async function githubUser(token: string, clientId: string, clientSecret: string)
   let res: Response;
   try {
     res = await fetch(`https://api.github.com/applications/${encodeURIComponent(clientId)}/token`, {
+      // A followed redirect would carry the client secret to wherever it points.
+      // A 3xx is not ok, so it counts as GitHub being unreachable.
+      redirect: "manual",
       method: "POST",
       headers: {
         Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
@@ -150,15 +164,16 @@ async function githubUser(token: string, clientId: string, clientSecret: string)
   } catch {
     return "unreachable";
   }
-  // 404: no such token for this app (wrong app, revoked or expired). 422: not a token.
-  if (res.status === 404 || res.status === 422) {
-    await res.body?.cancel();
+  // 404: no such token for this app (wrong app, revoked or expired). GitHub
+  // also answers 422 when it is spammed, so 422 is not a clear no.
+  if (res.status === 404) {
+    await discard(res);
     return "rejected";
   }
   // 401 here means our own client ID or secret is wrong, not the user's token.
   if (!res.ok) {
     if (res.status === 401) console.error("GitHub refused the app's client credentials");
-    await res.body?.cancel();
+    await discard(res);
     return "unreachable";
   }
   let body: unknown;
@@ -171,7 +186,8 @@ async function githubUser(token: string, clientId: string, clientSecret: string)
   if (typeof user !== "object" || user === null) return "unreachable";
   const { id, login } = user as Record<string, unknown>;
   if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return "unreachable";
-  // GitHub logins: letters, digits and hyphens, at most 39.
-  if (typeof login !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(login)) return "unreachable";
+  // GitHub logins: letters, digits and hyphens, at most 39. Enterprise Managed
+  // Users also have an underscore before their enterprise's short code.
+  if (typeof login !== "string" || !/^[A-Za-z0-9_-]{1,39}$/.test(login)) return "unreachable";
   return { id, login };
 }

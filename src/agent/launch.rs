@@ -384,8 +384,20 @@ pub fn agent_hint(cwd: Option<&Path>) -> Option<String> {
         .filter(|_| !std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "off"))
         .map(|dir| format!("\n\n{}", crate::memory::prompt_for(dir)))
         .unwrap_or_default();
-    Some(format!("{HINT}{memory}"))
+    Some(format!("{}{memory}", base_hint()))
 }
+
+fn base_hint() -> String {
+    format!("{HINT}{LAB_HINT}{HINT_END}")
+}
+
+// `arakun lab` exists only in the coderlabs build. Told to an agent in a public
+// build, it would run an unknown command, which opens a second window.
+#[cfg(feature = "coderlabs")]
+const LAB_HINT: &str =
+    "- `arakun lab` shows the harness lab dashboard (Arakun Lab evals and experiments).\n";
+#[cfg(not(feature = "coderlabs"))]
+const LAB_HINT: &str = "";
 
 const HINT: &str = "You are running inside arakun, a desktop app where the user reads this conversation. \
          The `arakun` command on your PATH controls its window, acting on this project:\n\
@@ -414,14 +426,14 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          - `arakun rename <branch>` renames this environment's branch, before it is pushed, when the \
          work turns out to be something its name doesn't say.\n\
          - `arakun notify <message>` sends the user a desktop notification.\n\
-         - `arakun lab` shows the harness lab dashboard (Arakun Lab evals and experiments).\n\
          - `arakun agent new [--model <provider/model>] [--effort <level>] <prompt>` starts a background agent in this \
          project that the user can watch in the sidebar: OpenCode, or arakun's own Workers AI agent with \
          `--model workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017` or `--model workers-ai/@cf/zai-org/glm-5.3` \
          (an unknown `--model` or `--effort` prints the ones on offer); \
          `arakun agent wait <id>`, `arakun agent log <id>`, `arakun agent send <id> <text>`, \
-         `arakun agent stop <id>` and `arakun agent ls` follow it up.\n\
-         Use them when showing something helps the user; they are optional.";
+         `arakun agent stop <id>` and `arakun agent ls` follow it up.\n";
+
+const HINT_END: &str = "Use them when showing something helps the user; they are optional.";
 
 fn droid_hint_args(cwd: Option<&Path>) -> Vec<String> {
     agent_hint(cwd)
@@ -1060,6 +1072,13 @@ mod tests {
             Some("API key")
         );
         assert_eq!(label(serde_json::json!({"OPENAI_API_KEY": null})), None);
+    }
+
+    #[test]
+    fn the_hint_names_lab_only_in_a_build_that_has_it() {
+        let hint = base_hint();
+        assert_eq!(hint.contains("`arakun lab`"), cfg!(feature = "coderlabs"));
+        assert!(hint.ends_with("they are optional."));
     }
 
     #[test]

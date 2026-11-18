@@ -72,6 +72,63 @@ fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Res
     Ok(())
 }
 
+/// `write` on a background thread, for saves made on the UI thread, where the
+/// disk flushes would stall the window (a settings switch, a field saved on
+/// every key). One thread writes them in the order they came, so the file ends
+/// with the last one. A failure is logged after `what`.
+#[allow(dead_code)] // most examples that include this file write nothing
+pub fn write_soon(path: std::path::PathBuf, bytes: Vec<u8>, what: &'static str) {
+    let save = Soon::Write(path, bytes, what);
+    if let Err(std::sync::mpsc::SendError(Soon::Write(path, bytes, what))) = soon().send(save) {
+        write_logged(&path, &bytes, what);
+    }
+}
+
+/// Waits until every `write_soon` so far is on disk (before quitting).
+#[allow(dead_code)] // the examples that include this file don't quit through it
+pub fn flush() {
+    let (done, wait) = std::sync::mpsc::channel();
+    if soon().send(Soon::Flush(done)).is_ok() {
+        let _ = wait.recv();
+    }
+}
+
+enum Soon {
+    Write(std::path::PathBuf, Vec<u8>, &'static str),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+fn soon() -> &'static std::sync::mpsc::Sender<Soon> {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<Soon>> = std::sync::OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Soon>();
+        let spawned = std::thread::Builder::new()
+            .name("durable-writer".into())
+            .spawn(move || {
+                for save in rx {
+                    match save {
+                        Soon::Write(path, bytes, what) => write_logged(&path, &bytes, what),
+                        Soon::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            // The receiver is gone with the closure: sends fail, and
+            // `write_soon` writes on the spot.
+            eprintln!("arakun: could not start the file writer: {e}");
+        }
+        tx
+    })
+}
+
+fn write_logged(path: &Path, bytes: &[u8], what: &str) {
+    if let Err(e) = write(path, bytes) {
+        eprintln!("arakun: {what}: {e}");
+    }
+}
+
 /// How many taken temp names `create_temp` skips before it gives up.
 const TEMP_TRIES: u32 = 64;
 
@@ -199,6 +256,18 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(!err.to_string().contains("4f9c2e"), "{err}");
         assert_eq!(std::fs::read(&planted).unwrap(), b"x");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn writes_soon_in_order_and_flushes() {
+        let dir = scratch("soon");
+        let path = dir.join("settle-after-merge");
+        for n in 0..50 {
+            super::write_soon(path.clone(), format!("{n}").into_bytes(), "test");
+        }
+        super::flush();
+        assert_eq!(std::fs::read(&path).unwrap(), b"49");
         let _ = std::fs::remove_dir_all(dir);
     }
 

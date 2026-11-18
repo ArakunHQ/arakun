@@ -975,6 +975,8 @@ impl Shell {
                     this.save_transcripts(cx);
                     // Notices are saved off the UI thread: let the last one land.
                     crate::notices::flush();
+                    // Settings switched in the last moments.
+                    crate::durable::flush();
                     // Up to 2 s for usage events still queued.
                     crate::telemetry::quit();
                     crate::control::cleanup();

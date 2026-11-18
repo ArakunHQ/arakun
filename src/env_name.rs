@@ -172,6 +172,8 @@ fn namer_path() -> PathBuf {
 }
 
 pub fn namer() -> Namer {
+    // `set_namer` saves in the background: read what it was last given.
+    crate::durable::flush();
     std::fs::read(namer_path())
         .ok()
         .and_then(|b| serde_json::from_slice::<Namer>(&b).ok())
@@ -188,9 +190,11 @@ pub fn installed(agent: AgentKind) -> bool {
 }
 
 pub fn set_namer(namer: &Namer) {
-    let _ = crate::durable::write(
-        &namer_path(),
-        &serde_json::to_vec_pretty(namer).unwrap_or_default(),
+    // Saved on every key typed in the model field.
+    crate::durable::write_soon(
+        namer_path(),
+        serde_json::to_vec_pretty(namer).unwrap_or_default(),
+        "could not save the branch namer",
     );
 }
 

@@ -54,13 +54,13 @@ impl Shell {
             let d = dir.clone();
             let o = old.clone();
             let renamed = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     if quiet && !env_name::installed(agent) {
                         return Ok(None);
                     }
                     let name = env_name::suggest(agent, &model, &task)?;
                     git::rename_branch(&d, &o, &name, true).map(Some)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| match renamed {
                 Ok(Some(name)) => this.branch_renamed(&dir, &old, name, cx),
@@ -109,12 +109,12 @@ impl Shell {
             let d = dir.clone();
             // `env.branch` only changes on a project refresh; a terminal may have switched since.
             let renamed = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let old = git::current_branch(&d).ok_or_else(|| {
                         anyhow::anyhow!("HEAD is detached; there is no branch to rename")
                     })?;
                     git::rename_branch(&d, &old, &new, false).map(|name| (old, name))
-                })
+                }))
                 .await;
             let reply = match renamed {
                 Ok((old, name)) => {

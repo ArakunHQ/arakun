@@ -1261,7 +1261,9 @@ impl GitHubView {
         cx.spawn(async move |this, cx| {
             let t = task.clone();
             let sent = cx
-                .background_spawn(async move { pilot::send_task(&cfg, &t) })
+                .background_spawn(crate::guard::task(
+                    async move { pilot::send_task(&cfg, &t) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.task_sending = false;

@@ -106,7 +106,9 @@ impl CommitDialog {
         let dir = self.dir.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { git::commit(&dir, &message, all) })
+                .background_spawn(crate::guard::task(async move {
+                    git::commit(&dir, &message, all)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
@@ -330,7 +332,9 @@ impl ConfirmDialog {
         self.error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { action() }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { action() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {

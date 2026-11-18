@@ -502,15 +502,22 @@ mod host {
             });
             let headless = cx.spawn(async move |this, cx| {
                 loop {
-                    let scan = cx.background_spawn(async { watch::scan() }).await;
+                    let scan = cx
+                        .background_spawn(crate::guard::task(async { Some(watch::scan()) }))
+                        .await;
+                    let Some(scan) = scan else {
+                        // A scan that broke says nothing about the agents; the next may work.
+                        cx.background_executor().timer(WATCH_EVERY).await;
+                        continue;
+                    };
                     let Ok(mut seen) = this.update(cx, |host, _| host.watch.update(&scan)) else {
                         break;
                     };
                     let seen = cx
-                        .background_spawn(async move {
+                        .background_spawn(crate::guard::task_or_default(async move {
                             watch::read_replies(&mut seen.alerts);
                             seen
-                        })
+                        }))
                         .await;
                     if this.update(cx, |host, cx| host.headless(seen, cx)).is_err() {
                         break;

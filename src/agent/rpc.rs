@@ -229,7 +229,7 @@ impl Connection {
                         if let Some(log) = log.as_mut() {
                             let _ = writeln!(log, "{line}");
                         }
-                        let mut tail = tail.lock().unwrap();
+                        let mut tail = lock(&tail);
                         tail.push_back(line);
                         if tail.len() > 30 {
                             tail.pop_front();
@@ -247,30 +247,35 @@ impl Connection {
             std::thread::Builder::new()
                 .name(format!("acp-{}-r", kind.id()))
                 .spawn(move || {
-                    for line in lossy_lines(stdout) {
-                        let line = line.trim();
-                        if line.is_empty() {
-                            continue;
+                    // If reading panics, what waits for the agent is still told it is gone.
+                    let _ = crate::guard::run("reading the agent's output", || {
+                        for line in lossy_lines(stdout) {
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if trace {
+                                eprintln!("<- {}", clip(line, 4000));
+                            }
+                            let Ok(msg) = serde_json::from_str::<Value>(line) else {
+                                continue;
+                            };
+                            dispatch(msg, &pending, &events);
                         }
-                        if trace {
-                            eprintln!("<- {}", clip(line, 4000));
-                        }
-                        let Ok(msg) = serde_json::from_str::<Value>(line) else {
-                            continue;
-                        };
-                        dispatch(msg, &pending, &events);
-                    }
+                    })
+                    // Nobody reads the agent now, and it may not exit by itself.
+                    .inspect_err(|_| drop(child.kill()));
                     let status = match child.wait() {
                         Ok(s) => s.to_string(),
                         Err(e) => e.to_string(),
                     };
                     exited.store(true, Ordering::SeqCst);
-                    for (_, tx) in pending.lock().unwrap().drain() {
+                    for (_, tx) in lock(&pending).drain() {
                         let _ = tx.send(Err(RpcError::disconnected()));
                     }
                     // Give the stderr thread a moment to drain the last lines.
                     std::thread::sleep(Duration::from_millis(50));
-                    let stderr_tail = tail.lock().unwrap().iter().cloned().collect::<Vec<_>>();
+                    let stderr_tail = lock(&tail).iter().cloned().collect::<Vec<_>>();
                     let _ = events.unbounded_send(Incoming::Closed {
                         status,
                         stderr_tail: stderr_tail.join("\n"),
@@ -318,9 +323,10 @@ impl Connection {
                             dispatch(msg, &pending, &events);
                         })
                     };
-                    serve(write_rx, sink);
+                    // If the agent panics, what waits for it is still told it is gone.
+                    let _ = crate::guard::run("the in-process agent", || serve(write_rx, sink));
                     exited.store(true, Ordering::SeqCst);
-                    for (_, tx) in pending.lock().unwrap().drain() {
+                    for (_, tx) in lock(&pending).drain() {
                         let _ = tx.send(Err(RpcError::disconnected()));
                     }
                     let _ = events.unbounded_send(Incoming::Closed {
@@ -368,11 +374,11 @@ impl Connection {
         };
         let key = id_key(&id);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(key.clone(), tx);
+        lock(&self.pending).insert(key.clone(), tx);
         if !self.write(
             "request",
             json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
-        ) && let Some(tx) = self.pending.lock().unwrap().remove(&key)
+        ) && let Some(tx) = lock(&self.pending).remove(&key)
         {
             let _ = tx.send(Err(RpcError::disconnected()));
         }
@@ -405,6 +411,14 @@ impl Connection {
     }
 }
 
+/// A thread that panicked with one of these locks held must not hang or panic the rest:
+/// the maps stay usable, and whoever waited is told the agent is gone.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn dispatch(msg: Value, pending: &Pending, events: &fmpsc::UnboundedSender<Incoming>) {
     let method = msg
         .get("method")
@@ -421,7 +435,7 @@ fn dispatch(msg: Value, pending: &Pending, events: &fmpsc::UnboundedSender<Incom
             let _ = events.unbounded_send(Incoming::Notification { method, params });
         }
         (None, Some(id)) => {
-            let Some(tx) = pending.lock().unwrap().remove(&id_key(&id)) else {
+            let Some(tx) = lock(pending).remove(&id_key(&id)) else {
                 return;
             };
             let result = match msg.get("error") {
@@ -471,6 +485,8 @@ pub fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt as _;
+    use futures::executor::block_on;
 
     #[test]
     fn lossy_lines_read_past_bytes_that_arent_utf8() {
@@ -478,5 +494,21 @@ mod tests {
         let pipe: &[u8] = b"one\r\ncaf\xe9\n\xff\xfe\nlast";
         let lines: Vec<String> = lossy_lines(pipe).collect();
         assert_eq!(lines, ["one", "caf\u{fffd}", "\u{fffd}\u{fffd}", "last"]);
+    }
+
+    #[test]
+    fn an_in_process_agent_that_panics_reads_as_gone() {
+        let (conn, mut events) = Connection::in_process(AgentKind::WorkersAi, |rx, _| {
+            let _ = rx.recv();
+            panic!("bad request");
+        })
+        .unwrap();
+        // Without the guard the request is never answered and this waits forever.
+        let reply = block_on(conn.request("initialize", json!({})));
+        assert_eq!(reply.unwrap_err().code, RpcError::DISCONNECTED);
+        assert!(matches!(
+            block_on(events.next()),
+            Some(Incoming::Closed { .. })
+        ));
     }
 }

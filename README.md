@@ -346,6 +346,12 @@ are sent as they are, so a crash message can still name something it was working
 person profile from it and no location from your IP, and deleting the file starts a
 new one. Your answer is kept in `telemetry.json` in the same folder.
 
+Whatever you answer, Arakun writes each panic to `crash.log` in the same folder: when it
+happened, the version, the thread, the message (cleaned the same way) and the stack
+trace. That file stays on your machine; attach it when you report a crash. It keeps the
+most recent panics, up to about 256 KB. A panic in background work no longer closes
+Arakun: what was running shows an error, and the log says "Arakun carried on".
+
 `DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the question;
 `ARAKUN_TELEMETRY=1` turns both on. Debug builds send nothing unless
 `ARAKUN_TELEMETRY=1` is set, and the test Arakun of `arakun dev` never does. A build

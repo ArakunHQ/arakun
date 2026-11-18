@@ -95,7 +95,9 @@ impl CreateEnvDialog {
         let r = repo.clone();
         cx.spawn(async move |this, cx| {
             let branches = cx
-                .background_spawn(async move { git::branches(&r).unwrap_or_default() })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    git::branches(&r).unwrap_or_default()
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.branches = branches;
@@ -168,9 +170,9 @@ impl CreateEnvDialog {
             let branch = name.clone();
             // The branch list can be stale or empty (a failed read): git decides.
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     git::add_worktree(&repo, &target, &name, base.as_deref(), auto_name)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -623,7 +625,9 @@ impl DeleteEnvDialog {
         let p = path.clone();
         cx.spawn(async move |this, cx| {
             let counts = cx
-                .background_spawn(async move { (git::unpushed(&p), git::local_only(&p)) })
+                .background_spawn(crate::guard::task(async move {
+                    (git::unpushed(&p), git::local_only(&p))
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.unpushed = counts.0;
@@ -659,7 +663,9 @@ impl DeleteEnvDialog {
         cx.spawn(async move |this, cx| {
             let p = path.clone();
             let result = cx
-                .background_spawn(async move { git::remove_worktree(&repo, &p, branch.as_deref()) })
+                .background_spawn(crate::guard::task(async move {
+                    git::remove_worktree(&repo, &p, branch.as_deref())
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;

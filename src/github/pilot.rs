@@ -829,7 +829,7 @@ impl Pilot {
         let untold = self.book.untold.clone();
         cx.spawn(async move |this, cx| {
             let (told, read, board) = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     // The board and the items side by side: a slow one
                     // doesn't hold the other up.
                     // The handled ids the Worker missed go out beside them:
@@ -851,7 +851,7 @@ impl Pilot {
                         });
                         (told, read, board)
                     })
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -907,7 +907,7 @@ impl Pilot {
         cx.spawn(async move |this, cx| {
             let i = id.clone();
             let told = cx
-                .background_spawn(async move { tell_done(&cfg, &i) })
+                .background_spawn(crate::guard::task(async move { tell_done(&cfg, &i) }))
                 .await;
             // A failure stays untold; the next read tries again.
             if told.is_ok() {

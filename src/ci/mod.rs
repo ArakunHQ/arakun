@@ -660,6 +660,12 @@ pub enum ListError {
     Other(String),
 }
 
+impl From<crate::guard::Panicked> for ListError {
+    fn from(panicked: crate::guard::Panicked) -> Self {
+        ListError::Other(panicked.to_string())
+    }
+}
+
 pub fn list_runs(dir: &Path) -> std::result::Result<Vec<Run>, ListError> {
     let limit = LIST_LIMIT.to_string();
     gh_json(dir, &["run", "list", "-L", &limit, "--json", RUN_FIELDS]).map_err(|e| {
@@ -1232,13 +1238,13 @@ impl Ci {
         cx.spawn(async move |this, cx| {
             let dir = root.clone();
             let (result, prs) = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let runs = list_runs(&dir);
                     let prs = (want_prs && runs.is_ok())
                         .then(|| list_prs(&dir).ok())
                         .flatten();
                     (runs, prs)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let Some(repo) = this.repos.get_mut(&root) else {
@@ -1388,7 +1394,9 @@ impl Ci {
             let dir = root.clone();
             let r = run.clone();
             let result = cx
-                .background_spawn(async move { run_detail(&dir, &r, green.as_ref(), &checkouts) })
+                .background_spawn(crate::guard::task(async move {
+                    run_detail(&dir, &r, green.as_ref(), &checkouts)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(repo) = this.repos.get_mut(&root) {
@@ -1424,7 +1432,7 @@ impl Ci {
         cx.spawn(async move |this, cx| {
             let (dir, b) = (root.clone(), branch.clone());
             let result = cx
-                .background_spawn(async move { graph::build(&dir, &b) })
+                .background_spawn(crate::guard::task(async move { graph::build(&dir, &b) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(repo) = this.repos.get_mut(&root) {
@@ -1492,7 +1500,9 @@ impl Ci {
         let root = root.to_path_buf();
         cx.spawn(async move |this, cx| {
             let dir = root.clone();
-            let result = cx.background_spawn(async move { job_log(&dir, job) }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job_log(&dir, job) }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(repo) = this.repos.get_mut(&root) {
                     let load = match result {
@@ -1524,14 +1534,14 @@ impl Ci {
         cx.spawn(async move |this, cx| {
             let dir = root.clone();
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let id = id.to_string();
                     match (cancel, failed) {
                         (true, _) => gh_action(&dir, &["run", "cancel", &id]),
                         (false, true) => gh_action(&dir, &["run", "rerun", &id, "--failed"]),
                         (false, false) => gh_action(&dir, &["run", "rerun", &id]),
                     }
-                })
+                }))
                 .await;
             // GitHub takes a moment to show the new attempt.
             cx.background_executor().timer(Duration::from_secs(3)).await;

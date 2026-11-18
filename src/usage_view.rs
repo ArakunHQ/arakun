@@ -304,13 +304,13 @@ impl UsageView {
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
                 let (seats, go, access) = cx
-                    .background_spawn(async move {
+                    .background_spawn(crate::guard::task_or_default(async move {
                         (
                             plan::seats(),
                             opencode_plan::refresh(),
                             claude_auth::access(),
                         )
-                    })
+                    }))
                     .await;
                 let plan = seats.active().cloned();
                 #[cfg(feature = "coderlabs")]
@@ -347,7 +347,7 @@ impl UsageView {
         let proxy_poll = cx.spawn(async move |this, cx| {
             loop {
                 let proxy = cx
-                    .background_spawn(async move { cliproxy::refresh(false) })
+                    .background_spawn(crate::guard::task(async move { cliproxy::refresh(false) }))
                     .await;
                 if this
                     .update(cx, |v, cx| {
@@ -411,7 +411,7 @@ impl UsageView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let records = cx
-                .background_spawn(async move { usage_history::scan() })
+                .background_spawn(crate::guard::task(async move { usage_history::scan() }))
                 .await;
             let _ = this.update(cx, |v, cx| {
                 v.scanning = false;
@@ -549,9 +549,9 @@ impl UsageView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let got = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     cliproxy::save_key(&key, &base).map(|()| cliproxy::refresh(true))
-                })
+                }))
                 .await;
             let _ = this.update(cx, |v, cx| {
                 v.proxy_saving = false;

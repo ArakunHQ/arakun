@@ -18,7 +18,9 @@
 //!
 //! Events go to PostHog's capture API over the `ureq` client the app already
 //! has, from one background thread; a panic is sent right away from the
-//! panicking thread, since the process may not outlive it.
+//! panicking thread, since the process may not outlive it. The panic hook
+//! itself is `crash`'s, which also keeps a crash log on this machine whatever
+//! the answer was.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -209,14 +211,13 @@ fn apply(choice: Consent) {
     USAGE.store(choice.usage, Ordering::Relaxed);
     // What was queued while a choice was on is not sent once it is off.
     lock(&queue().events).retain(|e| allowed(e, choice));
-    if (choice.crashes || choice.usage) && STARTED.set(()).is_ok() {
-        install_panic_hook();
-        if let Err(e) = std::thread::Builder::new()
+    if (choice.crashes || choice.usage)
+        && STARTED.set(()).is_ok()
+        && let Err(e) = std::thread::Builder::new()
             .name("telemetry".into())
             .spawn(send_loop)
-        {
-            eprintln!("arakun: telemetry not started: {e}");
-        }
+    {
+        eprintln!("arakun: telemetry not started: {e}");
     }
 }
 
@@ -439,7 +440,7 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
 }
 
 /// `unix_ms` as RFC 3339 in UTC, as PostHog's capture API takes it.
-fn timestamp(unix_ms: u64) -> String {
+pub fn timestamp(unix_ms: u64) -> String {
     let secs = (unix_ms / 1000) as i64;
     let (y, m, d) = crate::platform::civil_from_days(secs.div_euclid(86_400));
     let s = secs.rem_euclid(86_400);
@@ -566,18 +567,18 @@ fn quick_agent() -> &'static ureq::Agent {
 
 // ---- panics -----------------------------------------------------------------
 
-fn install_panic_hook() {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        if CRASHES.load(Ordering::Relaxed) && !SENDING.with(Cell::get) {
-            let event = panic_event(info);
-            send(&[event], quick_agent());
-        }
-        previous(info);
-    }));
+/// Sends a panic right away, from the panicking thread, if the user agreed
+/// to crash reports. `props` come from `panic_props`.
+pub fn send_panic(props: Map<String, Value>) {
+    if CRASHES.load(Ordering::Relaxed) && !SENDING.with(Cell::get) {
+        send(&[event_json("$exception", props)], quick_agent());
+    }
 }
 
-fn panic_event(info: &std::panic::PanicHookInfo<'_>) -> Value {
+/// What is known about the panic on this thread, for the crash log and for
+/// PostHog. `fatal` is false when only a thread or a task died and the app
+/// carried on (`guard`): that is an error, not a crash.
+pub fn panic_props(info: &std::panic::PanicHookInfo<'_>, fatal: bool) -> Map<String, Value> {
     let message = info
         .payload()
         .downcast_ref::<&str>()
@@ -596,17 +597,18 @@ fn panic_event(info: &std::panic::PanicHookInfo<'_>) -> Value {
     if let Some(name) = std::thread::current().name() {
         props.insert("thread".into(), name.into());
     }
-    props.insert("$exception_level".into(), "fatal".into());
+    let level = if fatal { "fatal" } else { "error" };
+    props.insert("$exception_level".into(), level.into());
     props.insert(
         "$exception_list".into(),
         json!([{
             "type": "Panic",
             "value": scrub(&message, &home),
-            "mechanism": {"type": "panic", "handled": false, "synthetic": false},
+            "mechanism": {"type": "panic", "handled": !fatal, "synthetic": false},
             "stacktrace": {"type": "raw", "frames": frames(&home)},
         }]),
     );
-    event_json("$exception", props)
+    props
 }
 
 /// The panicking thread's stack, outermost first, without this hook and the
@@ -928,7 +930,7 @@ mod tests {
         let stack = [
             "backtrace::backtrace::trace",
             "arakun::telemetry::frames",
-            "arakun::telemetry::install_panic_hook::{{closure}}",
+            "arakun::crash::install::{{closure}}",
             "std::panicking::rust_panic_with_hook",
             "std::sys::backtrace::__rust_end_short_backtrace",
             "rust_begin_unwind",

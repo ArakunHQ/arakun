@@ -101,7 +101,9 @@ impl Shell {
         self.notify(AlertKind::Info, &title, &what, None, cx);
         cx.spawn_in(window, async move |this, cx| {
             let installed = cx
-                .background_spawn(async move { crate::agent::install_codex() })
+                .background_spawn(crate::guard::task(
+                    async move { crate::agent::install_codex() },
+                ))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 // The last project may have closed during the install.

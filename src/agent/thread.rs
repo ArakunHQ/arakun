@@ -1719,9 +1719,9 @@ impl Thread {
                 }
                 if fresh && t.kind == AgentKind::Codex {
                     let raw = v["configOptions"].clone();
-                    cx.background_spawn(async move {
+                    cx.background_spawn(crate::guard::task(async move {
                         super::catalog::remember_codex_options(&raw)
-                    })
+                    }))
                     .detach();
                 }
                 t.session_ready(id, &v, cx)
@@ -1945,8 +1945,10 @@ impl Thread {
         if push_user || self.turn_tree.is_none() {
             let cwd = self.cwd.clone();
             self.turn_tree = Some(
-                cx.background_spawn(async move { shell_diff::snapshot(&cwd) })
-                    .shared(),
+                cx.background_spawn(crate::guard::task(
+                    async move { shell_diff::snapshot(&cwd) },
+                ))
+                .shared(),
             );
         }
         self.turn_tokens = self.usage.total_tokens();
@@ -1991,12 +1993,12 @@ impl Thread {
         let seq = self.prompt_seq;
         self._prompt = Some(cx.spawn(async move |this, cx| {
             let blocks = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     images
                         .iter()
                         .map(|p| attach::acp_block(p))
                         .collect::<Vec<_>>()
-                })
+                }))
                 .await;
             let mut prompt = vec![json!({"type": "text", "text": text})];
             if !hint.is_empty() {
@@ -2231,11 +2233,11 @@ impl Thread {
                 return;
             };
             let changes = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     shell_diff::snapshot(&cwd)
                         .map(|after| shell_diff::changes(&before, &after))
                         .unwrap_or_default()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |t, cx| t.set_shell_changes(ix, changes, cx));
         });
@@ -2377,11 +2379,11 @@ impl Thread {
         if turn.is_empty() {
             return;
         }
-        cx.background_spawn(async move {
+        cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = ledger::append(&turn) {
                 eprintln!("arakun: could not log usage: {e}");
             }
-        })
+        }))
         .detach();
     }
     fn finish_turn(&mut self, result: Result<Value, RpcError>, cx: &mut Context<Self>) {

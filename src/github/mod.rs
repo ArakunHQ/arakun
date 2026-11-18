@@ -474,6 +474,12 @@ pub enum Problem {
     Other(String),
 }
 
+impl From<crate::guard::Panicked> for Problem {
+    fn from(panicked: crate::guard::Panicked) -> Self {
+        Problem::Other(panicked.to_string())
+    }
+}
+
 impl Problem {
     pub fn text(&self) -> String {
         match self {
@@ -1085,24 +1091,32 @@ impl GitHub {
         let since = queue::day_key(queue::day_start(now, MENTIONS_DAYS));
         cx.spawn(async move |this, cx| {
             let (unread, all, (found, failed, search_problem), me) = cx
-                .background_spawn(async move {
-                    std::thread::scope(|s| {
-                        let searches = s.spawn(|| queue::search_all(&today, &since));
-                        let me = s.spawn(|| pr::me().ok());
-                        let unread = list(false);
-                        let all = (want_all && unread.is_ok())
-                            .then(|| list(true).ok().map(|(all, _)| all))
-                            .flatten();
-                        let found = searches.join().unwrap_or_else(|_| {
-                            (
-                                Vec::new(),
-                                queue::Why::ALL.to_vec(),
-                                Some(Problem::Other("the searches failed".into())),
-                            )
-                        });
-                        (unread, all, found, me.join().ok().flatten())
-                    })
-                })
+                .background_spawn(crate::guard::task_or(
+                    async move {
+                        std::thread::scope(|s| {
+                            let searches = s.spawn(|| queue::search_all(&today, &since));
+                            let me = s.spawn(|| pr::me().ok());
+                            let unread = list(false);
+                            let all = (want_all && unread.is_ok())
+                                .then(|| list(true).ok().map(|(all, _)| all))
+                                .flatten();
+                            let found = searches.join().unwrap_or_else(|_| {
+                                (
+                                    Vec::new(),
+                                    queue::Why::ALL.to_vec(),
+                                    Some(Problem::Other("the searches failed".into())),
+                                )
+                            });
+                            (unread, all, found, me.join().ok().flatten())
+                        })
+                    },
+                    // As when every search failed: what was found last time stays.
+                    |panicked| {
+                        let problem = Problem::from(panicked);
+                        let found = (Vec::new(), queue::Why::ALL.to_vec(), Some(problem.clone()));
+                        (Err(problem), None, found, None)
+                    },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -1167,7 +1181,9 @@ impl GitHub {
         }
         self.me_reading = true;
         cx.spawn(async move |this, cx| {
-            let me = cx.background_spawn(async { pr::me().ok() }).await;
+            let me = cx
+                .background_spawn(crate::guard::task(async { pr::me().ok() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.me_reading = false;
                 if this.me.is_none() && me.is_some() {
@@ -1215,7 +1231,7 @@ impl GitHub {
             cx.spawn(async move |this, cx| {
                 let r = repo.clone();
                 let read = cx
-                    .background_spawn(async move {
+                    .background_spawn(crate::guard::task(async move {
                         let json = gh_out(&[
                             "pr",
                             "list",
@@ -1229,7 +1245,7 @@ impl GitHub {
                             "number,title,author,isDraft,updatedAt,reviewDecision,headRefName",
                         ])?;
                         parse_repo_pulls(&json)
-                    })
+                    }))
                     .await;
                 let _ = this.update(cx, |g, cx| {
                     g.repo_pulls_busy.remove(&repo);
@@ -1421,7 +1437,7 @@ impl GitHub {
         self.avatars_busy = true;
         cx.spawn(async move |this, cx| {
             let got = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     // A few at once: a queue's worth of people arrives in a second or two.
                     std::thread::scope(|s| {
                         let jobs: Vec<_> = want
@@ -1439,7 +1455,7 @@ impl GitHub {
                             .flat_map(|j| j.join().unwrap_or_default())
                             .collect::<Vec<_>>()
                     })
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.avatars_busy = false;
@@ -1515,7 +1531,7 @@ impl GitHub {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let read = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     match item.kind {
                         pr::ItemKind::Pull => {
                             pr::fetch_pull(&item).map(|p| queue::Details::Pull(Box::new(p)))
@@ -1524,7 +1540,7 @@ impl GitHub {
                             pr::fetch_issue(&item).map(|i| queue::Details::Issue(Box::new(i)))
                         }
                     }
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.fetching.remove(&key);
@@ -1639,11 +1655,11 @@ impl GitHub {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let failed: Vec<(String, Problem)> = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     ids.into_iter()
                         .filter_map(|id| mark_thread_read(&id).err().map(|e| (id, e)))
                         .collect()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // Not read after all: shown again now, since the next inbox

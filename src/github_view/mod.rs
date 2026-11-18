@@ -714,7 +714,9 @@ impl GitHubView {
         cx.spawn(async move |this, cx| {
             let r = repo.clone();
             let read = cx
-                .background_spawn(async move { pr::allowed_merge_methods(&r) })
+                .background_spawn(crate::guard::task(
+                    async move { pr::allowed_merge_methods(&r) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // Unknown counts as squash allowed: GitHub refuses a wrong one with its own words.
@@ -758,9 +760,9 @@ impl GitHubView {
         cx.spawn(async move |this, cx| {
             let it = item.clone();
             let read = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     pr::fetch_diff_at(&it).map(|(d, at)| (pr::split_diff(&d.text), d.cut, at))
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // A newer load (a push, a refresh) replaced this one.
@@ -985,7 +987,9 @@ impl GitHubView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let it = item.clone();
-            let result = cx.background_spawn(async move { job(&it) }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job(&it) }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 // Another item may be picked now: its confirmation stays, and

@@ -168,7 +168,9 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (r, p, b) = (repo_root.clone(), wt.clone(), branch.clone());
             let result = cx
-                .background_spawn(async move { git::add_branch_worktree(&r, &p, &b) })
+                .background_spawn(crate::guard::task(async move {
+                    git::add_branch_worktree(&r, &p, &b)
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(()) => {

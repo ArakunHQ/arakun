@@ -415,7 +415,9 @@ impl Shell {
             cx.spawn(async move |this, cx| {
                 let p = env_path.clone();
                 let files = cx
-                    .background_spawn(async move { git::ls_files(&p).unwrap_or_default() })
+                    .background_spawn(crate::guard::task(async move {
+                        git::ls_files(&p).unwrap_or_default()
+                    }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.file_index_loading = false;
@@ -717,8 +719,10 @@ impl Shell {
         self.history_at = None;
         if self.prompt_history.push(&typed) {
             let bytes = self.prompt_history.bytes();
-            cx.background_spawn(async move { crate::history::write(&bytes) })
-                .detach();
+            cx.background_spawn(crate::guard::task(
+                async move { crate::history::write(&bytes) },
+            ))
+            .detach();
         }
         self.send_prompt(text, now, window, cx);
     }

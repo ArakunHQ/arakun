@@ -133,8 +133,9 @@ impl Shell {
         // the checkout. Counted as running meanwhile so the agent stays up.
         self.checks.entry(id.to_string()).or_default().running += 1;
         let dir = env_path.to_path_buf();
-        let changed = cx
-            .background_spawn(async move { !crate::memory::changed_since(&dir, since).is_empty() });
+        let changed = cx.background_spawn(crate::guard::task(async move {
+            !crate::memory::changed_since(&dir, since).is_empty()
+        }));
         let (env_path, id, thread, stop_reason) = (
             env_path.to_path_buf(),
             id.clone(),

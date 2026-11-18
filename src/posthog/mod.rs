@@ -217,6 +217,12 @@ pub enum ApiError {
     Failed(String),
 }
 
+impl From<crate::guard::Panicked> for ApiError {
+    fn from(panicked: crate::guard::Panicked) -> Self {
+        ApiError::Failed(panicked.to_string())
+    }
+}
+
 impl ApiError {
     pub fn message(&self) -> String {
         match self {

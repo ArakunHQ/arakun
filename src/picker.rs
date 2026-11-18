@@ -106,7 +106,7 @@ impl FolderPicker {
         this.refilter(cx);
         cx.spawn(async move |this, cx| {
             let repos = cx
-                .background_spawn(async move { scan_repos(&home()) })
+                .background_spawn(crate::guard::task(async move { scan_repos(&home()) }))
                 .await;
             *REPOS.lock().unwrap() = Some(repos.clone());
             let _ = this.update(cx, |this, cx| {
@@ -373,7 +373,9 @@ impl FolderPicker {
             // Git runs here, off the UI thread: the clone, or reading the origin of
             // a folder that is already there.
             let result = cx
-                .background_spawn(async move { clone_or_reuse(&source, &target) })
+                .background_spawn(crate::guard::task(async move {
+                    clone_or_reuse(&source, &target)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.cloning = None;

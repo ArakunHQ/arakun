@@ -257,7 +257,9 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (r, p, b) = (repo_root.clone(), wt.clone(), branch.clone());
             let result = cx
-                .background_spawn(async move { git::add_branch_worktree(&r, &p, &b) })
+                .background_spawn(crate::guard::task(async move {
+                    git::add_branch_worktree(&r, &p, &b)
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(()) => {
@@ -314,7 +316,7 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let (d, r, b) = (dir.clone(), remote.clone(), branch.clone());
             let result = cx
-                .background_spawn(async move { git::push(&d, &r, &b) })
+                .background_spawn(crate::guard::task(async move { git::push(&d, &r, &b) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let (text, error) = match result {
@@ -351,7 +353,9 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let b = branch.clone();
             let result = cx
-                .background_spawn(async move { git::pr_create_web(&dir, &b) })
+                .background_spawn(crate::guard::task(
+                    async move { git::pr_create_web(&dir, &b) },
+                ))
                 .await;
             if let Err(e) = result {
                 let _ = this.update(cx, |this, cx| {
@@ -560,7 +564,7 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let (d, s) = (dir.clone(), sha.clone());
             let result = cx
-                .background_spawn(async move { git::revert(&d, &s) })
+                .background_spawn(crate::guard::task(async move { git::revert(&d, &s) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let short = sha.get(..7).unwrap_or(&sha);

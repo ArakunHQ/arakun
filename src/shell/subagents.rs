@@ -43,8 +43,17 @@ fn fmt_secs(secs: u64) -> String {
 
 impl Shell {
     pub(super) fn toggle_subagents(&mut self, cx: &mut Context<Self>) {
+        // Left out for room, a click brings it back in the panel's place.
+        if self.subagents_open && self.side_crowded.get()[1] {
+            self.side_prefer = SideCard::Subagents;
+            cx.notify();
+            return;
+        }
         self.subagents_open = !self.subagents_open;
         self.subagents_dismissed = !self.subagents_open;
+        if self.subagents_open {
+            self.side_prefer = SideCard::Subagents;
+        }
         self.save(cx);
         self.sync_subagent_tick(cx);
         cx.notify();
@@ -62,6 +71,7 @@ impl Shell {
             self.subagents_open = true;
             self.save(cx);
         }
+        self.side_prefer = SideCard::Subagents;
         match subagent {
             Some(id) => self.show_subagent(session, &id, window, cx),
             None => self.subagent_view = None,

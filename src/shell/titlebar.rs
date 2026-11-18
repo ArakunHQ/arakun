@@ -27,7 +27,12 @@ impl Shell {
         if !self.rail_shown() {
             for (id, icon_name, lit, rail) in [
                 ("title-rail", "sidebar-left", false, true),
-                ("title-panel", "layout-align-right", self.panel_open, false),
+                (
+                    "title-panel",
+                    "layout-align-right",
+                    self.panel_shown(),
+                    false,
+                ),
             ] {
                 strip = strip.child(
                     div()

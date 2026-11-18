@@ -22,6 +22,9 @@ pub(super) struct Watch {
     last: Option<Instant>,
     /// A check or a removal is running.
     busy: bool,
+    /// The worktree git is removing right now. Until it is gone, or git
+    /// refused, it can't be opened and no session starts in it.
+    removing: Option<PathBuf>,
 }
 
 impl Shell {
@@ -81,7 +84,13 @@ impl Shell {
                 // was turned off. Git itself refuses when a file changed.
                 let found = (repo.clone(), path.clone());
                 if !this
-                    .update(cx, |this, _| this.still_old(&found))
+                    .update(cx, |this, _| {
+                        let goes = this.still_old(&found);
+                        if goes {
+                            this.cleanup.removing = Some(found.1.clone());
+                        }
+                        goes
+                    })
                     .unwrap_or(false)
                 {
                     continue;
@@ -90,24 +99,31 @@ impl Shell {
                 let gone = cx
                     .background_spawn(async move { crate::git::remove_clean_worktree(&repo, &dir) })
                     .await;
-                match gone {
-                    Ok(()) => removed.push(path),
-                    Err(e) => eprintln!(
+                if let Err(e) = &gone {
+                    eprintln!(
                         "arakun: could not remove the old environment {}: {e}",
                         path.display()
-                    ),
+                    );
+                }
+                // Out of the lists at once, not after the others were
+                // checked: it must not be picked while its folder is gone.
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.cleanup.removing = None;
+                    if gone.is_ok() {
+                        this.env_removed(&path, window, cx);
+                    }
+                });
+                if gone.is_ok() {
+                    removed.push(path);
                 }
             }
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _, cx| {
                 this.cleanup.busy = false;
                 if removed.is_empty() {
                     return;
                 }
                 let names: Vec<String> =
                     removed.iter().map(|p| crate::model::dir_name(p)).collect();
-                for path in &removed {
-                    this.env_removed(path, window, cx);
-                }
                 let title = match removed.len() {
                     1 => "Removed an old environment".to_string(),
                     n => format!("Removed {n} old environments"),
@@ -168,6 +184,11 @@ impl Shell {
                     .any(|s| matches!(s.status, Status::Working | Status::NeedsInput)),
             used: e.last_used(),
         }
+    }
+
+    /// Whether the cleanup is removing the environment at `path` right now.
+    pub(super) fn being_cleaned_up(&self, path: &std::path::Path) -> bool {
+        self.cleanup.removing.as_deref() == Some(path)
     }
 
     /// Whether the app itself still lets `found` (repository, worktree) go.

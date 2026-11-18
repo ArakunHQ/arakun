@@ -2523,6 +2523,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Its folder is going away this moment (`shell::cleanup`).
+        if self.projects[project]
+            .environments
+            .get(env)
+            .is_some_and(|e| self.being_cleaned_up(&e.path))
+        {
+            return;
+        }
         self.active_project = project;
         self.projects[project].active_env = env;
         self.env_menu_open = false;

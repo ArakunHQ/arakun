@@ -2830,6 +2830,11 @@ fn run_git(cmd: &mut std::process::Command) -> Result<(), String> {
     ))
 }
 
+/// What `run_bounded` says when git ran out of `limit`.
+fn took_too_long(limit: Duration) -> String {
+    format!("git took longer than {} seconds", limit.as_secs())
+}
+
 /// An error that says which request it answers, for a client that waits on
 /// that one and must not take another's error for it.
 fn error_about(about: &str, message: &str) -> String {
@@ -2848,6 +2853,16 @@ fn add_worktree(from: &Path, branch: &str) -> Result<PathBuf, String> {
 
 /// `add_worktree`, under `base`.
 fn worktree_in(base: &Path, from: &Path, branch: &str) -> Result<PathBuf, String> {
+    worktree_within(base, from, branch, WORKTREE_LIMIT)
+}
+
+/// `worktree_in`, with git and its hooks given `limit`.
+fn worktree_within(
+    base: &Path,
+    from: &Path,
+    branch: &str,
+    limit: Duration,
+) -> Result<PathBuf, String> {
     if !plain_branch(branch) {
         return Err(format!("{branch:?} is not a branch name this server takes"));
     }
@@ -2874,11 +2889,17 @@ fn worktree_in(base: &Path, from: &Path, branch: &str) -> Result<PathBuf, String
         git(from)
             .args(["worktree", "add", "--quiet", "-b", branch])
             .arg(&dest),
-        WORKTREE_LIMIT,
+        limit,
         None,
     );
     match made {
         Ok(()) => dest.canonicalize().map_err(|e| e.to_string()),
+        // Stopped part way, maybe in the checkout itself: what is there may
+        // be half a worktree, not one to add.
+        Err(e) if dest.exists() && e == took_too_long(limit) => Err(format!(
+            "{e}, so it was stopped. What it left is at {}, on branch {branch}: remove both before you try again.",
+            dest.display()
+        )),
         // A hook that failed after the checkout: the worktree is there, and
         // asking again would only say so.
         Err(e) if dest.exists() => Err(format!(
@@ -3022,7 +3043,7 @@ fn run_bounded(
                 tree.kill();
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("git took longer than {} seconds", limit.as_secs()));
+                return Err(took_too_long(limit));
             }
             Err(e) => {
                 tree.kill();
@@ -3279,6 +3300,34 @@ mod tests {
             "{err}"
         );
         assert_eq!(store::branch(&made).as_deref(), Some("hooked"), "it stays");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_hangs_is_stopped_and_not_taken_for_a_failed_one() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = scratch("hang");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let hook = app.join(".git/hooks/post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = tmp.join("workspaces");
+        let started = Instant::now();
+        let err = worktree_within(&base, &app, "stuck", Duration::from_secs(2)).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "it waited on the hook"
+        );
+        assert!(
+            err.starts_with(&took_too_long(Duration::from_secs(2))),
+            "{err}"
+        );
+        assert!(err.contains("remove both"), "{err}");
+        assert!(!err.contains("arakun-server add"), "{err}");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

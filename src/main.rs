@@ -95,6 +95,7 @@ mod update;
 mod usage_history;
 mod usage_view;
 mod voice;
+mod window_error;
 #[cfg(feature = "coderlabs")]
 mod xlog;
 mod zoom;
@@ -149,7 +150,9 @@ fn main() {
     telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);
     update::clean_up();
     let started = std::time::Instant::now();
-    gpui::Application::with_platform(ui_zoom::platform())
+    let platform =
+        window_error::catch(ui_zoom::platform).unwrap_or_else(|e| window_error::exit(&e));
+    gpui::Application::with_platform(platform)
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             assets::load_fonts(cx);
@@ -296,7 +299,8 @@ fn main() {
                     },
                     |window, cx| cx.new(|cx| shell::Shell::new(window, cx)),
                 )
-                .unwrap();
+                // Fails without a usable GPU driver; say so instead of panicking.
+                .unwrap_or_else(|e| window_error::exit(&format!("{e:#}")));
             let _ = shell.update(cx, |shell, window, cx| {
                 // The setup asks about reports itself; the dialog is for everyone else.
                 shell.onboard_if_new(window, cx);

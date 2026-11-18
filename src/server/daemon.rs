@@ -2569,6 +2569,9 @@ fn real_dir(path: &Path) -> Result<PathBuf, String> {
     if real.to_str().is_none() {
         return Err(format!("{}: the name is not UTF-8", path.display()));
     }
+    if !real.is_dir() {
+        return Err(format!("{} is not a folder", path.display()));
+    }
     Ok(real)
 }
 
@@ -2653,7 +2656,10 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
                 std::thread::sleep(Duration::from_millis(100));
             }
             Ok(None) => {
+                // Git itself too: a tree that could not be set up (a job
+                // object Windows refused) would leave it running.
                 tree.kill();
+                let _ = child.kill();
                 let _ = child.wait();
                 return failed(format!(
                     "git clone took longer than {} minutes",
@@ -2662,6 +2668,7 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
             }
             Err(e) => {
                 tree.kill();
+                let _ = child.kill();
                 return failed(format!("git clone: {e}"));
             }
         }
@@ -2821,6 +2828,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn a_file_is_not_a_folder_to_add() {
+        let dir = scratch("file");
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = real_dir(&file).unwrap_err();
+        assert!(err.contains("is not a folder"), "{err}");
+        assert_eq!(real_dir(&dir), Ok(dir.clone()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -303,7 +303,8 @@ impl Shell {
     ) {
         // A server's session: what the user did goes there; the rest (checks,
         // transcripts, the phone) is the server's to do.
-        self.phone_thread_event(id, ev, cx);
+        let pid = self.phone_id(env_path, id);
+        self.phone_thread_event(&pid, ev, cx);
         if self.find_env(env_path).is_some_and(|e| e.remote.is_some()) {
             if let ThreadEvent::Remote(action) = ev {
                 self.servers_remote_action(env_path, id, action, cx);
@@ -491,7 +492,7 @@ impl Shell {
                 .live
                 .as_ref()
                 .is_some_and(|l| l.thread.read(cx).in_background());
-        if open || busy || self.check_running(id) || self.phone_watching(id) {
+        if open || busy || self.check_running(id) || self.phone_watching(env_path, id) {
             return;
         }
         let Some(env) = self.find_env_mut(env_path) else {
@@ -1673,7 +1674,8 @@ impl Shell {
         // the session is not the one on screen.
         let at_computer = window.is_window_active();
         if !at_computer {
-            self.notify_phones(id, kind, &title, &body, cx);
+            let pid = self.phone_id(env_path, id);
+            self.notify_phones(&pid, kind, &title, &body, cx);
         }
         let visible = at_computer
             && self.has_projects()

@@ -225,6 +225,21 @@ fn let_go(
     gone
 }
 
+/// What phones call the session `id` of `server`: the two together, since
+/// two servers may give a session the same id. No id has an `@`.
+pub(super) fn phone_session_id(server: &str, id: &str) -> String {
+    format!("{id}@{server}")
+}
+
+/// The session id and, for a server's session, the server in what phones
+/// call a session ([`phone_session_id`]).
+pub(super) fn split_phone_id(pid: &str) -> (&str, Option<&str>) {
+    match pid.rsplit_once('@') {
+        Some((id, server)) => (id, Some(server)),
+        None => (pid, None),
+    }
+}
+
 /// Tells each server to stop sending the sessions in `gone`.
 fn close_follows(link: &ServersLink, gone: Vec<Following>) {
     for f in gone {
@@ -1619,7 +1634,8 @@ impl Shell {
                         Some(Asker::Desktop) => link.starting_id = Some((id.to_string(), session)),
                         // Started from a phone: it opens there, not here.
                         Some(Asker::Phone(client)) => {
-                            let started = json!({ "type": "started", "id": session });
+                            let started =
+                                json!({ "type": "started", "id": phone_session_id(id, &session) });
                             self.phone_send(client, started.to_string());
                             self.phone_inbox_changed(cx);
                         }
@@ -2242,6 +2258,17 @@ mod tests {
         let names: Vec<&str> = gone.iter().map(|f| f.session.as_str()).collect();
         assert_eq!(names, ["a", "b"]);
         assert!(following.is_empty());
+    }
+
+    #[test]
+    fn a_phone_tells_two_servers_sessions_apart() {
+        let a = phone_session_id("srv1", "s19a-0");
+        let b = phone_session_id("srv2", "s19a-0");
+        assert_ne!(a, b);
+        assert_eq!(split_phone_id(&a), ("s19a-0", Some("srv1")));
+        assert_eq!(split_phone_id(&b), ("s19a-0", Some("srv2")));
+        // This computer's sessions keep their own ids.
+        assert_eq!(split_phone_id("h19a2b"), ("h19a2b", None));
     }
 
     #[test]

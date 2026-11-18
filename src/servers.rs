@@ -171,6 +171,22 @@ pub fn kept_inbox(inbox: &Value) -> Value {
     })
 }
 
+/// Whether two kept inboxes hold the same folders and sessions. A session's
+/// `updated` moves with each change of its status, which is not kept: it is
+/// left out, or every status change would write the file again.
+pub fn same_kept(a: &Value, b: &Value) -> bool {
+    let without_times = |v: &Value| {
+        let mut v = v.clone();
+        for s in v["sessions"].as_array_mut().into_iter().flatten() {
+            if let Some(s) = s.as_object_mut() {
+                s.remove("updated");
+            }
+        }
+        v
+    };
+    without_times(a) == without_times(b)
+}
+
 /// The inbox each server sent last, by its id.
 pub fn load_inboxes() -> HashMap<String, Value> {
     std::fs::read(inbox_file())
@@ -281,9 +297,13 @@ mod tests {
         assert_eq!(kept["sessions"][1]["status"], "idle");
         assert!(kept["sessions"][1].get("asks").is_none());
         assert!(kept.get("host").is_none());
-        // Only a change in what it holds is written again.
+        // Only a change in what it holds is written again. A status change
+        // moves the session's time too.
         let mut later = inbox.clone();
         later["sessions"][0]["status"] = json!("idle");
-        assert_eq!(kept_inbox(&later), kept);
+        later["sessions"][0]["updated"] = json!(1_800_000_000);
+        assert!(same_kept(&kept_inbox(&later), &kept));
+        later["sessions"][0]["title"] = json!("Fix it now");
+        assert!(!same_kept(&kept_inbox(&later), &kept));
     }
 }

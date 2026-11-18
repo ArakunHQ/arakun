@@ -2002,7 +2002,10 @@ impl Shell {
                     // Kept for the next start, when what it holds changed.
                     let kept = servers::kept_inbox(&msg);
                     // One that could not be written is tried again with the next.
-                    let changed = link.inboxes.get(id) != Some(&kept);
+                    let changed = link
+                        .inboxes
+                        .get(id)
+                        .is_none_or(|old| !servers::same_kept(old, &kept));
                     if link.saved.iter().any(|s| s.id == id) && (changed || link.inboxes_unsaved) {
                         link.inboxes.insert(id.to_string(), kept);
                         link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);

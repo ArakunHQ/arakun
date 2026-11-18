@@ -46,7 +46,8 @@ exception is `POST /teams/<team_id>/remind`, which only a pending user may call.
 ```
 
 - The server computes `device_id` from `sig_pub` and stores the row
-  (`github_id`, `device_id`, `sig_pub`, `enc_pub`, `name`, `created_at`, `endorsed_by`).
+  (`github_id`, `device_id`, `sig_pub`, `enc_pub`, `name`, `created_at`, `endorsed_by`,
+  `endorsement_sig`): the endorsement's `by` and `sig`, both null for a first device.
 - A user's first device has `endorsement: null`. Any later device must be endorsed
   by one of the same user's existing devices: `sig` = ECDSA by that device over the
   UTF-8 bytes of `arakun-teams/v1/device|<github_id>|<sig_pub>|<enc_pub>`. The
@@ -64,8 +65,10 @@ exception is `POST /teams/<team_id>/remind`, which only a pending user may call.
 
 `GET /users/<github_id>/devices` lists a user's devices (the user must share a team
 with the caller, or be the caller): `[{ device_id, sig_pub, enc_pub, name,
-created_at, endorsed_by }]`. Clients verify each endorsement chain back to the
-first device and show "new device" notices for devices they have not seen.
+created_at, endorsed_by, endorsement_sig }]`. Clients verify each endorsement chain
+back to the first device and show "new device" notices for devices they have not
+seen. A device registered before the server kept `endorsement_sig` has it null
+while `endorsed_by` is set; its chain cannot be checked.
 
 Every request a device makes about its own keys carries `X-Arakun-Device: <device_id>`:
 accept, approve, both envelope requests, the channel socket and history. `400`

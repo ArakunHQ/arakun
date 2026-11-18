@@ -164,6 +164,7 @@ async function registerDevice(c: Ctx): Promise<Response> {
   if (existing) return same(existing);
 
   let endorsedBy: string | null = null;
+  let endorsementSig: string | null = null;
   if (endorsement !== null && endorsement !== undefined) {
     if (!isObject(endorsement) || typeof endorsement["by"] !== "string" || typeof endorsement["sig"] !== "string") {
       return error(400, 'endorsement is null or {"by", "sig"}');
@@ -178,6 +179,7 @@ async function registerDevice(c: Ctx): Promise<Response> {
       return error(400, "the endorsement does not check out");
     }
     endorsedBy = endorsement["by"];
+    endorsementSig = endorsement["sig"];
   }
 
   // The conditions sit in the insert, so two registrations at once cannot
@@ -188,10 +190,10 @@ async function registerDevice(c: Ctx): Promise<Response> {
       : `(SELECT COUNT(*) FROM devices WHERE github_id = ?2) < ${MAX_DEVICES}`;
   const result = await db
     .prepare(
-      `INSERT INTO devices (device_id, github_id, sig_pub, enc_pub, name, created_at, endorsed_by)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${condition} ON CONFLICT DO NOTHING`,
+      `INSERT INTO devices (device_id, github_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 WHERE ${condition} ON CONFLICT DO NOTHING`,
     )
-    .bind(deviceId, me, sigPub, encPub, name, now(), endorsedBy)
+    .bind(deviceId, me, sigPub, encPub, name, now(), endorsedBy, endorsementSig)
     .run();
   if (result.meta.changes === 1) return Response.json({ device_id: deviceId }, { status: 201 });
   const raced = await known();
@@ -213,7 +215,7 @@ async function listDevices(c: Ctx, id: string): Promise<Response> {
     if (!shared) return notFound();
   }
   const { results } = await c.env.DB.prepare(
-    "SELECT device_id, sig_pub, enc_pub, name, created_at, endorsed_by FROM devices WHERE github_id = ? ORDER BY created_at, device_id",
+    "SELECT device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig FROM devices WHERE github_id = ? ORDER BY created_at, device_id",
   )
     .bind(githubId)
     .all();
@@ -402,7 +404,7 @@ async function listPending(c: Ctx, teamId: string): Promise<Response> {
       .bind(teamId),
     db
       .prepare(
-        `SELECT d.github_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by
+        `SELECT d.github_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by, d.endorsement_sig
          FROM devices d JOIN pending p ON p.github_id = d.github_id
          WHERE p.team_id = ? ORDER BY d.created_at, d.device_id`,
       )

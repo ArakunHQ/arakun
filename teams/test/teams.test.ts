@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { b64url, ulid } from "../src/util";
+import { deviceSigned, sigKey, verify } from "../src/wire";
 import { api, envelope, expectJson, makeDevice, newKey, register, seal, signText, team, user, join } from "./clients";
 import { nowSeconds } from "./helpers";
 
@@ -18,7 +19,7 @@ describe("devices", () => {
     expect(await expectJson(register(u, d), 201)).toEqual({ device_id: d.id });
     expect(await expectJson(register(u, d), 200)).toEqual({ device_id: d.id });
     const list = await expectJson(api(u, "GET", "/users/1001/devices"), 200);
-    expect(list).toEqual([{ device_id: d.id, sig_pub: d.sigPub, enc_pub: d.encPub, name: "laptop", created_at: expect.any(Number), endorsed_by: null }]);
+    expect(list).toEqual([{ device_id: d.id, sig_pub: d.sigPub, enc_pub: d.encPub, name: "laptop", created_at: expect.any(Number), endorsed_by: null, endorsement_sig: null }]);
   });
 
   it("takes a later device only with an endorsement by one of the user's devices", async () => {
@@ -28,8 +29,12 @@ describe("devices", () => {
     await expectJson(register(u, first), 201);
     expect((await expectJson(register(u, second), 400)).error).toMatch(/endorsement/);
     expect(await expectJson(register(u, second, first, "phone"), 201)).toEqual({ device_id: second.id });
-    const list = await expectJson<{ device_id: string; endorsed_by: string | null }[]>(api(u, "GET", "/users/1001/devices"), 200);
-    expect(list.find((d) => d.device_id === second.id)?.endorsed_by).toBe(first.id);
+    const list = await expectJson<{ device_id: string; endorsed_by: string | null; endorsement_sig: string | null }[]>(api(u, "GET", "/users/1001/devices"), 200);
+    const got = list.find((d) => d.device_id === second.id)!;
+    expect(got.endorsed_by).toBe(first.id);
+    // A client checks the chain itself, with the signature the server kept.
+    const key = (await sigKey(first.sigPub))!;
+    expect(await verify(key, got.endorsement_sig!, deviceSigned(1001, second.sigPub, second.encPub))).toBe(true);
   });
 
   it("refuses a forged endorsement", async () => {
@@ -249,10 +254,14 @@ describe("teams", () => {
     await expectJson(api(newcomer, "GET", `/teams/${t.teamId}`), 404);
     expect(await expectJson(api(newcomer, "GET", "/teams"), 200)).toEqual([]);
 
-    const pending = await expectJson<{ github_id: number; login: string; devices: { device_id: string }[] }[]>(api(owner.user, "GET", `/teams/${t.teamId}/pending`), 200);
+    const pending = await expectJson<{ github_id: number; login: string; devices: { device_id: string; endorsement_sig: string | null }[] }[]>(
+      api(owner.user, "GET", `/teams/${t.teamId}/pending`),
+      200,
+    );
     expect(pending).toHaveLength(1);
     expect(pending[0]).toMatchObject({ github_id: 2001, login: "RikVisser-dev", requested_at: expect.any(Number) });
     expect(pending[0]!.devices.map((d) => d.device_id).sort()).toEqual([laptop.id, phone.id].sort());
+    expect(pending[0]!.devices.find((d) => d.device_id === phone.id)?.endorsement_sig).toEqual(expect.any(String));
 
     const key = t.keys.get(1)!;
     const approvePath = `/teams/${t.teamId}/pending/2001/approve`;

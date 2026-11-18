@@ -188,13 +188,11 @@ enum Modal {
 enum MenuTarget {
     Project(usize),
     Env(usize, usize),
-    /// The composer's model chip: model, reasoning and fast mode, each opening
-    /// its choices to the side.
+    /// The composer's agent chip: the agents beside the model, reasoning and
+    /// fast mode of the one hovered.
     ModelMenu,
     /// The composer's permissions chip: Claude's mode, Droid's mode and autonomy.
     PermissionMenu,
-    /// The composer's agent chip on the New session tab.
-    AgentMenu,
     /// Which providers the rail's usage card shows.
     RailUsage,
     /// Sessions across all projects that want attention, and past notices.
@@ -233,13 +231,17 @@ struct ContextMenu {
 /// A row of a composer or rail menu, as both the mouse and the keys reach it.
 #[derive(Clone, Debug, PartialEq)]
 enum MenuKey {
-    /// A setting's choice: (setting, choice id, can be picked).
-    Choice(crate::agent::Setting, String, bool),
-    /// Opens a setting's choices beside the model menu.
-    Sub(crate::agent::Setting),
+    /// A setting's choice for an agent: (agent, setting, choice id, can be
+    /// picked). Another agent's model switches to it; its other settings are
+    /// only remembered while a session runs, and switch on the New session tab.
+    Choice(Agent, crate::agent::Setting, String, bool),
+    /// The reasoning row of the model menu; ← and → step through its levels.
+    Effort(Agent),
     /// Fast mode, with whether it is on now.
-    Fast(bool),
-    Reset,
+    Fast(Agent, bool),
+    /// Back to the agent's default model, reasoning and fast mode.
+    Reset(Agent),
+    /// Switches the composer to the agent, with the settings it remembers.
     Agent(Agent),
     /// Shows or hides a provider in the rail's usage card.
     Rail(crate::agent::AgentKind),
@@ -454,13 +456,11 @@ pub struct Shell {
     saved_prompts: Vec<crate::prompts::SavedPrompt>,
     /// A one-line note under the composer (a prompt was saved, ...), until the next key.
     composer_flash: Option<SharedString>,
-    /// The model menu's row whose choices show beside it.
-    menu_sub: Option<crate::agent::Setting>,
-    /// The keys went into that submenu (→), so arrows walk its choices.
-    menu_in_sub: bool,
+    /// The agent whose models the model menu shows; `None` is the composer's.
+    menu_agent: Option<Agent>,
     /// The row the arrow keys are on, in `menu_keys` order.
     menu_cursor: Option<usize>,
-    /// The submenu's scroll, kept on the row the keys are on.
+    /// The model list's scroll, kept on the row the keys are on.
     menu_scroll: ScrollHandle,
     /// The alert level (`limits::level`) each plan window last notified at.
     limit_alerts: std::collections::HashMap<String, u8>,
@@ -946,8 +946,7 @@ impl Shell {
             attached: std::collections::HashMap::new(),
             saved_prompts: crate::prompts::load(),
             composer_flash: None,
-            menu_sub: None,
-            menu_in_sub: false,
+            menu_agent: None,
             menu_cursor: None,
             menu_scroll: ScrollHandle::new(),
             limit_alerts: std::collections::HashMap::new(),
@@ -2779,10 +2778,7 @@ impl Render for Shell {
         let context_menu = self.menu.as_ref().map(|m| {
             let above = matches!(
                 m.target,
-                MenuTarget::ModelMenu
-                    | MenuTarget::PermissionMenu
-                    | MenuTarget::AgentMenu
-                    | MenuTarget::RailUsage
+                MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage
             );
             // The room between the anchor and the window edge the menu opens toward.
             let room = if above {
@@ -3001,13 +2997,6 @@ impl Render for Shell {
                     return;
                 }
                 if ev.keystroke.key == "escape" {
-                    if this.menu_in_sub {
-                        this.menu_in_sub = false;
-                        this.menu_cursor = None;
-                        cx.stop_propagation();
-                        cx.notify();
-                        return;
-                    }
                     if this.cancel_session_drag(window, cx) {
                         cx.stop_propagation();
                     } else if this.drop_menu.take().is_some() || this.menu.take().is_some() {

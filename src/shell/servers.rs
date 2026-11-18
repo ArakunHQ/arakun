@@ -566,10 +566,21 @@ impl Shell {
                 ));
             }
         }
+        // A folder the server no longer offers says nothing of its repository:
+        // it stays in the project it is in, not in one of the server's own.
+        for (project, _, remote, _, _) in &mut wanted {
+            let path = Remote::env_path(&remote.server, &remote.place);
+            if retired.contains(&path)
+                && let Some(p) = self.projects.iter().find(|p| p.env_index(&path).is_some())
+            {
+                *project = p.path.clone();
+            }
+        }
         link.retired = retired;
-        let keep: HashSet<PathBuf> = wanted
+        // Each folder is one environment, in the one project it belongs to.
+        let keep: HashMap<PathBuf, PathBuf> = wanted
             .iter()
-            .map(|(_, _, r, _, _)| Remote::env_path(&r.server, &r.place))
+            .map(|(project, _, r, _, _)| (Remote::env_path(&r.server, &r.place), project.clone()))
             .collect();
 
         // What is on screen stays on screen, wherever it moves in the lists.
@@ -582,7 +593,7 @@ impl Shell {
         for p in &mut self.projects {
             let open = p.environments.get(p.active_env).map(|e| e.path.clone());
             p.environments
-                .retain(|e| e.remote.is_none() || keep.contains(&e.path));
+                .retain(|e| e.remote.is_none() || keep.get(&e.path) == Some(&p.path));
             p.active_env = open.and_then(|o| p.env_index(&o)).unwrap_or(0);
         }
         self.projects
@@ -757,6 +768,7 @@ impl Shell {
             && let Some(thread) = thread_of(&self.projects, &f.env_path, id)
         {
             thread.update(cx, |t, cx| {
+                t.remote_undelivered();
                 t.post_notice(
                     String::from("The server is not connected, so this did not reach it."),
                     true,

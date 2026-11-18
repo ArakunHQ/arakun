@@ -1967,6 +1967,12 @@ impl Thread {
         self.remote
     }
 
+    /// What the user did did not reach the server: the questionnaire can be
+    /// answered again.
+    pub fn remote_undelivered(&mut self) {
+        self.native.remote_answered = None;
+    }
+
     /// Says in the session that `what` is not done for a server's session:
     /// the agent and its history are on that machine.
     fn remote_cannot(&mut self, what: &str, cx: &mut Context<Self>) {
@@ -2008,6 +2014,15 @@ impl Thread {
         let asked = permission.is_some() && self.permissions.is_empty();
         self.permissions = permission.into_iter().collect();
         self.native.questions = question.into_iter().collect();
+        // Another questionnaire, or none: the one answered is done with.
+        let front = self
+            .native
+            .questions
+            .front()
+            .map(native::AskUserRequest::remote_key);
+        if self.native.remote_answered != front {
+            self.native.remote_answered = None;
+        }
         if asked {
             cx.emit(ThreadEvent::NeedsPermission);
         }

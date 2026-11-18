@@ -256,6 +256,16 @@ pub(super) fn remote_question(v: &Value) -> Option<AskUserRequest> {
 }
 
 impl AskUserRequest {
+    /// What tells one of a server's questionnaires from another.
+    pub(super) fn remote_key(&self) -> String {
+        let mut key = self.tool_call_id.clone();
+        for q in &self.questions {
+            key.push('\n');
+            key.push_str(&q.question);
+        }
+        key
+    }
+
     /// An ACP `elicitation/create` form as questions: each select field (or plain
     /// text field) is one, and a `<field>_custom` text field rides along as its
     /// free-text answer. `None` for forms this card cannot show.
@@ -380,6 +390,10 @@ pub(super) struct State {
     /// Streaming text blocks: (message id, block index) -> entry.
     pub blocks: HashMap<(String, u64), usize>,
     pub questions: VecDeque<AskUserRequest>,
+    /// The server's questionnaire an answer or skip went out for, by
+    /// [`AskUserRequest::remote_key`]: the server cannot tell two of them
+    /// apart, so a second Submit could answer the next one.
+    pub remote_answered: Option<String>,
     /// Settings asked for before the session existed.
     pub want: Vec<(Setting, String)>,
     /// Droid's working state: idle, thinking, executing_tool, compacting_conversation, ...
@@ -950,10 +964,9 @@ impl Thread {
         // A server's question stays until the server says it is answered: if
         // this does not reach it, the card and the typed answers are still here.
         if self.remote {
-            if self.native.questions.is_empty() {
-                return;
+            if self.remote_answer_once() {
+                cx.emit(ThreadEvent::Remote(super::RemoteAction::Answer(answers)));
             }
-            cx.emit(ThreadEvent::Remote(super::RemoteAction::Answer(answers)));
             return;
         }
         let Some(req) = self.native.questions.pop_front() else {
@@ -973,15 +986,32 @@ impl Thread {
         self.reply_question(req, reply, cx);
     }
 
+    /// Whether the server's questionnaire on show can be answered: once,
+    /// until the server says what it waits on now or the answer did not go.
+    fn remote_answer_once(&mut self) -> bool {
+        let Some(key) = self
+            .native
+            .questions
+            .front()
+            .map(AskUserRequest::remote_key)
+        else {
+            return false;
+        };
+        if self.native.remote_answered.as_ref() == Some(&key) {
+            return false;
+        }
+        self.native.remote_answered = Some(key);
+        true
+    }
+
     /// Dismisses the pending questionnaire without answering.
     pub fn skip_question(&mut self, cx: &mut Context<Self>) {
         // A server's question stays until the server says it is answered: if
         // this does not reach it, the card and the typed answers are still here.
         if self.remote {
-            if self.native.questions.is_empty() {
-                return;
+            if self.remote_answer_once() {
+                cx.emit(ThreadEvent::Remote(super::RemoteAction::SkipQuestion));
             }
-            cx.emit(ThreadEvent::Remote(super::RemoteAction::SkipQuestion));
             return;
         }
         let Some(req) = self.native.questions.pop_front() else {

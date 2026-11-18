@@ -500,14 +500,17 @@ impl Shell {
         let remote = env.remote.is_some();
         let session = &mut env.sessions[i];
         if let Some(live) = session.live.take() {
-            let t = live.thread.read(cx);
-            let transcript = t.transcript(cx);
-            session.meta = Some(t.meta());
-            let path = state::transcript_path(id);
-            cx.background_spawn(crate::guard::task(async move {
-                let _ = write_transcript(&path, &transcript);
-            }))
-            .detach();
+            // A server's transcript stays on the server.
+            if !remote {
+                let t = live.thread.read(cx);
+                let transcript = t.transcript(cx);
+                session.meta = Some(t.meta());
+                let path = state::transcript_path(id);
+                cx.background_spawn(crate::guard::task(async move {
+                    let _ = write_transcript(&path, &transcript);
+                }))
+                .detach();
+            }
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
             if remote {

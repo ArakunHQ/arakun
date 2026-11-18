@@ -211,6 +211,8 @@ pub struct Hub {
     pub inviters: HashMap<String, String>,
     /// Teams an admin let this user into during this run: their chat says so.
     pub joined: HashSet<String>,
+    /// @bot's runs and what this user did with its answers, on this device.
+    pub bot: super::bot::Bots,
     events: socket::Events,
     /// Bumped when the account changes, so late answers for the last one are dropped.
     generation: u64,
@@ -254,6 +256,7 @@ impl Hub {
             my_devices: Vec::new(),
             error: None,
             busy: HashSet::new(),
+            bot: super::bot::Bots::default(),
             events: tx,
             generation: 0,
             _events: events,
@@ -323,6 +326,7 @@ impl Hub {
         self.sent.clear();
         self.inviters.clear();
         self.joined.clear();
+        self.bot.clear();
         self._poll = None;
         self._tick = None;
         self.info = None;
@@ -1252,6 +1256,8 @@ impl Hub {
             return;
         };
         let mut unknown_seen = false;
+        // This device's @bot questions the server just stored: the bot runs now.
+        let mut asked = Vec::new();
         for s in stored {
             if c.seen_ids.contains(&s.message.id) {
                 continue;
@@ -1283,7 +1289,12 @@ impl Hub {
                 c.hidden += 1;
                 continue;
             };
-            c.outbox.remove(&s.message.id);
+            if c.outbox.remove(&s.message.id).is_some()
+                && body.kind == "text"
+                && body.mentions.iter().any(|m| m == "bot")
+            {
+                asked.push(s.message.id.clone());
+            }
             c.seen_ids.insert(s.message.id.clone());
             let msg = Msg {
                 id: s.message.id.clone(),
@@ -1303,6 +1314,10 @@ impl Hub {
         c.messages
             .sort_by_key(|m| (m.seq.is_none(), m.seq.unwrap_or(0), m.at));
         let team_id = c.team_id.clone();
+        let channel_id = c.channel_id.clone();
+        for id in asked {
+            self.start_bot(&team_id, &channel_id, &id, cx);
+        }
         if unknown_seen
             && self
                 .team
@@ -1316,13 +1331,29 @@ impl Hub {
         }
     }
 
-    /// Sends a text message, replying to `reply_to` when given.
+    /// Sends a text message, replying to `reply_to` when given. One that
+    /// mentions @bot runs it once the server has stored it.
     pub fn send(
         &mut self,
         team_id: &str,
         channel_id: &str,
         text: String,
         reply_to: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut body = Body::text(text, reply_to);
+        if super::bot::mentions_bot(&body.text) {
+            body.mentions = vec!["bot".into()];
+        }
+        self.send_body(team_id, channel_id, body, cx)
+    }
+
+    /// Seals and sends any message body.
+    pub fn send_body(
+        &mut self,
+        team_id: &str,
+        channel_id: &str,
+        body: Body,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((epoch, key)) = self.sending_key(team_id) else {
@@ -1339,7 +1370,6 @@ impl Hub {
             return false;
         };
         let id = crypto::ulid();
-        let body = Body::text(text, reply_to);
         let wire: WireMessage = crypto::seal_message(
             team_id,
             channel_id,
@@ -1380,7 +1410,7 @@ impl Hub {
             return;
         };
         let m = c.messages.remove(i);
-        self.send(team_id, channel_id, m.body.text, m.body.reply_to, cx);
+        self.send_body(team_id, channel_id, m.body, cx);
     }
 }
 

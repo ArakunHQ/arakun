@@ -6,7 +6,11 @@
 //! and keeps only the session the server answers with, in the system keyring.
 
 pub mod api;
+pub mod bot;
 pub mod crypto;
+// The Decisions view, in the next pass, reads the log; the chat uses only `acceptances` so far.
+#[allow(dead_code)]
+pub mod decisions;
 pub mod hub;
 pub mod sign_in;
 pub mod socket;

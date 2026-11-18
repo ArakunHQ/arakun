@@ -19,6 +19,7 @@ use gpui::{
 
 use super::Teams;
 use super::api::{DeviceRow, InviteRow, Role};
+use super::bot;
 use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, Notice, TeamState};
 use super::socket;
 use crate::input::{InputEvent, TextInput};
@@ -220,6 +221,11 @@ impl TeamsView {
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
+    }
+
+    /// The project @bot reads: the environment the window shows.
+    pub fn set_project(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.hub.update(cx, |h, _| h.set_bot_project(Some(dir)));
     }
 
     /// Opens the first channel once there is one and nothing else was picked,
@@ -1901,6 +1907,7 @@ impl TeamsView {
                     .text_color(text_color)
                     .child(m.body.text.clone()),
             )
+            .children(self.bot_actions(index, m, team_channel, cx))
             .children(delivery);
         div()
             .id(("teams-message", index))
@@ -2165,6 +2172,184 @@ impl TeamsView {
             .into_any_element()
     }
 
+    /// Accept, reject or ask more under a bot answer, or who accepted it.
+    /// Plain for now; the Doop restyle draws `bot.answer` itself.
+    fn bot_actions(
+        &self,
+        index: usize,
+        m: &Msg,
+        team_channel: (&str, &str),
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if m.body.kind != "bot" || m.delivery != Delivery::Sent {
+            return None;
+        }
+        if bot::meta(m).is_none() {
+            return Some(
+                ui::text(
+                    Type::Caption,
+                    theme::attention().into(),
+                    "Not posted by the member it names as running @bot.",
+                )
+                .into_any_element(),
+            );
+        }
+        let hub = self.hub.read(cx);
+        let accepted = hub
+            .channels
+            .get(&hub::channel_key(team_channel.0, team_channel.1))
+            .map(|c| super::decisions::acceptances(&c.messages, &m.id))
+            .unwrap_or_default();
+        let me = hub.me().map_or(0, |me| me.github_id);
+        let rejected = hub.bot.rejected.contains(&m.id);
+        let mine = accepted.iter().any(|a| a.github_id == me);
+        let who: Vec<String> = accepted.iter().map(|a| format!("@{}", a.login)).collect();
+        let (t, c, id) = (
+            team_channel.0.to_string(),
+            team_channel.1.to_string(),
+            m.id.clone(),
+        );
+        let (rid, aid) = (id.clone(), id.clone());
+        let row = div()
+            .flex()
+            .items_center()
+            .gap(ui::sp(8.))
+            .pt(ui::sp(6.))
+            .when(!who.is_empty(), |d| {
+                d.child(ui::text(
+                    Type::Caption,
+                    theme::text_subtle(),
+                    format!("Accepted by {}", who.join(", ")),
+                ))
+            })
+            .when(rejected && !mine, |d| {
+                d.child(ui::text(
+                    Type::Caption,
+                    theme::text_faint(),
+                    "You rejected this decision.",
+                ))
+            })
+            .when(!mine && !rejected, |d| {
+                d.child(
+                    ui::button(
+                        ("teams-bot-accept", index),
+                        "Accept decision",
+                        ButtonKind::Primary,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.hub
+                            .update(cx, |h, cx| h.accept_decision(&t, &c, &id, cx));
+                    })),
+                )
+                .child(
+                    ui::button(
+                        ("teams-bot-reject", index),
+                        "Reject",
+                        ButtonKind::Outline,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.hub.update(cx, |h, cx| h.reject_decision(&rid, cx));
+                    })),
+                )
+            })
+            .child(
+                ui::button(
+                    ("teams-bot-more", index),
+                    "Ask for more detail",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.reply_to = Some(aid.clone());
+                    this.composer
+                        .update(cx, |i, cx| i.set_text("@bot more detail on ", cx));
+                    let handle = this.composer.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                    cx.notify();
+                })),
+            );
+        Some(row.into_any_element())
+    }
+
+    /// @bot's runs in this channel: local rows, never sent.
+    fn bot_runs(&self, team_id: &str, channel_id: &str, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let runs: Vec<bot::Run> = self
+            .hub
+            .read(cx)
+            .bot
+            .in_channel(team_id, channel_id)
+            .cloned()
+            .collect();
+        runs.into_iter()
+            .enumerate()
+            .map(|(i, run)| {
+                let failed = run.failed();
+                let (ask, again) = (run.ask_id.clone(), run.ask_id.clone());
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(8.))
+                    .mx(ui::sp(16.))
+                    .mt(ui::sp(6.))
+                    .px(ui::sp(12.))
+                    .py(ui::sp(8.))
+                    .rounded(ui::rad(ui::RADIUS))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::fill_raised())
+                    .child(if failed {
+                        icon("alert-circle", 13.)
+                            .text_color(theme::error())
+                            .into_any_element()
+                    } else {
+                        ui::spinner(("teams-bot-spin", i), 13., theme::text_faint())
+                            .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .ty(Type::Caption)
+                            .text_color(if failed {
+                                theme::error().into()
+                            } else {
+                                theme::text_subtle()
+                            })
+                            .child(run.label()),
+                    )
+                    .when(failed, |d| {
+                        d.child(
+                            ui::button(
+                                ("teams-bot-retry", i),
+                                "Try again",
+                                ButtonKind::Outline,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.hub.update(cx, |h, cx| h.retry_bot(&again, cx));
+                                },
+                            )),
+                        )
+                    })
+                    .child(
+                        ui::button(
+                            ("teams-bot-stop", i),
+                            if failed { "Dismiss" } else { "Stop" },
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
+                        })),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     fn render_channel(
         &mut self,
         team_id: &str,
@@ -2352,6 +2537,7 @@ impl TeamsView {
             };
             rows.push(el);
         }
+        rows.extend(self.bot_runs(team_id, channel_id, cx));
         let list = div()
             .id(SharedString::from(format!(
                 "teams-messages-{team_id}-{channel_id}"

@@ -569,6 +569,8 @@ pub struct Thread {
     /// See [`Transcript::handoff`]; dropped once a turn that carried it ends well.
     handoff: Option<String>,
     handoff_sent: bool,
+    /// Context arakun adds to the next prompt the user sends, out of sight.
+    notes: Vec<String>,
     /// Subagents in the order they started (see `subagents.rs`).
     subagents: Vec<Subagent>,
     /// The session running this one as a subagent; set on the read-only
@@ -1014,6 +1016,7 @@ impl Thread {
             auto_allow: false,
             handoff: None,
             handoff_sent: false,
+            notes: Vec::new(),
             subagents: Vec::new(),
             parent: None,
             prompt_seq: 0,
@@ -1832,6 +1835,12 @@ impl Thread {
         self.conn.is_some() && self.session_id.is_some() && !self.applying_config
     }
 
+    /// Has the next prompt the user sends tell the agent `note`, without the
+    /// chat showing it.
+    pub fn add_note(&mut self, note: String) {
+        self.notes.push(note);
+    }
+
     /// Sends a prompt, or queues it while the agent is busy or still starting.
     pub fn send(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
@@ -1916,6 +1925,14 @@ impl Thread {
             }
             None => text,
         };
+        // Added after the user entry, so the chat doesn't show them; `last_prompt`
+        // keeps them for a retry.
+        let mut text = text;
+        if push_user {
+            for note in std::mem::take(&mut self.notes) {
+                text.push_str(&super::chart::hint(&note));
+            }
+        }
         self.turn_started = Some(Instant::now());
         if push_user || self.turn_tree.is_none() {
             let cwd = self.cwd.clone();

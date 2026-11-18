@@ -1162,10 +1162,7 @@ impl Shell {
                             ),
                             _ => "The server stopped sending this session part way.".into(),
                         };
-                        f.broken = Some(why.clone());
-                        if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
-                            thread.update(cx, |t, cx| t.post_notice(why, true, cx));
-                        }
+                        f.broken = Some(why);
                         None
                     }
                 };
@@ -1183,7 +1180,14 @@ impl Shell {
                     && let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session)
                 {
                     let (status, transcript) = (thread_status(f.status), transcript_of(f));
-                    thread.update(cx, |t, cx| t.show_transcript(transcript, status, cx));
+                    // The reason goes after what is shown, which would replace it.
+                    let why = f.broken.clone();
+                    thread.update(cx, |t, cx| {
+                        t.show_transcript(transcript, status, cx);
+                        if let Some(why) = why {
+                            t.post_notice(why, true, cx);
+                        }
+                    });
                 }
             }
             "error" => {

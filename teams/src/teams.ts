@@ -442,22 +442,25 @@ async function remind(c: Ctx, teamId: string): Promise<Response> {
   const db = c.env.DB;
   const t = now();
   // The hour is checked in the update, so two reminders at once set it once.
-  const result = await db
-    .prepare(
-      `UPDATE pending SET reminded_at = ?3 WHERE team_id = ?1 AND github_id = ?2
-         AND (reminded_at IS NULL OR reminded_at <= ?3 - ${REMIND_EVERY})
-         AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
-    )
-    .bind(teamId, c.me.githubId, t)
-    .run();
-  if (result.meta.changes === 1) return new Response(null, { status: 204 });
-  const row = await db
-    .prepare(
-      `SELECT reminded_at FROM pending WHERE team_id = ?1 AND github_id = ?2
-         AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
-    )
-    .bind(teamId, c.me.githubId)
-    .first<{ reminded_at: number | null }>();
+  // The read is in the same batch, so it sees the request the update saw: a
+  // request rejected and made again in between cannot answer 429 by mistake.
+  const [result, read] = await db.batch([
+    db
+      .prepare(
+        `UPDATE pending SET reminded_at = ?3 WHERE team_id = ?1 AND github_id = ?2
+           AND (reminded_at IS NULL OR reminded_at <= ?3 - ${REMIND_EVERY})
+           AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
+      )
+      .bind(teamId, c.me.githubId, t),
+    db
+      .prepare(
+        `SELECT reminded_at FROM pending WHERE team_id = ?1 AND github_id = ?2
+           AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
+      )
+      .bind(teamId, c.me.githubId),
+  ]);
+  if (result!.meta.changes === 1) return new Response(null, { status: 204 });
+  const row = read!.results[0] as { reminded_at: number | null } | undefined;
   if (!row) return notFound();
   const retryAt = (row.reminded_at ?? t) + REMIND_EVERY;
   const minutes = Math.max(1, Math.ceil((retryAt - t) / 60));

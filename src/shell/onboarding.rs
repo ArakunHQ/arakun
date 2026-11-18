@@ -233,6 +233,10 @@ impl Shell {
         );
         cx.background_spawn(async { onboarding::set_done() })
             .detach();
+        for view in onboarding::views_set_up(o.fresh, o.github, o.pair_phone) {
+            self.extensions_view
+                .update(cx, |v, cx| v.set_view(view, true, cx));
+        }
         if self.has_projects() {
             window.focus(&self.composer_focus, cx);
             if o.pair_phone {

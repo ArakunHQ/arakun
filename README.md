@@ -270,9 +270,11 @@ after a week).
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
   and permission rules the agents load now. Under Arakun › Extensions you turn on the
   tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
-  Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. A new
-  install starts with none on; an update keeps the ones your sidebar already had. The
-  choice is kept in `extensions.json` next to the state.
+  Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
+  palette and the sidebar builder list only the tabs that are on. A new install starts
+  with none on, except what you set up in the first-run setup: GitHub once the GitHub
+  CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
+  sidebar already had. The choice is kept in `extensions.json` next to the state.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours

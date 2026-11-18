@@ -131,6 +131,8 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | Teams session (Settings › Account) | Credential Manager, as `arakun:teams-session` |
+| Teams device keys (Teams tab) | Credential Manager, as `arakun:teams-device` |
+| Teams keys of each team and epoch, sealed | By default `%LOCALAPPDATA%\arakun\teams.keys`; with `ARAKUN_STATE` set, `teams.keys` next to that state file, and the two Credential Manager entries end in `@<that state file>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | The PR agent's cards you saw and dealt with (arakun-pilot) | By default `%LOCALAPPDATA%\arakun\pilot.json`; with `ARAKUN_STATE` set, `pilot.json` next to that state file |
 | arakun-pilot's Worker address and token | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |

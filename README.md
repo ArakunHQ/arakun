@@ -287,6 +287,26 @@ after a week).
   `https://teams.arakun.dev`, and plain `http://` works only for `localhost`,
   `127.0.0.1` and `[::1]`.
 
+  The Teams tab is an end-to-end encrypted team chat. Each install makes two key
+  pairs on first use and keeps them in the system keyring (`teams-device`); the
+  server only stores and forwards what they seal and sign (see
+  [teams/PROTOCOL.md](teams/PROTOCOL.md)). The **+** beside Teams creates a team with
+  a `#general` channel; the team page invites people by GitHub user name, adds
+  channels and approves the people who accepted. Approving hands the team key to
+  each of their devices from yours, so the server can't let anyone in by itself;
+  removing someone makes a new key for everyone else. Hover a message and press the
+  reply arrow to answer it: the quote shows above your message, and clicking it
+  scrolls to the original. **Esc** drops the reply. Messages whose signature does not
+  check out are hidden and counted. When a member adds a device, the others see
+  "@them added a new device".
+
+  A second device of yours shows "Approve this device from your other device" and a
+  code: on a device that already has Teams, open **Your devices** and paste it. The
+  team keys of each epoch are kept in `teams.keys` next to the state, sealed with a
+  key that stays in the keyring; the server keeps every key for every device too, so
+  losing the file loses nothing. A test Arakun with its own `ARAKUN_STATE` (such as
+  `arakun dev`) keeps its own Teams session, device and keys.
+
 ### Make it yours
 
 - **Color palettes.** Settings › Appearance has built-in palettes (Arakun Black, the

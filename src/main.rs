@@ -246,6 +246,7 @@ fn main() {
             ]);
             app_menu::install(cx);
             signals::quit_on_signals(cx);
+            ui::motion::follow_system(cx);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();

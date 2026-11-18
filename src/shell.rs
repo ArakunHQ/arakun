@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
@@ -2632,20 +2633,20 @@ impl Render for Shell {
         };
 
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
-        let modal: Option<AnyElement> = self.modal.as_ref().map(|(m, _)| match m {
-            Modal::Picker(e) => e.clone().into_any_element(),
-            Modal::Attach(e) => e.clone().into_any_element(),
-            Modal::CreateEnv(e) => e.clone().into_any_element(),
-            Modal::DeleteEnv(e) => e.clone().into_any_element(),
-            Modal::Command(e) => e.clone().into_any_element(),
-            Modal::Account(e) => e.clone().into_any_element(),
-            Modal::Commit(e) => e.clone().into_any_element(),
-            Modal::GitConfirm(e) => e.clone().into_any_element(),
-            Modal::Palette(e) => e.clone().into_any_element(),
-            Modal::Settings(e) => e.clone().into_any_element(),
-            Modal::Automations(e) => e.clone().into_any_element(),
-            Modal::Session(v) => v.clone().into_any_element(),
-            Modal::Telemetry(e) => e.clone().into_any_element(),
+        let modal: Option<(AnyElement, u64)> = self.modal.as_ref().map(|(m, _)| match m {
+            Modal::Picker(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Attach(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::CreateEnv(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::DeleteEnv(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Command(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Account(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Commit(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::GitConfirm(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Palette(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Settings(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
+            Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);
@@ -2668,6 +2669,15 @@ impl Render for Shell {
                 .flex_col()
                 .max_h(px(room.max(120.)))
                 .child(self.render_context_menu(m, cx));
+            // Keyed by where it opened, so a menu opened at another spot
+            // arrives again; it slides out of its anchor.
+            let key = ((m.at.x.as_f32() as usize) << 16) ^ m.at.y.as_f32() as usize;
+            let from = if above {
+                ui::motion::From::Below
+            } else {
+                ui::motion::From::Above
+            };
+            let menu = ui::motion::enter(menu, ("menu-in", key), from, 4., ui::motion::FAST);
             (m.at, above, menu.into_any_element())
         });
 
@@ -2954,7 +2964,7 @@ impl Render for Shell {
                 ))
             })
             .when_some(floating_sheet, |d, sheet| d.child(sheet))
-            .when_some(modal, |d, modal| {
+            .when_some(modal, |d, (modal, key)| {
                 d.child(
                     div()
                         .id("modal-backdrop")
@@ -2968,14 +2978,43 @@ impl Render for Shell {
                         .pt(relative(0.10))
                         .pb(crate::ui::sp(12.))
                         .px(crate::ui::sp(12.))
-                        // The palette dims the app further: gpui has no backdrop blur.
-                        .bg(gpui::black().opacity(if palette_open { 0.62 } else { 0.4 }))
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
                         )
-                        .child(modal),
+                        .child(
+                            // Keyed by the dialog, so one opened over another
+                            // arrives too. A flex column like the backdrop, so a
+                            // tall dialog still fits the window.
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .relative()
+                                .child(modal)
+                                .with_animation(
+                                    ("modal-in", key as usize),
+                                    gpui::Animation::new(ui::motion::BASE),
+                                    |d, t| {
+                                        let (opacity, offset) =
+                                            ui::motion::enter_at(t, ui::motion::From::Below, 10.);
+                                        d.opacity(opacity).top(px(offset))
+                                    },
+                                ),
+                        )
+                        // The palette dims the app further: gpui has no backdrop blur.
+                        .with_animation(
+                            "modal-backdrop-in",
+                            gpui::Animation::new(ui::motion::BASE),
+                            move |d, t| {
+                                let dim = if palette_open { 0.62 } else { 0.4 };
+                                d.bg(gpui::black().opacity(dim * ui::motion::ease_out(t)))
+                            },
+                        ),
                 )
             })
             .when(self.env_menu_open, |d| {

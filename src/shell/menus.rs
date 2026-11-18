@@ -11,109 +11,127 @@ impl Shell {
         let project = self.project();
         let pi = self.active_project;
         let at = self.env_menu_at;
-        div()
-            .id("env-menu")
-            .absolute()
-            .map(|d| match at {
-                Some(p) => d
-                    .left(p.x)
-                    .bottom(px(viewport_h) - p.y)
-                    .max_h((p.y - px(12.)).max(px(120.))),
-                None => d
-                    .top(px(gap() + 38.))
-                    .right(px(gap() + 6.))
-                    .max_h(px((viewport_h - gap() - 46.).max(120.))),
-            })
-            .w(px(280.))
-            .overflow_y_scroll()
-            .p(crate::ui::sp(4.))
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(1.))
-            .bg(theme::dialog())
-            .border_1()
-            .border_color(theme::border())
-            .rounded(crate::ui::rad(ui::MENU_RADIUS))
-            .shadow_xl()
-            .occlude()
-            .child(
-                div()
-                    .px(crate::ui::sp(8.))
-                    .pt(crate::ui::sp(4.))
-                    .pb(crate::ui::sp(6.))
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(theme::text_subtle())
-                    .child(format!("Environments in {}", project.name)),
-            )
-            .children(project.environments.iter().enumerate().map(|(ei, env)| {
-                let active = ei == project.active_env;
-                div()
-                    .id(("env-menu-item", ei))
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .h(px(32.))
-                    .px(crate::ui::sp(8.))
-                    .rounded(ui::menu_row_radius())
-                    .cursor_pointer()
-                    .text_size(px(ui::TEXT_MD))
-                    .when(active, |d| d.bg(theme::selection()))
-                    .hover(|s| s.bg(theme::selection_hover()))
-                    .child(
-                        icon(
-                            if env.is_checkout {
-                                "folder01"
-                            } else {
-                                "git-branch"
-                            },
-                            14.,
+        let from = if at.is_some() {
+            ui::motion::From::Below
+        } else {
+            ui::motion::From::Above
+        };
+        let menu =
+            div()
+                .id("env-menu")
+                .absolute()
+                .map(|d| match at {
+                    Some(p) => d
+                        .left(p.x)
+                        .bottom(px(viewport_h) - p.y)
+                        .max_h((p.y - px(12.)).max(px(120.))),
+                    None => d
+                        .top(px(gap() + 38.))
+                        .right(px(gap() + 6.))
+                        .max_h(px((viewport_h - gap() - 46.).max(120.))),
+                })
+                .w(px(280.))
+                .overflow_y_scroll()
+                .p(crate::ui::sp(4.))
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(1.))
+                .bg(theme::dialog())
+                .border_1()
+                .border_color(theme::border())
+                .rounded(crate::ui::rad(ui::MENU_RADIUS))
+                .shadow_xl()
+                .occlude()
+                .child(
+                    div()
+                        .px(crate::ui::sp(8.))
+                        .pt(crate::ui::sp(4.))
+                        .pb(crate::ui::sp(6.))
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_subtle())
+                        .child(format!("Environments in {}", project.name)),
+                )
+                .children(project.environments.iter().enumerate().map(|(ei, env)| {
+                    let active = ei == project.active_env;
+                    div()
+                        .id(("env-menu-item", ei))
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .h(px(32.))
+                        .px(crate::ui::sp(8.))
+                        .rounded(ui::menu_row_radius())
+                        .cursor_pointer()
+                        .text_size(px(ui::TEXT_MD))
+                        .when(active, |d| d.bg(theme::selection()))
+                        .hover(|s| s.bg(theme::selection_hover()))
+                        .child(
+                            icon(
+                                if env.is_checkout {
+                                    "folder01"
+                                } else {
+                                    "git-branch"
+                                },
+                                14.,
+                            )
+                            .text_color(theme::text_subtle()),
                         )
-                        .text_color(theme::text_subtle()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(env.branch.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(ui::TEXT_XS))
-                            .text_color(theme::text_faint())
-                            .child(format!(
-                                "{} · {}",
-                                plural(env.tabs.len(), "tab"),
-                                plural(env.terminals.len(), "terminal")
-                            )),
-                    )
-                    .child(status_dot(env.aggregate_status()))
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)),
-                    )
-            }))
-            .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
-            .child(
-                div()
-                    .id("env-new")
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .h(px(32.))
-                    .px(crate::ui::sp(8.))
-                    .rounded(ui::menu_row_radius())
-                    .cursor_pointer()
-                    .text_size(px(ui::TEXT_MD))
-                    .text_color(theme::text_subtle())
-                    .hover(|s| s.bg(theme::selection_hover()).text_color(theme::content()))
-                    .child(icon("add01", 14.).text_color(theme::text_subtle()))
-                    .child("New environment (worktree)…")
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(env.branch.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_faint())
+                                .child(format!(
+                                    "{} · {}",
+                                    plural(env.tabs.len(), "tab"),
+                                    plural(env.terminals.len(), "terminal")
+                                )),
+                        )
+                        .child(status_dot(env.aggregate_status()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_env(pi, ei, window, cx)
+                        }))
+                }))
+                .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
+                .child(
+                    div()
+                        .id("env-new")
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .h(px(32.))
+                        .px(crate::ui::sp(8.))
+                        .rounded(ui::menu_row_radius())
+                        .cursor_pointer()
+                        .text_size(px(ui::TEXT_MD))
+                        .text_color(theme::text_subtle())
+                        .hover(|s| s.bg(theme::selection_hover()).text_color(theme::content()))
+                        .child(icon("add01", 14.).text_color(theme::text_subtle()))
+                        .child("New environment (worktree)…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_create_env(pi, window, cx)
-                        }),
-                    ),
-            )
+                        })),
+                );
+        // Placed by its bottom when it opens above the anchor, where a top
+        // margin would not move it.
+        menu.with_animation(
+            "env-menu-in",
+            gpui::Animation::new(ui::motion::FAST),
+            move |d, t| {
+                let (opacity, offset) = ui::motion::enter_at(t, from, 4.);
+                let d = d.opacity(opacity);
+                match from {
+                    ui::motion::From::Below => d.mb(px(-offset)),
+                    ui::motion::From::Above => d.mt(px(offset)),
+                }
+            },
+        )
     }
 
     // ---- composer menus: agent, model and permissions -------------------------

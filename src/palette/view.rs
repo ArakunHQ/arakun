@@ -50,7 +50,7 @@ fn bar(key: &str) -> AnyElement {
     kit::selection_bar()
         .with_animation(
             ElementId::NamedInteger("palette-bar".into(), id_of(key)),
-            Animation::new(Duration::from_millis(140)).with_easing(gpui::ease_out_quint()),
+            Animation::new(crate::ui::motion::FAST).with_easing(crate::ui::motion::ease_out_back),
             |d, t| {
                 d.top(px(9. + 10. * (1. - t)))
                     .bottom(px(9. + 10. * (1. - t)))
@@ -434,7 +434,7 @@ impl Palette {
                                 .child(div().child("Asking Claude…").with_animation(
                                     "answer-wait-label",
                                     Animation::new(Duration::from_millis(1400))
-                                        .repeat()
+                                        .repeat_synced()
                                         .with_easing(gpui::pulsating_between(0.45, 1.)),
                                     |d, t| d.opacity(t),
                                 ))
@@ -450,8 +450,9 @@ impl Palette {
                                             .bg(theme::active())
                                             .with_animation(
                                                 "answer-cursor",
-                                                Animation::new(Duration::from_millis(900)).repeat(),
-                                                |d, t| d.opacity(if t < 0.5 { 1. } else { 0.25 }),
+                                                Animation::new(Duration::from_millis(1000))
+                                                    .repeat_synced(),
+                                                |d, t| d.opacity(cursor_blink(t)),
                                             ),
                                     )
                                 })
@@ -1200,11 +1201,18 @@ impl Render for Palette {
             .child(self.render_footer(cx))
             .children(menu)
             .children(bulk)
-            .with_animation(
-                "palette-in",
-                Animation::new(Duration::from_millis(140)).with_easing(gpui::ease_out_quint()),
-                |d, t| d.opacity(t).mt(px(6. * (1. - t))),
-            )
+    }
+}
+
+/// The answer cursor's opacity `t` into a blink: it holds, then dims and
+/// comes back smoothly, where a hard on and off read as flicker.
+fn cursor_blink(t: f32) -> f32 {
+    const HOLD: f32 = 0.45;
+    if t < HOLD {
+        1.
+    } else {
+        let dip = (std::f32::consts::PI * (t - HOLD) / (1. - HOLD)).sin();
+        1. - 0.75 * dip * dip
     }
 }
 

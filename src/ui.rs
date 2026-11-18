@@ -61,6 +61,8 @@ pub fn tree_item(last: bool, mid: f32, gap: f32, row: gpui::AnyElement) -> gpui:
 mod chart;
 #[path = "ui/kit.rs"]
 mod kit;
+#[path = "ui/motion.rs"]
+pub mod motion;
 
 #[allow(unused_imports)]
 pub use chart::{AreaChart, Format, Series, sparkline};
@@ -106,7 +108,7 @@ struct Tip(SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let tip = div()
             .px(sp(8.))
             .py(sp(4.))
             .rounded(rad(RADIUS_SM))
@@ -116,7 +118,8 @@ impl Render for Tip {
             .shadow_lg()
             .text_size(px(TEXT_XS))
             .text_color(theme::content())
-            .child(self.0.clone())
+            .child(self.0.clone());
+        motion::enter(tip, "tip-in", motion::From::Above, 3., motion::FAST)
     }
 }
 
@@ -799,7 +802,8 @@ pub fn menu_item(
 pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
     icon("loading03", size).text_color(color).with_animation(
         id,
-        gpui::Animation::new(std::time::Duration::from_millis(900)).repeat(),
+        // Synced, so spinners side by side turn together.
+        gpui::Animation::new(std::time::Duration::from_millis(900)).repeat_synced(),
         |svg, t| svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
     )
 }

@@ -164,6 +164,15 @@ fn older_server_refused(message: &str, kinds: &[&str]) -> bool {
         .any(|k| message.starts_with(&format!("bad message: unknown variant `{k}`")))
 }
 
+/// A folder request (`add_place` or `clone`) to `server` that never left
+/// this app: the form can ask again, and says why. None when there was none.
+fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -> Option<String> {
+    if !matches!(kind, "add_place" | "clone") || !adding.remove(server) {
+        return None;
+    }
+    Some("The request did not reach the server. Try again once it is connected.".into())
+}
+
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
 fn in_the_clear(s: &Saved) -> bool {
     s.way == servers::Way::Direct && s.origin.starts_with("http://")
@@ -898,6 +907,15 @@ impl Shell {
                     return;
                 };
                 env
+            }
+            Some(kind @ ("add_place" | "clone")) => {
+                if let Some(link) = &mut self.servers
+                    && let Some(why) = folder_request_lost(&mut link.adding, server, kind)
+                {
+                    link.error = Some(why);
+                    self.sync_servers_view(cx);
+                }
+                return;
             }
             // An answer that did not go can be given again.
             Some("answer" | "skip_question") => {
@@ -1643,6 +1661,20 @@ mod tests {
             ticket: "t".into(),
         };
         assert!(!in_the_clear(&saved("http://10.0.0.2:7474", relay)));
+    }
+
+    #[test]
+    fn a_folder_request_that_never_left_frees_the_form() {
+        let mut adding = HashSet::from(["a".to_string(), "b".to_string()]);
+        let why = folder_request_lost(&mut adding, "a", "clone").unwrap();
+        assert!(why.contains("did not reach"), "{why}");
+        assert_eq!(adding, HashSet::from(["b".to_string()]));
+        // The other server's request is still on its way.
+        assert!(folder_request_lost(&mut adding, "a", "add_place").is_none());
+        assert!(folder_request_lost(&mut adding, "b", "start").is_none());
+        assert!(adding.contains("b"));
+        assert!(folder_request_lost(&mut adding, "b", "add_place").is_some());
+        assert!(adding.is_empty());
     }
 
     #[test]

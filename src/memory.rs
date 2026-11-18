@@ -159,11 +159,10 @@ pub fn store_file(root: &Path, scope: Scope, project: &Path) -> PathBuf {
     }
 }
 
+/// A store that can't be read (one entry edited by hand without its `id`) is
+/// set aside, so `update` doesn't replace every memory with the new one.
 pub fn load(file: &Path) -> Store {
-    std::fs::read(file)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::stored::load(file).unwrap_or_default()
 }
 
 /// Runs `f` on the store in `file` under an exclusive lock and writes it back
@@ -190,7 +189,7 @@ pub fn update<T>(
     let (changed, out) = f(&mut store);
     if changed {
         let bytes = serde_json::to_vec_pretty(&store).map_err(std::io::Error::other)?;
-        crate::durable::write(file, &bytes)?;
+        crate::stored::write(file, &bytes)?;
     }
     Ok(out)
 }
@@ -1428,5 +1427,30 @@ mod tests {
         assert_eq!(parse_id("12"), Some((Scope::Project, 12)));
         assert_eq!(parse_id("#g3"), Some((Scope::Global, 3)));
         assert_eq!(parse_id("x"), None);
+    }
+
+    #[test]
+    fn a_hand_edited_store_is_kept_when_a_turn_saves() {
+        let dir = tmp("hand-edited");
+        let file = dir.join("p.json");
+        // The second memory lost its `kind`.
+        let edited = r#"{"path":"/p","next_id":3,"items":[
+            {"id":1,"title":"A","kind":"decision","created":1,"updated":1},
+            {"id":2,"title":"B","created":1,"updated":1}]}"#;
+        std::fs::write(&file, edited).unwrap();
+        update(&file, "/p", |s| {
+            let d = Draft {
+                title: "Session".into(),
+                kind: "session".into(),
+                body: String::new(),
+                topic: None,
+                files: vec![],
+            };
+            (true, save(s, d, 5))
+        })
+        .unwrap();
+        assert_eq!(load(&file).items.len(), 1);
+        assert_eq!(crate::stored::tests::kept(&file).as_deref(), Some(edited));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

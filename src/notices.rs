@@ -326,41 +326,10 @@ fn parse(bytes: &[u8]) -> serde_json::Result<(History, usize)> {
     Ok((history, bad))
 }
 
-/// How many `.corrupt-<time>-<n>` names `set_aside` tries in one second.
-const ASIDE_NAMES: usize = 100;
-
 /// Renames the file out of the way so the next save can't overwrite it.
 /// `false` when it is still there.
 fn set_aside(path: &Path, now: u64) -> bool {
-    // A rename replaces a file already at the new name: take a free one, so
-    // a file set aside earlier in the same second is not lost either.
-    let kept = (0..ASIDE_NAMES)
-        .map(|n| {
-            let mut name = path.as_os_str().to_owned();
-            name.push(format!(".corrupt-{now}"));
-            if n > 0 {
-                name.push(format!("-{n}"));
-            }
-            PathBuf::from(name)
-        })
-        .find(|p| std::fs::symlink_metadata(p).is_err());
-    let Some(kept) = kept else {
-        eprintln!(
-            "arakun: could not set {} aside: no free name",
-            path.display()
-        );
-        return false;
-    };
-    match std::fs::rename(path, &kept) {
-        Ok(()) => {
-            eprintln!("arakun: kept the old notices in {}", kept.display());
-            true
-        }
-        Err(e) => {
-            eprintln!("arakun: could not set {} aside: {e}", path.display());
-            false
-        }
-    }
+    crate::stored::set_aside(path, now).is_some()
 }
 
 /// Saves `history` on a background thread, so a slow disk flush doesn't
@@ -740,7 +709,7 @@ mod tests {
             0 => dir.join("notices.json.corrupt-42"),
             n => dir.join(format!("notices.json.corrupt-42-{n}")),
         };
-        for n in 0..ASIDE_NAMES {
+        for n in 0..crate::stored::ASIDE_NAMES {
             std::fs::write(aside(n), "older").unwrap();
         }
         let mut h = load_from(&path, 42);

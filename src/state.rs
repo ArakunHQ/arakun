@@ -492,20 +492,23 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> State {
-    std::fs::read(file())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or(State {
-            dock_open: true,
-            dock_height: DOCK_HEIGHT,
-            rail_open: true,
-            panel_open: true,
-            rail_w: RAIL_W,
-            panel_w: PANEL_W,
-            subagents_w: SUBAGENTS_W,
-            arcade: true,
-            ..Default::default()
-        })
+    load_from(&file())
+}
+
+/// A file this build can't read (say, from a newer Arakun that knows more
+/// agents) is set aside, not saved over on quit.
+fn load_from(path: &Path) -> State {
+    crate::stored::load(path).unwrap_or(State {
+        dock_open: true,
+        dock_height: DOCK_HEIGHT,
+        rail_open: true,
+        panel_open: true,
+        rail_w: RAIL_W,
+        panel_w: PANEL_W,
+        subagents_w: SUBAGENTS_W,
+        arcade: true,
+        ..Default::default()
+    })
 }
 
 /// The newest state snapshot not yet on disk. Saves are written off the UI
@@ -520,8 +523,10 @@ pub fn queue(bytes: Vec<u8>) {
 }
 
 /// Writes the newest queued snapshot, if a save before this one has not.
+/// A state.json that could not be read on launch is set aside first, or
+/// kept and the save fails.
 pub fn write_queued() -> std::io::Result<()> {
-    SAVES.write(|bytes| crate::durable::write(&file(), bytes))
+    SAVES.write(|bytes| crate::stored::write(&file(), bytes))
 }
 
 struct Saves {
@@ -1550,5 +1555,29 @@ mod tests {
             uuid(),
         );
         assert_eq!(back.to_bounds(), gpui::WindowBounds::Windowed(plain));
+    }
+
+    #[test]
+    fn a_state_from_a_newer_arakun_is_kept_not_saved_over() {
+        let dir = crate::stored::tests::scratch("state-newer");
+        let path = dir.join("state.json");
+        // A session whose agent this build doesn't know.
+        let newer = r#"{"projects":[{"path":"/p","logo":0,"art":0,"envs":[{"path":"/p",
+            "sessions":[{"id":"s1","title":"T","agent":"future","updated":1,
+            "meta":{"agent":"future","session_id":null,"title":"T","cwd":"/p",
+            "created":1,"updated":1}}]}]}]}"#;
+        std::fs::write(&path, newer).unwrap();
+        let state = load_from(&path);
+        assert!(state.projects.is_empty());
+        assert!(state.dock_open, "the defaults of a first launch");
+        // The queued save on quit writes a new file; the old one is still there.
+        let saves = Saves::new();
+        saves.queue(b"{}".to_vec());
+        saves
+            .write(|bytes| crate::stored::write(&path, bytes))
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(newer));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

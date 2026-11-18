@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -317,15 +317,20 @@ impl Frecency {
     }
 
     pub fn load() -> Self {
-        std::fs::read(file())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        Self::load_from(&file())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        crate::stored::load(path).unwrap_or_default()
     }
 
     pub fn save(&self) {
+        self.save_to(&file());
+    }
+
+    fn save_to(&self, path: &Path) {
         if let Ok(bytes) = serde_json::to_vec(self) {
-            let _ = crate::durable::write(&file(), &bytes);
+            let _ = crate::stored::write(path, &bytes);
         }
     }
 }
@@ -504,9 +509,21 @@ mod tests {
         let path = dir.join("palette-frecency.json");
         let mut f = Frecency::default();
         f.record("view:github", 50, 1);
-        crate::durable::write(&path, &serde_json::to_vec(&f).unwrap()).unwrap();
-        let back: Frecency = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        f.save_to(&path);
+        let back = Frecency::load_from(&path);
         assert_eq!(back.opened["view:github"].count, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unreadable_frecency_file_is_kept() {
+        let dir = crate::stored::tests::scratch("frecency");
+        let path = dir.join("palette-frecency.json");
+        let torn = r#"{"opened":{"view:github":{"count":1"#;
+        std::fs::write(&path, torn).unwrap();
+        assert_eq!(Frecency::load_from(&path), Frecency::default());
+        Frecency::default().save_to(&path);
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(torn));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -82,6 +82,7 @@ mod site;
 #[cfg(feature = "coderlabs")]
 mod site_view;
 mod state;
+mod stored;
 #[cfg(feature = "coderlabs")]
 mod tasks_view;
 #[cfg(feature = "team")]

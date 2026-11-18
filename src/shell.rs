@@ -1478,6 +1478,10 @@ impl Shell {
                 self.projects.len() - 1
             }
         };
+        // The one on screen until now was in use until now. Without this a
+        // switch right after a long sleep leaves it with its old date, and
+        // the cleanup could take what was just open.
+        self.mark_visible_used();
         self.active_project = index;
         self.show_env_tab(false);
         self.note_active_tab(cx);
@@ -2493,6 +2497,10 @@ impl Shell {
     }
 
     fn select_project(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // The one on screen until now was in use until now. Without this a
+        // switch right after a long sleep leaves it with its old date, and
+        // the cleanup could take what was just open.
+        self.mark_visible_used();
         self.active_project = index;
         self.env_menu_open = false;
         self.after_switch(window, cx);
@@ -2531,6 +2539,10 @@ impl Shell {
         {
             return;
         }
+        // The one on screen until now was in use until now. Without this a
+        // switch right after a long sleep leaves it with its old date, and
+        // the cleanup could take what was just open.
+        self.mark_visible_used();
         self.active_project = project;
         self.projects[project].active_env = env;
         self.env_menu_open = false;

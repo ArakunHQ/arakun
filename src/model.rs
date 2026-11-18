@@ -643,10 +643,13 @@ impl TabStrip {
                 }
             }
             // The first environment on screen: a split made so far is its own.
-            None => {
+            None if self.split.is_some() => {
                 self.split_env = Some(env.to_path_buf());
                 return;
             }
+            // No split on screen (the environment that had one is gone): the
+            // one this environment put aside comes back below.
+            None => {}
         }
         self.split_env = Some(env.to_path_buf());
         let Some((mut split, focus)) = self.parked.remove(env) else {

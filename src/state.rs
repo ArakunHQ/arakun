@@ -504,7 +504,13 @@ pub fn write(bytes: &[u8]) -> std::io::Result<()> {
     crate::durable::write(&file(), bytes)
 }
 
-pub fn snapshot(
+/// [`snapshot_with`] for projects that have no tabs open.
+#[cfg(test)]
+pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> Vec<u8> {
+    snapshot_with(projects, &TabStrip::default(), active_project, layout)
+}
+
+pub fn snapshot_with(
     projects: &[Project],
     strip: &TabStrip,
     active_project: usize,
@@ -956,9 +962,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let none = TabStrip::default();
-        let (_, _, layout, _) =
-            restore(serde_json::from_slice(&snapshot(&[], &none, 0, layout)).unwrap());
+        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
     }
 
@@ -987,9 +991,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let none = TabStrip::default();
-        let (_, _, layout, _) =
-            restore(serde_json::from_slice(&snapshot(&[], &none, 0, layout)).unwrap());
+        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert_eq!(layout.rail_usage, [true, false, true]);
         assert_eq!(
             (layout.grays, layout.type_scale),
@@ -1025,7 +1027,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(&[project], &TabStrip::default(), 0, layout);
+        let bytes = snapshot(&[project], 0, layout);
         let state: State = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(state.projects[0].coderspace.as_deref(), Some("rp7"));
     }
@@ -1058,12 +1060,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(
-            std::slice::from_ref(&project),
-            &TabStrip::default(),
-            0,
-            layout,
-        );
+        let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (mut projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let env = &mut projects[0].environments[1];
         assert!(env.awaits_name());
@@ -1100,12 +1097,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(
-            std::slice::from_ref(&project),
-            &TabStrip::default(),
-            0,
-            layout,
-        );
+        let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let draft = &projects[0].environments[0].draft;
         assert_eq!((&**draft, draft.head()), ("fix the tests\nplease", 3));
@@ -1171,7 +1163,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(std::slice::from_ref(&project), &strip, 0, layout.clone());
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout.clone());
         let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
         // The blank browser tab is not reopened, so the docs tab lands at index 1.
         assert_eq!(strip.tabs.len(), 2);
@@ -1186,7 +1178,7 @@ mod tests {
         let focus = strip.tabs[0].id;
         strip.bring_split(Path::new("/tmp/arakun-split-elsewhere"), Some(focus));
         assert!(strip.split.is_none());
-        let bytes = snapshot(std::slice::from_ref(&project), &strip, 0, layout);
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
         let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
         assert_eq!(strip.split_other(&here), Some(1));
     }

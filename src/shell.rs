@@ -1227,7 +1227,7 @@ impl Shell {
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),
         };
-        state::snapshot(&self.projects, &self.strip, self.active_project, layout)
+        state::snapshot_with(&self.projects, &self.strip, self.active_project, layout)
     }
 
     /// Re-reads a project's worktrees, then the status of every environment.

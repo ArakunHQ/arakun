@@ -1342,6 +1342,22 @@ impl Shell {
                 }
                 return;
             }
+            // The branch keeps the name it has; the naming says so, as when
+            // the server is not connected at all.
+            Some("rename_branch") => {
+                let why = format!(
+                    "The connection dropped before the server renamed it. It stays {}.",
+                    text(msg, "from")
+                );
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not name the branch",
+                    &why,
+                    None,
+                    cx,
+                );
+                return;
+            }
             // An answer that did not go can be given again.
             Some("answer" | "skip_question") => {
                 let session = text(msg, "session");

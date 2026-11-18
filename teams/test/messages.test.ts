@@ -194,6 +194,43 @@ describe("channel sockets", () => {
     a.ws.close();
   });
 
+  it("close a socket a send could not check, so its client reads the history again", async () => {
+    const t = await team();
+    const m = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    // Sockets keep arriving during each of the send's reads (made-up sessions
+    // stand in for them), and the member's real one arrives during the last.
+    await runInDurableObject<Channel, void>(stub, (instance) => {
+      const ch = instance as any;
+      const allowed = ch.allowed.bind(ch);
+      const sessions = ch.sessions.bind(ch);
+      let n = 0;
+      ch.sessions = () => [...sessions(), `arriving-${n++}`];
+      const gate = new Promise<void>((r) => (ch.release = r));
+      ch.held = false;
+      ch.allowed = async (teamId: string, list: string[]) => {
+        const got: Set<string> = await allowed(teamId, list);
+        if (list.includes("arriving-3")) {
+          ch.held = true;
+          await gate;
+        }
+        return got;
+      };
+    });
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "while they opened"));
+    while (!(await runInDurableObject<Channel, boolean>(stub, (ch) => (ch as any).held))) await new Promise((r) => setTimeout(r, 1));
+    // The member opens and reads the history before the message is stored.
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    const path = `/teams/${t.teamId}/channels/${t.channelId}/messages`;
+    expect(await expectJson(api(m.user, "GET", path, { device: m.device }), 200)).toEqual([]);
+    await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).release());
+    await stored(a);
+    expect(await b.inbox.next()).toEqual({ closed: { code: 4503, reason: "reconnect and read the history" } });
+    expect(await expectJson<unknown[]>(api(m.user, "GET", path, { device: m.device }), 200)).toHaveLength(1);
+    a.ws.close();
+  });
+
   it("answer a send with an error when its checks cannot run, and store nothing", async () => {
     const t = await team();
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);

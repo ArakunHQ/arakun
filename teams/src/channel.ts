@@ -49,6 +49,9 @@ const MAX_FRAME = 96 * 1024;
 /// In the 4000s so they never collide with the protocol's own codes.
 const CLOSE_BAD_FRAME = 4400;
 const CLOSE_FORBIDDEN = 4403;
+/// A socket that may have missed a message: the client opens a new one and
+/// reads the history from the last `seq` it has.
+const CLOSE_RECONNECT = 4503;
 /// How many more D1 reads a send makes for sockets admitted while it read.
 /// More than one only when sockets keep arriving during each read.
 const RECHECKS = 3;
@@ -251,12 +254,16 @@ export class Channel extends DurableObject<Env> {
     }
     // Everyone on the channel, the sender included: that is its ack. A socket
     // whose session ended, or whose user lost the team or the flag, is closed
-    // instead. One still unchecked after the last round gets nothing now; it
-    // finds the message in the history.
+    // instead. One still unchecked after the last round gets nothing, and its
+    // client may have read the history before this insert, so it is closed
+    // with a code that tells the client to reconnect and read it again.
     const out = JSON.stringify({ type: "message", seq, at, message: msg });
     for (const other of this.ctx.getWebSockets()) {
       const session = sessionOf(other);
-      if (!checked.has(session)) continue;
+      if (!checked.has(session)) {
+        this.close(other, CLOSE_RECONNECT, "reconnect and read the history");
+        continue;
+      }
       if (!allowed.has(session)) {
         this.close(other, CLOSE_FORBIDDEN, "not a member of this team");
         continue;

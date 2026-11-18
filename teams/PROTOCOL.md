@@ -310,13 +310,21 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
 - The server closes a socket with `4403` when its user is removed. On every
   message it also checks each socket on the channel, sender and recipients: one
   whose session ended (logout or expiry), whose user is no longer a member, or who
-  lost the `teams` flag is closed with `4403` and gets nothing more.
+  lost the `teams` flag is closed with `4403` and gets nothing more. A socket that
+  opened while a message was being checked, too late for that check, gets `4503`
+  instead of the message: the client opens a new socket and reads the history.
 
 `seq` is the channel's order, set by the server. History, for a client that was
 away: `GET /teams/<team_id>/channels/<channel_id>/messages?after=<seq>&limit=200`
 → `[{ seq, at, message }]`, oldest first. `after` defaults to 0, `limit` to 200,
-its maximum. A message stored while a socket was opening may not reach that socket,
-so a client reads the history once its socket is open.
+its maximum.
+
+A client keeps the highest `seq` it holds with no gap before it. Once its socket
+is open, it reads the history after that `seq`. When a live frame's `seq` is more
+than one past it, it reads the history in between. A message stored while a socket
+was opening may not reach that socket live, and no later frame may show the gap,
+so the server closes such a socket with `4503`; the client then opens a new one and
+reads the history again in the same way.
 
 The server checks on `send`: the sender device belongs to the session's user, the
 user is a member, `epoch` is the newest one with envelopes (see Rotation) and not

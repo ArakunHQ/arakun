@@ -1035,7 +1035,7 @@ mod tests {
         client.send(&json!({ "type": "open", "session": "s1" }));
         assert!(matches!(
             from_server(&mut incoming),
-            Incoming::Message(_, ClientMsg::Open { session }) if session == "s1"
+            Incoming::Message(_, ClientMsg::Open { session, .. }) if session == "s1"
         ));
 
         // Several pings went by unanswered by anything but pongs: still connected.

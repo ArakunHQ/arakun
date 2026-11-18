@@ -115,8 +115,9 @@ pub struct Daemon {
     /// What the log last said about how the server is reached.
     told: String,
     account: Entity<Account>,
-    /// The session each device is looking at.
-    watching: HashMap<ClientId, String>,
+    /// The sessions each device is looking at: one for a phone, the ones it
+    /// follows for a desktop.
+    watching: HashMap<ClientId, Vec<String>>,
     /// Devices whose page left the screen: they still get updates, but a push too.
     hidden: HashSet<ClientId>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
@@ -900,7 +901,7 @@ impl Daemon {
     }
 
     fn watched(&self, id: &str) -> bool {
-        self.watching.values().any(|w| w == id)
+        self.watching.values().flatten().any(|w| w == id)
     }
 
     fn thread_event(
@@ -1336,7 +1337,7 @@ impl Daemon {
 
     fn send_watchers(&self, id: &str, msg: String) {
         for (client, watched) in &self.watching {
-            if watched == id {
+            if watched.iter().any(|w| w == id) {
                 self.transport.send(*client, msg.clone());
             }
         }
@@ -1344,9 +1345,20 @@ impl Daemon {
 
     /// A device looked away from its session: the agent may stop if no one else is looking.
     fn stop_watching(&mut self, client: ClientId, cx: &mut Context<Self>) {
-        if let Some(id) = self.watching.remove(&client) {
+        for id in self.watching.remove(&client).unwrap_or_default() {
             self.retire_if_unwatched(&id, cx);
         }
+    }
+
+    /// A device looked away from `id` only.
+    fn stop_watching_one(&mut self, client: ClientId, id: &str, cx: &mut Context<Self>) {
+        if let Some(watched) = self.watching.get_mut(&client) {
+            watched.retain(|w| w != id);
+            if watched.is_empty() {
+                self.watching.remove(&client);
+            }
+        }
+        self.retire_if_unwatched(id, cx);
     }
 
     fn incoming(&mut self, msg: Incoming, cx: &mut Context<Self>) {
@@ -1391,7 +1403,7 @@ impl Daemon {
     fn message(&mut self, client: ClientId, msg: ClientMsg, cx: &mut Context<Self>) {
         let gone = |session: &str| session_error(session, "that session is gone");
         match msg {
-            ClientMsg::Open { session } => {
+            ClientMsg::Open { session, keep } => {
                 let Some(record) = self.store.session(&session) else {
                     self.transport.send(client, gone(&session));
                     return;
@@ -1413,15 +1425,24 @@ impl Daemon {
                         wire::session_saved(&head, all, &self.scope(cwd))
                     }),
                 };
-                // The session it looked at before has one watcher fewer.
-                if let Some(before) = self.watching.insert(client, session.clone())
-                    && before != session
-                {
-                    self.retire_if_unwatched(&before, cx);
+                let watched = self.watching.entry(client).or_default();
+                if keep {
+                    if !watched.contains(&session) {
+                        watched.push(session.clone());
+                    }
+                } else {
+                    // The sessions it looked at before have one watcher fewer.
+                    let before = std::mem::replace(watched, vec![session.clone()]);
+                    for b in before.iter().filter(|b| **b != session) {
+                        self.retire_if_unwatched(b, cx);
+                    }
                 }
                 self.transport.send(client, reply);
             }
-            ClientMsg::Close => self.stop_watching(client, cx),
+            ClientMsg::Close { session: None } => self.stop_watching(client, cx),
+            ClientMsg::Close {
+                session: Some(session),
+            } => self.stop_watching_one(client, &session, cx),
             ClientMsg::Entries { session, from, to } => {
                 if self.store.session(&session).is_none() {
                     return;
@@ -1996,7 +2017,9 @@ impl Daemon {
         let looking: HashSet<String> = self
             .watching
             .iter()
-            .filter(|(client, watched)| *watched == id && !self.hidden.contains(client))
+            .filter(|(client, watched)| {
+                watched.iter().any(|w| w == id) && !self.hidden.contains(client)
+            })
             .filter_map(|(client, _)| self.transport.device_of(*client))
             .collect();
         let wanted = |d: &phone::Device| match kind {
@@ -2422,7 +2445,9 @@ impl Daemon {
         if let Some(live) = self.live.remove(id) {
             live.thread.update(cx, |t, _| t.shutdown());
         }
-        self.watching.retain(|_, watched| watched != id);
+        for watched in self.watching.values_mut() {
+            watched.retain(|w| w != id);
+        }
         self.notified.remove(id);
         // A save still on its way, or one kept because it failed, would bring
         // the file back after it is deleted.

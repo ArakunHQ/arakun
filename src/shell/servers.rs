@@ -77,6 +77,18 @@ struct Following {
     /// Why the session could not be read in full, when it could not. Nothing
     /// more is asked for until it is opened again.
     broken: Option<String>,
+    /// Who looks at it: the session in front here, phones through this app.
+    /// It is followed while anyone does.
+    by: Vec<Watcher>,
+}
+
+/// Who a server's session is followed for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Watcher {
+    /// The session in front in this app's window.
+    Desktop,
+    /// A phone that opened it through this app.
+    Phone(ClientId),
 }
 
 pub(super) struct ServersLink {
@@ -84,7 +96,8 @@ pub(super) struct ServersLink {
     conns: HashMap<String, Conn>,
     /// Where every connection's thread tells how it goes.
     events: Events,
-    following: Option<Following>,
+    /// The servers' sessions followed, each for whoever looks at it.
+    following: Vec<Following>,
     /// What each local project's repository is known by (`repo_key`), read once.
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
@@ -192,6 +205,36 @@ struct NewEnv {
     /// The New environment dialog that asked, which waits on the answer. One
     /// opened after it was dismissed is not told about it.
     dialog: Option<gpui::EntityId>,
+}
+
+/// `who` no longer looks at what it followed, but for `keep` (server and
+/// session): what nobody looks at any more is taken out and returned.
+fn let_go(
+    following: &mut Vec<Following>,
+    who: Watcher,
+    keep: Option<(&str, &str)>,
+) -> Vec<Following> {
+    let kept = |f: &Following| keep == Some((f.server.as_str(), f.session.as_str()));
+    for f in following.iter_mut().filter(|f| !kept(f)) {
+        f.by.retain(|w| *w != who);
+    }
+    let (gone, stay) = std::mem::take(following)
+        .into_iter()
+        .partition(|f| f.by.is_empty() && !kept(f));
+    *following = stay;
+    gone
+}
+
+/// Tells each server to stop sending the sessions in `gone`.
+fn close_follows(link: &ServersLink, gone: Vec<Following>) {
+    for f in gone {
+        if let Some(conn) = link.conns.get(&f.server)
+            && conn.reach == Reach::Connected
+        {
+            conn.client
+                .send(&json!({ "type": "close", "session": f.session }));
+        }
+    }
 }
 
 /// Whether the error `msg` answers a start. A server from before errors said
@@ -528,7 +571,7 @@ impl Shell {
             saved,
             conns,
             events,
-            following: None,
+            following: Vec::new(),
             origins: HashMap::new(),
             starts: Starts::default(),
             starting_id: None,
@@ -634,9 +677,7 @@ impl Shell {
                 }
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
-                if link.following.as_ref().is_some_and(|f| f.server == *id) {
-                    link.following = None;
-                }
+                link.following.retain(|f| f.server != *id);
                 // What it was asked is not coming: the others' requests stay.
                 link.adding.remove(id);
                 if link.added.as_ref().is_some_and(|(s, _)| s == id) {
@@ -862,17 +903,27 @@ impl Shell {
         let Some(link) = &mut self.servers else {
             return;
         };
-        if let Some(f) = link.following.take_if(|f| f.session == id)
-            && let Some(conn) = link.conns.get(&f.server)
-            && conn.reach == Reach::Connected
-        {
-            conn.client.send(&json!({ "type": "close" }));
-        }
+        let (gone, kept) = std::mem::take(&mut link.following)
+            .into_iter()
+            .partition(|f| f.session == id);
+        link.following = kept;
+        close_follows(link, gone);
     }
 
-    /// The server's session in the active tab is the one followed: the server
-    /// sends it whole, then every change.
-    pub(super) fn servers_follow(&mut self, env_path: &Path, id: &str) {
+    /// `who` looks away from what it followed: a session nobody else looks at
+    /// is no longer followed.
+    pub(super) fn servers_look_away(&mut self, who: Watcher) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        let gone = let_go(&mut link.following, who, None);
+        close_follows(link, gone);
+    }
+
+    /// The server sends session `id`, of the environment at `env_path`, whole
+    /// and then every change, for as long as `who` or anyone else looks at it.
+    /// The one `who` looked at before is let go.
+    pub(super) fn servers_follow(&mut self, env_path: &Path, id: &str, who: Watcher) {
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
             return;
         };
@@ -886,23 +937,30 @@ impl Shell {
         let Some(link) = &mut self.servers else {
             return;
         };
+        let same = |f: &Following| f.server == remote.server && f.session == id;
         // A session that could not be read is read again when it comes back on screen.
-        if link
+        link.following.retain(|f| !(same(f) && f.broken.is_some()));
+        let had = link
             .following
-            .as_ref()
-            .is_some_and(|f| f.server == remote.server && f.session == id && f.broken.is_none())
-        {
+            .iter()
+            .find(|f| same(f))
+            .map(|f| f.by.clone());
+        // What `who` looked at before, unless someone else still does.
+        let others = let_go(&mut link.following, who, Some((&remote.server, id)));
+        close_follows(link, others);
+        if let Some(mut by) = had {
+            if !by.contains(&who) {
+                by.push(who);
+            }
+            if let Some(f) = link.following.iter_mut().find(|f| same(f)) {
+                f.by = by;
+            }
             return;
         }
         let Some(conn) = link.conns.get(&remote.server) else {
             return;
         };
-        if let Some(before) = link.following.take().filter(|b| b.server != remote.server)
-            && let Some(other) = link.conns.get(&before.server)
-        {
-            other.client.send(&json!({ "type": "close" }));
-        }
-        link.following = Some(Following {
+        link.following.push(Following {
             server: remote.server.clone(),
             session: id.to_string(),
             env_path: env_path.to_path_buf(),
@@ -916,10 +974,12 @@ impl Shell {
             again: None,
             refill: Some(Vec::new()),
             broken: None,
+            by: vec![who],
         });
         // Not connected: it is asked for when the server is back.
         if conn.reach == Reach::Connected {
-            conn.client.send(&json!({ "type": "open", "session": id }));
+            conn.client
+                .send(&json!({ "type": "open", "session": id, "keep": true }));
             conn.client
                 .send(&json!({ "type": "transcript", "session": id, "from": 0 }));
         }
@@ -955,8 +1015,8 @@ impl Shell {
             (conn.reach == Reach::Connected).then(|| conn.client.send(&msg))
         });
         if sent.is_none()
-            && let Some(f) = self.servers.as_ref().and_then(|l| l.following.as_ref())
-            && let Some(thread) = thread_of(&self.projects, &f.env_path, id)
+            && let Some(env) = self.server_session_env(server, id)
+            && let Some(thread) = thread_of(&self.projects, &env, id)
         {
             thread.update(cx, |t, cx| {
                 t.remote_undelivered();
@@ -1227,6 +1287,24 @@ impl Shell {
         if let Some(link) = &mut self.servers {
             link.starts.phone_left(client);
         }
+        match client {
+            Some(c) => self.servers_look_away(Watcher::Phone(c)),
+            None => {
+                let phones: Vec<ClientId> = self
+                    .servers
+                    .iter()
+                    .flat_map(|l| &l.following)
+                    .flat_map(|f| &f.by)
+                    .filter_map(|w| match w {
+                        Watcher::Phone(c) => Some(*c),
+                        Watcher::Desktop => None,
+                    })
+                    .collect();
+                for c in phones {
+                    self.servers_look_away(Watcher::Phone(c));
+                }
+            }
+        }
     }
 
     /// A new environment in project `pi` on the server of its environment
@@ -1472,11 +1550,12 @@ impl Shell {
                     // Back after a drop: the followed session is asked for
                     // again, whole, since what changed meanwhile was not
                     // heard. It is read to the side and swapped in when complete.
-                    if back && let Some(f) = link.following.as_mut().filter(|f| f.server == id) {
+                    let back_to = link.following.iter_mut().filter(|f| back && f.server == id);
+                    for f in back_to {
                         (f.asking, f.asked, f.again) = (true, 0, None);
                         (f.refill, f.broken) = (Some(Vec::new()), None);
                         conn.client
-                            .send(&json!({ "type": "open", "session": f.session }));
+                            .send(&json!({ "type": "open", "session": f.session, "keep": true }));
                         conn.client.send(
                             &json!({ "type": "transcript", "session": f.session, "from": 0 }),
                         );
@@ -1669,8 +1748,8 @@ impl Shell {
         };
         let following = link
             .following
-            .as_mut()
-            .filter(|f| f.server == id && msg["id"] == f.session.as_str());
+            .iter_mut()
+            .find(|f| f.server == id && msg["id"] == f.session.as_str());
         match msg["type"].as_str().unwrap_or("") {
             "session" | "state" => {
                 let Some(f) = following else { return };
@@ -2129,6 +2208,40 @@ mod tests {
         assert_eq!(&*env.draft, "half a prompt");
         // A folder no server lists any more is not kept for anywhere.
         assert!(moving.is_empty());
+    }
+
+    #[test]
+    fn a_session_is_followed_while_anyone_looks_at_it() {
+        let follow = |session: &str, by: Vec<Watcher>| Following {
+            server: "s1".into(),
+            session: session.into(),
+            env_path: PathBuf::new(),
+            entries: Vec::new(),
+            agent: AgentKind::Claude,
+            cwd: PathBuf::new(),
+            title: String::new(),
+            status: Status::Idle,
+            asking: false,
+            asked: 0,
+            again: None,
+            refill: None,
+            broken: None,
+            by,
+        };
+        let phone = Watcher::Phone(7);
+        let mut following = vec![
+            follow("a", vec![Watcher::Desktop]),
+            follow("b", vec![phone, Watcher::Desktop]),
+        ];
+        // The phone opens `a`: `b` stays, the desktop has it in front.
+        let gone = let_go(&mut following, phone, Some(("s1", "a")));
+        assert!(gone.is_empty());
+        assert_eq!(following[1].by, vec![Watcher::Desktop]);
+        // The desktop moves to `c`: nobody looks at `a` or `b` any more.
+        let gone = let_go(&mut following, Watcher::Desktop, Some(("s1", "c")));
+        let names: Vec<&str> = gone.iter().map(|f| f.session.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert!(following.is_empty());
     }
 
     #[test]

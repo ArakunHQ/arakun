@@ -511,7 +511,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         match msg {
-            ClientMsg::Open { session } => {
+            ClientMsg::Open { session, .. } => {
                 let sid: SharedString = session.clone().into();
                 let Some(env_path) = self.env_of_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
@@ -523,12 +523,13 @@ impl Shell {
                 // A server's session: its server sends it here as it goes.
                 if self.find_env(&env_path).is_some_and(|e| e.remote.is_some()) {
                     self.ensure_live(&env_path, &session, window, cx);
-                    self.servers_follow(&env_path, &session);
+                    let who = super::servers::Watcher::Phone(client);
+                    self.servers_follow(&env_path, &session, who);
                 }
                 let reply = self.phone_session_json(&env_path, &sid, cx);
                 self.phone_send(client, reply);
             }
-            ClientMsg::Close => self.phone_stop_watching(client, cx),
+            ClientMsg::Close { .. } => self.phone_stop_watching(client, cx),
             ClientMsg::Entries { session, from, to } => {
                 let sid: SharedString = session.clone().into();
                 let Some(env_path) = self.env_of_session(&session) else {
@@ -864,6 +865,7 @@ impl Shell {
         let Some(id) = link.watching.remove(&client) else {
             return;
         };
+        self.servers_look_away(super::servers::Watcher::Phone(client));
         if let Some(env_path) = self.env_of_session(&id) {
             self.retire_if_hidden(&env_path, &id, cx);
         }

@@ -3177,8 +3177,13 @@ fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>,
     }
     // No `worktree prune`: it would also take the git files of another
     // worktree whose folder is away for now, on a mount that is not there.
+    // A hook that never ends would keep the answer from the device.
     if let Some(b) = branch {
-        let deleted = run_git(git(&root).args(["branch", "-D", "--", b]));
+        let deleted = run_bounded(
+            git(&root).args(["branch", "-D", "--", b]),
+            WORKTREE_LIMIT,
+            None,
+        );
         if let Err(e) = deleted {
             stayed.push(format!("The branch stayed: {e}"));
         }

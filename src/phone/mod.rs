@@ -157,6 +157,19 @@ pub enum ClientMsg {
     Clone {
         url: String,
     },
+    /// A new worktree of the repository `from` is a checkout of, on a new
+    /// `branch`, made a place. Answered with `place_added`.
+    NewEnv {
+        from: String,
+        branch: String,
+    },
+    /// Renames the branch checked out at place `place` from `from` to `to`,
+    /// unless it was renamed meanwhile. Answered with the inbox.
+    RenameBranch {
+        place: String,
+        from: String,
+        to: String,
+    },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
     /// Whether the page is on the phone's screen. A page in the background

@@ -514,6 +514,11 @@ impl Shell {
                 if let Some(link) = &mut self.phone {
                     link.watching.insert(client, sid.clone());
                 }
+                // A server's session: its server sends it here as it goes.
+                if self.find_env(&env_path).is_some_and(|e| e.remote.is_some()) {
+                    self.ensure_live(&env_path, &session, window, cx);
+                    self.servers_follow(&env_path, &session);
+                }
                 let reply = self.phone_session_json(&env_path, &sid, cx);
                 self.phone_send(client, reply);
             }
@@ -595,6 +600,15 @@ impl Shell {
                     .unwrap_or(found.agent);
                 let text = text.trim().to_string();
                 if text.is_empty() {
+                    return;
+                }
+                // On a server: it starts there, and says its id when it has one.
+                if found.remote.is_some() {
+                    if !self.servers_start(&path, agent, &text) {
+                        self.phone_send(client, wire::error("that server is not connected"));
+                    } else {
+                        self.servers_phone_waits(client);
+                    }
                     return;
                 }
                 for (key, value) in &settings {
@@ -775,7 +789,10 @@ impl Shell {
                 }
             }
             // The desktop's projects are added in its own window, not from a device.
-            ClientMsg::AddPlace { .. } | ClientMsg::Clone { .. } => self.phone_send(
+            ClientMsg::AddPlace { .. }
+            | ClientMsg::Clone { .. }
+            | ClientMsg::NewEnv { .. }
+            | ClientMsg::RenameBranch { .. } => self.phone_send(
                 client,
                 wire::error("add projects to this computer in Arakun itself"),
             ),
@@ -833,7 +850,7 @@ impl Shell {
         }
     }
 
-    fn phone_send(&self, client: ClientId, text: String) {
+    pub(super) fn phone_send(&self, client: ClientId, text: String) {
         if let Some(link) = &self.phone {
             link.server.send(client, text);
         }
@@ -857,8 +874,8 @@ impl Shell {
         // Where the phone can start a session, with the agent each place picks.
         let mut places: Vec<serde_json::Value> = Vec::new();
         for p in &self.projects {
-            // A phone pairs with each server itself; this app speaks for this machine.
-            for e in p.environments.iter().filter(|e| e.remote.is_none()) {
+            // A server's folders too: the phone works there through this app.
+            for e in &p.environments {
                 places.push(wire::inbox_place(wire::InboxPlace {
                     path: &e.path,
                     project: &p.name,

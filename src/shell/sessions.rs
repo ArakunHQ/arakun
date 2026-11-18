@@ -303,13 +303,13 @@ impl Shell {
     ) {
         // A server's session: what the user did goes there; the rest (checks,
         // transcripts, the phone) is the server's to do.
+        self.phone_thread_event(id, ev, cx);
         if self.find_env(env_path).is_some_and(|e| e.remote.is_some()) {
             if let ThreadEvent::Remote(action) = ev {
                 self.servers_remote_action(env_path, id, action, cx);
             }
             return;
         }
-        self.phone_thread_event(id, ev, cx);
         // A turn whose check is about to run is announced once the check is done.
         self.speak_question(env_path, id, thread, cx);
         let checking = matches!(ev, ThreadEvent::Finished { stop_reason }
@@ -531,6 +531,13 @@ impl Shell {
         // staged or checked for it.
         if self.env().remote.is_some() {
             let path = self.env().path.clone();
+            let agent = self.env().agent;
+            // The branch is named after the first prompt, there as here.
+            self.name_after_first_prompt(&path, &text, agent.kind(), cx);
+            let text = match self.rename_notes.remove(&path) {
+                Some(note) => format!("{text}{}", crate::agent::chart::hint(&note)),
+                None => text,
+            };
             match self.active_session_id() {
                 Some(id) => {
                     self.ensure_live(&path, &id, window, cx);
@@ -550,7 +557,6 @@ impl Shell {
                     }
                 }
                 None => {
-                    let agent = self.env().agent;
                     if !self.servers_start(&path, agent, &text) {
                         // Not sent: back into the composer, with why.
                         self.env_mut().draft.set(&text);

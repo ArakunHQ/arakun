@@ -1740,6 +1740,55 @@ impl Daemon {
                 })
                 .detach();
             }
+            ClientMsg::NewEnv { from, branch } => {
+                let from = PathBuf::from(from);
+                let Some(agent) = self.store.place(&from).map(|p| p.agent) else {
+                    self.transport
+                        .send(client, wire::error("that project is gone"));
+                    return;
+                };
+                cx.spawn(async move |this, cx| {
+                    let made = cx
+                        .background_executor()
+                        .spawn(async move { add_worktree(&from, &branch) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        // The new folder starts with the agent of the one it came from.
+                        if let Ok(path) = &made
+                            && this.add_place(path, agent.id()).is_ok()
+                        {
+                            this.save_store();
+                        }
+                        this.place_added(client, made, cx)
+                    });
+                })
+                .detach();
+            }
+            ClientMsg::RenameBranch { place, from, to } => {
+                let place = PathBuf::from(place);
+                if self.store.place(&place).is_none() {
+                    self.transport.send(
+                        client,
+                        wire::error("that folder is not one of this server's"),
+                    );
+                    return;
+                }
+                cx.spawn(async move |this, cx| {
+                    let done = cx
+                        .background_executor()
+                        .spawn(async move { rename_branch(&place, &from, &to) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| match done {
+                        // The inbox carries the new name.
+                        Ok(()) => {
+                            this.inbox_dirty = true;
+                            this.sync_inbox(cx);
+                        }
+                        Err(e) => this.transport.send(client, wire::error(&e)),
+                    });
+                })
+                .detach();
+            }
             ClientMsg::Ping => {}
         }
     }
@@ -2682,6 +2731,79 @@ const CLONE_LIMIT: Duration = Duration::from_secs(20 * 60);
 /// How long a stopping server waits for its clones to end and clean up.
 const CLONE_STOP_WAIT: Duration = Duration::from_secs(10);
 
+/// A branch name a device sent, as one that becomes a folder: no way out of
+/// the folder it goes in, and nothing git would take for an option.
+fn plain_branch(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(['-', '.', '/'])
+        && !name.ends_with(['/', '.'])
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+}
+
+fn git(dir: &Path) -> std::process::Command {
+    let mut git = std::process::Command::new("git");
+    git.arg("-C").arg(dir).stdin(std::process::Stdio::null());
+    git
+}
+
+/// Runs git; its last words when it fails.
+fn run_git(cmd: &mut std::process::Command) -> Result<(), String> {
+    let out = cmd
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let why = String::from_utf8_lossy(&out.stderr);
+    Err(format!(
+        "git failed: {}",
+        why.lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or("no reason given")
+    ))
+}
+
+/// A worktree of the repository `from` is a checkout of, on a new `branch`,
+/// where the app makes its own: `~/arakun-workspaces/<project>/<branch>`.
+fn add_worktree(from: &Path, branch: &str) -> Result<PathBuf, String> {
+    if !plain_branch(branch) {
+        return Err(format!("{branch:?} is not a branch name this server takes"));
+    }
+    let (root, _) = store::repo(from).ok_or("that folder is not in a git repository")?;
+    let project = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or("that repository has no name")?;
+    let dest = crate::platform::home()
+        .join("arakun-workspaces")
+        .join(project)
+        .join(branch);
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
+    run_git(
+        git(&root)
+            .args(["worktree", "add", "--quiet", "-b", branch])
+            .arg(&dest),
+    )?;
+    dest.canonicalize().map_err(|e| e.to_string())
+}
+
+/// Renames the branch at `place` from `from` to `to`, as long as `from` is
+/// still the one checked out there: one renamed by hand meanwhile stays.
+fn rename_branch(place: &Path, from: &str, to: &str) -> Result<(), String> {
+    if !plain_branch(to) {
+        return Err(format!("{to:?} is not a branch name this server takes"));
+    }
+    if store::branch(place).as_deref() != Some(from) {
+        return Ok(());
+    }
+    run_git(git(place).args(["branch", "-m", "--", from, to]))
+}
+
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
 /// that repository. A failed clone leaves nothing behind, nor does one that
 /// `stop` ends.
@@ -2988,6 +3110,18 @@ mod tests {
         assert!(err.contains("is not a folder"), "{err}");
         assert_eq!(real_dir(&dir), Ok(dir.clone()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_branch_from_a_device_stays_in_its_folder() {
+        for good in ["fix-login", "rv/fix_2", "v1.2"] {
+            assert!(plain_branch(good), "{good}");
+        }
+        for bad in [
+            "", "-b", "../x", "a/../b", "/abs", "x/", "a b", "x.", ".hidden", "a;b",
+        ] {
+            assert!(!plain_branch(bad), "{bad}");
+        }
     }
 
     #[test]

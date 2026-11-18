@@ -754,7 +754,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   the machine's name. A folder whose repository you also have here (the same `origin`)
   joins that project; the others make projects of their own. Its sessions open in the
   same tabs, with the same composer, as sessions here: send, stop, approve and answer
-  go to the server. Git, terminals and the file tree stay with this machine's folders;
+  go to the server. "New environment" while a server's environment is open (or in a
+  project only servers have) makes a worktree on that server, in
+  `~/arakun-workspaces/<project>/<branch>` there, and its branch is named after the
+  first prompt as it is here. A phone paired with this app sees and works in the
+  servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
   yet. To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its

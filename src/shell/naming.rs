@@ -42,6 +42,8 @@ impl Shell {
         let pending = env.awaits_name();
         env.placeholder = None;
         let old = env.branch.to_string();
+        // A server's folder: the name is picked here, and git there renames it.
+        let remote = env.remote.is_some();
         self.save(cx);
         let namer = env_name::namer();
         let Some((agent, model)) = namer.pick(session).filter(|_| pending) else {
@@ -59,11 +61,19 @@ impl Shell {
                         return Ok(None);
                     }
                     let name = env_name::suggest(agent, &model, &task)?;
+                    if remote {
+                        return Ok(Some(name));
+                    }
                     git::rename_branch(&d, &o, &name, true).map(Some)
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| match renamed {
-                Ok(Some(name)) => this.branch_renamed(&dir, &old, name, cx),
+                Ok(Some(name)) => {
+                    if remote {
+                        this.servers_rename_branch(&dir, &old, &name);
+                    }
+                    this.branch_renamed(&dir, &old, name, cx)
+                }
                 Ok(None) => {}
                 Err(e) => this.notify(
                     AlertKind::Warning,

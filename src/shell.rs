@@ -1366,8 +1366,16 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
-        // Only servers have it: a worktree cannot be made here.
-        if project.is_remote() {
+        // In a server's environment, or a project only servers have: the
+        // new one is made on that server.
+        if let Some(from) = project
+            .environments
+            .get(project.active_env)
+            .filter(|e| e.remote.is_some())
+            .map(|_| project.active_env)
+            .or_else(|| project.is_remote().then_some(0))
+        {
+            self.servers_new_env(pi, from, cx);
             return;
         }
         let (repo, name) = (project.path.clone(), project.name.clone());
@@ -1402,8 +1410,16 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
-        // Only servers have it: a worktree cannot be made here.
-        if project.is_remote() {
+        // In a server's environment, or a project only servers have: the
+        // new one is made on that server.
+        if let Some(from) = project
+            .environments
+            .get(project.active_env)
+            .filter(|e| e.remote.is_some())
+            .map(|_| project.active_env)
+            .or_else(|| project.is_remote().then_some(0))
+        {
+            self.servers_new_env(pi, from, cx);
             return;
         }
         let (repo, project_name) = (project.path.clone(), project.name.clone());

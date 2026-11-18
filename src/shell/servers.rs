@@ -97,6 +97,11 @@ pub(super) struct ServersLink {
     adding: HashSet<String>,
     /// A folder a server just added, by server and path: it opens once listed.
     added: Option<(String, String)>,
+    /// A new environment asked of a server, by server and branch: named after
+    /// its first prompt once it is here, as one made here is.
+    new_env: Option<(String, String)>,
+    /// A phone that started a session on a server, told its id once it has one.
+    phone_start: Option<crate::phone::ClientId>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -426,6 +431,8 @@ impl Shell {
             retired: HashSet::new(),
             adding: HashSet::new(),
             added: None,
+            new_env: None,
+            phone_start: None,
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -712,6 +719,8 @@ impl Shell {
             .active_project
             .min(self.projects.len().saturating_sub(1));
         self.servers_open_started(window, cx);
+        // Phones list the servers' sessions too.
+        self.phone_inbox_changed(cx);
         cx.notify();
     }
 
@@ -1032,10 +1041,75 @@ impl Shell {
             .enumerate()
             .find_map(|(pi, p)| p.env_index(&env_path).map(|ei| (pi, ei)));
         if let Some((pi, ei)) = found {
-            if let Some(link) = &mut self.servers {
+            let named = self.servers.as_mut().and_then(|link| {
                 link.added = None;
+                link.new_env.take_if(|(s, _)| *s == server).map(|(_, b)| b)
+            });
+            let env = &mut self.projects[pi].environments[ei];
+            if let Some(branch) = named.filter(|b| env.branch.as_ref() == b) {
+                env.placeholder = Some(branch);
             }
             self.select_env(pi, ei, window, cx);
+        }
+    }
+
+    /// A phone started a session on a server: it hears the id when the server says it.
+    pub(super) fn servers_phone_waits(&mut self, client: crate::phone::ClientId) {
+        if let Some(link) = &mut self.servers {
+            link.phone_start = Some(client);
+        }
+    }
+
+    /// A new environment in project `pi` on the server of its environment
+    /// `from`: a worktree there on a new branch with a random name, which its
+    /// first prompt names, as here.
+    pub(super) fn servers_new_env(&mut self, pi: usize, from: usize, cx: &mut Context<Self>) {
+        let Some(project) = self.projects.get(pi) else {
+            return;
+        };
+        let Some(remote) = project
+            .environments
+            .get(from)
+            .and_then(|e| e.remote.clone())
+        else {
+            return;
+        };
+        let taken: Vec<String> = project
+            .environments
+            .iter()
+            .map(|e| e.branch.to_string())
+            .collect();
+        let branch = crate::env_name::random(|n| taken.iter().any(|t| t == n));
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        let Some(conn) = link.conns.get(&remote.server) else {
+            return;
+        };
+        if conn.reach != Reach::Connected {
+            link.error = Some(format!("{} is not connected right now.", remote.machine));
+            return;
+        }
+        conn.client
+            .send(&json!({ "type": "new_env", "from": remote.place, "branch": branch }));
+        link.adding = Some(remote.server.clone());
+        link.new_env = Some((remote.server, branch));
+        self.sync_servers_view(cx);
+    }
+
+    /// The branch of a server's environment, renamed there.
+    pub(super) fn servers_rename_branch(&mut self, env_path: &Path, from: &str, to: &str) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        if let Some(conn) = self
+            .servers
+            .as_ref()
+            .and_then(|l| l.conns.get(&remote.server))
+        {
+            conn.client.send(&json!({
+                "type": "rename_branch", "place": remote.place, "from": from, "to": to,
+            }));
         }
     }
 
@@ -1172,7 +1246,18 @@ impl Shell {
                 } else if msg["type"] == "started" {
                     if link.starting.as_deref() == Some(id) {
                         link.starting = None;
-                        link.starting_id = Some((id.to_string(), text(&msg, "id")));
+                        let session = text(&msg, "id");
+                        // Started from a phone: it opens there, not here.
+                        match link.phone_start.take() {
+                            Some(client) => {
+                                let started = json!({ "type": "started", "id": session });
+                                self.phone_send(client, started.to_string());
+                                self.phone_inbox_changed(cx);
+                                self.sync_servers_view(cx);
+                                return;
+                            }
+                            None => link.starting_id = Some((id.to_string(), session)),
+                        }
                     }
                     // The server sends its inbox before this: the session is here.
                     self.servers_open_started(window, cx);

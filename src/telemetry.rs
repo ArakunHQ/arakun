@@ -362,13 +362,12 @@ fn category(message: &str) -> &'static str {
         "unreachable",
     ]) {
         "network error"
-    } else if has(&[
-        "was not found on path",
-        "no such file",
-        "not found",
-        "not installed",
-    ]) {
+    // Only Arakun's own wording for a missing CLI. A bare "not found" is also in
+    // a provider's 404, a missing model, an adapter's stderr and a deleted folder.
+    } else if has(&["was not found on path", "own binary is missing"]) {
         "agent not found"
+    } else if has(&["npm was not found"]) {
+        "npm not found"
     } else if has(&["stopped responding"]) {
         "stopped responding"
     } else if has(&[" exited ("]) {
@@ -377,6 +376,9 @@ fn category(message: &str) -> &'static str {
         "initialize failed"
     } else if has(&["starting the session failed", "returned no sessionid"]) {
         "session start failed"
+    // The CLI was found but did not run: often the session's folder is gone.
+    } else if m.starts_with("starting ") {
+        "failed to start"
     } else if m.starts_with("the turn failed") {
         "turn failed"
     } else {
@@ -878,8 +880,29 @@ mod tests {
                 "agent not found",
             ),
             (
+                "Claude Code's own binary is missing: /x is not there",
+                "agent not found",
+            ),
+            (
+                "npm was not found; it is needed once to install x",
+                "npm not found",
+            ),
+            (
                 "Droid exited (exit status: 1).\nat /srv/acme/x.rs",
                 "process exited",
+            ),
+            (
+                "Claude Code exited (exit status: 127).\nenv: node: No such file or directory",
+                "process exited",
+            ),
+            (
+                "starting /usr/bin/droid exec: No such file or directory (os error 2)",
+                "failed to start",
+            ),
+            ("The turn failed: model gpt-9 not found", "turn failed"),
+            (
+                "Starting the session failed: Session not found",
+                "session start failed",
             ),
             ("Codex stopped responding.", "stopped responding"),
             ("initialize failed: bad version", "initialize failed"),

@@ -120,6 +120,8 @@ pub struct Daemon {
     watching: HashMap<ClientId, Vec<String>>,
     /// Devices whose page left the screen: they still get updates, but a push too.
     hidden: HashSet<ClientId>,
+    /// Places whose worktree is being deleted: nothing new starts in them.
+    deleting: HashSet<PathBuf>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
@@ -712,6 +714,7 @@ impl Daemon {
             account,
             watching: HashMap::new(),
             hidden: HashSet::new(),
+            deleting: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
             inbox_dirty: false,
@@ -902,6 +905,18 @@ impl Daemon {
 
     fn watched(&self, id: &str) -> bool {
         self.watching.values().flatten().any(|w| w == id)
+    }
+
+    /// Whether a device has the session `id` on a screen it shows.
+    fn seen(&self, id: &str) -> bool {
+        self.watching
+            .iter()
+            .any(|(client, w)| w.iter().any(|w| w == id) && !self.hidden.contains(client))
+    }
+
+    /// Whether `place` is in a worktree being deleted.
+    fn being_deleted(&self, place: &Path) -> bool {
+        inside_any(place, &self.deleting)
     }
 
     fn thread_event(
@@ -1465,6 +1480,12 @@ impl Daemon {
                 text,
                 uploads,
             } => {
+                let place = self.store.session(&session).map(|s| s.place.clone());
+                if place.is_some_and(|p| self.being_deleted(&p)) {
+                    let why = "its environment is being deleted";
+                    self.transport.send(client, session_error(&session, why));
+                    return;
+                }
                 let text = self.uploads.attach(text, &uploads);
                 if let Err(e) = self.send_to_session(&session, text, cx) {
                     self.transport.send(client, session_error(&session, &e));
@@ -1502,6 +1523,13 @@ impl Daemon {
                 settings,
             } => {
                 let path = PathBuf::from(env);
+                if self.being_deleted(&path) {
+                    self.transport.send(
+                        client,
+                        error_about("start", "that environment is being deleted"),
+                    );
+                    return;
+                }
                 let Some(place) = self.store.place_mut(&path) else {
                     // Said to be about the start: the app waits for its answer.
                     self.transport
@@ -1847,6 +1875,8 @@ impl Daemon {
                         .send(client, env_deleted(&place, false, Some(&e)));
                     return;
                 }
+                // Until it is gone, or stays: no session starts there meanwhile.
+                self.deleting.insert(path.clone());
                 cx.spawn(async move |this, cx| {
                     let p = path.clone();
                     // Git's files are read to the side, as every place's are.
@@ -1859,6 +1889,7 @@ impl Daemon {
                         })
                         .await;
                     let _ = this.update(cx, |this, cx| {
+                        this.deleting.remove(&path);
                         // The folder is gone even when its branch stayed.
                         let (deleted, error) = match done {
                             Ok(branch_kept) => {
@@ -1927,7 +1958,8 @@ impl Daemon {
                 Some(t) if t.in_background() => continue,
                 Some(t) => match status_of(t) {
                     Status::Working => continue,
-                    Status::NeedsInput if self.watched(&id) => continue,
+                    // A page in the background is not someone looking.
+                    Status::NeedsInput if self.seen(&id) => continue,
                     status => status == Status::NeedsInput,
                 },
                 None => false,
@@ -1952,9 +1984,13 @@ impl Daemon {
         if self.store.place(place).is_none() {
             return Err("that folder is not one of this server's".into());
         }
+        if self.being_deleted(place) {
+            return Err("it is being deleted already".into());
+        }
         // Whether git calls it a worktree is asked to the side, after this.
+        // A folder inside it added on its own goes with it, sessions and all.
         let busy = self.store.sessions.iter().any(|s| {
-            s.place == place
+            s.place.starts_with(place)
                 && self.live.get(&s.id).is_some_and(|l| {
                     let t = l.thread.read(cx);
                     matches!(status_of(t), Status::Working | Status::NeedsInput)
@@ -1968,26 +2004,37 @@ impl Daemon {
     }
 
     /// The place is gone from disk: it leaves the list, with its sessions,
-    /// which have no folder to go on in.
+    /// which have no folder to go on in, and so do places inside it.
     fn forget_place(&mut self, place: &Path, cx: &mut Context<Self>) {
         let ids: Vec<String> = self
             .store
             .sessions
             .iter()
-            .filter(|s| s.place == place)
+            .filter(|s| s.place.starts_with(place))
             .map(|s| s.id.clone())
             .collect();
         for id in ids {
             if let Some(live) = self.live.remove(&id) {
                 live.thread.update(cx, |t, _| t.shutdown());
             }
-            self.watching.retain(|_, watched| *watched != id);
+            for watched in self.watching.values_mut() {
+                watched.retain(|w| *w != id);
+            }
             self.notified.remove(&id);
             self.writer.forget(self.store.transcript_path(&id));
             self.store.remove_session(&id);
         }
-        self.store.remove_place(place);
-        self.meta.remove(place);
+        let inside: Vec<PathBuf> = self
+            .store
+            .places
+            .iter()
+            .map(|p| p.path.clone())
+            .filter(|p| p.starts_with(place))
+            .collect();
+        for p in inside {
+            self.store.remove_place(&p);
+            self.meta.remove(&p);
+        }
         self.save_store();
         self.inbox_dirty = true;
     }
@@ -2852,6 +2899,12 @@ impl Clones {
     }
 }
 
+/// Whether `place` is one of `folders` or inside one, by whole names:
+/// `/w/fix2` is not in `/w/fix`.
+fn inside_any(place: &Path, folders: &HashSet<PathBuf>) -> bool {
+    folders.iter().any(|f| place.starts_with(f))
+}
+
 /// Whether `path` (canonical) is where a clone under way goes. Clones are
 /// reserved by [`real_dest`], so this is the same path however it was given.
 fn being_cloned(path: &Path, cloning: &[PathBuf]) -> bool {
@@ -3320,6 +3373,15 @@ mod tests {
         let saved = std::fs::read_to_string(dir.join("state.json")).unwrap();
         assert!(saved.contains(app.to_str().unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_being_deleted_takes_what_is_inside_it() {
+        let deleting = HashSet::from([PathBuf::from("/w/fix")]);
+        assert!(inside_any(Path::new("/w/fix"), &deleting));
+        assert!(inside_any(Path::new("/w/fix/docs"), &deleting));
+        assert!(!inside_any(Path::new("/w/fix2"), &deleting));
+        assert!(!inside_any(Path::new("/w"), &deleting));
     }
 
     #[test]

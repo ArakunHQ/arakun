@@ -2041,6 +2041,17 @@ impl Shell {
             // turns the message itself down.
             // Its own failures come as `place_failed`; any other error is
             // about something else and is left to the session or the tab.
+            // A server from before environments could be deleted from here.
+            _ if link.deleting.as_ref().is_some_and(|(s, _)| s == id)
+                && older_server_refused(&message, &["delete_env"]) =>
+            {
+                link.deleting = None;
+                if let Some(dialog) = self.delete_dialog() {
+                    let why = "This server runs an older Arakun. Update it to delete environments from here.";
+                    dialog.update(cx, |d, cx| d.failed(why.into(), cx));
+                }
+                true
+            }
             _ if link.new_env.contains_key(id) && older_server_refused(&message, &["new_env"]) => {
                 link.adding.remove(id);
                 if let Some(new) = link.new_env.remove(id) {

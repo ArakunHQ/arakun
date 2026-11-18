@@ -685,10 +685,16 @@ async function getEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   if (!team) return notFound();
   const device = await callerDevice(c);
   if (device instanceof Response) return device;
-  const { results } = await c.env.DB.prepare("SELECT body FROM envelopes WHERE team_id = ? AND device_id = ? ORDER BY epoch")
+  // made_at is when the epoch's key first reached the team, not when this
+  // device got it: a device added later still sees how old the key is. It sits
+  // next to the signed fields and is not covered by the signature.
+  const { results } = await c.env.DB.prepare(
+    `SELECT e.body, (SELECT MIN(x.created_at) FROM envelopes x WHERE x.team_id = e.team_id AND x.epoch = e.epoch) AS made_at
+     FROM envelopes e WHERE e.team_id = ? AND e.device_id = ? ORDER BY e.epoch`,
+  )
     .bind(teamId, device.device_id)
-    .all<{ body: string }>();
-  return Response.json(results.map((r) => JSON.parse(r.body)));
+    .all<{ body: string; made_at: number }>();
+  return Response.json(results.map((r) => ({ ...JSON.parse(r.body), made_at: r.made_at })));
 }
 
 // ---- members -------------------------------------------------------------------

@@ -280,7 +280,7 @@ describe("teams", () => {
       [2001, "member"],
     ]);
     expect(await expectJson(api(owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
-    expect(await expectJson(api(newcomer, "GET", `/teams/${t.teamId}/envelopes`, { device: phone }), 200)).toEqual([good[1]]);
+    expect(await expectJson(api(newcomer, "GET", `/teams/${t.teamId}/envelopes`, { device: phone }), 200)).toEqual([{ ...good[1], made_at: expect.any(Number) }]);
     // Invited again once a member: refused.
     await expectJson(api(owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "rikvisser-dev" } }), 409);
   });
@@ -464,7 +464,7 @@ describe("envelopes", () => {
 
     const mine = await expectJson<{ device_id: string }[]>(api(owner.user, "GET", `/teams/${t.teamId}/envelopes`, { device: owner.device }), 200);
     expect(mine.map((e) => e.device_id)).toEqual([owner.device.id]);
-    expect(await expectJson(api(owner.user, "GET", `/teams/${t.teamId}/envelopes`, { device: second }), 200)).toEqual([forSecond]);
+    expect(await expectJson(api(owner.user, "GET", `/teams/${t.teamId}/envelopes`, { device: second }), 200)).toEqual([{ ...forSecond, made_at: expect.any(Number) }]);
     // A member cannot ask for someone else's device's envelopes.
     const m = await join(t);
     await expectJson(api(m.user, "GET", `/teams/${t.teamId}/envelopes`, { device: second }), 403);
@@ -511,6 +511,30 @@ describe("envelopes", () => {
     await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [await envelope(t.teamId, 3, newKey(), m.device, t.owner.device)] } }), 400);
   });
 
+  it("carry when their epoch's key first reached the team, outside the signed fields", async () => {
+    const t = await team();
+    const path = `/teams/${t.teamId}/envelopes`;
+    // The owner's epoch-1 envelope is the oldest; a device added later sees its time.
+    await env.DB.prepare("UPDATE envelopes SET created_at = 1000 WHERE device_id = ?").bind(t.owner.device.id).run();
+    const m = await join(t);
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const key2 = newKey();
+    const second = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
+    await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: second } }), 200);
+    await env.DB.prepare("UPDATE envelopes SET created_at = 2000 WHERE epoch = 2 AND device_id = ?").bind(t.owner.device.id).run();
+    await env.DB.prepare("UPDATE envelopes SET created_at = 2500 WHERE epoch = 2 AND device_id = ?").bind(m.device.id).run();
+
+    const theirs = await expectJson<Record<string, unknown>[]>(api(m.user, "GET", path, { device: m.device }), 200);
+    expect(theirs.map((e) => [e["epoch"], e["made_at"]])).toEqual([
+      [1, 1000],
+      [2, 2000],
+    ]);
+    // Every other field is the envelope as sent, so its signature still checks out.
+    const { made_at: _, ...signed } = theirs[1]!;
+    expect(signed).toEqual(second[1]);
+  });
+
   it("refuse an eph_pub that is not on the curve, even signed", async () => {
     const t = await team();
     const e = await envelope(t.teamId, 1, t.keys.get(1)!, t.owner.device, t.owner.device);
@@ -538,7 +562,7 @@ describe("envelopes", () => {
     const late = await Promise.all(devices.map((d) => envelope(t.teamId, 2, newKey(), d, second)));
     expect(await expectJson(api(t.owner.user, "PUT", path, { device: second, body: { envelopes: late } }), 200)).toMatchObject({ stored: 0 });
     const mine = await expectJson<{ epoch: number; from: string }[]>(api(m.user, "GET", path, { device: m.device }), 200);
-    expect(mine.find((e) => e.epoch === 2)).toEqual(first[2]);
+    expect(mine.find((e) => e.epoch === 2)).toEqual({ ...first[2], made_at: expect.any(Number) });
   });
 
   it("are asked only for epochs with a key when two removals skipped one", async () => {

@@ -170,7 +170,11 @@ An envelope carries one epoch's team key to one device:
   that made a new key and sees fewer than it sent must fetch the key in use. At most
   25 members per team, so a rotation fits in one request.
 - `GET /teams/<team_id>/envelopes` (with `X-Arakun-Device`) returns the caller
-  device's envelopes for every epoch, oldest first.
+  device's envelopes for every epoch, oldest first. Each is the envelope as it was
+  sent, plus `made_at`: when that epoch's key first reached the team (the oldest
+  stored envelope of that epoch), so a device added later still sees how old a
+  key is. The server sets `made_at` and nothing signs it: a client must not trust
+  it for anything but display, and must check `sig` without it.
 
 ## Rotation
 

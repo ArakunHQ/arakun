@@ -1713,6 +1713,7 @@ impl Shell {
         let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
         let place = PathBuf::from(&remote.place);
         let machine = remote.machine.clone();
+        let confirmed = branch.clone();
         let dialog = cx.new(|cx| DeleteEnvDialog::remote(place, branch, machine, window, cx));
         let sub = cx.subscribe_in(
             &dialog,
@@ -1720,7 +1721,8 @@ impl Shell {
             move |this, dialog, ev: &DialogEvent, window, cx| match ev {
                 DialogEvent::DeleteOnServer { delete_branch } => {
                     let asked = dialog.entity_id();
-                    if let Err(why) = this.servers_ask_delete(&remote, *delete_branch, asked) {
+                    let branch = delete_branch.then_some(confirmed.as_deref()).flatten();
+                    if let Err(why) = this.servers_ask_delete(&remote, branch, asked) {
                         dialog.update(cx, |d, cx| d.failed(why, cx));
                     }
                 }
@@ -1736,7 +1738,7 @@ impl Shell {
     fn servers_ask_delete(
         &mut self,
         remote: &Remote,
-        delete_branch: bool,
+        branch: Option<&str>,
         dialog: gpui::EntityId,
     ) -> Result<(), String> {
         // Its reply names only the server and the place: with two asked, it
@@ -1750,7 +1752,8 @@ impl Shell {
             return Err(format!("{} is not connected right now.", remote.machine));
         };
         client.send(&json!({
-            "type": "delete_env", "place": remote.place, "delete_branch": delete_branch,
+            "type": "delete_env", "place": remote.place,
+            "delete_branch": branch.is_some(), "branch": branch,
         }));
         if let Some(link) = &mut self.servers {
             link.deleting

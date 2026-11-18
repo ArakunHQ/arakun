@@ -192,6 +192,10 @@ pub enum ClientMsg {
         place: String,
         #[serde(default)]
         delete_branch: bool,
+        /// The branch the user agreed to delete. One checked out there
+        /// since is not deleted, and neither is the folder.
+        #[serde(default)]
+        branch: Option<String>,
     },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
@@ -1426,13 +1430,15 @@ mod tests {
             ClientMsg::DeleteEnv {
                 place: "/w/fix".into(),
                 delete_branch: false,
+                branch: None,
             }
         );
         assert_eq!(
-            read(r#"{"type":"delete_env","place":"/w/fix","delete_branch":true}"#),
+            read(r#"{"type":"delete_env","place":"/w/fix","delete_branch":true,"branch":"fix"}"#),
             ClientMsg::DeleteEnv {
                 place: "/w/fix".into(),
                 delete_branch: true,
+                branch: Some("fix".into()),
             }
         );
         assert_eq!(

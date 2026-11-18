@@ -1869,6 +1869,7 @@ impl Daemon {
             ClientMsg::DeleteEnv {
                 place,
                 delete_branch,
+                branch: confirmed,
             } => {
                 let path = PathBuf::from(&place);
                 if let Err(e) = self.deletable(&path, cx) {
@@ -1886,6 +1887,7 @@ impl Daemon {
                         .spawn(async move {
                             removable(&p)?;
                             let branch = delete_branch.then(|| store::branch(&p)).flatten();
+                            branch_agreed(branch.as_deref(), confirmed.as_deref())?;
                             remove_worktree(&p, branch.as_deref())
                         })
                         .await;
@@ -3202,6 +3204,19 @@ fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>,
     Ok((!stayed.is_empty()).then(|| stayed.join(" ")))
 }
 
+/// Whether `checked_out`, the branch a deletion would take, is the one the
+/// user agreed to, `confirmed`: one switched to since the dialog showed it
+/// may hold commits nobody chose to lose. A device that names none (from
+/// before it could) takes the one checked out.
+fn branch_agreed(checked_out: Option<&str>, confirmed: Option<&str>) -> Result<(), String> {
+    match (checked_out, confirmed) {
+        (Some(now), Some(agreed)) if now != agreed => Err(format!(
+            "its branch is {now} now, not {agreed}; open the dialog again"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Whether the folder at `place` is a worktree a device may delete: never a
 /// repository's main folder, which holds the history of every worktree.
 fn removable(place: &Path) -> Result<(), String> {
@@ -3567,6 +3582,16 @@ mod tests {
             (settled["id"].as_str(), settled["title"].as_str()),
             (Some("s1"), Some("Fix"))
         );
+    }
+
+    #[test]
+    fn only_the_branch_the_user_agreed_to_is_deleted() {
+        assert_eq!(branch_agreed(Some("fix"), Some("fix")), Ok(()));
+        let switched = branch_agreed(Some("experiment"), Some("fix")).unwrap_err();
+        assert!(switched.contains("experiment") && switched.contains("fix"));
+        // Detached now: no branch goes, so nothing to check.
+        assert_eq!(branch_agreed(None, Some("fix")), Ok(()));
+        assert_eq!(branch_agreed(Some("fix"), None), Ok(()));
     }
 
     #[test]

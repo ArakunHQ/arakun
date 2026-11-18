@@ -257,7 +257,14 @@ pub fn repo(dir: &Path) -> Option<(PathBuf, Option<String>)> {
         Err(_) => git,
     };
     let common = common.canonicalize().unwrap_or(common);
-    let root = common.parent()?.to_path_buf();
+    // Only `<root>/.git` sits in its checkout. A bare repository's own folder,
+    // or a submodule's under `.git/modules`, is the repository itself: its
+    // parent holds other repositories too.
+    let root = if common.file_name().is_some_and(|n| n == ".git") {
+        common.parent()?.to_path_buf()
+    } else {
+        common.clone()
+    };
     let config = std::fs::read_to_string(common.join("config")).unwrap_or_default();
     Some((root, origin_url(&config)))
 }
@@ -311,6 +318,29 @@ mod tests {
         // Not a checkout at all.
         assert_eq!(repo(&temp("repo-none")), None);
         for dir in ["repo-main", "repo-tree", "repo-none"] {
+            let _ = std::fs::remove_dir_all(temp(dir));
+        }
+    }
+
+    #[test]
+    fn a_worktree_of_a_bare_repository_belongs_to_that_repository() {
+        let parent = temp("repo-bare");
+        let bare = parent.join("app.git");
+        let tree_git = bare.join("worktrees/fix");
+        std::fs::create_dir_all(&tree_git).unwrap();
+        std::fs::write(bare.join("config"), "[core]\n\tbare = true\n").unwrap();
+        std::fs::write(tree_git.join("HEAD"), "ref: refs/heads/fix\n").unwrap();
+        std::fs::write(tree_git.join("commondir"), "../..\n").unwrap();
+        let tree = temp("repo-bare-tree");
+        std::fs::write(
+            tree.join(".git"),
+            format!("gitdir: {}\n", tree_git.display()),
+        )
+        .unwrap();
+
+        // Not the folder the bare repository is in, which other ones share.
+        assert_eq!(repo(&tree), Some((bare.canonicalize().unwrap(), None)));
+        for dir in ["repo-bare", "repo-bare-tree"] {
             let _ = std::fs::remove_dir_all(temp(dir));
         }
     }

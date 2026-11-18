@@ -279,15 +279,50 @@ fn origin_url(config: &str) -> Option<String> {
             && let Some((key, value)) = line.split_once('=')
             && key.trim() == "url"
         {
-            return Some(value.trim().to_string());
+            return Some(without_userinfo(value.trim()));
         }
     }
     None
 }
 
+/// `url` without a user or token before its host: the origin goes to every
+/// paired device. An scp-style `git@host:o/r` has no scheme and stays as is.
+fn without_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(host_end);
+    match authority.rfind('@') {
+        Some(at) => format!("{scheme}://{}{path}", &authority[at + 1..]),
+        None => url.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_origin_leaves_its_token_on_the_server() {
+        let config = "[remote \"origin\"]\n\turl = https://me:ghp_secret@github.com/o/r.git\n";
+        assert_eq!(
+            origin_url(config).as_deref(),
+            Some("https://github.com/o/r.git")
+        );
+        assert_eq!(
+            without_userinfo("ssh://git@host:22/o/r.git"),
+            "ssh://host:22/o/r.git"
+        );
+        assert_eq!(
+            without_userinfo("git@github.com:o/r.git"),
+            "git@github.com:o/r.git"
+        );
+        assert_eq!(
+            without_userinfo("https://github.com/o/r@v2.git"),
+            "https://github.com/o/r@v2.git"
+        );
+    }
 
     #[test]
     fn a_worktree_belongs_to_the_repository_it_was_made_from() {

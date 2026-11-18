@@ -6,6 +6,7 @@ mod ascii_face;
 mod assets;
 mod attach_picker;
 mod automations_view;
+mod background;
 mod branches;
 mod branches_view;
 mod browser;

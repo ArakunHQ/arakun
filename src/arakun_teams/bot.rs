@@ -152,9 +152,10 @@ impl fmt::Display for RangeError {
 /// channel's order; without one, only the asking message. Messages not
 /// stored yet (no `seq`) are left out, except the asking one.
 pub fn select_range(messages: &[Msg], ask_id: &str) -> Result<Range, RangeError> {
+    // An edit shows in the message it changes, not as a line of its own.
     let stored: Vec<&Msg> = messages
         .iter()
-        .filter(|m| m.seq.is_some() || m.id == ask_id)
+        .filter(|m| (m.seq.is_some() && m.body.kind != "edit") || m.id == ask_id)
         .collect();
     let end = stored
         .iter()
@@ -210,6 +211,7 @@ pub fn draft_range(messages: &[Msg], reply_to: Option<&str>) -> Result<Range, Ra
         login: String::new(),
         body: Body::text("", reply_to.map(String::from)),
         delivery: Delivery::Sending,
+        edited: None,
     });
     select_range(&all, DRAFT_ID)
 }
@@ -1107,6 +1109,7 @@ mod tests {
             } else {
                 Delivery::Sending
             },
+            edited: None,
         }
     }
 

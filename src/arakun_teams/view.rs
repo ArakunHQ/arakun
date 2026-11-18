@@ -148,6 +148,8 @@ pub struct TeamsView {
     drafts: HashMap<String, String>,
     /// The message the composer answers.
     reply_to: Option<String>,
+    /// This user's message the composer edits.
+    editing: Option<String>,
     scroll: ScrollHandle,
     /// Rows in the open channel at the last render (twice the messages,
     /// plus @bot's runs): new ones keep the list at its bottom.
@@ -243,8 +245,18 @@ impl TeamsView {
             on(cx, &composer, |this, ev, cx| match ev {
                 InputEvent::Submit => this.send(cx),
                 InputEvent::Cancel => {
-                    this.reply_to = None;
+                    if this.editing.is_some() {
+                        this.stop_editing(cx);
+                    } else {
+                        this.reply_to = None;
+                    }
                     cx.notify();
+                }
+                // Up in an empty composer edits this user's last message.
+                InputEvent::Up if this.composer.read(cx).text().is_empty() => {
+                    if let Some(id) = this.last_own_text(cx) {
+                        this.start_editing(id, cx);
+                    }
                 }
                 _ => cx.notify(),
             }),
@@ -267,6 +279,7 @@ impl TeamsView {
             device_code,
             drafts: HashMap::new(),
             reply_to: None,
+            editing: None,
             scroll: ScrollHandle::new(),
             seen_count: 0,
             flash: None,
@@ -384,7 +397,8 @@ impl TeamsView {
                 return;
             }
             let typed = self.composer.read(cx).text().to_string();
-            if !typed.trim().is_empty() {
+            // An edit in progress is not a draft.
+            if !typed.trim().is_empty() && self.editing.is_none() {
                 self.drafts.insert(was, typed);
             }
         }
@@ -402,6 +416,7 @@ impl TeamsView {
             i.set_placeholder(format!("Message {name}"), cx);
         });
         self.reply_to = None;
+        self.editing = None;
         self.seen_count = 0;
         self.flash = None;
         self.hub
@@ -570,12 +585,71 @@ impl TeamsView {
         cx.notify();
     }
 
+    /// The open channel's messages, as held now.
+    fn open_messages<'a>(&self, cx: &'a Context<Self>) -> Option<&'a [Msg]> {
+        let Pane::Channel(t, c) = &self.pane else {
+            return None;
+        };
+        let hub = self.hub.read(cx);
+        Some(
+            hub.channels
+                .get(&hub::channel_key(t, c))?
+                .messages
+                .as_slice(),
+        )
+    }
+
+    /// This user's newest text message in the open channel that was sent.
+    fn last_own_text(&self, cx: &Context<Self>) -> Option<String> {
+        let me = self.hub.read(cx).me()?.github_id;
+        self.open_messages(cx)?
+            .iter()
+            .rev()
+            .find(|m| m.github_id == me && m.body.kind == "text" && m.delivery == Delivery::Sent)
+            .map(|m| m.id.clone())
+    }
+
+    /// Puts one of this user's messages in the composer to edit.
+    fn start_editing(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .open_messages(cx)
+            .and_then(|ms| ms.iter().find(|m| m.id == id))
+            .map(|m| m.body.text.clone())
+        else {
+            return;
+        };
+        self.editing = Some(id);
+        self.reply_to = None;
+        self.composer.update(cx, |i, cx| i.set_text(text, cx));
+        cx.notify();
+    }
+
+    fn stop_editing(&mut self, cx: &mut Context<Self>) {
+        self.editing = None;
+        self.composer.update(cx, |i, cx| i.set_text("", cx));
+        cx.notify();
+    }
+
     fn send(&mut self, cx: &mut Context<Self>) {
         let Pane::Channel(team, channel) = self.pane.clone() else {
             return;
         };
         let text = self.composer.read(cx).text().trim().to_string();
         if text.is_empty() {
+            return;
+        }
+        if let Some(id) = self.editing.clone() {
+            let unchanged = self
+                .open_messages(cx)
+                .and_then(|ms| ms.iter().find(|m| m.id == id))
+                .is_some_and(|m| m.body.text == text);
+            let sent = unchanged
+                || self
+                    .hub
+                    .update(cx, |h, cx| h.edit(&team, &channel, &id, text, cx));
+            if sent {
+                self.stop_editing(cx);
+            }
             return;
         }
         let reply_to = self.reply_to.take();
@@ -2135,9 +2209,17 @@ impl TeamsView {
                 div()
                     .ty(Type::Body)
                     .text_color(text_color)
-                    .child(m.body.text.clone()),
+                    .child(edited_text(&m.body.text, m.edited.is_some())),
             )
             .children(delivery);
+        let editable = m.body.kind == "text"
+            && m.delivery == Delivery::Sent
+            && self
+                .hub
+                .read(cx)
+                .me()
+                .is_some_and(|me| me.github_id == m.github_id);
+        let edit_id = m.id.clone();
         div()
             .id(("teams-message", index))
             .group(group.clone())
@@ -2179,10 +2261,23 @@ impl TeamsView {
                         .border_1()
                         .border_color(theme::border())
                         .bg(theme::raised())
+                        .flex()
+                        .when(editable, |d| {
+                            d.child(
+                                ui::icon_button(("teams-edit", index), "pencil-edit01", 13.)
+                                    .tooltip(ui::tip("Edit (Up in an empty message)"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.start_editing(edit_id.clone(), cx);
+                                        let handle = this.composer.read(cx).focus_handle(cx);
+                                        window.focus(&handle, cx);
+                                    })),
+                            )
+                        })
                         .child(
                             ui::icon_button(("teams-reply", index), "arrow-turn-backward", 13.)
                                 .tooltip(ui::tip("Reply"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.editing = None;
                                     this.reply_to = Some(id.clone());
                                     let handle = this.composer.read(cx).focus_handle(cx);
                                     window.focus(&handle, cx);
@@ -2347,6 +2442,25 @@ impl TeamsView {
                         })),
                 )
         });
+        let edit_bar = self.editing.as_ref().map(|_| {
+            Self::above_row()
+                .child(icon("pencil-edit01", 12.).text_color(theme::text_subtle()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child("Editing your message"),
+                )
+                .child(
+                    ui::icon_button("teams-edit-cancel", "cancel01", 12.)
+                        .tooltip(ui::tip("Cancel edit (Esc)"))
+                        .on_click(cx.listener(|this, _, _, cx| this.stop_editing(cx))),
+                )
+        });
+        let reply_bar = edit_bar.or(reply_bar);
+        // An edit never runs @bot, so the hint would mislead.
+        let bot_hint = bot_hint.filter(|_| self.editing.is_none());
         let above = reply_bar.is_some() || bot_hint.is_some();
         let square = |id: &'static str| {
             div()
@@ -2533,7 +2647,7 @@ impl TeamsView {
         let mut runs_placed = vec![false; bot.runs.len()];
         for (i, m) in messages.iter().enumerate() {
             // An acceptance shows as the "Decided" line under its answer.
-            if m.body.kind == "decision_accept" {
+            if m.body.kind == "decision_accept" || m.body.kind == "edit" {
                 continue;
             }
             for (n, (notice, at)) in notices.iter().enumerate() {
@@ -3653,6 +3767,23 @@ fn ago_from(at: u64, now: u64) -> String {
         86_400..172_800 => "yesterday".into(),
         _ => format!("{} days ago", secs / 86_400),
     }
+}
+
+/// A message's text, with a faint "(edited)" after it once edited.
+fn edited_text(text: &str, edited: bool) -> gpui::StyledText {
+    if !edited {
+        return gpui::StyledText::new(text.to_string());
+    }
+    let mark = "\u{a0}(edited)";
+    let full = format!("{text}{mark}");
+    let range = text.len()..full.len();
+    gpui::StyledText::new(full).with_highlights([(
+        range,
+        gpui::HighlightStyle {
+            color: Some(theme::text_faint()),
+            ..Default::default()
+        },
+    )])
 }
 
 /// How long until a time, in words: "in a moment", "in 4 minutes".

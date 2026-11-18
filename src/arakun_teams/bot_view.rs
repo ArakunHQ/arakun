@@ -35,6 +35,34 @@ pub(super) struct BotState {
     pub my_login: String,
     /// Answers this user turned down on this device.
     pub rejected: HashSet<String>,
+    /// Answers whose range holds a message edited after them, by answer ID.
+    pub stale: HashMap<String, Stale>,
+}
+
+/// A message in an answer's range that was edited after the answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Stale {
+    /// Its number in the range.
+    pub n: usize,
+    pub login: String,
+    pub id: String,
+}
+
+/// The first message of a bot answer's range edited after the answer.
+pub(super) fn stale_of(messages: &[Msg], answer: &Msg) -> Option<Stale> {
+    let meta = bot::meta(answer)?;
+    let after = answer.seq?;
+    let range = bot::select_range(messages, &meta.range[1]).ok()?;
+    range.lines.iter().find_map(|l| {
+        let m = messages.iter().find(|m| m.id == l.id)?;
+        let e = m.edited.as_ref()?;
+        // An edit still on its way is newer than anything stored.
+        e.seq.is_none_or(|s| s > after).then(|| Stale {
+            n: l.n,
+            login: m.login.clone(),
+            id: m.id.clone(),
+        })
+    })
 }
 
 /// "Karlo", "Karlo and Dani", "Karlo, Dani and Rik".
@@ -111,8 +139,14 @@ impl TeamsView {
             .map(|m| (m.id.clone(), decisions::acceptances(messages, &m.id)))
             .filter(|(_, a)| !a.is_empty())
             .collect();
+        let stale: HashMap<String, Stale> = messages
+            .iter()
+            .filter(|m| m.body.kind == "bot")
+            .filter_map(|m| Some((m.id.clone(), stale_of(messages, m)?)))
+            .collect();
         let me = hub.me();
         BotState {
+            stale,
             draft,
             hint,
             runs,
@@ -403,6 +437,9 @@ impl TeamsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut sections: Vec<AnyElement> = Vec::new();
+        if let Some(st) = bot.stale.get(&m.id) {
+            sections.push(self.render_stale(index, st, &meta.range[1], index_of, team_channel, cx));
+        }
         if let (Some(parts), Some(read)) = (meta.parts.filter(|p| *p > 1), meta.read) {
             sections.push(
                 div()
@@ -587,6 +624,87 @@ impl TeamsView {
                     .child(s)
             }))
             .child(decision)
+            .into_any_element()
+    }
+
+    /// "Based on an earlier version": a message in the range changed after
+    /// the answer. Jump to it, or ask @bot again on the same range.
+    fn render_stale(
+        &self,
+        index: usize,
+        st: &Stale,
+        ask_id: &str,
+        index_of: &HashMap<&str, usize>,
+        team_channel: (&str, &str),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let target = index_of.get(st.id.as_str()).copied();
+        let id = st.id.clone();
+        let (t, c, ask) = (
+            team_channel.0.to_string(),
+            team_channel.1.to_string(),
+            ask_id.to_string(),
+        );
+        let running = self
+            .hub
+            .read(cx)
+            .bot
+            .runs
+            .iter()
+            .any(|r| r.ask_id == ask_id && matches!(r.state, RunState::Running(_)));
+        div()
+            .flex()
+            .items_center()
+            .gap(ui::sp(8.))
+            .py(ui::sp(12.))
+            .ty(Type::Label)
+            .font_weight(FontWeight::NORMAL)
+            .text_color(theme::text_muted())
+            .child(icon("pencil-edit01", 14.).text_color(theme::attention()))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(ui::sp(4.))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child("Based on an earlier version."),
+                    )
+                    .child(format!("{} edited message", st.login))
+                    .child(
+                        ui::text(Type::Caption, theme::text(), st.n.to_string())
+                            .px(ui::sp(4.))
+                            .rounded(ui::rad(ui::RADIUS_SM))
+                            .bg(theme::fill_selected())
+                            .font_family(theme::FONT_MONO),
+                    )
+                    .child("after this answer."),
+            )
+            .children(target.map(|row| {
+                ui::button(
+                    ("teams-stale-see", index),
+                    "See the edit",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.jump_to(row, id.clone(), cx)))
+            }))
+            .child(
+                ui::button(
+                    ("teams-stale-again", index),
+                    if running { "Asking…" } else { "Ask again" },
+                    ButtonKind::Outline,
+                    !running,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.hub.update(cx, |h, cx| h.start_bot(&t, &c, &ask, cx))
+                })),
+            )
             .into_any_element()
     }
 
@@ -907,6 +1025,55 @@ impl TeamsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_goes_stale_when_its_range_is_edited_after_it() {
+        use super::super::super::bot::{Answer, Outcome};
+        use super::super::super::crypto::Body;
+        use super::super::super::hub::{Edited, apply_edits};
+        let m = |id: &str, seq: u64, gid: u64, body: Body| Msg {
+            id: id.into(),
+            seq: Some(seq),
+            at: seq,
+            github_id: gid,
+            login: format!("u{gid}"),
+            body,
+            delivery: Delivery::Sent,
+            edited: None,
+        };
+        let mut all = vec![
+            m("a", 1, 1, Body::text("idea", None)),
+            m("q", 2, 2, Body::text("@bot decide", Some("a".into()))),
+        ];
+        let range = bot::select_range(&all, "q").unwrap();
+        let outcome = Outcome {
+            answer: Answer {
+                ideas: Vec::new(),
+                verified: Vec::new(),
+                assumed: Vec::new(),
+                unchecked: Vec::new(),
+                decision: "Do it.".into(),
+            },
+            parts: 0,
+        };
+        let mut answer = m("bot", 3, 2, bot::bot_body(&range, 2, &outcome));
+        answer.github_id = 2;
+        all.push(answer.clone());
+        assert_eq!(stale_of(&all, &answer), None);
+        let mut edit = Body::text("a better idea", Some("a".into()));
+        edit.kind = "edit".into();
+        all.push(m("e", 4, 1, edit));
+        apply_edits(&mut all);
+        assert!(matches!(all[0].edited, Some(Edited { seq: Some(4), .. })));
+        assert_eq!(
+            stale_of(&all, &answer),
+            Some(Stale {
+                n: 1,
+                login: "u1".into(),
+                id: "a".into()
+            })
+        );
+    }
 
     #[test]
     fn names_read_as_a_list() {

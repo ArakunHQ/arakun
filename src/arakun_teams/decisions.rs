@@ -180,6 +180,7 @@ mod tests {
             login: login.into(),
             body,
             delivery: Delivery::Sent,
+            edited: None,
         }
     }
 

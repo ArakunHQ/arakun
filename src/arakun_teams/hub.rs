@@ -127,6 +127,67 @@ pub struct Msg {
     pub login: String,
     pub body: Body,
     pub delivery: Delivery,
+    /// The newest edit its sender made, once one applies: `body.text`
+    /// then holds the edited text.
+    pub edited: Option<Edited>,
+}
+
+/// An edit applied to a text message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edited {
+    /// The `edit` message.
+    pub id: String,
+    pub seq: Option<u64>,
+    pub at: u64,
+    /// The text as first sent.
+    pub original: String,
+}
+
+/// Applies every `edit` to the text message it names: only one by the same
+/// sender, of a `text` message, the newest by `seq` winning. One still on
+/// its way shows at once; one that failed does not.
+pub fn apply_edits(messages: &mut [Msg]) {
+    for m in messages.iter_mut() {
+        if let Some(e) = m.edited.take() {
+            m.body.text = e.original;
+        }
+    }
+    let mut edits: Vec<(Option<u64>, usize)> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.body.kind == "edit"
+                && m.body.reply_to.is_some()
+                && !matches!(m.delivery, Delivery::Failed(_))
+        })
+        .map(|(i, m)| (m.seq, i))
+        .collect();
+    edits.sort_by_key(|(seq, i)| (seq.is_none(), seq.unwrap_or(0), *i));
+    for (_, i) in edits {
+        let e = &messages[i];
+        let (id, seq, at, gid) = (e.id.clone(), e.seq, e.at, e.github_id);
+        let (target, text) = (
+            e.body.reply_to.clone().unwrap_or_default(),
+            e.body.text.clone(),
+        );
+        let Some(t) = messages.iter_mut().find(|m| m.id == target) else {
+            continue;
+        };
+        if t.body.kind != "text" || t.github_id != gid {
+            continue;
+        }
+        let original = t
+            .edited
+            .take()
+            .map_or_else(|| t.body.text.clone(), |e| e.original);
+        t.body.text = text;
+        t.edited = Some(Edited {
+            id,
+            seq,
+            at,
+            original,
+        });
+    }
 }
 
 impl ChannelState {
@@ -1468,6 +1529,7 @@ impl Hub {
                 login: t.login(gid),
                 body,
                 delivery: Delivery::Sent,
+                edited: None,
             };
             match c.messages.iter().position(|m| m.id == msg.id) {
                 Some(i) => c.messages[i] = msg,
@@ -1477,6 +1539,7 @@ impl Hub {
         // Sent ones by seq; what is still on its way stays at the end.
         c.messages
             .sort_by_key(|m| (m.seq.is_none(), m.seq.unwrap_or(0), m.at));
+        apply_edits(&mut c.messages);
         let team_id = c.team_id.clone();
         let channel_id = c.channel_id.clone();
         for id in asked {
@@ -1634,6 +1697,24 @@ impl Hub {
         self.send_body(team_id, channel_id, body, cx)
     }
 
+    /// Edits one of this user's text messages: a new `edit` message that
+    /// names it. Its mentions never run @bot again.
+    pub fn edit(
+        &mut self,
+        team_id: &str,
+        channel_id: &str,
+        id: &str,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut body = Body::text(text, Some(id.to_string()));
+        body.kind = "edit".into();
+        if super::bot::mentions_bot(&body.text) {
+            body.mentions = vec!["bot".into()];
+        }
+        self.send_body(team_id, channel_id, body, cx)
+    }
+
     /// Seals and sends any message body.
     pub fn send_body(
         &mut self,
@@ -1675,7 +1756,9 @@ impl Hub {
             login: me.map(|m| m.login).unwrap_or_default(),
             body,
             delivery: Delivery::Sending,
+            edited: None,
         });
+        apply_edits(&mut c.messages);
         c.outbox.insert(id, frame.clone());
         if c.status == socket::Status::Connected
             && let Some(link) = &c.link
@@ -2011,6 +2094,48 @@ mod tests {
             .map(|(m, on)| (m.login.as_str(), on))
             .collect();
         assert_eq!(got, vec![("karlo", true), ("dani", true), ("rik", false)]);
+    }
+
+    #[test]
+    fn edits_apply_by_the_same_sender_newest_first() {
+        let m = |id: &str, seq: u64, gid: u64, body: Body| Msg {
+            id: id.into(),
+            seq: Some(seq),
+            at: seq,
+            github_id: gid,
+            login: "x".into(),
+            body,
+            delivery: Delivery::Sent,
+            edited: None,
+        };
+        let edit = |text: &str, of: &str| {
+            let mut b = Body::text(text, Some(of.into()));
+            b.kind = "edit".into();
+            b
+        };
+        let mut all = vec![
+            m("a", 1, 7, Body::text("first", None)),
+            m("e2", 4, 7, edit("third", "a")),
+            m("e1", 3, 7, edit("second", "a")),
+            // Someone else's edit, and an edit of a non-text message.
+            m("x", 5, 8, edit("forged", "a")),
+            m("b", 2, 8, Body::text("bot", None)),
+        ];
+        all[4].body.kind = "bot".into();
+        all.push(m("y", 6, 8, edit("nope", "b")));
+        apply_edits(&mut all);
+        assert_eq!(all[0].body.text, "third");
+        let e = all[0].edited.as_ref().unwrap();
+        assert_eq!(
+            (e.id.as_str(), e.seq, e.original.as_str()),
+            ("e2", Some(4), "first")
+        );
+        assert_eq!(all[4].body.text, "bot");
+        assert!(all[4].edited.is_none());
+        // Applying again changes nothing.
+        apply_edits(&mut all);
+        assert_eq!(all[0].body.text, "third");
+        assert_eq!(all[0].edited.as_ref().unwrap().original, "first");
     }
 
     #[test]

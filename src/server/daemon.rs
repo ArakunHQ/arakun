@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
@@ -1080,6 +1081,14 @@ impl Daemon {
         self.save_devices();
         self.save_store();
         self.writer.finish();
+        // Git runs in a process group of its own, which the terminal's Ctrl-C
+        // does not reach: left alone, a clone would go on writing a folder
+        // that no place names, or leave half of one.
+        self.cloning.stop_all();
+        let given_up = Instant::now() + CLONE_STOP_WAIT;
+        while self.cloning.busy() && Instant::now() < given_up {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         // The process ends without dropping the app, so the socket goes here.
         self.listening = None;
         if self.reach == Reach::Tailscale {
@@ -1693,8 +1702,11 @@ impl Daemon {
                         .await;
                     // A second clone there would find the first one half done.
                     let reserved = this.update(cx, |this, _| {
-                        let new = this.cloning.start(&dest);
-                        if !new {
+                        if this.stopping {
+                            return None;
+                        }
+                        let run = this.cloning.start(&dest);
+                        if run.is_none() {
                             this.transport.send(
                                 client,
                                 place_failed(&format!(
@@ -1703,16 +1715,20 @@ impl Daemon {
                                 )),
                             );
                         }
-                        new
+                        run
                     });
-                    if !matches!(reserved, Ok(true)) {
+                    let Ok(Some(run)) = reserved else {
                         return;
-                    }
+                    };
                     let into = dest.clone();
                     let done = cx
                         .background_executor()
                         .spawn(async move {
-                            let path = clone_into(&source, &into).and_then(|()| real_dir(&into))?;
+                            // Busy first: a stop asked from now on is seen.
+                            run.busy.store(true, Ordering::SeqCst);
+                            let cloned = clone_into(&source, &into, &run.stop);
+                            run.busy.store(false, Ordering::SeqCst);
+                            let path = cloned.and_then(|()| real_dir(&into))?;
                             let meta = PlaceMeta::read(&path);
                             Ok((path, meta))
                         })
@@ -2535,19 +2551,29 @@ impl PlaceMeta {
 /// goes into.
 #[derive(Default)]
 struct Clones {
-    running: HashSet<PathBuf>,
+    running: HashMap<PathBuf, Arc<CloneRun>>,
     /// How many have started, ever.
     started: u64,
 }
 
+/// A clone under way. The server stops it when it stops itself.
+#[derive(Default)]
+struct CloneRun {
+    stop: AtomicBool,
+    /// Git runs, or a folder it made is being removed.
+    busy: AtomicBool,
+}
+
 impl Clones {
-    /// Reserves `dest` for a clone, unless one goes there already.
-    fn start(&mut self, dest: &Path) -> bool {
-        let new = self.running.insert(dest.to_path_buf());
-        if new {
-            self.started += 1;
+    /// Reserves `dest` for a clone, or None when one goes there already.
+    fn start(&mut self, dest: &Path) -> Option<Arc<CloneRun>> {
+        if self.running.contains_key(dest) {
+            return None;
         }
-        new
+        let run = Arc::new(CloneRun::default());
+        self.running.insert(dest.to_path_buf(), run.clone());
+        self.started += 1;
+        Some(run)
     }
 
     fn end(&mut self, dest: &Path) {
@@ -2555,18 +2581,30 @@ impl Clones {
     }
 
     fn has(&self, path: &Path) -> bool {
-        self.running.contains(path)
+        self.running.contains_key(path)
     }
 
     /// What an Add looks at its folder with: where clones go now, and a mark
     /// for [`started_since`](Self::started_since).
     fn seen(&self) -> (Vec<PathBuf>, u64) {
-        (self.running.iter().cloned().collect(), self.started)
+        (self.running.keys().cloned().collect(), self.started)
     }
 
     /// Whether a clone started after `mark` was taken.
     fn started_since(&self, mark: u64) -> bool {
         self.started != mark
+    }
+
+    fn stop_all(&self) {
+        for run in self.running.values() {
+            run.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn busy(&self) -> bool {
+        self.running
+            .values()
+            .any(|run| run.busy.load(Ordering::SeqCst))
     }
 }
 
@@ -2641,10 +2679,18 @@ const CLONE_CONFIG: [&str; 6] = [
 /// How long a clone may take before it is given up.
 const CLONE_LIMIT: Duration = Duration::from_secs(20 * 60);
 
+/// How long a stopping server waits for its clones to end and clean up.
+const CLONE_STOP_WAIT: Duration = Duration::from_secs(10);
+
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
-/// that repository. A failed clone leaves nothing behind.
-fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), String> {
-    clone_with(git_command(), source, dest)
+/// that repository. A failed clone leaves nothing behind, nor does one that
+/// `stop` ends.
+fn clone_into(
+    source: &clone_source::CloneSource,
+    dest: &Path,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    clone_with(git_command(), source, dest, stop)
 }
 
 /// [`clone_into`], with `git` as the command to start from: tests give it
@@ -2653,8 +2699,12 @@ fn clone_with(
     mut git: std::process::Command,
     source: &clone_source::CloneSource,
     dest: &Path,
+    stop: &AtomicBool,
 ) -> Result<(), String> {
     use std::process::Stdio;
+    if stop.load(Ordering::SeqCst) {
+        return Err(SERVER_STOPPED.into());
+    }
     if dest.exists() {
         return match checkout_origin(dest) {
             Some(found) if found.same_repo(source) => Ok(()),
@@ -2714,6 +2764,12 @@ fn clone_with(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if stop.load(Ordering::SeqCst) => {
+                tree.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                return failed(SERVER_STOPPED.into());
+            }
             Ok(None) if started.elapsed() < CLONE_LIMIT => {
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -2751,6 +2807,8 @@ fn clone_with(
             .unwrap_or("no reason given")
     ))
 }
+
+const SERVER_STOPPED: &str = "the server stopped before the clone was done";
 
 /// Whether `git` has an ssh command of its own, from its environment or the
 /// server's git config, the way git looks for one.
@@ -2979,28 +3037,28 @@ mod tests {
         };
         let url = origin.display().to_string();
         let dest = root.join("code").join("r");
-        clone_into(&source(&url), &dest).unwrap();
+        clone_into(&source(&url), &dest, &AtomicBool::new(false)).unwrap();
         assert!(dest.join(".git").exists());
         // Asked again, the checkout is taken as it is. Its origin must read as
         // a repository address, which a local path does not.
         let remote = "https://example.com/o/r.git";
         git_in(&dest, &["remote", "set-url", "origin", remote]);
         let again = clone_source::parse_clone_source(remote).unwrap();
-        clone_into(&again, &dest).unwrap();
+        clone_into(&again, &dest, &AtomicBool::new(false)).unwrap();
         let other = clone_source::parse_clone_source("https://example.com/o/s.git").unwrap();
-        let err = clone_into(&other, &dest).unwrap_err();
+        let err = clone_into(&other, &dest, &AtomicBool::new(false)).unwrap_err();
         assert!(err.contains("already holds"), "{err}");
 
         // A plain folder inside that checkout is not a checkout of it.
         let inner = dest.join("docs");
         std::fs::create_dir(&inner).unwrap();
-        let err = clone_into(&again, &inner).unwrap_err();
+        let err = clone_into(&again, &inner, &AtomicBool::new(false)).unwrap_err();
         assert!(err.contains("already exists"), "{err}");
 
         // A clone that fails removes only the folder it made.
         let missing = root.join("nothing-here").display().to_string();
         let gone = root.join("code").join("gone");
-        assert!(clone_into(&source(&missing), &gone).is_err());
+        assert!(clone_into(&source(&missing), &gone, &AtomicBool::new(false)).is_err());
         assert!(!gone.exists());
         assert!(dest.join(".git").exists());
         let _ = std::fs::remove_dir_all(&root);
@@ -3060,7 +3118,7 @@ mod tests {
         };
 
         // No ssh command set: ssh may not ask for a passphrase or a host key.
-        clone_with(git(), &source, &dir.join("plain")).unwrap();
+        clone_with(git(), &source, &dir.join("plain"), &AtomicBool::new(false)).unwrap();
         assert!(dir.join("plain/.git").exists());
         let args = std::fs::read_to_string(bin.join("ssh.args")).unwrap();
         assert!(args.lines().any(|l| l == "BatchMode=yes"), "{args}");
@@ -3075,7 +3133,13 @@ mod tests {
             .env("GIT_CONFIG_COUNT", "1")
             .env("GIT_CONFIG_KEY_0", "core.sshCommand")
             .env("GIT_CONFIG_VALUE_0", &own);
-        clone_with(configured, &source, &dir.join("own")).unwrap();
+        clone_with(
+            configured,
+            &source,
+            &dir.join("own"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert!(dir.join("own/.git").exists());
         let args = std::fs::read_to_string(dir.join("own-ssh.args")).unwrap();
         assert!(!args.contains("BatchMode"), "{args}");
@@ -3237,7 +3301,13 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
             git
         };
 
-        clone_with(git("right-token"), &source, &dir.join("ok")).unwrap();
+        clone_with(
+            git("right-token"),
+            &source,
+            &dir.join("ok"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert!(dir.join("ok/.git").exists());
         assert!(signed_in.load(std::sync::atomic::Ordering::SeqCst) > 0);
         let config = std::fs::read_to_string(dir.join("ok/.git/config")).unwrap();
@@ -3245,7 +3315,13 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
 
         // A login the host turns down: no prompt to wait on, and what the
         // device is told does not carry the password.
-        let err = clone_with(git("wrong-token"), &source, &dir.join("no")).unwrap_err();
+        let err = clone_with(
+            git("wrong-token"),
+            &source,
+            &dir.join("no"),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
         assert!(!err.contains("wrong-token"), "{err}");
         assert!(err.contains("Authentication failed"), "{err}");
         assert!(!dir.join("no").exists());
@@ -3260,8 +3336,8 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         let (cloning, mark) = clones.seen();
         assert!(!being_cloned(&dest, &cloning));
         // A clone starts there while the Add looks at the folder.
-        assert!(clones.start(&dest));
-        assert!(!clones.start(&dest), "one clone at a time");
+        assert!(clones.start(&dest).is_some());
+        assert!(clones.start(&dest).is_none(), "one clone at a time");
         assert!(clones.has(&dest));
         // It fails, takes its folder away and ends, all before the Add is
         // back: the reservation is gone, but the Add knows to look again.
@@ -3271,6 +3347,61 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         // Looking again, nothing started meanwhile.
         let (_, mark) = clones.seen();
         assert!(!clones.started_since(mark));
+    }
+
+    // The fake ssh is a shell script.
+    #[cfg(unix)]
+    #[test]
+    fn a_clone_the_server_stops_ends_and_leaves_no_folder() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("stop");
+        // An ssh that never answers.
+        let ssh = dir.join("slow-ssh");
+        std::fs::write(&ssh, "#!/bin/sh\nexec sleep 600\n").unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut git = git_command();
+        git.env("GIT_SSH_COMMAND", &ssh);
+        let source = clone_source::CloneSource {
+            url: "ssh://example.invalid/o/r.git".into(),
+            on_github: false,
+            label: "o/r".into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        let mut clones = Clones::default();
+        let dest = dir.join("r");
+        let run = clones.start(&dest).unwrap();
+        let cloning = {
+            let (run, dest, source) = (run.clone(), dest.clone(), source.clone());
+            std::thread::spawn(move || {
+                run.busy.store(true, Ordering::SeqCst);
+                let cloned = clone_with(git, &source, &dest, &run.stop);
+                run.busy.store(false, Ordering::SeqCst);
+                cloned
+            })
+        };
+        let started = Instant::now();
+        while !dest.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the clone began"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The server stops, as `shut_down` does it.
+        clones.stop_all();
+        let started = Instant::now();
+        while clones.busy() {
+            assert!(started.elapsed() < CLONE_STOP_WAIT, "the clone ended");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(cloning.join().unwrap(), Err(SERVER_STOPPED.into()));
+        assert!(!dest.exists());
+        // A clone asked for after the stop does not begin.
+        let late = clone_into(&source, &dir.join("late"), &run.stop);
+        assert_eq!(late, Err(SERVER_STOPPED.into()));
+        assert!(!dir.join("late").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

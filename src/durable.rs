@@ -105,13 +105,10 @@ fn soon() -> &'static std::sync::mpsc::Sender<Soon> {
         let spawned = std::thread::Builder::new()
             .name("durable-writer".into())
             .spawn(move || {
-                for save in rx {
-                    match save {
-                        Soon::Write(path, bytes, what) => write_logged(&path, &bytes, what),
-                        Soon::Flush(done) => {
-                            let _ = done.send(());
-                        }
-                    }
+                while let Ok(first) = rx.recv() {
+                    let mut batch = vec![first];
+                    batch.extend(rx.try_iter());
+                    write_batch(batch);
                 }
             });
         if let Err(e) = spawned {
@@ -121,6 +118,30 @@ fn soon() -> &'static std::sync::mpsc::Sender<Soon> {
         }
         tx
     })
+}
+
+/// Writes only the last of the queued saves to each file, since each one
+/// replaces the whole file: a field saved on every key leaves no backlog for
+/// the quit to wait on. Flushes are answered after, when what they waited for
+/// (or something newer) is on disk.
+fn write_batch(batch: Vec<Soon>) {
+    let mut writes: Vec<(std::path::PathBuf, Vec<u8>, &'static str)> = Vec::new();
+    let mut flushes = Vec::new();
+    for save in batch {
+        match save {
+            Soon::Write(path, bytes, what) => {
+                writes.retain(|(p, ..)| *p != path);
+                writes.push((path, bytes, what));
+            }
+            Soon::Flush(done) => flushes.push(done),
+        }
+    }
+    for (path, bytes, what) in writes {
+        write_logged(&path, &bytes, what);
+    }
+    for done in flushes {
+        let _ = done.send(());
+    }
 }
 
 fn write_logged(path: &Path, bytes: &[u8], what: &str) {
@@ -268,6 +289,25 @@ mod tests {
         }
         super::flush();
         assert_eq!(std::fs::read(&path).unwrap(), b"49");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_batch_writes_each_file_once_with_its_last_save() {
+        let dir = scratch("batch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        let (done, wait) = std::sync::mpsc::channel();
+        super::write_batch(vec![
+            super::Soon::Write(a.clone(), b"a1".to_vec(), "test"),
+            super::Soon::Write(b.clone(), b"b1".to_vec(), "test"),
+            super::Soon::Flush(done),
+            super::Soon::Write(a.clone(), b"a2".to_vec(), "test"),
+        ]);
+        assert!(wait.try_recv().is_ok(), "the flush is answered");
+        assert_eq!(std::fs::read(&a).unwrap(), b"a2");
+        assert_eq!(std::fs::read(&b).unwrap(), b"b1");
+        assert_eq!(entries(&dir), ["a", "b"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

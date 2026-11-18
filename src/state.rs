@@ -487,62 +487,61 @@ pub fn load() -> State {
         })
 }
 
-/// A snapshot of the state, numbered when it was taken. Saves are written
-/// off the UI thread, on whichever thread is free, so without the number an
-/// older snapshot could be renamed over a newer one and lose the last change.
-pub struct Snapshot {
-    seq: u64,
-    bytes: Vec<u8>,
-}
-
+/// The newest state snapshot not yet on disk. Saves are written off the UI
+/// thread, on whichever thread is free; each takes the newest snapshot when
+/// its turn comes, so an older one can never be renamed over a newer one.
 static SAVES: Saves = Saves::new();
 
-impl Snapshot {
-    /// Take it on the UI thread, where the state changes, so the numbers
-    /// follow the changes.
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Snapshot {
-            seq: SAVES.take(),
-            bytes,
-        }
-    }
-
-    /// Writes it unless a newer snapshot was taken since: that one is written
-    /// instead, so only the newest pending snapshot reaches the disk.
-    pub fn write(self) -> std::io::Result<()> {
-        SAVES.write(self.seq, || crate::durable::write(&file(), &self.bytes))
-    }
+/// Queues `bytes` (on the UI thread, where the state changes) in place of
+/// any older snapshot not written yet.
+pub fn queue(bytes: Vec<u8>) {
+    SAVES.queue(bytes);
 }
 
-/// Puts the saves of one file in order: one at a time, newest wins.
+/// Writes the newest queued snapshot, if a save before this one has not.
+pub fn write_queued() -> std::io::Result<()> {
+    SAVES.write(|bytes| crate::durable::write(&file(), bytes))
+}
+
 struct Saves {
-    taken: std::sync::atomic::AtomicU64,
+    pending: std::sync::Mutex<Option<Vec<u8>>>,
     writing: std::sync::Mutex<()>,
 }
 
 impl Saves {
     const fn new() -> Self {
         Saves {
-            taken: std::sync::atomic::AtomicU64::new(0),
+            pending: std::sync::Mutex::new(None),
             writing: std::sync::Mutex::new(()),
         }
     }
 
-    fn take(&self) -> u64 {
-        self.taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    fn pending(&self) -> std::sync::MutexGuard<'_, Option<Vec<u8>>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn write(&self, seq: u64, write: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
-        // Held across the write, so a newer snapshot taken meanwhile is
-        // written after this one, never before.
+    fn queue(&self, bytes: Vec<u8>) {
+        *self.pending() = Some(bytes);
+    }
+
+    fn write(&self, write: impl FnOnce(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+        // One write at a time: the snapshot taken here is the newest, and
+        // a newer one queued meanwhile waits and is written after it.
         let _one_at_a_time = self
             .writing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if seq < self.taken.load(std::sync::atomic::Ordering::SeqCst) {
+        let Some(bytes) = self.pending().take() else {
             return Ok(());
+        };
+        let written = write(&bytes);
+        if written.is_err() {
+            // Kept for the next save to try, unless a newer one came.
+            self.pending().get_or_insert(bytes);
         }
-        write()
+        written
     }
 }
 
@@ -893,62 +892,62 @@ pub fn new_project(path: &Path) -> Project {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_older_save_never_lands_after_a_newer_one() {
-        let saves = Saves::new();
-        let disk = std::sync::Mutex::new(Vec::new());
-        let older = saves.take();
-        let newer = saves.take();
-        // The newer save's thread gets there first.
-        let save = |seq: u64| {
-            saves.write(seq, || {
-                disk.lock().unwrap().push(seq);
-                Ok(())
-            })
-        };
-        save(newer).unwrap();
-        save(older).unwrap();
-        assert_eq!(*disk.lock().unwrap(), [newer]);
+    fn record(
+        disk: &std::sync::Mutex<Vec<Vec<u8>>>,
+        fail: bool,
+    ) -> impl FnOnce(&[u8]) -> std::io::Result<()> + '_ {
+        move |bytes| {
+            if fail {
+                return Err(std::io::Error::other("disk full"));
+            }
+            disk.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
     }
 
     #[test]
-    fn a_save_with_a_newer_one_pending_is_skipped() {
+    fn only_the_newest_queued_snapshot_is_written() {
         let saves = Saves::new();
         let disk = std::sync::Mutex::new(Vec::new());
-        let save = |seq: u64| {
-            saves.write(seq, || {
-                disk.lock().unwrap().push(seq);
-                Ok(())
-            })
-        };
-        let first = saves.take();
-        save(first).unwrap();
-        let stale = saves.take();
-        let newest = saves.take();
-        save(stale).unwrap();
-        save(newest).unwrap();
-        assert_eq!(*disk.lock().unwrap(), [first, newest]);
+        saves.queue(b"older".to_vec());
+        saves.queue(b"newer".to_vec());
+        // Two save tasks ran; the first takes the newest, the second finds
+        // nothing left.
+        saves.write(record(&disk, false)).unwrap();
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [b"newer".to_vec()]);
+    }
+
+    #[test]
+    fn a_failed_save_is_kept_for_the_next_one() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        saves.queue(b"state".to_vec());
+        assert!(saves.write(record(&disk, true)).is_err());
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [b"state".to_vec()]);
+        // A newer snapshot queued after a failure replaces the failed one.
+        saves.queue(b"old".to_vec());
+        assert!(saves.write(record(&disk, true)).is_err());
+        saves.queue(b"new".to_vec());
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(disk.lock().unwrap().last().unwrap(), b"new");
     }
 
     #[test]
     fn saves_from_many_threads_end_with_the_newest() {
         let saves = Saves::new();
-        let disk = std::sync::Mutex::new(0);
-        let seqs: Vec<u64> = (0..32).map(|_| saves.take()).collect();
+        let disk = std::sync::Mutex::new(Vec::new());
         std::thread::scope(|scope| {
-            for &seq in seqs.iter().rev() {
+            for n in 0..32u8 {
+                saves.queue(vec![n]);
                 let (saves, disk) = (&saves, &disk);
-                scope.spawn(move || {
-                    saves
-                        .write(seq, || {
-                            *disk.lock().unwrap() = seq;
-                            Ok(())
-                        })
-                        .unwrap()
-                });
+                scope.spawn(move || saves.write(record(disk, false)).unwrap());
             }
         });
-        assert_eq!(*disk.lock().unwrap(), *seqs.last().unwrap());
+        let disk = disk.into_inner().unwrap();
+        assert_eq!(disk.last().unwrap(), &[31]);
+        assert!(disk.windows(2).all(|w| w[0] < w[1]), "{disk:?}");
     }
 
     #[test]

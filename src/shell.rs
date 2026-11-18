@@ -967,9 +967,9 @@ impl Shell {
             _quit: [
                 cx.on_app_quit(|this, cx| {
                     // A draft typed in the last moments may not be saved yet.
-                    // Numbered after every save already queued, so none of
-                    // them can land over it.
-                    if let Err(e) = state::Snapshot::new(this.state_bytes()).write() {
+                    // Replaces any save still queued, so none can land over it.
+                    state::queue(this.state_bytes());
+                    if let Err(e) = state::write_queued() {
                         eprintln!("arakun: could not save state: {e}");
                     }
                     this.save_transcripts(cx);
@@ -1036,9 +1036,9 @@ impl Shell {
     // Persistence and git refresh
 
     fn save(&self, cx: &mut Context<Self>) {
-        let snapshot = state::Snapshot::new(self.state_bytes());
+        state::queue(self.state_bytes());
         cx.background_spawn(crate::guard::task(async move {
-            if let Err(e) = snapshot.write() {
+            if let Err(e) = state::write_queued() {
                 eprintln!("arakun: could not save state: {e}");
             }
         }))

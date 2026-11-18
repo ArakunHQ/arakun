@@ -1,7 +1,8 @@
 //! Settling after a merge: once an environment's pull request is merged, its
 //! review threads are resolved on GitHub, its notifications are marked read,
-//! and the environment's sessions stop asking for attention. On unless turned
-//! off in Settings > Branches.
+//! and the environment's sessions stop asking for attention and leave the
+//! sessions list until they are used again. On unless turned off in
+//! Settings > Branches.
 //!
 //! The merges already settled are kept in `settled.json` next to the state, so
 //! each one is settled once, even after a restart.

@@ -308,6 +308,9 @@ pub struct Session {
     /// The sessions it took over from other agents ("Continue with"), oldest
     /// first; their history is already in this one's transcript.
     pub continues: Vec<Earlier>,
+    /// Its pull request merged (`crate::settle`): the sessions list leaves it
+    /// out until it is used again.
+    pub settled: bool,
     pub live: Option<LiveSession>,
 }
 
@@ -344,6 +347,7 @@ impl Session {
             cli_model: None,
             auto_allow: false,
             continues: Vec::new(),
+            settled: false,
             live: None,
         }
     }

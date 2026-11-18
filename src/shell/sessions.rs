@@ -340,6 +340,10 @@ impl Shell {
                     }
                     s.status = status;
                     s.updated = model::unix_now();
+                    // Used again after its merge: back in the list.
+                    if status == Status::Working {
+                        s.settled = false;
+                    }
                     cx.notify();
                 }
             }

@@ -1,6 +1,7 @@
 //! Watches the environments' branches for a merged pull request and settles it
 //! (`crate::settle`): its review threads resolved, its notifications read, and
-//! the environment's sessions no longer asking for attention.
+//! the environment's sessions no longer asking for attention and hidden from
+//! the sessions list.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -158,8 +159,8 @@ impl Shell {
     }
 
     /// The environment's sessions from before the merge stop asking for
-    /// attention, and the agents nobody is looking at stop. A session still
-    /// working, or used after the merge, is left alone.
+    /// attention and leave the sessions list, and the agents nobody is looking
+    /// at stop. A session still working, or used after the merge, is left alone.
     fn settle_sessions(&mut self, path: &Path, merged_at: u64, cx: &mut Context<Self>) {
         let Some(env) = self.find_env_mut(path) else {
             return;
@@ -172,6 +173,7 @@ impl Shell {
                 .any(|t| matches!(&t.kind, TabKind::Session { id, .. } if *id == s.id));
             if let Some(status) = settled_status(s.status, s.updated, merged_at, open) {
                 s.status = status;
+                s.settled = true;
                 ids.push(s.id.clone());
             }
         }

@@ -165,14 +165,37 @@ pub fn load(file: &Path) -> Store {
     if !file.exists() {
         return Store::default();
     }
-    // Under the store's lock: a read that finds the file unreadable sets it
-    // aside, and must not move the fresh store an `update` in another process
-    // (`arakun mem`) just wrote in its place.
-    let lock = lock_store(file);
-    if let Err(e) = &lock {
-        eprintln!("arakun: reading {} without its lock: {e}", file.display());
+    // Only under the store's lock may a read set an unreadable file aside:
+    // it must not move the fresh store an `update` in another process
+    // (`arakun mem`) just wrote in its place. The memory view reads on the UI
+    // thread, so a busy lock is not waited for; the read just leaves the file
+    // alone, and the one holding the lock deals with it.
+    match try_lock_store(file) {
+        Ok(Some(_lock)) => load_locked(file),
+        Ok(None) => crate::stored::peek(file).unwrap_or_default(),
+        Err(e) => {
+            eprintln!("arakun: reading {} without its lock: {e}", file.display());
+            load_locked(file)
+        }
     }
-    load_locked(file)
+}
+
+/// The store's lock when it is free; `None` while another holds it.
+fn try_lock_store(file: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let lock = open_lock(file)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(lock)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+fn open_lock(file: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(file.with_extension("lock"))
 }
 
 /// `load` for a caller that already holds the store's lock.
@@ -182,11 +205,7 @@ fn load_locked(file: &Path) -> Store {
 
 /// The store's lock file, locked; released when it closes.
 fn lock_store(file: &Path) -> std::io::Result<std::fs::File> {
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(file.with_extension("lock"))?;
+    let lock = open_lock(file)?;
     lock.lock()?;
     Ok(lock)
 }
@@ -1471,6 +1490,21 @@ mod tests {
         .unwrap();
         assert_eq!(load(&file).items.len(), 1);
         assert_eq!(crate::stored::tests::kept(&file).as_deref(), Some(edited));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_read_while_the_store_is_locked_neither_waits_nor_moves_it() {
+        let dir = tmp("locked-read");
+        let file = dir.join("p.json");
+        std::fs::write(&file, "{torn").unwrap();
+        let held = lock_store(&file).unwrap();
+        assert!(load(&file).items.is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{torn");
+        // Once the lock is free, a read sets it aside.
+        drop(held);
+        assert!(load(&file).items.is_empty());
+        assert_eq!(crate::stored::tests::kept(&file).as_deref(), Some("{torn"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

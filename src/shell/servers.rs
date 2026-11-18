@@ -100,6 +100,10 @@ pub(super) struct ServersLink {
     added: Option<(String, String)>,
     /// A new environment asked of each server, until it answers.
     new_env: HashMap<String, NewEnv>,
+    /// The first prompts of sessions asked of servers, by the start's `ref`,
+    /// until the server answers: they name the branch once it started, and
+    /// go back in the composer if it did not.
+    first_prompts: HashMap<u64, FirstPrompt>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -168,13 +172,26 @@ fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -
     Some("The request did not reach the server. Try again once it is connected.".into())
 }
 
+/// The first prompt of a session a server was asked to start.
+pub(super) struct FirstPrompt {
+    pub env: PathBuf,
+    /// As the user wrote it, without the note to the agent.
+    pub text: String,
+    pub agent: crate::agent::AgentKind,
+    /// The rename note that went with it, kept for the next prompt if it did not go.
+    pub note: Option<String>,
+    /// Typed here: it goes back in the composer if the server did not start it.
+    pub desktop: bool,
+}
+
 /// A new environment a server was asked for.
 struct NewEnv {
     branch: String,
     /// Its first prompt names it, as one made here.
     auto_name: bool,
-    /// Asked from the New environment dialog, which waits on the answer.
-    dialog: bool,
+    /// The New environment dialog that asked, which waits on the answer. One
+    /// opened after it was dismissed is not told about it.
+    dialog: Option<gpui::EntityId>,
 }
 
 /// Whether the error `msg` answers a start. A server from before errors said
@@ -221,9 +238,21 @@ impl Starts {
     }
 
     /// Who the answer `server` just gave is for.
+    #[cfg(test)]
     fn answered(&mut self, server: &str) -> Option<Asker> {
+        self.answered_ref(server).map(|(by, _)| by)
+    }
+
+    /// Who the answer `server` just gave is for, and the `ref` it went with.
+    fn answered_ref(&mut self, server: &str) -> Option<(Asker, u64)> {
         let at = self.0.iter().position(|(s, _, _)| s == server)?;
-        Some(self.0.remove(at).1)
+        let (_, by, reference) = self.0.remove(at);
+        Some((by, reference))
+    }
+
+    /// Whether the start `reference` still waits on its answer.
+    fn waiting(&self, reference: u64) -> bool {
+        self.0.iter().any(|(_, _, r)| *r == reference)
     }
 
     /// The start `reference` never went out: who asked for it. No answer comes for it.
@@ -507,6 +536,7 @@ impl Shell {
             adding: HashSet::new(),
             added: None,
             new_env: HashMap::new(),
+            first_prompts: HashMap::new(),
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -613,10 +643,17 @@ impl Shell {
                     link.added = None;
                 }
                 let new = link.new_env.remove(id);
+                // Its link stops without a word: the phones waiting on a start hear it here.
+                let waiting = link.starts.dropped(id);
+                let starts = &link.starts;
+                link.first_prompts.retain(|r, _| starts.waiting(*r));
                 self.sync_remote_projects(window, cx);
                 if let Some(new) = new {
                     let why = "The server was forgotten before it made the environment.";
                     self.servers_new_env_failed(&new, why.into(), cx);
+                }
+                for client in waiting {
+                    self.phone_send(client, wire::error("that server was forgotten"));
                 }
             }
             ServersEvent::AddPlace { server, path } => {
@@ -934,7 +971,7 @@ impl Shell {
 
     /// The first prompt in a server's environment starts a session there,
     /// with the `settings` picked for it, for `by`.
-    /// False when the server cannot be reached; the prompt stays in the composer.
+    /// The `ref` it went out with, or `None` when the server cannot be reached.
     pub(super) fn servers_start(
         &mut self,
         env_path: &Path,
@@ -942,37 +979,95 @@ impl Shell {
         text: &str,
         settings: &[(String, String)],
         by: Asker,
-    ) -> bool {
-        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
-            return false;
-        };
+    ) -> Option<u64> {
+        let remote = self.find_env(env_path).and_then(|e| e.remote.clone())?;
         let Some(link) = &mut self.servers else {
-            return false;
+            return None;
         };
         let Some(conn) = link.conns.get(&remote.server) else {
             link.error = Some(format!(
                 "{} is not paired with this app any more.",
                 remote.machine
             ));
-            return false;
+            return None;
         };
         if conn.reach != Reach::Connected {
             link.error = Some(format!("{} is not connected right now.", remote.machine));
-            return false;
+            return None;
         }
         if link.retired.contains(env_path) {
             link.error = Some(format!(
                 "{} no longer offers this folder, so no new session starts in it.",
                 remote.machine
             ));
-            return false;
+            return None;
         }
         let reference = link.starts.sent(&remote.server, by);
         conn.client.send(&json!({
             "type": "start", "env": remote.place, "agent": agent.key(), "text": text,
             "settings": settings, "ref": reference,
         }));
-        true
+        Some(reference)
+    }
+
+    /// Keeps the first prompt of the start `reference` until its server answers.
+    pub(super) fn servers_first_prompt(&mut self, reference: u64, first: FirstPrompt) {
+        if let Some(link) = &mut self.servers {
+            link.first_prompts.insert(reference, first);
+        }
+    }
+
+    /// The start `reference` was answered: what it started with, if kept.
+    fn take_first_prompt(&mut self, reference: Option<u64>) -> Option<FirstPrompt> {
+        let link = self.servers.as_mut()?;
+        link.first_prompts.remove(&reference?)
+    }
+
+    /// A first prompt that did not start its session goes back in the
+    /// composer, with its note for the agent, unless something new was typed
+    /// there since. `why` says what happened; the island tells it.
+    fn servers_put_back(
+        &mut self,
+        env_path: &Path,
+        prompt: String,
+        note: Option<String>,
+        why: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let active = self.has_projects() && self.env().path == env_path;
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        let machine = env
+            .remote
+            .as_ref()
+            .map(|r| r.machine.to_string())
+            .unwrap_or_default();
+        let back = env.draft.trim().is_empty();
+        if back {
+            env.draft.set(prompt);
+            if let Some(note) = note {
+                self.rename_notes
+                    .entry(env_path.to_path_buf())
+                    .or_insert(note);
+            }
+        }
+        if back && active {
+            self.composer_changed(cx);
+        }
+        let then = if back {
+            "It is back in the composer."
+        } else {
+            "The composer already had text, so it was not put back."
+        };
+        self.notify(
+            crate::island::AlertKind::Warning,
+            &format!("The prompt did not reach {machine}"),
+            &format!("{why} {then}"),
+            None,
+            cx,
+        );
+        cx.notify();
     }
 
     /// A prompt that never left for `server`: it goes back in its
@@ -980,10 +1075,18 @@ impl Shell {
     fn servers_undelivered(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) {
         let env_path = match msg["type"].as_str() {
             Some("start") => {
+                let reference = msg["ref"].as_u64();
                 let asker = self
                     .servers
                     .as_mut()
-                    .and_then(|link| msg["ref"].as_u64().and_then(|r| link.starts.undelivered(r)));
+                    .and_then(|link| reference.and_then(|r| link.starts.undelivered(r)));
+                if let Some(first) = self.take_first_prompt(reference) {
+                    if first.desktop {
+                        let why = "The connection dropped first.";
+                        self.servers_put_back(&first.env, first.text, first.note, why, cx);
+                    }
+                    return;
+                }
                 match asker {
                     // A phone's prompt: the phone hears it did not go.
                     Some(Asker::Phone(client)) => {
@@ -1030,36 +1133,8 @@ impl Shell {
             }
             _ => return,
         };
-        let prompt = text(msg, "text");
-        let active = self.has_projects() && self.env().path == env_path;
-        let Some(env) = self.find_env_mut(&env_path) else {
-            return;
-        };
-        let machine = env
-            .remote
-            .as_ref()
-            .map(|r| r.machine.to_string())
-            .unwrap_or_default();
-        let back = env.draft.trim().is_empty();
-        if back {
-            env.draft.set(prompt);
-        }
-        if back && active {
-            self.composer_changed(cx);
-        }
-        let why = if back {
-            "The connection dropped first. It is back in the composer."
-        } else {
-            "The connection dropped first, and the composer already had text, so it was not put back."
-        };
-        self.notify(
-            crate::island::AlertKind::Warning,
-            &format!("The prompt did not reach {machine}"),
-            why,
-            None,
-            cx,
-        );
-        cx.notify();
+        let why = "The connection dropped first.";
+        self.servers_put_back(&env_path, text(msg, "text"), None, why, cx);
     }
 
     /// The environment `server`'s session `session` is in.
@@ -1130,7 +1205,11 @@ impl Shell {
                 link.added = None;
                 link.new_env.remove(&server)
             });
-            if new.as_ref().is_some_and(|n| n.dialog) && self.create_env_dialog().is_some() {
+            if let Some(asked) = new.as_ref().and_then(|n| n.dialog)
+                && self
+                    .create_env_dialog()
+                    .is_some_and(|d| d.entity_id() == asked)
+            {
                 self.close_modal(window, cx);
             }
             let named = new.and_then(|n| n.auto_name.then_some(n.branch));
@@ -1170,19 +1249,19 @@ impl Shell {
             .map(|e| e.branch.to_string())
             .collect();
         let branch = crate::env_name::random(|n| taken.iter().any(|t| t == n));
-        self.servers_new_env_on(&remote.server, &remote.place, branch, true, false, cx);
+        self.servers_new_env_on(&remote.server, &remote.place, branch, true, None, cx);
     }
 
     /// A worktree on `branch` made on `server`, of the repository its folder
     /// `from` is a checkout of. With `auto_name`, the first prompt there names
-    /// it. With `dialog`, the New environment dialog waits on the answer.
+    /// it. With `dialog`, that New environment dialog waits on the answer.
     pub(super) fn servers_new_env_on(
         &mut self,
         server: &str,
         from: &str,
         branch: String,
         auto_name: bool,
-        dialog: bool,
+        dialog: Option<gpui::EntityId>,
         cx: &mut Context<Self>,
     ) {
         let Some(link) = &mut self.servers else {
@@ -1227,8 +1306,9 @@ impl Shell {
     /// A new environment did not come: said in the dialog that asked, or by
     /// the island when the sidebar did.
     fn servers_new_env_failed(&mut self, new: &NewEnv, why: String, cx: &mut Context<Self>) {
-        if new.dialog
-            && let Some(dialog) = self.create_env_dialog()
+        if let Some(dialog) = self
+            .create_env_dialog()
+            .filter(|d| new.dialog == Some(d.entity_id()))
         {
             dialog.update(cx, |d, cx| d.failed(why, cx));
             return;
@@ -1240,6 +1320,14 @@ impl Shell {
             None,
             cx,
         );
+    }
+
+    /// Whether the server environment at `env_path` is a folder its server
+    /// no longer offers, kept for its sessions: nothing new starts from it.
+    pub(super) fn server_env_retired(&self, env_path: &Path) -> bool {
+        self.servers
+            .as_ref()
+            .is_some_and(|l| l.retired.contains(env_path))
     }
 
     /// The New environment dialog, when it is open.
@@ -1260,9 +1348,11 @@ impl Shell {
         } else {
             &row.repo
         };
-        Path::new(repo)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned().into())
+        // As the server names it (`store::repo_name`): without a bare
+        // repository's `.git`.
+        let name = Path::new(repo).file_name()?.to_string_lossy();
+        let name = name.strip_suffix(".git").unwrap_or(&name);
+        (!name.is_empty()).then(|| name.to_string().into())
     }
 
     /// The branch of a server's environment, renamed there. The app shows the
@@ -1374,6 +1464,9 @@ impl Shell {
                 } else {
                     link.starts.dropped(id)
                 };
+                // Whether those starts got there is not known: nothing is put back.
+                let starts = &link.starts;
+                link.first_prompts.retain(|r, _| starts.waiting(*r));
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for
@@ -1432,7 +1525,18 @@ impl Shell {
                     );
                 } else if msg["type"] == "started" {
                     let session = text(&msg, "id");
-                    match link.starts.answered(id) {
+                    let answered = link.starts.answered_ref(id);
+                    let first = answered
+                        .as_ref()
+                        .and_then(|(_, r)| link.first_prompts.remove(r));
+                    // The branch is named after the first prompt that started, there as here.
+                    if let Some(first) = first {
+                        self.name_after_first_prompt(&first.env, &first.text, first.agent, cx);
+                    }
+                    let Some(link) = &mut self.servers else {
+                        return;
+                    };
+                    match answered.map(|(by, _)| by) {
                         Some(Asker::Desktop) => link.starting_id = Some((id.to_string(), session)),
                         // Started from a phone: it opens there, not here.
                         Some(Asker::Phone(client)) => {
@@ -1447,7 +1551,12 @@ impl Shell {
                 } else if msg["type"] == "branch_renamed" {
                     let env_path = Remote::env_path(id, &text(&msg, "place"));
                     let (from, to) = (text(&msg, "from"), text(&msg, "to"));
-                    self.branch_renamed(&env_path, &from, to, cx);
+                    // The inbox sent after it may have told of a newer rename
+                    // already: this one is then over, its note too.
+                    let current = self.find_env(&env_path).map(|e| e.branch.to_string());
+                    if current.is_some_and(|b| b == from || b == to) {
+                        self.branch_renamed(&env_path, &from, to, cx);
+                    }
                 } else if msg["type"] == "error" && self.servers_answer_failed(id, &msg, cx) {
                     // Said to whoever asked.
                 } else {
@@ -1472,14 +1581,25 @@ impl Shell {
             msg["about"].as_str()
         };
         match about {
-            Some("start") => match link.starts.answered(id) {
-                Some(Asker::Phone(client)) => {
-                    self.phone_send(client, wire::error(&message));
-                    true
+            Some("start") => {
+                let answered = link.starts.answered_ref(id);
+                let first = self.take_first_prompt(answered.as_ref().map(|(_, r)| *r));
+                match answered.map(|(by, _)| by) {
+                    Some(Asker::Phone(client)) => {
+                        self.phone_send(client, wire::error(&message));
+                        true
+                    }
+                    Some(Asker::Gone) => true,
+                    // Also shown in the Servers tab, whose start it ends.
+                    Some(Asker::Desktop) | None => {
+                        if let Some(first) = first.filter(|f| f.desktop) {
+                            let why = format!("The server said: {message}.");
+                            self.servers_put_back(&first.env, first.text, first.note, &why, cx);
+                        }
+                        false
+                    }
                 }
-                Some(Asker::Gone) => true,
-                Some(Asker::Desktop) | None => false,
-            },
+            }
             Some("rename_branch") => {
                 let why = format!("{message}. `arakun rename <name>` in its terminal renames it.");
                 self.notify(
@@ -2064,6 +2184,11 @@ mod tests {
         assert!(!older_server_refused("no such session", &["add_place"]));
         let other = "bad message: unknown variant `rename`, expected one of `add_place`, `clone`";
         assert!(!older_server_refused(other, &["add_place", "clone"]));
+        // A server with folders but no new environments lists them as expected.
+        let no_new_env =
+            "bad message: unknown variant `new_env`, expected one of `add_place`, `clone`";
+        assert!(!older_server_refused(no_new_env, &["add_place", "clone"]));
+        assert!(older_server_refused(no_new_env, &["new_env"]));
     }
 
     #[test]

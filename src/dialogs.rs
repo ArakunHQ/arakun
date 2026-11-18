@@ -101,9 +101,7 @@ impl CreateEnvDialog {
                 if this.base_open {
                     this.base_open = false;
                     cx.notify();
-                } else if !this.busy || this.on_server().is_some() {
-                    // A server's answer can be waited for elsewhere: it is
-                    // said by the island once the dialog is gone.
+                } else if this.dismissable() {
                     cx.emit(DialogEvent::Dismissed);
                 }
             }
@@ -188,6 +186,12 @@ impl CreateEnvDialog {
         self.busy = false;
         self.error = Some(why.into());
         cx.notify();
+    }
+
+    /// Whether it can go now: not while a worktree is made here, but while a
+    /// server makes one, whose answer the island says once it is gone.
+    fn dismissable(&self) -> bool {
+        !self.busy || self.on_server().is_some()
     }
 
     /// The server picked, when it is not this computer.
@@ -325,11 +329,13 @@ fn field_box() -> gpui::Div {
 impl Render for CreateEnvDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.name(cx);
-        let existing = self.branches.local.contains(&name);
+        let server = self.on_server().map(|m| m.label.clone());
+        // A server makes a new branch, and refuses a name taken there: this
+        // computer's branches say nothing of it.
+        let existing = server.is_none() && self.branches.local.contains(&name);
         let namer = (name == self.suggested && !existing)
             .then_some(self.namer)
             .flatten();
-        let server = self.on_server().map(|m| m.label.clone());
         let folder = self.on_server().and_then(|m| m.folder.clone());
         let target = (!name.is_empty()).then(|| match (&server, &folder) {
             // The server's home, not this one's, and its repository's name there.
@@ -359,6 +365,10 @@ impl Render for CreateEnvDialog {
                             i == self.machine,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            // The request under way is for the machine it was sent to.
+                            if this.busy {
+                                return;
+                            }
                             this.machine = i;
                             this.base_open = false;
                             this.error = None;
@@ -443,7 +453,7 @@ impl Render for CreateEnvDialog {
                 "New environment",
                 None,
                 ui::close_button("create-env-close").on_click(cx.listener(|this, _, _, cx| {
-                    if !this.busy {
+                    if this.dismissable() {
                         cx.emit(DialogEvent::Dismissed)
                     }
                 })),
@@ -563,9 +573,9 @@ impl Render for CreateEnvDialog {
                             .justify_end()
                             .gap(crate::ui::sp(8.))
                             .child(
-                                ui::button("create-env-cancel", "Cancel", ButtonKind::Ghost, !self.busy)
+                                ui::button("create-env-cancel", "Cancel", ButtonKind::Ghost, self.dismissable())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        if !this.busy {
+                                        if this.dismissable() {
                                             cx.emit(DialogEvent::Dismissed)
                                         }
                                     })),

@@ -613,12 +613,21 @@ impl Shell {
                 // and says its id when it has one.
                 if found.remote.is_some() {
                     let by = super::servers::Asker::Phone(client);
-                    if !self.servers_start(&path, agent, &text, &settings, by) {
+                    let Some(reference) = self.servers_start(&path, agent, &text, &settings, by)
+                    else {
                         self.phone_send(client, wire::error("that server is not connected"));
                         return;
-                    }
-                    // The branch is named after the first prompt, as from the desktop.
-                    self.name_after_first_prompt(&path, &text, agent.kind(), cx);
+                    };
+                    // The branch is named after the first prompt once it
+                    // started, as from the desktop.
+                    let first = super::servers::FirstPrompt {
+                        env: path,
+                        text,
+                        agent: agent.kind(),
+                        note: None,
+                        desktop: false,
+                    };
+                    self.servers_first_prompt(reference, first);
                     return;
                 }
                 for (key, value) in &settings {

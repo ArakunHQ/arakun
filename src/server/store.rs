@@ -269,6 +269,15 @@ pub fn repo(dir: &Path) -> Option<(PathBuf, Option<String>)> {
     Some((root, origin_url(&config)))
 }
 
+/// What the repository at `root` (from [`repo`]) is called: its folder's
+/// name, without the `.git` a bare one or one kept apart ends in. New
+/// worktrees of it go in a folder of this name.
+pub fn repo_name(root: &Path) -> Option<String> {
+    let name = root.file_name()?.to_string_lossy();
+    let name = name.strip_suffix(".git").unwrap_or(&name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// The `url` of `[remote "origin"]` in a git config.
 fn origin_url(config: &str) -> Option<String> {
     let mut in_origin = false;

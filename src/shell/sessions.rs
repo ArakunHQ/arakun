@@ -588,19 +588,32 @@ impl Shell {
                         &[],
                         super::servers::Asker::Desktop,
                     );
-                    if !sent {
-                        let why = self
-                            .servers_refusal()
-                            .unwrap_or_else(|| "The server cannot be reached.".into());
-                        self.notify(
-                            crate::island::AlertKind::Warning,
-                            "The prompt did not go",
-                            &why,
-                            None,
-                            cx,
-                        );
+                    // Until the server answers: it names the branch once the
+                    // session started, and comes back here if it did not.
+                    if let Some(reference) = sent {
+                        let first = super::servers::FirstPrompt {
+                            env: path.clone(),
+                            text: text.clone(),
+                            agent: agent.kind(),
+                            note: note.clone(),
+                            desktop: true,
+                        };
+                        self.servers_first_prompt(reference, first);
+                        self.composer_changed(cx);
+                        cx.notify();
+                        return;
                     }
-                    sent
+                    let why = self
+                        .servers_refusal()
+                        .unwrap_or_else(|| "The server cannot be reached.".into());
+                    self.notify(
+                        crate::island::AlertKind::Warning,
+                        "The prompt did not go",
+                        &why,
+                        None,
+                        cx,
+                    );
+                    false
                 }
             };
             if sent {

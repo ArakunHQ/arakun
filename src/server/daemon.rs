@@ -2755,7 +2755,7 @@ fn plain_branch(name: &str) -> bool {
 }
 
 fn git(dir: &Path) -> std::process::Command {
-    let mut git = std::process::Command::new("git");
+    let mut git = git_command();
     git.arg("-C").arg(dir).stdin(std::process::Stdio::null());
     git
 }
@@ -2798,20 +2798,31 @@ fn worktree_in(base: &Path, from: &Path, branch: &str) -> Result<PathBuf, String
     if !plain_branch(branch) {
         return Err(format!("{branch:?} is not a branch name this server takes"));
     }
-    let project = main_checkout(from)?
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or("that repository has no name")?;
+    // Named as the inbox names its repository, so the path the app shows
+    // before is the one made, from any worktree of it.
+    let (root, _) = store::repo(from).ok_or("that folder is not in a git repository")?;
+    let project = store::repo_name(&root).ok_or("that repository has no name")?;
     let dest = base.join(project).join(branch);
     if dest.exists() {
         return Err(format!("{} already exists", dest.display()));
     }
+    // A link on the way would have git write outside the workspaces.
+    if !real_dest(&dest).starts_with(real_dest(base)) {
+        return Err(format!(
+            "{} leads outside {}",
+            dest.display(),
+            base.display()
+        ));
+    }
     // Git runs in `from` itself: a checkout whose git folder lives elsewhere
-    // has no checkout at that folder's parent.
-    let made = run_git(
+    // has no checkout at that folder's parent. A hook that never ends would
+    // hold the server's answer: it is given a time.
+    let made = run_bounded(
         git(from)
             .args(["worktree", "add", "--quiet", "-b", branch])
             .arg(&dest),
+        WORKTREE_LIMIT,
+        None,
     );
     match made {
         Ok(()) => dest.canonicalize().map_err(|e| e.to_string()),
@@ -2825,34 +2836,8 @@ fn worktree_in(base: &Path, from: &Path, branch: &str) -> Result<PathBuf, String
     }
 }
 
-/// The repository's main checkout, which names the project. Read from git,
-/// since the folder of git's files need not be in it.
-fn main_checkout(from: &Path) -> Result<PathBuf, String> {
-    let out = git(from)
-        .args(["rev-parse", "--path-format=absolute"])
-        .args(["--git-dir", "--git-common-dir", "--show-toplevel"])
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
-    let said = String::from_utf8_lossy(&out.stdout);
-    let mut lines = said.lines().filter(|_| out.status.success());
-    let (Some(own), Some(common), Some(top)) = (lines.next(), lines.next(), lines.next()) else {
-        return Err("that folder is not in a git repository".into());
-    };
-    if own == common {
-        return Ok(PathBuf::from(top));
-    }
-    // A worktree: git lists the main checkout first.
-    let out = git(from)
-        .args(["worktree", "list", "--porcelain"])
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .and_then(|l| l.strip_prefix("worktree "))
-        .map(PathBuf::from)
-        .ok_or_else(|| "that folder is not in a git repository".into())
-}
+/// How long making a worktree, its hooks included, may take.
+const WORKTREE_LIMIT: Duration = Duration::from_secs(2 * 60);
 
 /// Renames the branch at `place` from `from` to `to`, as long as `from` is
 /// still the one checked out there: one renamed by hand meanwhile stays.
@@ -2886,7 +2871,6 @@ fn clone_with(
     dest: &Path,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    use std::process::Stdio;
     if stop.load(Ordering::SeqCst) {
         return Err(SERVER_STOPPED.into());
     }
@@ -2910,10 +2894,7 @@ fn clone_with(
         .args(["clone", "--quiet", "--", &source.url])
         .arg(dest)
         // Nobody is at this machine to type a password: fail instead of waiting.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .env("GIT_TERMINAL_PROMPT", "0");
     // ssh asks for a passphrase or a new host key on the terminal, which
     // `serve` may have. A command the server set keeps its say: it may pick
     // the key that signs in. The time limit still holds for it.
@@ -2923,17 +2904,25 @@ fn clone_with(
             "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15",
         );
     }
-    // Git runs helpers (`git-remote-https`, ssh) of its own: a clone given up
-    // ends them too.
-    crate::platform::ProcessTree::prepare(&mut git);
-    let failed = |why: String| {
+    run_bounded(&mut git, CLONE_LIMIT, Some(stop)).inspect_err(|_| {
         let _ = std::fs::remove_dir_all(dest);
-        Err(why)
-    };
-    let mut child = match git.spawn() {
-        Ok(child) => child,
-        Err(e) => return failed(format!("could not run git: {e}")),
-    };
+    })
+}
+
+/// Runs git for at most `limit`; its last words when it fails. Git runs
+/// helpers (`git-remote-https`, ssh, hooks) of its own: given up, they end too,
+/// as they do once `stop` is set.
+fn run_bounded(
+    git: &mut std::process::Command,
+    limit: Duration,
+    stop: Option<&AtomicBool>,
+) -> Result<(), String> {
+    use std::process::Stdio;
+    git.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    crate::platform::ProcessTree::prepare(git);
+    let mut child = git.spawn().map_err(|e| format!("could not run git: {e}"))?;
     let tree = crate::platform::ProcessTree::adopt(&child);
     // Read as it comes, so a full pipe does not stop git.
     let mut stderr = child.stderr.take();
@@ -2949,13 +2938,13 @@ fn clone_with(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if stop.load(Ordering::SeqCst) => {
+            Ok(None) if stop.is_some_and(|s| s.load(Ordering::SeqCst)) => {
                 tree.kill();
                 let _ = child.kill();
                 let _ = child.wait();
-                return failed(SERVER_STOPPED.into());
+                return Err(SERVER_STOPPED.into());
             }
-            Ok(None) if started.elapsed() < CLONE_LIMIT => {
+            Ok(None) if started.elapsed() < limit => {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Ok(None) => {
@@ -2964,15 +2953,12 @@ fn clone_with(
                 tree.kill();
                 let _ = child.kill();
                 let _ = child.wait();
-                return failed(format!(
-                    "git clone took longer than {} minutes",
-                    CLONE_LIMIT.as_secs() / 60
-                ));
+                return Err(format!("git took longer than {} seconds", limit.as_secs()));
             }
             Err(e) => {
                 tree.kill();
                 let _ = child.kill();
-                return failed(format!("git clone: {e}"));
+                return Err(format!("git: {e}"));
             }
         }
     };
@@ -2985,8 +2971,8 @@ fn clone_with(
     let why = said
         .recv_timeout(Duration::from_secs(5))
         .unwrap_or_default();
-    failed(format!(
-        "git clone failed: {}",
+    Err(format!(
+        "git failed: {}",
         why.lines()
             .rfind(|l| !l.trim().is_empty())
             .unwrap_or("no reason given")
@@ -3233,6 +3219,34 @@ mod tests {
         let base = tmp.join("workspaces");
         let made = worktree_in(&base, &app, "fix").unwrap();
         assert_eq!(made, base.join("app/fix"));
+        // From that worktree, the next one goes beside it.
+        let next = worktree_in(&base, &made, "next").unwrap();
+        assert_eq!(next, base.join("app/next"));
+        // The app names the repository as the folders are named.
+        let named = |p: &Path| store::repo_name(&store::repo(p).unwrap().0).unwrap();
+        assert_eq!(named(&app), "app");
+        assert_eq!(named(&made), "app");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_environment_does_not_follow_a_link_out_of_the_workspaces() {
+        let tmp = scratch("escape");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let base = tmp.join("workspaces");
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("app")).unwrap();
+        let err = worktree_in(&base, &app, "fix").unwrap_err();
+        assert!(err.contains("leads outside"), "{err}");
+        assert!(!outside.join("fix").exists());
+        // A branch with a folder in its name is still one.
+        std::fs::remove_file(base.join("app")).unwrap();
+        assert!(worktree_in(&base, &app, "rv/fix").is_ok());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

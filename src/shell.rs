@@ -1382,6 +1382,9 @@ impl Shell {
         let envs = open_env.into_iter().chain(project.environments.iter());
         for e in envs {
             let Some(r) = &e.remote else { continue };
+            if self.server_env_retired(&e.path) {
+                continue;
+            }
             let known = machines
                 .iter()
                 .any(|m| m.server.as_ref().is_some_and(|(s, _)| *s == r.server));
@@ -1421,7 +1424,7 @@ impl Shell {
         let sub = cx.subscribe_in(
             &dialog,
             window,
-            move |this, _, ev: &DialogEvent, window, cx| match ev {
+            move |this, dialog, ev: &DialogEvent, window, cx| match ev {
                 DialogEvent::Created {
                     path,
                     branch,
@@ -1440,7 +1443,8 @@ impl Shell {
                     let (server, from) = (server.clone(), from.clone());
                     let (branch, auto_name) = (branch.clone(), *auto_name);
                     // The dialog stays until the server answers.
-                    this.servers_new_env_on(&server, &from, branch, auto_name, true, cx);
+                    let asked = Some(dialog.entity_id());
+                    this.servers_new_env_on(&server, &from, branch, auto_name, asked, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
@@ -1460,13 +1464,23 @@ impl Shell {
         };
         // In a server's environment, or a project only servers have: the
         // new one is made on that server.
-        if let Some(from) = project
+        let on_server = project
             .environments
             .get(project.active_env)
-            .filter(|e| e.remote.is_some())
-            .map(|_| project.active_env)
-            .or_else(|| project.is_remote().then_some(0))
-        {
+            .is_some_and(|e| e.remote.is_some())
+            || project.is_remote();
+        if on_server {
+            let from = server_source(project, |p| self.server_env_retired(p));
+            let Some(from) = from else {
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not make the environment",
+                    "The server no longer offers this folder, nor another of this project.",
+                    None,
+                    cx,
+                );
+                return;
+            };
             self.servers_new_env(pi, from, cx);
             return;
         }
@@ -3417,6 +3431,26 @@ fn chip(
         })
 }
 
+/// The server environment of `project` a new one is made from: the open one,
+/// else another on its server, else any. A folder its server no longer
+/// offers (`retired`) makes nothing.
+fn server_source(
+    project: &crate::model::Project,
+    retired: impl Fn(&std::path::Path) -> bool,
+) -> Option<usize> {
+    let envs = &project.environments;
+    let usable = |e: &crate::model::Environment| e.remote.is_some() && !retired(&e.path);
+    let open = envs.get(project.active_env).and_then(|e| e.remote.as_ref());
+    if envs.get(project.active_env).is_some_and(usable) {
+        return Some(project.active_env);
+    }
+    open.and_then(|o| {
+        envs.iter()
+            .position(|e| usable(e) && e.remote.as_ref().is_some_and(|r| r.server == o.server))
+    })
+    .or_else(|| envs.iter().position(usable))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3494,6 +3528,38 @@ mod tests {
             crowd_out(room, rail, None, sub, SideCard::Panel),
             [false, false]
         );
+    }
+
+    #[test]
+    fn a_server_environment_is_made_from_a_folder_still_offered() {
+        use crate::model::{Environment, Remote};
+        let env = |server: &str, place: &str| {
+            let mut e = Environment::new(Remote::env_path(server, place), None, false);
+            e.remote = Some(Remote {
+                server: server.into(),
+                machine: server.into(),
+                place: place.into(),
+            });
+            e
+        };
+        let mut project = crate::state::new_project(std::path::Path::new("remote:app"));
+        project.environments = vec![
+            env("s2", "/srv/b"),
+            env("s1", "/srv/old"),
+            env("s1", "/srv/app"),
+        ];
+        project.active_env = 1;
+        let old = Remote::env_path("s1", "/srv/old");
+        // The open folder, while it is offered.
+        assert_eq!(server_source(&project, |_| false), Some(1));
+        // Retired: another of its server's, not another server's.
+        assert_eq!(server_source(&project, |p| p == old), Some(2));
+        // None left there: any server's.
+        assert_eq!(
+            server_source(&project, |p| p != project.environments[0].path),
+            Some(0)
+        );
+        assert_eq!(server_source(&project, |_| true), None);
     }
 
     #[test]

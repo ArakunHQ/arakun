@@ -3241,13 +3241,18 @@ fn git_dirs(place: &Path) -> Option<(PathBuf, PathBuf)> {
         .output()
         .ok()
         .filter(|o| o.status.success())?;
-    let said = String::from_utf8_lossy(&out.stdout);
-    let mut lines = said.lines().map(|l| PathBuf::from(l.trim()));
-    let (own, common) = (lines.next()?, lines.next()?);
+    let (own, common) = two_paths(&String::from_utf8_lossy(&out.stdout))?;
     Some((
         own.canonicalize().unwrap_or(own),
         common.canonicalize().unwrap_or(common),
     ))
+}
+
+/// The two paths git printed, a line each. Only the line ends go: a folder
+/// name may end in a space.
+fn two_paths(said: &str) -> Option<(PathBuf, PathBuf)> {
+    let mut lines = said.lines().map(PathBuf::from);
+    Some((lines.next()?, lines.next()?))
 }
 
 /// `state`, as [`wire::state_message`] put it, for a session settled from
@@ -3592,6 +3597,22 @@ mod tests {
         // Detached now: no branch goes, so nothing to check.
         assert_eq!(branch_agreed(None, Some("fix")), Ok(()));
         assert_eq!(branch_agreed(Some("fix"), None), Ok(()));
+    }
+
+    #[test]
+    fn a_git_folder_keeps_the_space_its_name_ends_in() {
+        assert_eq!(
+            two_paths("/r/.git/worktrees/fix\n/r/x /.git \n"),
+            Some((
+                PathBuf::from("/r/.git/worktrees/fix"),
+                PathBuf::from("/r/x /.git ")
+            ))
+        );
+        assert_eq!(
+            two_paths("/r/.git\r\n/r/.git\r\n").unwrap().1,
+            PathBuf::from("/r/.git")
+        );
+        assert_eq!(two_paths("/r/.git\n"), None);
     }
 
     #[test]

@@ -1890,9 +1890,9 @@ impl Daemon {
                         // The folder is gone even when its branch stayed.
                         let (deleted, error) = match done {
                             Ok(branch_kept) => {
-                                this.forget_place(&path, cx);
+                                let saved = this.forget_place(&path, cx);
                                 this.sync_inbox(cx);
-                                (true, branch_kept.map(|e| format!("The branch stayed: {e}")))
+                                (true, deleted_warning(branch_kept, saved.err()))
                             }
                             Err(e) => (false, Some(e)),
                         };
@@ -2005,8 +2005,9 @@ impl Daemon {
     }
 
     /// The place is gone from disk: it leaves the list, with its sessions,
-    /// which have no folder to go on in, and so do places inside it.
-    fn forget_place(&mut self, place: &Path, cx: &mut Context<Self>) {
+    /// which have no folder to go on in, and so do places inside it. Says
+    /// whether the list was saved: if not, a restart brings the place back.
+    fn forget_place(&mut self, place: &Path, cx: &mut Context<Self>) -> std::io::Result<()> {
         let ids: Vec<String> = self
             .store
             .sessions
@@ -2036,8 +2037,10 @@ impl Daemon {
             self.store.remove_place(&p);
             self.meta.remove(&p);
         }
-        self.save_store();
         self.inbox_dirty = true;
+        self.store.save().inspect_err(|e| {
+            eprintln!("arakun server: could not save its state: {e}");
+        })
     }
 
     /// A folder a device asked for is a place now, or why it is not. The
@@ -3173,6 +3176,21 @@ fn git_dirs(place: &Path) -> Option<(PathBuf, PathBuf)> {
     ))
 }
 
+/// What a deletion that took the folder warns of: a branch that stayed, a
+/// list that could not be saved (the place comes back at the next start).
+fn deleted_warning(branch_kept: Option<String>, unsaved: Option<std::io::Error>) -> Option<String> {
+    let parts: Vec<String> = [
+        branch_kept.map(|e| format!("The branch stayed: {e}")),
+        unsaved.map(|e| {
+            format!("The server could not save its list ({e}), so the environment comes back when it restarts.")
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 /// The answer to `delete_env`: whether the folder is gone, and what went wrong.
 fn env_deleted(place: &str, deleted: bool, error: Option<&str>) -> String {
     json!({ "type": "env_deleted", "place": place, "deleted": deleted, "error": error }).to_string()
@@ -3449,6 +3467,19 @@ mod tests {
         assert!(working.is_some_and(|w| w.contains("still working")));
         let background = busy_reason([(Status::Idle, true)]);
         assert!(background.is_some_and(|w| w.contains("still working")));
+    }
+
+    #[test]
+    fn a_deletion_says_when_its_list_was_not_saved() {
+        assert_eq!(deleted_warning(None, None), None);
+        let unsaved = deleted_warning(None, Some(std::io::Error::other("disk full")));
+        assert!(unsaved.is_some_and(|w| w.contains("disk full") && w.contains("comes back")));
+        let both = deleted_warning(
+            Some("in use".into()),
+            Some(std::io::Error::other("disk full")),
+        )
+        .unwrap();
+        assert!(both.starts_with("The branch stayed: in use") && both.contains("disk full"));
     }
 
     #[test]

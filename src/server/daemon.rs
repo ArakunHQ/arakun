@@ -127,7 +127,7 @@ pub struct Daemon {
     last_inbox: String,
     last_usage: String,
     /// Folders a device's clone is going into, until it is done.
-    cloning: HashSet<PathBuf>,
+    cloning: Clones,
     /// What git says of each place, read to the side ([`PlaceMeta`]): a
     /// folder on a mount that stops answering would hold up every device.
     meta: HashMap<PathBuf, PlaceMeta>,
@@ -716,7 +716,7 @@ impl Daemon {
             flush: None,
             last_inbox: String::new(),
             last_usage: String::new(),
-            cloning: HashSet::new(),
+            cloning: Clones::default(),
             uploads: phone::Uploads::default(),
             meta: HashMap::new(),
             reading_meta: false,
@@ -1655,28 +1655,7 @@ impl Daemon {
                     self.hidden.insert(client);
                 }
             }
-            ClientMsg::AddPlace { path } => {
-                let home = crate::platform::home();
-                let cloning: Vec<PathBuf> = self.cloning.iter().cloned().collect();
-                // A folder on a mount that does not answer would hold up
-                // every device: it is looked at to the side.
-                cx.spawn(async move |this, cx| {
-                    let found = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let path = device_path(&path, &home)?;
-                            // A failed clone takes its folder away again.
-                            if being_cloned(&path, &cloning) {
-                                return Err(format!("{} is being cloned.", path.display()));
-                            }
-                            let meta = PlaceMeta::read(&path);
-                            Ok((path, meta))
-                        })
-                        .await;
-                    let _ = this.update(cx, |this, cx| this.place_added(client, found, cx));
-                })
-                .detach();
-            }
+            ClientMsg::AddPlace { path } => self.add_device_place(client, path, cx),
             ClientMsg::Clone { url } => {
                 let Some(source) = clone_source::parse_clone_source(&url) else {
                     self.transport.send(
@@ -1714,7 +1693,7 @@ impl Daemon {
                         .await;
                     // A second clone there would find the first one half done.
                     let reserved = this.update(cx, |this, _| {
-                        let new = this.cloning.insert(dest.clone());
+                        let new = this.cloning.start(&dest);
                         if !new {
                             this.transport.send(
                                 client,
@@ -1739,7 +1718,7 @@ impl Daemon {
                         })
                         .await;
                     let _ = this.update(cx, |this, cx| {
-                        this.cloning.remove(&dest);
+                        this.cloning.end(&dest);
                         this.place_added(client, done, cx);
                     });
                 })
@@ -1747,6 +1726,38 @@ impl Daemon {
             }
             ClientMsg::Ping => {}
         }
+    }
+
+    /// Adds a folder already on this machine that a device named, `typed`.
+    fn add_device_place(&mut self, client: ClientId, typed: String, cx: &mut Context<Self>) {
+        let home = crate::platform::home();
+        let (cloning, mark) = self.cloning.seen();
+        // A folder on a mount that does not answer would hold up
+        // every device: it is looked at to the side.
+        cx.spawn(async move |this, cx| {
+            let looked = typed.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let path = device_path(&looked, &home)?;
+                    // A failed clone takes its folder away again.
+                    if being_cloned(&path, &cloning) {
+                        return Err(format!("{} is being cloned.", path.display()));
+                    }
+                    let meta = PlaceMeta::read(&path);
+                    Ok((path, meta))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // A clone that started while the folder was looked at may
+                // have made it, failed and taken it away since: look again.
+                if found.is_ok() && this.cloning.started_since(mark) {
+                    return this.add_device_place(client, typed, cx);
+                }
+                this.place_added(client, found, cx);
+            });
+        })
+        .detach();
     }
 
     /// A folder a device asked for is a place now, or why it is not. The
@@ -1786,7 +1797,7 @@ impl Daemon {
     /// The folder was looked at to the side; nothing here touches it again.
     fn offer_place(&mut self, path: &Path) -> Result<(), String> {
         // A clone that started while the folder was looked at.
-        if self.cloning.contains(path) {
+        if self.cloning.has(path) {
             return Err(format!("{} is being cloned.", path.display()));
         }
         offer(&mut self.store, path)
@@ -2520,6 +2531,45 @@ impl PlaceMeta {
     }
 }
 
+/// The clones under way, by the real path ([`real_dest`]) of the folder each
+/// goes into.
+#[derive(Default)]
+struct Clones {
+    running: HashSet<PathBuf>,
+    /// How many have started, ever.
+    started: u64,
+}
+
+impl Clones {
+    /// Reserves `dest` for a clone, unless one goes there already.
+    fn start(&mut self, dest: &Path) -> bool {
+        let new = self.running.insert(dest.to_path_buf());
+        if new {
+            self.started += 1;
+        }
+        new
+    }
+
+    fn end(&mut self, dest: &Path) {
+        self.running.remove(dest);
+    }
+
+    fn has(&self, path: &Path) -> bool {
+        self.running.contains(path)
+    }
+
+    /// What an Add looks at its folder with: where clones go now, and a mark
+    /// for [`started_since`](Self::started_since).
+    fn seen(&self) -> (Vec<PathBuf>, u64) {
+        (self.running.iter().cloned().collect(), self.started)
+    }
+
+    /// Whether a clone started after `mark` was taken.
+    fn started_since(&self, mark: u64) -> bool {
+        self.started != mark
+    }
+}
+
 /// Whether `path` (canonical) is where a clone under way goes. Clones are
 /// reserved by [`real_dest`], so this is the same path however it was given.
 fn being_cloned(path: &Path, cloning: &[PathBuf]) -> bool {
@@ -3200,6 +3250,27 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         assert!(err.contains("Authentication failed"), "{err}");
         assert!(!dir.join("no").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_add_looks_again_when_a_clone_started_while_it_looked() {
+        let mut clones = Clones::default();
+        let dest = PathBuf::from("/srv/code/app");
+        // An Add takes what is being cloned: nothing yet.
+        let (cloning, mark) = clones.seen();
+        assert!(!being_cloned(&dest, &cloning));
+        // A clone starts there while the Add looks at the folder.
+        assert!(clones.start(&dest));
+        assert!(!clones.start(&dest), "one clone at a time");
+        assert!(clones.has(&dest));
+        // It fails, takes its folder away and ends, all before the Add is
+        // back: the reservation is gone, but the Add knows to look again.
+        clones.end(&dest);
+        assert!(!clones.has(&dest));
+        assert!(clones.started_since(mark));
+        // Looking again, nothing started meanwhile.
+        let (_, mark) = clones.seen();
+        assert!(!clones.started_since(mark));
     }
 
     #[test]

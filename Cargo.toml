@@ -125,8 +125,13 @@ team = []
 # meeting recorder, the borrowed Claude seat, the Canvas tab). Not in the public build.
 coderlabs = []
 
+# Thin LTO and one codegen unit let the compiler inline across crates (GPUI, the
+# terminal, the parsers), which the app's hot paths cross every frame. Release builds
+# take longer for it; the dev profile is untouched.
 [profile.release]
 debug = 1
+lto = "thin"
+codegen-units = 1
 
 # Leaves debug info in the object files instead of copying it into each binary. The
 # examples include large parts of src/, so a change relinks several binaries: on Linux

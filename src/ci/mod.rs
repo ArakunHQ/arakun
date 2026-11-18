@@ -990,6 +990,8 @@ pub struct Repo {
     /// Run id → the `updated_at` it was read at, and the read.
     details: HashMap<u64, (String, Load<Arc<Detail>>)>,
     logs: HashMap<u64, Load<Arc<Vec<LogLine>>>>,
+    /// Counts `clear_logs`, to drop the reads that started before one.
+    logs_gen: u64,
     /// Branch → its graph and when it was read.
     graphs: HashMap<String, (Instant, Load<Arc<graph::Graph>>)>,
     /// When each run's page was last read, to keep a running one moving.
@@ -1045,16 +1047,30 @@ impl Repo {
         self.logs.get(&job)
     }
 
-    /// Marks a job's log as being read: true when it should be read now. A failed
-    /// read stays until the user tries again or the run changes (`read_detail`
-    /// clears the logs): the Logs tab asks on every render, and reading again each
-    /// time calls `gh` in a loop and uses up the GitHub rate limit.
-    fn start_log(&mut self, job: u64) -> bool {
+    /// Marks a job's log as being read, and gives the read's generation for
+    /// `finish_log`; `None` when it is read, being read or failed. A failed read
+    /// stays until the user tries again or the run changes (`clear_logs`): the
+    /// Logs tab asks on every render, and reading again each time calls `gh` in a
+    /// loop and uses up the GitHub rate limit.
+    fn start_log(&mut self, job: u64) -> Option<u64> {
         if self.logs.contains_key(&job) {
-            return false;
+            return None;
         }
         self.logs.insert(job, Load::Loading);
-        true
+        Some(self.logs_gen)
+    }
+
+    /// Keeps a read's result, unless the logs were cleared since it started: an
+    /// old failure would otherwise stay until the user tries again.
+    fn finish_log(&mut self, job: u64, generation: u64, load: Load<Arc<Vec<LogLine>>>) {
+        if generation == self.logs_gen {
+            self.logs.insert(job, load);
+        }
+    }
+
+    fn clear_logs(&mut self) {
+        self.logs.clear();
+        self.logs_gen += 1;
     }
 
     /// Forgets a log that failed to read, so the next `start_log` reads it again.
@@ -1400,7 +1416,7 @@ impl Ci {
             ),
         );
         // The job logs can have grown too.
-        repo.logs.clear();
+        repo.clear_logs();
         cx.notify();
         let root = root.to_path_buf();
         cx.spawn(async move |this, cx| {
@@ -1503,9 +1519,9 @@ impl Ci {
         let Some(repo) = self.repos.get_mut(root) else {
             return;
         };
-        if !repo.start_log(job) {
+        let Some(generation) = repo.start_log(job) else {
             return;
-        }
+        };
         cx.notify();
         let root = root.to_path_buf();
         cx.spawn(async move |this, cx| {
@@ -1517,7 +1533,7 @@ impl Ci {
                         Ok(l) => Load::Ready(Arc::new(l)),
                         Err(e) => Load::Failed(e.to_string().into()),
                     };
-                    repo.logs.insert(job, load);
+                    repo.finish_log(job, generation, load);
                 }
                 cx.notify();
             });
@@ -1738,15 +1754,27 @@ mod tests {
     #[test]
     fn a_failed_log_is_read_again_only_when_asked() {
         let mut repo = Repo::default();
-        assert!(repo.start_log(7));
-        assert!(!repo.start_log(7), "it is being read");
-        repo.logs.insert(7, Load::Failed("gone".into()));
-        assert!(!repo.start_log(7), "every render would call gh again");
+        let generation = repo.start_log(7).unwrap();
+        assert!(repo.start_log(7).is_none(), "it is being read");
+        repo.finish_log(7, generation, Load::Failed("gone".into()));
+        assert!(
+            repo.start_log(7).is_none(),
+            "every render would call gh again"
+        );
         repo.forget_failed_log(7);
-        assert!(repo.start_log(7));
-        repo.logs.insert(7, Load::Ready(Arc::default()));
+        let generation = repo.start_log(7).unwrap();
+        repo.finish_log(7, generation, Load::Ready(Arc::default()));
         repo.forget_failed_log(7);
-        assert!(!repo.start_log(7), "a read log stays");
+        assert!(repo.start_log(7).is_none(), "a read log stays");
+    }
+
+    #[test]
+    fn a_log_read_from_before_a_clear_is_dropped() {
+        let mut repo = Repo::default();
+        let old = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        repo.finish_log(7, old, Load::Failed("not there yet".into()));
+        assert!(repo.start_log(7).is_some(), "the old failure doesn't stay");
     }
 
     #[test]

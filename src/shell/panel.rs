@@ -252,18 +252,25 @@ impl Shell {
                 && (query.is_empty() || s.title.to_lowercase().contains(query.trim()))
         };
         let active_id = self.active_session_id();
+        // The session in the other pane of a split shows too.
+        let other_id = env.split_other().and_then(|i| match &env.tabs[i].kind {
+            TabKind::Session { id, .. } => Some(id.clone()),
+            _ => None,
+        });
+        let on_screen = |s: &model::Session| {
+            active_id.as_ref() == Some(&s.id) || other_id.as_ref() == Some(&s.id)
+        };
         // A search looks through settled sessions too.
         let show_settled = self.show_settled || !query.trim().is_empty();
-        let listed = |s: &model::Session| {
-            matches(s) && (show_settled || !s.settled || active_id.as_ref() == Some(&s.id))
-        };
+        let listed =
+            |s: &model::Session| matches(s) && (show_settled || !s.settled || on_screen(s));
         let shown = env.sessions.iter().filter(|s| listed(s)).count();
-        // Only the ones the row would add: the open session is listed anyway,
+        // Only the ones the row would add: an open session is listed anyway,
         // and the agent filter hides the others either way.
         let settled = env
             .sessions
             .iter()
-            .filter(|s| s.settled && matches(s) && active_id.as_ref() != Some(&s.id))
+            .filter(|s| s.settled && matches(s) && !on_screen(s))
             .count();
 
         let list: AnyElement = if env.sessions.is_empty() {

@@ -131,6 +131,7 @@ impl Client {
             status: None,
             parts: wire::Parts::default(),
             timing,
+            torn: false,
         };
         let _ = std::thread::Builder::new()
             .name("arakun-server-link".into())
@@ -203,6 +204,10 @@ struct Link {
     status: Option<Status>,
     parts: wire::Parts,
     timing: Timing,
+    /// A write failed and the socket may still hold that frame: it is
+    /// dropped without a close or a flush, so what was told back as
+    /// undelivered does not go out after all.
+    torn: bool,
 }
 
 impl Link {
@@ -282,6 +287,15 @@ impl Link {
         self.forget_queued();
     }
 
+    /// Ends a connection. After a failed write the frame may still be in
+    /// the socket's buffer, and a close or flush would send it.
+    fn hang_up(&mut self, ws: &mut Socket) {
+        if !std::mem::take(&mut self.torn) {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        }
+    }
+
     /// `text` did not go out: the shell hears what it was.
     fn undelivered(&self, text: &str) {
         if let Ok(msg) = serde_json::from_str(text) {
@@ -329,8 +343,7 @@ impl Link {
         };
         self.connected(wait);
         let ended = self.talk_direct(&mut ws, &unpair);
-        let _ = ws.close(None);
-        let _ = ws.flush();
+        self.hang_up(&mut ws);
         ended
     }
 
@@ -360,6 +373,7 @@ impl Link {
                 match out {
                     Out::Say(text) => {
                         if let Err(e) = ws.send(Message::text(text.as_str())) {
+                            self.torn = true;
                             self.undelivered(&text);
                             return Ended::Retry(format!("Could not write to the server: {e}"));
                         }
@@ -408,8 +422,7 @@ impl Link {
             Err(ended) => return ended,
         };
         let ended = self.talk_relay(&mut ws, &origin, &label, wait);
-        let _ = ws.close(None);
-        let _ = ws.flush();
+        self.hang_up(&mut ws);
         ended
     }
 
@@ -562,6 +575,7 @@ impl Link {
                 if let (true, Some(seal)) = (ready, session.as_mut()) {
                     let sealed = seal.seal(text.as_bytes());
                     if let Err(ended) = send_frame(ws, DATA, &sealed) {
+                        self.torn = true;
                         if !last {
                             self.undelivered(&text);
                         }

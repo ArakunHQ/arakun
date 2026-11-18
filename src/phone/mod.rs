@@ -267,6 +267,10 @@ pub struct Settings {
     /// Changed by hand to point at a relay of one's own.
     #[serde(default = "default_relay_base")]
     pub relay_base: String,
+    /// `arakun server` on Tailscale: machines of the same tailnet user do not
+    /// pair without a link. The app's phone page never lets them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link_only: bool,
     #[serde(default)]
     pub devices: Vec<Device>,
 }
@@ -280,6 +284,7 @@ impl Default for Settings {
             vapid: None,
             identity: None,
             relay_base: default_relay_base(),
+            link_only: false,
             devices: Vec::new(),
         }
     }
@@ -711,11 +716,53 @@ struct Client {
 
 type Clients = Arc<Mutex<HashMap<ClientId, Client>>>;
 
+/// Says whether whoever connected from this address in the tailnet may pair
+/// without a code, or why not. It may take a moment: it asks Tailscale.
+pub type Admit = Arc<dyn Fn(SocketAddr) -> Result<(), String> + Send + Sync>;
+
+/// A second way in, at this machine's address in the tailnet. Only machines
+/// of the tailnet get to it, and Tailscale encrypts what they send, so it
+/// needs no HTTPS; and since the connections arrive from where they come from
+/// (not from `tailscale serve` on the loopback), Tailscale can be asked whose
+/// machine each one is. `admit` lets the right ones pair without a code.
+#[derive(Clone)]
+struct Door {
+    ip: Ipv4Addr,
+    admit: Admit,
+}
+
+/// What every connection's thread needs.
+#[derive(Clone)]
+struct Lines {
+    tx: mpsc::UnboundedSender<Incoming>,
+    clients: Clients,
+    stop: Arc<AtomicBool>,
+    access: Shared,
+    ids: Arc<AtomicU64>,
+}
+
 /// The listening server. Dropping it stops listening and closes every phone.
 pub struct Server {
     port: u16,
-    clients: Clients,
-    stop: Arc<AtomicBool>,
+    lines: Lines,
+    /// The tailnet addresses it also listens on.
+    doors: Mutex<Vec<Ipv4Addr>>,
+}
+
+fn accept(listener: TcpListener, lines: Lines, door: Option<Door>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("arakun-phone".into())
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                if lines.stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let id = lines.ids.fetch_add(1, Ordering::Relaxed);
+                let (lines, door) = (lines.clone(), door.clone());
+                std::thread::spawn(move || answer(stream, id, &lines, door.as_ref()));
+            }
+        })
+        .map(|_| ())
 }
 
 impl Server {
@@ -728,30 +775,36 @@ impl Server {
         let listener = TcpListener::bind(SocketAddr::from((bind, port)))?;
         let port = listener.local_addr()?.port();
         let (tx, rx) = mpsc::unbounded();
-        let clients: Clients = Arc::default();
-        let stop = Arc::new(AtomicBool::new(false));
-        let (c, s) = (clients.clone(), stop.clone());
-        std::thread::Builder::new()
-            .name("arakun-phone".into())
-            .spawn(move || {
-                let ids = AtomicU64::new(1);
-                for stream in listener.incoming().flatten() {
-                    if s.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let id = ids.fetch_add(1, Ordering::Relaxed);
-                    let (tx, c, s, access) = (tx.clone(), c.clone(), s.clone(), access.clone());
-                    std::thread::spawn(move || answer(stream, id, tx, c, s, &access));
-                }
-            })?;
+        let lines = Lines {
+            tx,
+            clients: Arc::default(),
+            stop: Arc::new(AtomicBool::new(false)),
+            access,
+            ids: Arc::new(AtomicU64::new(1)),
+        };
+        accept(listener, lines.clone(), None)?;
         Ok((
             Server {
                 port,
-                clients,
-                stop,
+                lines,
+                doors: Mutex::default(),
             },
             rx,
         ))
+    }
+
+    /// Listens at this machine's tailnet address too, on the same port, and
+    /// lets whoever `admit` accepts pair there without a code. Asking again
+    /// for an address it already listens on changes nothing.
+    pub fn open_tailnet(&self, ip: Ipv4Addr, admit: Admit) -> std::io::Result<()> {
+        let mut doors = self.doors.lock().unwrap();
+        if doors.contains(&ip) {
+            return Ok(());
+        }
+        let listener = TcpListener::bind(SocketAddr::from((ip, self.port)))?;
+        accept(listener, self.lines.clone(), Some(Door { ip, admit }))?;
+        doors.push(ip);
+        Ok(())
     }
 
     pub fn port(&self) -> u16 {
@@ -760,7 +813,8 @@ impl Server {
 
     /// The device behind a connected phone.
     pub fn device_of(&self, id: ClientId) -> Option<String> {
-        self.clients
+        self.lines
+            .clients
             .lock()
             .unwrap()
             .get(&id)
@@ -768,24 +822,25 @@ impl Server {
     }
 
     pub fn send(&self, id: ClientId, text: String) {
-        if let Some(c) = self.clients.lock().unwrap().get(&id) {
+        if let Some(c) = self.lines.clients.lock().unwrap().get(&id) {
             let _ = c.out.send(text);
         }
     }
 
     pub fn broadcast(&self, text: &str) {
-        for c in self.clients.lock().unwrap().values() {
+        for c in self.lines.clients.lock().unwrap().values() {
             let _ = c.out.send(text.to_string());
         }
     }
 
     pub fn client_count(&self) -> usize {
-        self.clients.lock().unwrap().len()
+        self.lines.clients.lock().unwrap().len()
     }
 
     /// The devices with a socket open right now.
     pub fn connected_devices(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
+            .lines
             .clients
             .lock()
             .unwrap()
@@ -800,7 +855,8 @@ impl Server {
     /// Closes every socket of a device, as unpairing it must.
     pub fn disconnect_device(&self, device: &str) {
         // Dropping a client's sender ends its loop, which closes the socket.
-        self.clients
+        self.lines
+            .clients
             .lock()
             .unwrap()
             .retain(|_, c| c.device != device);
@@ -809,25 +865,28 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // Dropping the senders ends every client loop; a connection wakes the acceptor.
-        self.clients.lock().unwrap().clear();
-        let _ = TcpStream::connect_timeout(
-            &SocketAddr::from((Ipv4Addr::LOCALHOST, self.port)),
-            Duration::from_millis(200),
-        );
+        self.lines.stop.store(true, Ordering::Relaxed);
+        // Dropping the senders ends every client loop; a connection wakes each acceptor.
+        self.lines.clients.lock().unwrap().clear();
+        let doors = std::mem::take(&mut *self.doors.lock().unwrap());
+        for ip in std::iter::once(Ipv4Addr::LOCALHOST).chain(doors) {
+            let _ = TcpStream::connect_timeout(
+                &SocketAddr::from((ip, self.port)),
+                Duration::from_millis(200),
+            );
+        }
     }
 }
 
 /// Serves one connection: the page over HTTP, or a phone over WebSocket.
-fn answer(
-    mut stream: TcpStream,
-    id: ClientId,
-    tx: mpsc::UnboundedSender<Incoming>,
-    clients: Clients,
-    stop: Arc<AtomicBool>,
-    access: &Shared,
-) {
+fn answer(mut stream: TcpStream, id: ClientId, lines: &Lines, door: Option<&Door>) {
+    let Lines {
+        tx,
+        clients,
+        stop,
+        access,
+        ..
+    } = lines;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_nodelay(true);
     // Peeking leaves the request for tungstenite to read when it is a WebSocket.
@@ -862,7 +921,7 @@ fn answer(
                 out: out_tx,
             },
         );
-        talk(stream, id, device.id, out_rx, &tx, &stop);
+        talk(stream, id, device.id, out_rx, tx, stop);
         clients.lock().unwrap().remove(&id);
         let _ = tx.unbounded_send(Incoming::Disconnected(id));
         return;
@@ -874,7 +933,13 @@ fn answer(
     } else {
         None
     };
-    let (reply, effect) = route(&req, body, access, now);
+    let (reply, effect) = match door.and_then(|door| {
+        let peer = stream.peer_addr().ok()?;
+        door.route(&req, body.as_deref(), peer, access, now)
+    }) {
+        Some(answered) => answered,
+        None => route(&req, body, access, now),
+    };
     let _ = respond(&mut stream, reply.status, reply.content_type, &reply.body);
     match effect {
         Effect::None => {}
@@ -889,6 +954,65 @@ fn answer(
             let _ = tx.unbounded_send(Incoming::Unpaired);
         }
     }
+}
+
+impl Door {
+    /// Answers what only the tailnet address answers: who is here, and a
+    /// pairing without a code. `None` for everything else.
+    fn route(
+        &self,
+        req: &Head,
+        body: Option<&[u8]>,
+        peer: SocketAddr,
+        access: &Shared,
+        now: u64,
+    ) -> Option<(Reply, Effect)> {
+        match (req.method.as_str(), req.path.as_str()) {
+            // What a machine looking through its tailnet for servers asks.
+            ("GET", TAILNET_HELLO) => {
+                let body = serde_json::json!({
+                    "arakun": "server", "host": host_name(), "version": env!("CARGO_PKG_VERSION"),
+                });
+                Some((Reply::json(200, &body), Effect::None))
+            }
+            ("POST", TAILNET_PAIR) => {
+                // A page in a browser on one of the user's machines must not
+                // pair in their name: a browser says where a POST comes from,
+                // and the app says nothing. A name that resolves to this
+                // address is not this address either.
+                let here = req
+                    .host
+                    .as_deref()
+                    .and_then(|h| h.split(':').next())
+                    .is_some_and(|h| h == self.ip.to_string());
+                if req.origin.is_some() || !here {
+                    return Some((Reply::error(403, "forbidden"), Effect::None));
+                }
+                let Some(ask) = body.and_then(|b| serde_json::from_slice::<TailnetPair>(b).ok())
+                else {
+                    return Some((Reply::error(400, "bad request"), Effect::None));
+                };
+                if let Err(why) = (self.admit)(peer) {
+                    return Some((Reply::error(403, &why), Effect::None));
+                }
+                let (device, token, _) = access.lock().unwrap().admit(&ask.name, now, false);
+                let body = serde_json::json!({ "token": token, "id": device.id, "name": device.name, "host": host_name() });
+                Some((Reply::json(200, &body), Effect::Paired))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Where a server says it is one, to a machine of its tailnet.
+pub const TAILNET_HELLO: &str = "/tailnet";
+/// Where a machine of the same tailnet user pairs without a code.
+pub const TAILNET_PAIR: &str = "/tailnet/pair";
+
+#[derive(Deserialize)]
+struct TailnetPair {
+    #[serde(default)]
+    name: String,
 }
 
 /// What a request gets back.
@@ -1833,6 +1957,66 @@ mod tests {
             "",
         );
         assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+    }
+
+    #[test]
+    fn the_tailnet_address_pairs_who_tailscale_vouches_for_without_a_code() {
+        let access = Access::new(Vec::new(), String::new());
+        let ip = Ipv4Addr::new(100, 64, 0, 2);
+        let own = SocketAddr::from((Ipv4Addr::new(100, 64, 0, 1), 50000));
+        let door = Door {
+            ip,
+            admit: Arc::new(move |peer| {
+                if peer == own {
+                    Ok(())
+                } else {
+                    Err("not yours".into())
+                }
+            }),
+        };
+        let ask = |head: &str, body: &str, peer: SocketAddr| {
+            let req = Head::parse(head).unwrap();
+            door.route(&req, Some(body.as_bytes()), peer, &access, 1)
+                .map(|(reply, effect)| {
+                    let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+                    (reply.status, body, matches!(effect, Effect::Paired))
+                })
+        };
+        let pair = "POST /tailnet/pair HTTP/1.1\r\nHost: 100.64.0.2:7474\r\n\r\n";
+
+        let (status, hello, _) = ask("GET /tailnet HTTP/1.1\r\n\r\n", "", own).unwrap();
+        assert_eq!((status, hello["arakun"].as_str()), (200, Some("server")));
+
+        // Another user's machine is told why, and gets nothing.
+        let stranger = SocketAddr::from((Ipv4Addr::new(100, 64, 0, 9), 50000));
+        let (status, said, paired) = ask(pair, r#"{"name":"Arakun on x"}"#, stranger).unwrap();
+        assert_eq!(
+            (status, said["error"].as_str(), paired),
+            (403, Some("not yours"), false)
+        );
+        assert!(access.lock().unwrap().devices.is_empty());
+
+        // A browser says where its POST comes from, and a name that resolves
+        // here is not this address: neither is the app.
+        for head in [
+            "POST /tailnet/pair HTTP/1.1\r\nHost: 100.64.0.2:7474\r\nOrigin: http://evil.example\r\n\r\n",
+            "POST /tailnet/pair HTTP/1.1\r\nHost: evil.example:7474\r\n\r\n",
+            "POST /tailnet/pair HTTP/1.1\r\n\r\n",
+        ] {
+            let (status, _, paired) = ask(head, "{}", own).unwrap();
+            assert_eq!((status, paired), (403, false), "{head}");
+        }
+        assert!(access.lock().unwrap().devices.is_empty());
+
+        let (status, said, paired) = ask(pair, r#"{"name":"Arakun on desk"}"#, own).unwrap();
+        assert_eq!((status, paired), (200, true));
+        let token = said["token"].as_str().unwrap();
+        let device = access.lock().unwrap().device_for(token, 2).unwrap();
+        assert_eq!(device.name, "Arakun on desk");
+
+        // The rest is answered as on every other way in.
+        assert!(ask("GET /me HTTP/1.1\r\n\r\n", "", own).is_none());
+        assert!(ask("POST /pair HTTP/1.1\r\n\r\n", "{}", own).is_none());
     }
 
     #[test]

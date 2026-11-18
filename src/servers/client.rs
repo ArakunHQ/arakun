@@ -674,11 +674,24 @@ fn fetch(
 
 /// Pairs with a server on a socket of its own: the code for a token.
 fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
-    let body = json!({ "code": invite.code, "name": name }).to_string();
-    let (status, answer) = fetch("POST", &format!("{}/pair", invite.origin), Some(body), None)
-        .map_err(|e| Ended::Refused(format!("Could not reach {}: {e}", invite.origin)))?;
+    let (path, body) = if invite.is_tailnet() {
+        (crate::phone::TAILNET_PAIR, json!({ "name": name }))
+    } else {
+        ("/pair", json!({ "code": invite.code, "name": name }))
+    };
+    let (status, answer) = fetch(
+        "POST",
+        &format!("{}{path}", invite.origin),
+        Some(body.to_string()),
+        None,
+    )
+    .map_err(|e| Ended::Refused(format!("Could not reach {}: {e}", invite.origin)))?;
     let text = |key: &str| answer[key].as_str().unwrap_or("").to_string();
     match status {
+        // Over the tailnet the server says why it will not have this machine.
+        403 if invite.is_tailnet() && !text("error").is_empty() => {
+            Err(Ended::Refused(text("error")))
+        }
         200 if !text("token").is_empty() => Ok(Saved {
             id: id.to_string(),
             name: text("host"),

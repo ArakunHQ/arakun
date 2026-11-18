@@ -22,6 +22,10 @@ use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 pub enum ServersEvent {
     /// Pair with the server this link is for.
     Pair(String),
+    /// Pair with the server at this origin in the tailnet, which takes no link.
+    PairTailnet(String),
+    /// Ask the tailnet again which of its machines run a server.
+    LookInTailnet,
     /// Give up the pairing under way.
     CancelPairing,
     /// Forget a server; it is told to forget this app too.
@@ -122,9 +126,33 @@ pub struct Open {
     pub problem: Option<String>,
 }
 
+/// A server found in the tailnet.
+#[derive(Clone, PartialEq)]
+pub struct TailnetRow {
+    pub name: String,
+    pub origin: String,
+    /// It is this user's machine, so it pairs without a link.
+    pub own: bool,
+    /// This app is paired with it already.
+    pub paired: bool,
+}
+
+/// What looking through the tailnet for servers came to.
+#[derive(Clone, PartialEq, Default)]
+pub enum Tailnet {
+    /// Not looked yet.
+    #[default]
+    Unasked,
+    Looking,
+    Found(Vec<TailnetRow>),
+    /// Tailscale is not here or not connected, in its words.
+    Away(String),
+}
+
 #[derive(Clone, PartialEq, Default)]
 pub struct ServersState {
     pub servers: Vec<ServerRow>,
+    pub tailnet: Tailnet,
     pub open: Option<Open>,
     /// A pairing is under way.
     pub pairing: bool,
@@ -564,12 +592,13 @@ impl ServersView {
                         .into_any_element(),
                 ),
             ))
+            .child(self.render_tailnet(cx))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(ui::sp(8.))
-                    .child(Self::label("On that machine, start the server and ask it for a link:"))
+                    .child(Self::label("Or with a link. On that machine, start the server and ask it for one:"))
                     .child(
                         div()
                             .flex()
@@ -630,6 +659,93 @@ impl ServersView {
                 theme::text_faint(),
                 "Through the relay, everything between this app and the server is encrypted end to end. A link that starts with http:// is not encrypted: use one only on a network you trust. Agents there use that machine's logins and run in its folders.",
             ))
+            .into_any_element()
+    }
+
+    /// The servers the tailnet holds, each with a button to pair.
+    fn render_tailnet(&self, cx: &mut Context<Self>) -> AnyElement {
+        let pairing = self.state.pairing;
+        let looking = self.state.tailnet == Tailnet::Looking;
+        let body: AnyElement = match &self.state.tailnet {
+            Tailnet::Unasked | Tailnet::Looking => {
+                Self::label("Looking through your tailnet…").into_any_element()
+            }
+            Tailnet::Away(why) => ui::text(
+                Type::Label,
+                theme::text_faint(),
+                format!("{why} With Tailscale on both machines, servers show here."),
+            )
+            .into_any_element(),
+            Tailnet::Found(rows) if rows.is_empty() => ui::text(
+                Type::Label,
+                theme::text_faint(),
+                "No machine in your tailnet answers as a server. Start one there with the command below.",
+            )
+            .into_any_element(),
+            Tailnet::Found(rows) => div()
+                .flex()
+                .flex_col()
+                .gap(ui::sp(6.))
+                .children(rows.iter().enumerate().map(|(ix, row)| {
+                    let origin = row.origin.clone();
+                    let end: AnyElement = if row.paired {
+                        ui::badge("Paired", Tone::Success).into_any_element()
+                    } else if !row.own {
+                        ui::text(
+                            Type::Caption,
+                            theme::text_faint(),
+                            "Not your machine: pair with a link",
+                        )
+                        .into_any_element()
+                    } else {
+                        ui::button(("servers-tailnet-pair", ix), "Pair", ButtonKind::Primary, !pairing)
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(ServersEvent::PairTailnet(origin.clone()))
+                            }))
+                            .into_any_element()
+                    };
+                    ui::card()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(10.))
+                        .px(ui::sp(12.))
+                        .py(ui::sp(8.))
+                        .child(icon("computer", 14.).text_color(theme::text_subtle()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(ui::text(Type::Body, theme::content(), row.name.clone()))
+                                .child(
+                                    ui::text(Type::Caption, theme::text_faint(), row.origin.clone())
+                                        .font_family(theme::FONT_MONO),
+                                ),
+                        )
+                        .child(end)
+                }))
+                .into_any_element(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(8.))
+                    .child(Self::label("In your tailnet").flex_1())
+                    .child(
+                        ui::button(
+                            "servers-tailnet-look",
+                            "Look again",
+                            ButtonKind::Ghost,
+                            !looking,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ServersEvent::LookInTailnet))),
+                    ),
+            )
+            .child(body)
             .into_any_element()
     }
 

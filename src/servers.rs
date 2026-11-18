@@ -9,6 +9,7 @@
 //! this user only: with the token in it, anyone could start agents on the server.
 
 pub mod client;
+pub mod tailnet;
 
 use std::path::PathBuf;
 
@@ -52,6 +53,23 @@ pub struct Invite {
     /// Through the relay, what the server is then shown inside the encrypted
     /// channel, so the relay cannot pair in the app's place.
     pub secret: Option<String>,
+}
+
+impl Invite {
+    /// No link at all: the server at `origin`, an address in the tailnet,
+    /// lets this machine in because Tailscale says it is the same user's.
+    pub fn tailnet(origin: String) -> Invite {
+        Invite {
+            origin,
+            code: String::new(),
+            secret: None,
+        }
+    }
+
+    /// A link always carries a code; only [`Invite::tailnet`] has none.
+    pub fn is_tailnet(&self) -> bool {
+        self.code.is_empty() && self.secret.is_none()
+    }
 }
 
 /// Reads the link `arakun server pair` prints: `https://host/?p=<code>` for a
@@ -180,6 +198,19 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn only_an_invite_made_for_the_tailnet_carries_no_code() {
+        let invite = Invite::tailnet("http://100.64.0.2:7474".into());
+        assert!(invite.is_tailnet());
+        assert!(
+            !parse_link("http://100.64.0.2:7474/?p=123456")
+                .unwrap()
+                .is_tailnet()
+        );
+        // A link whose code is empty is no link, not a tailnet invite.
+        assert!(parse_link("http://100.64.0.2:7474/?p=").is_err());
     }
 
     #[test]

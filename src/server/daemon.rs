@@ -9,6 +9,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -58,6 +59,8 @@ pub struct Options {
     pub reach: Option<Reach>,
     pub port: Option<u16>,
     pub relay: Option<String>,
+    /// Whether machines of the same tailnet user pair without a link.
+    pub tailnet_pairing: Option<bool>,
 }
 
 /// Where devices find the server, as last worked out.
@@ -112,6 +115,9 @@ pub struct Daemon {
     address: Address,
     /// What the log last said about how the server is reached.
     told: String,
+    /// On Tailscale: whether machines of the same tailnet user pair without
+    /// a link right now, in words, for `status` and the log.
+    tailnet: String,
     account: Entity<Account>,
     /// The session each device is looking at.
     watching: HashMap<ClientId, String>,
@@ -349,6 +355,9 @@ pub fn run(opts: Options) -> i32 {
     if let Some(relay) = opts.relay {
         settings.relay_base = relay;
     }
+    if let Some(on) = opts.tailnet_pairing {
+        settings.link_only = !on;
+    }
     settings.enabled = true;
     settings.save();
 
@@ -507,6 +516,31 @@ fn tailscale_address(port: u16) -> Address {
             tailscale::ADMIN_DNS_URL
         )),
     }
+}
+
+/// Whether whoever connected from `peer` over the tailnet may pair without a
+/// link: Tailscale is asked whose machine that is, and whose this one is,
+/// each time, so a change of user here is not missed. Runs processes.
+fn admit_tailnet(peer: SocketAddr) -> Result<(), String> {
+    let this = tailscale::tailnet()?.this;
+    let caller = tailscale::whois(peer).map_err(|why| {
+        eprintln!(
+            "arakun server: Tailscale does not say whose machine {} is: {why}",
+            peer.ip()
+        );
+        "Tailscale could not tell the server whose machine this is. Pair with a link.".to_string()
+    })?;
+    let admitted = tailscale::same_user(&this, &caller);
+    let who = if caller.login.is_empty() {
+        peer.ip().to_string()
+    } else {
+        format!("{} ({})", peer.ip(), caller.login)
+    };
+    match &admitted {
+        Ok(()) => eprintln!("arakun server: {who} paired over the tailnet"),
+        Err(_) => eprintln!("arakun server: turned away {who}, who asked to pair over the tailnet"),
+    }
+    admitted
 }
 
 /// Whether a file is there. `Path::exists` says "no" when it could not find
@@ -699,6 +733,7 @@ impl Daemon {
             vapid: parts.vapid,
             address: parts.address,
             told: String::new(),
+            tailnet: String::new(),
             account,
             watching: HashMap::new(),
             hidden: HashSet::new(),
@@ -726,9 +761,9 @@ impl Daemon {
         cx.spawn(async move |this, cx| {
             let mut tries = 0u32;
             loop {
-                let found = cx
+                let (found, tailnet) = cx
                     .background_executor()
-                    .spawn(async move { tailscale_address(port) })
+                    .spawn(async move { (tailscale_address(port), tailscale::tailnet()) })
                     .await;
                 let ready = matches!(found, Address::Ready(_));
                 let news = match &found {
@@ -736,7 +771,10 @@ impl Daemon {
                     Address::Pending(what) | Address::Problem(what) => what.clone(),
                 };
                 if this
-                    .update(cx, |this, _| this.set_address(found, Some(news)))
+                    .update(cx, |this, _| {
+                        this.set_address(found, Some(news));
+                        this.open_tailnet(tailnet.map(|t| t.this));
+                    })
                     .is_err()
                 {
                     break;
@@ -752,6 +790,41 @@ impl Daemon {
                 cx.background_executor().timer(wait).await;
             }
         })
+    }
+
+    /// Listens on this machine's tailnet address, where machines of the same
+    /// tailnet user pair without a link, once Tailscale says what it is.
+    fn open_tailnet(&mut self, this: Result<tailscale::Machine, String>) {
+        let Transport::Local(server) = &self.transport else {
+            return;
+        };
+        let line = if self.settings.link_only {
+            "off (`serve --tailnet-pairing on` turns it on)".to_string()
+        } else {
+            match this {
+                Err(why) => format!("not yet: {why}"),
+                Ok(this) if this.tagged => {
+                    "off: this machine is tagged in the tailnet, so no user's devices are its own"
+                        .to_string()
+                }
+                Ok(this) => match server.open_tailnet(this.ip, Arc::new(admit_tailnet)) {
+                    Ok(()) => format!(
+                        "your own devices in the tailnet pair without a link, at {}:{}",
+                        this.ip,
+                        server.port()
+                    ),
+                    Err(e) => format!(
+                        "off: could not listen on {}:{}: {e}",
+                        this.ip,
+                        server.port()
+                    ),
+                },
+            }
+        };
+        if self.tailnet != line {
+            eprintln!("arakun server: pairing over the tailnet: {line}");
+            self.tailnet = line;
+        }
     }
 
     /// Takes where the server is reached now. `news` goes to the log when it
@@ -1858,8 +1931,12 @@ impl Daemon {
             .values()
             .filter(|l| l.thread.read(cx).is_busy())
             .count();
+        let tailnet = match self.tailnet.as_str() {
+            "" => String::new(),
+            line => format!("\ntailnet   {line}"),
+        };
         format!(
-            "arakun server {} on {}\nreach     {}\ndevices   {devices} paired, {} connected\nfolders   {}\nsessions  {} ({} working, {} waiting on you, {} agents busy)",
+            "arakun server {} on {}\nreach     {}{tailnet}\ndevices   {devices} paired, {} connected\nfolders   {}\nsessions  {} ({} working, {} waiting on you, {} agents busy)",
             env!("CARGO_PKG_VERSION"),
             phone::host_name(),
             reach_line(self.reach, &self.transport, &self.address),

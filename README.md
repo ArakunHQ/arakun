@@ -679,7 +679,8 @@ arakun-server pair           # in another terminal: a link and its QR code
 
 The link is good for two minutes and pairs one device. There are two ways to use it:
 
-- **In the app.** Open the Servers tab and paste the link. The server and its sessions
+- **In the app.** Open the Servers tab and paste the link. A server on Tailscale needs
+  no link: see [Without a link, on Tailscale](#without-a-link-on-tailscale). The server and its sessions
   show there. A session opens as the app draws its own, live; you can start one in any
   folder the server offers, send follow-ups, stop a turn and answer what the agent
   asks. The app keeps what pairing gave it in `servers.json` next to its state, which
@@ -731,6 +732,28 @@ arakun-server service install   # keep it running; see Keep it running
 - **A turn that is running when the server stops** is cut off. Its session is still
   there after a restart, and the next message picks it up. Follow-ups that were
   waiting behind that turn run first, then the new message.
+
+### Without a link, on Tailscale
+
+When the server and the app are in the same tailnet, start the server with
+`arakun-server serve --reach tailscale`. The Servers tab then lists it under "In your
+tailnet", and "Pair" pairs with it. There is nothing to copy.
+
+- **Who gets in.** Only a machine of the same tailnet user as the server's. The server
+  asks Tailscale whose machine is calling, each time. A machine of another user, a
+  machine shared into the tailnet and a tagged machine are turned away, and a server
+  on a tagged machine lets nobody in this way: pair those with a link. The server's log
+  says who paired and who was turned away.
+- **How.** The server also listens on the machine's tailnet address (`100.x.y.z`, the
+  port of `--port`, 7474 unless told). Only machines of the tailnet reach that address
+  and Tailscale encrypts what they send, so the app needs no HTTPS certificates in the
+  tailnet for it. Phones in a browser still use the HTTPS address.
+- **A firewall on the server.** It must let the server take connections on that port.
+  macOS asks the first time; say yes.
+- **Finding it.** The app asks the machines that are online in the tailnet on port
+  7474, so a server on another port is not listed: pair it with a link.
+- **Turning it off.** `serve --tailnet-pairing off` leaves only `pair`; `on` brings it
+  back. `arakun-server status` says which it is.
 
 ### Keep it running
 

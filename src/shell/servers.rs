@@ -25,6 +25,7 @@ use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{
     Open, Permission, PlaceRow, Question, Reach, ServerRow, ServersEvent, ServersState, SessionRow,
+    Tailnet, TailnetRow,
 };
 
 /// One server: its connection and what it last said it holds.
@@ -91,6 +92,10 @@ pub(super) struct ServersLink {
     /// Gives a pairing up when its link has run out.
     pairing_timeout: Option<Task<()>>,
     error: Option<String>,
+    /// The servers the tailnet holds, as last looked.
+    tailnet: Tailnet,
+    /// The look under way.
+    looking: Option<Task<()>>,
     _listen: Task<()>,
 }
 
@@ -255,6 +260,7 @@ impl Shell {
             self.github_alone = false;
         }
         self.servers_connect(window, cx);
+        self.servers_look_in_tailnet(cx);
         self.sync_servers_view(cx);
         self.servers_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -295,6 +301,8 @@ impl Shell {
             pairing: None,
             pairing_timeout: None,
             error: None,
+            tailnet: Tailnet::Unasked,
+            looking: None,
             _listen: listen,
         });
     }
@@ -335,8 +343,21 @@ impl Shell {
             loading: !s.loaded,
             problem: s.broken.clone(),
         });
+        // Whether one is paired is read now: it changes without another look.
+        let tailnet = match &link.tailnet {
+            Tailnet::Found(rows) => Tailnet::Found(
+                rows.iter()
+                    .map(|row| TailnetRow {
+                        paired: link.saved.iter().any(|s| s.origin == row.origin),
+                        ..row.clone()
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        };
         let state = ServersState {
             servers,
+            tailnet,
             open,
             pairing: link.pairing.is_some(),
             error: link.error.clone(),
@@ -371,27 +392,13 @@ impl Shell {
         link.error = None;
         match ev {
             ServersEvent::Pair(text) => match servers::parse_link(text) {
-                Ok(invite) => {
-                    let id = servers::new_id();
-                    let client = Client::pair(
-                        id.clone(),
-                        invite,
-                        servers::device_name(),
-                        link.events.clone(),
-                    );
-                    // A pairing still under way is dropped, which hangs it up.
-                    if let Some(before) = link.pairing.take() {
-                        link.conns.remove(&before);
-                    }
-                    link.conns.insert(id.clone(), Conn::new(client));
-                    link.pairing = Some(id.clone());
-                    link.pairing_timeout = Some(cx.spawn(async move |this, cx| {
-                        cx.background_executor().timer(PAIRING_WAIT).await;
-                        let _ = this.update(cx, |this, cx| this.servers_pairing_ran_out(&id, cx));
-                    }));
-                }
+                Ok(invite) => self.servers_pair(invite, cx),
                 Err(e) => link.error = Some(e),
             },
+            ServersEvent::PairTailnet(origin) => {
+                self.servers_pair(servers::Invite::tailnet(origin.clone()), cx)
+            }
+            ServersEvent::LookInTailnet => self.servers_look_in_tailnet(cx),
             ServersEvent::CancelPairing => {
                 if let Some(id) = link.pairing.take() {
                     link.conns.remove(&id);
@@ -436,6 +443,71 @@ impl Shell {
             ServersEvent::SkipQuestion => self.servers_tell(json!({ "type": "skip_question" })),
         }
         self.sync_servers_view(cx);
+    }
+
+    /// Starts pairing with the server `invite` names.
+    fn servers_pair(&mut self, invite: servers::Invite, cx: &mut Context<Self>) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        let id = servers::new_id();
+        let client = Client::pair(
+            id.clone(),
+            invite,
+            servers::device_name(),
+            link.events.clone(),
+        );
+        // A pairing still under way is dropped, which hangs it up.
+        if let Some(before) = link.pairing.take() {
+            link.conns.remove(&before);
+        }
+        link.conns.insert(id.clone(), Conn::new(client));
+        link.pairing = Some(id.clone());
+        link.pairing_timeout = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(PAIRING_WAIT).await;
+            let _ = this.update(cx, |this, cx| this.servers_pairing_ran_out(&id, cx));
+        }));
+    }
+
+    /// Asks the tailnet which of its machines run a server. What was found
+    /// last stays on show until the answer is in.
+    fn servers_look_in_tailnet(&mut self, cx: &mut Context<Self>) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        if link.looking.is_some() {
+            return;
+        }
+        if !matches!(link.tailnet, Tailnet::Found(_)) {
+            link.tailnet = Tailnet::Looking;
+        }
+        link.looking = Some(cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async { servers::tailnet::find() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(link) = &mut this.servers else {
+                    return;
+                };
+                link.looking = None;
+                link.tailnet = match found {
+                    Ok(found) => Tailnet::Found(
+                        found
+                            .into_iter()
+                            .map(|f| TailnetRow {
+                                name: f.name,
+                                origin: f.origin,
+                                own: f.own,
+                                paired: false,
+                            })
+                            .collect(),
+                    ),
+                    Err(why) => Tailnet::Away(why),
+                };
+                this.sync_servers_view(cx);
+            });
+        }));
     }
 
     /// The link of a pairing still under way has run out: it is given up.

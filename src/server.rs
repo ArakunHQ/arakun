@@ -90,10 +90,14 @@ connected. Paired devices reach it as phones reach the app: through the relay
 
 Usage:
   {name} serve [--reach relay|tailscale|lan] [--port <n>] [--relay <url>]
+               [--tailnet-pairing on|off]
                              run the server until it is stopped (Ctrl+C, a
                              signal or `quit`). What it is started with is kept
                              for the next run. --port is for tailscale and lan;
-                             --relay names a relay of your own
+                             --relay names a relay of your own. On tailscale,
+                             the app on your own machines in the tailnet finds
+                             the server and pairs without a link;
+                             --tailnet-pairing off leaves only `pair`
   {name} status              how it is reached, and what it holds
   {name} quit                stop the running server
   {name} pair                print a link (and its QR code) that pairs one
@@ -188,7 +192,7 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
     match sub.as_str() {
         "help" | "-h" | "--help" => Ok(Command::Help),
         "serve" => {
-            let text = "serve [--reach relay|tailscale|lan] [--port <n>] [--relay <url>]";
+            let text = "serve [--reach relay|tailscale|lan] [--port <n>] [--relay <url>] [--tailnet-pairing on|off]";
             let mut opts = Options::default();
             while !rest.is_empty() {
                 if let Some(v) = flag(&mut rest, &["--reach"]).map_err(|()| usage(text))? {
@@ -202,6 +206,14 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
                     opts.port = Some(v.parse().map_err(|_| usage(text))?);
                 } else if let Some(v) = flag(&mut rest, &["--relay"]).map_err(|()| usage(text))? {
                     opts.relay = Some(v.to_string());
+                } else if let Some(v) =
+                    flag(&mut rest, &["--tailnet-pairing"]).map_err(|()| usage(text))?
+                {
+                    opts.tailnet_pairing = Some(match v {
+                        "on" => true,
+                        "off" => false,
+                        _ => return Err(usage(text)),
+                    });
                 } else {
                     return Err(usage(text));
                 }
@@ -524,10 +536,19 @@ mod tests {
                 reach: Some(Reach::Tailscale),
                 port: Some(7575),
                 relay: Some("https://relay.example".into()),
+                tailnet_pairing: None,
+            }))
+        );
+        assert_eq!(
+            parse(&args(&["serve", "--tailnet-pairing", "off"]), cwd),
+            Ok(Command::Serve(Options {
+                tailnet_pairing: Some(false),
+                ..Options::default()
             }))
         );
         for bad in [
             &["serve", "--reach", "wifi"][..],
+            &["serve", "--tailnet-pairing", "maybe"],
             &["serve", "--port", "many"],
             &["serve", "--port"],
             &["serve", "now"],

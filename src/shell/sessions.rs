@@ -1617,9 +1617,9 @@ impl Shell {
             }
         }
         if self.restarting {
-            let _ = std::fs::write(
-                state::resume_path(),
-                serde_json::to_vec(&resume).unwrap_or_default(),
+            let _ = crate::durable::write(
+                &state::resume_path(),
+                &serde_json::to_vec(&resume).unwrap_or_default(),
             );
         }
     }

@@ -188,11 +188,10 @@ pub fn installed(agent: AgentKind) -> bool {
 }
 
 pub fn set_namer(namer: &Namer) {
-    let path = namer_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(path, serde_json::to_vec_pretty(namer).unwrap_or_default());
+    let _ = crate::durable::write(
+        &namer_path(),
+        &serde_json::to_vec_pretty(namer).unwrap_or_default(),
+    );
 }
 
 /// The longest part of the first prompt the model reads; the start says what the task is.

@@ -43,11 +43,8 @@ pub fn set(on: bool) {
     // Kept in memory too, so the switch works for this run even when the file
     // cannot be written.
     CHOICE.store(if on { ON } else { OFF }, Ordering::Relaxed);
-    let path = choice_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, if on { "on\n" } else { "off\n" }) {
+    let text: &[u8] = if on { b"on\n" } else { b"off\n" };
+    if let Err(e) = crate::durable::write(&choice_path(), text) {
         eprintln!("arakun: the settle-after-merge setting will not last past a restart: {e}");
     }
 }

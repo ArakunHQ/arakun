@@ -186,12 +186,8 @@ pub fn set_links_in_arakun(on: bool) {
     // cannot be written.
     let choice = if on { LINKS_ARAKUN } else { LINKS_SYSTEM };
     LINKS_CHOICE.store(choice, std::sync::atomic::Ordering::Relaxed);
-    let path = links_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let text = if on { "arakun\n" } else { "system\n" };
-    if let Err(e) = std::fs::write(&path, text) {
+    let text: &[u8] = if on { b"arakun\n" } else { b"system\n" };
+    if let Err(e) = crate::durable::write(&links_path(), text) {
         eprintln!("arakun: where links open will not last past a restart: {e}");
     }
 }

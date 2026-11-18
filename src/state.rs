@@ -487,8 +487,63 @@ pub fn load() -> State {
         })
 }
 
-pub fn write(bytes: &[u8]) -> std::io::Result<()> {
-    crate::durable::write(&file(), bytes)
+/// A snapshot of the state, numbered when it was taken. Saves are written
+/// off the UI thread, on whichever thread is free, so without the number an
+/// older snapshot could be renamed over a newer one and lose the last change.
+pub struct Snapshot {
+    seq: u64,
+    bytes: Vec<u8>,
+}
+
+static SAVES: Saves = Saves::new();
+
+impl Snapshot {
+    /// Take it on the UI thread, where the state changes, so the numbers
+    /// follow the changes.
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Snapshot {
+            seq: SAVES.take(),
+            bytes,
+        }
+    }
+
+    /// Writes it unless a newer snapshot was taken since: that one is written
+    /// instead, so only the newest pending snapshot reaches the disk.
+    pub fn write(self) -> std::io::Result<()> {
+        SAVES.write(self.seq, || crate::durable::write(&file(), &self.bytes))
+    }
+}
+
+/// Puts the saves of one file in order: one at a time, newest wins.
+struct Saves {
+    taken: std::sync::atomic::AtomicU64,
+    writing: std::sync::Mutex<()>,
+}
+
+impl Saves {
+    const fn new() -> Self {
+        Saves {
+            taken: std::sync::atomic::AtomicU64::new(0),
+            writing: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn take(&self) -> u64 {
+        self.taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    fn write(&self, seq: u64, write: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
+        // Held across the write, so a newer snapshot taken meanwhile is
+        // written after this one, never before.
+        let _one_at_a_time = self
+            .writing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seq < self.taken.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        write()
+    }
 }
 
 pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> Vec<u8> {
@@ -837,6 +892,64 @@ pub fn new_project(path: &Path) -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_save_never_lands_after_a_newer_one() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        let older = saves.take();
+        let newer = saves.take();
+        // The newer save's thread gets there first.
+        let save = |seq: u64| {
+            saves.write(seq, || {
+                disk.lock().unwrap().push(seq);
+                Ok(())
+            })
+        };
+        save(newer).unwrap();
+        save(older).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [newer]);
+    }
+
+    #[test]
+    fn a_save_with_a_newer_one_pending_is_skipped() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        let save = |seq: u64| {
+            saves.write(seq, || {
+                disk.lock().unwrap().push(seq);
+                Ok(())
+            })
+        };
+        let first = saves.take();
+        save(first).unwrap();
+        let stale = saves.take();
+        let newest = saves.take();
+        save(stale).unwrap();
+        save(newest).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [first, newest]);
+    }
+
+    #[test]
+    fn saves_from_many_threads_end_with_the_newest() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(0);
+        let seqs: Vec<u64> = (0..32).map(|_| saves.take()).collect();
+        std::thread::scope(|scope| {
+            for &seq in seqs.iter().rev() {
+                let (saves, disk) = (&saves, &disk);
+                scope.spawn(move || {
+                    saves
+                        .write(seq, || {
+                            *disk.lock().unwrap() = seq;
+                            Ok(())
+                        })
+                        .unwrap()
+                });
+            }
+        });
+        assert_eq!(*disk.lock().unwrap(), *seqs.last().unwrap());
+    }
 
     #[test]
     fn continued_sessions_keep_what_they_took_over() {

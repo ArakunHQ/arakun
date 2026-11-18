@@ -102,7 +102,7 @@ pub fn set_channel(channel: Channel) -> std::io::Result<()> {
     }
     // Waits out an install that is checking the channel (see apply_locked).
     let _held = channel_lock()?;
-    std::fs::write(&path, format!("{}\n", channel.name()))?;
+    crate::durable::write(&path, format!("{}\n", channel.name()).as_bytes())?;
     // What the last check found was for the other channel.
     set_status(Status::Idle);
     Ok(())
@@ -292,11 +292,10 @@ fn load() -> Saved {
 }
 
 fn save(s: &Saved) -> std::io::Result<()> {
-    let path = saved_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_vec_pretty(s).unwrap_or_default())
+    crate::durable::write(
+        &saved_path(),
+        &serde_json::to_vec_pretty(s).unwrap_or_default(),
+    )
 }
 
 /// The release this platform's build is called by, and its file type.

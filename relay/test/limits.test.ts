@@ -2,7 +2,7 @@ import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare
 import { beforeEach, describe, expect, it } from "vitest";
 import { DATA, pcFrame, phoneFrame } from "../src/frames";
 import { FREE, disabledReason, isBlocked, planFor } from "../src/limits";
-import { claim, connectedComputer, issueTickets, openPc, openPhone, stored } from "./helpers";
+import { claim, computer, connectedComputer, issueTickets, openPc, openPhone, stored } from "./helpers";
 
 const LABEL = "k7f3q2m4xwab4c5d";
 
@@ -192,6 +192,13 @@ describe("a computer gone for ninety days", () => {
     await phone.inbox.control();
     expect((await phone.inbox.control())["type"]).toBe("pc_offline");
 
+    // An alarm that runs early leaves everything as it was.
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await stored(me.label, "pub")).toBe(me.pubB64);
+    await runInDurableObject(stub, async (_i, state) => {
+      await state.storage.put("last_seen", Date.now() - 91 * 24 * 3_600_000);
+      await state.storage.setAlarm(Date.now());
+    });
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "gone" });
     expect((await phone.inbox.closedWith()).code).toBe(4410);
@@ -214,5 +221,90 @@ describe("a computer gone for ninety days", () => {
     await runInDurableObject(stub, (_i, state) => state.storage.setAlarm(Date.now() + 1000));
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await stored(me.label, "pub")).toBe(me.pubB64);
+  });
+});
+
+describe("a socket at /pc that never claims", () => {
+  it("stores nothing, and is closed by the alarm when its time is up", async () => {
+    const me = await computer();
+    const pc = await openPc(me.label);
+    expect((await pc.inbox.control())["type"]).toBe("challenge");
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    const [keys, at] = await runInDurableObject(stub, async (_i, state) => [
+      [...(await state.storage.list()).keys()],
+      await state.storage.getAlarm(),
+    ]);
+    expect(keys).toEqual([]);
+    expect(at).not.toBeNull();
+    expect((at as number) - Date.now()).toBeLessThanOrEqual(30_000);
+
+    // Early: still waiting.
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(pc.inbox.closed).toBeNull();
+
+    await runInDurableObject(stub, async (_i, state) => {
+      for (const ws of state.getWebSockets("pc")) ws.serializeAttachment({ ...ws.deserializeAttachment(), until: 0 });
+      await state.storage.setAlarm(Date.now());
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "claim_timeout" });
+    expect((await pc.inbox.closedWith()).code).toBe(4401);
+    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("does not keep the alarm from purging a computer that left", async () => {
+    const { me, pc } = await connectedComputer();
+    pc.ws.close(1000, "shutting down");
+    await new Promise((r) => setTimeout(r, 50));
+    const stranger = await openPc(me.label);
+    await stranger.inbox.control();
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    const at = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
+    expect((at as number) - Date.now()).toBeLessThanOrEqual(30_000);
+
+    // Once the stranger is gone, the alarm is back on the purge.
+    stranger.ws.close(1000, "bye");
+    await new Promise((r) => setTimeout(r, 50));
+    const later = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
+    expect((later as number) - Date.now()).toBeGreaterThan(89 * 24 * 3_600_000);
+  });
+
+  it("clears what an older relay stored for it", async () => {
+    const me = await computer();
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    await runInDurableObject(stub, (_i, state) => state.storage.put("label", me.label));
+    // The challenge waits in the inbox for claim() below.
+    const pc = await openPc(me.label);
+    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).not.toBeNull();
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await stored(me.label, "label")).toBeUndefined();
+    // The socket still has its time to claim.
+    expect(pc.inbox.closed).toBeNull();
+    expect(await claim(pc, me)).toEqual({ type: "claimed" });
+    expect(await stored(me.label, "label")).toBe(me.label);
+  });
+});
+
+describe("a phone that switched networks", () => {
+  it("replaces its own old socket instead of hitting the phone limit", async () => {
+    await plans({ phones: 2 });
+    const { me, pc } = await connectedComputer();
+    await issueTickets(pc, me.label, "t", "u");
+    const old = await openPhone(me.label, "d=dev-1&t=t");
+    expect(await old.inbox.control()).toEqual({ type: "open", channel: 1 });
+    await pc.inbox.control();
+    const other = await openPhone(me.label, "d=dev-2&t=u");
+    expect(await other.inbox.control()).toEqual({ type: "open", channel: 2 });
+    await pc.inbox.control();
+
+    const again = await openPhone(me.label, "d=dev-1&t=t");
+    expect(await old.inbox.control()).toEqual({ type: "bye", reason: "replaced" });
+    expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "replaced" });
+    expect(await again.inbox.control()).toEqual({ type: "open", channel: 3 });
+    expect(other.inbox.closed).toBeNull();
+
+    // Another device still finds the limit.
+    const third = await openPhone(me.label, "d=dev-3&t=u");
+    expect(await third.inbox.control()).toEqual({ type: "limit", which: "phones" });
   });
 });

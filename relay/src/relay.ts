@@ -5,7 +5,9 @@
 //
 // The computer connects at /pc and is challenged: it signs the nonce and its
 // label with the key its label derives from. Only then is it the computer, and
-// only one computer is: a later claim replaces the earlier socket. Phones
+// only one computer is: a later claim replaces the earlier socket. Anyone can
+// open /pc, so nothing is stored before the claim, and a socket that does not
+// claim in time is closed by the alarm. Phones
 // connect at /ws with a ticket the computer issued (we keep the hashes it sent)
 // or, while pairing, with the one-use code the computer opened. Each admitted
 // phone gets a channel number; the computer hears `open` and `close` for it,
@@ -37,7 +39,7 @@ import { planFor, type Plan } from "./limits";
 
 /// What a socket is, kept on it across hibernation.
 type Tag =
-  | { role: "pc"; nonce: string; claimed: boolean }
+  | { role: "pc"; nonce: string; claimed: boolean; label: string; until: number }
   | { role: "phone"; channel: number; device: string | null; ticketHash: string | null };
 
 /// What the computer opened for the next phone to pair with.
@@ -53,6 +55,9 @@ const CLOSE_FORBIDDEN = 4403;
 const CLOSE_REPLACED = 4409;
 const CLOSE_GONE = 4410;
 const CLOSE_LIMIT = 4429;
+
+/// How long the computer has to answer the challenge.
+const CLAIM_TIMEOUT_MS = 30_000;
 
 /// The longest a pairing code may stay open, whatever the computer asks.
 const PAIR_TTL_MAX_S = 300;
@@ -94,12 +99,12 @@ export class Relay extends DurableObject<Env> {
 
   /// The computer's socket: challenged at once, trusted only after it answers.
   private async acceptPc(label: string): Promise<Response> {
-    if ((await this.ctx.storage.get<string>("label")) !== label) await this.ctx.storage.put("label", label);
     const [client, server] = pair();
     const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
     this.ctx.acceptWebSocket(server, ["pc"]);
-    server.serializeAttachment({ role: "pc", nonce, claimed: false } satisfies Tag);
+    server.serializeAttachment({ role: "pc", nonce, claimed: false, label, until: Date.now() + CLAIM_TIMEOUT_MS } satisfies Tag);
     server.send(pcControl({ type: "challenge", nonce }));
+    await this.schedule();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -130,7 +135,7 @@ export class Relay extends DurableObject<Env> {
   private async claim(ws: WebSocket, tag: Tag & { role: "pc" }, msg: Record<string, unknown>): Promise<void> {
     const pub = typeof msg["pub"] === "string" ? fromB64url(msg["pub"]) : null;
     const sig = typeof msg["sig"] === "string" ? fromB64url(msg["sig"]) : null;
-    const label = (await this.ctx.storage.get<string>("label")) ?? "";
+    const label = tag.label;
     if (!pub || !sig || pub.length !== 65 || sig.length !== 64) return this.bye(ws, "bad claim", CLOSE_BAD_FRAME);
     if ((await labelOf(pub)) !== label) return this.bye(ws, "wrong_label", CLOSE_FORBIDDEN);
     const nonce = fromB64url(tag.nonce) ?? new Uint8Array();
@@ -140,12 +145,12 @@ export class Relay extends DurableObject<Env> {
     if (known && known !== pubB64) return this.bye(ws, "key_mismatch", CLOSE_FORBIDDEN);
     const now = Date.now();
     if (!known) await this.ctx.storage.put({ pub: pubB64, claimed_at: now });
-    await this.ctx.storage.put("last_seen", now);
-    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.put({ label, last_seen: now });
     for (const other of this.ctx.getWebSockets("pc")) {
       if (other !== ws) this.bye(other, "replaced", CLOSE_REPLACED);
     }
     ws.serializeAttachment({ ...tag, claimed: true } satisfies Tag);
+    await this.schedule();
     ws.send(pcControl({ type: "claimed" }));
     // The computer knows nothing of the phones already waiting: introduce them.
     for (const phone of this.phones()) {
@@ -220,6 +225,7 @@ export class Relay extends DurableObject<Env> {
   private async acceptPhone(query: URLSearchParams): Promise<Response> {
     const [client, server] = pair();
     const admitted = await this.admit(query);
+    if (typeof admitted !== "string" && (await this.full()) === "phones") this.replaceStale(admitted);
     const full = typeof admitted === "string" ? null : await this.full();
     if (typeof admitted === "string" || full) {
       this.ctx.acceptWebSocket(server, ["phone"]);
@@ -237,6 +243,18 @@ export class Relay extends DurableObject<Env> {
       server.send(phoneControl({ type: "pc_offline", since: (await this.ctx.storage.get<number>("last_seen")) ?? null }));
     }
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /// A phone that moves between networks reconnects before the relay sees its
+  /// old socket die. When that would leave it out, its oldest socket with the
+  /// same device and ticket makes room.
+  private replaceStale(admitted: { device: string | null; ticketHash: string | null }): void {
+    if (!admitted.device || !admitted.ticketHash) return;
+    const same = this.phones()
+      .map((ws) => ({ ws, tag: ws.deserializeAttachment() as Tag & { role: "phone" } }))
+      .filter(({ tag }) => tag.device === admitted.device && tag.ticketHash === admitted.ticketHash)
+      .sort((a, b) => a.tag.channel - b.tag.channel);
+    if (same[0]) this.bye(same[0].ws, "replaced", CLOSE_REPLACED);
   }
 
   /// Why one more phone cannot come in right now, if it cannot.
@@ -319,16 +337,52 @@ export class Relay extends DurableObject<Env> {
     this.bye(phone, `limit:${which}`, CLOSE_LIMIT, { type: "limit", which });
   }
 
+  /// Closes computer sockets that did not claim in time, and empties the
+  /// object when it is due. Alarms can run early or twice, so both are checked
+  /// against the clock.
+  override async alarm(): Promise<void> {
+    const now = Date.now();
+    for (const ws of this.unclaimed()) {
+      if ((ws.deserializeAttachment() as Tag & { role: "pc" }).until <= now) this.bye(ws, "claim_timeout", CLOSE_UNAUTHORIZED);
+    }
+    if (!this.computer()) {
+      const due = await this.purgeAt();
+      if (due !== null && due <= now) await this.purge();
+    }
+    await this.schedule();
+  }
+
   /// Ninety days without the computer: forget everything about it. Phones
   /// still waiting are sent away; the computer rebuilds the state on its next
   /// claim.
-  override async alarm(): Promise<void> {
-    if (this.computer()) return;
+  private async purge(): Promise<void> {
     for (const phone of this.phones()) this.bye(phone, "gone", CLOSE_GONE);
     const label = await this.ctx.storage.get<string>("label");
     if (label) await this.env.CONFIG.delete(`labels/${label}`).catch(() => undefined);
     await this.ctx.storage.deleteAll();
     this.today = null;
+  }
+
+  /// When the object empties itself, while no computer is connected: ninety
+  /// days after it was last seen. State without a claim behind it (a label an
+  /// older relay stored for anyone who opened /pc) goes at once.
+  private async purgeAt(): Promise<number | null> {
+    const seen = await this.ctx.storage.get<number>("last_seen");
+    if (seen !== undefined) return seen + PURGE_AFTER_MS;
+    return (await this.ctx.storage.list({ limit: 1 })).size > 0 ? 0 : null;
+  }
+
+  /// Sets the alarm for the next thing it has to do, so every object that
+  /// keeps a socket or state wakes again: a claim running out, or the purge.
+  private async schedule(): Promise<void> {
+    const times = this.unclaimed().map((ws) => (ws.deserializeAttachment() as Tag & { role: "pc" }).until);
+    if (!this.computer()) {
+      const due = await this.purgeAt();
+      if (due !== null) times.push(due);
+    }
+    if (times.length === 0) return this.ctx.storage.deleteAlarm();
+    const at = Math.max(Math.min(...times), Date.now());
+    if ((await this.ctx.storage.getAlarm()) !== at) await this.ctx.storage.setAlarm(at);
   }
 
   // ---- sockets -------------------------------------------------------------
@@ -348,16 +402,7 @@ export class Relay extends DurableObject<Env> {
     replyClose(ws, code, reason);
     const tag = ws.deserializeAttachment() as Tag | null;
     if (!tag) return;
-    if (tag.role === "pc") {
-      if (!tag.claimed) return;
-      const now = Date.now();
-      await this.ctx.storage.put("last_seen", now);
-      // Replaced means another socket of the computer is already there.
-      if (reason === "replaced") return;
-      await this.ctx.storage.setAlarm(now + PURGE_AFTER_MS);
-      for (const phone of this.phones()) this.tell(phone, { type: "pc_offline", since: now });
-      return;
-    }
+    if (tag.role === "pc") return this.pcGone(tag, reason);
     if (tag.channel) this.channelClosed(tag.channel, reason);
   }
 
@@ -367,6 +412,20 @@ export class Relay extends DurableObject<Env> {
     } catch {
       // already gone
     }
+    const tag = ws.deserializeAttachment() as Tag | null;
+    if (tag?.role === "pc") await this.pcGone(tag, "error");
+  }
+
+  /// A computer socket closed. When it was the computer, the phones hear it
+  /// is offline; either way the alarm moves to what is next.
+  private async pcGone(tag: Tag & { role: "pc" }, reason: string): Promise<void> {
+    // Replaced means another socket of the computer is already there.
+    if (tag.claimed && reason !== "replaced") {
+      const now = Date.now();
+      await this.ctx.storage.put("last_seen", now);
+      for (const phone of this.phones()) this.tell(phone, { type: "pc_offline", since: now });
+    }
+    await this.schedule();
   }
 
   /// The computer's socket, once it has claimed. A socket we closed as replaced
@@ -377,6 +436,14 @@ export class Relay extends DurableObject<Env> {
       if (tag?.role === "pc" && tag.claimed && ws.readyState === WebSocket.READY_STATE_OPEN) return ws;
     }
     return null;
+  }
+
+  /// Computer sockets still open that have not claimed yet.
+  private unclaimed(): WebSocket[] {
+    return this.ctx.getWebSockets("pc").filter((ws) => {
+      const tag = ws.deserializeAttachment() as Tag | null;
+      return tag?.role === "pc" && !tag.claimed && ws.readyState === WebSocket.READY_STATE_OPEN;
+    });
   }
 
   /// Tells the computer a phone's channel is open; false when no computer is
@@ -397,11 +464,12 @@ export class Relay extends DurableObject<Env> {
     return this.ctx.getWebSockets(`ch:${channel}`)[0] ?? null;
   }
 
-  /// The phones admitted, on a channel.
+  /// The phones admitted, on a channel. One we are closing is listed until
+  /// its close completes, and no longer counts.
   private phones(): WebSocket[] {
     return this.ctx.getWebSockets("phone").filter((ws) => {
       const tag = ws.deserializeAttachment() as Tag | null;
-      return tag?.role === "phone" && tag.channel > 0;
+      return tag?.role === "phone" && tag.channel > 0 && ws.readyState === WebSocket.READY_STATE_OPEN;
     });
   }
 

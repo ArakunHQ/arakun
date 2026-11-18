@@ -280,6 +280,8 @@ pub struct PullRequestDialog {
     draft: bool,
     /// Some(on the web) while it is being opened.
     busy: Option<bool>,
+    /// The base whose commits are being read for the description.
+    planning: Option<String>,
     error: Option<SharedString>,
     _subs: Vec<Subscription>,
 }
@@ -350,6 +352,7 @@ impl PullRequestDialog {
             base,
             draft: true,
             busy: None,
+            planning: None,
             error: None,
             _subs: subs,
         }
@@ -361,15 +364,22 @@ impl PullRequestDialog {
     fn refresh_plan(&mut self, cx: &mut Context<Self>) {
         let base = self.base.read(cx).text().trim().to_string();
         if base.is_empty() || base == self.plan.base {
+            self.planning = None;
             return;
         }
+        self.planning = Some(base.clone());
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
         cx.spawn(async move |this, cx| {
             let onto = base.clone();
             let plan = cx
-                .background_spawn(async move { git::pr_plan_onto(&dir, &remote, &branch, &onto) })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    git::pr_plan_onto(&dir, &remote, &branch, &onto)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if this.planning.as_deref() == Some(base.as_str()) {
+                    this.planning = None;
+                }
                 // Typed on since, or no such branch: the plan shown stays.
                 let (Some(plan), true) = (plan, this.base.read(cx).text().trim() == base) else {
                     return;
@@ -393,17 +403,31 @@ impl PullRequestDialog {
         if self.busy.is_some() || (!web && (title.is_empty() || base.is_empty())) {
             return;
         }
+        // The description shown is still the one of the base before: it
+        // would go out with this pull request.
+        if !web && self.planning.is_some() {
+            self.error = Some(
+                format!("Still reading the commits for {base}. Try again in a moment.").into(),
+            );
+            cx.notify();
+            return;
+        }
         self.busy = Some(web);
         self.error = None;
         cx.notify();
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
-        let (needs_push, draft, body) = (self.needs_push, self.draft, self.plan.body.clone());
+        let (draft, body) = (self.draft, self.plan.body.clone());
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     // Read again: a commit made while the dialog was open
                     // would stay behind, and gh pushes nothing with --head.
-                    let needs_push = git::needs_push(&dir).unwrap_or(needs_push);
+                    // Not knowing is no reason to skip the push.
+                    let Some(needs_push) = git::needs_push(&dir) else {
+                        anyhow::bail!(
+                            "Couldn't read the branch's state, so nothing was pushed or created."
+                        );
+                    };
                     if needs_push {
                         // A read-only Arakun sends nothing, the branch included.
                         if crate::github::read_only() {
@@ -418,7 +442,7 @@ impl PullRequestDialog {
                     } else {
                         git::pr_create(&dir, &head, &base, &title, &body, draft).map(Some)
                     }
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;

@@ -154,7 +154,9 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (dir, r, b) = (path.clone(), remote.clone(), branch.clone());
             let plan = cx
-                .background_spawn(async move { git::pr_plan(&dir, &r, &b) })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    git::pr_plan(&dir, &r, &b)
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.show_pull_request(path, remote, branch, needs_push, plan, window, cx)

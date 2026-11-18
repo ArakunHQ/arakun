@@ -985,6 +985,9 @@ pub enum CiEvent {
     },
 }
 
+/// A job's log as the Logs tab reads it.
+type JobLog = Load<Arc<Vec<LogLine>>>;
+
 #[derive(Default)]
 pub struct Repo {
     pub runs: Vec<Run>,
@@ -995,7 +998,10 @@ pub struct Repo {
     last_fetch: Option<Instant>,
     /// Run id → the `updated_at` it was read at, and the read.
     details: HashMap<u64, (String, Load<Arc<Detail>>)>,
-    logs: HashMap<u64, Load<Arc<Vec<LogLine>>>>,
+    /// Job id → the log, and the `logs_gen` of the read it came from.
+    logs: HashMap<u64, (u64, JobLog)>,
+    /// Counts `clear_logs`, to tell the reads that started before one.
+    logs_gen: u64,
     /// Branch → its graph and when it was read.
     graphs: HashMap<String, (Instant, Load<Arc<graph::Graph>>)>,
     /// When each run's page was last read, to keep a running one moving.
@@ -1048,7 +1054,49 @@ impl Repo {
     }
 
     pub fn log(&self, job: u64) -> Option<&Load<Arc<Vec<LogLine>>>> {
-        self.logs.get(&job)
+        self.logs.get(&job).map(|(_, l)| l)
+    }
+
+    /// Marks a job's log as being read, and gives the read's generation for
+    /// `finish_log`; `None` when it is read, being read or failed. A failed read
+    /// stays until the user tries again or the run's page is read again
+    /// (`clear_logs`): the Logs tab asks on every render, and reading again each
+    /// time calls `gh` in a loop and uses up the GitHub rate limit.
+    fn start_log(&mut self, job: u64) -> Option<u64> {
+        if self.logs.contains_key(&job) {
+            return None;
+        }
+        self.logs.insert(job, (self.logs_gen, Load::Loading));
+        Some(self.logs_gen)
+    }
+
+    /// Keeps a read's result. A read that started before the logs were last
+    /// cleared keeps only a log, and only over a read in progress or an older
+    /// one: a running run's page is read again every few seconds, so a slow read
+    /// must still count, but its failure is old and would otherwise stay until
+    /// the user tries again.
+    fn finish_log(&mut self, job: u64, generation: u64, load: JobLog) {
+        let keep = generation == self.logs_gen
+            || matches!(load, Load::Ready(_))
+                && self
+                    .logs
+                    .get(&job)
+                    .is_none_or(|(at, held)| matches!(held, Load::Loading) || *at < generation);
+        if keep {
+            self.logs.insert(job, (generation, load));
+        }
+    }
+
+    fn clear_logs(&mut self) {
+        self.logs.clear();
+        self.logs_gen += 1;
+    }
+
+    /// Forgets a log that failed to read, so the next `start_log` reads it again.
+    fn forget_failed_log(&mut self, job: u64) {
+        if matches!(self.logs.get(&job), Some((_, Load::Failed(_)))) {
+            self.logs.remove(&job);
+        }
     }
 
     pub fn graph(&self, branch: &str) -> Option<&Load<Arc<graph::Graph>>> {
@@ -1387,7 +1435,7 @@ impl Ci {
             ),
         );
         // The job logs can have grown too.
-        repo.logs.clear();
+        repo.clear_logs();
         cx.notify();
         let root = root.to_path_buf();
         cx.spawn(async move |this, cx| {
@@ -1492,10 +1540,9 @@ impl Ci {
         let Some(repo) = self.repos.get_mut(root) else {
             return;
         };
-        if matches!(repo.logs.get(&job), Some(Load::Ready(_) | Load::Loading)) {
+        let Some(generation) = repo.start_log(job) else {
             return;
-        }
-        repo.logs.insert(job, Load::Loading);
+        };
         cx.notify();
         let root = root.to_path_buf();
         cx.spawn(async move |this, cx| {
@@ -1509,12 +1556,20 @@ impl Ci {
                         Ok(l) => Load::Ready(Arc::new(l)),
                         Err(e) => Load::Failed(e.to_string().into()),
                     };
-                    repo.logs.insert(job, load);
+                    repo.finish_log(job, generation, load);
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Reads a job's log again after it failed to read.
+    pub fn retry_log(&mut self, root: &Path, job: u64, cx: &mut Context<Self>) {
+        if let Some(repo) = self.repos.get_mut(root) {
+            repo.forget_failed_log(job);
+        }
+        self.load_log(root, job, cx);
     }
 
     /// `gh run rerun --failed` (every job when none failed), or `gh run cancel`.
@@ -1717,6 +1772,61 @@ mod tests {
         assert!(repo.branch_state("other").is_none());
         assert_eq!(repo.previous(&repo.runs[0]).map(|r| r.id), Some(2));
         assert!(repo.previous(&repo.runs[3]).is_none());
+    }
+
+    #[test]
+    fn a_failed_log_is_read_again_only_when_asked() {
+        let mut repo = Repo::default();
+        let generation = repo.start_log(7).unwrap();
+        assert!(repo.start_log(7).is_none(), "it is being read");
+        repo.finish_log(7, generation, Load::Failed("gone".into()));
+        assert!(
+            repo.start_log(7).is_none(),
+            "every render would call gh again"
+        );
+        repo.forget_failed_log(7);
+        let generation = repo.start_log(7).unwrap();
+        repo.finish_log(7, generation, Load::Ready(Arc::default()));
+        repo.forget_failed_log(7);
+        assert!(repo.start_log(7).is_none(), "a read log stays");
+    }
+
+    #[test]
+    fn a_log_read_from_before_a_clear_keeps_only_a_log() {
+        let mut repo = Repo::default();
+        let old = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        repo.finish_log(7, old, Load::Failed("not there yet".into()));
+        assert!(repo.start_log(7).is_some(), "the old failure doesn't stay");
+
+        // A slow read that ends after the page of a running run is read again.
+        let mut repo = Repo::default();
+        let old = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        repo.finish_log(7, old, Load::Ready(Arc::default()));
+        assert!(matches!(repo.log(7), Some(Load::Ready(_))));
+
+        // It doesn't replace the newer read's log.
+        let newer = Arc::new(Vec::new());
+        let mut repo = Repo::default();
+        let old = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        let generation = repo.start_log(7).unwrap();
+        repo.finish_log(7, generation, Load::Ready(newer.clone()));
+        repo.finish_log(7, old, Load::Ready(Arc::default()));
+        assert!(matches!(repo.log(7), Some(Load::Ready(l)) if Arc::ptr_eq(l, &newer)));
+
+        // Two clears with two reads on their way: the newer read's log wins,
+        // whichever ends first.
+        let newer = Arc::new(Vec::new());
+        let mut repo = Repo::default();
+        let a = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        let b = repo.start_log(7).unwrap();
+        repo.clear_logs();
+        repo.finish_log(7, a, Load::Ready(Arc::default()));
+        repo.finish_log(7, b, Load::Ready(newer.clone()));
+        assert!(matches!(repo.log(7), Some(Load::Ready(l)) if Arc::ptr_eq(l, &newer)));
     }
 
     #[test]

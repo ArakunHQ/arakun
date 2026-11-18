@@ -352,6 +352,13 @@ pub struct EnvState {
     pub caret: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<PathBuf>,
+    /// Unix seconds it was last on screen; 0 in files from before it was kept.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub used: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -635,6 +642,7 @@ pub fn snapshot_with(
                         is_main: e.is_checkout,
                         placeholder: e.placeholder.clone(),
                         follow_branch: e.follow_branch,
+                        used: e.used,
                         agent: Some(e.agent.key().into()),
                         settings: e
                             .draft_settings
@@ -764,6 +772,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                     let mut env = Environment::new(e.path, None, e.is_main);
                     env.placeholder = e.placeholder;
                     env.follow_branch = e.follow_branch;
+                    // Unknown in an older file: counted from now, so nothing
+                    // looks old the first time the cleanup runs.
+                    if e.used > 0 {
+                        env.used = e.used;
+                    }
                     env.set_branch(e.branch);
                     if let Some(agent) = e.agent {
                         env.agent = Agent::from_key(&agent);

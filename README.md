@@ -104,6 +104,14 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.
   On by default; turn off Settings › Branches › Settle threads after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
+- **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
+  or 30 days; also asked during the setup) removes an environment's worktree once its
+  pull request is merged or closed and it sat unused that long. Arakun checks every hour,
+  asking `git` and `gh`. An environment stays when it has uncommitted or untracked files,
+  a commit that isn't in the pull request, an agent working or waiting for you, or is
+  the one on screen. The branch is kept. Off by default; the first time an environment
+  would have gone, a notice suggests it once. Saved in `~/.local/share/arakun/env-cleanup`
+  (`%LOCALAPPDATA%\arakun\` on Windows).
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on
   Windows), numbered so agents and scripts can read them with `arakun logs`.
 - **Built-in browser.** Browser tabs based on CEF (Chromium Embedded Framework), behind

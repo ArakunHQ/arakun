@@ -70,6 +70,8 @@ pub(super) enum Open {
     Task(String),
     Cloudflare,
     Usage,
+    /// Settings, at Branches.
+    BranchSettings,
     /// A link a teammate's find points at, in the system browser.
     #[cfg(feature = "team")]
     Url(String),
@@ -95,6 +97,7 @@ impl Open {
             Open::Task(id) => format!("open:task:{id}").into(),
             Open::Cloudflare => "open:cloudflare".into(),
             Open::Usage => "open:usage".into(),
+            Open::BranchSettings => "open:settings:branches".into(),
             #[cfg(feature = "team")]
             Open::Url(url) => format!("open:url:{url}").into(),
             #[cfg(feature = "team")]
@@ -128,6 +131,7 @@ impl Open {
             ("task", id) if !id.is_empty() => Some(Open::Task(id.to_string())),
             ("cloudflare", "") => Some(Open::Cloudflare),
             ("usage", "") => Some(Open::Usage),
+            ("settings", "branches") => Some(Open::BranchSettings),
             #[cfg(feature = "team")]
             ("team", "") => Some(Open::Team),
             #[cfg(feature = "team")]
@@ -281,6 +285,10 @@ impl Shell {
             }
             Some(Open::Cloudflare) => self.open_cloudflare_tab(window, cx),
             Some(Open::Usage) => self.open_usage_tab(window, cx),
+            Some(Open::BranchSettings) => {
+                crate::settings_view::start_on_branches();
+                self.open_settings(window, cx);
+            }
             #[cfg(feature = "team")]
             Some(Open::Url(url)) => cx.open_url(&url),
             #[cfg(feature = "team")]
@@ -738,6 +746,7 @@ mod tests {
             Open::Task("tsk_9".into()),
             Open::Cloudflare,
             Open::Usage,
+            Open::BranchSettings,
             #[cfg(feature = "team")]
             Open::Url("https://example.com/x/y?v=2".into()),
             #[cfg(feature = "team")]

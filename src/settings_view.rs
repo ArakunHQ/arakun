@@ -202,7 +202,8 @@ impl Section {
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
-                 settle resolve threads review notifications pull request"
+                 settle resolve threads review notifications pull request cleanup clean up \
+                 remove delete old stale environments"
             }
             Section::Voice => {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
@@ -258,10 +259,16 @@ static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
 
 /// Makes the next dialog open on General, where the link setting is.
 pub fn start_on_general() {
-    let ix = Section::ALL
-        .iter()
-        .position(|s| *s == Section::General)
-        .unwrap_or(0);
+    start_on(Section::General);
+}
+
+/// Makes the next dialog open on Branches, where the environment cleanup is.
+pub fn start_on_branches() {
+    start_on(Section::Branches);
+}
+
+fn start_on(section: Section) {
+    let ix = Section::ALL.iter().position(|s| *s == section).unwrap_or(0);
     LAST_SECTION.store(ix as u8, Ordering::Relaxed);
 }
 
@@ -997,6 +1004,28 @@ impl SettingsDialog {
                             .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
                     );
                 }
+                let current_days = crate::cleanup::days().unwrap_or(0);
+                let mut days = ui::segmented();
+                for (i, d) in crate::cleanup::CHOICES.into_iter().enumerate() {
+                    days = days.child(
+                        ui::segment(
+                            ("set-env-cleanup", i),
+                            None,
+                            crate::cleanup::label(d),
+                            d == current_days,
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::cleanup::set_days(d);
+                            cx.notify();
+                        })),
+                    );
+                }
+                let cleanup = stacked_row(
+                    "Remove old environments",
+                    "Removes an environment's worktree once its pull request is merged or closed and nobody opened it for this long. Environments with uncommitted files, commits that aren't in the pull request or a working agent stay. The branch is kept.",
+                    days.into_any_element(),
+                )
+                .into_any_element();
                 let settle = row(
                     "Settle threads after merge",
                     "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you. The GitHub tab marks read the notifications of every merged pull request.",
@@ -1036,7 +1065,7 @@ impl SettingsDialog {
                         .into_any_element(),
                     ],
                 ),
-                    titled("After merge", vec![settle]),
+                    titled("After merge", vec![settle, cleanup]),
                 ])
             }
             Section::Privacy => {

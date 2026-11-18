@@ -24,6 +24,7 @@ mod automations;
 mod branches;
 mod browsers;
 mod checks;
+mod cleanup;
 mod cloudflare;
 mod commands;
 mod composer;
@@ -344,6 +345,7 @@ pub struct Shell {
     _scheduler: Option<Task<()>>,
     /// Merges seen and settled (`settle`).
     settle: settle::Watch,
+    cleanup: cleanup::Watch,
     /// Set while the divider between split panes is being dragged.
     split_drag: bool,
     /// Bounds of the split panes as last painted, for dragging the divider.
@@ -863,6 +865,7 @@ impl Shell {
             _control: None,
             _scheduler: None,
             settle: settle::Watch::default(),
+            cleanup: cleanup::Watch::default(),
             split_drag: false,
             split_bounds: Rc::default(),
             browsers_dirty: false,
@@ -2010,25 +2013,43 @@ impl Shell {
                 DialogEvent::Deleted(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
-                    if let Some(project) = this.projects.get_mut(pi) {
-                        project.environments.retain(|e| e.path != path);
-                        project.active_env = project
-                            .active_env
-                            .min(project.environments.len().saturating_sub(1));
-                    }
-                    // Its tabs, and the pages of its browser tabs, go with it.
-                    this.settle_strip(cx);
-                    this.unfloat_github(cx);
-                    this.servers_tab_closed(cx);
-                    this.save(cx);
-                    this.refresh_project(pi, cx);
-                    this.ensure_terminal(window, cx);
-                    cx.notify();
+                    this.env_removed(&path, window, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
         );
         self.modal = Some((Modal::DeleteEnv(dialog), sub));
+        cx.notify();
+    }
+
+    /// Forgets the environment at `path` once its worktree is gone: closes its
+    /// browser tabs and moves the project to the environment left.
+    fn env_removed(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pi) = self
+            .projects
+            .iter()
+            .position(|p| p.env_index(path).is_some())
+        else {
+            return;
+        };
+        let project = &mut self.projects[pi];
+        let active = project
+            .environments
+            .get(project.active_env)
+            .map(|e| e.path.clone());
+        project.environments.retain(|e| e.path != path);
+        // The environment on screen stays on screen when another one goes.
+        project.active_env = active
+            .and_then(|a| project.env_index(&a))
+            .unwrap_or(project.active_env)
+            .min(project.environments.len().saturating_sub(1));
+        // Its tabs, and the pages of its browser tabs, go with it.
+        self.settle_strip(cx);
+        self.unfloat_github(cx);
+        self.servers_tab_closed(cx);
+        self.save(cx);
+        self.refresh_project(pi, cx);
+        self.ensure_terminal(window, cx);
         cx.notify();
     }
 
@@ -2482,6 +2503,9 @@ impl Shell {
         // The strip goes to the tab this environment showed last.
         self.show_env_tab(false);
         self.note_active_tab(cx);
+        self.mark_visible_used();
+        // The project or environment switched to may show its GitHub tab.
+        self.unfloat_github(cx);
         self.refresh_visible(cx);
         self.ensure_active_live(window, cx);
         self.ensure_terminal(window, cx);

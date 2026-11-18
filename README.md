@@ -852,7 +852,9 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `←` / `→` move between agents (on the Reasoning row they step the level), `Enter`
   picks and `Esc` closes. In a running session, only a model pick, a click on an
   agent row or Continue with hands the session to another agent; reasoning and fast
-  mode for another agent are kept for when you switch to it
+  mode for another agent are kept for when you switch to it. Picking a different
+  model for that agent clears the reasoning level kept for it, so pick the level
+  again after the model
 - In the GitHub tab: `J` / `K` (or `↓` / `↑`) next and previous item, `A` approve,
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `D` all or
   fewer details, `O` open on GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an

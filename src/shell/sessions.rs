@@ -706,8 +706,11 @@ impl Shell {
                     .retain(|(d, _)| *d != s && !(s == Setting::Model && *d == Setting::Effort));
                 claude_settings.push((s, v));
             }
-            claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         }
+        // The model first, also with nothing picked: an agent checks a
+        // reasoning level against the model it is on, and would skip one that
+        // only the remembered model has.
+        claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         thread.update(cx, |t, cx| {
             // Queued until the session exists, then sent with `initialize_session`
             // (Droid) or one by one before the first prompt (Claude, OpenCode, Codex).
@@ -1135,6 +1138,9 @@ impl Shell {
         value: &str,
         cx: &mut Context<Self>,
     ) {
+        // The value the menu shows: an agent still on its default model has
+        // none in its draft.
+        let shown = self.draft_choices(env_path, agent, s).map(|(v, _)| v);
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
@@ -1145,7 +1151,7 @@ impl Shell {
             model::Agent::Codex => &mut env.codex_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
-        let changed = !draft.iter().any(|(d, v)| *d == s && v == value);
+        let changed = value_changed(shown.as_deref(), draft, s, value);
         draft.retain(|(d, _)| *d != s);
         draft.push((s, value.to_string()));
         // A model change may drop the effort picked for the old model. Picking
@@ -1888,6 +1894,20 @@ pub(super) fn codex_draft(env: &model::Environment) -> Vec<(Setting, String)> {
     draft
 }
 
+/// Whether picking `value` for `s` changes it: against the value the menu
+/// shows (`shown`), or against the draft when the agent has no choices yet.
+fn value_changed(
+    shown: Option<&str>,
+    draft: &[(Setting, String)],
+    s: Setting,
+    value: &str,
+) -> bool {
+    match shown {
+        Some(shown) => shown != value,
+        None => !draft.iter().any(|(d, v)| *d == s && v == value),
+    }
+}
+
 /// The OpenCode settings an environment's next session starts with: its own
 /// picks, and where it has no model of its own, the model last picked anywhere.
 /// The model goes first: the reasoning levels on offer depend on it.
@@ -1919,5 +1939,18 @@ mod tests {
         let (a, b) = (notification_tag(""), notification_tag(""));
         assert!(a.starts_with("open:none:"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn picking_the_model_an_agent_is_on_by_default_changes_nothing() {
+        let m = Setting::Model;
+        // On its default model the draft has no model, only the level picked.
+        let draft = vec![(Setting::Effort, "medium".to_string())];
+        assert!(!value_changed(Some("sonnet"), &draft, m, "sonnet"));
+        assert!(value_changed(Some("sonnet"), &draft, m, "opus"));
+        // No choices loaded yet: the draft decides.
+        assert!(value_changed(None, &draft, m, "sonnet"));
+        let draft = vec![(m, "opus".to_string())];
+        assert!(!value_changed(None, &draft, m, "opus"));
     }
 }

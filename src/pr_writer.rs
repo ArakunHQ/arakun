@@ -67,11 +67,14 @@ fn model(agent: AgentKind) -> &'static str {
 
 /// Reads what the model writes from out of the clone. Blocks.
 pub fn read(dir: &std::path::Path, remote: &str, base: &str, branch: &str) -> Input {
-    let (stat, diff, cut) = crate::git::pr_diff(dir, remote, base, DIFF_CHARS);
+    // The branch the dialog names, not whatever is checked out by now, and
+    // one commit for every read, also when the branch moves meanwhile.
+    let tip = crate::git::branch_tip(dir, branch).unwrap_or_else(|| "HEAD".into());
+    let (stat, diff, cut) = crate::git::pr_diff(dir, remote, base, &tip, DIFF_CHARS);
     Input {
         branch: branch.to_string(),
         base: base.to_string(),
-        commits: crate::git::pr_commits(dir, remote, base),
+        commits: crate::git::pr_commits_at(dir, remote, base, &tip),
         stat,
         diff,
         cut,

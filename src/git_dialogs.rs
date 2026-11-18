@@ -402,6 +402,10 @@ impl PullRequestDialog {
                     let title = plan.title.clone();
                     this.title.update(cx, |input, cx| input.set_text(title, cx));
                 }
+                // What was written for the other base, by an agent too, goes
+                // with it.
+                this.body = plan.body.clone();
+                this.written_by = None;
                 this.plan = plan;
                 cx.notify();
             });
@@ -501,6 +505,12 @@ impl PullRequestDialog {
     }
 }
 
+/// Whether what an agent wrote for the base `asked` still fits the base in
+/// the dialog `now`.
+fn written_for(asked: &str, now: &str) -> bool {
+    asked.trim() == now.trim()
+}
+
 impl PullRequestDialog {
     /// "Write with AI": the agent reads the branch's commits and diff and
     /// writes the title and the description. Nothing goes to GitHub; the
@@ -515,6 +525,8 @@ impl PullRequestDialog {
         self.error = None;
         cx.notify();
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
+        // Both fields stay editable while it writes.
+        let (for_base, old_title) = (base.clone(), self.title.read(cx).text().to_string());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -529,9 +541,28 @@ impl PullRequestDialog {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.writing = false;
+                let now = (
+                    this.base.read(cx).text().trim().to_string(),
+                    this.title.read(cx).text().to_string(),
+                );
                 match result {
+                    // It describes the commits of another base than the one
+                    // the pull request would now merge into.
+                    Ok(_) if !written_for(&for_base, &now.0) => {
+                        this.error = Some(
+                            format!(
+                                "\"Merge into\" changed while {} wrote. Write it again for {}.",
+                                agent.label(),
+                                now.0
+                            )
+                            .into(),
+                        )
+                    }
                     Ok((title, body)) => {
-                        this.title.update(cx, |i, cx| i.set_text(title, cx));
+                        // A title typed meanwhile is the user's.
+                        if now.1 == old_title {
+                            this.title.update(cx, |i, cx| i.set_text(title, cx));
+                        }
                         this.body = body;
                         this.written_by = Some(agent);
                     }

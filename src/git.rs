@@ -1154,7 +1154,20 @@ pub fn default_base(dir: &Path, remote: &str) -> String {
 
 /// The commits on HEAD that `remote/base` doesn't have, oldest first.
 pub fn pr_commits(dir: &Path, remote: &str, base: &str) -> Vec<PrCommit> {
-    let range = format!("{remote}/{base}..HEAD");
+    pr_commits_at(dir, remote, base, "HEAD")
+}
+
+/// The commit `branch` is on now, to read everything about it from one
+/// commit; None when there is no such branch.
+pub fn branch_tip(dir: &Path, branch: &str) -> Option<String> {
+    let name = format!("refs/heads/{branch}^{{commit}}");
+    let out = read(dir, &["rev-parse", "--verify", "--quiet", &name]).ok()?;
+    Some(out.trim().to_string()).filter(|id| !id.is_empty())
+}
+
+/// [`pr_commits`] of the commit `tip` instead of HEAD.
+pub fn pr_commits_at(dir: &Path, remote: &str, base: &str, tip: &str) -> Vec<PrCommit> {
+    let range = format!("{remote}/{base}..{tip}");
     let Ok(out) = read(
         dir,
         &["log", "--reverse", "--format=%s%x1f%b%x1e", &range, "--"],
@@ -1210,11 +1223,17 @@ pub fn pr_template(dir: &Path, remote: &str) -> Option<String> {
         .filter(|text| !text.trim().is_empty())
 }
 
-/// What HEAD changes since it left `remote/base`, for a model to read: the
+/// What `tip` changes since it left `remote/base`, for a model to read: the
 /// list of files with their counts, and the diff cut at `cap` characters (at
 /// the end of a line), with whether it was cut. Empty when git can't tell.
-pub fn pr_diff(dir: &Path, remote: &str, base: &str, cap: usize) -> (String, String, bool) {
-    let range = format!("{remote}/{base}...HEAD");
+pub fn pr_diff(
+    dir: &Path,
+    remote: &str,
+    base: &str,
+    tip: &str,
+    cap: usize,
+) -> (String, String, bool) {
+    let range = format!("{remote}/{base}...{tip}");
     let stat = read(dir, &["diff", "--stat=200", "--no-color", &range, "--"]).unwrap_or_default();
     let diff = read(dir, &["diff", "--no-color", &range, "--"]).unwrap_or_default();
     let (diff, cut) = cut_at_line(diff, cap);
@@ -1651,6 +1670,36 @@ test: cover the resize\u{1f}\u{1e}\n";
             assert!(super::has_commits(&plain).is_err());
         }
         let _ = std::fs::remove_dir_all(&plain);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pull_request_is_read_from_its_branch_not_from_head() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            let ok = super::unpinned(&mut Command::new("git"))
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success(), "{args:?}");
+        };
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&["switch", "-q", "taken"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "feat: on taken"]);
+        // Another branch is checked out while the dialog for `taken` is open.
+        git(&["switch", "-q", "env/brave-otter"]);
+        let tip = super::branch_tip(&dir, "taken").unwrap();
+        let subjects: Vec<String> = super::pr_commits_at(&dir, "origin", "main", &tip)
+            .into_iter()
+            .map(|c| c.subject)
+            .collect();
+        assert_eq!(subjects, ["feat: on taken"]);
+        assert!(super::pr_commits(&dir, "origin", "main").is_empty());
+        assert_eq!(super::branch_tip(&dir, "no-such-branch"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

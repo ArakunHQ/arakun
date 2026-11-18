@@ -173,9 +173,10 @@ pub fn load(file: &Path) -> Store {
     match try_lock_store(file) {
         Ok(Some(_lock)) => load_locked(file),
         Ok(None) => crate::stored::peek(file).unwrap_or_default(),
+        // Without the lock (say, no write access to it), only read.
         Err(e) => {
             eprintln!("arakun: reading {} without its lock: {e}", file.display());
-            load_locked(file)
+            crate::stored::peek(file).unwrap_or_default()
         }
     }
 }
@@ -1501,10 +1502,22 @@ mod tests {
         let held = lock_store(&file).unwrap();
         assert!(load(&file).items.is_empty());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{torn");
-        // Once the lock is free, a read sets it aside.
+        // A read under a free lock sets it aside: see the hand-edited test.
+        // Not checked here, since a child another test forks can hold the
+        // lock's file a moment after `held` is dropped.
         drop(held);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_read_that_cannot_lock_does_not_move_the_store() {
+        let dir = tmp("no-lock");
+        let file = dir.join("p.json");
+        std::fs::write(&file, "{torn").unwrap();
+        // A directory where the lock file goes: it can't be opened.
+        std::fs::create_dir(file.with_extension("lock")).unwrap();
         assert!(load(&file).items.is_empty());
-        assert_eq!(crate::stored::tests::kept(&file).as_deref(), Some("{torn"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{torn");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

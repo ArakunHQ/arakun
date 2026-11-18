@@ -1383,6 +1383,17 @@ impl Shell {
                 );
                 return;
             }
+            // The threads stay as they were; settling them again is safe.
+            Some("settle_env") => {
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not settle the threads",
+                    "The connection dropped first. Try again once the server is connected.",
+                    None,
+                    cx,
+                );
+                return;
+            }
             // An answer that did not go can be given again.
             Some("answer" | "skip_question") => {
                 let session = text(msg, "session");

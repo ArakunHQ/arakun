@@ -122,6 +122,9 @@ pub struct Daemon {
     hidden: HashSet<ClientId>,
     /// Places whose worktree is being deleted: nothing new starts in them.
     deleting: HashSet<PathBuf>,
+    /// How many worktrees were deleted so far: a folder looked at before one
+    /// went may be that one.
+    deletions: u64,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
@@ -715,6 +718,7 @@ impl Daemon {
             watching: HashMap::new(),
             hidden: HashSet::new(),
             deleting: HashSet::new(),
+            deletions: 0,
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
             inbox_dirty: false,
@@ -1910,6 +1914,7 @@ impl Daemon {
     fn add_device_place(&mut self, client: ClientId, typed: String, cx: &mut Context<Self>) {
         let home = crate::platform::home();
         let (cloning, mark) = self.cloning.seen();
+        let deletions = self.deletions;
         // A folder on a mount that does not answer would hold up
         // every device: it is looked at to the side.
         cx.spawn(async move |this, cx| {
@@ -1928,8 +1933,10 @@ impl Daemon {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // A clone that started while the folder was looked at may
-                // have made it, failed and taken it away since: look again.
-                if found.is_ok() && this.cloning.started_since(mark) {
+                // have made it, failed and taken it away since, and a
+                // deletion that ended may have taken it: look again.
+                let moved = this.cloning.started_since(mark) || this.deletions != deletions;
+                if found.is_ok() && moved {
                     return this.add_device_place(client, typed, cx);
                 }
                 this.place_added(client, found, AgentKind::Claude, cx);
@@ -2066,6 +2073,7 @@ impl Daemon {
             self.meta.remove(&p);
         }
         self.inbox_dirty = true;
+        self.deletions += 1;
         self.store.save().inspect_err(|e| {
             eprintln!("arakun server: could not save its state: {e}");
         })
@@ -2133,6 +2141,9 @@ impl Daemon {
         // A clone that started while the folder was looked at.
         if self.cloning.has(path) {
             return Err(format!("{} is being cloned.", path.display()));
+        }
+        if self.being_deleted(path) {
+            return Err(format!("{} is being deleted.", path.display()));
         }
         offer(&mut self.store, path, agent)
     }

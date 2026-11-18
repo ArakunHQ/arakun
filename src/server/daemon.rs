@@ -952,7 +952,18 @@ impl Daemon {
             live.dirty = true;
         }
         self.note_for_devices(id, ev, cx);
-        self.notify(id, thread, ev, cx);
+        // Nobody sits at a server to press Install: a missing Claude or Codex
+        // adapter is installed with npm at once, and once. Decided before the
+        // notice: the error that asks for the install is about to be fixed,
+        // so it is not pushed to the devices or kept as the session's status.
+        // An install that fails reports its own error the usual way.
+        let installing = matches!(
+            ev,
+            ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission
+        ) && self.install_missing_adapter(id, thread, cx);
+        if !installing {
+            self.notify(id, thread, ev, cx);
+        }
         match ev {
             ThreadEvent::TitleChanged => {
                 let title = thread.read(cx).title();
@@ -964,22 +975,8 @@ impl Daemon {
                     self.save_store();
                 }
             }
+            ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission if installing => {}
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
-                // Nobody sits at a server to press Install: a missing Claude
-                // or Codex adapter is installed with npm at once, and once.
-                let needed = thread.read(cx).needs_install().cloned();
-                if let Some(needed) = needed
-                    && self.installed_for.insert(id.to_string())
-                {
-                    eprintln!(
-                        "{}: {id} needs {}; installing it into {}",
-                        super::name(),
-                        needed.package,
-                        needed.dir.display()
-                    );
-                    let thread = thread.clone();
-                    cx.defer(move |cx| thread.update(cx, |t, cx| t.install_adapter(cx)));
-                }
                 let status = status_of(thread.read(cx));
                 if let Some(s) = self.store.session_mut(id)
                     && s.status != status
@@ -2245,6 +2242,31 @@ impl Daemon {
     /// finishes a turn, wants an answer or fails, except to the ones looking
     /// at that very session. Subscriptions the push service says are gone are
     /// forgotten.
+    /// Starts the install of the adapter a session is missing, the first time
+    /// it asks. True when it started one.
+    fn install_missing_adapter(
+        &mut self,
+        id: &str,
+        thread: &Entity<Thread>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(needed) = thread.read(cx).needs_install().cloned() else {
+            return false;
+        };
+        if !self.installed_for.insert(id.to_string()) {
+            return false;
+        }
+        eprintln!(
+            "{}: {id} needs {}; installing it into {}",
+            super::name(),
+            needed.package,
+            needed.dir.display()
+        );
+        let thread = thread.clone();
+        cx.defer(move |cx| thread.update(cx, |t, cx| t.install_adapter(cx)));
+        true
+    }
+
     fn notify(
         &mut self,
         id: &str,

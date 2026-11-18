@@ -1954,10 +1954,12 @@ impl Daemon {
             .map(|s| s.id.clone())
             .collect();
         for id in ids {
-            let asks = match self.live.get(&id).map(|l| l.thread.read(cx)) {
+            let stop = match self.live.get(&id).map(|l| l.thread.read(cx)) {
                 Some(t) if t.in_background() => continue,
                 Some(t) => match status_of(t) {
                     Status::Working => continue,
+                    // A failure watched or not: what it shows goes with it.
+                    Status::Error => true,
                     // A page in the background is not someone looking.
                     Status::NeedsInput if self.seen(&id) => continue,
                     status => status == Status::NeedsInput,
@@ -1967,9 +1969,9 @@ impl Daemon {
             if let Some(s) = self.store.session_mut(&id) {
                 s.status = Status::Idle;
             }
-            // Its agent waits on an answer nobody will give: it stops now,
-            // as the app's does.
-            if asks {
+            // Its agent waits on an answer nobody will give, or failed: it
+            // stops now, as the app's does, and a device sees it idle.
+            if stop {
                 self.retire(&id, cx);
             } else {
                 self.retire_if_unwatched(&id, cx);
@@ -3101,7 +3103,9 @@ const WORKTREE_LIMIT: Duration = Duration::from_secs(2 * 60);
 /// as the app deletes an environment. Ok once the folder is gone; it carries
 /// why the branch stayed, when it did.
 fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>, String> {
-    let (root, _) = store::repo(place).ok_or("that folder is not in a git repository")?;
+    // Git runs in the repository's own files, which hold every worktree's
+    // and are wherever they are kept (`--separate-git-dir`, bare).
+    let (_, root) = git_dirs(place).ok_or("that folder is not in a git repository")?;
     run_git(
         git(&root)
             .args(["worktree", "remove", "--force"])
@@ -3114,11 +3118,34 @@ fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>,
 /// Whether the folder at `place` is a worktree a device may delete: never a
 /// repository's main folder, which holds the history of every worktree.
 fn removable(place: &Path) -> Result<(), String> {
-    match store::repo(place) {
-        Some((root, _)) if root != place => Ok(()),
+    match git_dirs(place) {
+        // Only a worktree has git files of its own beside the shared ones.
+        Some((own, common)) if own != common => Ok(()),
         Some(_) => Err("a repository's main folder is not deleted".into()),
         None => Err("that folder is not a git worktree".into()),
     }
+}
+
+/// The git files of the checkout at `place` and the repository's shared
+/// ones, as git resolves them.
+fn git_dirs(place: &Path) -> Option<(PathBuf, PathBuf)> {
+    let out = git(place)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let mut lines = said.lines().map(|l| PathBuf::from(l.trim()));
+    let (own, common) = (lines.next()?, lines.next()?);
+    Some((
+        own.canonicalize().unwrap_or(own),
+        common.canonicalize().unwrap_or(common),
+    ))
 }
 
 /// The answer to `delete_env`: whether the folder is gone, and what went wrong.
@@ -3592,6 +3619,24 @@ mod tests {
         // A branch with a folder in its name is still one.
         std::fs::remove_file(base.join("app")).unwrap();
         assert!(worktree_in(&base, &app, "rv/fix").is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_worktree_of_a_checkout_with_its_git_folder_elsewhere_can_be_deleted() {
+        let tmp = scratch("separate-delete");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        std::fs::create_dir(tmp.join("git-files")).unwrap();
+        let elsewhere = tmp.join("git-files").join("app.git");
+        repo_at(&app, &["--separate-git-dir", &elsewhere.to_string_lossy()]);
+        let made = worktree_in(&tmp.join("workspaces"), &app, "fix").unwrap();
+        // The main folder holds the history: it stays.
+        assert!(removable(&app).is_err());
+        assert_eq!(removable(&made), Ok(()));
+        assert_eq!(remove_worktree(&made, Some("fix")), Ok(None));
+        assert!(!made.exists());
+        assert!(app.exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -130,9 +130,9 @@ pub(super) struct ServersLink {
     /// until the server answers: they name the branch once it started, and
     /// go back in the composer if it did not. Each with its server.
     first_prompts: HashMap<u64, (String, FirstPrompt)>,
-    /// The environment a server was asked to delete, by server and place,
-    /// until it answers. The Delete environment dialog waits on it.
-    deleting: Option<(String, String)>,
+    /// The environments servers were asked to delete, by server and place,
+    /// until each answers, with the Delete environment dialog that waits on it.
+    deleting: Vec<(String, String, gpui::EntityId)>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -703,7 +703,7 @@ impl Shell {
             added: None,
             new_env: HashMap::new(),
             first_prompts: HashMap::new(),
-            deleting: None,
+            deleting: Vec::new(),
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -807,7 +807,7 @@ impl Shell {
                 if link.added.as_ref().is_some_and(|(s, _)| s == id) {
                     link.added = None;
                 }
-                link.deleting.take_if(|(server, _)| server == id);
+                link.deleting.retain(|(server, _, _)| server != id);
                 let new = link.new_env.remove(id);
                 // Its link stops without a word: the phones waiting on a start hear it here.
                 let waiting = link.starts.dropped(id);
@@ -1703,23 +1703,26 @@ impl Shell {
             window,
             move |this, dialog, ev: &DialogEvent, window, cx| match ev {
                 DialogEvent::DeleteOnServer { delete_branch } => {
-                    if let Err(why) = this.servers_ask_delete(&remote, *delete_branch) {
+                    let asked = dialog.entity_id();
+                    if let Err(why) = this.servers_ask_delete(&remote, *delete_branch, asked) {
                         dialog.update(cx, |d, cx| d.failed(why, cx));
                     }
                 }
-                _ => {
-                    if let Some(link) = &mut this.servers {
-                        link.deleting = None;
-                    }
-                    this.close_modal(window, cx);
-                }
+                // A deletion under way still ends as the server says, with
+                // the island telling why when it fails.
+                _ => this.close_modal(window, cx),
             },
         );
         self.modal = Some((Modal::DeleteEnv(dialog), sub));
         cx.notify();
     }
 
-    fn servers_ask_delete(&mut self, remote: &Remote, delete_branch: bool) -> Result<(), String> {
+    fn servers_ask_delete(
+        &mut self,
+        remote: &Remote,
+        delete_branch: bool,
+        dialog: gpui::EntityId,
+    ) -> Result<(), String> {
         let Some(client) = self.connected(&remote.server) else {
             return Err(format!("{} is not connected right now.", remote.machine));
         };
@@ -1727,7 +1730,8 @@ impl Shell {
             "type": "delete_env", "place": remote.place, "delete_branch": delete_branch,
         }));
         if let Some(link) = &mut self.servers {
-            link.deleting = Some((remote.server.clone(), remote.place.clone()));
+            link.deleting
+                .push((remote.server.clone(), remote.place.clone(), dialog));
         }
         Ok(())
     }
@@ -1736,6 +1740,26 @@ impl Shell {
         match &self.modal {
             Some((Modal::DeleteEnv(d), _)) => Some(d.clone()),
             _ => None,
+        }
+    }
+
+    /// A deletion did not happen: said in the dialog that asked while it is
+    /// open, else by the island.
+    fn servers_delete_failed(
+        &mut self,
+        asked: gpui::EntityId,
+        why: String,
+        cx: &mut Context<Self>,
+    ) {
+        match self.delete_dialog().filter(|d| d.entity_id() == asked) {
+            Some(dialog) => dialog.update(cx, |d, cx| d.failed(why, cx)),
+            None => self.notify(
+                crate::island::AlertKind::Warning,
+                "Could not delete the environment",
+                &why,
+                None,
+                cx,
+            ),
         }
     }
 
@@ -1748,23 +1772,25 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let asked = (server.to_string(), text(msg, "place"));
+        let place = text(msg, "place");
         let Some(link) = &mut self.servers else {
             return;
         };
-        if link.deleting.as_ref() != Some(&asked) {
+        let Some(at) = link
+            .deleting
+            .iter()
+            .position(|(s, p, _)| s == server && *p == place)
+        else {
             return;
-        }
-        link.deleting = None;
+        };
+        let (_, _, asked) = link.deleting.remove(at);
         let error = msg["error"].as_str().map(str::to_string);
         if msg["deleted"] != true {
-            if let Some(dialog) = self.delete_dialog() {
-                let why = error.unwrap_or_else(|| "The server did not delete it.".into());
-                dialog.update(cx, |d, cx| d.failed(why, cx));
-            }
+            let why = error.unwrap_or_else(|| "The server did not delete it.".into());
+            self.servers_delete_failed(asked, why, cx);
             return;
         }
-        if self.delete_dialog().is_some() {
+        if self.delete_dialog().is_some_and(|d| d.entity_id() == asked) {
             self.close_modal(window, cx);
         }
         if let Some(why) = error {
@@ -1873,8 +1899,16 @@ impl Shell {
                 if back {
                     settle_first_prompts(&mut link.first_prompts, &link.starts, id);
                 }
-                let lost_delete =
-                    !back && link.deleting.take_if(|(server, _)| server == id).is_some();
+                let mut lost_delete = Vec::new();
+                if !back {
+                    link.deleting.retain(|(server, _, asked)| {
+                        let lost = server == id;
+                        if lost {
+                            lost_delete.push(*asked);
+                        }
+                        !lost
+                    });
+                }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for
@@ -1903,13 +1937,9 @@ impl Shell {
                     self.servers_new_env_failed(&new, why.into(), cx);
                 }
                 // Its answer would have come on the connection that dropped.
-                if lost_delete && let Some(dialog) = self.delete_dialog() {
-                    dialog.update(cx, |d, cx| {
-                        d.failed(
-                            "The server dropped before it answered. If the environment is still there, try again.".into(),
-                            cx,
-                        )
-                    });
+                for asked in lost_delete {
+                    let why = "The server dropped before it answered. If the environment is still there, try again.";
+                    self.servers_delete_failed(asked, why.into(), cx);
                 }
             }
             Event::Message(msg) => {
@@ -2042,13 +2072,20 @@ impl Shell {
             // Its own failures come as `place_failed`; any other error is
             // about something else and is left to the session or the tab.
             // A server from before environments could be deleted from here.
-            _ if link.deleting.as_ref().is_some_and(|(s, _)| s == id)
+            _ if link.deleting.iter().any(|(s, _, _)| s == id)
                 && older_server_refused(&message, &["delete_env"]) =>
             {
-                link.deleting = None;
-                if let Some(dialog) = self.delete_dialog() {
+                // It refuses every one asked of it.
+                let asked: Vec<gpui::EntityId> = link
+                    .deleting
+                    .iter()
+                    .filter(|(s, _, _)| s == id)
+                    .map(|(_, _, d)| *d)
+                    .collect();
+                link.deleting.retain(|(s, _, _)| s != id);
+                for asked in asked {
                     let why = "This server runs an older Arakun. Update it to delete environments from here.";
-                    dialog.update(cx, |d, cx| d.failed(why.into(), cx));
+                    self.servers_delete_failed(asked, why.into(), cx);
                 }
                 true
             }

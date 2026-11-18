@@ -331,9 +331,11 @@ reports and anonymous usage counts to Arakun's PostHog project, so we can see wh
 breaks and what gets used: as a step of the setup, or in a dialog when you skip the
 setup or already have a project. Settings › Privacy has a switch for each:
 
-- **Crash reports:** a panic's message and stack trace, and when an agent stops with
-  an error, the agent's name and a fixed category such as "rate limited" or "not
-  signed in", never the error's text.
+- **Crash reports:** a panic's message and stack trace. When an agent stops with an
+  error: the agent's name and version number, a fixed category such as "rate
+  limited" or "not signed in", the step that failed (such as starting the agent or
+  a turn), the agent's error code or exit code, and whether the session's folder
+  still exists. Never the error's text.
 - **Usage counts:** app launched, app quit (with the minutes it was open), setup
   finished (whether you added a project or skipped, and the step you were on),
   session started (with the agent), agent turn finished (with the agent, how it

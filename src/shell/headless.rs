@@ -281,6 +281,7 @@ impl Shell {
         if let Some(i) = env.session_index(id) {
             let s = env.sessions.remove(i);
             if let Some(live) = s.live {
+                super::sessions::report_failure(&live.thread, true, cx);
                 live.thread.update(cx, |t, _| t.shutdown());
             }
         }

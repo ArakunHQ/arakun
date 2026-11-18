@@ -7,16 +7,57 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use gpui::{AppContext as _, Context, Entity, SharedString, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 
 use super::Shell;
 use crate::agent::catalog;
 use crate::agent::{
-    AgentKind, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
+    AgentKind, FailedAt, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
     ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
 use crate::state;
+
+/// Sends an agent's error to crash reports with where it failed. The folder
+/// check tells a deleted project apart from a broken agent.
+fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
+    use serde_json::Value;
+    let mut props = vec![
+        ("agent", Value::from(t.kind().id())),
+        ("cwd_exists", t.cwd().is_dir().into()),
+    ];
+    if let Some(version) = t.agent_title().and_then(agent_version) {
+        props.push(("agent_version", version.into()));
+    }
+    props.push(("stage", at.stage().into()));
+    if let Some(code) = at.code() {
+        props.push(("code", code.into()));
+    }
+    crate::telemetry::error("AgentError", msg, &props);
+}
+
+/// Sends `thread`'s failure if crash reports have not had it yet. `closing`
+/// sends a disconnect that still waits for its exit, which a thread about to
+/// shut down will never hear.
+pub(super) fn report_failure(thread: &Entity<Thread>, closing: bool, cx: &mut App) {
+    let Some(at) = thread.update(cx, |t, _| t.take_failure_report(closing)) else {
+        return;
+    };
+    if let ThreadStatus::Error(msg) = thread.read(cx).status() {
+        report_agent_error(thread.read(cx), at, &msg);
+    }
+}
+
+/// The version at the end of an agent's title ("Factory Droid 0.240.1"), and
+/// nothing else of it: the title is the agent's own text.
+fn agent_version(title: &str) -> Option<&str> {
+    let v = title.rsplit(' ').next()?.trim_start_matches('v');
+    (v.starts_with(|c: char| c.is_ascii_digit())
+        && v.len() <= 32
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
+    .then_some(v)
+}
 
 pub fn status_of(t: &Thread) -> Status {
     match t.status() {
@@ -328,16 +369,12 @@ impl Shell {
             }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
                 let status = status_of(thread.read(cx));
+                if status == Status::Error {
+                    report_failure(thread, false, cx);
+                }
                 if let Some(s) = self.session_mut(env_path, id)
                     && s.status != status
                 {
-                    // Once per failure: the status only changes back after a new turn.
-                    if status == Status::Error
-                        && let ThreadStatus::Error(msg) = thread.read(cx).status()
-                    {
-                        let agent = thread.read(cx).kind().id();
-                        crate::telemetry::error("AgentError", &msg, &[("agent", agent)]);
-                    }
                     s.status = status;
                     s.updated = model::unix_now();
                     cx.notify();
@@ -451,6 +488,7 @@ impl Shell {
                 let _ = write_transcript(&path, &transcript);
             }))
             .detach();
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
     }
@@ -761,6 +799,7 @@ impl Shell {
             if let Err(e) = write_transcript(&state::transcript_path(&old_id), &t.transcript(cx)) {
                 eprintln!("arakun: could not save {old_id}: {e}");
             }
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
         forget_alerts(&old_id);
@@ -1511,6 +1550,7 @@ impl Shell {
         let env = self.env_mut();
         let removed = env.session_index(id).map(|i| env.sessions.remove(i));
         if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
         let mut paths = vec![state::transcript_path(id)];
@@ -1801,6 +1841,18 @@ pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_version_keeps_only_the_version() {
+        use super::agent_version;
+        assert_eq!(agent_version("Factory Droid 0.240.1"), Some("0.240.1"));
+        assert_eq!(
+            agent_version("claude-code-acp v1.2.3-beta.1"),
+            Some("1.2.3-beta.1")
+        );
+        assert_eq!(agent_version("Acme internal build"), None);
+        assert_eq!(agent_version("x 1.0/../secret"), None);
+    }
+
     use super::*;
 
     #[test]

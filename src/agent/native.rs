@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 use super::super::attach;
 use super::super::rpc::{Connection, RpcError};
 use super::{
-    Entry, PermissionOption, PermissionRequest, PlanEntry, SessionMeta, Thread, ThreadEvent,
-    ThreadStatus, ToolCall, ToolContent, ToolStatus, recount, str_of,
+    Entry, FailedAt, PermissionOption, PermissionRequest, PlanEntry, SessionMeta, Thread,
+    ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus, recount, str_of,
 };
 
 /// Which protocol a [`Thread`] speaks.
@@ -1385,14 +1385,18 @@ impl Thread {
                     }
                     None => {
                         let _ = this.update(cx, |t, cx| {
-                            t.fail("droid.initialize_session returned no sessionId".into(), cx)
+                            t.fail(
+                                FailedAt::Session(None),
+                                "droid.initialize_session returned no sessionId".into(),
+                                cx,
+                            )
                         });
                     }
                 },
                 Err(e) => {
                     let _ = this.update(cx, |t, cx| {
                         let msg = t.describe_error(&e, "Starting the session failed");
-                        t.fail(msg, cx)
+                        t.fail(FailedAt::Session(Some(e.code)), msg, cx)
                     });
                 }
             }

@@ -64,14 +64,23 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 
 ### Workspace
 
+- **Active.** The top of the sidebar lists the sessions of every project that need
+  you (waiting for an answer, or failed), then the ones running. A click opens the
+  session in its project. It stays the same whichever project is open. The open
+  project's list below holds the rest, so nothing shows twice. Move or remove it in
+  the sidebar builder.
+- **One session, one worktree.** A new session (`Ctrl+T`) gets its own worktree on a
+  random branch, and the first prompt names the branch. The open environment is used
+  only while it has no session yet. The sidebar lists each worktree by its session's
+  title, and the main checkout by its branch.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
-  others in its dropdown, and its environments as a flat list: a status dot, the name,
-  and one signal (Needs you, CI failed, or the diff). Under them, **Other projects**
-  lists the environments elsewhere that run or need you, and a click goes there; the
-  dropdown says the same per project. The **+** on Environments, or
-  `Ctrl+Shift+N`, makes an environment at once on a random branch from the current
-  commit; `Alt`+click on it, or File › New Environment with Options…, asks for the
+  others in its dropdown, and its sessions as a flat list: a status dot, the title,
+  and one signal (Needs you, CI failed, or the diff). If you take the Active list
+  out, **Other projects** under them lists the environments elsewhere that run or need
+  you. The dropdown says the same per project. The **+** on Sessions, or
+  `Ctrl+Shift+N`, always makes a new worktree at once on a random branch from the
+  current commit; `Alt`+click on it, or File › New Environment with Options…, asks for the
   branch and where to start from. Every environment has its own sessions, terminals
   and draft prompt. The window has one row of tabs for all of them: a session, file,
   diff or browser tab belongs to its environment, and going to the tab shows that
@@ -930,7 +939,7 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session, `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+T` new session (in a new worktree once the open one has a session), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments
@@ -941,7 +950,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   right. The tab on screen stays open when its environment has no other. GNOME, Ubuntu
   and some KDE setups keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen
   closed tab in the File menu or a tab's right-click menu
-- `Ctrl+Shift+N` new environment, at once on a random branch
+- `Ctrl+Shift+N` new session in a new worktree, at once on a random branch
 - `Ctrl+F` search the conversation
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for

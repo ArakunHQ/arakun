@@ -751,6 +751,12 @@ impl Shell {
                         .into_any_element()
                 }
             }
+            Piece::Active => {
+                if narrow {
+                    return None;
+                }
+                self.render_active_block(cx)?
+            }
             Piece::Mascot => div()
                 .flex()
                 .items_center()

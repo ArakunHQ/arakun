@@ -19,6 +19,7 @@ use gpui::{
     div, fill, img, point, px, relative, size, uniform_list,
 };
 
+mod active;
 pub(crate) mod agent_cli;
 mod automations;
 mod branches;
@@ -1737,6 +1738,8 @@ impl Shell {
             env.follow_branch();
         }
         self.select_env(pi, ei, window, cx);
+        // It opens on its New session tab, ready for the first prompt.
+        window.focus(&self.composer_focus, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.
         let setup = self.projects.get(pi).and_then(|p| p.setup.clone());
@@ -2686,8 +2689,14 @@ impl Shell {
         cx.notify();
     }
 
+    /// One thread per worktree: a new session gets a worktree of its own,
+    /// unless the open environment has no thread yet.
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
+            return;
+        }
+        if !self.env().sessions.is_empty() {
+            self.quick_create_env(self.active_project, window, cx);
             return;
         }
         let path = self.env().path.clone();

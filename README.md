@@ -742,7 +742,8 @@ tailnet", and "Pair" pairs with it. There is nothing to copy.
 - **Who gets in.** Only a machine of the same tailnet user as the server's. The server
   asks Tailscale whose machine is calling, each time. A machine of another user, a
   machine shared into the tailnet and a tagged machine are turned away, and a server
-  on a tagged machine lets nobody in this way: pair those with a link. The server's log
+  on a tagged machine lets nobody in this way: pair those with a link. So is a connection from the
+  server's own machine, which could be any of its users. The server's log
   says who paired and who was turned away.
 - **How.** The server also listens on the machine's tailnet address (`100.x.y.z`, the
   port of `--port`, 7474 unless told). Only machines of the tailnet reach that address

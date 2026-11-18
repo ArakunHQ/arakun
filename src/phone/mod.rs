@@ -27,7 +27,9 @@ pub use upload::Uploads;
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs as _, UdpSocket};
+use std::net::{
+    IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs as _, UdpSocket,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
@@ -992,6 +994,14 @@ impl Door {
                 else {
                     return Some((Reply::error(400, "bad request"), Effect::None));
                 };
+                // A connection from this machine itself comes from every user
+                // on it, and Tailscale would vouch for all of them alike.
+                if peer.ip() == IpAddr::V4(self.ip) || peer.ip().is_loopback() {
+                    return Some((
+                        Reply::error(403, "Pair from the server's own machine with a link."),
+                        Effect::None,
+                    ));
+                }
                 if let Err(why) = (self.admit)(peer) {
                     return Some((Reply::error(403, &why), Effect::None));
                 }
@@ -2005,6 +2015,18 @@ mod tests {
         ] {
             let (status, _, paired) = ask(head, "{}", own).unwrap();
             assert_eq!((status, paired), (403, false), "{head}");
+        }
+        assert!(access.lock().unwrap().devices.is_empty());
+
+        // From the machine itself any of its users could be asking.
+        for local in [
+            SocketAddr::from((ip, 50000)),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 50000)),
+        ] {
+            let (status, said, paired) = ask(pair, "{}", local).unwrap();
+            assert_eq!((status, paired), (403, false), "{local}");
+            // Turned away before Tailscale is asked, which would say yes.
+            assert!(said["error"].as_str().unwrap().contains("own machine"));
         }
         assert!(access.lock().unwrap().devices.is_empty());
 

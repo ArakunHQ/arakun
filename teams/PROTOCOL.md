@@ -103,7 +103,8 @@ without it, `403` if it is not one of the caller's devices.
    leaves out pending members) and accepts with
    `POST /invites/<invite_id>/accept` (from a registered device) → `200 { team_id,
    status: "pending" }`: the user becomes a **pending** member. A pending member
-   is not a member: every team endpoint answers them `404`. Or they decline it:
+   is not a member: every team endpoint but `POST /teams/<team_id>/remind` (below)
+   answers them `404`. Or they decline it:
    `POST /invites/<invite_id>/decline` → `204`, and the invite is gone; `404` if
    it is expired or someone else's.
    A pending user sees their own requests in `GET /pending` → `[{ team_id,

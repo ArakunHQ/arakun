@@ -107,6 +107,10 @@ pub struct Kept {
     /// new key is a new, unchecked device.
     #[serde(default)]
     verified: BTreeSet<String>,
+    /// Channel (`team/channel`) → the newest `seq` this device showed, for
+    /// the unread counts.
+    #[serde(default)]
+    read: BTreeMap<String, u64>,
 }
 
 impl Kept {
@@ -188,10 +192,28 @@ impl Kept {
         }
     }
 
+    /// The newest `seq` this device showed in a channel, if it ever showed it.
+    pub fn last_read(&self, channel: &str) -> Option<u64> {
+        self.read.get(channel).copied()
+    }
+
+    /// Moves a channel's last-read mark forward; whether it moved.
+    pub fn mark_read(&mut self, channel: &str, seq: u64) -> bool {
+        let slot = self.read.entry(channel.to_string()).or_default();
+        if seq > *slot {
+            *slot = seq;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Forgets a team this user is no longer in.
     pub fn forget_team(&mut self, team_id: &str) {
         self.keys.remove(team_id);
         self.sealed.remove(team_id);
+        let prefix = format!("{team_id}/");
+        self.read.retain(|k, _| !k.starts_with(&prefix));
     }
 }
 
@@ -275,6 +297,17 @@ mod tests {
         assert_eq!(k.newest("T"), Some((2, [2; 32])));
         k.forget_team("T");
         assert_eq!(k.newest("T"), None);
+    }
+
+    #[test]
+    fn the_last_read_mark_only_moves_forward() {
+        let mut k = Kept::default();
+        assert_eq!(k.last_read("T/c"), None);
+        assert!(k.mark_read("T/c", 5));
+        assert!(!k.mark_read("T/c", 3));
+        assert_eq!(k.last_read("T/c"), Some(5));
+        k.forget_team("T");
+        assert_eq!(k.last_read("T/c"), None);
     }
 
     #[test]

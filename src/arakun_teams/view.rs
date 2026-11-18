@@ -259,6 +259,16 @@ impl TeamsView {
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
+        self.hub.update(cx, |h, cx| h.refresh_unread(true, cx));
+    }
+
+    /// Tells the hub which channel shows, so what arrives there is read.
+    fn sync_viewing(&self, cx: &mut Context<Self>) {
+        let key = match &self.pane {
+            Pane::Channel(t, c) => Some(hub::channel_key(t, c)),
+            _ => None,
+        };
+        self.hub.update(cx, |h, cx| h.set_viewing(key, cx));
     }
 
     /// The project @bot reads: the environment the window shows.
@@ -326,6 +336,7 @@ impl TeamsView {
             }
         }
         self.teams.update(cx, |t, cx| t.want_pictures(people, cx));
+        self.sync_viewing(cx);
         cx.notify();
     }
 
@@ -360,6 +371,7 @@ impl TeamsView {
         self.hub
             .update(cx, |h, cx| h.open_channel(&team, &channel, cx));
         self.pane = Pane::Channel(team, channel);
+        self.sync_viewing(cx);
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
@@ -389,6 +401,7 @@ impl TeamsView {
             self.open_channel(t, c, cx);
         } else {
             self.pane = pane;
+            self.sync_viewing(cx);
         }
         if let Some(field) = field {
             let handle = field.read(cx).focus_handle(cx);
@@ -1678,10 +1691,13 @@ impl TeamsView {
             return div().into_any_element();
         };
         let admin = t.role.is_admin() && !t.keyless;
-        let channels: Vec<(String, Option<String>)> = t
+        let channels: Vec<(String, Option<String>, Option<String>)> = t
             .channels
             .iter()
-            .map(|c| (c.id.clone(), c.name.clone()))
+            .map(|c| {
+                let unread = hub::unread_label(hub.unread(team_id, &c.id));
+                (c.id.clone(), c.name.clone(), unread)
+            })
             .collect();
         let here = hub
             .channels
@@ -1713,7 +1729,7 @@ impl TeamsView {
                             })),
                     )
                 }));
-        for (i, (cid, cname)) in channels.into_iter().enumerate() {
+        for (i, (cid, cname, unread)) in channels.into_iter().enumerate() {
             let on = cid == channel_id;
             let (t2, c2) = (tid.clone(), cid.clone());
             list = list.child(
@@ -1746,6 +1762,11 @@ impl TeamsView {
                             .truncate()
                             .child(cname.unwrap_or_else(|| "locked channel".into())),
                     )
+                    .children(unread.map(|n| {
+                        ui::text(Type::Caption, theme::text_subtle(), n)
+                            .flex_none()
+                            .font_family(theme::FONT_MONO)
+                    }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
                     })),
@@ -3204,6 +3225,9 @@ impl TeamsView {
 
 impl Render for TeamsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Drawn means shown: the unread counts of channels with no socket
+        // here follow, at most once a minute.
+        self.hub.update(cx, |h, cx| h.refresh_unread(false, cx));
         let teams = self.teams.read(cx);
         let enabled = teams.enabled();
         let faces = Faces::of(teams);

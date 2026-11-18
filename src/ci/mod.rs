@@ -1045,6 +1045,25 @@ impl Repo {
         self.logs.get(&job)
     }
 
+    /// Marks a job's log as being read: true when it should be read now. A failed
+    /// read stays until the user tries again or the run changes (`read_detail`
+    /// clears the logs): the Logs tab asks on every render, and reading again each
+    /// time calls `gh` in a loop and uses up the GitHub rate limit.
+    fn start_log(&mut self, job: u64) -> bool {
+        if self.logs.contains_key(&job) {
+            return false;
+        }
+        self.logs.insert(job, Load::Loading);
+        true
+    }
+
+    /// Forgets a log that failed to read, so the next `start_log` reads it again.
+    fn forget_failed_log(&mut self, job: u64) {
+        if matches!(self.logs.get(&job), Some(Load::Failed(_))) {
+            self.logs.remove(&job);
+        }
+    }
+
     pub fn graph(&self, branch: &str) -> Option<&Load<Arc<graph::Graph>>> {
         self.graphs.get(branch).map(|(_, g)| g)
     }
@@ -1484,10 +1503,9 @@ impl Ci {
         let Some(repo) = self.repos.get_mut(root) else {
             return;
         };
-        if matches!(repo.logs.get(&job), Some(Load::Ready(_) | Load::Loading)) {
+        if !repo.start_log(job) {
             return;
         }
-        repo.logs.insert(job, Load::Loading);
         cx.notify();
         let root = root.to_path_buf();
         cx.spawn(async move |this, cx| {
@@ -1505,6 +1523,14 @@ impl Ci {
             });
         })
         .detach();
+    }
+
+    /// Reads a job's log again after it failed to read.
+    pub fn retry_log(&mut self, root: &Path, job: u64, cx: &mut Context<Self>) {
+        if let Some(repo) = self.repos.get_mut(root) {
+            repo.forget_failed_log(job);
+        }
+        self.load_log(root, job, cx);
     }
 
     /// `gh run rerun --failed` (every job when none failed), or `gh run cancel`.
@@ -1707,6 +1733,20 @@ mod tests {
         assert!(repo.branch_state("other").is_none());
         assert_eq!(repo.previous(&repo.runs[0]).map(|r| r.id), Some(2));
         assert!(repo.previous(&repo.runs[3]).is_none());
+    }
+
+    #[test]
+    fn a_failed_log_is_read_again_only_when_asked() {
+        let mut repo = Repo::default();
+        assert!(repo.start_log(7));
+        assert!(!repo.start_log(7), "it is being read");
+        repo.logs.insert(7, Load::Failed("gone".into()));
+        assert!(!repo.start_log(7), "every render would call gh again");
+        repo.forget_failed_log(7);
+        assert!(repo.start_log(7));
+        repo.logs.insert(7, Load::Ready(Arc::default()));
+        repo.forget_failed_log(7);
+        assert!(!repo.start_log(7), "a read log stays");
     }
 
     #[test]

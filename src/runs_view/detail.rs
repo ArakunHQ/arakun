@@ -1356,7 +1356,23 @@ impl RunsView {
                 .justify_center()
                 .child(ui::spinner("log-loading", 16., theme::mix(0.4)))
                 .into_any_element(),
-            Some(Err(Some(e))) => empty("alert-circle", "Couldn't read the log", e.as_ref()),
+            Some(Err(Some(e))) => {
+                let retry = ui::button("log-retry", "Try again", ui::ButtonKind::Outline, true)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(root) = this.root.clone() {
+                            this.ci.update(cx, |ci, cx| ci.retry_log(&root, job, cx));
+                        }
+                    }));
+                ui::empty_state(
+                    "alert-circle",
+                    "Couldn't read the log",
+                    e.as_ref(),
+                    Some(retry.into_any_element()),
+                )
+                .flex_1()
+                .justify_center()
+                .into_any_element()
+            }
             Some(Ok(lines)) => {
                 let rows = lines.clone();
                 uniform_list(

@@ -596,18 +596,70 @@ fn github_error(body: &str) -> String {
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
+        let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(20)))
             .http_status_as_error(false)
             .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .into()
+            .build();
+        ureq::Agent::with_parts(
+            config,
+            ureq::unversioned::transport::DefaultConnector::new(),
+            Ipv4First::default(),
+        )
     })
+}
+
+/// The system resolver, with IPv4 addresses tried first. ureq dials one address
+/// after another; Cloudflare lists IPv6 first, and on a network whose IPv6 is
+/// broken each IPv6 attempt hangs until the request's time is gone.
+#[derive(Debug, Default)]
+struct Ipv4First(ureq::unversioned::resolver::DefaultResolver);
+
+impl ureq::unversioned::resolver::Resolver for Ipv4First {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let mut addrs = self.0.resolve(uri, config, timeout)?;
+        ipv4_first(&mut addrs);
+        Ok(addrs)
+    }
+}
+
+/// IPv4 before IPv6, each family in the order the resolver gave.
+pub(super) fn ipv4_first(addrs: &mut [std::net::SocketAddr]) {
+    addrs.sort_by_key(std::net::SocketAddr::is_ipv6);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tries_ipv4_before_ipv6_keeping_each_order() {
+        let mut addrs: Vec<std::net::SocketAddr> = [
+            "[2606:4700::1]:443",
+            "104.18.22.18:443",
+            "[2606:4700::2]:443",
+            "104.18.23.18:443",
+        ]
+        .iter()
+        .map(|a| a.parse().unwrap())
+        .collect();
+        ipv4_first(&mut addrs);
+        let got: Vec<String> = addrs.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            got,
+            [
+                "104.18.22.18:443",
+                "104.18.23.18:443",
+                "[2606:4700::1]:443",
+                "[2606:4700::2]:443"
+            ]
+        );
+    }
 
     fn answer(json: &str) -> TokenAnswer {
         serde_json::from_str(json).unwrap()

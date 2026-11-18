@@ -180,6 +180,8 @@ fn save(s: &Saved) -> std::io::Result<()> {
 fn platform() -> Result<(&'static str, &'static str), String> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Ok(("linux-x86_64", "tar.gz"))
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Ok(("linux-arm64", "tar.gz"))
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Ok(("macos-arm64", "dmg"))
     } else if cfg!(all(windows, target_arch = "x86_64")) {

@@ -127,7 +127,7 @@ if [ $browser = 1 ]; then
       sh tools/install-cef.sh "$dist" "$cef"
     else
       echo "install: $cef has CEF ${have:-nothing}, this build needs CEF $want" >&2
-      echo "         set CEF_DIST to an unpacked CEF $want linux64 build, or pass --no-browser" >&2
+      echo "         set CEF_DIST to an unpacked CEF $want linux64 (or linuxarm64) build, or pass --no-browser" >&2
       exit 1
     fi
   fi

@@ -6,9 +6,9 @@
 #   curl -fsSL https://arakun.dev/install-server | sh
 #
 # macOS (Apple silicon): ~/Applications/Arakun.app, and ~/.local/bin/arakun linking into it.
-# Linux (x86_64):        ~/.local/bin/arakun, and the browser's CEF runtime in
+# Linux (x86_64, arm64): ~/.local/bin/arakun, and the browser's CEF runtime in
 #                        ${XDG_DATA_HOME:-~/.local/share}/arakun/cef.
-# --server (Linux x86_64): only ~/.local/bin/arakun-server, the server without
+# --server (Linux):      only ~/.local/bin/arakun-server, the server without
 #                        the window. arakun.dev/install-server serves this script
 #                        with `main "$@"` at the end changed to `main --server "$@"`,
 #                        so keep that line as it is.
@@ -129,7 +129,7 @@ main() {
       -h | --help)
         # Not read from $0: under `curl | sh` there is no file.
         echo "usage: install-release.sh [--server] [--version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
-        echo "  --server  install arakun-server (Linux x86_64), the server without the window"
+        echo "  --server  install arakun-server (Linux), the server without the window"
         return 0
         ;;
       *) die "unknown option $1" ;;
@@ -155,12 +155,13 @@ main() {
       ;;
     Linux)
       case $arch in
-        x86_64 | amd64) ;;
+        x86_64 | amd64) platform=linux-x86_64 ;;
+        aarch64 | arm64) platform=linux-arm64 ;;
         *) die "Linux on $arch has no release build; build from source (see README.md)" ;;
       esac
       check_glibc
       command -v tar >/dev/null || die "tar is needed"
-      platform=linux-x86_64 ext=tar.gz
+      ext=tar.gz
       ;;
     MINGW* | MSYS* | CYGWIN*)
       die "on Windows, run in PowerShell: irm https://arakun.dev/install.ps1 | iex"
@@ -212,6 +213,9 @@ main() {
   if [ -z "$want" ] && [ "$ext" = dmg ]; then
     ext=tar.gz file=$name.tar.gz
     want=$(listed "$file" "$tmp/SHA256SUMS")
+  fi
+  if [ -z "$want" ] && [ "$platform" = linux-arm64 ]; then
+    die "$version has no Linux arm64 build; the first release with one is the one after v0.4.1"
   fi
   if [ -z "$want" ] && [ -n "$server" ]; then
     die "$version has no arakun-server build; the first release with one is the one after v0.4.0"

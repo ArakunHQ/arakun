@@ -95,8 +95,8 @@ mod linux {
 
     use super::runtime_dir;
 
-    #[cfg(not(target_arch = "x86_64"))]
-    compile_error!("the browser loader only has x86_64 Linux trampolines");
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    compile_error!("the browser loader only has x86_64 and aarch64 Linux trampolines");
 
     unsafe extern "C" {
         fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
@@ -117,7 +117,10 @@ mod linux {
             mod slots {
                 $(pub static $name: super::AtomicUsize = super::AtomicUsize::new(0);)*
             }
+            // r11 and x16 are scratch registers at a call, so the trampoline can use them
+            // without touching the caller's arguments.
             $(
+                #[cfg(target_arch = "x86_64")]
                 core::arch::global_asm!(
                     concat!(".globl ", stringify!($name)),
                     concat!(".type ", stringify!($name), ",@function"),
@@ -126,6 +129,23 @@ mod linux {
                     "test r11, r11",
                     "jz {unloaded}",
                     "jmp r11",
+                    concat!(".size ", stringify!($name), ", . - ", stringify!($name)),
+                    slot = sym slots::$name,
+                    unloaded = sym unloaded,
+                );
+                // `cbz` only reaches 1 MB, so it skips over a `b`, which reaches 128 MB
+                // and gets a linker veneer beyond that.
+                #[cfg(target_arch = "aarch64")]
+                core::arch::global_asm!(
+                    concat!(".globl ", stringify!($name)),
+                    concat!(".type ", stringify!($name), ",%function"),
+                    concat!(stringify!($name), ":"),
+                    "adrp x16, {slot}",
+                    "ldr x16, [x16, :lo12:{slot}]",
+                    "cbz x16, 2f",
+                    "br x16",
+                    "2:",
+                    "b {unloaded}",
                     concat!(".size ", stringify!($name), ", . - ", stringify!($name)),
                     slot = sym slots::$name,
                     unloaded = sym unloaded,

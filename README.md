@@ -356,12 +356,13 @@ made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
 | Platform | Status | Notes |
 |---|---|---|
 | Linux (x86_64) | Supported | Main platform. Wayland and X11. The Dynamic Island needs Wayland with wlr-layer-shell. |
+| Linux (arm64) | Beta | The same build as x86_64, for ARM machines such as Snapdragon laptops, Ampere and Graviton servers. Less tested. |
 | Windows 10/11 (x86_64) | Beta | No Dynamic Island yet. Browser tabs are barely tested. See [docs/windows.md](docs/windows.md). |
 | macOS | Experimental | Release builds for Apple silicon. Little tested, browser tabs least of all. The Dynamic Island's shape around a notch and around the MacBook Pro's own Dynamic Island is not tested on those screens yet. |
 
 ## Install
 
-**macOS (Apple silicon) and Linux (x86_64):**
+**macOS (Apple silicon) and Linux (x86_64 and arm64):**
 
 ```sh
 curl -fsSL https://arakun.dev/install | sh
@@ -386,10 +387,11 @@ check it against `SHA256SUMS` (and its signature, when a verifier is installed; 
 
 To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.2.1`,
 or set `ARAKUN_VERSION=v0.2.1` (on Windows, `$env:ARAKUN_VERSION = "v0.2.1"`). There is
-no build for Intel Macs or Linux on ARM yet; build from source there. `v0.1.0` has no
-macOS build; on macOS, install a later version.
+no build for Intel Macs yet; build from source there. `v0.1.0` has no macOS build; on
+macOS, install a later version. Linux on arm64 has release builds from the release after
+v0.4.1.
 
-**The server alone (Linux x86_64):** for a machine with no display, such as a VPS, install
+**The server alone (Linux x86_64 and arm64):** for a machine with no display, such as a VPS, install
 only [`arakun-server`](#the-server-alone-no-display):
 
 ```sh
@@ -479,7 +481,8 @@ release workflow built it, and from which commit. Check it with the
 gh attestation verify arakun-<version>-linux-x86_64.tar.gz -R arakunhq/arakun
 ```
 
-**Linux:** extract `arakun-<version>-linux-x86_64.tar.gz`. `arakun` runs from there, or
+**Linux:** extract `arakun-<version>-linux-x86_64.tar.gz` (on ARM,
+`arakun-<version>-linux-arm64.tar.gz`). `arakun` runs from there, or
 put it somewhere on your `PATH`, for example `~/.local/bin`, with its `cef` folder next to
 it (or in `~/.local/share/arakun/cef`). Without that folder, everything but browser tabs
 works. It needs glibc 2.35 or newer (Ubuntu 22.04+,
@@ -564,8 +567,9 @@ cargo build --release --no-default-features
 
 The default `browser` feature needs CEF at build time and at run time.
 
-- **Linux:** download the CEF 156.0.15 linux64 binary distribution (the minimal one is
-  enough) from <https://cef-builds.spotifycdn.com/index.html>, unpack it, and run:
+- **Linux:** download the CEF 156.0.15 linux64 binary distribution (linuxarm64 on ARM;
+  the minimal one is enough) from <https://cef-builds.spotifycdn.com/index.html>, unpack
+  it, and run:
 
   ```sh
   tools/install-cef.sh /path/to/cef_binary_156.0.15_linux64
@@ -630,8 +634,8 @@ cargo build --release --locked -p arakun-server
 ```
 
 Build it on its own, as above. Built in the same command as the app, Cargo gives both
-the same GPUI, with the display code in it. On Linux x86_64 you can also install the
-release build instead: `curl -fsSL https://arakun.dev/install-server | sh` (see
+the same GPUI, with the display code in it. On Linux x86_64 and arm64 you can also install
+the release build instead: `curl -fsSL https://arakun.dev/install-server | sh` (see
 [Install](#install)).
 
 ### Install for your user (Linux)

@@ -856,14 +856,18 @@ impl Shell {
         // Where the phone can start a session, with the agent each place picks.
         let mut places: Vec<serde_json::Value> = Vec::new();
         for p in &self.projects {
-            for e in &p.environments {
-                places.push(wire::inbox_place(
-                    &e.path,
-                    &p.name,
-                    &e.name,
-                    Some(&e.branch),
-                    e.agent.key(),
-                ));
+            // A phone pairs with each server itself; this app speaks for this machine.
+            for e in p.environments.iter().filter(|e| e.remote.is_none()) {
+                places.push(wire::inbox_place(wire::InboxPlace {
+                    path: &e.path,
+                    project: &p.name,
+                    env: &e.name,
+                    branch: Some(&e.branch),
+                    agent: e.agent.key(),
+                    repo: Some(&p.path),
+                    // The page a phone opens has no use for it.
+                    origin: None,
+                }));
                 for s in &e.sessions {
                     sessions.push(wire::inbox_session(wire::InboxSession {
                         id: &s.id,

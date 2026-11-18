@@ -752,15 +752,25 @@ pub fn inbox_session(s: InboxSession) -> Value {
     })
 }
 
-/// Where a phone can start a session, with the agent that place picks (its key).
-pub fn inbox_place(
-    path: &Path,
-    project: &str,
-    env: &str,
-    branch: Option<&str>,
-    agent: &str,
-) -> Value {
-    json!({ "path": path, "project": project, "env": env, "branch": branch, "agent": agent })
+/// Where a session can start: the folder, the repository it is a checkout
+/// of, and the agent that place picks (its key).
+pub struct InboxPlace<'a> {
+    pub path: &'a Path,
+    pub project: &'a str,
+    pub env: &'a str,
+    pub branch: Option<&'a str>,
+    pub agent: &'a str,
+    /// The repository's main folder, shared by all its worktrees.
+    pub repo: Option<&'a Path>,
+    /// Its `origin`, by which the app finds the same project on its side.
+    pub origin: Option<&'a str>,
+}
+
+pub fn inbox_place(p: InboxPlace) -> Value {
+    json!({
+        "path": p.path, "project": p.project, "env": p.env, "branch": p.branch,
+        "agent": p.agent, "repo": p.repo, "origin": p.origin,
+    })
 }
 
 /// `inbox`: every session, newest first, and the places.

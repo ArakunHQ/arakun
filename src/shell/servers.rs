@@ -1,35 +1,33 @@
 //! The servers' side of the shell: the connections to the machines running
-//! `arakun server` (`crate::servers`), what each said it holds, and the one
-//! session on show in the Servers tab (`servers_view`).
+//! `arakun server` (`crate::servers`), and their folders and sessions shown
+//! as the app's own.
 //!
-//! A server's session is not one of the shell's own: its agent runs over
-//! there. The tab shows it through a thread that only holds a transcript, as a
-//! headless session's does, fed with the entries the server sends whole
-//! (`transcript`); what the user writes or answers goes back as the phone's
-//! messages.
+//! Each folder a server offers is an environment here (`model::Remote`): under
+//! the local project with the same `origin`, so one project holds its work on
+//! every machine, or under a project of the servers' own. Their sessions open
+//! in the same tabs, with the same composer, as sessions here. The agent runs
+//! over there: the tab shows it through a thread that only holds a transcript,
+//! fed with the entries the server sends whole (`transcript`), and what the
+//! user does in it goes back as the phone's messages ([`RemoteAction`]).
 //!
-//! The rail lists each server beside the projects, with its folders as
-//! environments (`rail_servers`), so the app connects at start when any
-//! server is paired; with none, nothing connects until the tab is opened.
+//! The app connects at start when any server is paired.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{AppContext as _, Context, Entity, Task, Window};
+use gpui::{Context, Entity, SharedString, Task, Window};
 use serde_json::{Value, json};
 
 use super::Shell;
 use crate::agent::{
-    AgentKind, Entry, SessionMeta, Thread, ThreadStatus, ThreadView, Transcript, Usage,
+    AgentKind, Entry, RemoteAction, SessionMeta, Thread, ThreadStatus, Transcript, Usage,
 };
-use crate::model::{Status, TabKind, unix_now};
+use crate::model::{self, Environment, Project, Remote, Session, Status, TabKind, unix_now};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
-use crate::servers_view::{
-    Open, Permission, PlaceRow, Question, Reach, ServerRow, ServersEvent, ServersState, SessionRow,
-};
+use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
 
 /// One server: its connection and what it last said it holds.
 struct Conn {
@@ -50,22 +48,20 @@ impl Conn {
     }
 }
 
-/// The session on show, and how much of it has arrived.
-struct Showing {
+/// The server's session on screen, which the server sends every change of,
+/// and how much of it has arrived. A server follows one session for a
+/// connection; the others show what they had and their state from the inbox.
+struct Following {
     server: String,
     session: String,
-    thread: Entity<Thread>,
-    view: Entity<ThreadView>,
+    /// The environment it is in here.
+    env_path: PathBuf,
     /// Its entries so far, whole, as the server's transcript holds them.
     entries: Vec<Entry>,
     agent: AgentKind,
     cwd: PathBuf,
     title: String,
-    agent_name: String,
-    place: String,
     status: Status,
-    permission: Option<Permission>,
-    questions: Option<(String, Vec<Question>)>,
     /// A `transcript` was asked for and has not come back.
     asking: bool,
     /// The index the one that is out asked from.
@@ -77,8 +73,6 @@ struct Showing {
     /// only once all of it is here, so the view never falls back to a first
     /// page and fills up again.
     refill: Option<Vec<Entry>>,
-    /// Everything the server had when the session was opened is here.
-    loaded: bool,
     /// Why the session could not be read in full, when it could not. Nothing
     /// more is asked for until it is opened again.
     broken: Option<String>,
@@ -89,7 +83,13 @@ pub(super) struct ServersLink {
     conns: HashMap<String, Conn>,
     /// Where every connection's thread tells how it goes.
     events: Events,
-    showing: Option<Showing>,
+    following: Option<Following>,
+    /// What each local project's repository is known by (`repo_key`), read once.
+    origins: HashMap<PathBuf, Option<String>>,
+    /// The server a new session was started on, until it says the session's id.
+    starting: Option<String>,
+    /// That session, by server and id: its tab opens once the inbox has it.
+    starting_id: Option<(String, String)>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -111,52 +111,54 @@ fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or("").to_string()
 }
 
-fn permission_from(v: &Value) -> Option<Permission> {
-    let options = v["options"].as_array()?;
-    Some(Permission {
-        title: text(v, "title"),
-        options: options
-            .iter()
-            .map(|o| (text(o, "id"), text(o, "name"), text(o, "kind")))
-            .collect(),
+/// What a repository is known by on every machine: `owner/repo` on GitHub,
+/// whatever the protocol, else its URL.
+fn repo_key(origin: &str) -> Option<String> {
+    let source = crate::clone_source::parse_clone_source(origin)?;
+    Some(if source.on_github {
+        source.label.to_lowercase()
+    } else {
+        source.label.to_string()
     })
 }
 
-fn questions_from(v: &Value) -> Option<(String, Vec<Question>)> {
-    let questions = v["questions"].as_array()?;
-    Some((
-        text(v, "tool_call_id"),
-        questions
-            .iter()
-            .map(|q| Question {
-                question: text(q, "question"),
-                options: q["options"]
-                    .as_array()
-                    .map(|o| {
-                        o.iter()
-                            .filter_map(|x| x.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            })
-            .collect(),
-    ))
+/// Where a server's folder goes: the local project its repository is, else a
+/// project of the servers' own. Without an `origin`, a server's repository is
+/// its own and no other machine's.
+fn project_for(
+    place: &PlaceRow,
+    server: &str,
+    locals: &[(PathBuf, Option<String>)],
+) -> (PathBuf, bool) {
+    let key = repo_key(&place.origin);
+    if let Some(key) = &key
+        && let Some((path, _)) = locals.iter().find(|(_, k)| k.as_ref() == Some(key))
+    {
+        return (path.clone(), true);
+    }
+    let repo = if place.repo.is_empty() {
+        &place.path
+    } else {
+        &place.repo
+    };
+    let key = key.unwrap_or_else(|| format!("{server}{repo}"));
+    (Remote::project_path(&key), false)
 }
 
 /// The transcript a viewer thread is handed: the entries so far, as this session.
-fn transcript_of(s: &Showing) -> Transcript {
+fn transcript_of(f: &Following) -> Transcript {
     Transcript {
         version: 1,
         meta: SessionMeta {
-            agent: s.agent,
+            agent: f.agent,
             session_id: None,
-            title: s.title.clone(),
-            cwd: s.cwd.clone(),
+            title: f.title.clone(),
+            cwd: f.cwd.clone(),
             created: unix_now(),
             updated: unix_now(),
             pr: None,
         },
-        entries: s.entries.clone(),
+        entries: f.entries.clone(),
         usage: Usage::default(),
         fork_point: None,
         interrupted: false,
@@ -177,40 +179,22 @@ fn thread_status(status: Status) -> ThreadStatus {
     }
 }
 
-/// A server as the rail lists it, beside the projects.
-pub(super) struct RailServer {
-    pub id: String,
-    pub name: String,
-    pub reach: Reach,
-    pub places: Vec<RailPlace>,
-}
-
-/// One of a server's folders, as an environment row.
-pub(super) struct RailPlace {
-    pub path: String,
-    pub label: String,
-    /// The most urgent state of its sessions.
-    pub status: Status,
-}
-
-/// The rail's view of the servers: each place with the state of the sessions
-/// that run in it. Sessions come newest first, as the server sends them.
-fn rail_places(places: &[PlaceRow], sessions: &[SessionRow]) -> Vec<RailPlace> {
-    places
+/// The thread of a session that is on screen, if it is.
+fn thread_of(projects: &[Project], env_path: &Path, id: &str) -> Option<Entity<Thread>> {
+    projects
         .iter()
-        .map(|p| {
-            let statuses = sessions.iter().filter(|s| s.in_place(p)).map(|s| s.status);
-            RailPlace {
-                path: p.path.clone(),
-                label: if p.branch.is_empty() || p.branch == p.project {
-                    p.project.clone()
-                } else {
-                    format!("{} · {}", p.project, p.branch)
-                },
-                status: super::rail::Activity::of(statuses).status(),
-            }
-        })
-        .collect()
+        .flat_map(|p| &p.environments)
+        .find(|e| e.path == env_path)?
+        .sessions
+        .iter()
+        .find(|s| s.id.as_ref() == id)?
+        .live
+        .as_ref()
+        .map(|l| l.thread.clone())
+}
+
+fn agent_of(name: &str) -> model::Agent {
+    model::Agent::from_key(AgentKind::parse(name).unwrap_or(AgentKind::Claude).id())
 }
 
 /// A link is good for two minutes; a pairing still under way a little after
@@ -300,76 +284,12 @@ impl Shell {
         cx.notify();
     }
 
-    /// At start: the paired servers are connected, so the rail can list them.
+    /// At start: the paired servers are connected, so their projects show.
     pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !servers::load().is_empty() {
             self.servers_connect(window, cx);
             self.sync_servers_view(cx);
         }
-    }
-
-    /// The paired servers and their places, for the rail.
-    pub(super) fn rail_servers(&self) -> Vec<RailServer> {
-        let Some(link) = &self.servers else {
-            return Vec::new();
-        };
-        link.saved
-            .iter()
-            .filter_map(|s| {
-                let conn = link.conns.get(&s.id)?;
-                Some(RailServer {
-                    id: s.id.clone(),
-                    name: if s.name.is_empty() {
-                        s.origin.clone()
-                    } else {
-                        s.name.clone()
-                    },
-                    reach: conn.reach.clone(),
-                    places: rail_places(&conn.places, &conn.sessions),
-                })
-            })
-            .collect()
-    }
-
-    /// A server's place picked in the rail: its newest session, as a local
-    /// environment opens on its own. A place with none opens on the form
-    /// for its first.
-    pub(super) fn servers_open_place(
-        &mut self,
-        server: &str,
-        place: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_servers_tab(window, cx);
-        let newest = self.servers.as_ref().and_then(|link| {
-            let conn = link.conns.get(server)?;
-            let row = conn.places.iter().find(|p| p.path == place)?;
-            conn.sessions
-                .iter()
-                .find(|s| s.in_place(row))
-                .map(|s| s.id.clone())
-        });
-        match newest {
-            Some(session) => {
-                self.servers_show(server, &session, window, cx);
-                self.sync_servers_view(cx);
-            }
-            None => self.servers_new_session(server, Some(place.to_string()), window, cx),
-        }
-    }
-
-    /// The form for a new session on a server, in `place` when one is given.
-    pub(super) fn servers_new_session(
-        &mut self,
-        server: &str,
-        place: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_servers_tab(window, cx);
-        self.servers_view
-            .update(cx, |v, cx| v.new_session(server, place, window, cx));
     }
 
     fn servers_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,12 +323,24 @@ impl Shell {
             saved,
             conns,
             events,
-            showing: None,
+            following: None,
+            origins: HashMap::new(),
+            starting: None,
+            starting_id: None,
             pairing: None,
             pairing_timeout: None,
             error: None,
             _listen: listen,
         });
+    }
+
+    /// The name a server goes by.
+    fn server_name(s: &Saved) -> String {
+        if s.name.is_empty() {
+            s.origin.clone()
+        } else {
+            s.name.clone()
+        }
     }
 
     pub(super) fn sync_servers_view(&mut self, cx: &mut Context<Self>) {
@@ -422,11 +354,7 @@ impl Shell {
                 let conn = link.conns.get(&s.id)?;
                 Some(ServerRow {
                     id: s.id.clone(),
-                    name: if s.name.is_empty() {
-                        s.origin.clone()
-                    } else {
-                        s.name.clone()
-                    },
+                    name: Self::server_name(s),
                     origin: s.origin.clone(),
                     reach: conn.reach.clone(),
                     sessions: conn.sessions.clone(),
@@ -434,42 +362,19 @@ impl Shell {
                 })
             })
             .collect();
-        let open = link.showing.as_ref().map(|s| Open {
-            server: s.server.clone(),
-            session: s.session.clone(),
-            title: s.title.clone(),
-            agent: s.agent_name.clone(),
-            place: s.place.clone(),
-            status: s.status,
-            permission: s.permission.clone(),
-            questions: s.questions.clone(),
-            view: s.view.clone(),
-            loading: !s.loaded,
-            problem: s.broken.clone(),
-        });
         let state = ServersState {
             servers,
-            open,
             pairing: link.pairing.is_some(),
             error: link.error.clone(),
         };
         self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
-        // The rail lists the servers too.
         cx.notify();
     }
 
-    /// A message to the server showing the open session, about that session.
-    fn servers_tell(&self, mut msg: Value) {
-        let Some(link) = &self.servers else {
-            return;
-        };
-        let Some(showing) = &link.showing else {
-            return;
-        };
-        msg["session"] = json!(showing.session);
-        if let Some(conn) = link.conns.get(&showing.server) {
-            conn.client.send(&msg);
-        }
+    /// Whether a server answers right now.
+    pub(super) fn server_reach(&self, server: &str) -> Option<Reach> {
+        let link = self.servers.as_ref()?;
+        link.conns.get(server).map(|c| c.reach.clone())
     }
 
     pub(super) fn on_servers_event(
@@ -518,36 +423,15 @@ impl Shell {
                 }
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
-                if link.showing.as_ref().is_some_and(|s| s.server == *id) {
-                    link.showing = None;
+                if link.following.as_ref().is_some_and(|f| f.server == *id) {
+                    link.following = None;
                 }
+                self.sync_remote_projects(window, cx);
             }
             ServersEvent::Open { server, session } => {
-                self.servers_show(server, session, window, cx);
+                let (server, session) = (server.clone(), session.clone());
+                self.servers_open_session(&server, &session, window, cx);
             }
-            ServersEvent::Start {
-                server,
-                place,
-                agent,
-                text,
-            } => {
-                if let Some(conn) = link.conns.get(server) {
-                    conn.client.send(&json!({
-                        "type": "start", "env": place, "agent": agent, "text": text, "settings": [],
-                    }));
-                }
-            }
-            ServersEvent::Send(text) => {
-                self.servers_tell(json!({ "type": "send", "text": text, "uploads": [] }))
-            }
-            ServersEvent::Stop => self.servers_tell(json!({ "type": "cancel" })),
-            ServersEvent::Permission(option) => {
-                self.servers_tell(json!({ "type": "permission", "option": option }))
-            }
-            ServersEvent::Answer(answers) => {
-                self.servers_tell(json!({ "type": "answer", "answers": answers }))
-            }
-            ServersEvent::SkipQuestion => self.servers_tell(json!({ "type": "skip_question" })),
         }
         self.sync_servers_view(cx);
     }
@@ -566,103 +450,313 @@ impl Shell {
         self.sync_servers_view(cx);
     }
 
-    /// The last Servers tab was closed: the server is told nobody is looking
-    /// at the session any more, so it can let that session's agent go.
+    /// The last Servers tab was closed: what went wrong was about what it showed.
     pub(super) fn servers_tab_closed(&mut self, cx: &mut Context<Self>) {
-        let still_open = self.servers_alone
-            || self
-                .projects
-                .iter()
-                .flat_map(|p| &p.environments)
-                .flat_map(|e| &e.tabs)
-                .any(|t| matches!(t.kind, TabKind::Servers));
-        let Some(link) = &mut self.servers else {
-            return;
-        };
-        if still_open {
-            return;
+        if let Some(link) = &mut self.servers {
+            link.error = None;
         }
-        if let Some(showing) = link.showing.take()
-            && let Some(conn) = link.conns.get(&showing.server)
-        {
-            conn.client.send(&json!({ "type": "close" }));
-        }
-        // What went wrong was about what was on show.
-        link.error = None;
         self.sync_servers_view(cx);
     }
 
-    /// Puts a server's session on show and asks the server for it.
-    fn servers_show(
+    /// Brings the servers' folders and sessions into the projects: new ones
+    /// in, gone ones out, the rest brought up to date. A server that cannot be
+    /// reached keeps what it last said, so its work stays in sight.
+    fn sync_remote_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        // What each local repository is known by, read the first time.
+        for p in self.projects.iter().filter(|p| !p.is_remote()) {
+            link.origins.entry(p.path.clone()).or_insert_with(|| {
+                crate::git::origin_url(&p.path)
+                    .as_deref()
+                    .and_then(repo_key)
+            });
+        }
+        let locals: Vec<(PathBuf, Option<String>)> = self
+            .projects
+            .iter()
+            .filter(|p| !p.is_remote())
+            .map(|p| (p.path.clone(), link.origins.get(&p.path).cloned().flatten()))
+            .collect();
+        // Every folder the servers offer: its project, and itself as an environment.
+        let mut wanted: Vec<(PathBuf, String, Remote, PlaceRow, Vec<SessionRow>)> = Vec::new();
+        for saved in &link.saved {
+            let Some(conn) = link.conns.get(&saved.id) else {
+                continue;
+            };
+            for place in &conn.places {
+                let (project, _) = project_for(place, &saved.id, &locals);
+                let remote = Remote {
+                    server: saved.id.clone(),
+                    machine: Self::server_name(saved).into(),
+                    place: place.path.clone(),
+                };
+                let sessions = conn
+                    .sessions
+                    .iter()
+                    .filter(|s| s.in_place(place))
+                    .cloned()
+                    .collect();
+                wanted.push((
+                    project,
+                    place.project.clone(),
+                    remote,
+                    place.clone(),
+                    sessions,
+                ));
+            }
+        }
+        let keep: HashSet<PathBuf> = wanted
+            .iter()
+            .map(|(_, _, r, _, _)| Remote::env_path(&r.server, &r.place))
+            .collect();
+
+        // What is on screen stays on screen, wherever it moves in the lists.
+        let active = self.projects.get(self.active_project).map(|p| {
+            (
+                p.path.clone(),
+                p.environments.get(p.active_env).map(|e| e.path.clone()),
+            )
+        });
+        for p in &mut self.projects {
+            let open = p.environments.get(p.active_env).map(|e| e.path.clone());
+            p.environments
+                .retain(|e| e.remote.is_none() || keep.contains(&e.path));
+            p.active_env = open.and_then(|o| p.env_index(&o)).unwrap_or(0);
+        }
+        self.projects
+            .retain(|p| !p.is_remote() || !p.environments.is_empty());
+
+        for (project, name, remote, place, sessions) in wanted {
+            let pi = match self.projects.iter().position(|p| p.path == project) {
+                Some(pi) => pi,
+                None => {
+                    // After every local project: their indexes stay as saved.
+                    let mut p = crate::state::new_project(&project);
+                    p.name = name.into();
+                    p.environments.clear();
+                    self.projects.push(p);
+                    self.projects.len() - 1
+                }
+            };
+            let env_path = Remote::env_path(&remote.server, &remote.place);
+            let p = &mut self.projects[pi];
+            let ei = match p.env_index(&env_path) {
+                Some(ei) => ei,
+                None => {
+                    let main = !place.repo.is_empty() && place.repo == place.path;
+                    let branch = (!place.branch.is_empty()).then(|| place.branch.clone());
+                    let mut env = Environment::new(env_path.clone(), branch, main);
+                    env.agent = model::Agent::from_key(&place.agent);
+                    env.remote = Some(remote.clone());
+                    p.environments.push(env);
+                    p.environments.len() - 1
+                }
+            };
+            let env = &mut p.environments[ei];
+            if !place.branch.is_empty() && env.branch.as_ref() != place.branch {
+                env.set_branch(Some(place.branch.clone()));
+            }
+            env.remote = Some(remote);
+            sync_sessions(env, sessions);
+        }
+
+        if let Some((path, env)) = active
+            && let Some(pi) = self.projects.iter().position(|p| p.path == path)
+        {
+            self.active_project = pi;
+            if let Some(ei) = env.and_then(|e| self.projects[pi].env_index(&e)) {
+                self.projects[pi].active_env = ei;
+            }
+        }
+        self.active_project = self
+            .active_project
+            .min(self.projects.len().saturating_sub(1));
+        self.servers_open_started(window, cx);
+        cx.notify();
+    }
+
+    /// A session of a server's environment was put on screen: a viewer for
+    /// it, which the server fills once it follows it.
+    pub(super) fn view_remote(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(s) = self.session_mut(env_path, id) else {
+            return;
+        };
+        let (agent, title, status) = (s.agent.kind(), s.title.to_string(), s.status);
+        let thread = Thread::viewer(empty_transcript(agent, &title), thread_status(status), cx);
+        thread.update(cx, |t, _| t.set_remote());
+        self.attach(env_path, id, thread, window, cx);
+    }
+
+    /// The server's session in the active tab is the one followed: the server
+    /// sends it whole, then every change.
+    pub(super) fn servers_follow(&mut self, env_path: &Path, id: &str) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        let session = self
+            .find_env(env_path)
+            .and_then(|e| e.sessions.iter().find(|s| s.id.as_ref() == id))
+            .map(|s| (s.agent.kind(), s.title.to_string(), s.status));
+        let Some((agent, title, status)) = session else {
+            return;
+        };
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        // A session that could not be read is read again when it comes back on screen.
+        if link
+            .following
+            .as_ref()
+            .is_some_and(|f| f.server == remote.server && f.session == id && f.broken.is_none())
+        {
+            return;
+        }
+        let Some(conn) = link.conns.get(&remote.server) else {
+            return;
+        };
+        if let Some(before) = link.following.take().filter(|b| b.server != remote.server)
+            && let Some(other) = link.conns.get(&before.server)
+        {
+            other.client.send(&json!({ "type": "close" }));
+        }
+        link.following = Some(Following {
+            server: remote.server.clone(),
+            session: id.to_string(),
+            env_path: env_path.to_path_buf(),
+            entries: Vec::new(),
+            agent,
+            cwd: PathBuf::from(&remote.place),
+            title,
+            status,
+            asking: true,
+            asked: 0,
+            again: None,
+            refill: Some(Vec::new()),
+            broken: None,
+        });
+        // Not connected: it is asked for when the server is back.
+        if conn.reach == Reach::Connected {
+            conn.client.send(&json!({ "type": "open", "session": id }));
+            conn.client
+                .send(&json!({ "type": "transcript", "session": id, "from": 0 }));
+        }
+    }
+
+    /// What the user did in a server's session goes to the server.
+    pub(super) fn servers_remote_action(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        action: &RemoteAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        let msg = match action {
+            RemoteAction::Send(text) => json!({ "type": "send", "text": text, "uploads": [] }),
+            RemoteAction::Cancel => json!({ "type": "cancel" }),
+            RemoteAction::Permission(option) => json!({ "type": "permission", "option": option }),
+            RemoteAction::Answer(answers) => json!({ "type": "answer", "answers": answers }),
+            RemoteAction::SkipQuestion => json!({ "type": "skip_question" }),
+        };
+        self.servers_send(&remote.server, id, msg, cx);
+    }
+
+    /// A message about session `id` to its server, or a word in the session
+    /// on why it cannot go.
+    fn servers_send(&mut self, server: &str, id: &str, mut msg: Value, cx: &mut Context<Self>) {
+        msg["session"] = json!(id);
+        let sent = self.servers.as_ref().and_then(|link| {
+            let conn = link.conns.get(server)?;
+            (conn.reach == Reach::Connected).then(|| conn.client.send(&msg))
+        });
+        if sent.is_none()
+            && let Some(f) = self.servers.as_ref().and_then(|l| l.following.as_ref())
+            && let Some(thread) = thread_of(&self.projects, &f.env_path, id)
+        {
+            thread.update(cx, |t, cx| {
+                t.post_notice(
+                    String::from("The server is not connected, so this did not reach it."),
+                    true,
+                    cx,
+                )
+            });
+        }
+    }
+
+    /// The first prompt in a server's environment starts a session there.
+    /// False when the server cannot be reached; the prompt stays in the composer.
+    pub(super) fn servers_start(
+        &mut self,
+        env_path: &Path,
+        agent: model::Agent,
+        text: &str,
+    ) -> bool {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return false;
+        };
+        let Some(link) = &mut self.servers else {
+            return false;
+        };
+        let Some(conn) = link.conns.get(&remote.server) else {
+            return false;
+        };
+        if conn.reach != Reach::Connected {
+            link.error = Some(format!("{} is not connected right now.", remote.machine));
+            return false;
+        }
+        conn.client.send(&json!({
+            "type": "start", "env": remote.place, "agent": agent.key(), "text": text, "settings": [],
+        }));
+        link.starting = Some(remote.server);
+        true
+    }
+
+    /// A session picked in the Servers tab opens in its environment's tab.
+    fn servers_open_session(
         &mut self,
         server: &str,
         session: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(link) = &mut self.servers else {
+        let found = self.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.environments.iter().enumerate().find_map(|(ei, e)| {
+                (e.remote.as_ref().is_some_and(|r| r.server == server)
+                    && e.session_index(session).is_some())
+                .then_some((pi, ei))
+            })
+        });
+        let Some((pi, ei)) = found else {
             return;
         };
-        // A session that could not be read is read again when asked for again.
-        if link
-            .showing
-            .as_ref()
-            .is_some_and(|s| s.server == server && s.session == session && s.broken.is_none())
-        {
-            return;
-        }
-        let Some(conn) = link.conns.get(server) else {
+        self.select_env(pi, ei, window, cx);
+        self.open_session(session.to_string().into(), window, cx);
+    }
+
+    /// A session this app started on a server is in its inbox now: its tab opens.
+    fn servers_open_started(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((server, id)) = self.servers.as_ref().and_then(|l| l.starting_id.clone()) else {
             return;
         };
-        // Nothing would answer: say so instead of waiting on it.
-        if conn.reach != Reach::Connected {
-            link.error =
-                Some("That server is not connected; its sessions cannot be read right now.".into());
-            return;
+        let here = self.projects.iter().flat_map(|p| &p.environments).any(|e| {
+            e.remote.as_ref().is_some_and(|r| r.server == server) && e.session_index(&id).is_some()
+        });
+        if here {
+            if let Some(link) = &mut self.servers {
+                link.starting_id = None;
+            }
+            self.servers_open_session(&server, &id, window, cx);
         }
-        let row = conn.sessions.iter().find(|s| s.id == session);
-        let (title, agent_name, status) = row
-            .map_or((String::new(), String::new(), Status::Idle), |r| {
-                (r.title.clone(), r.agent.clone(), r.status)
-            });
-        let agent = AgentKind::parse(&agent_name).unwrap_or(AgentKind::Claude);
-        // The server stops sending the last one's changes once it hears of another.
-        let before = link.showing.take();
-        if let Some(before) = before.filter(|b| b.server != server)
-            && let Some(other) = link.conns.get(&before.server)
-        {
-            other.client.send(&json!({ "type": "close" }));
-        }
-        // Empty until its entries come; the status shows it is on its way.
-        let thread = Thread::viewer(empty_transcript(agent, &title), thread_status(status), cx);
-        let view = cx.new(|cx| ThreadView::new(thread.clone(), window, cx));
-        let showing = Showing {
-            server: server.to_string(),
-            session: session.to_string(),
-            thread,
-            view,
-            entries: Vec::new(),
-            agent,
-            cwd: PathBuf::new(),
-            title,
-            agent_name,
-            place: String::new(),
-            status,
-            permission: None,
-            questions: None,
-            asking: true,
-            asked: 0,
-            again: None,
-            refill: Some(Vec::new()),
-            loaded: false,
-            broken: None,
-        };
-        conn.client
-            .send(&json!({ "type": "open", "session": session }));
-        conn.client
-            .send(&json!({ "type": "transcript", "session": session, "from": 0 }));
-        link.showing = Some(showing);
-        self.servers_view.update(cx, |v, cx| v.show_session(cx));
     }
 
     /// What a connection's thread says: how it stands, or a message from the server.
@@ -722,31 +816,68 @@ impl Shell {
                 let back = reach == Reach::Connected;
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
-                    // Back after a drop: the open session is asked for again,
-                    // whole, since what changed meanwhile was not heard. It is
-                    // read to the side and swapped in when complete.
-                    if back && let Some(showing) = link.showing.as_mut().filter(|s| s.server == id)
-                    {
-                        (showing.asking, showing.asked, showing.again) = (true, 0, None);
-                        (showing.refill, showing.broken) = (Some(Vec::new()), None);
+                    // Back after a drop: the followed session is asked for
+                    // again, whole, since what changed meanwhile was not
+                    // heard. It is read to the side and swapped in when complete.
+                    if back && let Some(f) = link.following.as_mut().filter(|f| f.server == id) {
+                        (f.asking, f.asked, f.again) = (true, 0, None);
+                        (f.refill, f.broken) = (Some(Vec::new()), None);
                         conn.client
-                            .send(&json!({ "type": "open", "session": showing.session }));
+                            .send(&json!({ "type": "open", "session": f.session }));
                         conn.client.send(
-                            &json!({ "type": "transcript", "session": showing.session, "from": 0 }),
+                            &json!({ "type": "transcript", "session": f.session, "from": 0 }),
                         );
                     }
                 }
             }
             Event::Message(msg) => {
-                if msg["type"] == "started" {
-                    let session = text(&msg, "id");
-                    self.servers_show(id, &session, window, cx);
+                if msg["type"] == "inbox" {
+                    self.servers_inbox(id, &msg);
+                    self.sync_remote_projects(window, cx);
+                } else if msg["type"] == "started" {
+                    if link.starting.as_deref() == Some(id) {
+                        link.starting = None;
+                        link.starting_id = Some((id.to_string(), text(&msg, "id")));
+                    }
+                    // The server sends its inbox before this: the session is here.
+                    self.servers_open_started(window, cx);
                 } else {
                     self.servers_message(id, &msg, cx);
                 }
             }
         }
         self.sync_servers_view(cx);
+    }
+
+    /// The server's list of folders and sessions.
+    fn servers_inbox(&mut self, id: &str, msg: &Value) {
+        let Some(conn) = self.servers.as_mut().and_then(|l| l.conns.get_mut(id)) else {
+            return;
+        };
+        let rows = |key: &str| msg[key].as_array().cloned().unwrap_or_default();
+        conn.sessions = rows("sessions")
+            .iter()
+            .map(|s| SessionRow {
+                id: text(s, "id"),
+                title: text(s, "title"),
+                agent: text(s, "agent"),
+                status: status_from(s["status"].as_str().unwrap_or("")),
+                updated: s["updated"].as_u64().unwrap_or(0),
+                place: text(s, "place"),
+                env: text(s, "env"),
+            })
+            .collect();
+        conn.places = rows("places")
+            .iter()
+            .map(|p| PlaceRow {
+                path: text(p, "path"),
+                project: text(p, "project"),
+                branch: text(p, "branch"),
+                agent: text(p, "agent"),
+                repo: text(p, "repo"),
+                origin: text(p, "origin"),
+            })
+            .collect();
     }
 
     fn servers_message(&mut self, id: &str, msg: &Value, cx: &mut Context<Self>) {
@@ -756,85 +887,55 @@ impl Shell {
         let Some(conn) = link.conns.get_mut(id) else {
             return;
         };
-        let showing = link
-            .showing
+        let following = link
+            .following
             .as_mut()
-            .filter(|s| s.server == id && msg["id"] == s.session.as_str());
+            .filter(|f| f.server == id && msg["id"] == f.session.as_str());
         match msg["type"].as_str().unwrap_or("") {
-            "inbox" => {
-                let rows = |key: &str| msg[key].as_array().cloned().unwrap_or_default();
-                conn.sessions = rows("sessions")
-                    .iter()
-                    .map(|s| SessionRow {
-                        id: text(s, "id"),
-                        title: text(s, "title"),
-                        agent: text(s, "agent"),
-                        status: status_from(s["status"].as_str().unwrap_or("")),
-                        place: text(s, "place"),
-                        env: text(s, "env"),
-                    })
-                    .collect();
-                conn.places = rows("places")
-                    .iter()
-                    .map(|p| PlaceRow {
-                        path: text(p, "path"),
-                        project: text(p, "project"),
-                        branch: text(p, "branch"),
-                        agent: text(p, "agent"),
-                    })
-                    .collect();
-                // A session the server forgot is not on show any more.
-                if link.showing.as_ref().is_some_and(|s| {
-                    s.server == id && !conn.sessions.iter().any(|r| r.id == s.session)
-                }) {
-                    link.showing = None;
-                }
-            }
             "session" | "state" => {
-                let Some(showing) = showing else { return };
-                showing.status = status_from(msg["status"].as_str().unwrap_or(""));
-                showing.permission = permission_from(&msg["permission"]);
-                showing.questions = questions_from(&msg["question"]);
+                let Some(f) = following else { return };
+                f.status = status_from(msg["status"].as_str().unwrap_or(""));
                 if let Some(title) = msg["title"].as_str().filter(|t| !t.is_empty()) {
-                    showing.title = title.to_string();
+                    f.title = title.to_string();
                 }
-                if msg["type"] == "session" {
-                    showing.agent_name = text(msg, "agent");
-                    showing.place = text(msg, "place");
-                }
-                let (thread, status) = (showing.thread.clone(), thread_status(showing.status));
-                let transcript = transcript_of(showing);
-                thread.update(cx, |t, cx| t.show_transcript(transcript, status, cx));
+                let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) else {
+                    return;
+                };
+                let (status, transcript) = (thread_status(f.status), transcript_of(f));
+                let (permission, question) = (msg["permission"].clone(), msg["question"].clone());
+                thread.update(cx, |t, cx| {
+                    t.show_transcript(transcript, status, cx);
+                    t.set_remote_asks(&permission, &question, cx);
+                });
             }
             // Entries changed, cut down for a phone: the whole ones are asked for.
             "entries" => {
-                let Some(showing) = showing else { return };
-                if msg["older"] == true || showing.broken.is_some() {
+                let Some(f) = following else { return };
+                if msg["older"] == true || f.broken.is_some() {
                     return;
                 }
                 let from = msg["from"].as_u64().unwrap_or(0) as usize;
-                if showing.asking {
-                    showing.again = Some(showing.again.map_or(from, |a| a.min(from)));
+                if f.asking {
+                    f.again = Some(f.again.map_or(from, |a| a.min(from)));
                 } else {
-                    (showing.asking, showing.asked) = (true, from);
-                    conn.client.send(
-                        &json!({ "type": "transcript", "session": showing.session, "from": from }),
-                    );
+                    (f.asking, f.asked) = (true, from);
+                    conn.client
+                        .send(&json!({ "type": "transcript", "session": f.session, "from": from }));
                 }
             }
             "transcript" => {
-                let Some(showing) = showing else { return };
-                if showing.broken.is_some() {
+                let Some(f) = following else { return };
+                if f.broken.is_some() {
                     return;
                 }
                 if let Some(agent) = AgentKind::parse(msg["agent"].as_str().unwrap_or("")) {
-                    showing.agent = agent;
+                    f.agent = agent;
                 }
-                showing.cwd = PathBuf::from(text(msg, "cwd"));
-                let asked = showing.asked;
-                let next = page_of(msg).map(|page| match showing.refill.as_mut() {
+                f.cwd = PathBuf::from(text(msg, "cwd"));
+                let asked = f.asked;
+                let next = page_of(msg).map(|page| match f.refill.as_mut() {
                     Some(refill) => merge(refill, page, asked),
-                    None => merge(&mut showing.entries, page, asked),
+                    None => merge(&mut f.entries, page, asked),
                 });
                 let ask = match next {
                     // Not what was asked for: that answer is still on its way.
@@ -842,48 +943,96 @@ impl Shell {
                     Ok(Next::Ask(from)) => Some(from),
                     Ok(Next::Done) => {
                         // Read whole: now it takes the place of what was shown.
-                        if let Some(whole) = showing.refill.take() {
-                            showing.entries = whole;
+                        if let Some(whole) = f.refill.take() {
+                            f.entries = whole;
                         }
-                        showing.loaded = true;
                         // What changed while this one was out.
-                        showing.again.take()
+                        f.again.take()
                     }
                     // Asking again would bring the same answer. What is here
-                    // stays on show, and the session says why it stops there
-                    // for as long as it does: any click clears `link.error`.
+                    // stays on show, and the session says why it stops there.
                     failed => {
-                        (showing.asking, showing.again) = (false, None);
-                        (showing.refill, showing.loaded) = (None, true);
-                        showing.broken = Some(match failed {
+                        (f.asking, f.again, f.refill) = (false, None, None);
+                        let why = match failed {
                             // The reason without serde's list of every kind it knows.
                             Err(e) => format!(
                                 "A newer server? This session holds something this app cannot read ({}). Update this app to follow it.",
                                 e.split(", expected").next().unwrap_or(&e)
                             ),
                             _ => "The server stopped sending this session part way.".into(),
-                        });
+                        };
+                        f.broken = Some(why.clone());
+                        if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+                            thread.update(cx, |t, cx| t.post_notice(why, true, cx));
+                        }
                         None
                     }
                 };
                 match ask {
                     Some(from) => {
-                        showing.asked = from;
+                        f.asked = from;
                         conn.client.send(
-                            &json!({ "type": "transcript", "session": showing.session, "from": from }),
+                            &json!({ "type": "transcript", "session": f.session, "from": from }),
                         );
                     }
-                    None => showing.asking = false,
+                    None => f.asking = false,
                 }
                 // A refill shows once it is whole; what is on screen stays until then.
-                if showing.refill.is_none() {
-                    let (thread, status) = (showing.thread.clone(), thread_status(showing.status));
-                    let transcript = transcript_of(showing);
+                if f.refill.is_none()
+                    && let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session)
+                {
+                    let (status, transcript) = (thread_status(f.status), transcript_of(f));
                     thread.update(cx, |t, cx| t.show_transcript(transcript, status, cx));
                 }
             }
-            "error" => link.error = Some(text(msg, "message")),
+            "error" => {
+                let message = text(msg, "message");
+                link.starting = None;
+                // Said in the session on screen when it is that server's, else in its tab.
+                match following.and_then(|f| thread_of(&self.projects, &f.env_path, &f.session)) {
+                    Some(thread) => {
+                        thread.update(cx, |t, cx| t.post_notice(message, true, cx));
+                    }
+                    None => link.error = Some(message),
+                }
+            }
             _ => {}
+        }
+    }
+}
+
+/// Brings an environment's sessions in line with the server's list, newest
+/// first. A session with a tab open stays until its tab closes.
+fn sync_sessions(env: &mut Environment, rows: Vec<SessionRow>) {
+    let ids: HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    let open: HashSet<SharedString> = env
+        .tabs
+        .iter()
+        .filter_map(|t| match &t.kind {
+            TabKind::Session { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    env.sessions
+        .retain(|s| ids.contains(s.id.as_ref()) || open.contains(&s.id));
+    for (i, row) in rows.into_iter().enumerate() {
+        let at = match env.session_index(&row.id) {
+            Some(at) => at,
+            None => {
+                let s = Session::new(
+                    row.id.clone().into(),
+                    row.title.clone().into(),
+                    agent_of(&row.agent),
+                );
+                env.sessions.insert(i.min(env.sessions.len()), s);
+                i.min(env.sessions.len() - 1)
+            }
+        };
+        let s = &mut env.sessions[at];
+        s.status = row.status;
+        s.updated = row.updated;
+        if !row.title.is_empty() {
+            s.title = row.title.into();
         }
     }
 }
@@ -1017,80 +1166,48 @@ mod tests {
         assert!(page_of(&newer).err().unwrap().contains("hologram"));
     }
 
-    fn session(status: Status, place: &str, env: &str) -> SessionRow {
-        SessionRow {
-            id: "s".into(),
-            title: String::new(),
-            agent: "Claude Code".into(),
-            status,
-            place: place.into(),
-            env: env.into(),
-        }
-    }
-
-    fn place(path: &str, project: &str, branch: &str) -> PlaceRow {
+    fn place(path: &str, repo: &str, origin: &str) -> PlaceRow {
         PlaceRow {
             path: path.into(),
-            project: project.into(),
-            branch: branch.into(),
+            project: "app".into(),
+            branch: "main".into(),
             agent: "claude".into(),
+            repo: repo.into(),
+            origin: origin.into(),
         }
     }
 
     #[test]
-    fn the_rail_puts_each_session_under_its_folder() {
-        let places = [
-            place("/srv/app", "app", "main"),
-            place("/srv/wt/app-fix", "app-fix", "app-fix"),
-            place("/srv/site", "site", ""),
+    fn a_server_folder_joins_the_local_project_with_its_origin() {
+        let locals = vec![
+            (
+                PathBuf::from("/home/me/code/app"),
+                repo_key("https://github.com/Owner/App"),
+            ),
+            (PathBuf::from("/home/me/code/site"), None),
         ];
-        let sessions = [
-            session(Status::Working, "/srv/app", "app"),
-            session(Status::NeedsInput, "/srv/app", "app"),
-            // The same folder name elsewhere is another place.
-            session(Status::Working, "/other/site", "site"),
-            // A server from before `place` puts it by the folder's name.
-            session(Status::Working, "", "app-fix"),
-        ];
-        let rail = rail_places(&places, &sessions);
-        let rows: Vec<(&str, Status)> = rail.iter().map(|p| (p.label.as_str(), p.status)).collect();
-        assert_eq!(
-            rows,
-            [
-                ("app · main", Status::NeedsInput),
-                ("app-fix", Status::Working),
-                ("site", Status::Idle),
-            ]
+        // The same repository by ssh, in another case: the local project.
+        let (path, linked) = project_for(
+            &place("/srv/app", "/srv/app", "git@github.com:owner/app.git"),
+            "s1",
+            &locals,
         );
+        assert_eq!((path, linked), (PathBuf::from("/home/me/code/app"), true));
+        // Another repository: a project of the servers', the same on each server.
+        let other = place("/srv/wt/x", "/srv/x", "https://gitlab.com/g/x");
+        let (a, linked) = project_for(&other, "s1", &locals);
+        let (b, _) = project_for(&other, "s2", &locals);
+        assert!(!linked && a == b && Remote::is_path(&a));
+        // Without an origin, a server's repository is its own.
+        let bare = place("/srv/wt/fix", "/srv/notes", "");
+        let (a, _) = project_for(&bare, "s1", &locals);
+        let (b, _) = project_for(&place("/srv/notes", "/srv/notes", ""), "s1", &locals);
+        let (c, _) = project_for(&bare, "s2", &locals);
+        assert!(a == b && a != c);
     }
 
     #[test]
-    fn what_the_agent_asks_is_read_from_the_servers_words() {
-        let p = permission_from(&json!({
-            "tool_call_id": "t1", "title": "Run cargo test",
-            "options": [
-                { "id": "a", "name": "Allow", "kind": "allow_once" },
-                { "id": "r", "name": "Reject", "kind": "reject_once" },
-            ],
-        }))
-        .unwrap();
-        assert_eq!(p.title, "Run cargo test");
-        assert_eq!(
-            p.options[1],
-            ("r".into(), "Reject".into(), "reject_once".into())
-        );
-        assert!(permission_from(&Value::Null).is_none());
-
-        let (id, questions) = questions_from(&json!({
-            "tool_call_id": "q1",
-            "questions": [{ "index": 1, "topic": "db", "question": "Which one?", "options": ["sqlite", "postgres"], "multi": false }],
-        }))
-        .unwrap();
-        assert_eq!(id, "q1");
-        assert_eq!(questions[0].question, "Which one?");
-        assert_eq!(questions[0].options, ["sqlite", "postgres"]);
-        assert!(questions_from(&Value::Null).is_none());
-
+    fn statuses_read_from_the_servers_words() {
         assert_eq!(status_from("needs_input"), Status::NeedsInput);
         assert_eq!(status_from("something new"), Status::Idle);
     }

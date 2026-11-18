@@ -499,7 +499,8 @@ impl Shell {
                 {
                     envs = envs.child(pending_env_row(pi * 1000 + i, name));
                 }
-                if !only_open {
+                // A server makes its folders itself: `arakun-server add`.
+                if !only_open && !project.is_remote() {
                     envs = envs.child(
                         div()
                             .id(("env-add-row", pi))
@@ -537,7 +538,6 @@ impl Shell {
                 }
             }
         }
-        projects = projects.children(self.render_rail_servers(show_envs, cx));
         if self.projects.is_empty() {
             projects = projects.child(
                 div()
@@ -804,203 +804,36 @@ impl Shell {
         Some(list.into_any_element())
     }
 
-    /// The paired servers, each as a project whose environments are the
-    /// folders it offers, so work on another machine sits beside the work
-    /// here. A click opens a folder's newest session; + starts one.
-    fn render_rail_servers(&self, show_envs: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut out = Vec::new();
-        for (si, server) in self.rail_servers().into_iter().enumerate() {
-            let connected = server.reach == Reach::Connected;
-            let note = match &server.reach {
-                Reach::Connected => None,
-                Reach::Connecting => Some("Connecting…".to_string()),
-                Reach::Away(why) | Reach::Refused(why) => Some(why.clone()),
-            };
-            let activity = Activity::of(server.places.iter().map(|p| p.status));
-            let add_id = server.id.clone();
-            out.push(
-                div()
-                    .id(("server", si))
-                    .group("server-row")
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .h(px(32.))
-                    .px(crate::ui::sp(8.))
-                    .rounded(crate::ui::rad(8.))
-                    .cursor_pointer()
-                    .text_size(px(ui::TEXT_LG))
-                    .font_weight(FontWeight::MEDIUM)
-                    .opacity(if connected { 0.85 } else { 0.55 })
-                    .hover(|s| s.bg(theme::hover()).opacity(1.))
-                    .when_some(note, |d, note| d.tooltip(ui::tip_text(note)))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(16.))
-                            .child(icon("computer", 14.).text_color(theme::text_muted())),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(crate::redact::text(&server.name).into_owned()),
-                    )
-                    .when(!show_envs && activity.status() != Status::Idle, |d| {
-                        d.child(status_dot(activity.status()))
-                    })
-                    .when(!connected, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(ui::TEXT_XS))
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(theme::text_faint())
-                                .child("offline"),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id(("server-add", si))
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .size(px(22.))
-                            .rounded(crate::ui::rad(6.))
-                            .invisible()
-                            .group_hover("server-row", |s| s.visible())
-                            .hover(|s| s.bg(theme::fill_selected()))
-                            .tooltip(ui::tip("New session on this server"))
-                            .child(icon("add01", 14.).text_color(theme::text_muted()))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.servers_new_session(&add_id, None, window, cx)
-                            })),
-                    )
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.open_servers_tab(window, cx)),
-                    )
-                    .into_any_element(),
-            );
-            if !show_envs {
-                continue;
-            }
-            let mut envs = div()
+    /// For an environment on a server: which machine, dimmed while it cannot
+    /// be reached.
+    fn render_machine(&self, env: &Environment, id: usize) -> Option<AnyElement> {
+        let remote = env.remote.as_ref()?;
+        let reach = self.server_reach(&remote.server);
+        let note = match &reach {
+            Some(Reach::Connected) => None,
+            Some(Reach::Away(why) | Reach::Refused(why)) => Some(why.clone()),
+            Some(Reach::Connecting) | None => Some("Connecting…".to_string()),
+        };
+        let machine = crate::redact::text(&remote.machine).into_owned();
+        Some(
+            div()
+                .id(("env-machine", id))
                 .flex()
-                .flex_col()
-                .gap(crate::ui::sp(ENV_GAP))
-                .ml(px(10.));
-            for (pi, place) in server.places.into_iter().enumerate() {
-                let row = si * 1000 + pi;
-                let needs_you = place.status == Status::NeedsInput;
-                let (open_server, open_path) = (server.id.clone(), place.path.clone());
-                let (new_server, new_path) = (server.id.clone(), place.path.clone());
-                let lead: AnyElement = if place.status == Status::Idle {
-                    icon("folder01", 14.)
-                        .text_color(theme::text_faint())
-                        .into_any_element()
-                } else {
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(14.))
-                        .child(status_dot(place.status))
-                        .into_any_element()
-                };
-                envs = envs.child(
-                    div()
-                        .id(("server-place", row))
-                        .group("server-place")
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(8.))
-                        .h(px(ENV_ROW_H))
-                        .px(crate::ui::sp(8.))
-                        .rounded(crate::ui::rad(8.))
-                        .cursor_pointer()
-                        .text_size(px(ui::TEXT_MD))
-                        .text_color(if needs_you {
-                            theme::content()
-                        } else {
-                            theme::text_muted()
-                        })
-                        .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
-                        .tooltip(ui::tip_text(crate::redact::text(&place.path).into_owned()))
-                        .child(lead)
-                        .child(div().flex_1().min_w_0().truncate().child(place.label))
-                        .when(needs_you, |d| {
-                            d.child(
-                                div()
-                                    .flex_none()
-                                    .text_size(px(ui::TEXT_XS))
-                                    .text_color(theme::needs_you())
-                                    .child("Needs you"),
-                            )
-                        })
-                        .child(
-                            div()
-                                .id(("server-place-add", row))
-                                .flex()
-                                .flex_none()
-                                .items_center()
-                                .justify_center()
-                                .size(px(20.))
-                                .rounded(crate::ui::rad(6.))
-                                .invisible()
-                                .group_hover("server-place", |s| s.visible())
-                                .hover(|s| s.bg(theme::fill_selected()))
-                                .tooltip(ui::tip("New session here"))
-                                .child(icon("add01", 12.).text_color(theme::text_muted()))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.servers_new_session(
-                                        &new_server,
-                                        Some(new_path.clone()),
-                                        window,
-                                        cx,
-                                    )
-                                })),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.servers_open_place(&open_server, &open_path, window, cx)
-                        })),
-                );
-            }
-            let new_server = server.id.clone();
-            envs = envs.child(
-                div()
-                    .id(("server-new", si))
-                    .group("server-new")
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .h(px(ENV_ROW_H))
-                    .px(crate::ui::sp(8.))
-                    .rounded(crate::ui::rad(8.))
-                    .cursor_pointer()
-                    .text_size(px(ui::TEXT_MD))
-                    .text_color(theme::text_faint())
-                    .hover(|s| s.bg(theme::hover()).text_color(theme::text_muted()))
-                    .child(hover_icon(
-                        "add01",
-                        14.,
-                        theme::text_faint(),
-                        theme::mix(0.7),
-                        "server-new",
-                    ))
-                    .child("New session")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.servers_new_session(&new_server, None, window, cx)
-                    })),
-            );
-            out.push(envs.into_any_element());
-        }
-        out
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(4.))
+                .max_w(px(96.))
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_faint())
+                .when(note.is_some(), |d| d.opacity(0.6))
+                .tooltip(ui::tip_text(match note {
+                    Some(why) => format!("On {machine}: {why}"),
+                    None => format!("On {machine}"),
+                }))
+                .child(icon("computer", 12.).text_color(theme::text_faint()))
+                .child(div().min_w_0().truncate().child(machine))
+                .into_any_element(),
+        )
     }
 
     /// "Environments", with the + that makes one, over the open project's list.
@@ -1134,6 +967,7 @@ impl Shell {
             })
             .child(lead)
             .child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
+            .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
             .on_click(cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)))
     }

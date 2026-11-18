@@ -22,6 +22,10 @@ impl Shell {
         dirs: Vec<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) {
+        // A server's folder has no files here to list.
+        if crate::model::Remote::is_path(&env_path) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_spawn(crate::guard::task(async move {

@@ -497,6 +497,8 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
             .iter()
             // Headless sessions are listed from their own folder, not saved here;
             // their project stays once it holds sessions the app took over.
+            // A server's projects and folders come from the server each time.
+            .filter(|p| !p.is_remote())
             .filter(|p| {
                 p.path != crate::headless::root()
                     || p.environments
@@ -516,10 +518,15 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                 automations: p.automations.clone(),
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace.clone(),
-                active_env: p.environments.get(p.active_env).map(|e| e.path.clone()),
+                active_env: p
+                    .environments
+                    .get(p.active_env)
+                    .filter(|e| e.remote.is_none())
+                    .map(|e| e.path.clone()),
                 envs: p
                     .environments
                     .iter()
+                    .filter(|e| e.remote.is_none())
                     .map(|e| EnvState {
                         path: e.path.clone(),
                         branch: Some(e.branch.to_string()),
@@ -600,7 +607,14 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                     .collect(),
             })
             .collect(),
-        active_project,
+        // Remote projects come after every local one and are not saved.
+        active_project: active_project.min(
+            projects
+                .iter()
+                .filter(|p| !p.is_remote())
+                .count()
+                .saturating_sub(1),
+        ),
         dock_open: layout.dock_open,
         dock_height: layout.dock_height,
         rail_open: layout.rail_open,

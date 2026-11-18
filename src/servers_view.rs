@@ -1,19 +1,15 @@
 //! The Servers tab: the machines running `arakun server` this app is paired
-//! with, their sessions, and one of them open as the app shows its own. It
-//! pairs with the link the server prints, starts sessions in the folders the
-//! server offers, sends follow-ups and answers what the agents ask. The shell
-//! keeps the connections and tells this view what there is (`shell::servers`).
-
-use std::collections::HashMap;
+//! with, and their sessions. It pairs with the link the server prints and
+//! forgets a server. A server's folders and sessions live in the projects,
+//! as the app's own (`shell::servers`): a session picked here opens there.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
-    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
-use crate::agent::ThreadView;
 use crate::input::{InputEvent, TextInput};
 use crate::model::Status;
 use crate::theme;
@@ -26,27 +22,8 @@ pub enum ServersEvent {
     CancelPairing,
     /// Forget a server; it is told to forget this app too.
     Forget(String),
-    /// Show one of a server's sessions.
-    Open {
-        server: String,
-        session: String,
-    },
-    /// A new session on a server: the folder (its path there), the agent's key
-    /// and the first prompt.
-    Start {
-        server: String,
-        place: String,
-        agent: String,
-        text: String,
-    },
-    /// The rest act on the open session.
-    Send(String),
-    Stop,
-    /// Answers the permission the agent asks for with one of its options.
-    Permission(String),
-    /// One answer for each question the agent asked.
-    Answer(Vec<String>),
-    SkipQuestion,
+    /// Open one of a server's sessions in its project.
+    Open { server: String, session: String },
 }
 
 /// How the connection to a server stands.
@@ -66,6 +43,8 @@ pub struct SessionRow {
     pub title: String,
     pub agent: String,
     pub status: Status,
+    /// Unix seconds of its last activity.
+    pub updated: u64,
     /// The folder it runs in, as its place's path. Empty from a server that
     /// does not say: `env`, the folder's name, is all there is then.
     pub place: String,
@@ -91,6 +70,11 @@ pub struct PlaceRow {
     pub branch: String,
     /// The key of the agent sessions start with there.
     pub agent: String,
+    /// The repository's main folder there, which its worktrees share.
+    pub repo: String,
+    /// Its `origin`, by which the same project is found here. Empty when
+    /// the server does not say (an older one) or it has none.
+    pub origin: String,
 }
 
 #[derive(Clone, PartialEq)]
@@ -103,44 +87,9 @@ pub struct ServerRow {
     pub places: Vec<PlaceRow>,
 }
 
-/// A permission the open session's agent waits on.
-#[derive(Clone, PartialEq)]
-pub struct Permission {
-    pub title: String,
-    /// Each option's id, name and kind (`allow_once`, `reject_once`...).
-    pub options: Vec<(String, String, String)>,
-}
-
-#[derive(Clone, PartialEq)]
-pub struct Question {
-    pub question: String,
-    pub options: Vec<String>,
-}
-
-/// The session on show.
-#[derive(Clone, PartialEq)]
-pub struct Open {
-    pub server: String,
-    pub session: String,
-    pub title: String,
-    pub agent: String,
-    pub place: String,
-    pub status: Status,
-    pub permission: Option<Permission>,
-    /// The questions the agent asked, under the id of the call that asked them.
-    pub questions: Option<(String, Vec<Question>)>,
-    /// The transcript, drawn as the app draws its own sessions.
-    pub view: Entity<ThreadView>,
-    /// Its entries are still on their way.
-    pub loading: bool,
-    /// Why the session could not be read in full, when it could not.
-    pub problem: Option<String>,
-}
-
 #[derive(Clone, PartialEq, Default)]
 pub struct ServersState {
     pub servers: Vec<ServerRow>,
-    pub open: Option<Open>,
     /// A pairing is under way.
     pub pairing: bool,
     /// What went wrong last, until something else happens.
@@ -150,22 +99,11 @@ pub struct ServersState {
 /// What the side beside the list shows.
 #[derive(Clone, PartialEq)]
 enum Pane {
-    /// The open session, or a word about picking one.
-    Session,
+    /// A word on where the sessions are.
+    Overview,
     /// The form to pair with a server.
     Add,
-    /// The form for a new session on this server.
-    New(String),
 }
-
-/// The agents a session can start with, by key.
-const AGENTS: [(&str, &str); 5] = [
-    ("claude", "Claude Code"),
-    ("droid", "Droid"),
-    ("opencode", "OpenCode"),
-    ("codex", "Codex"),
-    ("workers-ai", "Workers AI"),
-];
 
 /// The list of servers, as wide as a sidebar.
 const LIST_W: f32 = 260.;
@@ -174,21 +112,6 @@ pub struct ServersView {
     state: ServersState,
     pane: Pane,
     link: Entity<TextInput>,
-    /// The follow-up to the open session.
-    prompt: Entity<TextInput>,
-    /// Follow-ups typed and not sent, by server and session. The field shows
-    /// the open session's only: text typed for one must not go to another.
-    drafts: HashMap<(String, String), String>,
-    /// The first prompt of a new session.
-    first: Entity<TextInput>,
-    /// A typed answer to the agent's question.
-    answer: Entity<TextInput>,
-    /// The folder and agent picked for the new session, when not the first offered.
-    place: Option<String>,
-    agent: Option<String>,
-    /// Answers given so far to the questions under this key: the server, the
-    /// session and the id of the call that asked.
-    answers: (String, Vec<String>),
     /// "Forget" was pressed once on this server; the next press counts.
     confirm_forget: Option<String>,
     focus: FocusHandle,
@@ -209,35 +132,15 @@ fn tone(status: Status) -> (Tone, &'static str) {
 impl ServersView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let link = cx.new(|cx| TextInput::new("https://…", cx).mono().redacted());
-        let prompt = cx.new(|cx| TextInput::new("Send a follow-up…", cx));
-        let first = cx.new(|cx| TextInput::new("What should the agent do?", cx));
-        let answer = cx.new(|cx| TextInput::new("Or type an answer…", cx));
-        let on_submit = |cx: &mut Context<Self>,
-                         input: &Entity<TextInput>,
-                         act: fn(&mut Self, &mut Context<Self>)| {
-            cx.subscribe(input, move |this, _, ev: &InputEvent, cx| {
-                if *ev == InputEvent::Submit {
-                    act(this, cx);
-                }
-            })
-        };
-        let inputs = vec![
-            on_submit(cx, &link, Self::pair),
-            on_submit(cx, &prompt, Self::send),
-            on_submit(cx, &first, Self::start),
-            on_submit(cx, &answer, Self::answer_typed),
-        ];
+        let inputs = vec![cx.subscribe(&link, |this, _, ev: &InputEvent, cx| {
+            if *ev == InputEvent::Submit {
+                this.pair(cx);
+            }
+        })];
         Self {
             state: ServersState::default(),
             pane: Pane::Add,
             link,
-            prompt,
-            drafts: HashMap::new(),
-            first,
-            answer,
-            place: None,
-            agent: None,
-            answers: (String::new(), Vec::new()),
             confirm_forget: None,
             focus: cx.focus_handle(),
             _inputs: inputs,
@@ -255,150 +158,19 @@ impl ServersView {
         // Paired: the link did its work, and the new server has the floor.
         if state.servers.len() > self.state.servers.len() && self.pane == Pane::Add {
             self.link.update(cx, |i, cx| i.set_text("", cx));
-            self.pane = Pane::Session;
+            self.pane = Pane::Overview;
         }
         if state.servers.is_empty() {
             self.pane = Pane::Add;
         }
-        if let Pane::New(id) = &self.pane
-            && !state.servers.iter().any(|s| s.id == *id)
-        {
-            self.pane = Pane::Session;
-        }
-        // Another question, or the same id asked in another session: the
-        // answers so far, and what is typed in the field, were to the last one.
-        let asked = state
-            .open
-            .as_ref()
-            .and_then(|o| Some((o, o.questions.as_ref()?)))
-            .map(|(o, (id, _))| format!("{}\n{}\n{id}", o.server, o.session))
-            .unwrap_or_default();
-        if self.answers.0 != asked {
-            self.answers = (asked, Vec::new());
-            self.answer.update(cx, |i, cx| i.set_text("", cx));
-        }
-        // Another session on show: what was typed stays with the one it was for.
-        let key =
-            |open: &Option<Open>| open.as_ref().map(|o| (o.server.clone(), o.session.clone()));
-        let (was, now) = (key(&self.state.open), key(&state.open));
-        if was != now {
-            let typed = self.prompt.read(cx).text().to_string();
-            if let Some(was) = was.filter(|_| !typed.trim().is_empty()) {
-                self.drafts.insert(was, typed);
-            }
-            let draft = now.and_then(|k| self.drafts.remove(&k)).unwrap_or_default();
-            self.prompt.update(cx, |i, cx| i.set_text(draft, cx));
-        }
         self.state = state;
         cx.notify();
-    }
-
-    /// The form for a new session on `server`, in `place` when one is given.
-    pub fn new_session(
-        &mut self,
-        server: &str,
-        place: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane = Pane::New(server.to_string());
-        self.place = place;
-        self.agent = None;
-        window.focus(&self.first.focus_handle(cx), cx);
-        cx.notify();
-    }
-
-    /// Shows the open session: one was just picked or started.
-    pub fn show_session(&mut self, cx: &mut Context<Self>) {
-        self.pane = Pane::Session;
-        cx.notify();
-    }
-
-    fn server(&self, id: &str) -> Option<&ServerRow> {
-        self.state.servers.iter().find(|s| s.id == id)
     }
 
     fn pair(&mut self, cx: &mut Context<Self>) {
         let link = self.link.read(cx).text().trim().to_string();
         if !link.is_empty() && !self.state.pairing {
             cx.emit(ServersEvent::Pair(link));
-        }
-    }
-
-    /// The open session's server can be told something right now. Without a
-    /// connection nothing typed or picked is taken: it would be dropped on
-    /// the way, and the field would look as if it had been sent.
-    fn open_connected(&self) -> bool {
-        self.state
-            .open
-            .as_ref()
-            .and_then(|o| self.server(&o.server))
-            .is_some_and(|s| s.reach == Reach::Connected)
-    }
-
-    fn send(&mut self, cx: &mut Context<Self>) {
-        let text = self.prompt.read(cx).text().trim().to_string();
-        if text.is_empty() || !self.open_connected() {
-            return;
-        }
-        self.prompt.update(cx, |i, cx| i.set_text("", cx));
-        cx.emit(ServersEvent::Send(text));
-    }
-
-    /// The folder a new session on `server` starts in: the one picked, or the first.
-    fn picked_place<'a>(&self, server: &'a ServerRow) -> Option<&'a PlaceRow> {
-        server
-            .places
-            .iter()
-            .find(|p| Some(&p.path) == self.place.as_ref())
-            .or(server.places.first())
-    }
-
-    fn start(&mut self, cx: &mut Context<Self>) {
-        let Pane::New(id) = &self.pane else { return };
-        let text = self.first.read(cx).text().trim().to_string();
-        let Some(server) = self.server(id) else {
-            return;
-        };
-        let Some(place) = self.picked_place(server) else {
-            return;
-        };
-        if text.is_empty() || server.reach != Reach::Connected {
-            return;
-        }
-        let event = ServersEvent::Start {
-            server: server.id.clone(),
-            place: place.path.clone(),
-            agent: self.agent.clone().unwrap_or_else(|| place.agent.clone()),
-            text,
-        };
-        self.first.update(cx, |i, cx| i.set_text("", cx));
-        self.pane = Pane::Session;
-        cx.emit(event);
-        cx.notify();
-    }
-
-    /// One more answer; once every question has one, they go to the agent.
-    fn give_answer(&mut self, answer: String, cx: &mut Context<Self>) {
-        let Some((_, questions)) = self.state.open.as_ref().and_then(|o| o.questions.as_ref())
-        else {
-            return;
-        };
-        if !self.open_connected() {
-            return;
-        }
-        self.answers.1.push(answer);
-        if self.answers.1.len() >= questions.len() {
-            cx.emit(ServersEvent::Answer(std::mem::take(&mut self.answers.1)));
-        }
-        cx.notify();
-    }
-
-    fn answer_typed(&mut self, cx: &mut Context<Self>) {
-        let text = self.answer.read(cx).text().trim().to_string();
-        if !text.is_empty() && self.open_connected() {
-            self.answer.update(cx, |i, cx| i.set_text("", cx));
-            self.give_answer(text, cx);
         }
     }
 
@@ -427,9 +199,8 @@ impl ServersView {
             Reach::Away(why) => (Tone::Warning, Some(why.clone())),
             Reach::Refused(why) => (Tone::Danger, Some(why.clone())),
         };
-        let open = self.state.open.as_ref().filter(|o| o.server == server.id);
-        let can_start = server.reach == Reach::Connected;
-        let (new_id, forget_id) = (server.id.clone(), server.id.clone());
+        let connected = server.reach == Reach::Connected;
+        let forget_id = server.id.clone();
         let head = div()
             .flex()
             .items_center()
@@ -459,18 +230,7 @@ impl ServersView {
                         this.confirm_forget = Some(forget_id.clone());
                         cx.notify();
                     })),
-            )
-            .when(can_start, |d| {
-                d.child(
-                    ui::icon_button(("servers-new", ix), "add01", 14.)
-                        .tooltip(ui::tip("New session"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            (this.place, this.agent) = (None, None);
-                            this.pane = Pane::New(new_id.clone());
-                            cx.notify();
-                        })),
-                )
-            });
+            );
         let confirm = (self.confirm_forget.as_deref() == Some(server.id.as_str())).then(|| {
             let id = server.id.clone();
             div()
@@ -513,7 +273,6 @@ impl ServersView {
                 )
         });
         let sessions = server.sessions.iter().enumerate().map(|(i, s)| {
-            let selected = open.is_some_and(|o| o.session == s.id) && self.pane == Pane::Session;
             let (tone, _) = tone(s.status);
             let (server_id, session_id) = (server.id.clone(), s.id.clone());
             div()
@@ -526,14 +285,11 @@ impl ServersView {
                 .rounded(ui::rad(ui::RADIUS))
                 .cursor_pointer()
                 .hover(|d| d.bg(theme::fill_hover()))
-                .when(selected, |d| d.bg(theme::fill_selected()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.pane = Pane::Session;
+                .on_click(cx.listener(move |_, _, _, cx| {
                     cx.emit(ServersEvent::Open {
                         server: server_id.clone(),
                         session: session_id.clone(),
                     });
-                    cx.notify();
                 }))
                 .child(
                     div()
@@ -569,7 +325,7 @@ impl ServersView {
             }))
             .children(confirm)
             .children(sessions)
-            .when(server.sessions.is_empty() && can_start, |d| {
+            .when(server.sessions.is_empty() && connected, |d| {
                 d.child(
                     ui::text(Type::Caption, theme::text_faint(), "No sessions yet.").px(ui::sp(8.)),
                 )
@@ -662,357 +418,6 @@ impl ServersView {
             ))
             .into_any_element()
     }
-
-    // ---- a new session -------------------------------------------------------
-
-    fn render_new(&self, server: &ServerRow, cx: &mut Context<Self>) -> AnyElement {
-        let page = div()
-            .flex()
-            .flex_col()
-            .gap(ui::sp(16.))
-            .p(ui::sp(ui::PAGE_PAD))
-            .max_w(px(620.))
-            .child(ui::page_title(
-                format!("New session on {}", crate::redact::text(&server.name)),
-                None,
-            ));
-        let Some(picked) = self.picked_place(server) else {
-            return page
-                .child(Self::label(
-                    "The server has no folder to start a session in yet. On it, name one:",
-                ))
-                .child(div().flex().child(Self::code("arakun-server add <dir>")))
-                .into_any_element();
-        };
-        let agent = self.agent.clone().unwrap_or_else(|| picked.agent.clone());
-        let places = server.places.iter().enumerate().map(|(i, p)| {
-            let path = p.path.clone();
-            ui::choice_row(("servers-place", i), p.path == picked.path)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.place = Some(path.clone());
-                    this.agent = None;
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w_0()
-                        .child(div().truncate().child(if p.branch.is_empty() {
-                            p.project.clone()
-                        } else {
-                            format!("{} · {}", p.project, p.branch)
-                        }))
-                        .child(
-                            ui::text(Type::Caption, theme::text_faint(), p.path.clone()).truncate(),
-                        ),
-                )
-        });
-        let agents = AGENTS
-            .iter()
-            .enumerate()
-            .fold(ui::segmented(), |track, (i, (key, name))| {
-                track.child(
-                    ui::segment(("servers-agent", i), None, *name, agent == *key).on_click(
-                        cx.listener(move |this, _, _, cx| {
-                            this.agent = Some(key.to_string());
-                            cx.notify();
-                        }),
-                    ),
-                )
-            });
-        let connected = server.reach == Reach::Connected;
-        page.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(ui::sp(6.))
-                .child(Self::label("Folder"))
-                .children(places),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(ui::sp(6.))
-                .child(Self::label("Agent"))
-                .child(div().flex().child(agents)),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(ui::sp(8.))
-                .child(ui::field().flex_1().child(self.first.clone()))
-                .child(
-                    ui::button("servers-start", "Start", ButtonKind::Primary, connected)
-                        .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
-                ),
-        )
-        .when(!connected, |d| {
-            d.child(ui::text(
-                Type::Caption,
-                theme::text_faint(),
-                "The server is not connected right now.",
-            ))
-        })
-        .into_any_element()
-    }
-
-    // ---- the open session ----------------------------------------------------
-
-    /// What the agent waits on the user for, with the ways to answer it.
-    fn render_asks(&self, open: &Open, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let connected = self.open_connected();
-        let band = || {
-            div()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .gap(ui::sp(8.))
-                .px(ui::sp(12.))
-                .py(ui::sp(10.))
-                .border_t_1()
-                .border_color(theme::border_subtle())
-        };
-        if let Some(p) = &open.permission {
-            let options = p.options.iter().enumerate().map(|(i, (id, name, kind))| {
-                let id = id.clone();
-                let allow = kind.starts_with("allow");
-                ui::button(
-                    ("servers-permission", i),
-                    name.clone(),
-                    if allow {
-                        ButtonKind::Outline
-                    } else {
-                        ButtonKind::Ghost
-                    },
-                    connected,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if this.open_connected() {
-                        cx.emit(ServersEvent::Permission(id.clone()))
-                    }
-                }))
-            });
-            return Some(
-                band()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(ui::sp(8.))
-                            .child(icon("alert-circle", 14.).text_color(theme::attention()))
-                            .child(ui::text(
-                                Type::Label,
-                                theme::text(),
-                                format!("Needs permission: {}", p.title),
-                            )),
-                    )
-                    .child(div().flex().flex_wrap().gap(ui::sp(6.)).children(options))
-                    .into_any_element(),
-            );
-        }
-        let (_, questions) = open.questions.as_ref()?;
-        let at = self.answers.1.len().min(questions.len().saturating_sub(1));
-        let q = questions.get(at)?;
-        let options = q.options.iter().enumerate().map(|(i, option)| {
-            let answer = option.clone();
-            ui::button(
-                ("servers-option", i),
-                option.clone(),
-                ButtonKind::Outline,
-                connected,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| this.give_answer(answer.clone(), cx)))
-        });
-        let count = (questions.len() > 1).then(|| {
-            ui::text(
-                Type::Caption,
-                theme::text_faint(),
-                format!("Question {} of {}", at + 1, questions.len()),
-            )
-        });
-        Some(
-            band()
-                .children(count)
-                .child(ui::text(Type::Label, theme::text(), q.question.clone()))
-                .child(div().flex().flex_wrap().gap(ui::sp(6.)).children(options))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(ui::sp(8.))
-                        .child(ui::field().flex_1().child(self.answer.clone()))
-                        .child(
-                            ui::button("servers-answer", "Answer", ButtonKind::Outline, connected)
-                                .on_click(cx.listener(|this, _, _, cx| this.answer_typed(cx))),
-                        )
-                        .child(
-                            ui::button("servers-skip", "Skip", ButtonKind::Ghost, connected)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if this.open_connected() {
-                                        cx.emit(ServersEvent::SkipQuestion)
-                                    }
-                                })),
-                        ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn render_open(&self, open: &Open, cx: &mut Context<Self>) -> AnyElement {
-        let connected = self
-            .server(&open.server)
-            .is_some_and(|s| s.reach == Reach::Connected);
-        let (tone, word) = tone(open.status);
-        let head = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(ui::sp(10.))
-            .h(px(ui::BAR_H))
-            .px(ui::sp(12.))
-            .border_b_1()
-            .border_color(theme::border_subtle())
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .truncate()
-                            .ty(Type::Label)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::content())
-                            .child(open.title.clone()),
-                    )
-                    .child(
-                        ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            format!("{} · {}", open.agent, open.place),
-                        )
-                        .truncate(),
-                    ),
-            )
-            .child(ui::status_dot(word, tone))
-            .when(open.status == Status::Working, |d| {
-                d.child(
-                    ui::button("servers-stop", "Stop", ButtonKind::Outline, connected).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            if this.open_connected() {
-                                cx.emit(ServersEvent::Stop)
-                            }
-                        }),
-                    ),
-                )
-            });
-        // Stays for as long as the session is short of what the server has.
-        let problem = open.problem.clone().map(|why| {
-            let (server, session) = (open.server.clone(), open.session.clone());
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(ui::sp(8.))
-                .px(ui::sp(12.))
-                .py(ui::sp(6.))
-                .border_b_1()
-                .border_color(theme::border_subtle())
-                .child(icon("alert-circle", 14.).text_color(theme::attention()))
-                .child(
-                    ui::text(Type::Label, theme::attention().into(), why)
-                        .flex_1()
-                        .min_w_0(),
-                )
-                .child(
-                    ui::button(
-                        "servers-read-again",
-                        "Read again",
-                        ButtonKind::Outline,
-                        connected,
-                    )
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(ServersEvent::Open {
-                            server: server.clone(),
-                            session: session.clone(),
-                        })
-                    })),
-                )
-        });
-        let body = if open.loading {
-            ui::loading("servers-loading", "Reading the session…").into_any_element()
-        } else {
-            open.view.clone().into_any_element()
-        };
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(head)
-            .children(problem)
-            .child(div().flex().flex_col().flex_1().min_h_0().child(body))
-            // A question with many options scrolls in its band rather
-            // than squeezing the transcript.
-            .children(self.render_asks(open, cx).map(|asks| {
-                // One scroll per question: the next starts at its top, not
-                // where the last was left.
-                let asked = match (&open.permission, &open.questions) {
-                    (Some(p), _) => format!("p:{}", p.title),
-                    (None, Some((id, _))) => format!("q:{id}:{}", self.answers.1.len()),
-                    (None, None) => String::new(),
-                };
-                div()
-                    .id(gpui::ElementId::Name(
-                        format!("servers-asks-{}-{asked}", open.session).into(),
-                    ))
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .max_h(gpui::relative(0.5))
-                    .overflow_y_scroll()
-                    .child(asks)
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .gap(ui::sp(6.))
-                    .px(ui::sp(12.))
-                    .py(ui::sp(10.))
-                    .border_t_1()
-                    .border_color(theme::border_subtle())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(ui::sp(8.))
-                            .child(ui::field().flex_1().child(self.prompt.clone()))
-                            .child(
-                                ui::button_with(
-                                    "servers-send",
-                                    Some("arrow-up01"),
-                                    "Send",
-                                    ButtonKind::Primary,
-                                    connected,
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
-                            ),
-                    )
-                    .when(!connected, |d| {
-                        d.child(ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            "The server is not connected. What you type stays here until it is back.",
-                        ))
-                    }),
-            )
-            .into_any_element()
-    }
 }
 
 impl Render for ServersView {
@@ -1059,20 +464,13 @@ impl Render for ServersView {
 
         let pane = match &self.pane {
             Pane::Add => self.render_add(cx),
-            Pane::New(id) => match self.server(id).cloned() {
-                Some(server) => self.render_new(&server, cx),
-                None => div().into_any_element(),
-            },
-            Pane::Session => match self.state.open.clone() {
-                Some(open) => self.render_open(&open, cx),
-                None => ui::empty_state(
-                    "computer",
-                    "No session open",
-                    "Pick a session from the list, or start one with the plus beside a server.",
-                    None,
-                )
-                .into_any_element(),
-            },
+            Pane::Overview => ui::empty_state(
+                "computer",
+                "Your servers' work is in your projects",
+                "Each folder a server offers is an environment in the sidebar: under the project with the same repository here, or under a project of its own. Its sessions open there, as yours do.",
+                None,
+            )
+            .into_any_element(),
         };
 
         let servers: Vec<ServerRow> = self.state.servers.clone();

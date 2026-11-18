@@ -1112,13 +1112,21 @@ impl Daemon {
             .iter()
             .map(|p| {
                 let name = p.name();
-                wire::inbox_place(
-                    &p.path,
-                    &name,
-                    &name,
-                    store::branch(&p.path).as_deref(),
-                    p.agent.id(),
-                )
+                let repo = store::repo(&p.path);
+                // Worktrees of one repository are one project, named for it.
+                let project = repo
+                    .as_ref()
+                    .and_then(|(root, _)| root.file_name())
+                    .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
+                wire::inbox_place(wire::InboxPlace {
+                    path: &p.path,
+                    project: &project,
+                    env: &name,
+                    branch: store::branch(&p.path).as_deref(),
+                    agent: p.agent.id(),
+                    repo: repo.as_ref().map(|(root, _)| root.as_path()),
+                    origin: repo.as_ref().and_then(|(_, o)| o.as_deref()),
+                })
             })
             .collect();
         let sessions = self

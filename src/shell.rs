@@ -1095,6 +1095,10 @@ impl Shell {
         let Some(root) = self.projects.get(pi).map(|p| p.path.clone()) else {
             return;
         };
+        // Only servers have it: there is no folder here to ask git about.
+        if crate::model::Remote::is_path(&root) {
+            return;
+        }
         let gen_ = self.refresh_gen.entry(root.clone()).or_default();
         *gen_ += 1;
         let gen_ = *gen_;
@@ -1133,6 +1137,10 @@ impl Shell {
     }
 
     fn refresh_status(&mut self, env_path: &std::path::Path, cx: &mut Context<Self>) {
+        // A server's folder: its changes are on that machine.
+        if crate::model::Remote::is_path(env_path) {
+            return;
+        }
         let path = env_path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
@@ -1357,6 +1365,10 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
+        // Only servers have it: a worktree cannot be made here.
+        if project.is_remote() {
+            return;
+        }
         let (repo, name) = (project.path.clone(), project.name.clone());
         let setup = project.setup.clone();
         let dialog = cx.new(|cx| CreateEnvDialog::new(repo, name, setup, window, cx));
@@ -1389,6 +1401,10 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
+        // Only servers have it: a worktree cannot be made here.
+        if project.is_remote() {
+            return;
+        }
         let (repo, project_name) = (project.path.clone(), project.name.clone());
         let pending: Vec<String> = self
             .pending_envs

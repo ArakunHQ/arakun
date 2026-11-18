@@ -231,21 +231,89 @@ pub fn new_id() -> String {
 /// built often, and this starts no process. `None` outside a repository and
 /// on a detached HEAD.
 pub fn branch(dir: &Path) -> Option<String> {
-    let dot_git = dir.join(".git");
-    let git_dir = if dot_git.is_dir() {
-        dot_git
-    } else {
-        // A worktree: `.git` is a file that names its real folder.
-        let text = std::fs::read_to_string(&dot_git).ok()?;
-        dir.join(text.trim().strip_prefix("gitdir:")?.trim())
-    };
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = std::fs::read_to_string(git_dir(dir)?.join("HEAD")).ok()?;
     Some(head.trim().strip_prefix("ref: refs/heads/")?.to_string())
+}
+
+/// The folder git keeps `dir`'s checkout in: `.git`, or for a worktree the
+/// folder its `.git` file names.
+fn git_dir(dir: &Path) -> Option<PathBuf> {
+    let dot_git = dir.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    Some(dir.join(text.trim().strip_prefix("gitdir:")?.trim()))
+}
+
+/// The repository a folder is a checkout of: its main folder, which every
+/// worktree of it shares, and the URL of its `origin`. Read from git's files,
+/// as `branch` is: the inbox is built often.
+pub fn repo(dir: &Path) -> Option<(PathBuf, Option<String>)> {
+    let git = git_dir(dir)?;
+    // A worktree's folder says where the shared one is (`../..`).
+    let common = match std::fs::read_to_string(git.join("commondir")) {
+        Ok(rel) => git.join(rel.trim()),
+        Err(_) => git,
+    };
+    let common = common.canonicalize().unwrap_or(common);
+    let root = common.parent()?.to_path_buf();
+    let config = std::fs::read_to_string(common.join("config")).unwrap_or_default();
+    Some((root, origin_url(&config)))
+}
+
+/// The `url` of `[remote "origin"]` in a git config.
+fn origin_url(config: &str) -> Option<String> {
+    let mut in_origin = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_origin = line.replace(' ', "") == "[remote\"origin\"]";
+        } else if in_origin
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "url"
+        {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worktree_belongs_to_the_repository_it_was_made_from() {
+        let main = temp("repo-main");
+        let git = main.join(".git");
+        std::fs::create_dir_all(git.join("worktrees/fix")).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            git.join("config"),
+            "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://x/u.git\n[remote \"origin\"]\n\turl = git@github.com:o/app.git\n",
+        )
+        .unwrap();
+        let tree = temp("repo-tree");
+        let tree_git = git.join("worktrees/fix");
+        std::fs::write(
+            tree.join(".git"),
+            format!("gitdir: {}\n", tree_git.display()),
+        )
+        .unwrap();
+        std::fs::write(tree_git.join("HEAD"), "ref: refs/heads/fix\n").unwrap();
+        std::fs::write(tree_git.join("commondir"), "../..\n").unwrap();
+
+        let root = main.canonicalize().unwrap();
+        let origin = Some("git@github.com:o/app.git".to_string());
+        assert_eq!(repo(&main), Some((root.clone(), origin.clone())));
+        assert_eq!(repo(&tree), Some((root, origin)));
+        assert_eq!(branch(&tree).as_deref(), Some("fix"));
+        // Not a checkout at all.
+        assert_eq!(repo(&temp("repo-none")), None);
+        for dir in ["repo-main", "repo-tree", "repo-none"] {
+            let _ = std::fs::remove_dir_all(temp(dir));
+        }
+    }
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("arakun-server-{name}-{}", std::process::id()));

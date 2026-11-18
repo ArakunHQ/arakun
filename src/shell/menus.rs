@@ -984,6 +984,20 @@ impl Shell {
                             })),
                     );
             }
+            // A server's folder: nothing here acts on it but the Servers tab.
+            MenuTarget::Env(pi, ei)
+                if self
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.environments.get(ei))
+                    .is_some_and(|e| e.remote.is_some()) =>
+            {
+                panel = panel.child(
+                    ui::menu_item("cm-servers", "computer", "Open Servers", false, true).on_click(
+                        cx.listener(|this, _, window, cx| this.open_servers_tab(window, cx)),
+                    ),
+                );
+            }
             MenuTarget::Env(pi, ei) => {
                 let env = self.projects.get(pi).and_then(|p| p.environments.get(ei));
                 let path = env.map(|e| e.path.clone()).unwrap_or_default();

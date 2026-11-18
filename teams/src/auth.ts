@@ -162,10 +162,14 @@ async function githubUser(token: string, clientId: string, clientSecret: string)
   // 404: no such token for this app (wrong app, revoked or expired). GitHub
   // also answers 422 when it is spammed, so 422 is not a clear no.
   if (res.status === 404) {
+    // Logged in case GitHub ever answers 404 to a wrong client ID or secret
+    // too: then every sign-in would end here, and this line would show it.
+    console.warn("GitHub answered 404 to a sign-in token: not issued by this app, revoked or expired");
     await discard(res);
     return "rejected";
   }
-  // 401 here means our own client ID or secret is wrong, not the user's token.
+  // 401 here means our own client ID or secret is wrong, not the user's token:
+  // api.github.com answers 401 "Bad credentials" to a wrong secret.
   if (!res.ok) {
     if (res.status === 401) console.error("GitHub refused the app's client credentials");
     await discard(res);

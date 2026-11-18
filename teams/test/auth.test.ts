@@ -1,6 +1,6 @@
 import { env, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
-import { session } from "../src/auth";
+import { describe, expect, it, vi } from "vitest";
+import { session, signIn as signInHandler } from "../src/auth";
 import { ADMIN, as, call, freshIp, github, nowSeconds, signIn, signInRequest } from "./helpers";
 
 const DAY = 24 * 60 * 60;
@@ -74,6 +74,28 @@ describe("sign-in with GitHub", () => {
     expect(await res.json()).toEqual({ error: expect.any(String) });
     const users = await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
     expect(users?.n).toBe(0);
+  });
+
+  it("logs a rejected token without the token", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await signInRequest("gho_unknown_value")).status).toBe(401);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0])).toMatch(/404/);
+    expect(String(warn.mock.calls[0])).not.toContain("gho_unknown_value");
+  });
+
+  it("logs a wrong client secret, and answers 502", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    github.users.set("gho_ok", { id: 1001, login: "octocat" });
+    // The fake checks the credentials as GitHub does; a wrong secret gets 401.
+    const wrong = { ...env, GITHUB_CLIENT_SECRET: "not-the-secret" };
+    const req = new Request("https://teams.test/auth/github", {
+      method: "POST",
+      headers: { "CF-Connecting-IP": freshIp() },
+      body: JSON.stringify({ access_token: "gho_ok" }),
+    });
+    expect((await signInHandler(req, wrong)).status).toBe(502);
+    expect(error).toHaveBeenCalledWith("GitHub refused the app's client credentials");
   });
 
   it("answers 401 for a token another app issued, even one GitHub would accept elsewhere", async () => {

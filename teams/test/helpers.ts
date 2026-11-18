@@ -34,8 +34,9 @@ export function fakeGitHub(): void {
     const outage = req.method === "DELETE" ? (github.revokeOutage ?? github.outage) : github.outage;
     if (outage === "throw") throw new TypeError("Network connection lost.");
     if (outage !== null) return new Response("unavailable", { status: outage });
+    // What api.github.com answers to a wrong client ID or secret.
     if (req.headers.get("Authorization") !== `Basic ${btoa("Iv-test:client-secret")}`)
-      return Response.json({ message: "Requires authentication" }, { status: 401 });
+      return Response.json({ message: "Bad credentials" }, { status: 401 });
     const token = (JSON.parse(body) as { access_token?: string }).access_token;
     const user = token ? github.users.get(token) : undefined;
     // GitHub answers 404 for a token this app did not issue, or revoked.

@@ -82,7 +82,7 @@
   ❌ Fixed some terminal bugs.
 - Voice: the subject of each sentence is the change, not its author. No "I" in the body; authorship is stated once, under Agent context.
 - Body: describe the rationale, not a replay of the session. Pass it straight to `gh pr create --body-file -` on stdin so markdown and newlines survive.
-- Draft first: open with `--draft`, get clippy and the tests green locally and CI passing, then mark it ready with `gh pr ready`.
+- Draft first: open with `--draft`, get rustfmt, clippy and the tests of the modules you touched green locally, let CI run the rest, and wait for it to pass, then mark it ready with `gh pr ready`.
 - Labels: don't set them; a workflow adds area labels from the changed paths.
 - Split instead of stuffing: if the diff holds separable steps (a rename then a rewrite, a refactor then a feature), open them as separate pull requests. If a later step needs an earlier one, stack them (`--base` the branch below, "Stacked on #N." under Changes); see "Stacked pull requests" in CONTRIBUTING.md.
 - Never write an @mention you have not verified this session (`gh api user`, `gh pr view --json author,assignees`); never guess a handle from a display name.

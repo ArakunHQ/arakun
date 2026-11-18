@@ -1,6 +1,6 @@
 ---
 name: ship-pr
-description: Take a finished change in Arakun to a pull request the way CONTRIBUTING.md wants it - run only the CI checks the diff needs, write a Conventional Commits title, fill in the pull request template, open a draft, wait for CI, then mark it ready. Use when the user asks to commit, push, open or ship a pull request, or "get this ready for review".
+description: Take a finished change in Arakun to a pull request the way CONTRIBUTING.md wants it - run the quick checks the diff needs and leave the rest to CI, write a Conventional Commits title, fill in the pull request template, open a draft, wait for CI, then mark it ready. Use when the user asks to commit, push, open or ship a pull request, or "get this ready for review".
 ---
 
 # Ship a pull request
@@ -18,14 +18,14 @@ order to apply them in. If the two disagree, CONTRIBUTING.md is right.
   `docs/windows.md` if Windows differs). A changed skill workflow needs its
   `.claude/skills/*/SKILL.md` updated.
 
-## 2. Run the checks the diff needs
+## 2. Run the quick checks the diff needs
 
 List the changed files with `git diff --name-status main...HEAD` and
 `git status --short` (for uncommitted ones). A rename counts at both its old and
-new path, as in CI: moving a file out of `src/` still needs the Rust checks. Run
-what CI would run for them. CI's "What changed" job in
-`.github/workflows/ci.yml` decides. In short: find every row that any changed
-path matches, and run all the checks those rows name. A path can match more than
+new path, as in CI: moving a file out of `src/` still needs the Rust checks. The
+table says what CI will run for them; CI's "What changed" job in
+`.github/workflows/ci.yml` decides. Find every row that any changed path
+matches. A path can match more than
 one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 
 | Changed | Run |
@@ -38,15 +38,18 @@ one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 | `Cargo.toml`, `Cargo.lock`, `deny.toml` | also `cargo deny check` |
 | `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, `LICENSE`, `NOTICE`, `.gitignore`, `deny.toml`, and `*.md` at the top level, apart from the paths named above | nothing to build; proofread (only when no path matched a row above) |
 
+Locally, run only the quick ones and leave the rest to CI on the draft:
+
 ```sh
 tools/rustfmt.sh --check        # fix with tools/rustfmt.sh, never plain cargo fmt
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
-cargo test --locked --no-default-features
-cargo deny check
-(cd relay && npm ci && npx tsc --noEmit && npx vitest run)
-(cd phone && node --test "test/*.test.mjs")
+cargo test --locked --no-default-features <module>   # the modules you touched
+(cd relay && npx tsc --noEmit)  # relay/ changed
 ```
 
+- Skip the full `cargo test`, `cargo deny check`, `zizmor`, the relay and phone
+  tests and the other platforms. CI runs them; if one goes red, step 5 handles it.
+- For a UI change, also run `cargo test --locked --no-default-features design_lint`.
 - `cargo: command not found`: run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 - Fix every warning. `#[allow(...)]` only with a comment saying why the lint is
   wrong there.
@@ -69,9 +72,8 @@ tools/conventional-commits.sh title "fix(terminal): keep the tab name on resize"
 ```
 
 Commit `Cargo.lock` with any dependency change. The Git hooks (if installed) run
-clippy on commit and the tests on push. They are safe in a linked worktree. If you
-just ran the same checks on this exact tree, `LEFTHOOK=0 git push` skips the
-second run.
+clippy on commit and the full tests on push. They are safe in a linked worktree.
+Push with `LEFTHOOK_EXCLUDE=cargo-test git push` to leave the full suite to CI.
 
 ## 4. Open a draft
 

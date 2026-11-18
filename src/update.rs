@@ -100,10 +100,31 @@ pub fn set_channel(channel: Channel) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    // Waits out an install that is checking the channel (see apply_locked).
+    let _held = channel_lock()?;
     std::fs::write(&path, format!("{}\n", channel.name()))?;
     // What the last check found was for the other channel.
     set_status(Status::Idle);
     Ok(())
+}
+
+/// Held while the channel is written, and by an install from its channel check
+/// to its swap, so a switch to stable can't land between the two and let a
+/// nightly in. Not the update lock: that one is held through a download, and
+/// a switch in Settings must not wait for it. Blocking, but only for a hash
+/// and a rename.
+fn channel_lock() -> std::io::Result<std::fs::File> {
+    let path = crate::platform::app_dir().join("update-channel.lock");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    file.lock()?;
+    Ok(file)
 }
 
 fn channel_file() -> PathBuf {
@@ -938,6 +959,8 @@ fn apply_locked() -> Result<Option<String>, String> {
         return Ok(None);
     };
     let install = Install::here()?;
+    // Until the swap is done: the channel read here is the one it installs for.
+    let _channel = channel_lock().map_err(|e| format!("could not lock the update channel: {e}"))?;
     let intact = installable(&tag, channel(), Version::current()) && install.staged_intact(&saved);
     if intact {
         swap(&install).map_err(|e| format!("could not install Arakun {tag}: {e}"))?;

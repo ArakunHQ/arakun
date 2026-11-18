@@ -420,9 +420,14 @@ describe("presence", () => {
     const a2 = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
     await a2.inbox.here.until([t.owner.user.id]);
     await a.inbox.here.until([t.owner.user.id]);
+    // A send closes b and c; once their close arrived, anything sent to them
+    // before it has arrived too.
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "barrier"));
+    expect((await b.inbox.closedWith()).code).toBe(4403);
+    expect((await c.inbox.closedWith()).code).toBe(4403);
     expect(b.inbox.here.count).toBe(bSeen);
     expect(c.inbox.here.count).toBe(cSeen);
-    for (const s of [a, a2, b, c]) s.ws.close();
+    for (const s of [a, a2]) s.ws.close();
   });
 
   it("drops a removed member", async () => {

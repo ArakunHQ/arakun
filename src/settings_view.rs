@@ -260,11 +260,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Jump to a session, environment or command",
     ),
     ("Navigate", "Alt+↑ / Alt+↓", "Previous / next environment"),
-    (
-        "Navigate",
-        "Ctrl+B",
-        "Hide or show the sidebar and workspace panel",
-    ),
+    ("Navigate", "Ctrl+B", "Hide or show the sidebar"),
     ("Navigate", "Ctrl+,", "Settings"),
     (
         "Navigate",

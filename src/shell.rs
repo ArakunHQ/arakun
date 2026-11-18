@@ -374,8 +374,6 @@ pub struct Shell {
     subagent_view: Option<subagents::SubagentView>,
     /// Redraws the Subagents panel each second while a subagent in it runs.
     subagent_tick: Option<Task<()>>,
-    /// What the chrome showed (rail, panel) before Ctrl+B hid it all.
-    left_before_hide: Option<(bool, bool)>,
     arcade: bool,
     /// What the person pinned from the palette (`pins.json`).
     pins: crate::palette::pins::Pins,
@@ -880,7 +878,6 @@ impl Shell {
             subagents_dismissed: false,
             subagent_view: None,
             subagent_tick: None,
-            left_before_hide: None,
             arcade: layout.arcade,
             pins: crate::palette::pins::Pins::load(),
             rules: crate::palette::rules::Rules::load(),
@@ -2021,25 +2018,17 @@ impl Shell {
         cx.notify();
     }
 
+    /// Shows or hides the sidebar alone: Ctrl+B, its buttons and the palette
+    /// all run this, so one name always does one thing.
     fn toggle_rail(&mut self, cx: &mut Context<Self>) {
         if self.sidebar.style.collapse == crate::sidebar::Collapse::Never {
+            // Otherwise the key looks broken.
+            self.composer_flash =
+                Some("The sidebar always shows: Customize sidebar → When hidden.".into());
+            cx.notify();
             return;
         }
         self.rail_open = !self.rail_open;
-        self.save(cx);
-        cx.notify();
-    }
-
-    /// Hides the rail and the workspace panel together, or brings back what was showing.
-    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        if self.rail_open || self.panel_open {
-            self.left_before_hide = Some((self.rail_open, self.panel_open));
-            self.rail_open = false;
-            self.panel_open = false;
-        } else {
-            (self.rail_open, self.panel_open) =
-                self.left_before_hide.take().unwrap_or((true, true));
-        }
         self.save(cx);
         cx.notify();
     }
@@ -2939,7 +2928,7 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &crate::palette::Pinned9, w, cx| this.open_pinned(8, w, cx)),
             )
-            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_rail(cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, _, cx| this.toggle_panel(cx)))
             .on_action(cx.listener(|this, _: &ToggleSubagents, _, cx| this.toggle_subagents(cx)))
             .on_action(

@@ -1212,7 +1212,7 @@ impl Shell {
                 "sidebar-left",
                 "Toggle sidebar",
                 &["Ctrl", "B"],
-                "Hides the sidebar and the workspace panel, or brings them back.",
+                "Shows or hides the sidebar. The workspace panel has its own toggle.",
                 Target::ToggleSidebar,
             );
             add(
@@ -1369,7 +1369,7 @@ impl Shell {
                 Setting::Sidebar,
                 "Sidebar",
                 "Layout",
-                "The rail at the left.",
+                "Projects and views, at the side of the window.",
                 self.rail_open,
             ),
             (
@@ -1437,7 +1437,7 @@ impl Shell {
             Target::AddProject => self.open_picker(window, cx),
             Target::Onboarding => self.start_onboarding(window, cx),
             Target::ToggleDock => self.toggle_dock(window, cx),
-            Target::ToggleSidebar => self.toggle_sidebar(cx),
+            Target::ToggleSidebar => self.toggle_rail(cx),
             Target::TogglePanel => self.toggle_panel(cx),
             Target::ToggleSubagents => self.toggle_subagents(cx),
             Target::Account => self.open_account(window, cx),

@@ -2475,8 +2475,6 @@ fn place_failed(message: &str) -> String {
     json!({ "type": "place_failed", "message": message }).to_string()
 }
 
-/// A folder a device named: its whole path, or one from `~/`, which stands
-/// for `home`. It must exist; links are followed, as the CLI does.
 /// Makes `path` a place in `store`, saved. A place that is there already is
 /// saved too: an earlier save may have failed, and it would be gone at the
 /// next start. On a failed save, a place this added goes again.
@@ -2547,6 +2545,8 @@ fn real_dest(dest: &Path) -> PathBuf {
     }
 }
 
+/// A folder a device named: its whole path, or one from `~/`, which stands
+/// for `home`. It must exist; links are followed, as the CLI does.
 fn device_path(typed: &str, home: &Path) -> Result<PathBuf, String> {
     let typed = typed.trim();
     let path = match typed.strip_prefix('~') {

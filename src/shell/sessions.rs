@@ -1169,14 +1169,15 @@ impl Shell {
         s: Setting,
         cx: &gpui::App,
     ) -> Option<(String, Vec<SettingOption>)> {
-        if agent == self.composer_agent() {
-            return self.setting_choices(s, cx);
-        }
-        if !self.has_projects() {
-            return None;
-        }
-        self.draft_choices(&self.env().path, agent, s)
-            .filter(|(_, o)| !o.is_empty())
+        // An agent without levels (Droid before its catalog loads) has no choices.
+        let choices = if agent == self.composer_agent() {
+            self.setting_choices(s, cx)
+        } else if self.has_projects() {
+            self.draft_choices(&self.env().path, agent, s)
+        } else {
+            None
+        };
+        choices.filter(|(_, o)| !o.is_empty())
     }
 
     /// The label of `agent`'s value for a setting, as `setting_value_label`.

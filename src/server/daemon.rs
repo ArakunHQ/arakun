@@ -1847,12 +1847,16 @@ impl Daemon {
                         .send(client, env_deleted(&place, false, Some(&e)));
                     return;
                 }
-                let branch = delete_branch.then(|| store::branch(&path)).flatten();
                 cx.spawn(async move |this, cx| {
                     let p = path.clone();
+                    // Git's files are read to the side, as every place's are.
                     let done = cx
                         .background_executor()
-                        .spawn(async move { remove_worktree(&p, branch.as_deref()) })
+                        .spawn(async move {
+                            removable(&p)?;
+                            let branch = delete_branch.then(|| store::branch(&p)).flatten();
+                            remove_worktree(&p, branch.as_deref())
+                        })
                         .await;
                     let _ = this.update(cx, |this, cx| {
                         // The folder is gone even when its branch stayed.
@@ -1948,7 +1952,7 @@ impl Daemon {
         if self.store.place(place).is_none() {
             return Err("that folder is not one of this server's".into());
         }
-        removable(place)?;
+        // Whether git calls it a worktree is asked to the side, after this.
         let busy = self.store.sessions.iter().any(|s| {
             s.place == place
                 && self.live.get(&s.id).is_some_and(|l| {
@@ -1983,6 +1987,7 @@ impl Daemon {
             self.store.remove_session(&id);
         }
         self.store.remove_place(place);
+        self.meta.remove(place);
         self.save_store();
         self.inbox_dirty = true;
     }

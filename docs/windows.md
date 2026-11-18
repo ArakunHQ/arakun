@@ -128,6 +128,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
+| What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |

@@ -937,6 +937,10 @@ fn respond(
 /// single frame goes as `{part}` pieces of its bytes, each saying whether more
 /// follow; the phone joins them and reads the message as if it came whole.
 /// The pieces of one message go out together, so they need no name.
+///
+/// This is the relay's own split, under any message. `wire::parts`
+/// (`type: "part"`) is another one, a layer up: a server cuts a transcript
+/// there so each piece is a message the shell can use by itself.
 fn say(ws: &mut Socket, channel: u32, session: &mut Session, text: &str) -> Result<(), Ended> {
     if text.len() <= WHOLE {
         return send_frame(ws, DATA, channel, &session.seal(text.as_bytes()));
@@ -947,9 +951,52 @@ fn say(ws: &mut Socket, channel: u32, session: &mut Session, text: &str) -> Resu
     Ok(())
 }
 
+/// Joins the `{part}` pieces of [`parts`] back into the message they carry,
+/// for the desktop app when it is the one a server talks to: arakun-server
+/// sends through this same client, so its big messages come in pieces too.
+/// The phone's page does the same in `phone/relay.js` (`joiner`).
+#[derive(Default)]
+pub struct Joiner {
+    bytes: Vec<u8>,
+}
+
+impl Joiner {
+    /// The most one joined message may be. Far over anything sent, and it
+    /// keeps a peer from growing the buffer without end.
+    const MOST: usize = 64 * 1024 * 1024;
+
+    /// A message as it came: itself when it is whole, nothing while pieces
+    /// are still due, and the joined message with the last piece.
+    pub fn take(&mut self, msg: Value) -> Result<Option<Value>, &'static str> {
+        let Some(part) = msg.get("part") else {
+            // The pieces of one message come together: a whole one between
+            // them means the rest never will.
+            self.bytes.clear();
+            return Ok(Some(msg));
+        };
+        let piece = part
+            .get("body")
+            .and_then(Value::as_str)
+            .and_then(|body| B64.decode(body).ok())
+            .ok_or("A piece of a message did not read.")?;
+        if self.bytes.len() + piece.len() > Self::MOST {
+            self.bytes = Vec::new();
+            return Err("A message in pieces was too big.");
+        }
+        self.bytes.extend(piece);
+        if part.get("more").and_then(Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        let whole = std::mem::take(&mut self.bytes);
+        serde_json::from_slice(&whole)
+            .map(Some)
+            .map_err(|_| "A message in pieces did not read.")
+    }
+}
+
 /// `text` as `{part: {body, more}}` messages that each carry `chunk` of its
-/// bytes; `phone/relay.js` joins them (`joiner`).
-fn parts(text: &str, chunk: usize) -> Vec<String> {
+/// bytes; `phone/relay.js` joins them (`joiner`), and [`Joiner`] does here.
+pub(crate) fn parts(text: &str, chunk: usize) -> Vec<String> {
     let last = text.len().div_ceil(chunk).saturating_sub(1);
     text.as_bytes()
         .chunks(chunk)
@@ -1614,6 +1661,35 @@ mod tests {
         assert_eq!(phone.hear(&mut ws)["text"], text);
         client.send(5, r#"{"type":"usage"}"#.into());
         assert_eq!(phone.hear_frame(&mut ws)["type"], "usage");
+    }
+
+    #[test]
+    fn the_pieces_join_back_into_the_message() {
+        let message = json!({ "type": "entries", "text": "aé€😀 ".repeat(8) });
+        let mut joiner = Joiner::default();
+        // Cut inside letters of more than one byte.
+        let pieces = parts(&message.to_string(), 7);
+        let (last, first) = pieces.split_last().unwrap();
+        for piece in first {
+            let piece: Value = serde_json::from_str(piece).unwrap();
+            assert_eq!(joiner.take(piece), Ok(None));
+        }
+        let last: Value = serde_json::from_str(last).unwrap();
+        assert_eq!(joiner.take(last), Ok(Some(message.clone())));
+        // A whole message passes as it is, and the next pieces start clean.
+        assert_eq!(
+            joiner.take(json!({"type": "usage"})),
+            Ok(Some(json!({"type": "usage"})))
+        );
+        for piece in parts(&message.to_string(), 4096) {
+            let got = joiner.take(serde_json::from_str(&piece).unwrap());
+            assert_eq!(got, Ok(Some(message.clone())));
+        }
+        assert!(
+            joiner
+                .take(json!({"part": {"body": "!", "more": false}}))
+                .is_err()
+        );
     }
 
     #[test]

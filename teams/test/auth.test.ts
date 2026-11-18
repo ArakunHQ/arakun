@@ -24,17 +24,40 @@ describe("sign-in with GitHub", () => {
     expect(sessions?.n).toBe(1);
   });
 
-  it("asks GitHub whether our app issued the token, with the headers GitHub wants", async () => {
+  it("asks GitHub whether our app issued the token, then revokes it, with the headers GitHub wants", async () => {
     await signIn(1001, "octocat", "gho_abc");
-    expect(github.calls).toHaveLength(1);
-    const req = github.calls[0]!;
-    expect(req.method).toBe("POST");
-    expect(req.url).toBe("https://api.github.com/applications/Iv-test/token");
-    expect(req.headers.get("Authorization")).toBe(`Basic ${btoa("Iv-test:client-secret")}`);
-    expect(JSON.parse(github.bodies[0]!)).toEqual({ access_token: "gho_abc" });
-    expect(req.headers.get("User-Agent")).toBe("arakun-teams");
-    expect(req.headers.get("Accept")).toBe("application/vnd.github+json");
-    expect(req.headers.get("X-GitHub-Api-Version")).toBe("2022-11-28");
+    expect(github.calls.map((req) => req.method)).toEqual(["POST", "DELETE"]);
+    for (const [i, req] of github.calls.entries()) {
+      expect(req.url).toBe("https://api.github.com/applications/Iv-test/token");
+      expect(req.headers.get("Authorization")).toBe(`Basic ${btoa("Iv-test:client-secret")}`);
+      expect(JSON.parse(github.bodies[i]!)).toEqual({ access_token: "gho_abc" });
+      expect(req.headers.get("User-Agent")).toBe("arakun-teams");
+      expect(req.headers.get("Accept")).toBe("application/vnd.github+json");
+      expect(req.headers.get("X-GitHub-Api-Version")).toBe("2022-11-28");
+      expect(req.redirect).toBe("manual");
+    }
+  });
+
+  it("gives one session per GitHub token, since it revokes the token", async () => {
+    github.users.set("gho_once", { id: 1001, login: "octocat" });
+    expect((await signInRequest("gho_once")).status).toBe(200);
+    expect(github.users.has("gho_once")).toBe(false);
+    expect((await signInRequest("gho_once")).status).toBe(401);
+  });
+
+  it("gives no session when the token cannot be revoked", async () => {
+    github.users.set("gho_ok", { id: 1001, login: "octocat" });
+    for (const outage of ["throw", 503, 422, 401, 302] as const) {
+      github.revokeOutage = outage;
+      const res = await signInRequest("gho_ok");
+      expect(res.status, String(outage)).toBe(502);
+      expect(await res.json()).toEqual({ error: expect.any(String) });
+    }
+    // Revoked by another sign-in between the check and the revoke.
+    github.revokeOutage = 404;
+    expect((await signInRequest("gho_ok")).status).toBe(401);
+    const sessions = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions").first<{ n: number }>();
+    expect(sessions?.n).toBe(0);
   });
 
   it("gives a new session on each sign-in and keeps the login current", async () => {
@@ -158,15 +181,17 @@ describe("sign-in with GitHub", () => {
   });
 
   it("answers 429 after ten sign-ins a minute from one IP", async () => {
-    github.users.set("gho_ok", { id: 1001, login: "octocat" });
+    // Each sign-in revokes its token, so each needs a new one.
+    for (let i = 0; i <= 11; i++) github.users.set(`gho_ok_${i}`, { id: 1001, login: "octocat" });
     const ip = "203.0.113.7";
-    for (let i = 0; i < 10; i++) expect((await signInRequest("gho_ok", ip)).status).toBe(200);
-    const res = await signInRequest("gho_ok", ip);
+    for (let i = 0; i < 10; i++) expect((await signInRequest(`gho_ok_${i}`, ip)).status).toBe(200);
+    const res = await signInRequest("gho_ok_10", ip);
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: expect.any(String) });
-    expect(github.calls).toHaveLength(10);
+    // A check and a revoke for each of the ten.
+    expect(github.calls).toHaveLength(20);
     // Another IP is not held back.
-    expect((await signInRequest("gho_ok", "203.0.113.8")).status).toBe(200);
+    expect((await signInRequest("gho_ok_11", "203.0.113.8")).status).toBe(200);
   });
 
   it("never stores the GitHub token or the session token", async () => {

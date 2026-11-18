@@ -11,6 +11,8 @@ export const github = {
   users: new Map<string, { id: number; login: string }>(),
   /// "throw": the network fails; a number: GitHub answers with that status.
   outage: null as "throw" | number | null,
+  /// The same, for revoking a token only.
+  revokeOutage: null as "throw" | number | null,
   calls: [] as Request[],
   /// The body of each call, read once by the fake.
   bodies: [] as string[],
@@ -19,23 +21,29 @@ export const github = {
 export function fakeGitHub(): void {
   github.users.clear();
   github.outage = null;
+  github.revokeOutage = null;
   github.calls = [];
   github.bodies = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const req = new Request(input, init);
-    if (req.url !== "https://api.github.com/applications/Iv-test/token" || req.method !== "POST")
+    if (req.url !== "https://api.github.com/applications/Iv-test/token" || (req.method !== "POST" && req.method !== "DELETE"))
       throw new Error(`unexpected fetch: ${req.method} ${req.url}`);
     const body = await req.text();
     github.calls.push(req);
     github.bodies.push(body);
-    if (github.outage === "throw") throw new TypeError("Network connection lost.");
-    if (github.outage !== null) return new Response("unavailable", { status: github.outage });
+    const outage = req.method === "DELETE" ? (github.revokeOutage ?? github.outage) : github.outage;
+    if (outage === "throw") throw new TypeError("Network connection lost.");
+    if (outage !== null) return new Response("unavailable", { status: outage });
     if (req.headers.get("Authorization") !== `Basic ${btoa("Iv-test:client-secret")}`)
       return Response.json({ message: "Requires authentication" }, { status: 401 });
     const token = (JSON.parse(body) as { access_token?: string }).access_token;
     const user = token ? github.users.get(token) : undefined;
-    // GitHub answers 404 for a token this app did not issue.
+    // GitHub answers 404 for a token this app did not issue, or revoked.
     if (!user) return Response.json({ message: "Not Found" }, { status: 404 });
+    if (req.method === "DELETE") {
+      github.users.delete(token!);
+      return new Response(null, { status: 204 });
+    }
     // Real answers carry much more; the Worker must keep none of it.
     return Response.json({ id: 1, token: null, user: { ...user, email: "someone@example.com", name: "Some One" } });
   });

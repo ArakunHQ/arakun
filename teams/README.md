@@ -27,7 +27,12 @@ teams/
 
    `GET /user` would accept any of the user's GitHub tokens (the `gh` CLI's, a
    personal token, another app's), so whoever held one could sign in as them.
-4. The app sends `Authorization: Bearer <session>` from then on.
+4. Before it answers, the Worker revokes that GitHub token
+   (`DELETE /applications/<client_id>/token`), since OAuth App tokens never expire
+   and it was only needed to learn who the user is. So one GitHub token gives one
+   session, and signing in again means running the device flow again. If GitHub
+   does not confirm the revoke, the sign-in fails and gives no session.
+5. The app sends `Authorization: Bearer <session>` from then on.
 
 A session lasts 90 days and is extended on use, at most once a day, but never past
 180 days after sign-in. Then the app has to sign in again. The database holds only
@@ -183,7 +188,7 @@ Times are Unix seconds.
 
 | Request | Answer |
 | --- | --- |
-| `POST /auth/github` with `{"access_token": "..."}` | `200 {session, expires_at, github_id, login, flags}`. `400` without a token, `401` if GitHub rejects it or another app issued it, `413` for a body over 4 KiB, `429` after about 10 tries a minute from one IP (see the rate limit above), `502` if GitHub cannot be reached or fails, `503` without `GITHUB_CLIENT_SECRET`. |
+| `POST /auth/github` with `{"access_token": "..."}` | `200 {session, expires_at, github_id, login, flags}`. `400` without a token, `401` if GitHub rejects it, another app issued it or it was already used to sign in, `413` for a body over 4 KiB, `429` after about 10 tries a minute from one IP (see the rate limit above), `502` if GitHub cannot be reached, fails or does not revoke the token, `503` without `GITHUB_CLIENT_SECRET`. |
 | `GET /me` with the session | `200 {github_id, login, flags}`, or `401`. |
 | `POST /auth/logout` with the session | `204`, and the session is gone. `401` if it was not valid. |
 | `PUT /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {github_id, flags}`. |

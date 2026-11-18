@@ -1,7 +1,8 @@
 // Sign-in: the desktop app runs GitHub's device flow itself and hands us the
 // user access token once. We ask GitHub whether our OAuth App issued it and
 // to whom, keep only the numeric ID and the login, and answer with a session
-// token of our own. The GitHub token is dropped as soon as the request ends.
+// token of our own. Then we revoke the GitHub token: OAuth App tokens never
+// expire, and it was only needed to learn who the user is.
 //
 // Asking /user would accept any token of the user's (the gh CLI's, a personal
 // one, another app's), so whoever held one could sign in as them. The
@@ -49,6 +50,11 @@ export async function signIn(request: Request, env: Env): Promise<Response> {
   const user = await githubUser(token, env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
   if (user === "rejected") return error(401, "GitHub rejected the token");
   if (user === "unreachable") return error(502, "could not reach GitHub");
+  // Before the session exists: a token that still works after sign-in could
+  // make more sessions for whoever gets it later.
+  const revoked = await revokeToken(token, env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
+  if (revoked === "rejected") return error(401, "GitHub rejected the token");
+  if (revoked === "unreachable") return error(502, "could not reach GitHub");
 
   const t = now();
   const session = b64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -151,26 +157,8 @@ async function accessToken(request: Request): Promise<string | typeof TOO_BIG | 
 /// clear yes or a clear no counts as GitHub being unreachable, so a GitHub
 /// outage never signs anyone out of the app by mistake.
 async function githubUser(token: string, clientId: string, clientSecret: string): Promise<GitHubUser | "rejected" | "unreachable"> {
-  let res: Response;
-  try {
-    res = await fetch(`https://api.github.com/applications/${encodeURIComponent(clientId)}/token`, {
-      // A followed redirect would carry the client secret to wherever it points.
-      // A 3xx is not ok, so it counts as GitHub being unreachable.
-      redirect: "manual",
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "arakun-teams",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      body: JSON.stringify({ access_token: token }),
-      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
-    });
-  } catch {
-    return "unreachable";
-  }
+  const res = await applicationToken("POST", token, clientId, clientSecret);
+  if (!res) return "unreachable";
   // 404: no such token for this app (wrong app, revoked or expired). GitHub
   // also answers 422 when it is spammed, so 422 is not a clear no.
   if (res.status === 404) {
@@ -197,4 +185,42 @@ async function githubUser(token: string, clientId: string, clientSecret: string)
   // Users also have an underscore before their enterprise's short code.
   if (typeof login !== "string" || !/^[A-Za-z0-9_-]{1,39}$/.test(login)) return "unreachable";
   return { id, login };
+}
+
+/// Revokes this one token, not the user's other tokens of our app. 404 means
+/// it is gone already: another sign-in with the same token got there first,
+/// so this one gets no session. Anything else unclear keeps the user out too,
+/// since the token would still work.
+async function revokeToken(token: string, clientId: string, clientSecret: string): Promise<"revoked" | "rejected" | "unreachable"> {
+  const res = await applicationToken("DELETE", token, clientId, clientSecret);
+  if (!res) return "unreachable";
+  await discard(res);
+  if (res.status === 204) return "revoked";
+  if (res.status === 404) return "rejected";
+  console.error(`GitHub answered ${res.status} when asked to revoke a sign-in token`);
+  return "unreachable";
+}
+
+/// One call to GitHub's Applications API about one token, with the app's
+/// credentials. Null when GitHub cannot be reached.
+async function applicationToken(method: "POST" | "DELETE", token: string, clientId: string, clientSecret: string): Promise<Response | null> {
+  try {
+    return await fetch(`https://api.github.com/applications/${encodeURIComponent(clientId)}/token`, {
+      // A followed redirect would carry the client secret to wherever it points.
+      // A 3xx is not ok, so it counts as GitHub being unreachable.
+      redirect: "manual",
+      method,
+      headers: {
+        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "arakun-teams",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({ access_token: token }),
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    });
+  } catch {
+    return null;
+  }
 }

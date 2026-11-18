@@ -149,6 +149,30 @@ fn session(
     alive
 }
 
+/// After an update is installed on Windows. The island outlives the app, so it
+/// would go on with the old version, and keep its .exe in use. Asks it to quit
+/// and starts the new one: Windows still names the running app by the path it
+/// started from, where the new .exe now is. Does nothing when no island runs.
+#[cfg(windows)]
+pub fn restart_after_update() {
+    if proto::request(&ToIsland::Quit).is_err() {
+        return;
+    }
+    // A new host that finds the old one still answering would quit at once.
+    let path = proto::socket_path();
+    let until = Instant::now() + Duration::from_secs(2);
+    while UnixStream::connect(&path).is_ok() {
+        if Instant::now() > until {
+            eprintln!("arakun: island: the old island did not quit; it stays until it does");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if let Err(e) = start_island() {
+        eprintln!("arakun: island: could not start the new version: {e}");
+    }
+}
+
 /// `arakun island-host`, in a session of its own so it outlives the app.
 fn start_island() -> std::io::Result<()> {
     let exe = std::env::current_exe()?;

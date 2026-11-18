@@ -978,7 +978,11 @@ impl Shell {
                     crate::control::cleanup();
                     // Before the restart below, so it starts the new version.
                     match crate::update::apply_staged() {
-                        Ok(Some(tag)) => eprintln!("arakun: installed Arakun {tag}"),
+                        Ok(Some(tag)) => {
+                            eprintln!("arakun: installed Arakun {tag}");
+                            #[cfg(windows)]
+                            crate::island_host::link::restart_after_update();
+                        }
                         Ok(None) => {}
                         Err(e) => eprintln!("arakun: {e}"),
                     }

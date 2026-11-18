@@ -208,16 +208,20 @@ Manager (Windows Credentials, Generic Credentials).
 - **Opening external files and links:** with the Windows default program.
 - **Updates:** a release build downloads a new release as `.arakun.exe.update` next to
   `arakun.exe`. Windows does not let a running `.exe` be replaced, so when Arakun quits
-  it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. The
-  next start deletes the old one. Settings has no **Restart now** button on Windows:
-  quit Arakun and open it again. Not tested on real Windows yet.
+  it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. Then
+  it restarts the Dynamic Island with the new version. A later start deletes the old
+  file once nothing runs it; an old file still in use is moved aside, with a number
+  after its name, and deleted the same way. Settings has no **Restart now** button on
+  Windows: quit Arakun and open it again. Not tested on real Windows yet.
 - **Dynamic Island:** an always-on-top window at the top center of the main display's
   work area, where Linux uses a layer-shell surface. Clicks around its shape reach the
   windows below, and clicking it never takes the focus from the window you type in.
   Arakun starts `arakun island-host` when it opens, and the island stays up after
   Arakun closes. Its socket is `island.sock` in `%LOCALAPPDATA%\arakun`, next to
   `control.sock`, and `arakun island …` works as on Linux. It shows no headless agents,
-  since they don't run on Windows, and no notifications from other apps.
+  since they don't run on Windows, and no notifications from other apps. After a
+  change of the display's scale in Settings, the island keeps its old size until it
+  restarts: Windows doesn't tell it about the change.
 
 ## Not available on Windows
 

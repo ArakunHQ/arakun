@@ -196,6 +196,11 @@ fn older_server_refused(message: &str, kinds: &[&str]) -> bool {
         .any(|k| message.starts_with(&format!("bad message: unknown variant `{k}`")))
 }
 
+/// Whether `server` was asked to delete `place` and has not answered yet.
+fn deleting_already<T>(deleting: &[(String, String, T)], server: &str, place: &str) -> bool {
+    deleting.iter().any(|(s, p, _)| s == server && p == place)
+}
+
 /// A folder request (`add_place` or `clone`) to `server` that never left
 /// this app: the form can ask again, and says why. None when there was none.
 fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -> Option<String> {
@@ -1723,6 +1728,13 @@ impl Shell {
         delete_branch: bool,
         dialog: gpui::EntityId,
     ) -> Result<(), String> {
+        // Its reply names only the server and the place: with two asked, it
+        // could be taken for the other's.
+        if let Some(link) = &self.servers
+            && deleting_already(&link.deleting, &remote.server, &remote.place)
+        {
+            return Err("It is being deleted already. Wait for that to finish.".into());
+        }
         let Some(client) = self.connected(&remote.server) else {
             return Err(format!("{} is not connected right now.", remote.machine));
         };
@@ -2360,6 +2372,14 @@ fn empty_transcript(agent: AgentKind, title: &str) -> Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_place_is_asked_to_go_only_once_at_a_time() {
+        let deleting = vec![("box".to_string(), "/w/fix".to_string(), 1)];
+        assert!(deleting_already(&deleting, "box", "/w/fix"));
+        assert!(!deleting_already(&deleting, "box", "/w/fix2"));
+        assert!(!deleting_already(&deleting, "other", "/w/fix"));
+    }
 
     fn said(text: &str) -> Entry {
         Entry::Agent { text: text.into() }

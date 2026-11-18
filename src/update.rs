@@ -1024,7 +1024,13 @@ fn remove_old(install: &Install) {
     };
     let prefix = format!("{}-", name.to_string_lossy());
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+        // Only the names `aside` makes: anything else is someone else's.
+        let file = entry.file_name();
+        let moved = file
+            .to_string_lossy()
+            .strip_prefix(&prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if moved {
             let _ = remove_any(&entry.path());
         }
     }
@@ -1436,14 +1442,15 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let install = Install::for_exe(&dir.join("arakun.exe")).unwrap();
-        // A real program, so the file is locked the way a running arakun.exe is.
+        // A real program, so the file is locked the way a running arakun.exe is:
+        // a copy of cmd.exe, which waits for commands on its stdin.
         let system = std::env::var_os("SystemRoot").unwrap();
-        let ping = std::path::Path::new(&system)
+        let cmd = std::path::Path::new(&system)
             .join("System32")
-            .join("PING.EXE");
-        std::fs::copy(&ping, &install.target).unwrap();
+            .join("cmd.exe");
+        std::fs::copy(&cmd, &install.target).unwrap();
         let mut running = std::process::Command::new(&install.target)
-            .args(["-n", "30", "127.0.0.1"])
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
@@ -1465,6 +1472,34 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(left, [std::ffi::OsString::from("arakun.exe")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_old_files_the_updater_named_are_removed() {
+        let dir = std::env::temp_dir().join(format!("arakun-update-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let install = Install {
+            target: dir.join("arakun"),
+            staged: dir.join(".arakun.update"),
+            incoming: dir.join(".arakun.incoming"),
+            old: dir.join(".arakun.old"),
+        };
+        std::fs::write(&install.old, "old").unwrap();
+        std::fs::write(aside(&install.old), "older").unwrap();
+        // Someone else's, with a name that starts the same way.
+        std::fs::create_dir_all(dir.join(".arakun.old-backup")).unwrap();
+        std::fs::write(dir.join(".arakun.old-backup").join("keep"), "keep").unwrap();
+        std::fs::write(dir.join(".arakun.old-"), "keep").unwrap();
+        remove_old(&install);
+        let mut left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".arakun.old-", ".arakun.old-backup"]);
+        assert!(dir.join(".arakun.old-backup").join("keep").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

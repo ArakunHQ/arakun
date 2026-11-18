@@ -46,6 +46,61 @@ pub enum ThreadStatus {
     Error(String),
 }
 
+/// Where a session failed, for crash reports. Only fixed labels and numbers,
+/// never the message: that can hold a project's name or a credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailedAt {
+    /// Finding or installing the agent's program.
+    Resolve,
+    /// Starting its process.
+    Spawn,
+    /// The `initialize` request, with the error's JSON-RPC code.
+    Initialize(i64),
+    /// Opening the session; the code is `None` when the reply had no session id.
+    Session(Option<i64>),
+    /// A turn, with the error's JSON-RPC code.
+    Turn(i64),
+    /// The process stopped answering during a turn.
+    Disconnected,
+    /// The process exited; its exit code, or the signal that ended it (negative).
+    Exited(Option<i64>),
+}
+
+impl FailedAt {
+    pub fn stage(self) -> &'static str {
+        match self {
+            FailedAt::Resolve => "resolve",
+            FailedAt::Spawn => "spawn",
+            FailedAt::Initialize(_) => "initialize",
+            FailedAt::Session(_) => "session",
+            FailedAt::Turn(_) => "turn",
+            FailedAt::Disconnected => "disconnected",
+            FailedAt::Exited(_) => "exited",
+        }
+    }
+
+    /// The JSON-RPC error code, or the exit code for [`FailedAt::Exited`].
+    pub fn code(self) -> Option<i64> {
+        match self {
+            FailedAt::Initialize(c) | FailedAt::Turn(c) => Some(c),
+            FailedAt::Session(c) | FailedAt::Exited(c) => c,
+            _ => None,
+        }
+    }
+}
+
+/// The code in a process's exit status as Rust prints it: `exit status: 1` on
+/// Unix, `exit code: 1` on Windows, and `signal: 9 (SIGKILL)` as -9.
+fn exit_code(status: &str) -> Option<i64> {
+    let (head, rest) = status.split_once(':')?;
+    let n: i64 = rest.split_whitespace().next()?.parse().ok()?;
+    match head.trim() {
+        "exit status" | "exit code" => Some(n),
+        "signal" => Some(-n),
+        _ => None,
+    }
+}
+
 /// What the shell persists in its session list.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -549,6 +604,8 @@ pub struct Thread {
     retry_status: Option<String>,
     /// The last error the agent reported as a session failure, used to explain a failed turn.
     failure: Option<String>,
+    /// Where the last failure happened, for crash reports.
+    failed_at: Option<FailedAt>,
     /// The running turn seems to be going in circles.
     stuck: Option<Stuck>,
     /// Patterns the user chose to keep going past this turn.
@@ -1013,6 +1070,7 @@ impl Thread {
             turn_tree: None,
             shell_pending: None,
             failure: None,
+            failed_at: None,
             auto_allow: false,
             handoff: None,
             handoff_sent: false,
@@ -1493,8 +1551,9 @@ impl Thread {
         self.post_marked_notice(text, error, None, cx);
     }
 
-    fn fail(&mut self, message: String, cx: &mut Context<Self>) {
+    fn fail(&mut self, at: FailedAt, message: String, cx: &mut Context<Self>) {
         self.status_detail = None;
+        self.failed_at = Some(at);
         self.set_status(ThreadStatus::Error(message), cx);
     }
 
@@ -1543,7 +1602,7 @@ impl Thread {
                 Ok(spec) => t.launch(spec, cx),
                 Err(e) => {
                     t.needs_install = e.downcast_ref::<launch::AdapterInstall>().cloned();
-                    t.fail(format!("{e:#}"), cx)
+                    t.fail(FailedAt::Resolve, format!("{e:#}"), cx)
                 }
             });
         }));
@@ -1563,7 +1622,7 @@ impl Thread {
         };
         let (conn, mut rx) = match spawned {
             Ok(c) => c,
-            Err(e) => return self.fail(format!("{e:#}"), cx),
+            Err(e) => return self.fail(FailedAt::Spawn, format!("{e:#}"), cx),
         };
         let conn = Rc::new(conn);
         self.conn = Some(conn.clone());
@@ -1622,7 +1681,7 @@ impl Thread {
             let init = match init {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = this.update(cx, |t, cx| t.fail(format!("initialize failed: {e}"), cx));
+                    let _ = this.update(cx, |t, cx| t.fail(FailedAt::Initialize(e.code), format!("initialize failed: {e}"), cx));
                     return;
                 }
             };
@@ -1697,7 +1756,7 @@ impl Thread {
                         Some(id) => session = Some((id, v)),
                         None => {
                             let _ = this.update(cx, |t, cx| {
-                                t.fail("session/new returned no sessionId".into(), cx)
+                                t.fail(FailedAt::Session(None), "session/new returned no sessionId".into(), cx)
                             });
                             return;
                         }
@@ -1705,7 +1764,7 @@ impl Thread {
                     Err(e) => {
                         let _ = this.update(cx, |t, cx| {
                             let msg = t.describe_error(&e, "Starting the session failed");
-                            t.fail(msg, cx)
+                            t.fail(FailedAt::Session(Some(e.code)), msg, cx)
                         });
                         return;
                     }
@@ -1778,6 +1837,12 @@ impl Thread {
         } else {
             format!("{what}: {e}")
         }
+    }
+
+    /// Where the session failed, while it shows the error.
+    pub fn failed_at(&self) -> Option<FailedAt> {
+        self.failed_at
+            .filter(|_| matches!(self.status, ThreadStatus::Error(_)))
     }
 
     pub fn needs_login(&self) -> bool {
@@ -2421,12 +2486,16 @@ impl Thread {
                 "cancelled".into()
             }
             Err(e) => {
-                let msg = if e.code == RpcError::DISCONNECTED {
-                    format!("{} stopped responding.", self.kind.label())
+                let (at, msg) = if e.code == RpcError::DISCONNECTED {
+                    let msg = format!("{} stopped responding.", self.kind.label());
+                    (FailedAt::Disconnected, msg)
                 } else {
-                    self.describe_error(&e, "The turn failed")
+                    (
+                        FailedAt::Turn(e.code),
+                        self.describe_error(&e, "The turn failed"),
+                    )
                 };
-                self.fail(msg, cx);
+                self.fail(at, msg, cx);
                 "error".into()
             }
         };
@@ -2933,7 +3002,7 @@ impl Thread {
                     msg.push('\n');
                     msg.push_str(&tail.join("\n"));
                 }
-                self.fail(msg, cx);
+                self.fail(FailedAt::Exited(exit_code(&status)), msg, cx);
             }
         }
     }
@@ -3730,6 +3799,16 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exit_codes_come_from_the_status() {
+        use super::exit_code;
+        assert_eq!(exit_code("exit status: 127"), Some(127));
+        assert_eq!(exit_code("exit code: 1"), Some(1));
+        assert_eq!(exit_code("signal: 9 (SIGKILL)"), Some(-9));
+        assert_eq!(exit_code("stopped"), None);
+        assert_eq!(exit_code("No such file or directory (os error 2)"), None);
+    }
+
     use super::*;
 
     #[test]

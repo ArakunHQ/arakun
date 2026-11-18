@@ -18,6 +18,37 @@ use crate::agent::{
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
 use crate::state;
 
+/// Sends an agent's error to crash reports with where it failed. The folder
+/// check tells a deleted project apart from a broken agent.
+fn report_agent_error(t: &Thread, msg: &str) {
+    use serde_json::Value;
+    let mut props = vec![
+        ("agent", Value::from(t.kind().id())),
+        ("cwd_exists", t.cwd().is_dir().into()),
+    ];
+    if let Some(version) = t.agent_title().and_then(agent_version) {
+        props.push(("agent_version", version.into()));
+    }
+    if let Some(at) = t.failed_at() {
+        props.push(("stage", at.stage().into()));
+        if let Some(code) = at.code() {
+            props.push(("code", code.into()));
+        }
+    }
+    crate::telemetry::error("AgentError", msg, &props);
+}
+
+/// The version at the end of an agent's title ("Factory Droid 0.240.1"), and
+/// nothing else of it: the title is the agent's own text.
+fn agent_version(title: &str) -> Option<&str> {
+    let v = title.rsplit(' ').next()?.trim_start_matches('v');
+    (v.starts_with(|c: char| c.is_ascii_digit())
+        && v.len() <= 32
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
+    .then_some(v)
+}
+
 pub fn status_of(t: &Thread) -> Status {
     match t.status() {
         ThreadStatus::NeedsInput => Status::NeedsInput,
@@ -335,8 +366,7 @@ impl Shell {
                     if status == Status::Error
                         && let ThreadStatus::Error(msg) = thread.read(cx).status()
                     {
-                        let agent = thread.read(cx).kind().id();
-                        crate::telemetry::error("AgentError", &msg, &[("agent", agent)]);
+                        report_agent_error(thread.read(cx), &msg);
                     }
                     s.status = status;
                     s.updated = model::unix_now();
@@ -1800,6 +1830,18 @@ pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_version_keeps_only_the_version() {
+        use super::agent_version;
+        assert_eq!(agent_version("Factory Droid 0.240.1"), Some("0.240.1"));
+        assert_eq!(
+            agent_version("claude-code-acp v1.2.3-beta.1"),
+            Some("1.2.3-beta.1")
+        );
+        assert_eq!(agent_version("Acme internal build"), None);
+        assert_eq!(agent_version("x 1.0/../secret"), None);
+    }
+
     use super::*;
 
     #[test]

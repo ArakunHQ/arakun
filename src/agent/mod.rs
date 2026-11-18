@@ -59,12 +59,12 @@ pub use selection::{TextMap, mark_color};
 pub use shell_diff::ShellChange;
 #[allow(unused_imports)]
 pub use thread::{
-    AskUserRequest, Backend, CheckAnswer, Choice, ConfigOption, Entry, ModelInfo, NativeSettings,
-    NoticeMark, NoticePlace, PermissionOption, PermissionRequest, PlanEntry, PlanLimit, Question,
-    RewindPlan, SessionMeta, Setting, SettingOption, SpecPlan, Subagent, SubagentRecord,
-    SubagentState, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus,
-    Transcript, Usage, acp_label, acp_option, acp_setting_options, apply_setting, fmt_cost,
-    fmt_count, setting_label, setting_options,
+    AskUserRequest, Backend, CheckAnswer, Choice, ConfigOption, Entry, FailedAt, ModelInfo,
+    NativeSettings, NoticeMark, NoticePlace, PermissionOption, PermissionRequest, PlanEntry,
+    PlanLimit, Question, RewindPlan, SessionMeta, Setting, SettingOption, SpecPlan, Subagent,
+    SubagentRecord, SubagentState, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent,
+    ToolStatus, Transcript, Usage, acp_label, acp_option, acp_setting_options, apply_setting,
+    fmt_cost, fmt_count, setting_label, setting_options,
 };
 #[allow(unused_imports)]
 pub use view::{ThreadView, ThreadViewEvent};

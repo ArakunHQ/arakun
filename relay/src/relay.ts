@@ -342,7 +342,10 @@ export class Relay extends DurableObject<Env> {
     return this.fromPhone(ws, tag, bytes);
   }
 
-  override async webSocketClose(ws: WebSocket, _code: number, reason: string, _wasClean: boolean): Promise<void> {
+  override async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
+    // Before compatibility date 2026-04-07 the runtime doesn't answer a close
+    // itself; without this the other side sees an abnormal close (1006).
+    replyClose(ws, code, reason);
     const tag = ws.deserializeAttachment() as Tag | null;
     if (!tag) return;
     if (tag.role === "pc") {
@@ -430,6 +433,17 @@ export class Relay extends DurableObject<Env> {
     } catch {
       // the computer is going too
     }
+  }
+}
+
+/// Answers a close the other side started, with its code when close() takes it
+/// (1000 or 3000-4999, as in browsers); any other code goes back as 1000.
+export function replyClose(ws: Pick<WebSocket, "close">, code: number, reason: string): void {
+  const sendable = code === 1000 || (code >= 3000 && code <= 4999);
+  try {
+    ws.close(sendable ? code : 1000, reason);
+  } catch {
+    // already closed
   }
 }
 

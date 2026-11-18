@@ -6,7 +6,11 @@
 //! there. The tab shows it through a thread that only holds a transcript, as a
 //! headless session's does, fed with the entries the server sends whole
 //! (`transcript`); what the user writes or answers goes back as the phone's
-//! messages. Nothing connects until the tab is opened once.
+//! messages.
+//!
+//! The rail lists each server beside the projects, with its folders as
+//! environments (`rail_servers`), so the app connects at start when any
+//! server is paired; with none, nothing connects until the tab is opened.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -173,6 +177,42 @@ fn thread_status(status: Status) -> ThreadStatus {
     }
 }
 
+/// A server as the rail lists it, beside the projects.
+pub(super) struct RailServer {
+    pub id: String,
+    pub name: String,
+    pub reach: Reach,
+    pub places: Vec<RailPlace>,
+}
+
+/// One of a server's folders, as an environment row.
+pub(super) struct RailPlace {
+    pub path: String,
+    pub label: String,
+    /// The most urgent state of its sessions.
+    pub status: Status,
+}
+
+/// The rail's view of the servers: each place with the state of the sessions
+/// that run in it. Sessions come newest first, as the server sends them.
+fn rail_places(places: &[PlaceRow], sessions: &[SessionRow]) -> Vec<RailPlace> {
+    places
+        .iter()
+        .map(|p| {
+            let statuses = sessions.iter().filter(|s| s.in_place(p)).map(|s| s.status);
+            RailPlace {
+                path: p.path.clone(),
+                label: if p.branch.is_empty() || p.branch == p.project {
+                    p.project.clone()
+                } else {
+                    format!("{} · {}", p.project, p.branch)
+                },
+                status: super::rail::Activity::of(statuses).status(),
+            }
+        })
+        .collect()
+}
+
 /// A link is good for two minutes; a pairing still under way a little after
 /// that will not finish.
 const PAIRING_WAIT: std::time::Duration = std::time::Duration::from_secs(150);
@@ -260,6 +300,78 @@ impl Shell {
         cx.notify();
     }
 
+    /// At start: the paired servers are connected, so the rail can list them.
+    pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !servers::load().is_empty() {
+            self.servers_connect(window, cx);
+            self.sync_servers_view(cx);
+        }
+    }
+
+    /// The paired servers and their places, for the rail.
+    pub(super) fn rail_servers(&self) -> Vec<RailServer> {
+        let Some(link) = &self.servers else {
+            return Vec::new();
+        };
+        link.saved
+            .iter()
+            .filter_map(|s| {
+                let conn = link.conns.get(&s.id)?;
+                Some(RailServer {
+                    id: s.id.clone(),
+                    name: if s.name.is_empty() {
+                        s.origin.clone()
+                    } else {
+                        s.name.clone()
+                    },
+                    reach: conn.reach.clone(),
+                    places: rail_places(&conn.places, &conn.sessions),
+                })
+            })
+            .collect()
+    }
+
+    /// A server's place picked in the rail: its newest session, as a local
+    /// environment opens on its own. A place with none opens on the form
+    /// for its first.
+    pub(super) fn servers_open_place(
+        &mut self,
+        server: &str,
+        place: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_servers_tab(window, cx);
+        let newest = self.servers.as_ref().and_then(|link| {
+            let conn = link.conns.get(server)?;
+            let row = conn.places.iter().find(|p| p.path == place)?;
+            conn.sessions
+                .iter()
+                .find(|s| s.in_place(row))
+                .map(|s| s.id.clone())
+        });
+        match newest {
+            Some(session) => {
+                self.servers_show(server, &session, window, cx);
+                self.sync_servers_view(cx);
+            }
+            None => self.servers_new_session(server, Some(place.to_string()), window, cx),
+        }
+    }
+
+    /// The form for a new session on a server, in `place` when one is given.
+    pub(super) fn servers_new_session(
+        &mut self,
+        server: &str,
+        place: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_servers_tab(window, cx);
+        self.servers_view
+            .update(cx, |v, cx| v.new_session(server, place, window, cx));
+    }
+
     fn servers_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.servers.is_some() {
             return;
@@ -342,6 +454,8 @@ impl Shell {
             error: link.error.clone(),
         };
         self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
+        // The rail lists the servers too.
+        cx.notify();
     }
 
     /// A message to the server showing the open session, about that session.
@@ -656,6 +770,8 @@ impl Shell {
                         title: text(s, "title"),
                         agent: text(s, "agent"),
                         status: status_from(s["status"].as_str().unwrap_or("")),
+                        place: text(s, "place"),
+                        env: text(s, "env"),
                     })
                     .collect();
                 conn.places = rows("places")
@@ -899,6 +1015,53 @@ mod tests {
             "entries": [{ "type": "agent", "text": "a" }, { "type": "hologram", "shape": "cube" }],
         });
         assert!(page_of(&newer).err().unwrap().contains("hologram"));
+    }
+
+    fn session(status: Status, place: &str, env: &str) -> SessionRow {
+        SessionRow {
+            id: "s".into(),
+            title: String::new(),
+            agent: "Claude Code".into(),
+            status,
+            place: place.into(),
+            env: env.into(),
+        }
+    }
+
+    fn place(path: &str, project: &str, branch: &str) -> PlaceRow {
+        PlaceRow {
+            path: path.into(),
+            project: project.into(),
+            branch: branch.into(),
+            agent: "claude".into(),
+        }
+    }
+
+    #[test]
+    fn the_rail_puts_each_session_under_its_folder() {
+        let places = [
+            place("/srv/app", "app", "main"),
+            place("/srv/wt/app-fix", "app-fix", "app-fix"),
+            place("/srv/site", "site", ""),
+        ];
+        let sessions = [
+            session(Status::Working, "/srv/app", "app"),
+            session(Status::NeedsInput, "/srv/app", "app"),
+            // The same folder name elsewhere is another place.
+            session(Status::Working, "/other/site", "site"),
+            // A server from before `place` puts it by the folder's name.
+            session(Status::Working, "", "app-fix"),
+        ];
+        let rail = rail_places(&places, &sessions);
+        let rows: Vec<(&str, Status)> = rail.iter().map(|p| (p.label.as_str(), p.status)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("app · main", Status::NeedsInput),
+                ("app-fix", Status::Working),
+                ("site", Status::Idle),
+            ]
+        );
     }
 
     #[test]

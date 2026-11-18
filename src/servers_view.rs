@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
@@ -66,6 +66,21 @@ pub struct SessionRow {
     pub title: String,
     pub agent: String,
     pub status: Status,
+    /// The folder it runs in, as its place's path. Empty from a server that
+    /// does not say: `env`, the folder's name, is all there is then.
+    pub place: String,
+    pub env: String,
+}
+
+impl SessionRow {
+    /// Whether the session runs in `place`.
+    pub fn in_place(&self, place: &PlaceRow) -> bool {
+        if self.place.is_empty() {
+            !self.env.is_empty() && self.env == place.project
+        } else {
+            self.place == place.path
+        }
+    }
 }
 
 /// A folder on the server where a session can start.
@@ -275,6 +290,21 @@ impl ServersView {
             self.prompt.update(cx, |i, cx| i.set_text(draft, cx));
         }
         self.state = state;
+        cx.notify();
+    }
+
+    /// The form for a new session on `server`, in `place` when one is given.
+    pub fn new_session(
+        &mut self,
+        server: &str,
+        place: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pane = Pane::New(server.to_string());
+        self.place = place;
+        self.agent = None;
+        window.focus(&self.first.focus_handle(cx), cx);
         cx.notify();
     }
 

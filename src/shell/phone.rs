@@ -875,6 +875,7 @@ impl Shell {
                         removed: s.removed,
                         project: &p.name,
                         env: &e.name,
+                        place: &e.path,
                         pr: s.meta.as_ref().and_then(|m| m.pr.as_deref()),
                         asks: s.live.as_ref().and_then(|l| wire::asks(l.thread.read(cx))),
                     }));

@@ -1141,6 +1141,7 @@ impl Daemon {
                     removed: s.removed,
                     project: &project,
                     env: &project,
+                    place: &s.place,
                     pr: s.meta.as_ref().and_then(|m| m.pr.as_deref()),
                     asks: self
                         .live

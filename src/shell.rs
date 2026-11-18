@@ -1006,6 +1006,7 @@ impl Shell {
         this.start_scheduler(window, cx);
         this.start_rule_ticker(window, cx);
         this.restore_phone(window, cx);
+        this.restore_servers(window, cx);
         this.start_updates(window, cx);
         this
     }

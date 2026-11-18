@@ -737,6 +737,9 @@ pub struct InboxSession<'a> {
     pub removed: u32,
     pub project: &'a str,
     pub env: &'a str,
+    /// The folder it runs in: the same path as its place's, so a device can
+    /// put the session under that place.
+    pub place: &'a Path,
     pub pr: Option<&'a str>,
     pub asks: Option<Value>,
 }
@@ -745,7 +748,7 @@ pub fn inbox_session(s: InboxSession) -> Value {
     json!({
         "id": s.id, "title": s.title, "agent": s.agent, "status": status(s.status),
         "updated": s.updated, "added": s.added, "removed": s.removed,
-        "project": s.project, "env": s.env, "pr": s.pr, "asks": s.asks,
+        "project": s.project, "env": s.env, "place": s.place, "pr": s.pr, "asks": s.asks,
     })
 }
 

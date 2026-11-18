@@ -751,7 +751,10 @@ The link is good for two minutes and pairs one device. There are two ways to use
 - **In the app.** Open the Servers tab and paste the link. The server and its sessions
   show there. A session opens as the app draws its own, live; you can start one in any
   folder the server offers, send follow-ups, stop a turn and answer what the agent
-  asks. The app keeps what pairing gave it in `servers.json` next to its state, which
+  asks. Each paired server is also listed in the sidebar under your projects, with its
+  folders as environments: a dot or "Needs you" says what runs there, a click opens the
+  folder's newest session, and the + on a server or folder starts a new one. The app
+  connects to its servers when it starts. The app keeps what pairing gave it in `servers.json` next to its state, which
   only your user can read. "Forget" on a server removes it there and has the server
   forget the app. A server that cannot be reached at that moment keeps the app in its
   list: remove it there with `arakun-server unpair <device>`.

@@ -394,6 +394,8 @@ pub enum Group {
     NeedsReview,
     Mentions,
     Yours,
+    /// Open issues assigned to the user.
+    Issues,
     Ready,
     #[default]
     Other,
@@ -401,10 +403,11 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 6] = [
+    pub const ALL: [Group; 7] = [
         Group::NeedsReview,
         Group::Mentions,
         Group::Yours,
+        Group::Issues,
         Group::Ready,
         Group::Other,
         Group::Done,
@@ -415,6 +418,7 @@ impl Group {
             Group::NeedsReview => "Needs your review",
             Group::Mentions => "Mentions",
             Group::Yours => "Your pull requests",
+            Group::Issues => "Assigned issues",
             Group::Ready => "Ready to merge",
             Group::Other => "Other",
             Group::Done => "Done today",
@@ -661,17 +665,23 @@ fn place_only(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) ->
                 });
             }
             let assigned = assigned || i.assignees.iter().any(|a| mine(&a.login));
-            if assigned || mentioned {
-                let asked = if assigned {
-                    "assigned to you".to_string()
-                } else {
-                    format!("{author} mentioned you")
-                };
+            if assigned {
+                // Work to do, not a question to answer: a group of its own.
+                let labels: Vec<&str> = i.labels.iter().map(|l| l.name.as_str()).collect();
+                return Some(Placed {
+                    group: Group::Issues,
+                    lane: Lane::OnYou,
+                    mark: Mark::Issue,
+                    sub: join(&["assigned to you", &labels.join(", ")]),
+                    ..Default::default()
+                });
+            }
+            if mentioned {
                 return Some(Placed {
                     group: Group::Mentions,
                     lane: Lane::OnYou,
                     mark: Mark::Mention,
-                    sub: join(&["issue", &asked]),
+                    sub: join(&["issue", &format!("{author} mentioned you")]),
                     ..Default::default()
                 });
             }
@@ -720,6 +730,15 @@ fn place_unread(
             lane: Lane::OnYou,
             mark: Mark::Pull,
             sub: join(&[author]),
+            ..Default::default()
+        });
+    }
+    if issue && assigned {
+        return Some(Placed {
+            group: Group::Issues,
+            lane: Lane::OnYou,
+            mark: Mark::Issue,
+            sub: join(&["assigned to you"]),
             ..Default::default()
         });
     }
@@ -1024,6 +1043,84 @@ mod tests {
         assert_eq!(entries[1].item.as_ref().unwrap().kind, ItemKind::Issue);
         assert_eq!(entries[2].key(), "thread:2");
         assert!(entries[2].item.is_none());
+    }
+
+    #[test]
+    fn assigned_issues_have_a_group_of_their_own() {
+        let entries = gather(
+            &[],
+            &[
+                found(Why::Assigned, "o/r", 1, "open", Some(false)),
+                found(Why::Mentioned, "o/r", 2, "open", Some(false)),
+                // An assigned pull request is still a question for the user.
+                found(Why::Assigned, "o/r", 3, "open", Some(true)),
+            ],
+        );
+        let place_of = |e: &Entry, d: Option<&Details>| {
+            place(e, d, ME, DAY).map(|p| (p.group, p.lane, p.mark, p.sub))
+        };
+        // Before its details are read, by the search that found it.
+        assert_eq!(
+            place_of(&entries[0], None),
+            Some((
+                Group::Issues,
+                Lane::OnYou,
+                Mark::Issue,
+                "assigned to you".into()
+            ))
+        );
+        assert_eq!(
+            place_of(&entries[1], None).map(|p| p.0),
+            Some(Group::Mentions)
+        );
+        assert_eq!(
+            place_of(&entries[2], None).map(|p| p.0),
+            Some(Group::Mentions)
+        );
+
+        let issue = |state: &str, assignee: &str, labels: &[&str]| {
+            Details::Issue(Box::new(pr::Issue {
+                state: state.into(),
+                author: pr::Actor {
+                    login: "ana".into(),
+                    ..Default::default()
+                },
+                assignees: vec![pr::Actor {
+                    login: assignee.into(),
+                    ..Default::default()
+                }],
+                labels: labels
+                    .iter()
+                    .map(|l| pr::Label {
+                        name: l.to_string(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                closed_at: "2020-01-01T00:00:00Z".into(),
+                ..Default::default()
+            }))
+        };
+        // The details say who has it, whatever case the login is in.
+        assert_eq!(
+            place_of(
+                &entries[1],
+                Some(&issue("OPEN", &ME.to_uppercase(), &["bug", "terminal"]))
+            ),
+            Some((
+                Group::Issues,
+                Lane::OnYou,
+                Mark::Issue,
+                "assigned to you · bug, terminal".into()
+            ))
+        );
+        // Mentioned on someone else's issue: a mention, as before.
+        assert_eq!(
+            place_of(&entries[1], Some(&issue("OPEN", "ana", &[]))).map(|p| (p.0, p.3)),
+            Some((Group::Mentions, "issue · ana mentioned you".into()))
+        );
+        // Closed before today: nothing is left to do with it.
+        assert_eq!(place_of(&entries[0], Some(&issue("CLOSED", ME, &[]))), None);
+        assert_eq!(Group::ALL.iter().position(|g| *g == Group::Issues), Some(3));
     }
 
     #[test]

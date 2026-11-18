@@ -168,9 +168,9 @@ terminal-only. The status line and keybindings from your settings don't apply in
   requests under their base, and what was merged today folded at the bottom. With
   arakun-pilot (below) the list is its board; without it, the review queue: pull
   requests whose review is asked of you, mentions and assignments, your own open pull
-  requests, what is ready to merge and what was done today, read from your
-  notifications and searches through the `gh` CLI and its session. It opens before you
-  add a project too.
+  requests, the open issues assigned to you ("Assigned issues"), what is ready to merge
+  and what was done today, read from your notifications and searches through the `gh`
+  CLI and its session. It opens before you add a project too.
 - **Pull request sheet.** A row opens a sheet on the right with where the pull request
   stands, who has it, what comes next, the checks and the stack, then tabs for what
   pilot did, the conversation, checks and files. On a window under 1000 pixels tall the
@@ -184,6 +184,10 @@ terminal-only. The status line and keybindings from your settings don't apply in
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits
   the draft can only be posted as a comment.
+- **Issues.** An issue's sheet has "Work on it with agent" (a session that makes the
+  change in the open project, and leaves git and GitHub to you), "Close issue" and, on
+  a closed one, "Reopen issue"; both ask a second time. In the box, `/work`, `/close`
+  and `/reopen` do the same.
 - **Alerts and filters.** Review requests, mentions and assignments raise an alert; so
   does anything new in the organizations and repositories on your watch list. Click the
   repository line above the verdict to show only some organizations or repositories; the rest

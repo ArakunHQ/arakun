@@ -197,6 +197,11 @@ impl GitHubView {
                     "Close issue".to_string(),
                     false,
                 ),
+                Confirm::Reopen => (
+                    "Open this issue again?".to_string(),
+                    "Reopen issue".to_string(),
+                    false,
+                ),
                 Confirm::PostDraft => {
                     let (draft, Some(Details::Pull(p))) = (
                         self.draft.as_ref()?,
@@ -756,6 +761,46 @@ impl GitHubView {
             .gap(crate::ui::sp(8.))
             .child(agent)
             .when(p.open(), |d| d.child(merge_btn))
+    }
+
+    /// An issue's own actions: an agent to work on it, and closing it or
+    /// opening it again.
+    pub(super) fn issue_actions(&self, i: &pr::Issue, cx: &mut Context<Self>) -> gpui::Div {
+        let free = self.busy.is_none();
+        let agent = ui::key_pill(
+            "gh-issue-agent",
+            Some(("sparkles", Some(theme::text_subtle()))),
+            "Work on it with agent",
+            None,
+            PillKind::Normal,
+            true,
+        )
+        .tooltip(ui::tip("Start an agent on this issue in the open project"))
+        .on_click(cx.listener(|this, _, _, cx| this.work_on_issue(cx)));
+        let (label, glyph, ask) = if i.open() {
+            ("Close issue", "checkmark-circle01", Confirm::Close)
+        } else {
+            ("Reopen issue", "circle-dot", Confirm::Reopen)
+        };
+        let state = ui::key_pill(
+            "gh-issue-state",
+            Some((glyph, Some(theme::text_subtle()))),
+            label,
+            None,
+            PillKind::Normal,
+            free,
+        )
+        .when(free, |b| {
+            b.on_click(cx.listener(move |this, _, _, cx| this.ask_confirm(ask, cx)))
+        });
+        div()
+            .flex()
+            .flex_none()
+            .flex_wrap()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .when(i.open(), |d| d.child(agent))
+            .child(state)
     }
 
     /// What the tab picked shows, in the body under the tabs.

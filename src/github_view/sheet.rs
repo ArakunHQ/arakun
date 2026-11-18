@@ -250,9 +250,10 @@ impl GitHubView {
                     Details::Issue(i) => self.issue_props(i, cx),
                 };
                 top = top.child(prop_list(props, folded));
-                if let Details::Pull(p) = d {
-                    top = top.child(self.pull_actions(p, cx));
-                }
+                top = top.child(match d {
+                    Details::Pull(p) => self.pull_actions(p, cx),
+                    Details::Issue(i) => self.issue_actions(i, cx),
+                });
             }
             (None, None) => {
                 top = top.child(match &problem {

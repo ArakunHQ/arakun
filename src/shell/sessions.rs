@@ -498,11 +498,11 @@ impl Shell {
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        let remote = env.remote.is_some();
+        let remote = env.remote.as_ref().map(|r| r.server.clone());
         let session = &mut env.sessions[i];
         if let Some(live) = session.live.take() {
             // A server's transcript stays on the server.
-            if !remote {
+            if remote.is_none() {
                 let t = live.thread.read(cx);
                 let transcript = t.transcript(cx);
                 session.meta = Some(t.meta());
@@ -514,8 +514,8 @@ impl Shell {
             }
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
-            if remote {
-                self.servers_unfollow(id);
+            if let Some(server) = remote {
+                self.servers_unfollow(&server, id);
             }
         }
     }

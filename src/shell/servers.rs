@@ -225,6 +225,14 @@ fn let_go(
     gone
 }
 
+/// Takes `server`'s session `id` out of what is followed. Another server's
+/// session may have the same id: it stays.
+fn unfollow(following: &mut Vec<Following>, server: &str, id: &str) -> Vec<Following> {
+    following
+        .extract_if(.., |f| f.server == server && f.session == id)
+        .collect()
+}
+
 /// What phones call the session `id` of `server`: the two together, since
 /// two servers may give a session the same id. No id has an `@`.
 pub(super) fn phone_session_id(server: &str, id: &str) -> String {
@@ -913,15 +921,13 @@ impl Shell {
         self.attach(env_path, id, thread, window, cx);
     }
 
-    /// Its viewer is gone: a new one must be filled again from the start.
-    pub(super) fn servers_unfollow(&mut self, id: &str) {
+    /// The viewer of `server`'s session `id` is gone: a new one must be
+    /// filled again from the start.
+    pub(super) fn servers_unfollow(&mut self, server: &str, id: &str) {
         let Some(link) = &mut self.servers else {
             return;
         };
-        let (gone, kept) = std::mem::take(&mut link.following)
-            .into_iter()
-            .partition(|f| f.session == id);
-        link.following = kept;
+        let gone = unfollow(&mut link.following, server, id);
         close_follows(link, gone);
     }
 
@@ -2239,10 +2245,9 @@ mod tests {
         assert!(moving.is_empty());
     }
 
-    #[test]
-    fn a_session_is_followed_while_anyone_looks_at_it() {
-        let follow = |session: &str, by: Vec<Watcher>| Following {
-            server: "s1".into(),
+    fn following(server: &str, session: &str, by: Vec<Watcher>) -> Following {
+        Following {
+            server: server.into(),
             session: session.into(),
             env_path: PathBuf::new(),
             entries: Vec::new(),
@@ -2256,7 +2261,12 @@ mod tests {
             refill: None,
             broken: None,
             by,
-        };
+        }
+    }
+
+    #[test]
+    fn a_session_is_followed_while_anyone_looks_at_it() {
+        let follow = |session: &str, by: Vec<Watcher>| following("s1", session, by);
         let phone = Watcher::Phone(7);
         let mut following = vec![
             follow("a", vec![Watcher::Desktop]),
@@ -2271,6 +2281,19 @@ mod tests {
         let names: Vec<&str> = gone.iter().map(|f| f.session.as_str()).collect();
         assert_eq!(names, ["a", "b"]);
         assert!(following.is_empty());
+    }
+
+    #[test]
+    fn a_viewer_that_goes_lets_go_of_its_own_servers_session_only() {
+        let mut list = vec![
+            following("srv1", "s19a-0", vec![Watcher::Desktop]),
+            following("srv2", "s19a-0", vec![Watcher::Phone(7)]),
+        ];
+        let gone = unfollow(&mut list, "srv1", "s19a-0");
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].server, "srv1");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].server, "srv2");
     }
 
     #[test]

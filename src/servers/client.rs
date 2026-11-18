@@ -459,6 +459,13 @@ impl Link {
                                     if kind == "open" {
                                         channel = msg["channel"].as_u64().unwrap_or(0) as u32;
                                     }
+                                    // A server that replaced the one this was
+                                    // talking to: the relay says no `pc_offline`
+                                    // first, but what the old one was asked
+                                    // gets no answer, so it went away all the same.
+                                    if ready {
+                                        self.set_status(Status::ServerAway);
+                                    }
                                     (session, ready) = (None, false);
                                     let hs = Handshake::begin();
                                     if let Err(ended) = send_frame(ws, HELLO, &hs.hello()) {
@@ -1402,6 +1409,23 @@ mod tests {
         assert_eq!(status(&mut rx), Status::ServerAway);
         let back = json!({ "type": "pc_online" }).to_string();
         ws.send(phone_frame(CONTROL, back.as_bytes())).unwrap();
+        let (kind, hello) = next_frame(&mut ws);
+        assert_eq!(kind, HELLO);
+        let (reply, mut session) = Handshake::begin()
+            .answer(&PhoneHello::parse(&hello).unwrap(), &identity, 7, "test")
+            .unwrap();
+        ws.send(phone_frame(HELLO, &reply)).unwrap();
+        assert_eq!(
+            sealed(&mut ws, &mut session),
+            json!({ "auth": { "token": "tok" } })
+        );
+        seal(&mut ws, &mut session, json!({ "ok": { "id": "dev1" } }));
+        assert_eq!(status(&mut rx), Status::Connected);
+
+        // Another server process takes its place at the relay, which says
+        // only that one is online: this one is gone, then back.
+        ws.send(phone_frame(CONTROL, back.as_bytes())).unwrap();
+        assert_eq!(status(&mut rx), Status::ServerAway);
         let (kind, hello) = next_frame(&mut ws);
         assert_eq!(kind, HELLO);
         let (reply, mut session) = Handshake::begin()

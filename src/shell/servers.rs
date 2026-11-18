@@ -115,6 +115,8 @@ pub(super) struct ServersLink {
     following: Vec<Following>,
     /// What each server listed last, as kept on disk (`servers::kept_inbox`).
     inboxes: HashMap<String, Value>,
+    /// The last write of `inboxes` failed: the next inbox writes them again.
+    inboxes_unsaved: bool,
     /// What each local project's repository is known by (`repo_key`), read once.
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
@@ -655,7 +657,6 @@ impl Shell {
     pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if servers::load().iter().any(|s| !in_the_clear(s)) {
             self.servers_connect_with(true, window, cx);
-            self.sync_remote_projects(window, cx);
             self.sync_servers_view(cx);
         }
     }
@@ -719,6 +720,7 @@ impl Shell {
             events,
             following: Vec::new(),
             inboxes: inboxes.clone(),
+            inboxes_unsaved: false,
             origins: HashMap::new(),
             starts: Starts::default(),
             starting_id: None,
@@ -736,6 +738,8 @@ impl Shell {
         for (id, inbox) in &inboxes {
             self.servers_inbox(id, inbox);
         }
+        // What they listed last shows until they answer, offline ones too.
+        self.sync_remote_projects(window, cx);
     }
 
     /// The name a server goes by.
@@ -828,8 +832,8 @@ impl Shell {
                 }
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
-                if link.inboxes.remove(id).is_some() {
-                    servers::save_inboxes(&link.inboxes);
+                if link.inboxes.remove(id).is_some() || link.inboxes_unsaved {
+                    link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
                 }
                 link.following.retain(|f| f.server != *id);
                 // What it was asked is not coming: the others' requests stay.
@@ -1997,10 +2001,11 @@ impl Shell {
                 if msg["type"] == "inbox" {
                     // Kept for the next start, when what it holds changed.
                     let kept = servers::kept_inbox(&msg);
-                    if link.saved.iter().any(|s| s.id == id) && link.inboxes.get(id) != Some(&kept)
-                    {
+                    // One that could not be written is tried again with the next.
+                    let changed = link.inboxes.get(id) != Some(&kept);
+                    if link.saved.iter().any(|s| s.id == id) && (changed || link.inboxes_unsaved) {
                         link.inboxes.insert(id.to_string(), kept);
-                        servers::save_inboxes(&link.inboxes);
+                        link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
                     }
                     self.servers_inbox(id, &msg);
                     self.sync_remote_projects(window, cx);

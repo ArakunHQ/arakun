@@ -179,14 +179,16 @@ pub fn load_inboxes() -> HashMap<String, Value> {
         .unwrap_or_default()
 }
 
-pub fn save_inboxes(inboxes: &HashMap<String, Value>) {
+/// Whether they were saved.
+pub fn save_inboxes(inboxes: &HashMap<String, Value>) -> bool {
     // Folder paths and session titles: this user's only, as the servers are.
     let saved = serde_json::to_vec(inboxes)
         .map_err(std::io::Error::other)
         .and_then(|bytes| crate::durable::write_private(&inbox_file(), &bytes));
-    if let Err(e) = saved {
+    if let Err(e) = &saved {
         eprintln!("arakun: could not save {}: {e}", inbox_file().display());
     }
+    saved.is_ok()
 }
 
 #[cfg(test)]

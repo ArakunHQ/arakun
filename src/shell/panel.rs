@@ -258,7 +258,13 @@ impl Shell {
             matches(s) && (show_settled || !s.settled || active_id.as_ref() == Some(&s.id))
         };
         let shown = env.sessions.iter().filter(|s| listed(s)).count();
-        let settled = env.sessions.iter().filter(|s| s.settled).count();
+        // Only the ones the row would add: the open session is listed anyway,
+        // and the agent filter hides the others either way.
+        let settled = env
+            .sessions
+            .iter()
+            .filter(|s| s.settled && matches(s) && active_id.as_ref() != Some(&s.id))
+            .count();
 
         let list: AnyElement = if env.sessions.is_empty() {
             div()

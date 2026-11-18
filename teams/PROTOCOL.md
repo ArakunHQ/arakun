@@ -217,7 +217,18 @@ A message on the wire:
     of the asking message through the asking message itself; `via` is who ran it;
     `cites` maps the `[n]` in `text` to message IDs.
   - `decision_accept` with `decision.of`: a member accepted the decision a bot
-    message proposed. The decision log is these, read back from the channels.
+    message proposed. `reply_to` is that bot message. The decision log is these,
+    read back from the channels, one acceptance per member (the oldest).
+  - A plain `@bot` without `reply_to` reads only the asking message.
+  - `bot` may also carry, for clients to render:
+    - `read`: how many messages the range held;
+    - `parts`: present when a long range was summed up in parts first;
+    - `answer`: `{ ideas: [{ label, title, verdict: "works" |
+      "works_with_conditions" | "wont_work", reason, cites: [n] }], verified:
+      [{ text, source }], assumed: [text], unchecked: [text], decision: text }`.
+    `cites` maps only the numbers the answer cites. Clients ignore a `bot`
+    message whose `via` is not its sender's `github_id`. All of this is inside
+    the encrypted body; the server never sees it.
 
 ### Realtime
 

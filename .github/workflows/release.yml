@@ -431,15 +431,22 @@ jobs:
 
       # The archives as a user gets them: they unpack, and the binaries load and run.
       - name: Smoke test
+        env:
+          # As in Package: a glob can't tell the app's folder from the server's
+          # once a nightly's name starts with a digit.
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
+          tag=${TAG:-dev-$(printf %.7s "$SHA")}
+          dir="smoke/arakun-$tag-linux-$ARCH"
           mkdir smoke
           for archive in dist/*.tar.gz; do tar -C smoke -xzf "$archive"; done
-          app=$(echo smoke/arakun-[vd]*/arakun)
-          server=$(echo smoke/arakun-server-*/arakun-server)
+          app=$dir/arakun
+          server=smoke/arakun-server-$tag-linux-$ARCH/arakun-server
           "$app" --version
           "$server" --version
-          test -f smoke/arakun-[vd]*/cef/libcef.so
-          test -f smoke/arakun-[vd]*/cef/locales/en-US.pak
+          test -f "$dir/cef/libcef.so"
+          test -f "$dir/cef/locales/en-US.pak"
           # Loaded on the first browser tab, never at startup.
           if objdump -p "$app" | grep -q 'NEEDED.*libcef'; then
             echo "::error::arakun links libcef.so at startup"

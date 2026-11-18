@@ -924,14 +924,21 @@ pub fn apply_staged() -> Result<Option<String>, String> {
     }
 }
 
+/// Whether a staged `tag` may replace `current`: it must be newer, and a
+/// nightly only while the user follows nightlies, since one staged before a
+/// switch to stable must not be installed after it.
+fn installable(tag: &str, channel: Channel, current: Version) -> bool {
+    Version::parse(tag)
+        .is_some_and(|v| v > current && (!v.is_nightly() || channel == Channel::Nightly))
+}
+
 fn apply_locked() -> Result<Option<String>, String> {
     let mut saved = load();
     let Some(tag) = saved.staged.clone() else {
         return Ok(None);
     };
     let install = Install::here()?;
-    let newer = Version::parse(&tag).is_some_and(|v| v > Version::current());
-    let intact = newer && install.staged_intact(&saved);
+    let intact = installable(&tag, channel(), Version::current()) && install.staged_intact(&saved);
     if intact {
         swap(&install).map_err(|e| format!("could not install Arakun {tag}: {e}"))?;
     } else {
@@ -1173,6 +1180,19 @@ mod tests {
             newest_listed("{\"message\": \"API rate limit exceeded\"}"),
             None
         );
+    }
+
+    #[test]
+    fn a_staged_nightly_waits_for_the_nightly_channel() {
+        let v = |s| Version::parse(s).unwrap();
+        let nightly = "0.5.1-nightly.202611180317";
+        assert!(installable(nightly, Channel::Nightly, v("0.5.0")));
+        // Staged before the switch to stable: dropped at quit.
+        assert!(!installable(nightly, Channel::Stable, v("0.5.0")));
+        assert!(installable("0.5.1", Channel::Stable, v("0.5.0")));
+        assert!(installable("0.5.1", Channel::Nightly, v(nightly)));
+        assert!(!installable("0.5.0", Channel::Nightly, v(nightly)));
+        assert!(!installable("0.5.0", Channel::Stable, v("0.5.0")));
     }
 
     #[test]

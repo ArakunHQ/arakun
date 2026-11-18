@@ -221,6 +221,8 @@ pub struct AskUserRequest {
     /// ACP form elicitation (Claude's AskUserQuestion): per question, its field
     /// and the free-text field beside it. Empty for native Droid.
     pub fields: Vec<(String, Option<String>)>,
+    /// The subagent session asking, when it is not this one.
+    pub session: Option<String>,
 }
 
 impl AskUserRequest {
@@ -270,6 +272,7 @@ impl AskUserRequest {
             tool_call_id: str_of(params, "toolCallId").unwrap_or_default(),
             questions,
             fields,
+            session: None,
         })
     }
 }
@@ -928,10 +931,7 @@ impl Thread {
         } else {
             json!({"action": "accept", "content": form_content(&req, &answers)})
         };
-        if let Some(conn) = &self.conn {
-            conn.respond(req.rpc_id, reply);
-        }
-        self.after_input(&req.tool_call_id, cx);
+        self.reply_question(req, reply, cx);
     }
 
     /// Dismisses the pending questionnaire without answering.
@@ -939,16 +939,77 @@ impl Thread {
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
-        if let Some(conn) = &self.conn {
-            // A declined form tells Claude the user skipped; it goes on.
-            let reply = if req.fields.is_empty() {
-                json!({"answers": [], "cancelled": true})
-            } else {
-                json!({"action": "decline"})
-            };
-            conn.respond(req.rpc_id, reply);
+        // A declined form tells Claude the user skipped; it goes on.
+        let reply = if req.fields.is_empty() {
+            json!({"answers": [], "cancelled": true})
+        } else {
+            json!({"action": "decline"})
+        };
+        self.reply_question(req, reply, cx);
+    }
+
+    /// Sends the answer to a questionnaire. A subagent's thread holds a copy
+    /// of what its session asks the parent, as with permission requests;
+    /// either answers it, and the other drops its copy.
+    fn reply_question(&mut self, req: AskUserRequest, reply: Value, cx: &mut Context<Self>) {
+        match self.parent.clone() {
+            Some(parent) => {
+                let id = req.rpc_id.clone();
+                cx.defer(move |cx| {
+                    let _ = parent.update(cx, |p, cx| p.answer_question_for_child(&id, reply, cx));
+                });
+            }
+            None => {
+                if let Some(conn) = &self.conn {
+                    conn.respond(req.rpc_id.clone(), reply);
+                }
+                self.forget_question_in_child(&req, cx);
+            }
         }
         self.after_input(&req.tool_call_id, cx);
+    }
+
+    /// The user answered a subagent's questionnaire in the subagent's own view.
+    fn answer_question_for_child(&mut self, rpc_id: &Value, reply: Value, cx: &mut Context<Self>) {
+        let Some(at) = self
+            .native
+            .questions
+            .iter()
+            .position(|q| &q.rpc_id == rpc_id)
+        else {
+            return;
+        };
+        let Some(req) = self.native.questions.remove(at) else {
+            return;
+        };
+        if let Some(conn) = &self.conn {
+            conn.respond(req.rpc_id.clone(), reply);
+        }
+        self.after_input(&req.tool_call_id, cx);
+    }
+
+    /// Drops the subagent's copy of a questionnaire answered or dropped here.
+    pub(super) fn forget_question_in_child(
+        &mut self,
+        req: &AskUserRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(child) = req
+            .session
+            .as_deref()
+            .and_then(|s| self.subagent(s))
+            .map(|s| s.thread.clone())
+        else {
+            return;
+        };
+        let id = req.rpc_id.clone();
+        child.update(cx, |c, cx| {
+            if let Some(at) = c.native.questions.iter().position(|q| q.rpc_id == id)
+                && let Some(req) = c.native.questions.remove(at)
+            {
+                c.after_input(&req.tool_call_id, cx);
+            }
+        });
     }
 
     /// The agent process is up and the session is loaded, so session requests can go out.
@@ -1563,18 +1624,47 @@ impl Thread {
             }
         })
         .detach();
-        self.native_drop_questions();
     }
 
-    pub(super) fn native_drop_questions(&mut self) {
-        for req in self.native.questions.drain(..) {
+    /// Answers the questionnaires nobody answered as cancelled. `keep_running`:
+    /// those of subagents still running stay, as their permission requests do.
+    pub(super) fn drop_questions(&mut self, keep_running: bool, cx: &mut Context<Self>) {
+        self.drop_questions_where(
+            |t, q| {
+                !(keep_running
+                    && q.session
+                        .as_deref()
+                        .and_then(|s| t.subagent(s))
+                        .is_some_and(|s| s.state.is_running()))
+            },
+            cx,
+        );
+    }
+
+    /// Answers the questionnaires `gone` picks as cancelled, and drops the
+    /// copies their subagents' threads hold.
+    pub(super) fn drop_questions_where(
+        &mut self,
+        gone: impl Fn(&Thread, &AskUserRequest) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        let asks = std::mem::take(&mut self.native.questions);
+        let (drop, keep): (Vec<_>, Vec<_>) = asks.into_iter().partition(|q| gone(self, q));
+        self.native.questions = keep.into();
+        for req in drop {
             if let Some(conn) = &self.conn {
                 let reply = if req.fields.is_empty() {
                     json!({"answers": [], "cancelled": true})
                 } else {
                     json!({"action": "cancel"})
                 };
-                conn.respond(req.rpc_id, reply);
+                conn.respond(req.rpc_id.clone(), reply);
+            }
+            self.forget_question_in_child(&req, cx);
+            // Not `after_input`: callers settle the status, and a turn ending
+            // here must not start the next queued prompt under itself.
+            if let Some(&ix) = self.tool_index.get(&req.tool_call_id) {
+                self.entries_changed(ix, cx);
             }
         }
     }
@@ -1586,7 +1676,7 @@ impl Thread {
             self.meta_changed(cx);
             return;
         }
-        self.native_drop_questions();
+        self.drop_questions(false, cx);
         let error = std::mem::take(&mut self.native.turn_error);
         let stop = match reason.as_str() {
             "completed" | "spec_handoff" => "end_turn",
@@ -2027,6 +2117,7 @@ impl Thread {
                     tool_call_id: tool_call_id.clone(),
                     questions,
                     fields: Vec::new(),
+                    session: None,
                 });
                 if let Some(&ix) = self.tool_index.get(&tool_call_id) {
                     self.entries_changed(ix, cx);

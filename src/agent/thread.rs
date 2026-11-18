@@ -2172,7 +2172,7 @@ impl Thread {
             }
             self.forget_in_child(&req, cx);
         }
-        self.native_drop_questions();
+        self.drop_questions(true, cx);
     }
 
     /// Stamps the turn's duration and usage on its prompt.
@@ -2485,6 +2485,9 @@ impl Thread {
             conn.respond(req.rpc_id.clone(), reply.clone());
             self.forget_in_child(&req, cx);
         }
+        // ACP asks the client to answer what it still waits on once it cancels;
+        // an AskUserQuestion form left open would hold the turn.
+        self.drop_questions(false, cx);
         if self.auto_turn && !self.prompting {
             // No response ends a turn the agent took by itself.
             self.notice("Stopped", false, cx);
@@ -2949,11 +2952,7 @@ impl Thread {
                 let tool = &params["toolCall"];
                 let tool_call_id = str_of(tool, "toolCallId").unwrap_or_default();
                 // A subagent's call is in its own transcript; the request shows in both.
-                let child = params["sessionId"]
-                    .as_str()
-                    .filter(|s| self.session_id.as_deref() != Some(*s))
-                    .and_then(|s| self.subagents.iter().find(|c| c.id == s))
-                    .map(|c| (c.id.clone(), c.thread.clone()));
+                let child = self.asking_child(&params);
                 let known = |t: &Thread| {
                     t.tool_index
                         .get(&tool_call_id)
@@ -3040,11 +3039,24 @@ impl Thread {
                 cx.notify();
             }
             "elicitation/create" => {
-                let Some(req) = AskUserRequest::from_form(id.clone(), &params) else {
+                let Some(mut req) = AskUserRequest::from_form(id.clone(), &params) else {
                     conn.respond(id, json!({"action": "decline"}));
                     return;
                 };
                 let tool_call_id = req.tool_call_id.clone();
+                // A subagent's question shows in its own transcript too.
+                if let Some((session, thread)) = self.asking_child(&params) {
+                    req.session = Some(session);
+                    let copy = req.clone();
+                    thread.update(cx, |c, cx| {
+                        c.native.questions.push_back(copy);
+                        if let Some(&ix) = c.tool_index.get(&tool_call_id) {
+                            c.entries_changed(ix, cx);
+                        }
+                        c.set_status(ThreadStatus::NeedsInput, cx);
+                        cx.emit(ThreadEvent::NeedsPermission);
+                    });
+                }
                 self.native.questions.push_back(req);
                 if let Some(&ix) = self.tool_index.get(&tool_call_id) {
                     self.entries_changed(ix, cx);
@@ -3063,6 +3075,15 @@ impl Thread {
             },
             _ => conn.respond_error(id, -32601, &format!("method not found: {method}")),
         }
+    }
+
+    /// The subagent whose session a request came on, when it is not this one.
+    fn asking_child(&self, params: &Value) -> Option<(String, Entity<Thread>)> {
+        params["sessionId"]
+            .as_str()
+            .filter(|s| self.session_id.as_deref() != Some(*s))
+            .and_then(|s| self.subagents.iter().find(|c| c.id == s))
+            .map(|c| (c.id.clone(), c.thread.clone()))
     }
 
     /// Resolves an agent-supplied path, refusing anything outside the session cwd

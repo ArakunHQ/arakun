@@ -90,12 +90,51 @@ pub(super) struct ServersLink {
     starting: Option<String>,
     /// That session, by server and id: its tab opens once the inbox has it.
     starting_id: Option<(String, String)>,
+    /// Environments of folders a server no longer offers, kept for the
+    /// sessions that ran there: nothing new starts in them.
+    retired: HashSet<PathBuf>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
     pairing_timeout: Option<Task<()>>,
     error: Option<String>,
     _listen: Task<()>,
+}
+
+/// The folders a server's sessions ran in that it no longer offers. Their
+/// sessions stay in its list, so they stay openable here. A session from an
+/// older server that does not say its folder has nowhere to go.
+fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
+    let mut gone: Vec<PlaceRow> = Vec::new();
+    for s in sessions {
+        if s.place.is_empty()
+            || places.iter().any(|p| s.in_place(p))
+            || gone.iter().any(|g| g.path == s.place)
+        {
+            continue;
+        }
+        let name = if s.env.is_empty() {
+            Path::new(&s.place)
+                .file_name()
+                .map_or_else(|| s.place.clone(), |n| n.to_string_lossy().into_owned())
+        } else {
+            s.env.clone()
+        };
+        gone.push(PlaceRow {
+            path: s.place.clone(),
+            project: name,
+            branch: String::new(),
+            agent: s.agent.clone(),
+            repo: String::new(),
+            origin: String::new(),
+        });
+    }
+    gone
+}
+
+/// A server reached over plain http: what goes to it, its token too, can be read on the way.
+fn in_the_clear(s: &Saved) -> bool {
+    s.way == servers::Way::Direct && s.origin.starts_with("http://")
 }
 
 fn status_from(word: &str) -> Status {
@@ -285,15 +324,30 @@ impl Shell {
     }
 
     /// At start: the paired servers are connected, so their projects show.
+    /// Not one reached over plain http: its token would cross whatever
+    /// network this is now in the clear. It waits for the Servers tab.
     pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !servers::load().is_empty() {
-            self.servers_connect(window, cx);
+        if servers::load().iter().any(|s| !in_the_clear(s)) {
+            self.servers_connect_with(true, window, cx);
             self.sync_servers_view(cx);
         }
     }
 
     fn servers_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.servers.is_some() {
+        self.servers_connect_with(false, window, cx)
+    }
+
+    /// With `startup`, only the servers whose link is encrypted.
+    fn servers_connect_with(&mut self, startup: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(link) = &mut self.servers {
+            if !startup {
+                for s in &link.saved {
+                    if !link.conns.contains_key(&s.id) {
+                        let client = Client::connect(s.clone(), link.events.clone());
+                        link.conns.insert(s.id.clone(), Conn::new(client));
+                    }
+                }
+            }
             return;
         }
         let (events, mut heard) = mpsc::unbounded::<(String, Event)>();
@@ -312,6 +366,7 @@ impl Shell {
         let saved = servers::load();
         let conns = saved
             .iter()
+            .filter(|s| !startup || !in_the_clear(s))
             .map(|s| {
                 (
                     s.id.clone(),
@@ -327,6 +382,7 @@ impl Shell {
             origins: HashMap::new(),
             starting: None,
             starting_id: None,
+            retired: HashSet::new(),
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -481,11 +537,14 @@ impl Shell {
             .collect();
         // Every folder the servers offer: its project, and itself as an environment.
         let mut wanted: Vec<(PathBuf, String, Remote, PlaceRow, Vec<SessionRow>)> = Vec::new();
+        let mut retired = HashSet::new();
         for saved in &link.saved {
             let Some(conn) = link.conns.get(&saved.id) else {
                 continue;
             };
-            for place in &conn.places {
+            let gone = gone_places(&conn.sessions, &conn.places);
+            retired.extend(gone.iter().map(|p| Remote::env_path(&saved.id, &p.path)));
+            for place in conn.places.iter().chain(&gone) {
                 let (project, _) = project_for(place, &saved.id, &locals);
                 let remote = Remote {
                     server: saved.id.clone(),
@@ -507,6 +566,7 @@ impl Shell {
                 ));
             }
         }
+        link.retired = retired;
         let keep: HashSet<PathBuf> = wanted
             .iter()
             .map(|(_, _, r, _, _)| Remote::env_path(&r.server, &r.place))
@@ -532,7 +592,7 @@ impl Shell {
             let pi = match self.projects.iter().position(|p| p.path == project) {
                 Some(pi) => pi,
                 None => {
-                    // After every local project: their indexes stay as saved.
+                    // At the end, so the projects before it keep their indexes.
                     let mut p = crate::state::new_project(&project);
                     p.name = name.into();
                     p.environments.clear();
@@ -593,6 +653,19 @@ impl Shell {
         let thread = Thread::viewer(empty_transcript(agent, &title), thread_status(status), cx);
         thread.update(cx, |t, _| t.set_remote());
         self.attach(env_path, id, thread, window, cx);
+    }
+
+    /// Its viewer is gone: a new one must be filled again from the start.
+    pub(super) fn servers_unfollow(&mut self, id: &str) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        if let Some(f) = link.following.take_if(|f| f.session == id)
+            && let Some(conn) = link.conns.get(&f.server)
+            && conn.reach == Reach::Connected
+        {
+            conn.client.send(&json!({ "type": "close" }));
+        }
     }
 
     /// The server's session in the active tab is the one followed: the server
@@ -712,6 +785,13 @@ impl Shell {
         };
         if conn.reach != Reach::Connected {
             link.error = Some(format!("{} is not connected right now.", remote.machine));
+            return false;
+        }
+        if link.retired.contains(env_path) {
+            link.error = Some(format!(
+                "{} no longer offers this folder, so no new session starts in it.",
+                remote.machine
+            ));
             return false;
         }
         conn.client.send(&json!({
@@ -1210,5 +1290,56 @@ mod tests {
     fn statuses_read_from_the_servers_words() {
         assert_eq!(status_from("needs_input"), Status::NeedsInput);
         assert_eq!(status_from("something new"), Status::Idle);
+    }
+
+    #[test]
+    fn only_plain_http_links_wait_for_the_servers_tab() {
+        let saved = |origin: &str, way: servers::Way| Saved {
+            id: "srv".into(),
+            name: String::new(),
+            origin: origin.into(),
+            way,
+            device: "d".into(),
+            token: "t".into(),
+        };
+        assert!(in_the_clear(&saved(
+            "http://10.0.0.2:7474",
+            servers::Way::Direct
+        )));
+        assert!(!in_the_clear(&saved(
+            "https://box.example",
+            servers::Way::Direct
+        )));
+        let relay = servers::Way::Relay {
+            label: "l".into(),
+            ticket: "t".into(),
+        };
+        assert!(!in_the_clear(&saved("http://10.0.0.2:7474", relay)));
+    }
+
+    #[test]
+    fn sessions_of_a_removed_folder_keep_one_of_their_own() {
+        let session = |id: &str, place: &str| SessionRow {
+            id: id.into(),
+            title: String::new(),
+            agent: "codex".into(),
+            status: Status::Idle,
+            updated: 0,
+            place: place.into(),
+            env: String::new(),
+        };
+        let sessions = [
+            session("s1", "/srv/app"),
+            session("s2", "/srv/old"),
+            session("s3", "/srv/old"),
+            session("s4", ""),
+        ];
+        let gone = gone_places(&sessions, &[place("/srv/app", "/srv/app", "")]);
+        assert_eq!(gone.len(), 1, "one folder, once, and none for s4");
+        assert_eq!(
+            (gone[0].path.as_str(), gone[0].project.as_str()),
+            ("/srv/old", "old")
+        );
+        assert_eq!(gone[0].agent, "codex");
     }
 }

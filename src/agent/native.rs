@@ -947,14 +947,18 @@ impl Thread {
 
     /// Answers the pending AskUser questionnaire, one answer per question.
     pub fn answer_question(&mut self, answers: Vec<String>, cx: &mut Context<Self>) {
+        // A server's question stays until the server says it is answered: if
+        // this does not reach it, the card and the typed answers are still here.
+        if self.remote {
+            if self.native.questions.is_empty() {
+                return;
+            }
+            cx.emit(ThreadEvent::Remote(super::RemoteAction::Answer(answers)));
+            return;
+        }
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
-        if self.remote {
-            cx.emit(ThreadEvent::Remote(super::RemoteAction::Answer(answers)));
-            cx.notify();
-            return;
-        }
         let reply = if req.fields.is_empty() {
             let answers: Vec<Value> = req
                 .questions
@@ -971,14 +975,18 @@ impl Thread {
 
     /// Dismisses the pending questionnaire without answering.
     pub fn skip_question(&mut self, cx: &mut Context<Self>) {
+        // A server's question stays until the server says it is answered: if
+        // this does not reach it, the card and the typed answers are still here.
+        if self.remote {
+            if self.native.questions.is_empty() {
+                return;
+            }
+            cx.emit(ThreadEvent::Remote(super::RemoteAction::SkipQuestion));
+            return;
+        }
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
-        if self.remote {
-            cx.emit(ThreadEvent::Remote(super::RemoteAction::SkipQuestion));
-            cx.notify();
-            return;
-        }
         // A declined form tells Claude the user skipped; it goes on.
         let reply = if req.fields.is_empty() {
             json!({"answers": [], "cancelled": true})

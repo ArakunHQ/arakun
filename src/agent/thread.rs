@@ -1958,7 +1958,6 @@ impl Thread {
         text
     }
 
-    /// Sends a prompt, or queues it while the agent is busy or still starting.
     /// Makes this viewer the face of a session on a server.
     pub fn set_remote(&mut self) {
         self.remote = true;
@@ -2016,6 +2015,7 @@ impl Thread {
         cx.notify();
     }
 
+    /// Sends a prompt, or queues it while the agent is busy or still starting.
     pub fn send(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {

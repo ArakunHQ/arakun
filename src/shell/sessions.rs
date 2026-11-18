@@ -494,9 +494,11 @@ impl Shell {
         if open || busy || self.check_running(id) || self.phone_watching(id) {
             return;
         }
-        let Some(session) = self.find_env_mut(env_path).map(|e| &mut e.sessions[i]) else {
+        let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
+        let remote = env.remote.is_some();
+        let session = &mut env.sessions[i];
         if let Some(live) = session.live.take() {
             let t = live.thread.read(cx);
             let transcript = t.transcript(cx);
@@ -508,6 +510,9 @@ impl Shell {
             .detach();
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
+            if remote {
+                self.servers_unfollow(id);
+            }
         }
     }
 

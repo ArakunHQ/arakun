@@ -177,6 +177,16 @@ struct NewEnv {
     dialog: bool,
 }
 
+/// Whether the error `msg` answers a start. A server from before errors said
+/// what they were about answers one with this message only, which it sends
+/// for nothing else.
+fn about_start(msg: &Value) -> bool {
+    msg["about"] == "start"
+        || (msg["about"].is_null()
+            && msg["id"].is_null()
+            && msg["message"] == "that project is gone")
+}
+
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
 fn in_the_clear(s: &Saved) -> bool {
     s.way == servers::Way::Direct && s.origin.starts_with("http://")
@@ -1456,7 +1466,12 @@ impl Shell {
             return false;
         };
         let message = text(msg, "message");
-        match msg["about"].as_str() {
+        let about = if about_start(msg) {
+            Some("start")
+        } else {
+            msg["about"].as_str()
+        };
+        match about {
             Some("start") => match link.starts.answered(id) {
                 Some(Asker::Phone(client)) => {
                     self.phone_send(client, wire::error(&message));
@@ -1814,6 +1829,21 @@ mod tests {
         assert_eq!(starts.dropped("a"), vec![7]);
         assert_eq!(starts.answered("a"), None);
         assert_eq!(starts.answered("b"), Some(Asker::Phone(8)));
+    }
+
+    #[test]
+    fn an_older_servers_start_error_is_known_by_its_words() {
+        assert!(about_start(
+            &json!({ "type": "error", "about": "start", "message": "x" })
+        ));
+        let old = json!({ "type": "error", "message": "that project is gone" });
+        assert!(about_start(&old));
+        assert!(!about_start(
+            &json!({ "type": "error", "message": "that session is gone" })
+        ));
+        // Said about a session, it is that session's.
+        let session = json!({ "type": "error", "id": "s1", "message": "that project is gone" });
+        assert!(!about_start(&session));
     }
 
     #[test]

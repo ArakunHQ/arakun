@@ -3198,6 +3198,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // A hook is a script git runs: it needs to be executable.
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_fails_after_the_checkout_leaves_the_worktree_and_says_where() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = scratch("hook");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let hook = app.join(".git/hooks/post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = tmp.join("workspaces");
+        let err = worktree_in(&base, &app, "hooked").unwrap_err();
+        let made = base.join("app/hooked");
+        assert!(
+            err.contains(&format!("The worktree is at {} anyway", made.display())),
+            "{err}"
+        );
+        assert_eq!(store::branch(&made).as_deref(), Some("hooked"), "it stays");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn a_checkout_with_its_git_folder_elsewhere_makes_environments_too() {
         let tmp = scratch("separate");

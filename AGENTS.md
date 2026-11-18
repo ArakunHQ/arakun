@@ -93,22 +93,24 @@ it, and the bottom one targets `main`.
 
 ## Before you commit
 
-Run what CI runs for the parts you changed, and fix every warning:
+CI is the gate, so keep local runs short. Run the quick checks for what you changed
+and fix every warning:
 
 ```sh
+# Rust changed
 tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
-cargo test --locked --no-default-features
-# server/ changed, or a file src/server.rs builds on
-cargo clippy --locked -p arakun-server -- -D warnings
-# Cargo.toml, Cargo.lock or deny.toml changed
-cargo deny check
+cargo test --locked --no-default-features <module>   # only the modules you touched
 # relay/ or phone/ changed
-(cd relay && npm ci && npx tsc --noEmit && npx vitest run)
-(cd phone && node --test "test/*.test.mjs")
-# .github/ changed: pin actions by SHA, see "Checks" in CONTRIBUTING.md
-zizmor .github
+(cd relay && npx tsc --noEmit)
 ```
+
+Leave the rest to CI on the draft pull request: the full `cargo test`, the
+`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the relay and phone
+tests and the other platforms. If CI fails, fix it with the `triage-ci` skill. Don't
+rerun the whole suite locally just to be sure. With the Git hooks installed, push with
+`LEFTHOOK_EXCLUDE=cargo-test git push` so the push does not run the full suite either.
+The full list of what CI runs is under "Checks" in CONTRIBUTING.md.
 
 If you add or update a dependency, commit `Cargo.lock` too. Its license must be on the
 allow-list in `deny.toml`; do not add a license to that list without asking.

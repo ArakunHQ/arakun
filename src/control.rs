@@ -129,6 +129,8 @@ fn link_shim(exe: &Path, bin: &Path) -> bool {
 }
 
 /// Listens for commands; `None` when another arakun already answers on the socket.
+/// Two copies on one state don't race to clear a stale socket here: only the
+/// one holding the state's lock (`claim`) starts a window.
 pub fn serve() -> Option<mpsc::UnboundedReceiver<Incoming>> {
     let path = socket_path();
     if let Some(dir) = path.parent() {
@@ -352,13 +354,117 @@ enum Cli {
 
 /// Handles `arakun <command>`; returns `false` when the app should start.
 pub fn run_cli() -> bool {
-    match cli(std::env::args().skip(1).collect()) {
-        Cli::App => false,
-        Cli::AppWith(dir) => {
-            let _ = OPEN_AT_START.set(dir);
-            false
-        }
+    let open = match cli(std::env::args().skip(1).collect()) {
+        Cli::App => None,
+        Cli::AppWith(dir) => Some(dir),
         Cli::Exit(code) => std::process::exit(code),
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let req = match &open {
+        Some(dir) => Request {
+            cmd: "add".into(),
+            args: vec![dir.display().to_string()],
+            cwd,
+            side: false,
+        },
+        None => Request {
+            cmd: "focus".into(),
+            args: Vec::new(),
+            cwd,
+            side: false,
+        },
+    };
+    let lock = crate::state::lock_path();
+    match claim(&lock, &socket_path(), &req, CLAIM_WAIT) {
+        Claim::Owner(file) => {
+            let _ = OWNER.set(file);
+        }
+        Claim::Unlocked => {}
+        Claim::HandedOff(reply) => {
+            // An older Arakun doesn't know `focus`; it is running all the same.
+            if reply.ok && !reply.message.is_empty() {
+                println!("{}", reply.message);
+            } else {
+                println!("arakun is already running");
+            }
+            std::process::exit(0);
+        }
+        Claim::Busy => {
+            eprintln!(
+                "arakun: another Arakun holds {} and does not answer; quit it first, \
+                 or set ARAKUN_STATE to run one with its own state",
+                lock.display()
+            );
+            std::process::exit(1);
+        }
+    }
+    if let Some(dir) = open {
+        let _ = OPEN_AT_START.set(dir);
+    }
+    false
+}
+
+/// The state lock, held until this process exits; the system lets go of it
+/// even after a crash.
+static OWNER: OnceLock<std::fs::File> = OnceLock::new();
+
+/// How long a second launch waits for the Arakun holding the state to answer
+/// on its socket (it may still be starting) or to quit (`arakun restart`).
+const CLAIM_WAIT: Duration = Duration::from_secs(10);
+
+/// What starting the app found about the state it would use.
+#[derive(Debug)]
+enum Claim {
+    /// This process loads and saves the state until it exits.
+    Owner(std::fs::File),
+    /// The lock could not be taken at all (say, a file system without
+    /// locks): start as before rather than not at all.
+    Unlocked,
+    /// Another Arakun holds the state and took the request.
+    HandedOff(Reply),
+    /// Another Arakun holds the state and did not answer in time.
+    Busy,
+}
+
+/// Takes the state's lock, or hands `req` to the Arakun that holds it. Two
+/// windows on one state would each save over the other's projects on quit and
+/// run the same schedules and rules twice.
+fn claim(lock: &Path, socket: &Path, req: &Request, wait: Duration) -> Claim {
+    let deadline = Instant::now() + wait;
+    loop {
+        match try_lock(lock) {
+            Ok(Some(file)) => return Claim::Owner(file),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("arakun: could not lock {}: {e}", lock.display());
+                return Claim::Unlocked;
+            }
+        }
+        if let Ok(reply) = send_to(socket, req) {
+            return Claim::HandedOff(reply);
+        }
+        if Instant::now() >= deadline {
+            return Claim::Busy;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The open lock file when this process got the lock, `None` when another
+/// one holds it.
+fn try_lock(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
     }
 }
 
@@ -1464,5 +1570,82 @@ mod tests {
         assert!(reply.ok);
         assert_eq!(reply.message, "browse x");
         let _ = std::fs::remove_file(&sock);
+    }
+
+    fn claim_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arakun-claim-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn focus() -> Request {
+        Request {
+            cmd: "focus".into(),
+            args: Vec::new(),
+            cwd: "/".into(),
+            side: false,
+        }
+    }
+
+    #[test]
+    fn a_second_launch_on_the_same_state_does_not_start() {
+        let dir = claim_dir("busy");
+        let (lock, sock) = (dir.join("state.lock"), dir.join("state.sock"));
+        let wait = Duration::from_millis(300);
+        let first = claim(&lock, &sock, &focus(), wait);
+        assert!(matches!(first, Claim::Owner(_)), "{first:?}");
+        // Nothing answers on the socket: it gives up instead of starting.
+        let second = claim(&lock, &sock, &focus(), wait);
+        assert!(matches!(second, Claim::Busy), "{second:?}");
+        // Once the first one is gone (a quit, a crash, `arakun restart`) the
+        // next launch takes over.
+        drop(first);
+        let third = claim(&lock, &sock, &focus(), wait);
+        assert!(matches!(third, Claim::Owner(_)), "{third:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_second_launch_hands_off_to_the_running_one() {
+        let dir = claim_dir("hand-off");
+        let (lock, sock) = (dir.join("state.lock"), dir.join("state.sock"));
+        let first = claim(&lock, &sock, &focus(), Duration::ZERO);
+        assert!(matches!(first, Claim::Owner(_)), "{first:?}");
+        // The running one answers on its socket.
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (tx, mut rx) = mpsc::unbounded::<Incoming>();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            answer(stream, tx);
+        });
+        std::thread::spawn(move || {
+            let (req, done) =
+                futures::executor::block_on(futures::StreamExt::next(&mut rx)).unwrap();
+            let _ = done.send(Reply::ok(format!("{} {}", req.cmd, req.args.join(","))));
+        });
+        let add = Request {
+            cmd: "add".into(),
+            args: vec!["/p".into()],
+            ..focus()
+        };
+        match claim(&lock, &sock, &add, Duration::from_secs(5)) {
+            Claim::HandedOff(reply) => assert_eq!(reply.message, "add /p"),
+            other => panic!("{other:?}"),
+        }
+        drop(first);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn instances_with_their_own_state_run_side_by_side() {
+        let (a, b) = (claim_dir("own-a"), claim_dir("own-b"));
+        let wait = Duration::ZERO;
+        let first = claim(&a.join("state.lock"), &a.join("state.sock"), &focus(), wait);
+        let second = claim(&b.join("state.lock"), &b.join("state.sock"), &focus(), wait);
+        assert!(matches!(first, Claim::Owner(_)), "{first:?}");
+        assert!(matches!(second, Claim::Owner(_)), "{second:?}");
+        let _ = std::fs::remove_dir_all(a);
+        let _ = std::fs::remove_dir_all(b);
     }
 }

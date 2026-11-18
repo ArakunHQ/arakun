@@ -455,6 +455,12 @@ pub fn onboarding_path() -> PathBuf {
     file().with_extension("onboarding.json")
 }
 
+/// Held by the one Arakun that loads and saves this state; next to it, so a
+/// second Arakun with its own state (`ARAKUN_STATE`) runs beside it.
+pub fn lock_path() -> PathBuf {
+    file().with_extension("lock")
+}
+
 /// Whether Arakun saved its state here before: not a first launch.
 pub fn exists() -> bool {
     file().exists()

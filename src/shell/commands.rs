@@ -69,6 +69,12 @@ impl Shell {
         if req.cmd == "ls" {
             return Reply::ok(self.listing());
         }
+        // `arakun` run again while this one holds the state: it exits and
+        // this window comes up instead.
+        if req.cmd == "focus" {
+            window.activate_window();
+            return Reply::ok("arakun is already running; brought its window up");
+        }
         if req.cmd == "palette" {
             window.activate_window();
             if !matches!(self.modal, Some((super::Modal::Palette(_), _))) {

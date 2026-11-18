@@ -2,7 +2,10 @@
 
 The contract between the `teams/` Worker and the clients (the desktop app now, the
 phone later). The server stores and forwards; it never holds a key that opens team
-content. Everything below "the server sees" is metadata we accept showing.
+content. Everything below "the server sees" is metadata we accept showing. v1 keeps
+team content from a server that follows this protocol and reads everything it
+stores, not from one that acts against its users: see "What a hostile server can
+do".
 
 Version: `v1`. Envelopes and `Sealed` objects carry `"v": 1`. A message on the wire
 has no `v`, and the server drops fields it does not know, so a client must not expect
@@ -52,7 +55,8 @@ exception is `POST /teams/<team_id>/remind`, which only a pending user may call.
   by one of the same user's existing devices: `sig` = ECDSA by that device over the
   UTF-8 bytes of `arakun-teams/v1/device|<github_id>|<sig_pub>|<enc_pub>`. The
   server checks it (`400` if wrong), and so does every client before trusting the
-  device. This stops the server from adding a later device of its own.
+  device. This stops the server from adding a later device of its own to a user
+  whose first device a client has pinned.
 - It does not make the first device trustworthy: the server could register one in
   the user's name. Clients trust a user's first device on first use: they pin it
   the first time they see that user, and show its fingerprint for an optional
@@ -61,7 +65,8 @@ exception is `POST /teams/<team_id>/remind`, which only a pending user may call.
   seal a team key to any of that user's devices and warns the user instead.
 - Answer: `201 { "device_id": "..." }`. Registering the same `sig_pub` again
   answers `200` with the same ID; `409` if another account has it.
-- At most 20 devices per user (`409`).
+- At most 20 devices per user (`409`). v1 cannot remove a device, so every
+  device ever registered counts (see "What a hostile server can do").
 
 `GET /users/<github_id>/devices` lists a user's devices (the user must share a team
 with the caller, or be the caller): `[{ device_id, sig_pub, enc_pub, name,
@@ -147,8 +152,9 @@ without it, `403` if it is not one of the caller's devices.
    changed since the admin read them (fetch them again and retry). `.../reject`
    drops the request: `204`.
 
-The approval happens on the admin's device because only it holds the team key;
-the server cannot approve anyone.
+The approval happens on the admin's device because only it holds the team key.
+A server that follows the protocol cannot let anyone in by itself; one that acts
+against its users can, by adding a member row (see below).
 
 ## Envelopes (team keys, per device)
 
@@ -353,7 +359,61 @@ when each was last reminded; when each envelope was first stored. It never sees 
 keys, channel names, message text, who replied to what, edits, bot answers,
 decisions or their reversals: these are messages like any other to it.
 
+## What a hostile server can do
+
+v1 does not protect a team against an actively malicious server: the operator of
+the Worker or of its D1 database, or anyone who takes control of them. Members,
+roles and the list of a user's devices are plain rows that clients take as the
+server reports them.
+
+Such a server can:
+
+- Add any GitHub ID to a team as a `member`, `admin` or `owner`, without an
+  invite or an approval. For a user no client has seen yet, it can also register
+  a first device it made in that user's name, which clients trust on first use.
+- Read everything the team sends from then on. Rotation must cover every device
+  of every member the server lists, so honest admins seal the next key to its
+  device, and that device, as an "admin", may make the key of a new epoch itself
+  (the server can bump the epoch at any time). Recipients accept envelopes from
+  any device of an owner or admin the server lists.
+- Drop, delay or hold back messages, envelopes, invites and members, and show
+  different clients different lists.
+- Stall a rotation: a client does not seal a key to a user whose pinned first
+  device changed, and the server refuses a rotation that leaves out a device. The
+  team then keeps sending under the epoch a removed member holds.
+- Read the metadata above, as any server here can.
+
+It cannot:
+
+- Read messages or channel names sealed with an epoch whose key its device never
+  got: the epochs before it joined, unless an honest admin's device seals an older
+  epoch to it.
+- Forge or change a message or an envelope of a real device: each is signed by
+  that device over where it belongs (team, epoch, and channel and `id` or the
+  recipient) and its ciphertext.
+- Add a later device to a user whose first device a client has pinned, or swap
+  that first device, without the client warning (the endorsement chain).
+- Make a removed member's device read what is sealed after a rotation that
+  honest admins made without it.
+
+A client shows what it can check so people may notice: a new member or role, a
+user's new device, a first device that differs from the pinned one, and whether a
+rotation is pending (`rotation_pending`).
+
+Not in v1 either, and tracked as follow-ups:
+
+- a membership log signed by admin devices, which clients check before they
+  trust a member, a role or an envelope's sender
+  ([#373](https://github.com/ArakunHQ/arakun/issues/373));
+- removing a device: a revocation signed by another of the user's devices, which
+  bumps the epoch in each of their teams; a cap that counts only active devices;
+  and a way to leave a device or user out of a rotation on purpose
+  ([#374](https://github.com/ArakunHQ/arakun/issues/374)). Until then a lost or
+  stolen device gets every new key, and a user who loses every device cannot
+  register a new one.
+
 ## Not in v1
 
 Attachments, deleting messages, direct messages, recovery keys, and the agent
-bus. They fit in the same shapes: new `kind`s and sealed blobs in R2.
+bus. They fit in the same shapes: new `kind`s and sealed blobs in R2. The signed
+membership log and device revocation are above.

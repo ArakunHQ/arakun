@@ -313,6 +313,17 @@ impl Shell {
 
     /// A segment that holds only extensions that are off draws nothing, not
     /// even its title.
+    /// Whether the Active list is drawn as a list: not in a row of icons, a
+    /// folded segment or the narrowed rail. Only then does the project list
+    /// leave what waits or runs to it.
+    pub(super) fn active_list_shown(&self) -> bool {
+        let Some((s, _)) = self.sidebar.find(&Piece::active()) else {
+            return false;
+        };
+        let section = &self.sidebar.sections[s];
+        !self.rail_narrow() && !section.row && !(section.collapsible && section.collapsed)
+    }
+
     pub(super) fn rail_section_hidden(&self, section: &Section, cx: &App) -> bool {
         !section.items.is_empty() && section.items.iter().all(|i| !self.rail_shows(&i.piece, cx))
     }

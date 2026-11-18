@@ -504,15 +504,26 @@ impl Shell {
                 }
                 // What waits or runs is in the Active list above; here the rest.
                 // The main checkout stays: it is how you get to it.
-                let active_above = self.sidebar.has(&crate::sidebar::Piece::active());
+                let active_above = self.active_list_shown();
                 for (ei, env) in project.environments.iter().enumerate() {
-                    if active_above
-                        && !env.is_checkout
-                        && super::active::is_active(env.aggregate_status())
-                    {
+                    // A worktree from before one session per worktree stays
+                    // while any of its sessions is idle.
+                    let all_above = !env.sessions.is_empty()
+                        && env
+                            .sessions
+                            .iter()
+                            .all(|s| super::active::is_active(s.status));
+                    if active_above && !env.is_checkout && all_above {
                         continue;
                     }
-                    envs = envs.child(self.render_env_row(pi, ei, env, show_changes, cx));
+                    envs = envs.child(self.render_env_row(
+                        pi,
+                        ei,
+                        env,
+                        show_changes,
+                        active_above,
+                        cx,
+                    ));
                 }
                 for (i, name) in self
                     .pending_envs
@@ -897,6 +908,7 @@ impl Shell {
         ei: usize,
         env: &Environment,
         show_changes: bool,
+        active_above: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.projects.get(pi).is_some_and(|p| p.active_env == ei);
@@ -906,9 +918,11 @@ impl Shell {
         // The diff of the open row; the others show theirs on hover.
         let changes = show_changes.then(|| env.diff_totals());
         let signal = env_signal(status, ci_failed, changes);
+        // The sessions in the Active list are named there; this row names the rest.
         let titles: Vec<(&str, u64)> = env
             .sessions
             .iter()
+            .filter(|s| !active_above || !super::active::is_active(s.status))
             .map(|s| (s.title.as_ref(), s.updated))
             .collect();
         let label = thread_label(env.is_checkout, &titles);

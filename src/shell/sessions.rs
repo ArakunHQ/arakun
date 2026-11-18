@@ -84,6 +84,17 @@ fn new_session_id() -> SharedString {
     format!("{millis:x}-{n}").into()
 }
 
+/// A first prompt waiting for the worktree it will start in.
+pub(super) struct QueuedPrompt {
+    text: String,
+    agent: model::Agent,
+    draft_settings: Vec<(Setting, String)>,
+    claude_settings: Vec<(Setting, String)>,
+    opencode_settings: Vec<(Setting, String)>,
+    codex_settings: Vec<(Setting, String)>,
+    workers_ai_settings: Vec<(Setting, String)>,
+}
+
 pub(super) fn summary(text: &str) -> SharedString {
     let text = crate::agent::attach::title_text(text);
     let line = text
@@ -520,6 +531,42 @@ impl Shell {
         }
     }
 
+    /// A first prompt that waits for its worktree, with the agent and settings
+    /// picked where it was written.
+    pub(super) fn queue_prompt(&self, text: String) -> QueuedPrompt {
+        let env = self.env();
+        QueuedPrompt {
+            text,
+            agent: env.agent,
+            draft_settings: env.draft_settings.clone(),
+            claude_settings: env.claude_settings.clone(),
+            opencode_settings: env.opencode_settings.clone(),
+            codex_settings: env.codex_settings.clone(),
+            workers_ai_settings: env.workers_ai_settings.clone(),
+        }
+    }
+
+    /// Starts the session a queued prompt waited for, in the new worktree.
+    pub(super) fn start_queued(
+        &mut self,
+        env_path: &Path,
+        p: QueuedPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        env.agent = p.agent;
+        env.draft_settings = p.draft_settings;
+        env.claude_settings = p.claude_settings;
+        env.opencode_settings = p.opencode_settings;
+        env.codex_settings = p.codex_settings;
+        env.workers_ai_settings = p.workers_ai_settings;
+        let title = summary(&p.text);
+        self.start_session_in(env_path, p.agent, title, p.text, true, window, cx);
+    }
+
     /// Sends the composer text: to the open session, or as the first prompt of a new one.
     pub(super) fn send_prompt(
         &mut self,
@@ -703,6 +750,13 @@ impl Shell {
             return;
         }
 
+        // One session per worktree: a New session tab left where a session
+        // already is starts its session in a worktree of its own.
+        if !self.env().sessions.is_empty() {
+            let prompt = self.queue_prompt(text);
+            self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
+            return;
+        }
         let (env_path, agent) = (self.env().path.clone(), self.env().agent);
         self.start_session_in(&env_path, agent, summary(&text), text, true, window, cx);
     }

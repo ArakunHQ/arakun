@@ -1612,6 +1612,18 @@ impl Shell {
     /// commit, as the dialog would fill in. Its row shows at once and the
     /// worktree follows; the agent names the branch after the first prompt.
     fn quick_create_env(&mut self, pi: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.quick_create_env_then(pi, None, window, cx)
+    }
+
+    /// [`Self::quick_create_env`], then `prompt` starts the worktree's session:
+    /// a first prompt sent where a session already is.
+    fn quick_create_env_then(
+        &mut self,
+        pi: usize,
+        prompt: Option<sessions::QueuedPrompt>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         self.env_menu_open = false;
         let Some(project) = self.projects.get(pi) else {
@@ -1691,7 +1703,10 @@ impl Shell {
                     // The project can have moved in the list since.
                     Ok((path, branch)) => {
                         if let Some(pi) = this.projects.iter().position(|p| p.path == key) {
-                            this.environment_created(pi, path, branch, true, window, cx);
+                            this.environment_created(pi, path.clone(), branch, true, window, cx);
+                            if let Some(prompt) = prompt {
+                                this.start_queued(&path, prompt, window, cx);
+                            }
                         }
                     }
                     Err(e) => this.notify(

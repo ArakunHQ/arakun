@@ -98,7 +98,11 @@ impl Shell {
             return;
         }
         let len = self.strip.tabs.len();
-        let index = if n == usize::MAX { len - 1 } else { n };
+        let index = if n == usize::MAX {
+            len.saturating_sub(1)
+        } else {
+            n
+        };
         if index < len && index != self.strip.active_tab {
             self.select_tab(index, window, cx);
             self.focus_active_content(window, cx);
@@ -432,7 +436,9 @@ impl Shell {
     }
 
     /// Closes the tabs at the indices `close` picks, never `anchor`; they can be
-    /// reopened in turn, leftmost first.
+    /// reopened in turn, leftmost first. Only tabs of the anchor's environment
+    /// (for a view: the other views) close: closing a session's tab can stop its
+    /// agent, which a menu on one environment's tab must not do in another.
     fn close_tabs(
         &mut self,
         anchor: usize,
@@ -443,7 +449,8 @@ impl Shell {
         if !self.has_projects() || anchor >= self.strip.tabs.len() {
             return;
         }
-        let closed = self.strip.remove_tabs(anchor, close);
+        let mine = same_env_as(&self.strip, anchor);
+        let closed = self.strip.remove_tabs(anchor, |i| mine[i] && close(i));
         let mut sessions = Vec::new();
         for (index, tab) in closed.into_iter().rev() {
             if let Some(kind) = reopenable(&tab, cx) {
@@ -706,8 +713,9 @@ impl Shell {
             return panel.into_any_element();
         };
         let split_open = self.split_other().is_some();
-        let several = self.strip.tabs.len() > 1;
-        let any_right = index + 1 < self.strip.tabs.len();
+        let mine = same_env_as(&self.strip, index);
+        let several = mine.iter().filter(|m| **m).count() > 1;
+        let any_right = mine.iter().skip(index + 1).any(|m| *m);
         let can_reopen = !self.strip.closed_tabs.is_empty();
         panel =
             panel
@@ -812,6 +820,12 @@ impl Shell {
         }
         panel.into_any_element()
     }
+}
+
+/// For each tab, whether it is of the same environment as the tab at `index`.
+fn same_env_as(strip: &model::TabStrip, index: usize) -> Vec<bool> {
+    let env = strip.tabs.get(index).map(|t| &t.env);
+    strip.tabs.iter().map(|t| Some(&t.env) == env).collect()
 }
 
 /// The tab to pair with the active one: the most recently visited other tab of

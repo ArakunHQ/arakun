@@ -316,6 +316,8 @@ impl Shell {
         if let Ok(trees) = crate::git::worktrees(&root) {
             self.projects[pi].sync_worktrees(trees);
         }
+        // The first project: the row gets the tab it must never be without.
+        self.settle_strip(cx);
         self.refresh_project(pi, cx);
         self.sync_ci_roots(cx);
         self.sync_poll(window, cx);

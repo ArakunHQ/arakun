@@ -182,6 +182,11 @@ impl Shell {
             p.name = "Headless".into();
             p.environments[0].set_branch(Some("agents".into()));
             self.projects.push(p);
+            // The first project: the row gets the tab it must never be without.
+            if self.strip.tabs.is_empty() {
+                self.show_env_tab(true);
+                self.strip.seed_tab_history();
+            }
         }
         root
     }

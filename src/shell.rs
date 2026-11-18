@@ -1063,10 +1063,12 @@ impl Shell {
         // A blank tab that is all the environment left behind has no use:
         // going through environments must not leave one for each.
         let strip = &mut self.strip;
+        // Unless it is half of that environment's split, which waits for it.
         if let Some(left) = strip
             .active()
             .filter(|t| matches!(t.kind, TabKind::NewSession))
             && strip.tabs.iter().filter(|t| t.env == left.env).count() == 1
+            && !(strip.split.is_some() && strip.split_env == left.env)
         {
             strip.remove(strip.active_tab);
         }
@@ -2519,7 +2521,23 @@ impl Shell {
         }
         let mut closed_session = None;
         let mut closed_servers = false;
+        let here = self.env().path.clone();
+        let was_active = index == self.strip.active_tab;
         if let Some(tab) = self.strip.remove(index) {
+            // Closing the tab on screen keeps its environment on screen: a
+            // closed view, or the last tab of the environment, must not land
+            // on a neighbour that works elsewhere and bring that one in.
+            let strays = tab.env.is_none()
+                || !self
+                    .strip
+                    .active()
+                    .is_some_and(|t| t.env.as_deref().is_none_or(|e| e == here));
+            if was_active && strays {
+                self.strip.active_tab = match self.strip.front_of(&here) {
+                    Some(i) => i,
+                    None => self.strip.add(Tab::new_session(&here)),
+                };
+            }
             if let Some(kind) = reopenable(&tab, cx).filter(|_| remember) {
                 self.strip.remember_closed(index, kind, tab.env.clone());
             }
@@ -2529,11 +2547,6 @@ impl Shell {
             }
             if let (TabKind::Session { id, .. }, Some(env)) = (tab.kind, tab.env) {
                 closed_session = Some((env, id));
-            }
-            // The strip is never empty: the environment on screen starts over.
-            if self.strip.tabs.is_empty() {
-                let path = self.env().path.clone();
-                self.strip.active_tab = self.strip.add(Tab::new_session(&path));
             }
         }
         if let Some((path, id)) = closed_session {

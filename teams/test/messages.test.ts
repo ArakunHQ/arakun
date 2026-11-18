@@ -1,5 +1,6 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import type { Channel } from "../src/channel";
 import { b64url } from "../src/util";
 import { ADMIN, call } from "./helpers";
 import { api, envelope, expectJson, join, message, newKey, openChannel, team, type Socket, type TeamSetup } from "./clients";
@@ -116,6 +117,45 @@ describe("channel sockets", () => {
     await stored(a);
     expect(await b.inbox.next()).toEqual({ closed: { code: 4403, reason: "not a member of this team" } });
     expect(await c.inbox.next()).toEqual({ closed: { code: 4403, reason: "not a member of this team" } });
+    a.ws.close();
+  });
+
+  it("check a socket admitted while a send checks the others, so a logout in between is not missed", async () => {
+    const t = await team();
+    const m = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const { token_hash: mine } = (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(m.user.id).first<{ token_hash: string }>())!;
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`));
+    // Holds the member's admission after its check passed, until the owner's
+    // send is checking the open sockets; the member logs out in between.
+    // allowed() is private; the test swaps it on the live object. The gate
+    // lives in the object: promises cannot cross from the test into it.
+    await runInDurableObject<Channel, void>(stub as DurableObjectStub, (instance) => {
+      const ch = instance as any;
+      const allowed = ch.allowed.bind(ch);
+      let open!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      ch.held = false;
+      ch.allowed = async (teamId: string, sessions: string[]) => {
+        const got: Set<string> = await allowed(teamId, sessions);
+        if (sessions.length === 1 && sessions[0] === mine) {
+          ch.held = true;
+          await gate;
+        } else {
+          // The send's read: the admission finishes while it is in flight.
+          open();
+          for (let i = 0; i < 200 && ch.ctx.getWebSockets().length < 2; i++) await new Promise((r) => setTimeout(r, 1));
+        }
+        return got;
+      };
+    });
+    const opening = openChannel(m.user, m.device, t.teamId, t.channelId);
+    while (!(await runInDurableObject<Channel, boolean>(stub as DurableObjectStub, (ch) => (ch as any).held))) await new Promise((r) => setTimeout(r, 1));
+    await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(mine).run();
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "not for a logged-out session"));
+    await stored(a);
+    const b = await opening;
+    expect(await b.inbox.next()).toEqual({ closed: { code: 4403, reason: "not a member of this team" } });
     a.ws.close();
   });
 

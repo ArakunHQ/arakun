@@ -70,6 +70,10 @@ export class Channel extends DurableObject<Env> {
   /// Kicks per user, so a socket admitted while its user was being removed is
   /// refused. Only read during an admission, which keeps the object awake.
   private kicks = new Map<number, number>();
+  /// Sessions whose socket is being admitted, by count. A send checks them
+  /// with the open sockets: one admitted while that check runs was itself
+  /// checked earlier, and a logout in between must not let it hear the send.
+  private admitting = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -102,7 +106,15 @@ export class Channel extends DurableObject<Env> {
     // commit and kick in between, before this socket exists. So check again,
     // and refuse if a kick for this user ran while we checked.
     const kicks = this.kicks.get(who.githubId) ?? 0;
-    const allowed = await this.allowed(who.teamId, [who.session]);
+    this.admitting.set(who.session, (this.admitting.get(who.session) ?? 0) + 1);
+    let allowed: Set<string>;
+    try {
+      allowed = await this.allowed(who.teamId, [who.session]);
+    } finally {
+      const n = (this.admitting.get(who.session) ?? 1) - 1;
+      if (n > 0) this.admitting.set(who.session, n);
+      else this.admitting.delete(who.session);
+    }
     if (!allowed.has(who.session) || (this.kicks.get(who.githubId) ?? 0) !== kicks) return error(404, "not found");
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
@@ -160,8 +172,9 @@ export class Channel extends DurableObject<Env> {
     }
     if (!(await verify(key, msg.sig, messageSigned(who.teamId, who.channelId, msg)))) return this.refuse(ws, msg.id, "bad signature");
 
-    // Every socket's session, the sender's included, checked in the same read.
-    const checked = new Set([who.session, ...this.ctx.getWebSockets().map(sessionOf)]);
+    // Every socket's session, the sender's included, checked in the same read,
+    // and those of sockets being admitted.
+    const checked = new Set([who.session, ...this.ctx.getWebSockets().map(sessionOf), ...this.admitting.keys()]);
     const [team, allowed] = await Promise.all([
       this.env.DB.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(who.teamId).first<{ epoch: number; keyed_epoch: number }>(),
       this.allowed(who.teamId, [...checked]),
@@ -193,7 +206,8 @@ export class Channel extends DurableObject<Env> {
     }
     // Everyone on the channel, the sender included: that is its ack. A socket
     // whose session ended, or whose user lost the team or the flag, is closed
-    // instead. One opened during the read above was checked when it opened.
+    // instead. A socket whose session is not in `checked` began its admission
+    // after the read above began, so its own check is at least as recent.
     const out = JSON.stringify({ type: "message", seq, at, message: msg });
     for (const other of this.ctx.getWebSockets()) {
       const session = sessionOf(other);

@@ -52,6 +52,7 @@ jobs:
     # it was given, such as the old head after two quick pushes. Every run
     # reads the reviews just before it writes, so overlapping runs agree.
     runs-on: depot-ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       pull-requests: read
       statuses: write
@@ -72,6 +73,31 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+
+          # Retries a call that failed on the network or on GitHub's side
+          # (a timeout, HTTP 5xx or a rate limit); any other error fails at
+          # once. The output is held until the call succeeds, so a retried
+          # --paginate doesn't print a page twice. Every call here can be
+          # repeated safely. Keep in step with reviewers.yml.
+          gh() {
+            local attempt out err
+            err=$(mktemp)
+            for attempt in 1 2 3 4; do
+              if out=$(command gh "$@" 2>"$err"); then
+                rm -f "$err"
+                [ -z "$out" ] || printf '%s\n' "$out"
+                return 0
+              fi
+              cat "$err" >&2
+              if [ "$attempt" = 4 ] ||
+                ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit' "$err"; then
+                rm -f "$err"
+                return 1
+              fi
+              echo "Retrying in $((attempt * 10)) seconds." >&2
+              sleep $((attempt * 10))
+            done
+          }
 
           in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
 

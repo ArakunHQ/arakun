@@ -4,8 +4,8 @@
 #
 #   tools/install-cef.sh CEF_DIST [DEST]
 #
-# CEF_DIST is an unpacked CEF 156.0.15 linux64 distribution (the version cef 156.3 is built
-# for; https://cef-builds.spotifycdn.com/index.html). DEST defaults to
+# CEF_DIST is an unpacked CEF 156.0.15 linux64 (x86_64) or linuxarm64 (aarch64) distribution
+# (the version cef 156.3 is built for; https://cef-builds.spotifycdn.com/index.html). DEST defaults to
 # ${XDG_DATA_HOME:-~/.local/share}/arakun/cef. Re-running replaces DEST. Either layout works:
 # the archive as unpacked (Release/, Resources/, include/), or the flat directory with an
 # archive.json that the `cef` crate's own download leaves.
@@ -88,9 +88,15 @@ for l in en-US es es-419; do
   cp "$res/locales/$l.pak" "$tmp/locales/"
 done
 if [ -n "$version" ]; then
+  # CEF names its Linux builds after the CPU. The `cef` crate only reads the version from
+  # the name, but the name should still say which build this is.
+  case $(uname -m) in
+    aarch64 | arm64) platform=linuxarm64 ;;
+    *) platform=linux64 ;;
+  esac
   # The fields the `cef` crate reads. The archive's checksum is not known here.
-  printf '{\n  "type": "minimal",\n  "name": "cef_binary_%s_linux64_minimal",\n  "sha1": ""\n}\n' \
-    "$version" >"$tmp/archive.json"
+  printf '{\n  "type": "minimal",\n  "name": "cef_binary_%s_%s_minimal",\n  "sha1": ""\n}\n' \
+    "$version" "$platform" >"$tmp/archive.json"
 else
   cp "$src/archive.json" "$tmp/archive.json"
 fi

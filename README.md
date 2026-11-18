@@ -564,11 +564,12 @@ cargo build --release --no-default-features
 
 The default `browser` feature needs CEF at build time and at run time.
 
-- **Linux:** download the CEF 156.0.15 linux64 binary distribution (the minimal one is
-  enough) from <https://cef-builds.spotifycdn.com/index.html>, unpack it, and run:
+- **Linux:** download the CEF 156.0.15 binary distribution for your CPU (the minimal
+  one is enough) from <https://cef-builds.spotifycdn.com/index.html>: linux64 on x86_64,
+  linuxarm64 on ARM (aarch64). Unpack it and run:
 
   ```sh
-  tools/install-cef.sh /path/to/cef_binary_156.0.15_linux64
+  tools/install-cef.sh /path/to/cef_binary_156.0.15_linux64   # or ..._linuxarm64
   cargo build --release
   ```
 

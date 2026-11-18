@@ -123,11 +123,12 @@ if [ $browser = 1 ]; then
   have=$(sed -n 's/.*"cef_binary_\([^+]*\)+.*/\1/p' "$cef/archive.json" 2>/dev/null)
   if [ ! -f "$cef/libcef.so" ] || [ ! -d "$cef/sdk/include" ] || [ "$have" != "$want" ]; then
     dist=${CEF_DIST:-}
-    if [ -n "$dist" ] && [ -f "$dist/libcef.so" ]; then
+    if [ -n "$dist" ] && { [ -f "$dist/libcef.so" ] || [ -f "$dist/Release/libcef.so" ]; }; then
       sh tools/install-cef.sh "$dist" "$cef"
     else
       echo "install: $cef has CEF ${have:-nothing}, this build needs CEF $want" >&2
-      echo "         set CEF_DIST to an unpacked CEF $want linux64 build, or pass --no-browser" >&2
+      case $(uname -m) in aarch64 | arm64) platform=linuxarm64 ;; *) platform=linux64 ;; esac
+      echo "         set CEF_DIST to an unpacked CEF $want $platform build, or pass --no-browser" >&2
       exit 1
     fi
   fi

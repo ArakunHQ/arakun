@@ -4,7 +4,7 @@
 //! make `libcef.so` a startup dependency of arakun: measured, that alone doubles the PSS of
 //! a window with no browser tab (51 → 105 MB) because the dynamic linker relocates the
 //! whole 270 MB library. Instead every C entry point the crate uses is defined here as a
-//! two-instruction trampoline that jumps through a slot filled in by [`load`]. At build
+//! few-instruction trampoline (x86_64 or aarch64) that jumps through a slot filled in by [`load`]. At build
 //! time `-lcef` resolves to the empty stub from `tools/install-cef.sh`, which `--as-needed`
 //! then drops, so a symbol missing from the list below shows up as a link error rather
 //! than as a silent runtime dependency.
@@ -95,8 +95,8 @@ mod linux {
 
     use super::runtime_dir;
 
-    #[cfg(not(target_arch = "x86_64"))]
-    compile_error!("the browser loader only has x86_64 Linux trampolines");
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    compile_error!("the browser loader only has x86_64 and aarch64 Linux trampolines");
 
     unsafe extern "C" {
         fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
@@ -117,7 +117,11 @@ mod linux {
             mod slots {
                 $(pub static $name: super::AtomicUsize = super::AtomicUsize::new(0);)*
             }
+            // r11 (x86_64) and x16 (aarch64) are scratch registers the calling
+            // convention lets a call stub clobber, so the caller's arguments pass
+            // through untouched.
             $(
+                #[cfg(target_arch = "x86_64")]
                 core::arch::global_asm!(
                     concat!(".globl ", stringify!($name)),
                     concat!(".type ", stringify!($name), ",@function"),
@@ -126,6 +130,23 @@ mod linux {
                     "test r11, r11",
                     "jz {unloaded}",
                     "jmp r11",
+                    concat!(".size ", stringify!($name), ", . - ", stringify!($name)),
+                    slot = sym slots::$name,
+                    unloaded = sym unloaded,
+                );
+                // cbz only reaches 1 MB, so it skips over the jump to `unloaded`
+                // and `b` (128 MB, with linker veneers past that) makes the long jump.
+                #[cfg(target_arch = "aarch64")]
+                core::arch::global_asm!(
+                    concat!(".globl ", stringify!($name)),
+                    concat!(".type ", stringify!($name), ",%function"),
+                    concat!(stringify!($name), ":"),
+                    "adrp x16, {slot}",
+                    "ldr x16, [x16, :lo12:{slot}]",
+                    "cbz x16, 1f",
+                    "br x16",
+                    "1:",
+                    "b {unloaded}",
                     concat!(".size ", stringify!($name), ", . - ", stringify!($name)),
                     slot = sym slots::$name,
                     unloaded = sym unloaded,

@@ -1606,6 +1606,7 @@ pub fn refresh_rate() -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     #[cfg(unix)]

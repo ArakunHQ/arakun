@@ -727,25 +727,31 @@ async function removeMember(c: Ctx, teamId: string, id: string): Promise<Respons
   const db = c.env.DB;
   const row = await db.prepare("SELECT role FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target).first<{ role: Role }>();
   if (!row) return notFound();
-  if (row.role === "owner") {
-    if (!self && team.role !== "owner") return error(403, "only an owner can remove an owner");
-    const owners = await db.prepare("SELECT COUNT(*) AS n FROM members WHERE team_id = ? AND role = 'owner'").bind(teamId).first<{ n: number }>();
-    if ((owners?.n ?? 0) <= 1) return error(409, "the last owner cannot leave");
-  }
+  if (row.role === "owner" && !self && team.role !== "owner") return error(403, "only an owner can remove an owner");
 
+  // Every statement holds only while the target is still a member and is not
+  // the last owner. The owner count is read in the batch, not before it, so
+  // two owners who leave at once cannot both pass and leave the team with
+  // none. The member row goes last, so the conditions read the same rows in
+  // each statement.
+  const removable = `EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2 AND (role <> 'owner'
+    OR (SELECT COUNT(*) FROM members WHERE team_id = ?1 AND role = 'owner') > 1))`;
   const results = await db.batch([
     // The removed member holds every key so far; the next one must be new.
-    // Before the delete, and only if they are still a member, so two removals
-    // of the same member at once bump the epoch once.
+    // Only once, so two removals of the same member at once bump it once.
+    db.prepare(`UPDATE teams SET epoch = epoch + 1 WHERE team_id = ?1 AND ${removable}`).bind(teamId, target),
     db
-      .prepare("UPDATE teams SET epoch = epoch + 1 WHERE team_id = ?1 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)")
+      .prepare(`DELETE FROM envelopes WHERE team_id = ?1 AND device_id IN (SELECT device_id FROM devices WHERE github_id = ?2) AND ${removable}`)
       .bind(teamId, target),
-    db.prepare("DELETE FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
-    db.prepare("DELETE FROM envelopes WHERE team_id = ? AND device_id IN (SELECT device_id FROM devices WHERE github_id = ?)").bind(teamId, target),
+    db.prepare(`DELETE FROM members WHERE team_id = ?1 AND github_id = ?2 AND ${removable}`).bind(teamId, target),
     db.prepare("SELECT epoch FROM teams WHERE team_id = ?").bind(teamId),
     db.prepare("SELECT channel_id FROM channels WHERE team_id = ?").bind(teamId),
+    db.prepare("SELECT role FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
   ]);
-  if (results[0]!.meta.changes !== 1) return notFound();
+  if (results[0]!.meta.changes !== 1) {
+    // Still there means the batch found them to be the last owner.
+    return results[5]!.results.length > 0 ? error(409, "the last owner cannot leave") : notFound();
+  }
   const epoch = (results[3]!.results[0] as { epoch: number }).epoch;
   // Their open sockets go now, not at the next message. A kick that fails is
   // not retried: every message checks each recipient and closes their socket

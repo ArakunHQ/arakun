@@ -724,6 +724,33 @@ describe("members", () => {
     }
     await expect(join(t)).rejects.toThrow(/expected 200, got 409.*at most 25 members/);
   });
+
+  it("keep an owner when two owners leave at once", async () => {
+    const t = await team();
+    const other = await join(t);
+    // No route makes a second owner yet.
+    await env.DB.prepare("UPDATE members SET role = 'owner' WHERE github_id = ?").bind(other.user.id).run();
+    const leave = (u: typeof other.user) => api(u, "DELETE", `/teams/${t.teamId}/members/${u.id}`);
+    // The other owner leaves after this one read the team, before its batch.
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === 6) {
+        raced = true;
+        await expectJson(leave(other.user), 200);
+      }
+      return batch(statements);
+    });
+    const res = await expectJson(leave(t.owner.user), 409);
+    expect(res.error).toMatch(/last owner/);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    const got = await expectJson<{ members: { github_id: number; role: string }[]; epoch: number }>(api(t.owner.user, "GET", `/teams/${t.teamId}`), 200);
+    expect(got.members.map((m) => [m.github_id, m.role])).toEqual([[t.owner.user.id, "owner"]]);
+    expect(got.epoch).toBe(2);
+    // The owner's envelopes are still there.
+    expect(await expectJson<unknown[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/envelopes`, { device: t.owner.device }), 200)).toHaveLength(1);
+  });
 });
 
 describe("channels", () => {

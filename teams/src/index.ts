@@ -1,16 +1,22 @@
-// Arakun teams, first part: sign-in with GitHub and per-user feature flags.
-// Only the desktop app calls this, so there is no CORS. Every error is JSON:
-// { "error": "..." }.
+// Arakun teams: sign-in with GitHub, per-user feature flags, and the teams of
+// PROTOCOL.md. Only the desktop app calls this, so there is no CORS. Every
+// error is JSON: { "error": "..." }.
 
 import { admin } from "./admin";
 import { logout, me, signIn } from "./auth";
+import { teams } from "./teams";
 import { error, type Env } from "./util";
+
+export { Channel } from "./channel";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const { pathname } = new URL(request.url);
+    const url = new URL(request.url);
+    const { pathname } = url;
     try {
       if (pathname.startsWith("/admin/")) return await admin(request, env, pathname);
+      const answer = await teams(request, env, url);
+      if (answer) return answer;
       switch (`${request.method} ${pathname}`) {
         case "GET /healthz":
           return Response.json({ ok: true });

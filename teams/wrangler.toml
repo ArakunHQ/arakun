@@ -1,15 +1,18 @@
-# Arakun teams: sign-in with GitHub and per-user feature flags, in one Worker
-# with a D1 database. Teams, members and chat come later, on the same database.
+# Arakun teams: sign-in with GitHub, per-user feature flags and the teams of
+# PROTOCOL.md, in one Worker with a D1 database and one Durable Object per
+# channel for its messages.
 # The top-level Worker is for tests; production is `--env production` below.
 # Their names differ so a test deploy cannot replace production's bindings.
 name = "arakun-teams-dev"
 main = "src/index.ts"
+# On or after 2026-04-07, so the runtime answers a WebSocket client's close by
+# itself (src/channel.ts relies on it). relay/ has its own date and config.
 compatibility_date = "2026-11-01"
 
-# Users, sessions and flags. This Worker has a database of its own, so a test
-# deploy and its admin secret never reach production's users, sessions or
-# flags. `wrangler d1 create arakun-teams-dev` gives the id to put here;
-# `wrangler d1 migrations apply` reads the tables from migrations/.
+# Users, sessions, flags, devices, teams, invites, envelopes and channels.
+# This Worker has a database of its own, so a test deploy and its admin secret
+# never reach production's data. `wrangler d1 create arakun-teams-dev` gives the
+# id to put here; `wrangler d1 migrations apply` reads the tables from migrations/.
 [[d1_databases]]
 binding = "DB"
 database_name = "arakun-teams-dev"
@@ -34,6 +37,25 @@ namespace_id = "1003"
   limit = 10
   period = 60
 
+# Messages each device may send on channel sockets: 60 every 10 seconds.
+[[ratelimits]]
+name = "SEND_LIMIT"
+namespace_id = "1002"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 10
+
+# One SQLite-backed object per channel: its messages, their seq and the live
+# sockets.
+[[durable_objects.bindings]]
+name = "CHANNEL"
+class_name = "Channel"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Channel"]
+
 # The hosted Worker (`npx wrangler deploy --env production`). ADMIN_SECRET and
 # GITHUB_CLIENT_SECRET stay Worker secrets. An environment inherits no bindings, so they are all
 # here again. No route yet: the hostname is picked when it is first deployed.
@@ -53,6 +75,22 @@ namespace_id = "1001"
   [env.production.ratelimits.simple]
   limit = 10
   period = 60
+
+[[env.production.ratelimits]]
+name = "SEND_LIMIT"
+namespace_id = "1002"
+
+  [env.production.ratelimits.simple]
+  limit = 60
+  period = 10
+
+[[env.production.durable_objects.bindings]]
+name = "CHANNEL"
+class_name = "Channel"
+
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["Channel"]
 
 [env.production.vars]
 GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"

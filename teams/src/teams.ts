@@ -1,0 +1,624 @@
+// Devices, teams, invites, envelopes, members and channels: the endpoints of
+// PROTOCOL.md. Every one needs a session and the user's `teams` flag. Team
+// endpoints answer 404 to non-members, so a team's existence does not leak,
+// and 403 to members who are not an owner or admin where one is needed.
+//
+// The server never holds a team key. What it checks is who may store what:
+// device endorsements, the signatures on envelopes and messages, and that
+// every device gets the keys it should.
+
+import { session, type Session } from "./auth";
+import { TRUSTED, epochAllowed } from "./channel";
+import { DAY, GITHUB_ID, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
+import {
+  DEVICE_ID,
+  deviceIdOf,
+  deviceSigned,
+  envelopeSigned,
+  isEncKey,
+  parseEnvelope,
+  parseSealedName,
+  sigKey,
+  verify,
+  type Envelope,
+} from "./wire";
+
+const FLAG = "teams";
+const DEVICE_HEADER = "X-Arakun-Device";
+const MAX_DEVICES = 20;
+const MAX_CHANNELS = 500;
+const MAX_NAME = 100;
+const INVITE_DAYS = 7;
+/// Per request: a rotation of 25 members with 20 devices each, or one new
+/// device's keys for 25 epochs. D1 runs them as one batch.
+const MAX_ENVELOPES = 500;
+const MAX_BODY = 1024 * 1024;
+const HISTORY_LIMIT = 200;
+/// GitHub logins: letters, digits and hyphens, at most 39.
+const LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+
+type Role = "owner" | "admin" | "member";
+
+interface Ctx {
+  request: Request;
+  env: Env;
+  url: URL;
+  me: Session;
+}
+
+interface Team {
+  team_id: string;
+  name: string;
+  epoch: number;
+  keyed_epoch: number;
+  role: Role;
+}
+
+interface Device {
+  device_id: string;
+  sig_pub: string;
+}
+
+type Handler = (c: Ctx, ...params: string[]) => Promise<Response>;
+
+const ROUTES: [string, RegExp, Handler][] = [
+  ["POST", /^\/devices$/, registerDevice],
+  ["GET", /^\/users\/([^/]+)\/devices$/, listDevices],
+  ["POST", /^\/teams$/, createTeam],
+  ["GET", /^\/teams$/, listTeams],
+  ["GET", /^\/teams\/([^/]+)$/, getTeam],
+  ["POST", /^\/teams\/([^/]+)\/invites$/, invite],
+  ["GET", /^\/invites$/, listInvites],
+  ["POST", /^\/invites\/([^/]+)\/accept$/, accept],
+  ["GET", /^\/teams\/([^/]+)\/pending$/, listPending],
+  ["POST", /^\/teams\/([^/]+)\/pending\/([^/]+)\/approve$/, approve],
+  ["POST", /^\/teams\/([^/]+)\/pending\/([^/]+)\/reject$/, reject],
+  ["PUT", /^\/teams\/([^/]+)\/envelopes$/, putEnvelopes],
+  ["GET", /^\/teams\/([^/]+)\/envelopes$/, getEnvelopes],
+  ["DELETE", /^\/teams\/([^/]+)\/members\/([^/]+)$/, removeMember],
+  ["POST", /^\/teams\/([^/]+)\/channels$/, createChannel],
+  ["GET", /^\/teams\/([^/]+)\/channels\/([^/]+)\/ws$/, openSocket],
+  ["GET", /^\/teams\/([^/]+)\/channels\/([^/]+)\/messages$/, history],
+];
+
+/// Answers a teams request, or null when the path is not one of ours.
+export async function teams(request: Request, env: Env, url: URL): Promise<Response | null> {
+  for (const [method, pattern, handler] of ROUTES) {
+    const match = pattern.exec(url.pathname);
+    if (!match || request.method !== method) continue;
+    const me = await session(request, env);
+    if (!me) return error(401, "not signed in");
+    const flagged = await env.DB.prepare("SELECT 1 FROM user_flags WHERE github_id = ? AND flag = ?").bind(me.githubId, FLAG).first();
+    if (!flagged) return error(403, "teams is not enabled for this account");
+    return handler({ request, env, url, me }, ...match.slice(1));
+  }
+  return null;
+}
+
+const notFound = () => error(404, "not found");
+const notAdmin = () => error(403, "only an owner or admin can do this");
+
+function isAdmin(role: Role): boolean {
+  return role === "owner" || role === "admin";
+}
+
+/// The team, if the caller is a member of it.
+async function teamOf(c: Ctx, teamId: string): Promise<Team | null> {
+  if (!ULID.test(teamId)) return null;
+  return c.env.DB.prepare(
+    `SELECT t.team_id, t.name, t.epoch, t.keyed_epoch, m.role
+     FROM members m JOIN teams t ON t.team_id = m.team_id
+     WHERE m.team_id = ? AND m.github_id = ?`,
+  )
+    .bind(teamId, c.me.githubId)
+    .first<Team>();
+}
+
+/// The device the request names in X-Arakun-Device, if it is the caller's.
+async function callerDevice(c: Ctx): Promise<Device | Response> {
+  const id = c.request.headers.get(DEVICE_HEADER);
+  if (!id) return error(400, `${DEVICE_HEADER} is required`);
+  const row = DEVICE_ID.test(id)
+    ? await c.env.DB.prepare("SELECT device_id, sig_pub FROM devices WHERE device_id = ? AND github_id = ?").bind(id, c.me.githubId).first<Device>()
+    : null;
+  return row ?? error(403, `${DEVICE_HEADER} is not one of your devices`);
+}
+
+/// A name of 1 to 100 characters without control characters, trimmed.
+function cleanName(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const name = v.trim();
+  const length = [...name].length;
+  return length >= 1 && length <= MAX_NAME && !/\p{Cc}/u.test(name) ? name : null;
+}
+
+// ---- devices ---------------------------------------------------------------
+
+async function registerDevice(c: Ctx): Promise<Response> {
+  const body = await jsonBody(c.request, 4096);
+  if (!isObject(body)) return error(400, 'expected {"sig_pub", "enc_pub", "name", "endorsement"}');
+  const { sig_pub: sigPub, enc_pub: encPub, endorsement } = body;
+  const name = cleanName(body["name"]);
+  if (name === null) return error(400, `name is 1 to ${MAX_NAME} characters`);
+  if (typeof sigPub !== "string" || !(await sigKey(sigPub))) return error(400, "sig_pub is not a P-256 public key");
+  if (typeof encPub !== "string" || !(await isEncKey(encPub))) return error(400, "enc_pub is not a P-256 public key");
+  const me = c.me.githubId;
+  const deviceId = await deviceIdOf(fromB64url(sigPub)!);
+  const db = c.env.DB;
+
+  const known = () => db.prepare("SELECT github_id, enc_pub FROM devices WHERE device_id = ?").bind(deviceId).first<{ github_id: number; enc_pub: string }>();
+  const same = (row: { github_id: number; enc_pub: string }) =>
+    row.github_id === me && row.enc_pub === encPub ? Response.json({ device_id: deviceId }) : error(409, "this key is registered already");
+  const existing = await known();
+  if (existing) return same(existing);
+
+  let endorsedBy: string | null = null;
+  if (endorsement !== null && endorsement !== undefined) {
+    if (!isObject(endorsement) || typeof endorsement["by"] !== "string" || typeof endorsement["sig"] !== "string") {
+      return error(400, 'endorsement is null or {"by", "sig"}');
+    }
+    const by = await db
+      .prepare("SELECT sig_pub FROM devices WHERE device_id = ? AND github_id = ?")
+      .bind(endorsement["by"], me)
+      .first<{ sig_pub: string }>();
+    if (!by) return error(400, "the endorsing device is not one of yours");
+    const key = await sigKey(by.sig_pub);
+    if (!key || !(await verify(key, endorsement["sig"], deviceSigned(me, sigPub, encPub)))) {
+      return error(400, "the endorsement does not check out");
+    }
+    endorsedBy = endorsement["by"];
+  }
+
+  // The conditions sit in the insert, so two registrations at once cannot
+  // both be a first device, or both be the 21st.
+  const condition =
+    endorsedBy === null
+      ? "NOT EXISTS (SELECT 1 FROM devices WHERE github_id = ?2)"
+      : `(SELECT COUNT(*) FROM devices WHERE github_id = ?2) < ${MAX_DEVICES}`;
+  const result = await db
+    .prepare(
+      `INSERT INTO devices (device_id, github_id, sig_pub, enc_pub, name, created_at, endorsed_by)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${condition} ON CONFLICT DO NOTHING`,
+    )
+    .bind(deviceId, me, sigPub, encPub, name, now(), endorsedBy)
+    .run();
+  if (result.meta.changes === 1) return Response.json({ device_id: deviceId }, { status: 201 });
+  const raced = await known();
+  if (raced) return same(raced);
+  return endorsedBy === null
+    ? error(400, "a new device needs an endorsement from one of your devices")
+    : error(409, `at most ${MAX_DEVICES} devices per account`);
+}
+
+async function listDevices(c: Ctx, id: string): Promise<Response> {
+  if (!GITHUB_ID.test(id)) return notFound();
+  const githubId = Number(id);
+  if (githubId !== c.me.githubId) {
+    const shared = await c.env.DB.prepare(
+      "SELECT 1 FROM members a JOIN members b ON b.team_id = a.team_id AND b.github_id = ? WHERE a.github_id = ? LIMIT 1",
+    )
+      .bind(githubId, c.me.githubId)
+      .first();
+    if (!shared) return notFound();
+  }
+  const { results } = await c.env.DB.prepare(
+    "SELECT device_id, sig_pub, enc_pub, name, created_at, endorsed_by FROM devices WHERE github_id = ? ORDER BY created_at, device_id",
+  )
+    .bind(githubId)
+    .all();
+  return Response.json(results);
+}
+
+// ---- teams -----------------------------------------------------------------
+
+async function createTeam(c: Ctx): Promise<Response> {
+  const body = await jsonBody(c.request, 4096);
+  const name = isObject(body) ? cleanName(body["name"]) : null;
+  if (name === null) return error(400, `expected {"name": "..."} of 1 to ${MAX_NAME} characters`);
+  const teamId = ulid();
+  const t = now();
+  const db = c.env.DB;
+  await db.batch([
+    db.prepare("INSERT INTO teams (team_id, name, epoch, keyed_epoch, created_by, created_at) VALUES (?, ?, 1, 0, ?, ?)").bind(teamId, name, c.me.githubId, t),
+    db.prepare("INSERT INTO members (team_id, github_id, role, joined_at) VALUES (?, ?, 'owner', ?)").bind(teamId, c.me.githubId, t),
+  ]);
+  return Response.json({ team_id: teamId, epoch: 1 }, { status: 201 });
+}
+
+async function listTeams(c: Ctx): Promise<Response> {
+  const { results } = await c.env.DB.prepare(
+    `SELECT t.team_id, t.name, m.role, t.epoch, t.keyed_epoch
+     FROM members m JOIN teams t ON t.team_id = m.team_id
+     WHERE m.github_id = ? ORDER BY t.created_at, t.team_id`,
+  )
+    .bind(c.me.githubId)
+    .all<Team>();
+  return Response.json(results.map((t) => ({ team_id: t.team_id, name: t.name, role: t.role, epoch: t.epoch, rotation_pending: t.keyed_epoch < t.epoch })));
+}
+
+async function getTeam(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  const db = c.env.DB;
+  const [members, channels] = await db.batch([
+    db
+      .prepare(
+        `SELECT m.github_id, u.login, m.role, m.joined_at FROM members m JOIN users u ON u.github_id = m.github_id
+         WHERE m.team_id = ? ORDER BY m.joined_at, m.rowid`,
+      )
+      .bind(teamId),
+    db.prepare("SELECT channel_id, name_ct, created_at FROM channels WHERE team_id = ? ORDER BY channel_id").bind(teamId),
+  ]);
+  return Response.json({
+    team_id: team.team_id,
+    name: team.name,
+    epoch: team.epoch,
+    rotation_pending: team.keyed_epoch < team.epoch,
+    members: members!.results,
+    channels: (channels!.results as { channel_id: string; name_ct: string; created_at: number }[]).map((ch) => ({
+      channel_id: ch.channel_id,
+      name_ct: JSON.parse(ch.name_ct),
+      created_at: ch.created_at,
+    })),
+  });
+}
+
+// ---- invites and approval ----------------------------------------------------
+
+async function invite(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  const body = await jsonBody(c.request, 4096);
+  const given = isObject(body) ? body["github_login"] : null;
+  if (typeof given !== "string" || !LOGIN.test(given)) return error(400, 'expected {"github_login": "..."}');
+  const login = given.toLowerCase();
+  const db = c.env.DB;
+  const already = await db
+    .prepare(
+      `SELECT 1 FROM users u WHERE lower(u.login) = ?2 AND (
+         EXISTS (SELECT 1 FROM members m WHERE m.team_id = ?1 AND m.github_id = u.github_id) OR
+         EXISTS (SELECT 1 FROM pending p WHERE p.team_id = ?1 AND p.github_id = u.github_id))`,
+    )
+    .bind(teamId, login)
+    .first();
+  if (already) return error(409, "already a member of this team, or waiting for approval");
+  const inviteId = ulid();
+  const t = now();
+  const expiresAt = t + INVITE_DAYS * DAY;
+  await db.batch([
+    db.prepare("DELETE FROM invites WHERE expires_at <= ?").bind(t),
+    // Inviting again replaces the open invite, with a new ID and expiry.
+    db
+      .prepare(
+        `INSERT INTO invites (invite_id, team_id, login, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (team_id, login) DO UPDATE SET invite_id = excluded.invite_id, invited_by = excluded.invited_by,
+           created_at = excluded.created_at, expires_at = excluded.expires_at`,
+      )
+      .bind(inviteId, teamId, login, c.me.githubId, t, expiresAt),
+  ]);
+  return Response.json({ invite_id: inviteId, expires_at: expiresAt }, { status: 201 });
+}
+
+async function listInvites(c: Ctx): Promise<Response> {
+  const { results } = await c.env.DB.prepare(
+    `SELECT i.invite_id, i.team_id, t.name AS team_name, u.login AS invited_by_login, i.created_at, i.expires_at
+     FROM invites i JOIN teams t ON t.team_id = i.team_id LEFT JOIN users u ON u.github_id = i.invited_by
+     WHERE i.login = ? AND i.expires_at > ? ORDER BY i.created_at, i.invite_id`,
+  )
+    .bind(c.me.login.toLowerCase(), now())
+    .all();
+  return Response.json(results);
+}
+
+async function accept(c: Ctx, inviteId: string): Promise<Response> {
+  const device = await callerDevice(c);
+  if (device instanceof Response) return device;
+  if (!ULID.test(inviteId)) return notFound();
+  const db = c.env.DB;
+  const inv = await db
+    .prepare("SELECT team_id, login, invited_by, expires_at FROM invites WHERE invite_id = ?")
+    .bind(inviteId)
+    .first<{ team_id: string; login: string; invited_by: number; expires_at: number }>();
+  // Someone else's invite is answered like one that does not exist.
+  if (!inv || inv.login !== c.me.login.toLowerCase() || inv.expires_at <= now()) return error(404, "no such invite");
+  const member = await db.prepare("SELECT 1 FROM members WHERE team_id = ? AND github_id = ?").bind(inv.team_id, c.me.githubId).first();
+  if (member) return error(409, "already a member of this team");
+  await db.batch([
+    db
+      .prepare("INSERT INTO pending (team_id, github_id, invited_by, requested_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
+      .bind(inv.team_id, c.me.githubId, inv.invited_by, now()),
+    db.prepare("DELETE FROM invites WHERE invite_id = ?").bind(inviteId),
+  ]);
+  return Response.json({ team_id: inv.team_id, status: "pending" });
+}
+
+async function listPending(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  const db = c.env.DB;
+  const [people, devices] = await db.batch([
+    db
+      .prepare(
+        `SELECT p.github_id, u.login, p.requested_at FROM pending p JOIN users u ON u.github_id = p.github_id
+         WHERE p.team_id = ? ORDER BY p.requested_at, p.github_id`,
+      )
+      .bind(teamId),
+    db
+      .prepare(
+        `SELECT d.github_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by
+         FROM devices d JOIN pending p ON p.github_id = d.github_id
+         WHERE p.team_id = ? ORDER BY d.created_at, d.device_id`,
+      )
+      .bind(teamId),
+  ]);
+  const byUser = new Map<number, unknown[]>();
+  for (const { github_id, ...device } of devices!.results as { github_id: number }[]) {
+    byUser.set(github_id, [...(byUser.get(github_id) ?? []), device]);
+  }
+  return Response.json(
+    (people!.results as { github_id: number; login: string; requested_at: number }[]).map((p) => ({
+      ...p,
+      devices: byUser.get(p.github_id) ?? [],
+    })),
+  );
+}
+
+async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  const device = await callerDevice(c);
+  if (device instanceof Response) return device;
+  if (!GITHUB_ID.test(id)) return error(404, "no such request");
+  const githubId = Number(id);
+  const db = c.env.DB;
+  const pending = await db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId).first();
+  if (!pending) return error(404, "no such request");
+  // Without a key there is nothing to hand over yet.
+  if (team.keyed_epoch < 1) return error(409, "the team has no key yet: upload the first envelopes");
+
+  const envelopes = await signedEnvelopes(c, teamId, device);
+  if (envelopes instanceof Response) return envelopes;
+  const { results } = await db.prepare("SELECT device_id FROM devices WHERE github_id = ?").bind(githubId).all<{ device_id: string }>();
+  const theirs = new Set(results.map((d) => d.device_id));
+  for (const e of envelopes) {
+    if (!theirs.has(e.device_id)) return error(400, `device ${e.device_id} is not one of the new member's`);
+    if (e.epoch > team.keyed_epoch) return error(400, `epoch ${e.epoch} has no key yet`);
+  }
+  // Every device, every epoch from the first one given through the newest
+  // with a key. An admin may leave out the oldest epochs, never a device.
+  const first = Math.min(...envelopes.map((e) => e.epoch));
+  const expected = theirs.size * (team.keyed_epoch - first + 1);
+  if (envelopes.length !== expected) {
+    return error(400, `expected one envelope per device of the new member and epoch, ${first} to ${team.keyed_epoch}`);
+  }
+
+  const t = now();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO members (team_id, github_id, role, joined_at)
+         SELECT ?1, ?2, 'member', ?3 WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2)
+         ON CONFLICT DO NOTHING`,
+      )
+      .bind(teamId, githubId, t),
+    db.prepare("DELETE FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId),
+    ...envelopes.map((e) => storeEnvelope(db, e, t)),
+  ]);
+  return Response.json({ github_id: githubId, role: "member" });
+}
+
+async function reject(c: Ctx, teamId: string, id: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  const result = GITHUB_ID.test(id)
+    ? await c.env.DB.prepare("DELETE FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, Number(id)).run()
+    : null;
+  if (!result?.meta.changes) return error(404, "no such request");
+  return new Response(null, { status: 204 });
+}
+
+// ---- envelopes -----------------------------------------------------------------
+
+/// The body's envelopes: in shape, for this team, from the calling device and
+/// signed by it, at most one per device and epoch.
+async function signedEnvelopes(c: Ctx, teamId: string, from: Device): Promise<Envelope[] | Response> {
+  const body = await jsonBody(c.request, MAX_BODY);
+  const list = isObject(body) ? body["envelopes"] : null;
+  if (!Array.isArray(list) || list.length === 0 || list.length > MAX_ENVELOPES) {
+    return error(400, `expected {"envelopes": [...]} with 1 to ${MAX_ENVELOPES} envelopes`);
+  }
+  const key = await sigKey(from.sig_pub);
+  if (!key) return error(400, "the calling device has no usable key");
+  const seen = new Set<string>();
+  const out: Envelope[] = [];
+  for (const raw of list) {
+    const e = parseEnvelope(raw, teamId);
+    if (typeof e === "string") return error(400, e);
+    if (e.from !== from.device_id) return error(400, "envelopes come from the calling device");
+    const slot = `${e.device_id}|${e.epoch}`;
+    if (seen.has(slot)) return error(400, `two envelopes for device ${e.device_id} and epoch ${e.epoch}`);
+    seen.add(slot);
+    out.push(e);
+  }
+  for (const e of out) {
+    if (!(await verify(key, e.sig, envelopeSigned(e)))) return error(400, `bad signature on the envelope for ${e.device_id}, epoch ${e.epoch}`);
+  }
+  return out;
+}
+
+/// Stores an envelope only while its device belongs to a member, so a removal
+/// that lands first is not undone.
+function storeEnvelope(db: D1Database, e: Envelope, t: number): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO envelopes (team_id, device_id, epoch, body, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (
+         SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?1 WHERE d.device_id = ?2)
+       ON CONFLICT DO UPDATE SET body = excluded.body, created_at = excluded.created_at`,
+    )
+    .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t);
+}
+
+async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  const device = await callerDevice(c);
+  if (device instanceof Response) return device;
+  const envelopes = await signedEnvelopes(c, teamId, device);
+  if (envelopes instanceof Response) return envelopes;
+
+  const db = c.env.DB;
+  const { results } = await db
+    .prepare("SELECT d.device_id FROM devices d JOIN members m ON m.github_id = d.github_id WHERE m.team_id = ?")
+    .bind(teamId)
+    .all<{ device_id: string }>();
+  const memberDevices = new Set(results.map((d) => d.device_id));
+  const newKey = team.epoch > team.keyed_epoch;
+  const covered = new Set<string>();
+  for (const e of envelopes) {
+    if (!memberDevices.has(e.device_id)) return error(400, `device ${e.device_id} is not a member's device`);
+    if (e.epoch > team.keyed_epoch && e.epoch !== team.epoch) return error(400, `epoch ${e.epoch} is neither keyed nor the current one`);
+    if (newKey && e.epoch === team.epoch) covered.add(e.device_id);
+  }
+  // A new key is all or nothing: once it exists the old epoch is refused, so a
+  // device left out would be locked out of the team.
+  const keying = covered.size > 0;
+  if (keying && covered.size !== memberDevices.size) {
+    return error(400, `the first envelopes of epoch ${team.epoch} must cover every device of every member`);
+  }
+
+  const t = now();
+  const done = await db.batch([
+    ...envelopes.map((e) => storeEnvelope(db, e, t)),
+    // Only if no removal bumped the epoch since we read it.
+    ...(keying
+      ? [db.prepare("UPDATE teams SET keyed_epoch = ?1 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1").bind(team.epoch, teamId)]
+      : []),
+    db.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(teamId),
+  ]);
+  const after = done[done.length - 1]!.results[0] as { epoch: number; keyed_epoch: number };
+  return Response.json({ stored: envelopes.length, epoch: after.epoch, rotation_pending: after.keyed_epoch < after.epoch });
+}
+
+async function getEnvelopes(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  const device = await callerDevice(c);
+  if (device instanceof Response) return device;
+  const { results } = await c.env.DB.prepare("SELECT body FROM envelopes WHERE team_id = ? AND device_id = ? ORDER BY epoch")
+    .bind(teamId, device.device_id)
+    .all<{ body: string }>();
+  return Response.json(results.map((r) => JSON.parse(r.body)));
+}
+
+// ---- members -------------------------------------------------------------------
+
+async function removeMember(c: Ctx, teamId: string, id: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!GITHUB_ID.test(id)) return notFound();
+  const target = Number(id);
+  const self = target === c.me.githubId;
+  if (!self && !isAdmin(team.role)) return notAdmin();
+  const db = c.env.DB;
+  const row = await db.prepare("SELECT role FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target).first<{ role: Role }>();
+  if (!row) return notFound();
+  if (row.role === "owner") {
+    if (!self && team.role !== "owner") return error(403, "only an owner can remove an owner");
+    const owners = await db.prepare("SELECT COUNT(*) AS n FROM members WHERE team_id = ? AND role = 'owner'").bind(teamId).first<{ n: number }>();
+    if ((owners?.n ?? 0) <= 1) return error(409, "the last owner cannot leave");
+  }
+
+  const results = await db.batch([
+    db.prepare("DELETE FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
+    // The removed member holds every key so far; the next one must be new.
+    db.prepare("UPDATE teams SET epoch = epoch + 1 WHERE team_id = ?").bind(teamId),
+    db.prepare("DELETE FROM envelopes WHERE team_id = ? AND device_id IN (SELECT device_id FROM devices WHERE github_id = ?)").bind(teamId, target),
+    db.prepare("SELECT epoch FROM teams WHERE team_id = ?").bind(teamId),
+    db.prepare("SELECT channel_id FROM channels WHERE team_id = ?").bind(teamId),
+  ]);
+  const epoch = (results[3]!.results[0] as { epoch: number }).epoch;
+  // Their open sockets go now, not at their next send. Each send checks
+  // membership too, so a channel this misses still refuses them.
+  const channels = results[4]!.results as { channel_id: string }[];
+  await Promise.all(channels.map((ch) => channelStub(c.env, teamId, ch.channel_id).kick(target)));
+  return Response.json({ epoch, rotation_pending: true });
+}
+
+// ---- channels ------------------------------------------------------------------
+
+function channelStub(env: Env, teamId: string, channelId: string) {
+  return env.CHANNEL.get(env.CHANNEL.idFromName(`${teamId}/${channelId}`));
+}
+
+async function createChannel(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  const body = await jsonBody(c.request, 8192);
+  if (!isObject(body)) return error(400, 'expected {"channel_id", "name_ct"}');
+  const channelId = body["channel_id"];
+  if (typeof channelId !== "string" || !ULID.test(channelId)) return error(400, "channel_id is a ULID");
+  const name = parseSealedName(body["name_ct"]);
+  if (typeof name === "string") return error(400, name);
+  if (!epochAllowed(name.epoch, team.epoch, team.keyed_epoch)) return error(400, "name_ct is sealed with a key that is not current");
+  const db = c.env.DB;
+  const result = await db
+    .prepare(
+      `INSERT INTO channels (team_id, channel_id, name_ct, created_by, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5 WHERE (SELECT COUNT(*) FROM channels WHERE team_id = ?1) < ${MAX_CHANNELS}
+       ON CONFLICT DO NOTHING`,
+    )
+    .bind(teamId, channelId, JSON.stringify(name), c.me.githubId, now())
+    .run();
+  if (result.meta.changes === 1) return Response.json({ channel_id: channelId }, { status: 201 });
+  const exists = await db.prepare("SELECT 1 FROM channels WHERE team_id = ? AND channel_id = ?").bind(teamId, channelId).first();
+  return error(409, exists ? "a channel with this ID exists" : `at most ${MAX_CHANNELS} channels per team`);
+}
+
+/// The checks a channel's socket and history share: member, device, channel.
+async function channelAccess(c: Ctx, teamId: string, channelId: string): Promise<{ team: Team; device: Device } | Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  const device = await callerDevice(c);
+  if (device instanceof Response) return device;
+  const channel = ULID.test(channelId)
+    ? await c.env.DB.prepare("SELECT 1 FROM channels WHERE team_id = ? AND channel_id = ?").bind(teamId, channelId).first()
+    : null;
+  if (!channel) return notFound();
+  return { team, device };
+}
+
+async function openSocket(c: Ctx, teamId: string, channelId: string): Promise<Response> {
+  const access = await channelAccess(c, teamId, channelId);
+  if (access instanceof Response) return access;
+  if (c.request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error(426, "expected a WebSocket upgrade");
+  // A request made here, not the client's: only these headers reach the
+  // object, so a client cannot send its own copies of the trusted ones.
+  const headers = new Headers({
+    Upgrade: "websocket",
+    [TRUSTED.githubId]: String(c.me.githubId),
+    [TRUSTED.deviceId]: access.device.device_id,
+    [TRUSTED.sigPub]: access.device.sig_pub,
+    [TRUSTED.teamId]: teamId,
+    [TRUSTED.channelId]: channelId,
+  });
+  return channelStub(c.env, teamId, channelId).fetch("https://channel/ws", { headers });
+}
+
+async function history(c: Ctx, teamId: string, channelId: string): Promise<Response> {
+  const access = await channelAccess(c, teamId, channelId);
+  if (access instanceof Response) return access;
+  const afterText = c.url.searchParams.get("after") ?? "0";
+  const limitText = c.url.searchParams.get("limit") ?? String(HISTORY_LIMIT);
+  const after = /^[0-9]{1,15}$/.test(afterText) ? Number(afterText) : NaN;
+  const limit = /^[0-9]{1,3}$/.test(limitText) ? Number(limitText) : NaN;
+  if (!Number.isSafeInteger(after)) return error(400, "after is a seq, 0 or more");
+  if (!(limit >= 1 && limit <= HISTORY_LIMIT)) return error(400, `limit is 1 to ${HISTORY_LIMIT}`);
+  return Response.json(await channelStub(c.env, teamId, channelId).history(after, limit));
+}

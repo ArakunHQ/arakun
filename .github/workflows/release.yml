@@ -40,10 +40,11 @@ name: Release
 #   smoke-tests and uploads the archives as `arakun-dev-<short sha>-…`, and
 #   does not publish. Only a pushed tag publishes; a manual run never does,
 #   even on a tag. A manual run with `version` only tags.
-# - Linux x86_64, Windows x86_64 (MSVC) and macOS arm64. No Intel Mac build.
-# - arakun-server (server/), the server without the window, for Linux x86_64
-#   only: as `arakun-server-<tag>-linux-x86_64.tar.gz`, built by the Linux job
-#   in the same container, so it has the same glibc floor. On macOS and Windows
+# - Linux x86_64 and arm64, Windows x86_64 (MSVC) and macOS arm64. No Intel
+#   Mac build. Each Linux build runs natively on a runner of its architecture.
+# - arakun-server (server/), the server without the window, for Linux only: as
+#   `arakun-server-<tag>-linux-<arch>.tar.gz`, built by the Linux job in the
+#   same container, so it has the same glibc floor. On macOS and Windows
 #   the app's `arakun server` does the same. `arakun.dev/install-server` and
 #   `tools/install-release.sh --server` install it.
 # - macOS: Arakun.app made by tools/macos-app.sh, as tools/install.sh makes it,
@@ -230,19 +231,37 @@ jobs:
           fi
 
   linux:
-    name: Build (Linux x86_64)
+    name: Build (Linux ${{ matrix.arch }})
     needs: [ci, version]
-    runs-on: depot-ubuntu-24.04-8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Keep CEF_ARCHIVE and CEF_SHA1 in step with the clippy-browser job in
+          # ci.yml. The SHA-1 is the one cef-builds publishes.
+          - arch: x86_64
+            runner: depot-ubuntu-24.04-8
+            target: x86_64-unknown-linux-gnu
+            cef_archive: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_linux64_minimal.tar.bz2
+            cef_sha1: 09235427222e026a4f34399742df27c5d98a4f8a
+          - arch: arm64
+            runner: depot-ubuntu-24.04-arm-8
+            target: aarch64-unknown-linux-gnu
+            cef_archive: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_linuxarm64_minimal.tar.bz2
+            cef_sha1: 85602db8e813ad824b45ae54218476aa3d91d561
+    runs-on: ${{ matrix.runner }}
     # The image's glibc is the binary's floor; see the header. Raising it drops
     # support for older distributions, so update README.md and GLIBC_FLOOR too.
     # Pinned by digest so a moved tag cannot change what the release is built in.
     # To update: look up the current digest of the ubuntu:22.04 tag and replace it.
+    # The digest is the multi-platform index, so each runner pulls its own architecture.
     container: ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c
     env:
       GLIBC_FLOOR: "2.35"
-      # Keep both in step with the clippy-browser job in ci.yml.
-      CEF_ARCHIVE: cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_linux64_minimal.tar.bz2
-      CEF_SHA1: 09235427222e026a4f34399742df27c5d98a4f8a
+      CEF_ARCHIVE: ${{ matrix.cef_archive }}
+      CEF_SHA1: ${{ matrix.cef_sha1 }}
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
     steps:
       # Same libraries as ci.yml (installed directly: cache-apt-pkgs-action expects
       # a runner, not a container), plus what the bare image lacks. Before checkout,
@@ -289,18 +308,18 @@ jobs:
           rm -rf "$RUNNER_TEMP/cef-dist"
 
       - name: cargo build
-        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+        run: cargo build --release --locked --target "$TARGET"
 
       # A build of its own: built with the app, Cargo would give both one GPUI,
       # with the display code in it (see server/Cargo.toml).
       - name: cargo build arakun-server
-        run: cargo build --release --locked -p arakun-server --target x86_64-unknown-linux-gnu
+        run: cargo build --release --locked -p arakun-server --target "$TARGET"
 
       # The runtime's libraries too: the browser loads them into this process.
       - name: Check glibc floor
         run: |
-          app=target/x86_64-unknown-linux-gnu/release/arakun
-          server=target/x86_64-unknown-linux-gnu/release/arakun-server
+          app=target/$TARGET/release/arakun
+          server=target/$TARGET/release/arakun-server
           for bin in "$app" "$server" "$RUNNER_TEMP"/cef/*.so*; do
             max=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9.]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
             if [ -z "$max" ]; then
@@ -325,9 +344,9 @@ jobs:
         # Steps in this container run under sh (dash), not bash: POSIX only.
         run: |
           tag=${TAG:-dev-$(printf %.7s "$SHA")}
-          name="arakun-$tag-linux-x86_64"
+          name="arakun-$tag-linux-$ARCH"
           mkdir -p "dist/$name"
-          cp target/x86_64-unknown-linux-gnu/release/arakun "dist/$name/"
+          cp "target/$TARGET/release/arakun" "dist/$name/"
           strip "dist/$name/arakun"
           cp LICENSE NOTICE README.md "dist/$name/"
           # Next to the binary, where src/browser/loader.rs looks first. Without
@@ -337,9 +356,9 @@ jobs:
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           du -sh "dist/$name" "dist/$name.tar.gz"
           # The server: one binary, no browser.
-          server="arakun-server-$tag-linux-x86_64"
+          server="arakun-server-$tag-linux-$ARCH"
           mkdir -p "dist/$server"
-          cp target/x86_64-unknown-linux-gnu/release/arakun-server "dist/$server/"
+          cp "target/$TARGET/release/arakun-server" "dist/$server/"
           strip "dist/$server/arakun-server"
           cp LICENSE NOTICE README.md "dist/$server/"
           tar -C dist -czf "dist/$server.tar.gz" "$server"
@@ -367,7 +386,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: linux-x86_64
+          name: linux-${{ matrix.arch }}
           path: dist/*.tar.gz
           if-no-files-found: error
 
@@ -864,8 +883,8 @@ jobs:
           ls -l
           shopt -s nullglob
           archives=(*.tar.gz *.zip *.dmg)
-          # The app for three platforms, and arakun-server for Linux.
-          [ ${#archives[@]} -eq 4 ] || { echo "::error::expected 4 archives, found ${#archives[@]}"; exit 1; }
+          # The app for four platforms, and arakun-server for both Linux ones.
+          [ ${#archives[@]} -eq 6 ] || { echo "::error::expected 6 archives, found ${#archives[@]}"; exit 1; }
           sha256sum "${archives[@]}" > SHA256SUMS
           cat SHA256SUMS
 

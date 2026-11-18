@@ -1161,12 +1161,102 @@ impl Shell {
         self.save(cx);
     }
 
-    /// Back to the agent's defaults, for the composer's session and the next ones.
-    pub(super) fn reset_settings(&mut self, cx: &mut Context<Self>) {
+    /// A setting's value and choices for `agent`: the composer's own, or what
+    /// the environment's next session of another agent starts with.
+    pub(super) fn agent_choices(
+        &self,
+        agent: model::Agent,
+        s: Setting,
+        cx: &gpui::App,
+    ) -> Option<(String, Vec<SettingOption>)> {
+        if agent == self.composer_agent() {
+            return self.setting_choices(s, cx);
+        }
+        if !self.has_projects() {
+            return None;
+        }
+        self.draft_choices(&self.env().path, agent, s)
+            .filter(|(_, o)| !o.is_empty())
+    }
+
+    /// The label of `agent`'s value for a setting, as `setting_value_label`.
+    pub(super) fn agent_value_label(
+        &self,
+        agent: model::Agent,
+        s: Setting,
+        cx: &gpui::App,
+    ) -> Option<String> {
+        if agent == self.composer_agent() {
+            return self.setting_value_label(s, cx);
+        }
+        let (current, options) = self.agent_choices(agent, s, cx)?;
+        let label = crate::agent::acp_label(s, &current, &options);
+        Some(if label.is_empty() {
+            "Default".into()
+        } else {
+            label
+        })
+    }
+
+    /// Whether the composer may move to another agent: a session another
+    /// process runs can't be handed over from here.
+    pub(super) fn can_switch_agent(&self) -> bool {
+        let env = self.env();
+        !matches!(
+            env.tabs.get(self.composer_tab()).map(|t| &t.kind),
+            Some(TabKind::Session { id, .. }) if crate::headless::shown(id)
+        )
+    }
+
+    /// Moves the composer to `agent`: the next session's agent on the New
+    /// session tab, or a hand-over of the running one.
+    pub(super) fn switch_agent(
+        &mut self,
+        agent: model::Agent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if agent == self.composer_agent() || !self.can_switch_agent() {
+            return;
+        }
+        if self.composer_in_session() {
+            self.continue_with(agent, window, cx);
+        } else {
+            self.env_mut().agent = agent;
+            model::set_default_agent(agent);
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
+    /// Picks a setting of `agent`. For another agent than the composer's it is
+    /// remembered first, so the switch to that agent starts with it.
+    pub(super) fn pick_setting(
+        &mut self,
+        agent: model::Agent,
+        s: Setting,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if agent == self.composer_agent() {
+            self.choose_setting(s, value, cx);
+            return;
+        }
+        if !self.has_projects() || !self.can_switch_agent() {
+            return;
+        }
+        let path = self.env().path.clone();
+        self.remember_setting(&path, agent, s, value, cx);
+        self.switch_agent(agent, window, cx);
+    }
+
+    /// Back to `agent`'s defaults, for the composer's session (when it is
+    /// `agent`'s) and the next ones.
+    pub(super) fn reset_settings(&mut self, agent: model::Agent, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
-        let agent = self.composer_agent();
         {
             let env = self.env_mut();
             // Only what the model menu shows; the permission level stays.
@@ -1184,7 +1274,10 @@ impl Shell {
             }
         }
         self.save(cx);
-        if let Some(thread) = self.composer_thread() {
+        if let Some(thread) = self
+            .composer_thread()
+            .filter(|_| agent == self.composer_agent())
+        {
             let defaults: Vec<(Setting, String)> = match agent {
                 model::Agent::Droid => {
                     let d = &catalog::current().defaults;

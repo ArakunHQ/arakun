@@ -259,23 +259,24 @@ describe("teams", () => {
       200,
     );
     expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({ github_id: 2001, login: "RikVisser-dev", requested_at: expect.any(Number) });
+    // The GitHub ID is who asked; the login they have now and the one invited may differ.
+    expect(pending[0]).toMatchObject({ github_id: 2001, login: "RikVisser-dev", invited_login: "rikvisser-dev", request_id: invite_id, requested_at: expect.any(Number) });
     expect(pending[0]!.devices.map((d) => d.device_id).sort()).toEqual([laptop.id, phone.id].sort());
     expect(pending[0]!.devices.find((d) => d.device_id === phone.id)?.endorsement_sig).toEqual(expect.any(String));
 
     const key = t.keys.get(1)!;
     const approvePath = `/teams/${t.teamId}/pending/2001/approve`;
     // A device left out is refused.
-    await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { envelopes: [await envelope(t.teamId, 1, key, laptop, owner.device)] } }), 400);
+    await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { request_id: invite_id, envelopes: [await envelope(t.teamId, 1, key, laptop, owner.device)] } }), 400);
     // Signed by a device that is not the caller's.
     const forger = await makeDevice();
     const forged = [await envelope(t.teamId, 1, key, laptop, forger), await envelope(t.teamId, 1, key, phone, forger)].map((e) => ({ ...e, from: owner.device.id }));
-    await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { envelopes: forged } }), 400);
+    await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { request_id: invite_id, envelopes: forged } }), 400);
     // For a device that is not theirs.
     await expectJson(
       api(owner.user, "POST", approvePath, {
         device: owner.device,
-        body: { envelopes: [await envelope(t.teamId, 1, key, laptop, owner.device), await envelope(t.teamId, 1, key, od, owner.device)] },
+        body: { request_id: invite_id, envelopes: [await envelope(t.teamId, 1, key, laptop, owner.device), await envelope(t.teamId, 1, key, od, owner.device)] },
       }),
       400,
     );
@@ -283,14 +284,16 @@ describe("teams", () => {
     await expectJson(
       api(owner.user, "POST", approvePath, {
         device: owner.device,
-        body: { envelopes: [await envelope(t.teamId, 2, key, laptop, owner.device), await envelope(t.teamId, 2, key, phone, owner.device)] },
+        body: { request_id: invite_id, envelopes: [await envelope(t.teamId, 2, key, laptop, owner.device), await envelope(t.teamId, 2, key, phone, owner.device)] },
       }),
       400,
     );
     await expectJson(api(newcomer, "GET", `/teams/${t.teamId}`), 404);
 
+    // Without the request it reviewed.
+    await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { envelopes: [] } }), 400);
     const good = [await envelope(t.teamId, 1, key, laptop, owner.device), await envelope(t.teamId, 1, key, phone, owner.device)];
-    expect(await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { envelopes: good } }), 200)).toEqual({ github_id: 2001, role: "member" });
+    expect(await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { request_id: invite_id, envelopes: good } }), 200)).toEqual({ github_id: 2001, role: "member" });
 
     expect(await expectJson(api(newcomer, "GET", "/teams"), 200)).toEqual([{ team_id: t.teamId, name: "Arakun", role: "member", epoch: 1, rotation_pending: false }]);
     const got = await expectJson<{ members: { github_id: number; role: string }[] }>(api(newcomer, "GET", `/teams/${t.teamId}`), 200);
@@ -333,15 +336,39 @@ describe("teams", () => {
     vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
       if (!raced && statements.length === 3) {
         raced = true;
-        await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { envelopes: [won] } }), 200);
+        await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: invite_id, envelopes: [won] } }), 200);
       }
       return batch(statements);
     });
-    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { envelopes: [lost] } }), 404);
+    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: invite_id, envelopes: [lost] } }), 404);
     expect(raced).toBe(true);
     vi.restoreAllMocks();
     const theirs = await expectJson<Record<string, unknown>[]>(api(u, "GET", `/teams/${t.teamId}/envelopes`, { device: d }), 200);
     expect(theirs).toEqual([{ ...won, made_at: expect.any(Number) }]);
+  });
+
+  it("lets an approval admit only the request the admin reviewed", async () => {
+    const t = await team();
+    const u = await user(2003, "again");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    const ask = async () => {
+      const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "again" } }), 201);
+      await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
+      return invite_id as string;
+    };
+    const reviewed = await ask();
+    const path = `/teams/${t.teamId}/pending/2003/approve`;
+    const envelopes = [await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device)];
+    // Another admin rejects it, and the user accepts a new invite, before the
+    // approval of the first request arrives.
+    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2003/reject`)).status).toBe(204);
+    const asked = await ask();
+    const res = await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: reviewed, envelopes } }), 409);
+    expect(res.error).toMatch(/request changed/);
+    await expectJson(api(u, "GET", `/teams/${t.teamId}`), 404);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM envelopes WHERE device_id = ?").bind(d.id).first("n")).toBe(0);
+    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: asked, envelopes } }), 200);
   });
 
   it("lists a team's open invites to its admins, newest first, and lets them withdraw one", async () => {

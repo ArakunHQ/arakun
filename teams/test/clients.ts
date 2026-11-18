@@ -274,7 +274,9 @@ export async function join(t: TeamSetup, login?: string): Promise<Member> {
   await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: m.user.login } }), 201);
   const [inv] = await expectJson<{ invite_id: string }[]>(api(m.user, "GET", "/invites"), 200);
   await expectJson(api(m.user, "POST", `/invites/${inv!.invite_id}/accept`, { device: m.device }), 200);
+  const pending = await expectJson<{ github_id: number; request_id: string }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200);
+  const request_id = pending.find((p) => p.github_id === id)!.request_id;
   const envelopes = await Promise.all([...t.keys.keys()].map((e) => envelope(t.teamId, e, t.keys.get(e)!, m.device, t.owner.device)));
-  await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${id}/approve`, { device: t.owner.device, body: { envelopes } }), 200);
+  await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${id}/approve`, { device: t.owner.device, body: { request_id, envelopes } }), 200);
   return m;
 }

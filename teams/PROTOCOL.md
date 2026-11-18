@@ -119,12 +119,21 @@ without it, `403` if it is not one of the caller's devices.
    header. Anyone who is not pending in that team, members included, gets `404`.
    The server sends nothing anywhere; admins see the time in the pending list.
 3. Admins see pending members in `GET /teams/<team_id>/pending` → `[{ github_id,
-   login, requested_at, reminded_at, devices: [...] }]` (`reminded_at` is null
-   until the first reminder).
+   login, invited_login, request_id, requested_at, reminded_at, devices: [...] }]`
+   (`reminded_at` is null until the first reminder). `login` is the user's login
+   now, `invited_login` the one the invite named, and `request_id` the accepted
+   invite's ID (an opaque string for requests made before it was kept). GitHub
+   can give a login that was renamed or deleted to someone else, so the invite
+   may reach another person than the admin meant. The admin's client shows the
+   `github_id` and the login next to each other when it asks to approve, and
+   warns when `login` and `invited_login` differ (ignoring case). The `github_id`
+   is who asked, and the one the client pins.
 4. An admin's device approves: `POST /teams/<team_id>/pending/<github_id>/approve`
-   with the envelopes for every device of the new member and every epoch they may
-   read (all of them, by default):
-   `{ "envelopes": [Envelope, ...] }`. The server checks there is one envelope per
+   with the request it showed and the envelopes for every device of the new member
+   and every epoch they may read (all of them, by default):
+   `{ "request_id": "...", "envelopes": [Envelope, ...] }`. `409` if the
+   request is no longer that one: it was rejected and the user accepted a new
+   invite, so the admin looks again. The server checks there is one envelope per
    (device, epoch) it expects, stores them, and makes the user a `member`:
    `200 { github_id, role: "member" }`. It expects every device of the new member
    and every epoch with a key (one that has envelopes) from the lowest one given

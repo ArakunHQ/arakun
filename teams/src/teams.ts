@@ -382,7 +382,10 @@ async function accept(c: Ctx, inviteId: string): Promise<Response> {
   const valid = "FROM invites WHERE invite_id = ?1 AND login = ?2 AND expires_at > ?3";
   const results = await db.batch([
     db
-      .prepare(`INSERT INTO pending (team_id, github_id, invited_by, requested_at) SELECT team_id, ?4, invited_by, ?3 ${valid} ON CONFLICT DO NOTHING`)
+      .prepare(
+        `INSERT INTO pending (team_id, github_id, invited_by, requested_at, request_id, invited_login)
+         SELECT team_id, ?4, invited_by, ?3, invite_id, login ${valid} ON CONFLICT DO NOTHING`,
+      )
       .bind(inviteId, inv.login, t, c.me.githubId),
     db.prepare(`DELETE ${valid}`).bind(inviteId, inv.login, t),
   ]);
@@ -398,7 +401,7 @@ async function listPending(c: Ctx, teamId: string): Promise<Response> {
   const [people, devices] = await db.batch([
     db
       .prepare(
-        `SELECT p.github_id, u.login, p.requested_at, p.reminded_at FROM pending p JOIN users u ON u.github_id = p.github_id
+        `SELECT p.github_id, u.login, p.invited_login, p.request_id, p.requested_at, p.reminded_at FROM pending p JOIN users u ON u.github_id = p.github_id
          WHERE p.team_id = ? ORDER BY p.requested_at, p.github_id`,
       )
       .bind(teamId),
@@ -415,7 +418,7 @@ async function listPending(c: Ctx, teamId: string): Promise<Response> {
     byUser.set(github_id, [...(byUser.get(github_id) ?? []), device]);
   }
   return Response.json(
-    (people!.results as { github_id: number; login: string; requested_at: number; reminded_at: number | null }[]).map((p) => ({
+    (people!.results as { github_id: number }[]).map((p) => ({
       ...p,
       devices: byUser.get(p.github_id) ?? [],
     })),
@@ -481,12 +484,20 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
   if (!GITHUB_ID.test(id)) return error(404, "no such request");
   const githubId = Number(id);
   const db = c.env.DB;
-  const pending = await db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId).first();
+  const pending = await db.prepare("SELECT request_id FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId).first<{ request_id: string }>();
   if (!pending) return error(404, "no such request");
+  const body = await jsonBody(c.request, MAX_BODY);
+  // The request the admin reviewed. A reject and a new accept in between make
+  // a new one, which this approval must not admit.
+  const requestId = isObject(body) ? body["request_id"] : null;
+  if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 64) {
+    return error(400, 'expected {"request_id", "envelopes"}: request_id as GET .../pending lists it');
+  }
+  if (pending.request_id !== requestId) return error(409, "the request changed: fetch the pending list again");
   // Without a key there is nothing to hand over yet.
   if (team.keyed_epoch < 1) return error(409, "the team has no key yet: upload the first envelopes");
 
-  const envelopes = await signedEnvelopes(c, teamId, device);
+  const envelopes = await signedEnvelopes(body, teamId, device);
   if (envelopes instanceof Response) return envelopes;
   const { results } = await db.prepare("SELECT device_id FROM devices WHERE github_id = ?").bind(githubId).all<{ device_id: string }>();
   const theirs = new Set(results.map((d) => d.device_id));
@@ -507,39 +518,46 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
     return error(400, `expected one envelope per device of the new member and epoch with a key, ${first} to ${team.keyed_epoch}`);
   }
 
-  // The checks above hold at commit, or nobody is added: still pending, the
-  // same newest key, the same devices (they are never deleted, so the same
-  // count is the same set), and room in the team.
+  // The checks above hold at commit, or nobody is added: the same request
+  // still pending, the same newest key, the same devices (they are never
+  // deleted, so the same count is the same set), and room in the team.
   const t = now();
   const done = await db.batch([
     db
       .prepare(
         `INSERT INTO members (team_id, github_id, role, joined_at)
          SELECT ?1, ?2, 'member', ?3
-         WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2)
+         WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2 AND request_id = ?6)
            AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?4
            AND (SELECT COUNT(*) FROM devices WHERE github_id = ?2) = ?5
            AND (SELECT COUNT(*) FROM members WHERE team_id = ?1) < ${MAX_MEMBERS}
          ON CONFLICT DO NOTHING`,
       )
-      .bind(teamId, githubId, t, team.keyed_epoch, theirs.size),
-    // Before the pending row goes: it still being there means this batch added
-    // the member. An approval that lost to another one writes nothing.
+      .bind(teamId, githubId, t, team.keyed_epoch, theirs.size, requestId),
+    // Before the pending row goes: it still being there, with the member
+    // added (insertEnvelope checks that), means this batch added them. An
+    // approval that lost to another one, or whose request changed, writes
+    // nothing.
     ...envelopes.map((e) =>
       db
-        .prepare(insertEnvelope("AND EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?6)"))
-        .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, githubId),
+        .prepare(
+          insertEnvelope("AND EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?6 AND request_id = ?7)"),
+        )
+        .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, githubId, requestId),
     ),
     db
-      .prepare("DELETE FROM pending WHERE team_id = ?1 AND github_id = ?2 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)")
-      .bind(teamId, githubId),
+      .prepare(
+        "DELETE FROM pending WHERE team_id = ?1 AND github_id = ?2 AND request_id = ?3 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)",
+      )
+      .bind(teamId, githubId, requestId),
   ]);
   if (done[0]!.meta.changes === 1) return Response.json({ github_id: githubId, role: "member" });
   const [still, count] = await db.batch([
-    db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId),
+    db.prepare("SELECT request_id FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId),
     db.prepare("SELECT COUNT(*) AS n FROM members WHERE team_id = ?").bind(teamId),
   ]);
   if (still!.results.length === 0) return error(404, "no such request");
+  if ((still!.results[0] as { request_id: string }).request_id !== requestId) return error(409, "the request changed: fetch the pending list again");
   if ((count!.results[0] as { n: number }).n >= MAX_MEMBERS) return error(409, `at most ${MAX_MEMBERS} members per team`);
   return error(409, "the team's key or their devices changed: fetch them again and retry");
 }
@@ -559,8 +577,7 @@ async function reject(c: Ctx, teamId: string, id: string): Promise<Response> {
 
 /// The body's envelopes: in shape, for this team, from the calling device and
 /// signed by it, at most one per device and epoch.
-async function signedEnvelopes(c: Ctx, teamId: string, from: Device): Promise<Envelope[] | Response> {
-  const body = await jsonBody(c.request, MAX_BODY);
+async function signedEnvelopes(body: unknown, teamId: string, from: Device): Promise<Envelope[] | Response> {
   const list = isObject(body) ? body["envelopes"] : null;
   if (!Array.isArray(list) || list.length === 0 || list.length > MAX_ENVELOPES) {
     return error(400, `expected {"envelopes": [...]} with 1 to ${MAX_ENVELOPES} envelopes`);
@@ -641,7 +658,7 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   if (!isAdmin(team.role)) return notAdmin();
   const device = await callerDevice(c);
   if (device instanceof Response) return device;
-  const envelopes = await signedEnvelopes(c, teamId, device);
+  const envelopes = await signedEnvelopes(await jsonBody(c.request, MAX_BODY), teamId, device);
   if (envelopes instanceof Response) return envelopes;
 
   const db = c.env.DB;

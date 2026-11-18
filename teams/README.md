@@ -50,14 +50,23 @@ For `wrangler dev`, create the tables in the local database first:
 
 ```sh
 npx wrangler d1 migrations apply arakun-teams --local
-printf 'ADMIN_SECRET=dev-secret\nGITHUB_CLIENT_SECRET=<the app secret>\n' > .dev.vars
 npx wrangler dev
+```
+
+`wrangler dev` reads the secrets from `.dev.vars`. If you do not have that file yet,
+create it with the two lines below; if you have it, keep your values:
+
+```sh
+ADMIN_SECRET=dev-secret
+GITHUB_CLIENT_SECRET=<the app secret>
 ```
 
 ## Deploying
 
-Nothing deploys this automatically yet. The commands below use `--env production`;
-leave it out to deploy the top-level Worker instead.
+Nothing deploys this automatically yet. The commands below use `--env production`,
+which deploys the Worker `arakun-teams`. Without it, wrangler deploys the top-level
+Worker `arakun-teams-dev`, a separate Worker, so a test deploy cannot replace the
+production one's bindings.
 
 1. Create the database once, and put the `database_id` it prints in `wrangler.toml`
    (under `[[env.production.d1_databases]]`, and the top-level one if you use it):
@@ -72,13 +81,19 @@ leave it out to deploy the top-level Worker instead.
    npx wrangler d1 migrations apply arakun-teams --env production --remote
    ```
 
-3. Set the admin secret. Without it, `/admin` answers 401 to everyone:
+3. Set the admin secret. Without it, the `/admin/users/...` endpoints answer 401 to
+   everyone. Make one and save it in your password manager first, since Cloudflare
+   will not show it again:
 
    ```sh
-   openssl rand -base64 32 | npx wrangler secret put ADMIN_SECRET --env production
+   openssl rand -base64 32
    ```
 
-   Keep a copy in your password manager; Cloudflare will not show it again.
+   Then paste it when wrangler asks for it:
+
+   ```sh
+   npx wrangler secret put ADMIN_SECRET --env production
+   ```
 
    Then the OAuth App's client secret (GitHub → ArakunHQ → Settings → Developer
    settings → OAuth Apps → Arakun → Generate a new client secret). Without it,
@@ -94,9 +109,10 @@ leave it out to deploy the top-level Worker instead.
    npx wrangler deploy --env production
    ```
 
-The rate limit on `POST /auth/github` (10 a minute per client IP) is set in
+The rate limit on `POST /auth/github` (about 10 a minute per client IP) is set in
 `wrangler.toml` under `[[ratelimits]]`. Its `namespace_id` must be unique among the
-account's rate limits.
+account's rate limits. Cloudflare counts it in each location on its own, and its
+counters catch up with a delay, so it is approximate: a client can get a few more.
 
 ## Granting flags
 
@@ -143,7 +159,7 @@ Times are Unix seconds.
 
 | Request | Answer |
 | --- | --- |
-| `POST /auth/github` with `{"access_token": "..."}` | `200 {session, expires_at, github_id, login, flags}`. `400` without a token, `401` if GitHub rejects it or another app issued it, `429` after 10 tries a minute from one IP, `502` if GitHub cannot be reached or fails, `503` without `GITHUB_CLIENT_SECRET`. |
+| `POST /auth/github` with `{"access_token": "..."}` | `200 {session, expires_at, github_id, login, flags}`. `400` without a token, `401` if GitHub rejects it or another app issued it, `413` for a body over 4 KiB, `429` after about 10 tries a minute from one IP (see the rate limit above), `502` if GitHub cannot be reached or fails, `503` without `GITHUB_CLIENT_SECRET`. |
 | `GET /me` with the session | `200 {github_id, login, flags}`, or `401`. |
 | `POST /auth/logout` with the session | `204`, and the session is gone. `401` if it was not valid. |
 | `PUT /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {github_id, flags}`. |

@@ -1,6 +1,8 @@
 # Arakun teams: sign-in with GitHub and per-user feature flags, in one Worker
 # with a D1 database. Teams, members and chat come later, on the same database.
-name = "arakun-teams"
+# The top-level Worker is for tests; production is `--env production` below.
+# Their names differ so a test deploy cannot replace production's bindings.
+name = "arakun-teams-dev"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 

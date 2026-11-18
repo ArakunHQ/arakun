@@ -27,10 +27,12 @@ pre-commit:
       glob: "*"
       run: (test -d node_modules || npm ci) && npx tsc --noEmit
 
+    # npm ci again when the lockfile is newer than the install, as after
+    # switching to a branch with other dependencies.
     - name: teams-types
       root: teams/
       glob: "*"
-      run: (test -d node_modules || npm ci) && npx tsc --noEmit
+      run: (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npx tsc --noEmit
 
     # The phone's encryption against the vectors the Rust side writes, so a
     # change on either side runs it. No `root:`, which would drop src/phone.
@@ -54,7 +56,7 @@ pre-push:
     - name: teams-tests
       root: teams/
       glob: "*"
-      run: (test -d node_modules || npm ci) && npx vitest run
+      run: (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npx vitest run
 
 commit-msg:
   jobs:

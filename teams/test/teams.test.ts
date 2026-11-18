@@ -673,7 +673,7 @@ describe("envelopes", () => {
       return batch(statements);
     });
     const res = await expectJson(api(t.owner.user, "PUT", path, { device: second, body: { envelopes: mixed } }), 409);
-    expect(res.error).toMatch(/another device made the key/);
+    expect(res.error).toMatch(/another upload made the key/);
     expect(raced).toBe(true);
     vi.restoreAllMocks();
     const theirs = await expectJson<{ epoch: number; from: string }[]>(api(t.owner.user, "GET", path, { device: second }), 200);
@@ -718,6 +718,36 @@ describe("envelopes", () => {
     vi.restoreAllMocks();
     const theirs = await expectJson<{ epoch: number; sig: string }[]>(api(m.user, "GET", path, { device: m.device }), 200);
     expect(theirs.find((e) => e.epoch === 2)?.sig).toBe(a[1]!.sig);
+  });
+
+  it("of an older epoch are not written by a second upload with the same new key", async () => {
+    const t = await team();
+    const second = await makeDevice();
+    await expectJson(register(t.owner.user, second, t.owner.device, "desktop"), 201);
+    const m = await join(t);
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const path = `/teams/${t.teamId}/envelopes`;
+    const key2 = newKey();
+    const a = await Promise.all([t.owner.device, second, m.device].map((d) => envelope(t.teamId, 2, key2, d, t.owner.device)));
+    // A retry of the same upload, with the epoch-1 key for the second device added.
+    const b = [...a, await envelope(t.teamId, 1, t.keys.get(1)!, second, t.owner.device)];
+    // Upload A wins after upload B read the team as pending, before B's batch.
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === b.length + 2) {
+        raced = true;
+        await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: a } }), 200);
+      }
+      return batch(statements);
+    });
+    const res = await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: b } }), 409);
+    expect(res.error).toMatch(/another upload made the key/);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    const theirs = await expectJson<{ epoch: number }[]>(api(t.owner.user, "GET", path, { device: second }), 200);
+    expect(theirs.map((e) => e.epoch)).toEqual([2]);
   });
 
   it("are asked only for epochs with a key when two removals skipped one", async () => {

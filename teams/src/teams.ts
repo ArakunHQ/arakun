@@ -624,22 +624,18 @@ function insertEnvelope(extra: string): string {
       WHERE d.device_id = json_extract(envelopes.body, '$.from') AND m.role IN ('owner', 'admin'))`;
 }
 
-/// Whether this upload's new key of epoch ?6 is the one in use: the epoch is
-/// the keyed one, and every envelope of it is one of this upload's (their
-/// signatures, ?7, a JSON list). Before this batch made the epoch the keyed
-/// one, it had no envelopes, so only the upload whose update won passes: not
-/// another device's, nor a second upload of the same device that lost.
-const KEY_WON = `AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?6
-  AND NOT EXISTS (SELECT 1 FROM envelopes WHERE team_id = ?1 AND epoch = ?6
-    AND json_extract(body, '$.sig') NOT IN (SELECT value FROM json_each(?7)))`;
+/// Whether this upload made the new key: the update in the same batch set
+/// `key_upload` to its random ID (?6). Only the upload whose update won passes:
+/// not another device's, nor a second upload of the same device, even with the
+/// same envelopes.
+const KEY_WON = "AND (SELECT key_upload FROM teams WHERE team_id = ?1) = ?6";
 
 /// An envelope of an upload that makes a new key, written only after the same
-/// batch made the new epoch the keyed one, and only if this upload's key won.
-/// So a key never lands for an epoch a removal skipped, a second rotation
-/// cannot replace the key that won, and an upload answered 409 writes nothing,
-/// its envelopes of older epochs included.
-function storeWithNewKey(db: D1Database, e: Envelope, epoch: number, sigs: string, t: number): D1PreparedStatement {
-  return db.prepare(insertEnvelope(KEY_WON)).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, epoch, sigs);
+/// batch made the new epoch the keyed one. So a key never lands for an epoch a
+/// removal skipped, a second rotation cannot replace the key that won, and an
+/// upload answered 409 writes nothing, its envelopes of older epochs included.
+function storeWithNewKey(db: D1Database, e: Envelope, upload: string, t: number): D1PreparedStatement {
+  return db.prepare(insertEnvelope(KEY_WON)).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, upload);
 }
 
 /// The epochs from `lo` to `hi` that have a key: the ones with envelopes. A
@@ -683,7 +679,7 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   }
 
   const t = now();
-  const sigs = JSON.stringify(envelopes.filter((e) => e.epoch === team.epoch).map((e) => e.sig));
+  const upload = crypto.randomUUID();
   const done = await db.batch([
     // First, so the new key's envelopes below can see whether it won. Only if
     // no removal bumped the epoch since we read it, no other device keyed it
@@ -693,20 +689,20 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
       ? [
           db
             .prepare(
-              `UPDATE teams SET keyed_epoch = ?1 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1 AND NOT EXISTS (
+              `UPDATE teams SET keyed_epoch = ?1, key_upload = ?4 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1 AND NOT EXISTS (
                  SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?2
                  WHERE d.device_id NOT IN (SELECT value FROM json_each(?3)))`,
             )
-            .bind(team.epoch, teamId, JSON.stringify([...covered])),
+            .bind(team.epoch, teamId, JSON.stringify([...covered]), upload),
         ]
       : []),
-    ...envelopes.map((e) => (keying ? storeWithNewKey(db, e, team.epoch, sigs, t) : storeEnvelope(db, e, t))),
+    ...envelopes.map((e) => (keying ? storeWithNewKey(db, e, upload, t) : storeEnvelope(db, e, t))),
     db.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(teamId),
   ]);
   const after = done[done.length - 1]!.results[0] as { epoch: number; keyed_epoch: number };
   if (keying && done[0]!.meta.changes !== 1) {
     if (after.epoch !== team.epoch) return error(409, `epoch ${team.epoch} was skipped: make a key for epoch ${after.epoch}`);
-    if (after.keyed_epoch >= team.epoch) return error(409, `another device made the key for epoch ${team.epoch}: fetch it`);
+    if (after.keyed_epoch >= team.epoch) return error(409, `another upload made the key for epoch ${team.epoch}: fetch it`);
     return error(409, "a member or device changed: fetch the devices again and retry");
   }
   // What was written, which is less than what was sent when another device's

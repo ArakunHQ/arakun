@@ -3157,19 +3157,33 @@ const WORKTREE_LIMIT: Duration = Duration::from_secs(2 * 60);
 
 /// Removes the worktree at `place` and what is in it, then `branch` if given,
 /// as the app deletes an environment. Ok once the folder is gone; it carries
-/// why the branch stayed, when it did.
+/// a warning of what stayed, when something did.
 fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>, String> {
     // Git runs in the repository's own files, which hold every worktree's
     // and are wherever they are kept (`--separate-git-dir`, bare).
     let (_, root) = git_dirs(place).ok_or("that folder is not in a git repository")?;
-    run_git(
+    let removed = run_git(
         git(&root)
             .args(["worktree", "remove", "--force"])
             .arg(place),
-    )?;
+    );
+    let mut stayed = Vec::new();
+    match removed {
+        Ok(()) => {}
+        // Git takes the folder first and its own files for it after. Gone,
+        // the folder is deleted: another try would only fail to find it.
+        Err(e) if !place.exists() => stayed.push(format!("Git did not finish tidying up: {e}")),
+        Err(e) => return Err(e),
+    }
     // No `worktree prune`: it would also take the git files of another
     // worktree whose folder is away for now, on a mount that is not there.
-    Ok(branch.and_then(|b| run_git(git(&root).args(["branch", "-D", "--", b])).err()))
+    if let Some(b) = branch {
+        let deleted = run_git(git(&root).args(["branch", "-D", "--", b]));
+        if let Err(e) = deleted {
+            stayed.push(format!("The branch stayed: {e}"));
+        }
+    }
+    Ok((!stayed.is_empty()).then(|| stayed.join(" ")))
 }
 
 /// Whether the folder at `place` is a worktree a device may delete: never a
@@ -3216,11 +3230,11 @@ fn settled_state(state: &str) -> String {
     msg.to_string()
 }
 
-/// What a deletion that took the folder warns of: a branch that stayed, a
-/// list that could not be saved (the place comes back at the next start).
-fn deleted_warning(branch_kept: Option<String>, unsaved: Option<std::io::Error>) -> Option<String> {
+/// What a deletion that took the folder warns of: what stayed (the branch,
+/// git's own files for it), a list that could not be saved (the place comes back at the next start).
+fn deleted_warning(stayed: Option<String>, unsaved: Option<std::io::Error>) -> Option<String> {
     let parts: Vec<String> = [
-        branch_kept.map(|e| format!("The branch stayed: {e}")),
+        stayed,
         unsaved.map(|e| {
             format!("The server could not save its list ({e}), so the environment comes back when it restarts.")
         }),
@@ -3515,7 +3529,7 @@ mod tests {
         let unsaved = deleted_warning(None, Some(std::io::Error::other("disk full")));
         assert!(unsaved.is_some_and(|w| w.contains("disk full") && w.contains("comes back")));
         let both = deleted_warning(
-            Some("in use".into()),
+            Some("The branch stayed: in use".into()),
             Some(std::io::Error::other("disk full")),
         )
         .unwrap();
@@ -3882,6 +3896,38 @@ mod tests {
         let admin = main.join(".git").join("worktrees");
         assert!(!admin.join("gone").exists());
         assert!(admin.join("away").join("HEAD").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Git's files are kept from being changed by a folder's permissions.
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_whose_folder_went_is_deleted_though_git_did_not_tidy_up() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("rm-tidy");
+        let main = dir.join("app");
+        std::fs::create_dir_all(&main).unwrap();
+        repo_at(&main, &[]);
+        git_in(&main, &["worktree", "add", "-q", "-b", "fix", "../fix"]);
+        let admin = main.join(".git").join("worktrees");
+        let fix = dir.join("fix");
+        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let done = remove_worktree(&fix, None);
+        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Run as root, the permissions keep nothing from going.
+        if admin.join("fix").exists() {
+            let warning = done.unwrap().unwrap();
+            assert!(
+                warning.starts_with("Git did not finish tidying up"),
+                "{warning}"
+            );
+        }
+        assert!(!fix.exists());
+        // A folder that stays is not deleted.
+        git_in(&main, &["worktree", "add", "-q", "-b", "kept", "../kept"]);
+        git_in(&main, &["worktree", "lock", "--reason", "busy", "../kept"]);
+        assert!(remove_worktree(&dir.join("kept"), None).is_err());
+        assert!(dir.join("kept").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

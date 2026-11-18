@@ -1482,6 +1482,7 @@ impl Shell {
         // switch right after a long sleep leaves it with its old date, and
         // the cleanup could take what was just open.
         self.mark_visible_used();
+        self.avoid_env_being_removed(index);
         self.active_project = index;
         self.show_env_tab(false);
         self.note_active_tab(cx);
@@ -2496,11 +2497,29 @@ impl Shell {
         cx.notify();
     }
 
+    /// A project about to show would show the environment it was left on.
+    /// When the cleanup is removing that one right now (`shell::cleanup`),
+    /// the project shows its main checkout instead.
+    fn avoid_env_being_removed(&mut self, project: usize) {
+        let Some(p) = self.projects.get(project) else {
+            return;
+        };
+        let going = p
+            .environments
+            .get(p.active_env)
+            .is_some_and(|e| self.being_cleaned_up(&e.path));
+        if going {
+            let main = p.environments.iter().position(|e| e.is_checkout);
+            self.projects[project].active_env = main.unwrap_or(0);
+        }
+    }
+
     fn select_project(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         // The one on screen until now was in use until now. Without this a
         // switch right after a long sleep leaves it with its old date, and
         // the cleanup could take what was just open.
         self.mark_visible_used();
+        self.avoid_env_being_removed(index);
         self.active_project = index;
         self.env_menu_open = false;
         self.after_switch(window, cx);

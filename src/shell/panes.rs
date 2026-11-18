@@ -183,6 +183,14 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
+        // A tab of another environment: that environment comes on screen first,
+        // and the tab is paired with one of its own.
+        let foreign = target
+            .and_then(|t| self.strip.tabs.get(t))
+            .is_some_and(|t| t.env.as_deref().is_some_and(|e| e != self.env().path));
+        if let (true, Some(t)) = (foreign, target) {
+            self.select_tab(t, window, cx);
+        }
         let here = self.env().path.clone();
         let strip = &mut self.strip;
         let Some(active_id) = strip.active().map(|t| t.id) else {
@@ -250,6 +258,15 @@ impl Shell {
         self.lifted_tab = None;
         if !self.has_projects() {
             return;
+        }
+        // A tab of another environment: that environment comes on screen first.
+        if let Some(index) = self.strip.position(id)
+            && self.strip.tabs[index]
+                .env
+                .as_deref()
+                .is_some_and(|e| e != self.env().path)
+        {
+            self.select_tab(index, window, cx);
         }
         let here = self.env().path.clone();
         if !self

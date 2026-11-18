@@ -1511,11 +1511,15 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
+        // Closing its tab may bring another environment on screen: the session
+        // is taken off the one that was on screen when this was asked.
+        let path = self.env().path.clone();
         while let Some(i) = self.strip.session_tab(id) {
             self.discard_tab(i, window, cx);
         }
-        let env = self.env_mut();
-        let removed = env.session_index(id).map(|i| env.sessions.remove(i));
+        let removed = self
+            .find_env_mut(&path)
+            .and_then(|env| env.session_index(id).map(|i| env.sessions.remove(i)));
         if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
             live.thread.update(cx, |t, _| t.shutdown());
         }

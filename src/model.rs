@@ -504,7 +504,12 @@ pub struct TabStrip {
     pub tab_fwd: Vec<u64>,
     /// Tabs closed, newest last: Reopen closed tab takes them back in turn.
     pub closed_tabs: Vec<ClosedTab>,
+    /// The split of the environment on screen, `split_env`.
     pub split: Option<Split>,
+    pub split_env: Option<PathBuf>,
+    /// The splits of the environments that are not on screen, each with the tab
+    /// its focused pane showed. One comes back with its environment.
+    pub parked: std::collections::HashMap<PathBuf, (Split, u64)>,
     /// The tab each environment showed last, which going to the environment shows again.
     pub front: std::collections::HashMap<PathBuf, u64>,
 }
@@ -609,6 +614,54 @@ impl TabStrip {
         let i = self.position(split.other)?;
         let fits = self.tabs[i].env.as_deref().is_none_or(|e| e == env);
         (i != self.active_tab && fits).then_some(i)
+    }
+
+    /// Makes `split` the one of the environment `env`, which came on screen
+    /// after the tab `prev` was active: the split of the environment that left
+    /// is put aside, and the one `env` had comes back. Arriving on the tab of
+    /// its other pane swaps the panes' roles, as selecting that tab does.
+    pub fn bring_split(&mut self, env: &Path, prev: Option<u64>) {
+        match self.split_env.take() {
+            Some(old) if old == env => {
+                self.split_env = Some(old);
+                return;
+            }
+            Some(old) => {
+                if let Some(split) = self.split.take() {
+                    let fits = |id: &u64| {
+                        *id != split.other
+                            && self.position(*id).is_some_and(|i| {
+                                self.tabs[i].env.as_deref().is_none_or(|e| e == old)
+                            })
+                    };
+                    let focus = prev
+                        .filter(&fits)
+                        .or_else(|| self.front.get(&old).copied().filter(&fits));
+                    if let Some(focus) = focus {
+                        self.parked.insert(old, (split, focus));
+                    }
+                }
+            }
+            // The first environment on screen: a split made so far is its own.
+            None => {
+                self.split_env = Some(env.to_path_buf());
+                return;
+            }
+        }
+        self.split_env = Some(env.to_path_buf());
+        let Some((mut split, focus)) = self.parked.remove(env) else {
+            return;
+        };
+        if self.active().map(|t| t.id) == Some(split.other) {
+            if self.position(focus).is_none() {
+                return;
+            }
+            split.other = focus;
+            split.focus_first = !split.focus_first;
+        }
+        if self.position(split.other).is_some() {
+            self.split = Some(split);
+        }
     }
 
     /// Shows the tab `id` in the first (left or top) pane or the second, splitting with
@@ -1284,6 +1337,38 @@ mod tests {
         // A view fits beside any environment.
         strip.split.as_mut().unwrap().other = strip.tabs[3].id;
         assert_eq!(strip.split_other(Path::new("b")), Some(3));
+    }
+
+    #[test]
+    fn an_environment_gets_its_split_back() {
+        let mut strip = strip_of(&["a", "a", "b"]);
+        strip.tabs.push(Tab::new("Notes", TabKind::Notes));
+        let ids: Vec<u64> = strip.tabs.iter().map(|t| t.id).collect();
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        strip.bring_split(a, None);
+        strip.split = Some(Split {
+            other: ids[3],
+            dir: SplitDir::Right,
+            ratio: 0.5,
+            focus_first: true,
+        });
+        // On `b` the split of `a` is away, also when its other pane is a view.
+        strip.active_tab = 2;
+        strip.bring_split(b, Some(ids[0]));
+        assert!(strip.split.is_none());
+        assert_eq!(strip.split_other(b), None);
+        // Back on the tab that had the focus: as it was.
+        strip.active_tab = 0;
+        strip.bring_split(a, Some(ids[2]));
+        assert_eq!(strip.split_other(a), Some(3));
+        assert!(strip.split.unwrap().focus_first);
+        // Back on the other pane's tab: the panes trade roles.
+        strip.active_tab = 2;
+        strip.bring_split(b, Some(ids[0]));
+        strip.active_tab = 3;
+        strip.bring_split(a, Some(ids[2]));
+        let split = strip.split.unwrap();
+        assert_eq!((split.other, split.focus_first), (ids[0], false));
     }
 
     #[test]

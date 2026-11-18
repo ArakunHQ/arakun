@@ -1086,8 +1086,14 @@ impl Shell {
                     .any(|e| e.path == path)
             })
         };
+        let active = self.strip.active().map(|t| t.id);
         let gone = self.strip.remove_where(|t| lost(&t.env));
         self.strip.closed_tabs.retain(|c| !lost(&c.env));
+        self.strip.parked.retain(|env, _| !lost(&Some(env.clone())));
+        if lost(&self.strip.split_env) {
+            self.strip.split = None;
+            self.strip.split_env = None;
+        }
         for tab in &gone {
             if let Some(b) = &tab.browser {
                 b.view.update(cx, |v, cx| v.close(cx));
@@ -1099,11 +1105,30 @@ impl Shell {
             return;
         }
         let before = self.strip.active().map(|t| t.id);
-        self.show_env_tab(true);
+        if active.is_some_and(|id| self.strip.position(id).is_some()) {
+            self.show_env_tab(true);
+        } else {
+            // The active tab went: the environment now on screen shows the tab
+            // it showed last, not whichever tab took the old place in the row.
+            let path = self.env().path.clone();
+            self.strip.active_tab = match self.strip.front_of(&path) {
+                Some(i) => i,
+                None => self.strip.add(Tab::new_session(&path)),
+            };
+        }
         if !gone.is_empty() || self.strip.active().map(|t| t.id) != before {
             self.note_active_tab(cx);
             self.env_followed = true;
             cx.notify();
+        }
+    }
+
+    /// The split of the environment on screen comes with it; `prev` is the tab
+    /// that was active before.
+    fn bring_split(&mut self, prev: Option<u64>) {
+        if self.has_projects() {
+            let here = self.env().path.clone();
+            self.strip.bring_split(&here, prev);
         }
     }
 
@@ -2381,12 +2406,12 @@ impl Shell {
     }
 
     fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let strip = &mut self.strip;
-        let prev = strip.active().map(|t| t.id);
-        strip.active_tab = index;
-        strip.settle_split(prev);
+        let prev = self.strip.active().map(|t| t.id);
+        self.strip.active_tab = index;
         // Back and forward come here without `note_active_tab`.
         self.follow_tab(cx);
+        self.bring_split(prev);
+        self.strip.settle_split(prev);
         self.unfloat_github(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
@@ -2401,6 +2426,7 @@ impl Shell {
         // Every path that changes the active tab ends here, so the environment
         // follows it and the split settles here too.
         self.follow_tab(cx);
+        self.bring_split(self.strip.tab_back.last().copied());
         let strip = &mut self.strip;
         strip.settle_split(strip.tab_back.last().copied());
         let Some(id) = strip.active().map(|t| t.id) else {

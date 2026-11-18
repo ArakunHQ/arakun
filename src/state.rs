@@ -438,11 +438,13 @@ fn reopened_index(strip: &TabStrip, e: &Environment, id: u64) -> Option<usize> {
 
 /// The split, kept with the environment whose two tabs it shows.
 fn split_state(strip: &TabStrip, e: &Environment) -> Option<SplitState> {
-    let split = strip.split.as_ref()?;
-    if !strip.active().is_some_and(|t| t.is_in(&e.path)) {
-        return None;
-    }
-    strip.split_other(&e.path)?;
+    let split = if strip.split_env.as_deref() == Some(&e.path) {
+        strip.split_other(&e.path)?;
+        strip.split?
+    } else {
+        // Not on screen: its split waits with the strip.
+        strip.parked.get(&e.path)?.0
+    };
     Some(SplitState {
         tab: reopened_index(strip, e, split.other)?,
         down: split.dir == SplitDir::Down,
@@ -647,8 +649,9 @@ pub fn snapshot(
 
 pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let mut strip = TabStrip::default();
-    // The split each environment was saved with; the one on screen gets its own back.
-    let mut splits: Vec<(PathBuf, Split)> = Vec::new();
+    // The split each environment was saved with, and the tab of its focused
+    // pane; the one on screen gets its own back, the others wait.
+    let mut splits: Vec<(PathBuf, Split, u64)> = Vec::new();
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     let projects: Vec<Project> = state
@@ -752,6 +755,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                     }
                     if let Some(s) = e.split
                         && let Some(other) = tabs.get(s.tab).filter(|_| s.tab != front)
+                        && let Some(focus) = tabs.get(front)
                     {
                         splits.push((
                             env.path.clone(),
@@ -765,6 +769,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                                 ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
                                 focus_first: s.focus_first,
                             },
+                            focus.id,
                         ));
                     }
                     strip.tabs.extend(tabs);
@@ -805,10 +810,14 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         strip.active_tab = strip
             .front_of(&shown.path)
             .unwrap_or_else(|| strip.add(Tab::new_session(&shown.path)));
-        strip.split = splits
-            .into_iter()
-            .find(|(path, _)| *path == shown.path)
-            .map(|(_, split)| split);
+        for (path, split, focus) in splits {
+            if path == shown.path {
+                strip.split = Some(split);
+            } else {
+                strip.parked.insert(path, (split, focus));
+            }
+        }
+        strip.split_env = Some(shown.path.clone());
         strip.seed_tab_history();
     }
     let layout = Layout {
@@ -1142,6 +1151,7 @@ mod tests {
             ratio: 0.35,
             focus_first: true,
         });
+        strip.split_env = Some(here.clone());
 
         let layout = Layout {
             dock_open: false,
@@ -1161,7 +1171,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(std::slice::from_ref(&project), &strip, 0, layout);
+        let bytes = snapshot(std::slice::from_ref(&project), &strip, 0, layout.clone());
         let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
         // The blank browser tab is not reopened, so the docs tab lands at index 1.
         assert_eq!(strip.tabs.len(), 2);
@@ -1170,6 +1180,15 @@ mod tests {
         assert_eq!(split.dir, SplitDir::Down);
         assert!(split.focus_first);
         assert!((split.ratio - 0.35).abs() < 1e-6);
+
+        // Saved while another environment is on screen, it waits for its own.
+        let mut strip = strip;
+        let focus = strip.tabs[0].id;
+        strip.bring_split(Path::new("/tmp/arakun-split-elsewhere"), Some(focus));
+        assert!(strip.split.is_none());
+        let bytes = snapshot(std::slice::from_ref(&project), &strip, 0, layout);
+        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        assert_eq!(strip.split_other(&here), Some(1));
     }
 
     #[test]

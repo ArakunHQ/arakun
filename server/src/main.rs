@@ -105,7 +105,7 @@ fn main() {
     server::set_name("arakun-server");
     let args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
-        println!("arakun-server {}", env!("CARGO_PKG_VERSION"));
+        println!("arakun-server {}", env!("ARAKUN_VERSION"));
         return;
     }
     std::process::exit(server::cli(&args));

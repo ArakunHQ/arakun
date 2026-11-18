@@ -413,9 +413,9 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
     };
     for (k, v) in [
         ("$lib", Value::from("arakun")),
-        ("$lib_version", env!("CARGO_PKG_VERSION").into()),
+        ("$lib_version", env!("ARAKUN_VERSION").into()),
         ("$app_name", "Arakun".into()),
-        ("$app_version", env!("CARGO_PKG_VERSION").into()),
+        ("$app_version", env!("ARAKUN_VERSION").into()),
         ("$os", os.into()),
         ("arch", std::env::consts::ARCH.into()),
         ("build", build.into()),
@@ -548,7 +548,7 @@ fn send(batch: &[Value], agent: &ureq::Agent) {
 fn agent_with(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
-        .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
         .build()
         .into()
 }

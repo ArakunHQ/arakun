@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    set_version();
     let browser = std::env::var_os("CARGO_FEATURE_BROWSER").is_some();
     if browser && std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
         copy_cef_runtime();
@@ -23,6 +24,18 @@ fn main() {
             manifest.display()
         );
     }
+}
+
+/// `ARAKUN_VERSION`, what `arakun --version` says: the crate's version, or the
+/// one the release workflow gives a nightly build (`0.5.1-nightly.202611180300`).
+/// server/build.rs does the same.
+fn set_version() {
+    println!("cargo::rerun-if-env-changed=ARAKUN_VERSION");
+    let version = std::env::var("ARAKUN_VERSION")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap());
+    println!("cargo::rustc-env=ARAKUN_VERSION={}", version.trim());
 }
 
 /// Copies the CEF runtime next to arakun.exe, where src/browser/loader.rs looks for it.

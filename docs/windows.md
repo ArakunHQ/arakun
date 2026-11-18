@@ -243,6 +243,10 @@ Manager (Windows Credentials, Generic Credentials).
 - **The window does not open or closes by itself:** start it from a terminal with
   `$env:RUST_BACKTRACE = 1; target\release\arakun.exe` and read the output, or check
   `%LOCALAPPDATA%\arakun\arakun.log`.
+- **`could not open its window` with Direct3D in the error:** no graphics device could
+  be used. Started from the Start menu or Explorer, this shows as a notification too, and
+  the whole error is in `arakun.log`. Update the graphics driver, or turn on 3D acceleration in a VM. If the error
+  names DirectComposition, set `GPUI_DISABLE_DIRECT_COMPOSITION=1`.
 - **The build fails on a C dependency:** the MSVC environment is missing (see above).
 - **`Failed to find fxc.exe`:** the Windows SDK is missing, or set `GPUI_FXC_PATH`.
 - **The build fails in `cef-dll-sys`:** CMake or Ninja is missing (see above), or CEF

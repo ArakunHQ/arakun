@@ -410,10 +410,18 @@ fn tabs_of<'a>(strip: &'a TabStrip, e: &Environment) -> Vec<&'a Tab> {
 }
 
 /// Position of the environment's front tab among its session tabs (0 when it
-/// is another tab).
+/// is another tab). With a split put aside, the tab of its focused pane counts:
+/// the split is saved against it.
 fn active_session_tab(strip: &TabStrip, e: &Environment) -> usize {
     let tabs = tabs_of(strip, e);
-    let front = strip.front_of(&e.path).map(|i| strip.tabs[i].id);
+    let parked = strip
+        .parked
+        .get(&e.path)
+        .filter(|_| strip.split_env.as_deref() != Some(&e.path));
+    let front = match parked {
+        Some((_, focus)) => Some(*focus),
+        None => strip.front_of(&e.path).map(|i| strip.tabs[i].id),
+    };
     match tabs.iter().position(|t| Some(t.id) == front) {
         Some(i) if is_session(tabs[i]) => tabs[..i].iter().filter(|t| is_session(t)).count(),
         _ => 0,
@@ -1175,12 +1183,22 @@ mod tests {
 
         // Saved while another environment is on screen, it waits for its own.
         let mut strip = strip;
-        let focus = strip.tabs[0].id;
-        strip.bring_split(Path::new("/tmp/arakun-split-elsewhere"), Some(focus));
+        let elsewhere = PathBuf::from("/tmp/arakun-split-elsewhere");
+        project
+            .environments
+            .push(Environment::new(elsewhere.clone(), None, false));
+        project.active_env = 1;
+        let (focus, other) = (strip.tabs[0].id, strip.tabs[1].id);
+        strip.bring_split(&elsewhere, Some(focus));
         assert!(strip.split.is_none());
+        // The environment's front tab moved on since; the split keeps its own.
+        strip.front.insert(here.clone(), other);
         let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
-        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
-        assert_eq!(strip.split_other(&here), Some(1));
+        let (_, _, _, mut strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        assert!(strip.split.is_none(), "it is not the one on screen");
+        strip.active_tab = strip.front_of(&here).unwrap();
+        strip.bring_split(&here, None);
+        assert_eq!((strip.active_tab, strip.split_other(&here)), (0, Some(1)));
     }
 
     #[test]

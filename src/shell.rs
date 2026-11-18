@@ -2453,11 +2453,14 @@ impl Shell {
             let env = &mut self.strip;
             let mut target = None;
             if back {
+                // Forward returns to the tab Back started from, not to a
+                // closed one skipped on the way.
+                let from = env.tab_back.last().copied().unwrap_or_default();
                 while env.tab_back.len() > 1 {
-                    let cur = env.tab_back.pop().unwrap_or_default();
+                    env.tab_back.pop();
                     let prev = env.tab_back.last().copied().unwrap_or_default();
                     if let Some(i) = env.tabs.iter().position(|t| t.id == prev) {
-                        env.tab_fwd.push(cur);
+                        env.tab_fwd.push(from);
                         target = Some(i);
                         break;
                     }

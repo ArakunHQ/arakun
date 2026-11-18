@@ -94,6 +94,8 @@ enum Confirm {
     RequestChanges,
     Merge(MergeMethod),
     Close,
+    /// Open a closed issue again.
+    Reopen,
     /// Post the agent's draft review (`confirm_draft`).
     PostDraft,
 }
@@ -216,6 +218,7 @@ fn busy_note(what: &str) -> String {
         "request-changes" => "the change request",
         "approve" => "the approval",
         "merge" => "the merge",
+        "reopen" => "the reopen",
         "close" => "the close",
         other => other,
     };
@@ -923,6 +926,19 @@ impl GitHubView {
         );
     }
 
+    /// "Work on it": an agent does what the issue asks, in the project open.
+    fn work_on_issue(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.item().filter(|i| i.kind == ItemKind::Issue) else {
+            return;
+        };
+        let title = self.title(cx);
+        self.ask(
+            format!("Issue: {title}"),
+            pr::issue_prompt(&item, &title),
+            cx,
+        );
+    }
+
     fn catch_up(&mut self, cx: &mut Context<Self>) {
         let Some(item) = self.item() else { return };
         let title = self.title(cx);
@@ -1123,6 +1139,8 @@ impl GitHubView {
             "request-changes" | "changes" if pull => self.ask_confirm(Confirm::RequestChanges, cx),
             "merge" if pull => self.ask_merge(cx),
             "close" if !pull => self.ask_confirm(Confirm::Close, cx),
+            "reopen" if !pull => self.ask_confirm(Confirm::Reopen, cx),
+            "work" if !pull => self.work_on_issue(cx),
             "review" if pull => self.review_with_agent(cx),
             "catchup" | "catch-up" => self.catch_up(cx),
             "summarize" | "summary" => self.summarize(cx),
@@ -1131,7 +1149,7 @@ impl GitHubView {
                 let list = if pull {
                     "/approve, /request-changes, /merge, /review, /catchup, /summarize, /open"
                 } else {
-                    "/close, /catchup, /summarize, /open"
+                    "/work, /close, /reopen, /catchup, /summarize, /open"
                 };
                 self.note = Some(Note {
                     ok: false,
@@ -1286,6 +1304,7 @@ impl GitHubView {
                 self.write("merge", done, move |i| pr::merge(i, m, &head), clear, cx)
             }
             Confirm::Close => self.write("close", "Closed.".into(), pr::close, clear, cx),
+            Confirm::Reopen => self.write("reopen", "Opened again.".into(), pr::reopen, clear, cx),
             Confirm::PostDraft => self.post_draft(cx),
         }
     }

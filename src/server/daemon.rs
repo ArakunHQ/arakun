@@ -919,6 +919,12 @@ impl Daemon {
         inside_any(place, &self.deleting)
     }
 
+    /// Whether new work may start in `place`: every path that starts or
+    /// sends a turn asks, the device's and the local commands' alike.
+    fn admit(&self, place: &Path) -> Result<(), String> {
+        admission(place, &self.deleting)
+    }
+
     fn thread_event(
         &mut self,
         id: &str,
@@ -1480,12 +1486,6 @@ impl Daemon {
                 text,
                 uploads,
             } => {
-                let place = self.store.session(&session).map(|s| s.place.clone());
-                if place.is_some_and(|p| self.being_deleted(&p)) {
-                    let why = "its environment is being deleted";
-                    self.transport.send(client, session_error(&session, why));
-                    return;
-                }
                 let text = self.uploads.attach(text, &uploads);
                 if let Err(e) = self.send_to_session(&session, text, cx) {
                     self.transport.send(client, session_error(&session, &e));
@@ -1523,11 +1523,8 @@ impl Daemon {
                 settings,
             } => {
                 let path = PathBuf::from(env);
-                if self.being_deleted(&path) {
-                    self.transport.send(
-                        client,
-                        error_about("start", "that environment is being deleted"),
-                    );
+                if let Err(e) = self.admit(&path) {
+                    self.transport.send(client, error_about("start", &e));
                     return;
                 }
                 let Some(place) = self.store.place_mut(&path) else {
@@ -2114,6 +2111,9 @@ impl Daemon {
         text: String,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        if let Some(s) = self.store.session(id) {
+            self.admit(&s.place)?;
+        }
         let thread = self.ensure_live(id, cx)?;
         thread.update(cx, |t, cx| {
             // Follow-ups that waited when the server stopped come back held,
@@ -2550,6 +2550,7 @@ impl Daemon {
             return Err("bad request".into());
         };
         let path = Path::new(dir);
+        self.admit(path)?;
         if !path.is_dir() {
             return Err(format!("not a directory: {}", path.display()));
         }
@@ -2905,6 +2906,14 @@ impl Clones {
 /// `/w/fix2` is not in `/w/fix`.
 fn inside_any(place: &Path, folders: &HashSet<PathBuf>) -> bool {
     folders.iter().any(|f| place.starts_with(f))
+}
+
+/// Why no work may start in `place` while `deleting` are being deleted.
+fn admission(place: &Path, deleting: &HashSet<PathBuf>) -> Result<(), String> {
+    if inside_any(place, deleting) {
+        return Err("its environment is being deleted".into());
+    }
+    Ok(())
 }
 
 /// Whether `path` (canonical) is where a clone under way goes. Clones are
@@ -3409,6 +3418,16 @@ mod tests {
         assert!(inside_any(Path::new("/w/fix/docs"), &deleting));
         assert!(!inside_any(Path::new("/w/fix2"), &deleting));
         assert!(!inside_any(Path::new("/w"), &deleting));
+    }
+
+    #[test]
+    fn no_work_starts_in_a_folder_being_deleted() {
+        let deleting = HashSet::from([PathBuf::from("/w/fix")]);
+        assert!(admission(Path::new("/w/fix"), &deleting).is_err());
+        // A place added inside it goes with it.
+        assert!(admission(Path::new("/w/fix/docs"), &deleting).is_err());
+        assert!(admission(Path::new("/w/fix2"), &deleting).is_ok());
+        assert!(admission(Path::new("/w/fix"), &HashSet::new()).is_ok());
     }
 
     #[test]

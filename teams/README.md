@@ -28,8 +28,9 @@ teams/
    personal token, another app's), so whoever held one could sign in as them.
 4. The app sends `Authorization: Bearer <session>` from then on.
 
-A session lasts 90 days and is extended on use, at most once a day. The database
-holds only the SHA-256 of the session token.
+A session lasts 90 days and is extended on use, at most once a day, but never past
+180 days after sign-in. Then the app has to sign in again. The database holds only
+the SHA-256 of the session token.
 
 Users are keyed by their numeric GitHub ID, which stays when they rename their account.
 Flags are set per user on the server, and every team endpoint must check its flag

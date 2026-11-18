@@ -12,6 +12,9 @@
 import { DAY, b64url, bearer, bodyText, discard, error, flagList, flagsQuery, hex, now, sha256, type Env } from "./util";
 
 const SESSION_DAYS = 90;
+/// Renewal never takes a session past this many days after its sign-in, so a
+/// stolen session ends even while it is in use.
+const MAX_SESSION_DAYS = 180;
 /// 32 bytes in base64url, as `signIn` makes them.
 const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 /// GitHub tokens are at most 255 characters; this leaves room for a change.
@@ -95,12 +98,12 @@ export async function session(request: Request, env: Env, { renew = true } = {})
   const hash = hex(await sha256(token));
   // A lookup by the hash itself, so no secret is compared here.
   const row = await env.DB.prepare(
-    `SELECT s.github_id, s.expires_at, s.last_used_at, u.login
+    `SELECT s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login
      FROM sessions s JOIN users u ON u.github_id = s.github_id
      WHERE s.token_hash = ?`,
   )
     .bind(hash)
-    .first<{ github_id: number; expires_at: number; last_used_at: number; login: string }>();
+    .first<{ github_id: number; created_at: number; expires_at: number; last_used_at: number; login: string }>();
   if (!row) return null;
   const t = now();
   if (row.expires_at <= t) {
@@ -114,7 +117,7 @@ export async function session(request: Request, env: Env, { renew = true } = {})
   if (renew && t - row.last_used_at >= DAY) {
     await env.DB.batch([
       env.DB.prepare("UPDATE sessions SET expires_at = ?, last_used_at = ? WHERE token_hash = ? AND last_used_at = ?").bind(
-        t + SESSION_DAYS * DAY,
+        Math.min(t + SESSION_DAYS * DAY, row.created_at + MAX_SESSION_DAYS * DAY),
         t,
         hash,
         row.last_used_at,

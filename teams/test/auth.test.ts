@@ -236,6 +236,25 @@ describe("sessions", () => {
     expect(after!.last_used_at).toBeGreaterThanOrEqual(t);
   });
 
+  it("is never extended past 180 days after sign-in, and then ends", async () => {
+    const got = await signIn(1001, "octocat");
+    const t = nowSeconds();
+    // Signed in 150 days ago, last used two days ago: renewal stops at day 180.
+    await env.DB.prepare("UPDATE sessions SET created_at = ?, expires_at = ?, last_used_at = ?")
+      .bind(t - 150 * DAY, t + DAY, t - 2 * DAY)
+      .run();
+    expect((await call("GET", "/me", as(got.session))).status).toBe(200);
+    const row = await env.DB.prepare("SELECT expires_at, last_used_at FROM sessions").first<{ expires_at: number; last_used_at: number }>();
+    expect(row!.expires_at).toBe(t - 150 * DAY + 180 * DAY);
+    expect(row!.last_used_at).toBeGreaterThanOrEqual(t);
+
+    // Day 180 has come: no renewal brings it back.
+    await env.DB.prepare("UPDATE sessions SET created_at = ?, expires_at = ?, last_used_at = ?")
+      .bind(t - 180 * DAY, t - 1, t - 2 * DAY)
+      .run();
+    expect((await call("GET", "/me", as(got.session))).status).toBe(401);
+  });
+
   it("drops the user's expired sessions on the next sign-in", async () => {
     await signIn(1001, "octocat");
     await env.DB.prepare("UPDATE sessions SET expires_at = ?").bind(nowSeconds() - 1).run();

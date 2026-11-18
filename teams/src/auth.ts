@@ -39,7 +39,7 @@ export async function signIn(request: Request, env: Env): Promise<Response> {
   if (!success) return error(429, "too many sign-ins, try again in a minute");
 
   const token = await accessToken(request);
-  if (token === "too big") return error(413, "the body is too big");
+  if (token === TOO_BIG) return error(413, "the body is too big");
   if (!token) return error(400, 'expected {"access_token": "..."}');
 
   if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return error(503, "sign-in is not set up");
@@ -125,11 +125,15 @@ export async function session(request: Request, env: Env, { renew = true } = {})
   return { hash, githubId: row.github_id, login: row.login };
 }
 
-async function accessToken(request: Request): Promise<string | "too big" | null> {
-  const text = await bodyText(request, MAX_SIGN_IN_BODY);
-  if (text === null) return "too big";
+/// A body over the limit. A symbol, so no token string can be mistaken for it.
+const TOO_BIG = Symbol("too big");
+
+async function accessToken(request: Request): Promise<string | typeof TOO_BIG | null> {
   let body: unknown;
   try {
+    // A body stream that breaks off is a bad request too, not a server error.
+    const text = await bodyText(request, MAX_SIGN_IN_BODY);
+    if (text === null) return TOO_BIG;
     body = JSON.parse(text);
   } catch {
     return null;

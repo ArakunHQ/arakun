@@ -136,6 +136,27 @@ describe("sign-in with GitHub", () => {
     expect(github.calls).toHaveLength(0);
   });
 
+  it("takes a token spelled like the size limit as a token, not as a big body", async () => {
+    const res = await signInRequest("too big");
+    expect(res.status).not.toBe(413);
+    expect(github.calls).toHaveLength(1);
+  });
+
+  it("answers 400 when the body stream breaks off", async () => {
+    const res = await SELF.fetch("https://teams.test/auth/github", {
+      method: "POST",
+      headers: { "CF-Connecting-IP": freshIp() },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"access_token":'));
+          controller.error(new Error("connection lost"));
+        },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(github.calls).toHaveLength(0);
+  });
+
   it("answers 429 after ten sign-ins a minute from one IP", async () => {
     github.users.set("gho_ok", { id: 1001, login: "octocat" });
     const ip = "203.0.113.7";

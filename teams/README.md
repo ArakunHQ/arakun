@@ -127,9 +127,11 @@ gh api users/<login> --jq .id
 A flag can be granted before the user signs in for the first time. The user row then
 has an empty login until they do.
 
-With the admin endpoint:
+With the admin endpoint, in a shell where `ADMIN_SECRET` holds the value you saved
+in step 3 (paste it; the variable is not set anywhere else):
 
 ```sh
+read -rs ADMIN_SECRET
 for id in <id> <id> <id>; do
   curl -fsS -X PUT -H "Authorization: Bearer $ADMIN_SECRET" \
     "https://<teams host>/admin/users/$id/flags/teams"

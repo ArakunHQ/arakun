@@ -552,9 +552,19 @@ impl Shell {
                 None => {
                     let agent = self.env().agent;
                     if !self.servers_start(&path, agent, &text) {
-                        // Not sent: back into the composer.
+                        // Not sent: back into the composer, with why.
                         self.env_mut().draft.set(&text);
                         self.composer_changed(cx);
+                        let why = self
+                            .servers_refusal()
+                            .unwrap_or_else(|| "The server cannot be reached.".into());
+                        self.notify(
+                            crate::island::AlertKind::Warning,
+                            "The prompt did not go",
+                            &why,
+                            None,
+                            cx,
+                        );
                     }
                 }
             }

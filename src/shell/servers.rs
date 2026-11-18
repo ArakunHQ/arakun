@@ -102,15 +102,21 @@ pub(super) struct ServersLink {
 }
 
 /// The folders a server's sessions ran in that it no longer offers. Their
-/// sessions stay in its list, so they stay openable here. A session from an
-/// older server that does not say its folder has nowhere to go.
+/// sessions stay in its list, so they stay openable here. An older server
+/// names a session's folder only (`env`): those sessions share one place per
+/// name, under a path no folder has ([`GONE`]).
 fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
     let mut gone: Vec<PlaceRow> = Vec::new();
     for s in sessions {
-        if s.place.is_empty()
-            || places.iter().any(|p| s.in_place(p))
-            || gone.iter().any(|g| g.path == s.place)
-        {
+        if (s.place.is_empty() && s.env.is_empty()) || places.iter().any(|p| s.in_place(p)) {
+            continue;
+        }
+        let path = if s.place.is_empty() {
+            format!("{GONE}{}", s.env)
+        } else {
+            s.place.clone()
+        };
+        if gone.iter().any(|g| g.path == path) {
             continue;
         }
         let name = if s.env.is_empty() {
@@ -121,7 +127,7 @@ fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
             s.env.clone()
         };
         gone.push(PlaceRow {
-            path: s.place.clone(),
+            path,
             project: name,
             branch: String::new(),
             agent: s.agent.clone(),
@@ -131,6 +137,10 @@ fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
     }
     gone
 }
+
+/// What the place of an older server's session starts with, whose folder is
+/// known by name only. Not an absolute path, so it never names a folder there.
+const GONE: &str = "gone:";
 
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
 fn in_the_clear(s: &Saved) -> bool {
@@ -793,6 +803,10 @@ impl Shell {
             return false;
         };
         let Some(conn) = link.conns.get(&remote.server) else {
+            link.error = Some(format!(
+                "{} is not paired with this app any more.",
+                remote.machine
+            ));
             return false;
         };
         if conn.reach != Reach::Connected {
@@ -811,6 +825,94 @@ impl Shell {
         }));
         link.starting = Some(remote.server);
         true
+    }
+
+    /// A prompt that never left for `server`: it goes back in its
+    /// environment's composer, unless something new was typed there since.
+    fn servers_undelivered(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) {
+        let env_path = match msg["type"].as_str() {
+            Some("start") => {
+                if let Some(link) = &mut self.servers
+                    && link.starting.as_deref() == Some(server)
+                {
+                    link.starting = None;
+                }
+                Remote::env_path(server, &text(msg, "env"))
+            }
+            Some("send") => {
+                let session = text(msg, "session");
+                let Some(env) = self.server_session_env(server, &session) else {
+                    return;
+                };
+                env
+            }
+            // An answer that did not go can be given again.
+            Some("answer" | "skip_question") => {
+                let session = text(msg, "session");
+                if let Some(env) = self.server_session_env(server, &session)
+                    && let Some(thread) = thread_of(&self.projects, &env, &session)
+                {
+                    thread.update(cx, |t, cx| {
+                        t.remote_undelivered();
+                        t.post_notice(
+                            String::from("The connection dropped before this reached the server."),
+                            true,
+                            cx,
+                        );
+                    });
+                }
+                return;
+            }
+            _ => return,
+        };
+        let prompt = text(msg, "text");
+        let active = self.has_projects() && self.env().path == env_path;
+        let Some(env) = self.find_env_mut(&env_path) else {
+            return;
+        };
+        let machine = env
+            .remote
+            .as_ref()
+            .map(|r| r.machine.to_string())
+            .unwrap_or_default();
+        let back = env.draft.trim().is_empty();
+        if back {
+            env.draft.set(prompt);
+        }
+        if back && active {
+            self.composer_changed(cx);
+        }
+        let why = if back {
+            "The connection dropped first. It is back in the composer."
+        } else {
+            "The connection dropped first, and the composer already had text, so it was not put back."
+        };
+        self.notify(
+            crate::island::AlertKind::Warning,
+            &format!("The prompt did not reach {machine}"),
+            why,
+            None,
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// The environment `server`'s session `session` is in.
+    fn server_session_env(&self, server: &str, session: &str) -> Option<PathBuf> {
+        self.projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .find(|e| {
+                e.remote.as_ref().is_some_and(|r| r.server == server)
+                    && e.session_index(session).is_some()
+            })
+            .map(|e| e.path.clone())
+    }
+
+    /// Why the last thing asked of the servers did not go, for a word beside
+    /// the composer.
+    pub(super) fn servers_refusal(&self) -> Option<String> {
+        self.servers.as_ref()?.error.clone()
     }
 
     /// A session picked in the Servers tab opens in its environment's tab.
@@ -863,6 +965,10 @@ impl Shell {
             return;
         };
         match event {
+            Event::Undelivered(msg) => {
+                self.servers_undelivered(id, &msg, cx);
+                return;
+            }
             Event::Paired(saved) => {
                 // A pairing given up (cancelled, or another link pasted over
                 // it) may still finish on its way out. Its connection is gone,
@@ -1079,9 +1185,25 @@ impl Shell {
             }
             "error" => {
                 let message = text(msg, "message");
-                link.starting = None;
-                // Said in the session on screen when it is that server's, else in its tab.
-                match following.and_then(|f| thread_of(&self.projects, &f.env_path, &f.session)) {
+                // An error about a session names it; one that does not may
+                // be the answer to a start.
+                let about = msg["id"].as_str();
+                if about.is_none() {
+                    link.starting = None;
+                }
+                // Said in that session's tab when it is open, else in the Servers tab.
+                let thread = about.and_then(|session| {
+                    let env = self
+                        .projects
+                        .iter()
+                        .flat_map(|p| &p.environments)
+                        .find(|e| {
+                            e.remote.as_ref().is_some_and(|r| r.server == id)
+                                && e.session_index(session).is_some()
+                        })?;
+                    thread_of(&self.projects, &env.path, session)
+                });
+                match thread {
                     Some(thread) => {
                         thread.update(cx, |t, cx| t.post_notice(message, true, cx));
                     }
@@ -1353,5 +1475,20 @@ mod tests {
             ("/srv/old", "old")
         );
         assert_eq!(gone[0].agent, "codex");
+
+        // An older server says the folder's name only.
+        let named = |id: &str, env: &str| SessionRow {
+            env: env.into(),
+            ..session(id, "")
+        };
+        let sessions = [named("s5", "old"), named("s6", "old"), named("s7", "app")];
+        let offered = [place("/srv/app", "/srv/app", "")];
+        let gone = gone_places(&sessions, &offered);
+        assert_eq!(gone.len(), 1, "s7 is in a folder still offered");
+        assert_eq!(
+            (gone[0].path.as_str(), gone[0].project.as_str()),
+            ("gone:old", "old")
+        );
+        assert!(sessions[..2].iter().all(|s| s.in_place(&gone[0])));
     }
 }

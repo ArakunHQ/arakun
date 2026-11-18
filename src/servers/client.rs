@@ -71,6 +71,9 @@ pub enum Event {
     Paired(Saved),
     /// A message from the server, whole (`wire`'s `part`s put back together).
     Message(Value),
+    /// A message [`Client::send`] was given that never went out: the
+    /// connection dropped first. What the user typed in it can go back.
+    Undelivered(Value),
 }
 
 /// A server's events come with the id the app knows it by.
@@ -129,8 +132,8 @@ impl Client {
     }
 
     /// A message to the server (the phone's `ClientMsg`, as JSON). Dropped
-    /// while there is no connection: the server says where things stand again
-    /// when there is one.
+    /// while there is no connection, and told back as [`Event::Undelivered`]:
+    /// the server says where things stand again when there is one.
     pub fn send(&self, msg: &Value) {
         let _ = self.out.send(Out::Say(msg.to_string()));
     }
@@ -243,7 +246,18 @@ impl Link {
 
     /// What was asked while there was no connection has nowhere to go.
     fn forget_queued(&self) {
-        while self.queued.try_recv().is_ok() {}
+        while let Ok(out) = self.queued.try_recv() {
+            if let Out::Say(text) = out {
+                self.undelivered(&text);
+            }
+        }
+    }
+
+    /// `text` did not go out: the shell hears what it was.
+    fn undelivered(&self, text: &str) {
+        if let Ok(msg) = serde_json::from_str(text) {
+            self.tell(Event::Undelivered(msg));
+        }
     }
 
     /// Pairing gave the app its place on the server: from now on it comes as itself.
@@ -316,7 +330,8 @@ impl Link {
             while let Ok(out) = self.queued.try_recv() {
                 match out {
                     Out::Say(text) => {
-                        if let Err(e) = ws.send(Message::text(text)) {
+                        if let Err(e) = ws.send(Message::text(text.as_str())) {
+                            self.undelivered(&text);
                             return Ended::Retry(format!("Could not write to the server: {e}"));
                         }
                     }
@@ -518,8 +533,13 @@ impl Link {
                 if let (true, Some(seal)) = (ready, session.as_mut()) {
                     let sealed = seal.seal(text.as_bytes());
                     if let Err(ended) = send_frame(ws, DATA, &sealed) {
+                        if !last {
+                            self.undelivered(&text);
+                        }
                         return ended;
                     }
+                } else if !last {
+                    self.undelivered(&text);
                 }
                 if last {
                     return Ended::Stopped;
@@ -885,6 +905,7 @@ mod tests {
             Event::Status(s) => s,
             Event::Paired(_) => panic!("paired, where a status was expected"),
             Event::Message(m) => panic!("{m}, where a status was expected"),
+            Event::Undelivered(m) => panic!("{m} undelivered, where a status was expected"),
         }
     }
 
@@ -996,6 +1017,38 @@ mod tests {
         assert!(
             matches!(status(&mut rx), Status::Refused(why) if why.contains("no longer paired"))
         );
+    }
+
+    #[test]
+    fn what_could_not_go_out_is_told_back() {
+        // A port nobody listens on: every dial fails.
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let saved = Saved {
+            id: "srv".into(),
+            name: "box".into(),
+            origin: format!("http://127.0.0.1:{port}"),
+            way: Way::Direct,
+            device: "d".into(),
+            token: "t".into(),
+        };
+        let (tx, mut rx) = mpsc::unbounded();
+        let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        let prompt = json!({ "type": "send", "session": "s1", "text": "hi" });
+        client.send(&prompt);
+        loop {
+            match next(&mut rx) {
+                Event::Undelivered(msg) => {
+                    assert_eq!(msg, prompt);
+                    break;
+                }
+                Event::Status(_) => {}
+                _ => panic!("only statuses come before it"),
+            }
+        }
     }
 
     #[test]

@@ -156,13 +156,18 @@ fn inbox_file() -> PathBuf {
 
 /// What is kept of a server's inbox: its folders and sessions. No session is
 /// shown at work or waiting from it: that was true when it was heard, and the
-/// server says what is true now once it answers. The lines a session changed move during each turn and
+/// server says what is true now once it answers. An error stays: it is where
+/// the session ended. The lines a session changed move during each turn and
 /// are not shown from here, so they are not kept.
 pub fn kept_inbox(inbox: &Value) -> Value {
     let mut sessions = inbox["sessions"].as_array().cloned().unwrap_or_default();
     for s in &mut sessions {
         if let Some(s) = s.as_object_mut() {
-            s.insert("status".into(), json!("idle"));
+            if s.get("status")
+                .is_some_and(|st| st == "working" || st == "needs_input")
+            {
+                s.insert("status".into(), json!("idle"));
+            }
             s.remove("asks");
             s.remove("added");
             s.remove("removed");
@@ -292,6 +297,7 @@ mod tests {
             "sessions": [
                 { "id": "a", "title": "Fix it", "status": "working", "updated": 2, "added": 3, "removed": 1 },
                 { "id": "b", "title": "Ask", "status": "needs_input", "updated": 1, "asks": { "kind": "permission" } },
+                { "id": "c", "title": "Broke", "status": "error", "updated": 0 },
             ],
         });
         let kept = kept_inbox(&inbox);
@@ -302,6 +308,8 @@ mod tests {
         assert_eq!(kept["sessions"][1]["status"], "idle");
         assert!(kept["sessions"][1].get("asks").is_none());
         assert!(kept["sessions"][0].get("added").is_none());
+        // How it ended does not go stale.
+        assert_eq!(kept["sessions"][2]["status"], "error");
         assert!(kept.get("host").is_none());
         // Only a change in what it holds is written again. A status change
         // moves the session's time too.

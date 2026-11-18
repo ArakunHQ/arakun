@@ -154,6 +154,13 @@ fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
 /// known by name only. Not an absolute path, so it never names a folder there.
 const GONE: &str = "gone:";
 
+/// Whether `message` is a server refusing one of `kinds` because it is older
+/// than them: it cannot read the message (`bad message: unknown variant ...`).
+fn older_server_refused(message: &str, kinds: &[&str]) -> bool {
+    message.starts_with("bad message: unknown variant")
+        && kinds.iter().any(|k| message.contains(&format!("`{k}`")))
+}
+
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
 fn in_the_clear(s: &Saved) -> bool {
     s.way == servers::Way::Direct && s.origin.starts_with("http://")
@@ -1125,6 +1132,17 @@ impl Shell {
                     if link.adding.remove(id) {
                         link.error = Some(text(&msg, "message"));
                     }
+                } else if msg["type"] == "error"
+                    && link.adding.contains(id)
+                    && older_server_refused(&text(&msg, "message"), &["add_place", "clone"])
+                {
+                    // A server from before folders could be added: it does not
+                    // know the request, and says so in a plain error.
+                    link.adding.remove(id);
+                    link.error = Some(
+                        "This server cannot add folders yet. Update arakun-server on it and try again."
+                            .into(),
+                    );
                 } else if msg["type"] == "started" {
                     if link.starting.as_deref() == Some(id) {
                         link.starting = None;
@@ -1617,6 +1635,14 @@ mod tests {
             ticket: "t".into(),
         };
         assert!(!in_the_clear(&saved("http://10.0.0.2:7474", relay)));
+    }
+
+    #[test]
+    fn an_older_server_is_told_from_its_plain_errors() {
+        let old = "bad message: unknown variant `add_place`, expected one of `open`, `send` at line 1 column 19";
+        assert!(older_server_refused(old, &["add_place", "clone"]));
+        assert!(!older_server_refused(old, &["clone"]));
+        assert!(!older_server_refused("no such session", &["add_place"]));
     }
 
     #[test]

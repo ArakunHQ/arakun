@@ -1601,12 +1601,20 @@ impl Daemon {
             }
             ClientMsg::AddPlace { path } => {
                 let home = crate::platform::home();
+                let cloning: Vec<PathBuf> = self.cloning.iter().cloned().collect();
                 // A folder on a mount that does not answer would hold up
                 // every device: it is looked at to the side.
                 cx.spawn(async move |this, cx| {
                     let found = cx
                         .background_executor()
-                        .spawn(async move { device_path(&path, &home) })
+                        .spawn(async move {
+                            let path = device_path(&path, &home)?;
+                            // A failed clone takes its folder away again.
+                            if being_cloned(&path, &cloning) {
+                                return Err(format!("{} is being cloned.", path.display()));
+                            }
+                            Ok(path)
+                        })
                         .await;
                     let _ = this.update(cx, |this, cx| this.place_added(client, found, cx));
                 })
@@ -1700,6 +1708,10 @@ impl Daemon {
     fn offer_place(&mut self, path: &Path) -> Result<(), String> {
         if !path.is_dir() {
             return Err(format!("not a directory: {}", path.display()));
+        }
+        // A clone that started while the folder was looked at.
+        if self.cloning.contains(path) {
+            return Err(format!("{} is being cloned.", path.display()));
         }
         if self.store.add_place(path, AgentKind::Claude)
             && let Err(e) = self.store.save()
@@ -2392,6 +2404,14 @@ fn place_failed(message: &str) -> String {
 
 /// A folder a device named: its whole path, or one from `~/`, which stands
 /// for `home`. It must exist; links are followed, as the CLI does.
+/// Whether `path` (canonical) is where a clone under way goes, by whatever
+/// path the clone was given.
+fn being_cloned(path: &Path, cloning: &[PathBuf]) -> bool {
+    cloning
+        .iter()
+        .any(|c| c == path || std::fs::canonicalize(c).is_ok_and(|c| c == path))
+}
+
 fn device_path(typed: &str, home: &Path) -> Result<PathBuf, String> {
     let typed = typed.trim();
     let path = match typed.strip_prefix('~') {
@@ -2534,6 +2554,22 @@ fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
 
 #[cfg(test)]
 mod tests {
+    // A link is how a second path to one folder comes about.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_being_cloned_is_known_by_any_path_to_it() {
+        let dir = scratch("cloning");
+        let real = dir.join("real");
+        std::fs::create_dir_all(real.join("app")).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let app = std::fs::canonicalize(real.join("app")).unwrap();
+        assert!(super::being_cloned(&app, &[link.join("app")]));
+        assert!(super::being_cloned(&app, std::slice::from_ref(&app)));
+        assert!(!super::being_cloned(&app, &[link.join("other")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// A folder of its own under the system's temporary one.

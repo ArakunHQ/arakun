@@ -153,6 +153,11 @@ fn main() {
     telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);
     update::clean_up();
     let started = std::time::Instant::now();
+    // Without a display server gpui runs headless, and nothing would ever show.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = window_error::check_display() {
+        window_error::exit(&e);
+    }
     let platform =
         window_error::catch(ui_zoom::platform).unwrap_or_else(|e| window_error::exit(&e));
     gpui::Application::with_platform(platform)

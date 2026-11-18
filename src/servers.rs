@@ -173,10 +173,16 @@ pub fn kept_inbox(inbox: &Value) -> Value {
             s.remove("removed");
         }
     }
-    json!({
+    let mut kept = json!({
         "places": inbox["places"].as_array().cloned().unwrap_or_default(),
         "sessions": sessions,
-    })
+    });
+    // Its sessions can be followed before it answers, several at once if it
+    // said it can. A list kept without it reads as a server from before.
+    if inbox["watch_several"] == true {
+        kept["watch_several"] = json!(true);
+    }
+    kept
 }
 
 /// Whether two kept inboxes hold the same folders and sessions. A session's
@@ -311,6 +317,10 @@ mod tests {
         // How it ended does not go stale.
         assert_eq!(kept["sessions"][2]["status"], "error");
         assert!(kept.get("host").is_none());
+        assert!(kept.get("watch_several").is_none());
+        let mut several = inbox.clone();
+        several["watch_several"] = json!(true);
+        assert_eq!(kept_inbox(&several)["watch_several"], true);
         // Only a change in what it holds is written again. A status change
         // moves the session's time too.
         let mut later = inbox.clone();

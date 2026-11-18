@@ -113,12 +113,14 @@ pub(super) fn git_identity() -> &'static (String, String) {
     static ID: OnceLock<(String, String)> = OnceLock::new();
     ID.get_or_init(|| {
         let get = |key: &str| {
-            crate::platform::command("git")
-                .args(["config", "--global", key])
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default()
+            crate::platform::output_within(
+                crate::platform::command("git").args(["config", "--global", key]),
+                None,
+                crate::platform::GIT_LOCAL,
+            )
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
         };
         (get("user.name"), get("user.email"))
     })

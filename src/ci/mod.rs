@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::git;
 use crate::model::unix_now;
+use crate::platform::GIT_REMOTE;
 
 const POLL_ACTIVE: Duration = Duration::from_secs(60);
 const POLL_RUNNING: Duration = Duration::from_secs(15);
@@ -630,14 +631,20 @@ pub fn snippet(source: &str, line: u32, end_line: u32) -> Vec<(u32, String)> {
 // ---------------------------------------------------------------------------
 // gh
 
-fn gh_json<T: serde::de::DeserializeOwned>(dir: &Path, args: &[&str]) -> Result<T> {
-    let out = git::gh(dir).args(args).output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow!("GitHub CLI (gh) is not installed")
-        } else {
-            anyhow!("could not run gh: {e}")
+/// Runs `gh` with `args` in `dir`, stopped after [`GIT_REMOTE`]: a refresh holds the
+/// project's `busy` flag until it ends.
+fn gh_out(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
+    crate::platform::output_within(git::gh(dir).args(args), None, GIT_REMOTE).map_err(|e| {
+        match e.kind() {
+            std::io::ErrorKind::NotFound => anyhow!("GitHub CLI (gh) is not installed"),
+            std::io::ErrorKind::TimedOut => anyhow!("{e}"),
+            _ => anyhow!("could not run gh: {e}"),
         }
-    })?;
+    })
+}
+
+fn gh_json<T: serde::de::DeserializeOwned>(dir: &Path, args: &[&str]) -> Result<T> {
+    let out = gh_out(dir, args)?;
     if !out.status.success() {
         let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
         bail!(
@@ -736,14 +743,14 @@ struct RawAnnotation {
 }
 
 pub fn job_log(dir: &Path, job: u64) -> Result<Vec<LogLine>> {
-    let out = git::gh(dir)
-        .args([
+    let out = gh_out(
+        dir,
+        &[
             "api",
             "--allow-escape-sequences",
             &format!("repos/{{owner}}/{{repo}}/actions/jobs/{job}/logs"),
-        ])
-        .output()
-        .context("could not run gh")?;
+        ],
+    )?;
     if !out.status.success() {
         let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
         bail!(
@@ -841,10 +848,7 @@ pub fn run_detail(
 }
 
 fn gh_action(dir: &Path, args: &[&str]) -> Result<()> {
-    let out = git::gh(dir)
-        .args(args)
-        .output()
-        .context("could not run gh")?;
+    let out = gh_out(dir, args)?;
     if !out.status.success() {
         let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
         bail!(

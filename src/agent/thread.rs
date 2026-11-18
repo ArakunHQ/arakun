@@ -3766,12 +3766,12 @@ fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
         return;
     }
     let git = |dir: &Path, args: &[&str]| -> Option<String> {
-        let out = crate::platform::command("git")
-            .args(args)
-            .current_dir(dir)
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()?;
+        let out = crate::platform::output_within(
+            crate::platform::command("git").args(args).current_dir(dir),
+            None,
+            crate::platform::GIT_LOCAL,
+        )
+        .ok()?;
         out.status
             .success()
             .then(|| String::from_utf8(out.stdout).ok())

@@ -107,14 +107,16 @@ pub fn root() -> PathBuf {
 /// The repository `dir` belongs to: a worktree's main checkout, else the
 /// nearest directory with `.git`, else `dir` itself.
 pub fn project_of(dir: &Path) -> PathBuf {
-    let common = crate::platform::command("git")
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .current_dir(dir)
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+    let common = crate::platform::output_within(
+        crate::platform::command("git")
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .current_dir(dir),
+        None,
+        crate::platform::GIT_LOCAL,
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
     if let Some(common) = common {
         if common.file_name().is_some_and(|n| n == ".git")
             && let Some(parent) = common.parent()
@@ -712,14 +714,14 @@ pub fn session_draft(
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    crate::platform::command("git")
-        .args(args)
-        .current_dir(dir)
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| o.stdout)
+    crate::platform::output_within(
+        crate::platform::command("git").args(args).current_dir(dir),
+        None,
+        crate::platform::GIT_LOCAL,
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| o.stdout)
 }
 
 /// Commits on the checkout at `top` since `since`, oldest first, as

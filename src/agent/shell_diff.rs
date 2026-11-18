@@ -4,7 +4,6 @@
 //! ends, and the text files that differ become the turn's shell changes.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -35,14 +34,11 @@ pub struct Snapshot {
 
 fn git(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<Vec<u8>> {
     let mut cmd = crate::platform::command("git");
-    cmd.args(args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.args(args).current_dir(dir);
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
     }
-    cmd.output()
+    crate::platform::output_within(&mut cmd, None, crate::platform::GIT_LOCAL)
         .ok()
         .filter(|o| o.status.success())
         .map(|o| o.stdout)

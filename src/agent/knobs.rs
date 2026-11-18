@@ -392,13 +392,18 @@ pub const GREEN_REMINDER_REPEAT: &str = "<system-reminder>Tests already passed a
 /// tool's name says nothing; the tree does. None outside a git repository.
 pub fn tree_mark(cwd: &std::path::Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["status", "--porcelain=v1", "-z", "-uall", "--no-renames"])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let out = crate::platform::output_within(
+        crate::platform::command("git").arg("-C").arg(cwd).args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "-uall",
+            "--no-renames",
+        ]),
+        None,
+        crate::platform::GIT_LOCAL,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -596,13 +601,16 @@ impl ReadBudget {
         let url = std::env::var("ARAKUN_CLEF_URL")
             .ok()
             .filter(|u| !u.trim().is_empty())?;
-        let diff = crate::platform::command("git")
-            .args(["diff", "-U1"])
-            .current_dir(cwd)
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
+        let diff = crate::platform::output_within(
+            crate::platform::command("git")
+                .args(["diff", "-U1"])
+                .current_dir(cwd),
+            None,
+            crate::platform::GIT_LOCAL,
+        )
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
         if diff.trim().is_empty() {
             return None;
         }

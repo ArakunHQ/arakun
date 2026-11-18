@@ -1,6 +1,7 @@
 //! The git workflow of the Changes panel: commit, push, pull, pull requests, merging
 //! a worktree into the main checkout, and per-file stage / unstage / discard.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,41 @@ use crate::ui::{self, ButtonKind, icon};
 
 /// `gh pr view` goes over the network; look again at most this often.
 const PR_RECHECK: Duration = Duration::from_secs(60);
+
+/// Background git reads of one environment that the window repeats on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum GitRead {
+    Status,
+    PullRequest,
+}
+
+/// The [`GitRead`]s running, so none of them overlaps itself. Polls ask for them every
+/// few seconds; while one is slow, starting more would only take more of the few
+/// background threads, which everything else (saves, diffs, file lists) waits on.
+#[derive(Debug, Default)]
+pub(super) struct GitReads {
+    running: HashSet<(PathBuf, GitRead)>,
+    /// Environments whose status was asked for while one was running. That one may
+    /// have read the files before the change that asked, so status runs once more.
+    status_again: HashSet<PathBuf>,
+}
+
+impl GitReads {
+    /// Marks `read` of `path` as running; false when it already is.
+    pub(super) fn start(&mut self, path: &Path, read: GitRead) -> bool {
+        let started = self.running.insert((path.to_path_buf(), read));
+        if !started && read == GitRead::Status {
+            self.status_again.insert(path.to_path_buf());
+        }
+        started
+    }
+
+    /// Marks `read` of `path` as ended; true when status must run again.
+    pub(super) fn end(&mut self, path: &Path, read: GitRead) -> bool {
+        self.running.remove(&(path.to_path_buf(), read));
+        read == GitRead::Status && self.status_again.remove(path)
+    }
+}
 
 impl Shell {
     /// Looks up the pull request of the visible environment's branch while the
@@ -45,7 +81,10 @@ impl Shell {
             Some((b, _)) if b.as_ref() != branch => env.pr = None,
             _ => {}
         }
-        env.pr_checked = Some((branch.clone().into(), Instant::now()));
+        if !self.git_reads.start(path, GitRead::PullRequest) {
+            return;
+        }
+        self.env_mut().pr_checked = Some((branch.clone().into(), Instant::now()));
         let path = path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
@@ -53,6 +92,7 @@ impl Shell {
                 .background_spawn(crate::guard::task(async move { git::pr_view(&p) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.git_reads.end(&path, GitRead::PullRequest);
                 if let Some(env) = this.find_env_mut(&path)
                     && env.sync.branch.as_deref() == Some(branch.as_str())
                     && env.pr != pr
@@ -803,4 +843,35 @@ fn sync_chip(
                 .into_any_element()
         })
         .when_some(label, |d, l| d.child(l))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_git_read_does_not_start_while_it_runs() {
+        let mut reads = GitReads::default();
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        assert!(reads.start(a, GitRead::PullRequest));
+        assert!(!reads.start(a, GitRead::PullRequest));
+        assert!(reads.start(b, GitRead::PullRequest));
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.end(a, GitRead::PullRequest));
+        assert!(reads.start(a, GitRead::PullRequest));
+    }
+
+    #[test]
+    fn status_asked_for_while_it_runs_runs_once_more() {
+        let mut reads = GitReads::default();
+        let a = Path::new("/a");
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.end(a, GitRead::Status));
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(reads.end(a, GitRead::Status));
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.end(a, GitRead::Status));
+    }
 }

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
@@ -1209,38 +1209,12 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
     cmd.args(args)
         .current_dir(cwd)
         .env("PATH", launch::child_path_env())
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
-    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-    let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
-    let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        s
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
-    let start = Instant::now();
-    let status = loop {
-        if let Some(st) = child.try_wait()? {
-            break st;
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(anyhow!("timed out after {}s", timeout.as_secs()));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    let out = reader.join().unwrap_or_default();
-    let err = err_reader.join().unwrap_or_default();
-    if !status.success() {
+        .env("NO_COLOR", "1");
+    // The CLI runs node, which may start more; all of it ends on a timeout.
+    let output = crate::platform::output_within(&mut cmd, None, timeout)?;
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
+    let err = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
         let msg = err
             .lines()
             .chain(out.lines())
@@ -1313,6 +1287,22 @@ fn looks_secret(w: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A helper that leaves a child running must not hold the call until the child ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_cli_that_leaves_a_child_running_returns_when_it_ends() {
+        let started = std::time::Instant::now();
+        let out = run(
+            Path::new("sh"),
+            &std::env::temp_dir(),
+            &["-c", "echo ok; sleep 30 &"],
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert_eq!(out, "ok\n");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 
     #[test]
     fn masks_tokens() {

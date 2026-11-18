@@ -199,15 +199,18 @@ pub const GH_URL: &str = "https://cli.github.com";
 /// Asks `gh` whether it is signed in. Starts a process; call it off the UI
 /// thread.
 pub fn find_github() -> GitHub {
-    let status = crate::platform::command("gh")
-        .args(["auth", "status"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    // It checks the token with GitHub, so a stalled network would hold it.
+    let status = crate::platform::output_within(
+        crate::platform::command("gh").args(["auth", "status"]),
+        None,
+        crate::platform::GIT_REMOTE,
+    )
+    .map(|o| o.status);
     match status {
         Ok(s) if s.success() => GitHub::Connected,
+        // Offline it fails; one that hangs is taken the same way.
         Ok(_) => GitHub::SignedOut,
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => GitHub::SignedOut,
         Err(_) => GitHub::NoGh,
     }
 }

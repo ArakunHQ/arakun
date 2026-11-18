@@ -232,7 +232,8 @@ struct ContextMenu {
 #[derive(Clone, Debug, PartialEq)]
 enum MenuKey {
     /// A setting's choice for an agent: (agent, setting, choice id, can be
-    /// picked). Another agent than the composer's switches to it.
+    /// picked). Another agent's model switches to it; its other settings are
+    /// only remembered while a session runs, and switch on the New session tab.
     Choice(Agent, crate::agent::Setting, String, bool),
     /// The reasoning row of the model menu; ← and → step through its levels.
     Effort(Agent),

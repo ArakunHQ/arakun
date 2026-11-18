@@ -1191,6 +1191,16 @@ impl Shell {
             return self.setting_value_label(s, cx);
         }
         let (current, options) = self.agent_choices(agent, s, cx)?;
+        // Droid's short model name, as its chip shows it.
+        if agent == model::Agent::Droid
+            && let Some(settings) = self.draft_settings()
+        {
+            return Some(if settings.get(s).is_empty() {
+                "Default".into()
+            } else {
+                crate::agent::setting_label(&settings, &catalog::current().models, s)
+            });
+        }
         let label = crate::agent::acp_label(s, &current, &options);
         Some(if label.is_empty() {
             "Default".into()
@@ -1231,7 +1241,9 @@ impl Shell {
     }
 
     /// Picks a setting of `agent`. For another agent than the composer's it is
-    /// remembered first, so the switch to that agent starts with it.
+    /// remembered, so the switch to that agent starts with it. Only a model
+    /// pick switches a running session: handing it over stops its agent, which
+    /// a click meant for reasoning or fast mode should not do.
     pub(super) fn pick_setting(
         &mut self,
         agent: model::Agent,
@@ -1249,7 +1261,10 @@ impl Shell {
         }
         let path = self.env().path.clone();
         self.remember_setting(&path, agent, s, value, cx);
-        self.switch_agent(agent, window, cx);
+        if s == Setting::Model || !self.composer_in_session() {
+            self.switch_agent(agent, window, cx);
+        }
+        cx.notify();
     }
 
     /// Back to `agent`'s defaults, for the composer's session (when it is

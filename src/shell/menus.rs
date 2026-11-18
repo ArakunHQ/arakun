@@ -250,6 +250,10 @@ impl Shell {
                     keys.push(MenuKey::Fast(agent, current == "on"));
                 }
                 keys.push(MenuKey::Reset(agent));
+                // Enter can move to the agent even before it has models.
+                if agent != self.composer_agent() {
+                    keys.push(MenuKey::Agent(agent));
+                }
                 keys
             }
             MenuTarget::PermissionMenu => {
@@ -279,7 +283,6 @@ impl Shell {
                         self.menu = None;
                     }
                     self.pick_setting(agent, s, &id, window, cx);
-                    self.menu_agent = None;
                 }
             }
             MenuKey::Effort(agent) => self.step_effort(agent, true, window, cx),
@@ -291,7 +294,6 @@ impl Shell {
                     window,
                     cx,
                 );
-                self.menu_agent = None;
             }
             MenuKey::Reset(agent) => {
                 self.menu = None;
@@ -338,7 +340,6 @@ impl Shell {
         };
         if let Some(id) = next.map(|id| id.to_string()) {
             self.pick_setting(agent, Setting::Effort, &id, window, cx);
-            self.menu_agent = None;
         }
     }
 
@@ -507,6 +508,11 @@ impl Shell {
             .agent_choices(shown, Setting::Fast, cx)
             .map(|(c, _)| c == "on");
         let reset_ix = fast_ix + usize::from(fast.is_some());
+        let switch_label = if in_session {
+            format!("Continue with {}", shown.label())
+        } else {
+            format!("Use {}", shown.label())
+        };
 
         let agent_column = div()
             .flex_none()
@@ -659,7 +665,16 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.menu_run(MenuKey::Reset(shown), window, cx)
                     })),
-            );
+            )
+            .when(shown != current, |d| {
+                d.child(
+                    ui::menu_item("model-switch", "arrow-right01", switch_label, false, true)
+                        .when(self.menu_focus(reset_ix + 1), |d| d.bg(theme::fill_hover()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(MenuKey::Agent(shown), window, cx)
+                        })),
+                )
+            });
 
         ui::menu_panel("model-menu", MODEL_MENU_W)
             .flex_row()

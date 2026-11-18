@@ -295,7 +295,8 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
 `seq` is the channel's order, set by the server. History, for a client that was
 away: `GET /teams/<team_id>/channels/<channel_id>/messages?after=<seq>&limit=200`
 → `[{ seq, at, message }]`, oldest first. `after` defaults to 0, `limit` to 200,
-its maximum.
+its maximum. A message stored while a socket was opening may not reach that socket,
+so a client reads the history once its socket is open.
 
 The server checks on `send`: the sender device belongs to the session's user, the
 user is a member, `epoch` is current (see Rotation), sizes (`ct` at most 64 KiB),

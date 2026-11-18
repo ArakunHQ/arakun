@@ -159,6 +159,41 @@ describe("channel sockets", () => {
     a.ws.close();
   });
 
+  it("check a socket admitted after a send began checking, so a logout before delivery is not missed", async () => {
+    const t = await team();
+    const m = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const hash = async (id: number) =>
+      (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(id).first<{ token_hash: string }>())!.token_hash;
+    const owner = await hash(t.owner.user.id);
+    const mine = await hash(m.user.id);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    // Holds the send's first read until the member was admitted, with a check
+    // of its own that passed, and has logged out.
+    await runInDurableObject<Channel, void>(stub, (instance) => {
+      const ch = instance as any;
+      const allowed = ch.allowed.bind(ch);
+      const gate = new Promise<void>((r) => (ch.release = r));
+      ch.held = false;
+      ch.allowed = async (teamId: string, sessions: string[]) => {
+        const got: Set<string> = await allowed(teamId, sessions);
+        if (!ch.held && sessions.includes(owner)) {
+          ch.held = true;
+          await gate;
+        }
+        return got;
+      };
+    });
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "not for a logged-out session"));
+    while (!(await runInDurableObject<Channel, boolean>(stub, (ch) => (ch as any).held))) await new Promise((r) => setTimeout(r, 1));
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(mine).run();
+    await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).release());
+    await stored(a);
+    expect(await b.inbox.next()).toEqual({ closed: { code: 4403, reason: "not a member of this team" } });
+    a.ws.close();
+  });
+
   it("ignore trusted headers a client sends", async () => {
     const t = await team();
     const m = await join(t);

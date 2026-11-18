@@ -10,8 +10,8 @@
 // session is still live, its user still a member and still flagged, from D1
 // rather than trusting what the Worker saw at upgrade: a socket stays open for
 // hours, and a removal, a logout, a lost flag or a rotation must apply to the
-// next message, for the sender and for every recipient. That is one D1 batch
-// per message.
+// next message, for the sender and for every recipient. That is one D1 read
+// per message, and another when sockets were admitted during it.
 
 import { DurableObject } from "cloudflare:workers";
 import { error, isObject, now, type Env } from "./util";
@@ -49,6 +49,9 @@ const MAX_FRAME = 96 * 1024;
 /// In the 4000s so they never collide with the protocol's own codes.
 const CLOSE_BAD_FRAME = 4400;
 const CLOSE_FORBIDDEN = 4403;
+/// How many more D1 reads a send makes for sockets admitted while it read.
+/// More than one only when sockets keep arriving during each read.
+const RECHECKS = 3;
 
 /// Whether a message's epoch may be stored. The current epoch always may.
 /// While a rotation is pending (no envelopes for the current epoch yet), the
@@ -174,7 +177,7 @@ export class Channel extends DurableObject<Env> {
 
     // Every socket's session, the sender's included, checked in the same read,
     // and those of sockets being admitted.
-    const checked = new Set([who.session, ...this.ctx.getWebSockets().map(sessionOf), ...this.admitting.keys()]);
+    const checked = new Set([who.session, ...this.sessions()]);
     const [team, allowed] = await Promise.all([
       this.env.DB.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(who.teamId).first<{ epoch: number; keyed_epoch: number }>(),
       this.allowed(who.teamId, [...checked]),
@@ -185,6 +188,15 @@ export class Channel extends DurableObject<Env> {
     }
     if (!epochAllowed(msg.epoch, team.epoch, team.keyed_epoch)) {
       return this.refuse(ws, msg.id, msg.epoch < team.epoch ? "stale epoch: fetch the new team key" : "unknown epoch");
+    }
+    // A socket admitted while that read ran had its own check, but D1 does not
+    // order two separate reads, so a logout between its check and ours could
+    // reach neither. Check those sessions too, until no new one came in.
+    for (let round = 0; round < RECHECKS; round++) {
+      const fresh = this.sessions().filter((s) => !checked.has(s));
+      if (fresh.length === 0) break;
+      for (const s of fresh) checked.add(s);
+      for (const s of await this.allowed(who.teamId, fresh)) allowed.add(s);
     }
 
     // From here to the send nothing awaits, so no other frame runs in between:
@@ -206,12 +218,13 @@ export class Channel extends DurableObject<Env> {
     }
     // Everyone on the channel, the sender included: that is its ack. A socket
     // whose session ended, or whose user lost the team or the flag, is closed
-    // instead. A socket whose session is not in `checked` began its admission
-    // after the read above began, so its own check is at least as recent.
+    // instead. One still unchecked after the last round gets nothing now; it
+    // finds the message in the history.
     const out = JSON.stringify({ type: "message", seq, at, message: msg });
     for (const other of this.ctx.getWebSockets()) {
       const session = sessionOf(other);
-      if (checked.has(session) && !allowed.has(session)) {
+      if (!checked.has(session)) continue;
+      if (!allowed.has(session)) {
         this.close(other, CLOSE_FORBIDDEN, "not a member of this team");
         continue;
       }
@@ -221,6 +234,11 @@ export class Channel extends DurableObject<Env> {
         // closing
       }
     }
+  }
+
+  /// The sessions of the open sockets and of those being admitted.
+  private sessions(): string[] {
+    return [...this.ctx.getWebSockets().map(sessionOf), ...this.admitting.keys()];
   }
 
   /// Which of these sessions are live, of a member of the team, with the

@@ -295,7 +295,10 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
   - `{ "type": "message", "seq": 42, "at": 1795000000, "message": <wire message> }`
     for every stored message, the sender's own included (that is its ack);
   - `{ "type": "error", "id": "<message id>", "error": "..." }` when one is refused
-    (`id` is null when the frame had none);
+    (`id` is null when the frame had none). A refused message was not stored.
+    When the server could not run its checks (D1 or the rate limiter failed),
+    `error` ends in "send it again", and the client may send the same message
+    again, with the same `id`;
   - `{ "type": "presence", "here": [66887635, ...] }` to every socket on the
     channel when one opens or closes: the GitHub IDs with a socket open on this
     channel, sorted, each once. A new socket gets one right away. A socket whose

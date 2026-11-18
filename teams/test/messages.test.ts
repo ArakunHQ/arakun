@@ -194,6 +194,23 @@ describe("channel sockets", () => {
     a.ws.close();
   });
 
+  it("answer a send with an error when its checks cannot run, and store nothing", async () => {
+    const t = await team();
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    await runInDurableObject<Channel, void>(stub, (instance) => {
+      const ch = instance as any;
+      ch.allowed = async () => {
+        throw new Error("D1_ERROR: queue full");
+      };
+    });
+    const msg = await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "not now");
+    a.send(msg);
+    expect(await refused(a)).toEqual({ type: "error", id: msg.id, error: "the server could not check the message: send it again" });
+    expect(await storedCount(t)).toBe(0);
+    a.ws.close();
+  });
+
   it("ignore trusted headers a client sends", async () => {
     const t = await team();
     const m = await join(t);

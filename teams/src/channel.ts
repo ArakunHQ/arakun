@@ -52,6 +52,8 @@ const CLOSE_FORBIDDEN = 4403;
 /// How many more D1 reads a send makes for sockets admitted while it read.
 /// More than one only when sockets keep arriving during each read.
 const RECHECKS = 3;
+/// When a check a send needs could not run. Nothing was stored.
+const CHECK_FAILED = "the server could not check the message: send it again";
 
 /// Whether a message or channel name sealed with this epoch may be stored:
 /// only the newest epoch with envelopes. While a rotation is pending that is
@@ -170,8 +172,14 @@ export class Channel extends DurableObject<Env> {
     if (typeof msg === "string") return this.refuse(ws, rawId, msg);
     if (msg.device_id !== who.deviceId) return this.refuse(ws, msg.id, "device_id is not this socket's device");
 
-    const { success } = await this.env.SEND_LIMIT.limit({ key: who.deviceId });
-    if (!success) return this.refuse(ws, msg.id, "too many messages, slow down");
+    let limited: boolean;
+    try {
+      limited = !(await this.env.SEND_LIMIT.limit({ key: who.deviceId })).success;
+    } catch (e) {
+      console.error("send limit failed:", e);
+      return this.refuse(ws, msg.id, CHECK_FAILED);
+    }
+    if (limited) return this.refuse(ws, msg.id, "too many messages, slow down");
 
     let key = this.keys.get(who.sigPub);
     if (!key) {
@@ -185,10 +193,19 @@ export class Channel extends DurableObject<Env> {
     // Every socket's session, the sender's included, checked in the same read,
     // and those of sockets being admitted.
     const checked = new Set([who.session, ...this.sessions()]);
-    const [team, allowed] = await Promise.all([
-      this.env.DB.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(who.teamId).first<{ epoch: number; keyed_epoch: number }>(),
-      this.allowed(who.teamId, [...checked]),
-    ]);
+    let team: { epoch: number; keyed_epoch: number } | null;
+    let allowed: Set<string>;
+    try {
+      [team, allowed] = await Promise.all([
+        this.env.DB.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(who.teamId).first<{ epoch: number; keyed_epoch: number }>(),
+        this.allowed(who.teamId, [...checked]),
+      ]);
+    } catch (e) {
+      // D1 can refuse a read, for one when its queue is full. Nothing is
+      // stored without the checks, and the sender hears it can try again.
+      console.error("send check failed:", e);
+      return this.refuse(ws, msg.id, CHECK_FAILED);
+    }
     if (!team || !allowed.has(who.session)) {
       this.refuse(ws, msg.id, "not a member of this team");
       return this.close(ws, CLOSE_FORBIDDEN, "not a member of this team");
@@ -197,11 +214,16 @@ export class Channel extends DurableObject<Env> {
     // A socket admitted while that read ran had its own check, but D1 does not
     // order two separate reads, so a logout between its check and ours could
     // reach neither. Check those sessions too, until no new one came in.
-    for (let round = 0; round < RECHECKS; round++) {
-      const fresh = this.sessions().filter((s) => !checked.has(s));
-      if (fresh.length === 0) break;
-      for (const s of fresh) checked.add(s);
-      for (const s of await this.allowed(who.teamId, fresh)) allowed.add(s);
+    try {
+      for (let round = 0; round < RECHECKS; round++) {
+        const fresh = this.sessions().filter((s) => !checked.has(s));
+        if (fresh.length === 0) break;
+        for (const s of fresh) checked.add(s);
+        for (const s of await this.allowed(who.teamId, fresh)) allowed.add(s);
+      }
+    } catch (e) {
+      console.error("send recheck failed:", e);
+      return this.refuse(ws, msg.id, CHECK_FAILED);
     }
 
     // From here to the send nothing awaits, so no other frame runs in between:

@@ -204,6 +204,13 @@ pub struct Hub {
     pub info: Option<String>,
     /// Actions under way, by a key such as `approve:<team>:<id>`.
     pub busy: HashSet<String>,
+    /// Invites sent from here in this run, by team: the login and when. The
+    /// server has no list of a team's open invites to read back.
+    pub sent: Vec<(String, String, u64)>,
+    /// Who invited this user to a team, from invites accepted in this run.
+    pub inviters: HashMap<String, String>,
+    /// Teams an admin let this user into during this run: their chat says so.
+    pub joined: HashSet<String>,
     events: socket::Events,
     /// Bumped when the account changes, so late answers for the last one are dropped.
     generation: u64,
@@ -253,6 +260,9 @@ impl Hub {
             _poll: None,
             _tick: None,
             info: None,
+            sent: Vec::new(),
+            inviters: HashMap::new(),
+            joined: HashSet::new(),
         };
         hub.account_changed(cx);
         hub
@@ -264,6 +274,24 @@ impl Hub {
 
     pub fn device_id(&self) -> Option<&str> {
         self.net.as_ref().map(|n| n.local.device.id())
+    }
+
+    /// This device's public signing key, for comparing devices.
+    pub fn sig_pub(&self) -> Option<&str> {
+        self.net.as_ref().map(|n| n.local.device.sig_pub())
+    }
+
+    /// The user checked this device's compare numbers with its owner.
+    pub fn verified(&self, device_id: &str) -> bool {
+        self.kept.verified(device_id)
+    }
+
+    /// Marks a device checked ("They match"), or not ("They don't").
+    pub fn set_verified(&mut self, device_id: &str, yes: bool, cx: &mut Context<Self>) {
+        if self.kept.set_verified(device_id, yes) {
+            self.save(cx);
+        }
+        cx.notify();
     }
 
     /// Who is signed in changed: start over for the new account, or stop.
@@ -292,6 +320,9 @@ impl Hub {
         self.error = None;
         self.info = None;
         self.busy.clear();
+        self.sent.clear();
+        self.inviters.clear();
+        self.joined.clear();
         self._poll = None;
         self._tick = None;
         self.info = None;
@@ -544,9 +575,7 @@ impl Hub {
                         .cloned()
                         .collect();
                     for t in &asked {
-                        if let Some(name) = hub.kept.asked().get(t) {
-                            hub.info = Some(format!("You're in {name} now."));
-                        }
+                        hub.joined.insert(t.clone());
                         hub.kept.forget_ask(t);
                     }
                     let gone: Vec<String> = hub
@@ -888,14 +917,17 @@ impl Hub {
         let team_id = team_id.to_string();
         self.run(
             cx,
-            move |net| net.call().invite(&team_id, &login).map(|()| login),
+            {
+                let team_id = team_id.clone();
+                move |net| net.call().invite(&team_id, &login).map(|()| login)
+            },
             move |hub, result, _| {
                 hub.busy.remove(&busy);
                 match result {
                     Ok(login) => {
-                        hub.info = Some(format!(
-                            "Invited @{login}. They'll see it in their Teams tab."
-                        ))
+                        hub.sent
+                            .retain(|(t, l, _)| !(*t == team_id && l.eq_ignore_ascii_case(&login)));
+                        hub.sent.push((team_id, login, now()));
                     }
                     Err(ApiError::Status(409, _)) => {
                         hub.error =
@@ -924,12 +956,12 @@ impl Hub {
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
                 match result {
+                    // The Team tab shows the wait itself.
                     Ok(()) => {
-                        hub.info = Some(format!(
-                            "You asked to join {}. An admin approves you next.",
-                            invite.team_name
-                        ));
                         hub.kept.ask(&invite.team_id, &invite.team_name);
+                        if let Some(by) = &invite.invited_by_login {
+                            hub.inviters.insert(invite.team_id.clone(), by.clone());
+                        }
                         hub.save(cx);
                         hub.refresh(cx);
                     }
@@ -1359,7 +1391,7 @@ fn now() -> u64 {
 }
 
 /// The name this device registers with: the machine's.
-fn device_name() -> String {
+pub fn device_name() -> String {
     let name: String = crate::phone::host_name()
         .chars()
         .filter(|c| !c.is_control())

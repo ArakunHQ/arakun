@@ -275,37 +275,50 @@ after a week).
   choice is kept in `extensions.json` next to the state.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 - **Teams.** A pilot, only for the accounts it is turned on for; the agents and the
-  rest of Arakun never need it. Settings › Account › Sign in with GitHub shows a code
-  and opens GitHub's device page: enter the code there and approve. Arakun asks GitHub
-  for no scopes and hands the token once to the Teams server, which keeps only your
-  GitHub user name and ID. Arakun drops the GitHub token and keeps the session the
-  server answers with in the system keyring. An account the server has turned Teams on
-  for gets a Teams tab in the sidebar; any other account sees "Signed in as @you" in
-  Settings and nothing else. Sign out ends the session on the server and removes it
-  from the keyring. `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as
-  one run with `wrangler dev` (see [teams/README.md](teams/README.md)); the default is
-  `https://teams.arakun.dev`, and plain `http://` works only for `localhost`,
-  `127.0.0.1` and `[::1]`.
+  rest of Arakun never need it. **Sign in with GitHub** (the User row of the sidebar,
+  or Settings › Account) opens a dialog with a code and opens GitHub's device page:
+  enter the code there and approve. The dialog counts down the code's 15 minutes and
+  says when it ran out or GitHub turned it down, with a way to get a new one. Arakun
+  asks GitHub for no scopes and hands the token once to the Teams server, which keeps
+  only your GitHub user name and ID. Arakun drops the GitHub token and keeps the
+  session the server answers with in the system keyring. Signed in, the User row shows
+  your GitHub picture and "Signed in with GitHub". An account the server has turned
+  Teams on for gets a **Team** row under Search in the sidebar; any other account sees
+  "Signed in as @you" in Settings and nothing else. Sign out (Settings › Account) ends
+  the session on the server and removes it from the keyring. `ARAKUN_TEAMS_URL` points
+  Arakun at another Teams server, such as one run with `wrangler dev` (see
+  [teams/README.md](teams/README.md)); the default is `https://teams.arakun.dev`, and
+  plain `http://` works only for `localhost`, `127.0.0.1` and `[::1]`.
 
-  The Teams tab is an end-to-end encrypted team chat. Each install makes two key
+  The Team tab is an end-to-end encrypted team chat. Each install makes two key
   pairs on first use and keeps them in the system keyring (`teams-device`); the
   server only stores and forwards what they seal and sign (see
-  [teams/PROTOCOL.md](teams/PROTOCOL.md)). The **+** beside Teams creates a team with
-  a `#general` channel; the team page invites people by GitHub user name, adds
-  channels and approves the people who accepted. Approving hands the team key to
-  each of their devices from yours, so the server can't let anyone in by itself;
-  removing someone makes a new key for everyone else. Hover a message and press the
-  reply arrow to answer it: the quote shows above your message, and clicking it
-  scrolls to the original. **Esc** drops the reply. Messages whose signature does not
-  check out are hidden and counted. When a member adds a device, the others see
-  "@them added a new device".
+  [teams/PROTOCOL.md](teams/PROTOCOL.md)). With no team yet it offers **Start a team**,
+  which makes one with a `general` channel. A channel shows the team's channels
+  (**+** adds one) and people on the left, and the chat with a composer at the bottom.
+  Click the team's name for your other teams, **Start a team** and **Your devices**;
+  click the people at the top right for the team's page, which invites people by
+  GitHub login and removes members. "N waiting" at the top opens the people who
+  accepted an invite, each device with its code: approving hands the team key to each
+  of their devices from yours, so the server can't let anyone in by itself; removing
+  someone makes a new key for everyone else. Hover a message and press the reply arrow
+  to answer it: the quote shows above your message, and clicking it scrolls to the
+  original. **Esc** drops the reply. Messages whose signature does not check out are
+  hidden and counted. **Decisions**, the **+** of the composer and **@bot** are not
+  there yet.
+
+  **Encrypted**, at the top of a channel, says what the server sees and what it
+  can't. When a member adds a device, the chat says "them added a new device" where
+  it happened, with **Compare**: both devices show six groups of five digits (and a
+  QR code of them), made from the two devices' signing keys. Read them to each other;
+  **They match** marks the device checked on this device only (kept in `teams.keys`).
 
   A second device of yours shows "Approve this device from your other device" and a
-  code: on a device that already has Teams, open **Your devices** and paste it. The
-  team keys of each epoch are kept in `teams.keys` next to the state, sealed with a
-  key that stays in the keyring; the server keeps every key for every device too, so
-  losing the file loses nothing. A test Arakun with its own `ARAKUN_STATE` (such as
-  `arakun dev`) keeps its own Teams session, device and keys.
+  code: on a device that already has Teams, click the team's name › **Your devices**
+  and paste it. The team keys of each epoch are kept in `teams.keys` next to the
+  state, sealed with a key that stays in the keyring; the server keeps every key for
+  every device too, so losing the file loses nothing. A test Arakun with its own
+  `ARAKUN_STATE` (such as `arakun dev`) keeps its own Teams session, device and keys.
 
 ### Make it yours
 

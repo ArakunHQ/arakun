@@ -182,6 +182,8 @@ enum Modal {
     Session(gpui::AnyView),
     /// The first-launch question about crash reports and usage counts.
     Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
+    /// Sign in with GitHub, for Teams.
+    TeamsSignIn(Entity<crate::arakun_teams::sign_in::SignInDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -1654,21 +1656,49 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        self.show_view_tab("Teams", TabKind::Teams, |k| matches!(k, TabKind::Teams));
+        self.show_view_tab("Team", TabKind::Teams, |k| matches!(k, TabKind::Teams));
         self.note_active_tab(cx);
         self.teams_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
-    /// The rail shows Teams once the server lets the account in. A layout
-    /// saved before Teams existed gets it once, where the other views are.
+    /// The sign-in dialog: GitHub's code, then whether it worked. It starts
+    /// the sign-in when none is under way.
+    pub(super) fn open_teams_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::arakun_teams::sign_in::{SignInDialog, SignInEvent};
+        self.menu = None;
+        self.env_menu_open = false;
+        let teams = self.teams.clone();
+        let dialog = cx.new(|cx| SignInDialog::new(teams, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, ev: &SignInEvent, window, cx| match ev {
+                SignInEvent::Dismissed => this.close_modal(window, cx),
+                SignInEvent::OpenTeam => {
+                    this.close_modal(window, cx);
+                    this.open_teams_tab(window, cx);
+                }
+            },
+        );
+        self.modal = Some((Modal::TeamsSignIn(dialog), sub));
+        cx.notify();
+    }
+
+    /// The rail shows Team once the server lets the account in. A layout
+    /// saved before Team existed gets it once, under Search.
     fn teams_changed(&mut self, cx: &mut Context<Self>) {
         use crate::sidebar::View;
         if self.teams.read(cx).enabled() && self.sidebar.is_new(View::Teams) {
             self.change_sidebar(cx, |s| {
-                s.place(View::Teams);
+                s.place_after_search(View::Teams);
                 s.known.push(View::Teams);
             });
+        }
+        // The User row shows the account's GitHub picture.
+        let login = self.teams.read(cx).me().map(|m| m.login.clone());
+        if let Some(login) = login {
+            self.teams.update(cx, |t, cx| t.want_pictures([login], cx));
         }
         cx.notify();
     }
@@ -1992,6 +2022,10 @@ impl Shell {
                 SettingsEvent::OpenTeams => {
                     this.close_modal(window, cx);
                     this.open_teams_tab(window, cx);
+                }
+                SettingsEvent::SignInTeams => {
+                    this.close_modal(window, cx);
+                    this.open_teams_sign_in(window, cx);
                 }
                 SettingsEvent::OpenUsage => {
                     this.close_modal(window, cx);
@@ -2821,6 +2855,7 @@ impl Render for Shell {
             Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::TeamsSignIn(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);

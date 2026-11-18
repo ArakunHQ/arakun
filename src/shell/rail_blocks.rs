@@ -664,6 +664,106 @@ impl Shell {
                         .into_any_element()
                 }
             }
+            // Signed out of GitHub: the row signs in, as Teams needs.
+            Piece::User if self.teams.read(cx).ready() && !self.teams.read(cx).signed_in() => div()
+                .id(gpui::ElementId::Name(row_id.clone()))
+                .group("rail-row")
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .h(px(style.density.row_h()))
+                .px(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
+                .w_full()
+                .text_size(px(ui::TEXT_MD))
+                .text_color(theme::text_subtle())
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                .when(narrow, |d| {
+                    d.justify_center()
+                        .px(crate::ui::sp(0.))
+                        .tooltip(ui::tip("Sign in with GitHub"))
+                })
+                .child(icon("github", 15.).text_color(theme::text_faint()))
+                .when(!narrow, |d| {
+                    d.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child("Sign in with GitHub"),
+                    )
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.open_teams_sign_in(window, cx)))
+                .into_any_element(),
+            // Signed in: the GitHub account, with its picture.
+            Piece::User if self.teams.read(cx).me().is_some() => {
+                let teams = self.teams.read(cx);
+                let login = teams.me().map(|m| m.login.clone()).unwrap_or_default();
+                let redacted = crate::redact::on();
+                let picture = teams
+                    .picture(&login)
+                    .filter(|_| !redacted)
+                    .map(|p| p.to_path_buf());
+                let shown = if redacted { "You".to_string() } else { login };
+                div()
+                    .id(gpui::ElementId::Name(row_id.clone()))
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .p(crate::ui::sp(6.))
+                    .rounded(crate::ui::rad(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::fill_selected()))
+                    .when(narrow, |d| {
+                        d.justify_center().tooltip(ui::tip_text(shown.clone()))
+                    })
+                    .child(ui::avatar_image(
+                        &shown,
+                        picture.as_deref(),
+                        if narrow { 26. } else { 28. },
+                    ))
+                    .when(!narrow, |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(ui::TEXT_MD))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(shown.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::text_faint())
+                                        .child("Signed in with GitHub"),
+                                ),
+                        )
+                        .child(icon("unfold-more", 12.).text_color(theme::text_subtle()))
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        crate::settings_view::start_on_account();
+                        this.open_settings(window, cx)
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.menu = Some(ContextMenu {
+                                target: MenuTarget::RailBlock(path.0, Some(path.1)),
+                                at: ev.position,
+                            });
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element()
+            }
             Piece::User => {
                 let (git_name, email) = git_identity();
                 let email = crate::redact::value(email);

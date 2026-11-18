@@ -102,6 +102,11 @@ pub struct Kept {
     /// names, until an admin approves.
     #[serde(default)]
     asked: BTreeMap<String, String>,
+    /// Devices of other people whose compare numbers the user checked with
+    /// them and found the same. A device ID derives from its signing key, so a
+    /// new key is a new, unchecked device.
+    #[serde(default)]
+    verified: BTreeSet<String>,
 }
 
 impl Kept {
@@ -168,6 +173,19 @@ impl Kept {
 
     pub fn forget_ask(&mut self, team_id: &str) -> bool {
         self.asked.remove(team_id).is_some()
+    }
+
+    pub fn verified(&self, device_id: &str) -> bool {
+        self.verified.contains(device_id)
+    }
+
+    /// Marks a device checked, or not; whether that changed anything.
+    pub fn set_verified(&mut self, device_id: &str, yes: bool) -> bool {
+        if yes {
+            self.verified.insert(device_id.to_string())
+        } else {
+            self.verified.remove(device_id)
+        }
     }
 
     /// Forgets a team this user is no longer in.
@@ -270,6 +288,12 @@ mod tests {
         assert!(k.sealed_for("T", "a"));
         assert!(!k.sealed_for("T", "b"));
         assert!(!k.sealed_for("U", "a"));
+        assert!(!k.verified("a"));
+        assert!(k.set_verified("a", true));
+        assert!(!k.set_verified("a", true));
+        assert!(k.verified("a"));
+        assert!(k.set_verified("a", false));
+        assert!(!k.verified("a"));
     }
 
     #[test]

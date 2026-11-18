@@ -9,7 +9,7 @@
 // every device gets the keys it should.
 
 import { session, type Session } from "./auth";
-import { TRUSTED, epochAllowed } from "./channel";
+import { TRUSTED, epochAllowed, epochRefused } from "./channel";
 import { DAY, GITHUB_ID, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
 import {
   DEVICE_ID,
@@ -791,7 +791,7 @@ async function createChannel(c: Ctx, teamId: string): Promise<Response> {
   if (typeof channelId !== "string" || !ULID.test(channelId)) return error(400, "channel_id is a ULID");
   const name = parseSealedName(body["name_ct"]);
   if (typeof name === "string") return error(400, name);
-  if (!epochAllowed(name.epoch, team.epoch, team.keyed_epoch)) return error(400, "name_ct is sealed with a key that is not current");
+  if (!epochAllowed(name.epoch, team.keyed_epoch)) return error(400, `name_ct: ${epochRefused(name.epoch, team.epoch, team.keyed_epoch)}`);
   const db = c.env.DB;
   const result = await db
     .prepare(

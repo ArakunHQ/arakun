@@ -234,21 +234,22 @@ describe("channel sockets", () => {
 });
 
 describe("rotation", () => {
-  it("refuses a stale epoch only once the new epoch's envelopes exist", async () => {
+  it("takes only the newest epoch with envelopes, so a stale one is refused once the new one has them", async () => {
     const t = await team();
     const m = await join(t);
     const gone = await join(t);
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
     await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
 
-    // Rotation pending: the old key still works, epoch 2 too (only an admin could have it).
+    // Rotation pending: the old key still works.
     a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "old key"));
     expect((await stored(a)).message).toMatchObject({ epoch: 1 });
     a.send(await message(t.teamId, t.channelId, t.owner.device, 3, newKey(), "future"));
     expect((await refused(a)).error).toBe("unknown epoch");
+    // Epoch 2 has no envelopes yet, and a second removal could skip it for good.
     const key2 = newKey();
     a.send(await message(t.teamId, t.channelId, t.owner.device, 2, key2, "current epoch, before its envelopes"));
-    expect((await stored(a)).message).toMatchObject({ epoch: 2 });
+    expect((await refused(a)).error).toMatch(/epoch 2 has no envelopes yet/);
 
     const envelopes = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
     await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: t.owner.device, body: { envelopes } }), 200);

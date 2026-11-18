@@ -200,19 +200,22 @@ removed member's envelopes and closes their channel sockets (code `4403`).
 
 The next time an admin device connects it makes a new team key and uploads
 envelopes for every remaining device (`PUT /teams/<team_id>/envelopes`). Until
-then, clients keep sending with the old epoch. The server accepts a message whose
-epoch is the current one or, while the rotation is pending, the newest epoch with
-envelopes; it refuses any other. So an older epoch is refused only after the new
-epoch's envelopes exist. Two removals before a rotation skip an epoch: nothing is
-ever sealed with it. A removed member keeps what they already read, never what
-comes after.
+then, clients keep sending with the old epoch. The server accepts a message, or a
+channel name, only when its epoch is the newest one with envelopes: the previous
+epoch while the rotation is pending, the current one after it. So an older epoch
+is refused only after the new epoch's envelopes exist, and nothing is stored under
+an epoch whose key may never reach the members: two removals before a rotation
+skip an epoch, and nothing is ever sealed with it. While the rotation is pending
+the members' messages use a key the removed member holds; clients show that the
+rotation is pending (`rotation_pending`). A removed member keeps what they
+already read, and once the rotation ends, never what comes after.
 
 ## Channels and messages
 
 - `POST /teams/<team_id>/channels` `{ "channel_id": "<ulid>", "name_ct": Sealed }`
   (admin) → `201 { channel_id }`. Names are encrypted with the team key
-  (`Sealed`, below), of an epoch a message could use. At most 500 channels per
-  team; `409` for that or an ID in use.
+  (`Sealed`, below), of the epoch a message would use now (`400` otherwise). At
+  most 500 channels per team; `409` for that or an ID in use.
 - Messages live in one Durable Object per channel.
 
 `Sealed` is anything encrypted with a team key:
@@ -313,8 +316,8 @@ its maximum. A message stored while a socket was opening may not reach that sock
 so a client reads the history once its socket is open.
 
 The server checks on `send`: the sender device belongs to the session's user, the
-user is a member, `epoch` is current (see Rotation), sizes (`ct` at most 64 KiB),
-and that `id` is new in the channel. It cannot check `sig` against content it
+user is a member, `epoch` is the newest one with envelopes (see Rotation), sizes
+(`ct` at most 64 KiB), and that `id` is new in the channel. It cannot check `sig` against content it
 cannot read, but it does check `sig` is a valid signature by that device, so a
 client cannot post as another device. Membership and epoch are read again on
 every `send`, so a removal or rotation applies to the next message.

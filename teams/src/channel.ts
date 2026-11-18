@@ -53,12 +53,19 @@ const CLOSE_FORBIDDEN = 4403;
 /// More than one only when sockets keep arriving during each read.
 const RECHECKS = 3;
 
-/// Whether a message's epoch may be stored. The current epoch always may.
-/// While a rotation is pending (no envelopes for the current epoch yet), the
-/// newest epoch that has them still may, since clients have no newer key.
-export function epochAllowed(epoch: number, current: number, keyed: number): boolean {
-  if (epoch === current) return true;
-  return keyed < current && keyed >= 1 && epoch === keyed;
+/// Whether a message or channel name sealed with this epoch may be stored:
+/// only the newest epoch with envelopes. While a rotation is pending that is
+/// the previous key, since the current epoch's may never be uploaded: a second
+/// removal skips it, and what was sealed with it could not be read.
+export function epochAllowed(epoch: number, keyed: number): boolean {
+  return keyed >= 1 && epoch === keyed;
+}
+
+/// Why an epoch was refused, for the sender.
+export function epochRefused(epoch: number, current: number, keyed: number): string {
+  if (epoch < keyed) return "stale epoch: fetch the new team key";
+  if (epoch <= current) return `epoch ${epoch} has no envelopes yet: keep using epoch ${keyed} until the rotation ends`;
+  return "unknown epoch";
 }
 
 /// The session a socket was opened with; "" for none, which no check allows.
@@ -186,9 +193,7 @@ export class Channel extends DurableObject<Env> {
       this.refuse(ws, msg.id, "not a member of this team");
       return this.close(ws, CLOSE_FORBIDDEN, "not a member of this team");
     }
-    if (!epochAllowed(msg.epoch, team.epoch, team.keyed_epoch)) {
-      return this.refuse(ws, msg.id, msg.epoch < team.epoch ? "stale epoch: fetch the new team key" : "unknown epoch");
-    }
+    if (!epochAllowed(msg.epoch, team.keyed_epoch)) return this.refuse(ws, msg.id, epochRefused(msg.epoch, team.epoch, team.keyed_epoch));
     // A socket admitted while that read ran had its own check, but D1 does not
     // order two separate reads, so a logout between its check and ours could
     // reach neither. Check those sessions too, until no new one came in.

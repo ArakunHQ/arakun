@@ -49,12 +49,13 @@ jobs:
   approval:
     name: Human approval status
     # No concurrency group: a cancelled or replaced run would skip the heads
-    # it was given, such as the old head after two quick pushes. Every run
-    # reads the reviews just before it writes, so overlapping runs agree.
+    # it was given, such as the old head after two quick pushes. Instead
+    # every run reads the reviews again after it writes (see update), so
+    # overlapping runs end on the latest verdict.
     runs-on: depot-ubuntu-24.04
-    # Room for every head's retries; the default six hours is far too long
-    # for a hung call. Two heads after a push can each spend minutes in
-    # backoff, and a head cut off here gets no status.
+    # Room for every head's retries; each call stops after a minute, and a
+    # head that fails doesn't stop the next. The default six hours is far
+    # too long for a hung run.
     timeout-minutes: 30
     permissions:
       pull-requests: read
@@ -78,22 +79,26 @@ jobs:
           set -euo pipefail
 
           # Retries a call that failed on the network or on GitHub's side
-          # (a timeout, HTTP 5xx or a rate limit); any other error fails at
-          # once. The output is held until the call succeeds, so a retried
+          # (a timeout, HTTP 5xx or a rate limit), or took over a minute; any
+          # other error fails at once. The output is held until the call succeeds, so a retried
           # --paginate doesn't print a page twice. Every call here can be
           # repeated safely. Keep in step with reviewers.yml.
           gh() {
-            local attempt out err
+            local attempt out err rc
             err=$(mktemp)
             for attempt in 1 2 3 4; do
-              if out=$(command gh "$@" 2>"$err"); then
+              # timeout runs the gh program, not this function. A call that
+              # hangs would otherwise use up the job's whole time limit.
+              out=$(timeout 60 gh "$@" 2>"$err") && rc=0 || rc=$?
+              if [ "$rc" = 0 ]; then
                 rm -f "$err"
                 [ -z "$out" ] || printf '%s\n' "$out"
                 return 0
               fi
               cat "$err" >&2
-              if [ "$attempt" = 4 ] ||
-                ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit|API rate limit exceeded' "$err"; then
+              [ "$rc" != 124 ] || echo "gh took more than 60 seconds." >&2
+              if [ "$attempt" = 4 ] || { [ "$rc" != 124 ] &&
+                ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit|API rate limit exceeded' "$err"; }; then
                 rm -f "$err"
                 return 1
               fi
@@ -105,25 +110,23 @@ jobs:
           in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
 
           # A status belongs to a commit, not a pull request, so it must hold
-          # for every open pull request with this head.
-          update() {
+          # for every open pull request with this head. Prints the state and
+          # the description, or nothing when no open pull request has it.
+          # Runs where `set -e` does nothing, so every call that can fail
+          # returns at once.
+          verdict() {
             export HEAD=$1
             # The workflow_run event lists no pull request when the branch is
             # on a fork, so find them by their head commit.
             local prs
-            # update runs as a condition, where `set -e` does nothing, so
-            # every call that can fail returns at once.
             prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
               --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"') || return 1
-            if [ -z "$prs" ]; then
-              echo "No open pull request has $HEAD as its head."
-              return
-            fi
+            [ -n "$prs" ] || return 0
 
             local state=success description="" pr author approvers approver user
             while read -r pr author; do
               if in_team "$author"; then
-                echo "#$pr: the author is on the team."
+                echo "#$pr: the author is on the team." >&2
                 continue
               fi
               # Each reviewer's last verdict on the head commit. A dismissed
@@ -141,10 +144,10 @@ jobs:
                 fi
               done
               if [ -n "$approver" ]; then
-                echo "#$pr: approved by $approver."
+                echo "#$pr: approved by $approver." >&2
                 description=${description:-"Approved by $approver."}
               else
-                echo "#$pr: waiting for a maintainer."
+                echo "#$pr: waiting for a maintainer." >&2
                 state=pending
               fi
             done <<<"$prs"
@@ -152,14 +155,35 @@ jobs:
             if [ "$state" = pending ]; then
               description="Waiting for a maintainer to approve: the author is outside the team."
             fi
-            description=${description:-"Not needed: the author is on the team."}
-            # Not through the retrying gh: during its wait another run may
-            # post a newer verdict, which a retry would overwrite. The caller
-            # retries all of update instead, which reads the reviews again.
-            command gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
-              -f context="Human approval" -f description="$description" -f target_url="$RUN_URL" ||
-              return 1
-            echo "$HEAD: $state, $description"
+            printf '%s\t%s\n' "$state" "${description:-"Not needed: the author is on the team."}"
+          }
+
+          # Writes the status, then reads the reviews again and writes again
+          # until the verdict holds. Runs overlap (see the job's comment), and
+          # one may read the reviews, then write after another run wrote a
+          # newer verdict. Whichever run writes last reads again after its
+          # write, so it puts back the verdict of the latest reviews.
+          update() {
+            local current written="" state description _
+            for _ in 1 2 3 4; do
+              current=$(verdict "$1") || return 1
+              if [ -z "$current" ]; then
+                echo "No open pull request has $1 as its head."
+                return 0
+              fi
+              if [ "$current" = "$written" ]; then
+                return 0
+              fi
+              IFS=$'\t' read -r state description <<<"$current"
+              # Not through the retrying gh: a retry would write a verdict
+              # read before its wait. The caller runs update again instead.
+              timeout 60 gh api -X POST "repos/$GH_REPO/statuses/$1" --silent -f state="$state" \
+                -f context="Human approval" -f description="$description" -f target_url="$RUN_URL" ||
+                return 1
+              echo "$1: $state, $description"
+              written=$current
+            done
+            echo "::warning::The reviews of $1 kept changing; the next review event sets its status again."
           }
 
           if [ "$EVENT" = workflow_dispatch ]; then
@@ -169,6 +193,8 @@ jobs:
             fi
             SHAS=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
           fi
+          # A head that fails doesn't stop the others; the job fails at the end.
+          failed=""
           for sha in $(tr ' ' '\n' <<<"$SHAS" | grep -xE '[0-9a-f]{40}' | grep -vx 0000000000000000000000000000000000000000 | sort -u); do
             for attempt in 1 2 3; do
               if update "$sha"; then
@@ -176,9 +202,11 @@ jobs:
               fi
               if [ "$attempt" = 3 ]; then
                 echo "::error::Couldn't set the Human approval status of $sha."
-                exit 1
+                failed+=" $sha"
+                break
               fi
               echo "Trying $sha again in $((attempt * 15)) seconds."
               sleep $((attempt * 15))
             done
           done
+          [ -z "$failed" ] || exit 1

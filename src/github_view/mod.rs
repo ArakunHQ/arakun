@@ -338,6 +338,8 @@ pub struct GitHubView {
     /// The answer to a thread or the comment on a line being written in
     /// `thread_input`.
     writing: Option<threads::Writing>,
+    /// The commit whose diff the line comment being written was started on.
+    writing_head: String,
     thread_input: Entity<TextInput>,
     /// Comments on lines of the diff not sent yet, by `queue::key_of`.
     pending: HashMap<String, threads::Pending>,
@@ -550,6 +552,7 @@ impl GitHubView {
             folded: HashSet::new(),
             unfolded_lines: HashSet::new(),
             writing: None,
+            writing_head: String::new(),
             thread_input,
             pending: HashMap::new(),
             checks_open: HashSet::new(),

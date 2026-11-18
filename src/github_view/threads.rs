@@ -60,6 +60,19 @@ pub(super) fn add_pending(
     Ok(())
 }
 
+/// Whether a line comment started on the diff of `started` can go to the
+/// diff shown `now`. After a push the same path and line may be other code:
+/// the first Enter says so and takes the new diff, the next one adds it.
+pub(super) fn same_diff(started: &mut String, now: &str) -> Result<(), &'static str> {
+    if started.is_empty() || started == now {
+        return Ok(());
+    }
+    *started = now.to_string();
+    Err(
+        "New commits arrived while you wrote. Check this is still the line you mean, then press Enter again.",
+    )
+}
+
 /// "1 pending comment", "3 pending comments".
 pub(super) fn pending_label(n: usize) -> String {
     if n == 1 {
@@ -97,6 +110,19 @@ impl GitHubView {
         self.item().map(|i| crate::github::queue::key_of(&i))
     }
 
+    /// The head of the diff the Files tab shows; empty until it is read.
+    fn shown_head(&self) -> String {
+        match self.pending_key().and_then(|key| self.diffs.get(&key)) {
+            Some(d) if matches!(d.state, DiffState::Ready { .. }) => d.tip.head.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// The pending comments, when they were written on the diff shown now.
+    fn pending_on_shown(&self) -> Option<&Pending> {
+        self.pending_here().filter(|p| p.head == self.shown_head())
+    }
+
     pub(super) fn pending_here(&self) -> Option<&Pending> {
         self.pending
             .get(&self.pending_key()?)
@@ -119,6 +145,9 @@ impl GitHubView {
                 i.set_text("", cx);
                 i.set_placeholder(placeholder, cx);
             });
+            if matches!(what, Writing::Line { .. }) {
+                self.writing_head = self.shown_head();
+            }
             self.writing = Some(what);
             self.relayout();
         }
@@ -153,13 +182,19 @@ impl GitHubView {
                     cx.notify();
                     return;
                 }
+                let sent = self.thread_input.read(cx).text().to_string();
                 self.write(
                     "reply",
                     "Reply posted.".into(),
                     move |item| pr::reply(item, id, &body).map(|_| ()),
                     move |this, cx| {
-                        // Another box may be open by now: only this one closes.
-                        if this.writing == Some(Writing::Reply(id)) {
+                        // Another box may be open by now: only this one
+                        // closes, and only with the text that went out. The
+                        // box stays open while it is sent, so more may have
+                        // been typed.
+                        if this.writing == Some(Writing::Reply(id))
+                            && this.thread_input.read(cx).text() == sent
+                        {
                             this.stop_writing(cx);
                         }
                     },
@@ -170,10 +205,12 @@ impl GitHubView {
                 let Some(key) = self.pending_key() else {
                     return;
                 };
-                let head = match self.diffs.get(&key) {
-                    Some(d) if matches!(d.state, DiffState::Ready { .. }) => d.tip.head.clone(),
-                    _ => String::new(),
-                };
+                let head = self.shown_head();
+                if let Err(why) = same_diff(&mut self.writing_head, &head) {
+                    self.note = Some(Note::failed(why));
+                    cx.notify();
+                    return;
+                }
                 let comment = LineComment {
                     path,
                     line,
@@ -360,8 +397,10 @@ impl GitHubView {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let here: Vec<&Thread> = threads.iter().filter(|t| t.place == Some(place)).collect();
+        // Comments written before a push are listed over the files instead:
+        // the same line of the new diff may be other code.
         let pending: Vec<&LineComment> = self
-            .pending_here()
+            .pending_on_shown()
             .into_iter()
             .flat_map(|p| &p.comments)
             .filter(|c| c.path == path && (c.line, c.left) == place)
@@ -455,7 +494,8 @@ impl GitHubView {
         };
         let sending = self.busy == Some("line-review");
         let free = self.busy.is_none();
-        div()
+        let old = self.pending_on_shown().is_none();
+        let bar = div()
             .flex()
             .flex_wrap()
             .items_center()
@@ -490,7 +530,46 @@ impl GitHubView {
                 .when(free, |b| {
                     b.on_click(cx.listener(|this, _, _, cx| this.submit_pending(cx)))
                 }),
-            )
+            );
+        if !old {
+            return bar;
+        }
+        // Written on an earlier commit: shown here with where they were
+        // written, since the lines of the diff below are the new commit's.
+        let mut list = div().flex().flex_col().gap(crate::ui::sp(6.)).child(bar).child(
+            ui::text(
+                Type::Caption,
+                theme::text_muted(),
+                "Written before new commits arrived. They go out on the commit they were written on.",
+            ),
+        );
+        for (n, c) in pending.comments.iter().enumerate() {
+            let gone = c.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .child(super::mono(
+                        format!("{}:{}", c.path, c.line),
+                        theme::text_muted(),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .ty(Type::Label)
+                            .child(c.body.replace('\n', " ")),
+                    )
+                    .child(
+                        word(name("gh-pending-old", &n.to_string()), "Remove").on_click(
+                            cx.listener(move |this, _, _, cx| this.remove_pending(&gone, cx)),
+                        ),
+                    ),
+            );
+        }
+        list
     }
 }
 
@@ -539,6 +618,27 @@ mod tests {
         pending.get_mut("o/r#1").unwrap().comments.clear();
         assert_eq!(
             add_pending(&mut pending, "o/r#1", "bbb", on(3, "x")),
+            Ok(())
+        );
+        assert_eq!(pending["o/r#1"].head, "bbb");
+    }
+
+    #[test]
+    fn a_push_while_a_line_comment_is_written_asks_once() {
+        // Started on commit aaa; the diff shown is still that one.
+        let mut started = "aaa".to_string();
+        assert_eq!(same_diff(&mut started, "aaa"), Ok(()));
+        // A push reloaded the diff: the first Enter is turned down.
+        assert!(
+            same_diff(&mut started, "bbb")
+                .unwrap_err()
+                .contains("New commits")
+        );
+        // The second goes to the new diff, and to no pending comment of the old.
+        assert_eq!(same_diff(&mut started, "bbb"), Ok(()));
+        let mut pending = HashMap::new();
+        assert_eq!(
+            add_pending(&mut pending, "o/r#1", &started, on(12, "x")),
             Ok(())
         );
         assert_eq!(pending["o/r#1"].head, "bbb");

@@ -387,17 +387,19 @@ impl Details {
         }
     }
 
-    /// How many comments sit on the diff and how many of them are in a
-    /// resolved thread: it moves when a thread is answered, resolved or
-    /// opened again, which the item's date doesn't always do.
-    pub fn threads_mark(&self) -> (usize, usize) {
-        match self {
-            Details::Pull(p) => (
-                p.inline.len(),
-                p.inline.iter().filter(|c| c.resolved == Some(true)).count(),
-            ),
-            Details::Issue(_) => (0, 0),
+    /// A mark of the comments on the diff and what can be done with each:
+    /// it moves when a thread is answered, resolved or opened again, or its
+    /// id arrives after a read that failed, which the item's date doesn't
+    /// always do. Counts alone miss one thread resolving while another opens.
+    pub fn threads_mark(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut mark = std::collections::hash_map::DefaultHasher::new();
+        if let Details::Pull(p) = self {
+            for c in &p.inline {
+                (c.id, c.resolved, c.outdated, &c.thread).hash(&mut mark);
+            }
         }
+        mark.finish()
     }
 }
 

@@ -446,9 +446,12 @@ const ISSUE_FIELDS: &str =
     "number,title,body,state,author,labels,assignees,comments,createdAt,updatedAt,closedAt,url";
 
 /// Resolution and review of each inline comment: REST doesn't give them.
-const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){\
-pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated \
-comments(first:100){nodes{databaseId pullRequestReview{id}}}}}}}}";
+const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){\
+pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} \
+nodes{id isResolved isOutdated comments(first:100){nodes{databaseId pullRequestReview{id}}}}}}}}";
+
+/// Pages of 100 threads read for one pull request, at most: 2,000 threads.
+const THREADS_PAGES: usize = 20;
 
 /// Drops every `null`, so a field GitHub left empty reads as its default
 /// instead of failing the whole answer (a deleted author is `null`).
@@ -531,6 +534,15 @@ fn thread_states(answer: &Value) -> HashMap<u64, ThreadState> {
     states
 }
 
+/// Where the next page of threads starts, when the answer says there is one.
+fn threads_next_page(answer: &Value) -> Option<String> {
+    let page = answer.pointer("/data/repository/pullRequest/reviewThreads/pageInfo")?;
+    page.get("hasNextPage")?
+        .as_bool()?
+        .then(|| page.get("endCursor")?.as_str().map(str::to_string))
+        .flatten()
+}
+
 fn fetch_inline(item: &ItemRef) -> Result<Vec<InlineComment>, Problem> {
     let path = format!(
         "repos/{}/pulls/{}/comments?per_page=100",
@@ -541,21 +553,35 @@ fn fetch_inline(item: &ItemRef) -> Result<Vec<InlineComment>, Problem> {
 
 fn fetch_thread_states(item: &ItemRef) -> Result<HashMap<u64, ThreadState>, Problem> {
     let (owner, name) = item.repo.split_once('/').unwrap_or((&item.repo, ""));
-    let out = super::gh_out(&[
-        "api",
-        "graphql",
-        "-f",
-        &format!("query={THREADS_QUERY}"),
-        "-f",
-        &format!("owner={owner}"),
-        "-f",
-        &format!("name={name}"),
-        "-F",
-        &format!("number={}", item.number),
-    ])?;
-    Ok(thread_states(
-        &serde_json::from_slice(&out).map_err(unexpected)?,
-    ))
+    let mut states = HashMap::new();
+    let mut after: Option<String> = None;
+    // GitHub gives 100 threads a page; a thread past the first page would
+    // have no state, and so no Resolve.
+    for _ in 0..THREADS_PAGES {
+        let mut args = strings(&[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={THREADS_QUERY}"),
+            "-f",
+            &format!("owner={owner}"),
+            "-f",
+            &format!("name={name}"),
+            "-F",
+            &format!("number={}", item.number),
+        ]);
+        if let Some(cursor) = &after {
+            args.extend(["-f".to_string(), format!("after={cursor}")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let answer: Value = serde_json::from_slice(&super::gh_out(&args)?).map_err(unexpected)?;
+        states.extend(thread_states(&answer));
+        after = threads_next_page(&answer);
+        if after.is_none() {
+            break;
+        }
+    }
+    Ok(states)
 }
 
 /// One page of review threads, with where the next page starts.
@@ -3577,6 +3603,14 @@ mod tests {
         assert_eq!(states[&102].thread.as_deref(), Some("PRRT_1"));
         assert_eq!(states[&103].thread, None);
         assert!(thread_states(&serde_json::json!({"errors": [{"message": "nope"}]})).is_empty());
+        // The 101st thread is on a second page.
+        let page = |more: bool| {
+            serde_json::json!({"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": more, "endCursor": "abc"}, "nodes": []}}}}})
+        };
+        assert_eq!(threads_next_page(&page(true)).as_deref(), Some("abc"));
+        assert_eq!(threads_next_page(&page(false)), None);
+        assert_eq!(threads_next_page(&answer), None);
     }
 
     #[test]

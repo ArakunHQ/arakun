@@ -305,7 +305,7 @@ fn hunk_lines(hunk: &str) -> Vec<AnyElement> {
 pub(super) struct Timeline {
     /// The item, its version, who looks, whether a draft shows last, and
     /// where its threads stand.
-    key: (String, String, String, bool, (usize, usize)),
+    key: (String, String, String, bool, u64),
     author: String,
     opened_at: u64,
     body: String,

@@ -67,8 +67,7 @@ impl Shell {
         if !self.has_projects() {
             return None;
         }
-        let env = self.env();
-        match env.tabs.get(env.active_tab).map(|t| &t.kind) {
+        match self.strip.active().map(|t| &t.kind) {
             Some(TabKind::Session { id, .. }) => Some(id.clone()),
             _ => None,
         }
@@ -97,17 +96,18 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env();
-        let path = env.path.clone();
-        let ids: Vec<SharedString> = self
+        let ids: Vec<(std::path::PathBuf, SharedString)> = self
             .visible_tabs()
             .into_iter()
-            .filter_map(|i| match &env.tabs.get(i)?.kind {
-                TabKind::Session { id, .. } => Some(id.clone()),
-                _ => None,
+            .filter_map(|i| {
+                let tab = self.strip.tabs.get(i)?;
+                match &tab.kind {
+                    TabKind::Session { id, .. } => Some((tab.env.clone()?, id.clone())),
+                    _ => None,
+                }
             })
             .collect();
-        for id in ids {
+        for (path, id) in ids {
             self.ensure_live(&path, &id, window, cx);
         }
     }
@@ -313,15 +313,13 @@ impl Shell {
                 if title.is_empty() {
                     return;
                 }
-                if let Some(env) = self.find_env_mut(env_path) {
-                    if let Some(i) = env.session_index(id) {
-                        env.sessions[i].title = title.clone();
-                    }
-                    for tab in &mut env.tabs {
-                        if matches!(&tab.kind, TabKind::Session { id: tid, .. } if tid == id) {
-                            tab.title = title.clone();
-                        }
-                    }
+                if let Some(env) = self.find_env_mut(env_path)
+                    && let Some(i) = env.session_index(id)
+                {
+                    env.sessions[i].title = title.clone();
+                }
+                if let Some(i) = self.strip.session_tab(id) {
+                    self.strip.tabs[i].title = title.clone();
                 }
                 self.save(cx);
                 cx.notify();
@@ -421,13 +419,10 @@ impl Shell {
 
     /// Stops the agent of a session nobody is looking at once it has nothing to do.
     pub(super) fn retire_if_hidden(&mut self, env_path: &Path, id: &str, cx: &mut Context<Self>) {
+        let open = self.strip.session_tab(id).is_some();
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        let open = env
-            .tabs
-            .iter()
-            .any(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id));
         let Some(i) = env.session_index(id) else {
             return;
         };
@@ -607,6 +602,35 @@ impl Shell {
         true
     }
 
+    /// Puts a session's tab in the strip: in place of its environment's blank
+    /// New session tab when that one is in front there, else after its other
+    /// tabs. It comes to the front when the environment is `visible`; otherwise
+    /// it is what the environment shows the next time.
+    fn open_session_tab(
+        &mut self,
+        env_path: &Path,
+        tab: Tab,
+        visible: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = tab.id;
+        let strip = &mut self.strip;
+        let front = strip.front_of(env_path);
+        let index = match front.filter(|i| matches!(strip.tabs[*i].kind, TabKind::NewSession)) {
+            Some(i) => {
+                strip.tabs[i] = tab;
+                i
+            }
+            None => strip.add(tab),
+        };
+        if visible {
+            strip.active_tab = index;
+            self.note_active_tab(cx);
+        } else {
+            strip.front.insert(env_path.to_path_buf(), id);
+        }
+    }
+
     /// Starts a session in any environment with `text` as its first prompt; `show`
     /// opens it in a tab (the active one of that environment).
     pub(super) fn start_session_in(
@@ -643,25 +667,15 @@ impl Shell {
         session.status = Status::Working;
         env.sessions.insert(0, session);
         if show {
-            let tab = Tab::new(
+            let tab = Tab::of(
+                env_path,
                 title,
                 TabKind::Session {
                     agent,
                     id: id.clone(),
                 },
             );
-            if matches!(
-                env.tabs.get(env.active_tab).map(|t| &t.kind),
-                Some(TabKind::NewSession)
-            ) {
-                env.tabs[env.active_tab] = tab;
-            } else {
-                env.tabs.push(tab);
-                env.active_tab = env.tabs.len() - 1;
-            }
-            if visible {
-                self.note_active_tab(cx);
-            }
+            self.open_session_tab(env_path, tab, visible, cx);
         }
         crate::telemetry::capture(
             crate::telemetry::events::SESSION_STARTED,
@@ -739,7 +753,7 @@ impl Shell {
             agent: from,
             id: old_id,
         }) = self
-            .env()
+            .strip
             .tabs
             .get(self.composer_tab())
             .map(|t| t.kind.clone())
@@ -819,7 +833,7 @@ impl Shell {
         drop(old);
         let env = self.env_mut();
         env.sessions.insert(ix, session);
-        for tab in &mut env.tabs {
+        for tab in &mut self.strip.tabs {
             if matches!(&tab.kind, TabKind::Session { id: tid, .. } if *tid == old_id) {
                 tab.kind = TabKind::Session {
                     agent,
@@ -846,31 +860,31 @@ impl Shell {
         let Some(i) = env.session_index(&id) else {
             return;
         };
-        let existing = env
-            .tabs
-            .iter()
-            .position(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if *tid == id));
-        env.active_tab = match existing {
+        let s = &env.sessions[i];
+        let tab = Tab::of(
+            &env.path,
+            s.title.clone(),
+            TabKind::Session {
+                agent: s.agent,
+                id: id.clone(),
+            },
+        );
+        let strip = &mut self.strip;
+        strip.active_tab = match strip.session_tab(&id) {
             Some(t) => t,
             None => {
-                let s = &env.sessions[i];
-                let tab = Tab::new(
-                    s.title.clone(),
-                    TabKind::Session {
-                        agent: s.agent,
-                        id: id.clone(),
-                    },
-                );
-                if matches!(
-                    env.tabs.get(env.active_tab).map(|t| &t.kind),
-                    Some(TabKind::NewSession)
-                ) && env.tabs.len() == 1
-                {
-                    env.tabs[0] = tab;
-                    0
-                } else {
-                    env.tabs.push(tab);
-                    env.tabs.len() - 1
+                // The environment's only tab, a blank one, turns into the session.
+                let mut own = strip
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.env == tab.env);
+                match (own.next(), own.next()) {
+                    (Some((only, t)), None) if matches!(t.kind, TabKind::NewSession) => {
+                        strip.tabs[only] = tab;
+                        only
+                    }
+                    _ => strip.add(tab),
                 }
             }
         };
@@ -966,7 +980,8 @@ impl Shell {
             return None;
         }
         let env = self.env();
-        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind)
+        let Some(TabKind::Session { id, .. }) =
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind)
         else {
             return None;
         };
@@ -979,16 +994,15 @@ impl Shell {
     /// The agent of the composer's session, or the one picked for the next session.
     pub(super) fn composer_agent(&self) -> model::Agent {
         let env = self.env();
-        match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+        match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
             Some(TabKind::Session { agent, .. }) => *agent,
             _ => env.agent,
         }
     }
 
     pub(super) fn composer_in_session(&self) -> bool {
-        let env = self.env();
         matches!(
-            env.tabs.get(self.composer_tab()).map(|t| &t.kind),
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind),
             Some(TabKind::Session { .. })
         )
     }
@@ -1433,10 +1447,8 @@ impl Shell {
             self.open_session(id, window, cx);
         } else {
             // Forked from a session of another environment: its tab waits there.
-            if let Some(env) = self.find_env_mut(env_path) {
-                env.tabs
-                    .push(Tab::new(title, TabKind::Session { agent, id }));
-            }
+            self.strip
+                .add(Tab::of(env_path, title, TabKind::Session { agent, id }));
             self.save(cx);
             cx.notify();
         }
@@ -1457,10 +1469,8 @@ impl Shell {
         // passes the rename on the next time the session starts.
         session.title = new_title.clone();
         let thread = session.live.as_ref().map(|l| l.thread.clone());
-        for tab in &mut env.tabs {
-            if matches!(&tab.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id) {
-                tab.title = new_title.clone();
-            }
+        if let Some(i) = self.strip.session_tab(id) {
+            self.strip.tabs[i].title = new_title.clone();
         }
         if let Some(thread) = thread {
             thread.update(cx, |t, cx| t.rename(title, cx));
@@ -1501,11 +1511,7 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        while let Some(i) =
-            self.env().tabs.iter().position(
-                |t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id),
-            )
-        {
+        while let Some(i) = self.strip.session_tab(id) {
             self.discard_tab(i, window, cx);
         }
         let env = self.env_mut();

@@ -74,10 +74,7 @@ impl Shell {
     /// Whether the window shows the GitHub tab, looked at or not.
     fn github_in_front(&self) -> bool {
         if self.has_projects() {
-            matches!(
-                self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
-                Some(TabKind::GitHub)
-            )
+            matches!(self.strip.active().map(|t| &t.kind), Some(TabKind::GitHub))
         } else {
             self.github_alone
         }

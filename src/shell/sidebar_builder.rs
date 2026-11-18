@@ -399,11 +399,9 @@ impl Shell {
     fn tab_pin(&self) -> Option<Pin> {
         let env = self.env();
         // The builder itself is on screen; the tab before it is the one meant.
-        let tab = env
-            .tabs
-            .iter()
-            .rev()
-            .find(|t| matches!(t.kind, TabKind::Browser { .. } | TabKind::File { .. }))?;
+        let tab = self.strip.tabs.iter().rev().find(|t| {
+            t.is_in(&env.path) && matches!(t.kind, TabKind::Browser { .. } | TabKind::File { .. })
+        })?;
         match &tab.kind {
             TabKind::Browser { url } if !url.is_empty() => Some(Pin::Url {
                 title: url_title(url),

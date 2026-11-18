@@ -457,10 +457,9 @@ impl Shell {
     pub(super) fn servers_tab_closed(&mut self, cx: &mut Context<Self>) {
         let still_open = self.servers_alone
             || self
-                .projects
+                .strip
+                .tabs
                 .iter()
-                .flat_map(|p| &p.environments)
-                .flat_map(|e| &e.tabs)
                 .any(|t| matches!(t.kind, TabKind::Servers));
         let Some(link) = &mut self.servers else {
             return;

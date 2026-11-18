@@ -631,10 +631,7 @@ impl Shell {
         };
         let watching = window.is_window_active()
             && pi == self.active_project
-            && matches!(
-                self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
-                Some(TabKind::Runs)
-            );
+            && matches!(self.strip.active().map(|t| &t.kind), Some(TabKind::Runs));
         if watching {
             return;
         }

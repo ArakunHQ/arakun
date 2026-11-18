@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentKind;
 use crate::model::Agent;
+use crate::sidebar::View;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -211,6 +212,22 @@ pub fn find_github() -> GitHub {
     }
 }
 
+/// The sidebar tabs a finished setup turns on, for what the user set up in
+/// it. A new install starts with every tab that is an extension off, so
+/// without this the GitHub they just connected and the phone they chose to
+/// pair have no row in the sidebar. A setup opened again leaves GitHub as it
+/// is: a returning user may have turned it off on purpose.
+pub fn views_set_up(fresh: bool, github: Option<GitHub>, pair_phone: bool) -> Vec<View> {
+    let mut on = Vec::new();
+    if fresh && github == Some(GitHub::Connected) {
+        on.push(View::GitHub);
+    }
+    if pair_phone {
+        on.push(View::Phone);
+    }
+    on
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +293,21 @@ mod tests {
         assert_eq!(pick(&none, Agent::Droid), None);
         // Workers AI needs no CLI, so it is not listed and cannot be kept.
         assert_eq!(pick(&rows, Agent::WorkersAi), Some(Agent::OpenCode));
+    }
+
+    #[test]
+    fn the_setup_turns_on_the_tabs_it_set_up() {
+        let connected = Some(GitHub::Connected);
+        assert_eq!(views_set_up(true, connected, false), [View::GitHub]);
+        assert_eq!(
+            views_set_up(true, connected, true),
+            [View::GitHub, View::Phone]
+        );
+        // GitHub not signed in, or still being asked.
+        assert!(views_set_up(true, Some(GitHub::SignedOut), false).is_empty());
+        assert!(views_set_up(true, None, false).is_empty());
+        // Opened again: only what was asked for there.
+        assert!(views_set_up(false, connected, false).is_empty());
+        assert_eq!(views_set_up(false, connected, true), [View::Phone]);
     }
 }

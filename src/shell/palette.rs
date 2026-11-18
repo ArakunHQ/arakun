@@ -542,7 +542,7 @@ impl Shell {
         self.palette_github(cx, &mut items);
         self.palette_runs(cx, &mut items);
         self.palette_places(cx, &mut items);
-        self.palette_views(&mut items);
+        self.palette_views(&mut items, cx);
         self.palette_commands(&mut items, cx);
         self.palette_settings(&mut items);
         // CoderSpace tasks waiting on the person, as the old switcher listed them.
@@ -1084,9 +1084,14 @@ impl Shell {
         }
     }
 
-    fn palette_views(&self, items: &mut Vec<Item>) {
+    fn palette_views(&self, items: &mut Vec<Item>, cx: &App) {
         let has = self.has_projects();
         for &v in View::ALL {
+            // The Marketplace switch decides for the palette too, so the two
+            // never disagree on which tabs there are.
+            if !self.rail_shows(&crate::sidebar::Piece::view(v), cx) {
+                continue;
+            }
             let target = match v {
                 View::Inbox => continue,
                 View::Runs => Target::Runs,

@@ -315,7 +315,8 @@ impl ExtensionsView {
         self.set_kind(Kind::Arakun, cx);
     }
 
-    fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
+    /// Turns an extension tab on or off, as its switch here does.
+    pub fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
         if self.views.set(view, on) {
             self.views.save();
             cx.emit(ExtensionsEvent::Toggled(view, on));

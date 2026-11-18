@@ -3033,6 +3033,175 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // A certificate for 127.0.0.1 and the authority that signed it, made
+    // for this test only. They protect nothing.
+    #[cfg(target_os = "linux")]
+    const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBmjCCAT+gAwIBAgIUfclK8YbDD/E7oTFEzGr9nNhTVK8wCgYIKoZIzj0EAwIw\n\
+GTEXMBUGA1UEAwwOYXJha3VuIHRlc3QgY2EwIBcNMjYxMTE4MjIwNzQxWhgPMjEy\n\
+NjEwMjUyMjA3NDFaMBkxFzAVBgNVBAMMDmFyYWt1biB0ZXN0IGNhMFkwEwYHKoZI\n\
+zj0CAQYIKoZIzj0DAQcDQgAErelQF52dVIXiqbahI/+vaq8H9EAig6U2bvj6A49O\n\
+z7cjlqy1tAguSxCX90QwN/SgbCsgh47sZE9qq8Vo6TDox6NjMGEwHQYDVR0OBBYE\n\
+FDs0jzS2DcBpQ7eYpW0sD8nb01BPMB8GA1UdIwQYMBaAFDs0jzS2DcBpQ7eYpW0s\n\
+D8nb01BPMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgIEMAoGCCqGSM49\n\
+BAMCA0kAMEYCIQCf8GOFkipY1rWcGVoKrfsFnLMWSc86wZVMXi/Z2mi6DgIhAIxt\n\
+SklF/YD6bQ6wc1DHFQEZiCjGfv2YijPx9EkeXQjr\n\
+-----END CERTIFICATE-----";
+    #[cfg(target_os = "linux")]
+    const TEST_CERT: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBuTCCAV+gAwIBAgIUEsd7LR7OTgVI9u7xto3rcxZvwuwwCgYIKoZIzj0EAwIw\n\
+GTEXMBUGA1UEAwwOYXJha3VuIHRlc3QgY2EwIBcNMjYxMTE4MjIwNzQxWhgPMjEy\n\
+NjEwMjUyMjA3NDFaMBQxEjAQBgNVBAMMCTEyNy4wLjAuMTBZMBMGByqGSM49AgEG\n\
+CCqGSM49AwEHA0IABGzYq0E5SaAw2wL11P3j15wkZTc1G9iEHhzkK2XeAfzu3axi\n\
+BqGTCyuyBo+ZOJUH1thMPnbLvR0C3FU006EWw1+jgYcwgYQwDAYDVR0TAQH/BAIw\n\
+ADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDwYDVR0RBAgw\n\
+BocEfwAAATAdBgNVHQ4EFgQUZjNa4mvSW5vadwvH3urT+QbcaI4wHwYDVR0jBBgw\n\
+FoAUOzSPNLYNwGlDt5ilbSwPydvTUE8wCgYIKoZIzj0EAwIDSAAwRQIhAJYzDK6f\n\
+pxaUor2zgIk6bx0tPIGQ/OmqE+i+Sx9C/q57AiBfNNVow1DD9GMLXugVvRviVpnb\n\
+p2hwF/IQOdR9oPiVBQ==\n\
+-----END CERTIFICATE-----";
+    #[cfg(target_os = "linux")]
+    const TEST_CERT_KEY: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJluVUiTfZ7P2f/2n\n\
+LE/y2RAG+2bvZUHKxQdTxLuxnKKhRANCAARs2KtBOUmgMNsC9dT949ecJGU3NRvY\n\
+hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
+-----END PRIVATE KEY-----";
+
+    /// An https server on 127.0.0.1 that hands out the files under `root`,
+    /// as git's plain ("dumb") http protocol reads them, to whoever signs in
+    /// as `login` (`user:password`). Returns its port and how many requests
+    /// signed in.
+    #[cfg(target_os = "linux")]
+    fn https_server(
+        root: PathBuf,
+        login: &str,
+    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use base64::Engine as _;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
+        use std::io::{Read as _, Write as _};
+        use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from_pem_slice(TEST_CERT.as_bytes()).unwrap()],
+                PrivateKeyDer::from_pem_slice(TEST_CERT_KEY.as_bytes()).unwrap(),
+            )
+            .unwrap();
+        let config = Arc::new(config);
+        let expected = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(login)
+        );
+        let signed_in = Arc::new(AtomicUsize::new(0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let counted = signed_in.clone();
+        // Lives as long as the tests do.
+        std::thread::spawn(move || {
+            for tcp in listener.incoming().flatten() {
+                let (config, root) = (config.clone(), root.clone());
+                let (expected, counted) = (expected.clone(), counted.clone());
+                std::thread::spawn(move || -> std::io::Result<()> {
+                    let conn =
+                        rustls::ServerConnection::new(config).map_err(std::io::Error::other)?;
+                    let mut tls = rustls::StreamOwned::new(conn, tcp);
+                    let mut head = Vec::new();
+                    let mut byte = [0u8];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if tls.read(&mut byte)? == 0 {
+                            return Ok(());
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    let target = head.split_whitespace().nth(1).unwrap_or("/");
+                    let signed = head.lines().any(|l| {
+                        l.split_once(':').is_some_and(|(k, v)| {
+                            k.eq_ignore_ascii_case("authorization") && v.trim() == expected
+                        })
+                    });
+                    let file = root.join(target.split('?').next().unwrap().trim_start_matches('/'));
+                    let (status, body) = if !signed {
+                        ("401 Unauthorized", Vec::new())
+                    } else {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        match std::fs::read(&file) {
+                            Ok(body) => ("200 OK", body),
+                            Err(_) => ("404 Not Found", Vec::new()),
+                        }
+                    };
+                    write!(
+                        tls,
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\
+                         WWW-Authenticate: Basic realm=\"test\"\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )?;
+                    tls.write_all(&body)?;
+                    tls.conn.send_close_notify();
+                    tls.flush()
+                });
+            }
+        });
+        (port, signed_in)
+    }
+
+    // The server's credential helper is a shell function, and the https
+    // server needs rustls, which only Linux tests build.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_https_clone_signs_in_with_the_servers_login_and_never_shows_it() {
+        let dir = scratch("https");
+        let origin = origin_repo(&dir);
+        let served = dir.join("served");
+        std::fs::create_dir(&served).unwrap();
+        let origin = origin.to_str().unwrap();
+        git_in(&served, &["clone", "--quiet", "--bare", origin, "r.git"]);
+        git_in(&served.join("r.git"), &["update-server-info"]);
+        let ca = dir.join("ca.pem");
+        std::fs::write(&ca, TEST_CA).unwrap();
+        let (port, signed_in) = https_server(served, "u:right-token");
+        let source = clone_source::CloneSource {
+            url: format!("https://127.0.0.1:{port}/r.git"),
+            on_github: false,
+            label: "o/r".into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        // How the server's git signs in: a credential helper, as `gh auth
+        // setup-git` or a stored login sets up.
+        let git = |password: &str| {
+            let mut git = git_command();
+            git.env("GIT_CONFIG_COUNT", "2")
+                .env("GIT_CONFIG_KEY_0", "http.sslCAInfo")
+                .env("GIT_CONFIG_VALUE_0", &ca)
+                .env("GIT_CONFIG_KEY_1", "credential.helper")
+                .env(
+                    "GIT_CONFIG_VALUE_1",
+                    format!(
+                        "!f() {{ test \"$1\" = get && printf 'username=u\\npassword={password}\\n'; }}; f"
+                    ),
+                );
+            git
+        };
+
+        clone_with(git("right-token"), &source, &dir.join("ok")).unwrap();
+        assert!(dir.join("ok/.git").exists());
+        assert!(signed_in.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        let config = std::fs::read_to_string(dir.join("ok/.git/config")).unwrap();
+        assert!(!config.contains("right-token"), "{config}");
+
+        // A login the host turns down: no prompt to wait on, and what the
+        // device is told does not carry the password.
+        let err = clone_with(git("wrong-token"), &source, &dir.join("no")).unwrap_err();
+        assert!(!err.contains("wrong-token"), "{err}");
+        assert!(err.contains("Authentication failed"), "{err}");
+        assert!(!dir.join("no").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_address_line_says_what_is_in_the_way() {
         assert_eq!(

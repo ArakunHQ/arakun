@@ -105,6 +105,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Time",
 ] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# An https server on 127.0.0.1 that a server clone signs in to (src/server/daemon.rs).
+# The rustls ureq already builds.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
 [[bin]]
 name = "arakun-helper"
 required-features = ["browser"]

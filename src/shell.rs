@@ -1373,9 +1373,14 @@ impl Shell {
             machines.push(crate::dialogs::Machine {
                 server: None,
                 label: "This computer".into(),
+                folder: None,
             });
         }
-        for e in &project.environments {
+        // The open environment speaks for its server: the new one starts with
+        // its agent. Any of a server's folders for the others.
+        let open_env = project.environments.get(project.active_env);
+        let envs = open_env.into_iter().chain(project.environments.iter());
+        for e in envs {
             let Some(r) = &e.remote else { continue };
             let known = machines
                 .iter()
@@ -1385,6 +1390,7 @@ impl Shell {
                 machines.push(crate::dialogs::Machine {
                     server: Some((r.server.clone(), r.place.clone())),
                     label: r.machine.clone(),
+                    folder: self.server_repo_folder(&r.server, &r.place),
                 });
             }
         }
@@ -1433,8 +1439,8 @@ impl Shell {
                 } => {
                     let (server, from) = (server.clone(), from.clone());
                     let (branch, auto_name) = (branch.clone(), *auto_name);
-                    this.close_modal(window, cx);
-                    this.servers_new_env_on(&server, &from, branch, auto_name, cx);
+                    // The dialog stays until the server answers.
+                    this.servers_new_env_on(&server, &from, branch, auto_name, true, cx);
                 }
                 _ => this.close_modal(window, cx),
             },

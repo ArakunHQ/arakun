@@ -532,8 +532,6 @@ impl Shell {
         if self.env().remote.is_some() {
             let path = self.env().path.clone();
             let agent = self.env().agent;
-            // The branch is named after the first prompt, there as here.
-            self.name_after_first_prompt(&path, &text, agent.kind(), cx);
             // `/stage` runs git here, on files that are on the server.
             if let Some(id) = self.active_session_id()
                 && text.trim() == "/stage"
@@ -558,14 +556,29 @@ impl Shell {
                 Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
                 None => text.clone(),
             };
+            // A remote thread hands the prompt on without saying whether it
+            // went: whether it can go is asked first.
+            let reachable = self.env().remote.as_ref().is_some_and(|r| {
+                self.server_reach(&r.server) == Some(crate::servers_view::Reach::Connected)
+            });
             let sent = match self.active_session_id() {
                 Some(id) => {
                     self.ensure_live(&path, &id, window, cx);
                     let thread = self.active_thread(cx);
                     if let Some(thread) = &thread {
-                        thread.update(cx, |t, cx| t.send(prompt, cx));
+                        thread.update(cx, |t, cx| {
+                            if reachable {
+                                t.send(prompt, cx);
+                            } else {
+                                t.post_notice(
+                                    "The server is not connected, so this did not reach it.",
+                                    true,
+                                    cx,
+                                );
+                            }
+                        });
                     }
-                    thread.is_some()
+                    reachable && thread.is_some()
                 }
                 None => {
                     let sent = self.servers_start(
@@ -576,9 +589,6 @@ impl Shell {
                         super::servers::Asker::Desktop,
                     );
                     if !sent {
-                        // Not sent: back into the composer, as the user wrote it, with why.
-                        self.env_mut().draft.set(&text);
-                        self.composer_changed(cx);
                         let why = self
                             .servers_refusal()
                             .unwrap_or_else(|| "The server cannot be reached.".into());
@@ -593,8 +603,16 @@ impl Shell {
                     sent
                 }
             };
-            if !sent && let Some(note) = note {
-                self.rename_notes.insert(path, note);
+            if sent {
+                // The branch is named after the first prompt that went, there as here.
+                self.name_after_first_prompt(&path, &text, agent.kind(), cx);
+            } else {
+                // Not sent: back into the composer, as the user wrote it.
+                self.env_mut().draft.set(&text);
+                self.composer_changed(cx);
+                if let Some(note) = note {
+                    self.rename_notes.insert(path, note);
+                }
             }
             cx.notify();
             return;

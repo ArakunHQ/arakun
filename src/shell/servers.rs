@@ -20,7 +20,7 @@ use futures::channel::mpsc;
 use gpui::{Context, Entity, SharedString, Task, Window};
 use serde_json::{Value, json};
 
-use super::Shell;
+use super::{Modal, Shell};
 use crate::agent::{
     AgentKind, Entry, RemoteAction, SessionMeta, Thread, ThreadStatus, Transcript, Usage,
 };
@@ -98,9 +98,8 @@ pub(super) struct ServersLink {
     adding: HashSet<String>,
     /// A folder a server just added, by server and path: it opens once listed.
     added: Option<(String, String)>,
-    /// A new environment asked of a server, by server and branch, and
-    /// whether its first prompt names it, as one made here is.
-    new_env: Option<(String, String, bool)>,
+    /// A new environment asked of each server, until it answers.
+    new_env: HashMap<String, NewEnv>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -167,6 +166,15 @@ fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -
         return None;
     }
     Some("The request did not reach the server. Try again once it is connected.".into())
+}
+
+/// A new environment a server was asked for.
+struct NewEnv {
+    branch: String,
+    /// Its first prompt names it, as one made here.
+    auto_name: bool,
+    /// Asked from the New environment dialog, which waits on the answer.
+    dialog: bool,
 }
 
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
@@ -488,7 +496,7 @@ impl Shell {
             retired: HashSet::new(),
             adding: HashSet::new(),
             added: None,
-            new_env: None,
+            new_env: HashMap::new(),
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -594,7 +602,12 @@ impl Shell {
                 if link.added.as_ref().is_some_and(|(s, _)| s == id) {
                     link.added = None;
                 }
+                let new = link.new_env.remove(id);
                 self.sync_remote_projects(window, cx);
+                if let Some(new) = new {
+                    let why = "The server was forgotten before it made the environment.";
+                    self.servers_new_env_failed(&new, why.into(), cx);
+                }
             }
             ServersEvent::AddPlace { server, path } => {
                 if let Some(conn) = link.conns.get(server) {
@@ -773,6 +786,7 @@ impl Shell {
             .active_project
             .min(self.projects.len().saturating_sub(1));
         self.servers_open_started(window, cx);
+        self.servers_open_added(window, cx);
         // Phones list the servers' sessions too.
         self.phone_inbox_changed(cx);
         cx.notify();
@@ -1102,12 +1116,14 @@ impl Shell {
             .enumerate()
             .find_map(|(pi, p)| p.env_index(&env_path).map(|ei| (pi, ei)));
         if let Some((pi, ei)) = found {
-            let named = self.servers.as_mut().and_then(|link| {
+            let new = self.servers.as_mut().and_then(|link| {
                 link.added = None;
-                link.new_env
-                    .take_if(|(s, _, _)| *s == server)
-                    .and_then(|(_, b, auto)| auto.then_some(b))
+                link.new_env.remove(&server)
             });
+            if new.as_ref().is_some_and(|n| n.dialog) && self.create_env_dialog().is_some() {
+                self.close_modal(window, cx);
+            }
+            let named = new.and_then(|n| n.auto_name.then_some(n.branch));
             let env = &mut self.projects[pi].environments[ei];
             if let Some(branch) = named.filter(|b| env.branch.as_ref() == b) {
                 env.placeholder = Some(branch);
@@ -1144,17 +1160,19 @@ impl Shell {
             .map(|e| e.branch.to_string())
             .collect();
         let branch = crate::env_name::random(|n| taken.iter().any(|t| t == n));
-        self.servers_new_env_on(&remote.server, &remote.place, branch, true, cx);
+        self.servers_new_env_on(&remote.server, &remote.place, branch, true, false, cx);
     }
 
     /// A worktree on `branch` made on `server`, of the repository its folder
-    /// `from` is a checkout of. With `auto_name`, the first prompt there names it.
+    /// `from` is a checkout of. With `auto_name`, the first prompt there names
+    /// it. With `dialog`, the New environment dialog waits on the answer.
     pub(super) fn servers_new_env_on(
         &mut self,
         server: &str,
         from: &str,
         branch: String,
         auto_name: bool,
+        dialog: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(link) = &mut self.servers else {
@@ -1177,24 +1195,64 @@ impl Shell {
             )),
             _ => None,
         };
+        let new = NewEnv {
+            branch,
+            auto_name,
+            dialog,
+        };
         if let Some(why) = problem {
-            self.notify(
-                crate::island::AlertKind::Warning,
-                "Could not make the environment",
-                &why,
-                None,
-                cx,
-            );
+            self.servers_new_env_failed(&new, why, cx);
             return;
         }
         let Some(conn) = link.conns.get(server) else {
             return;
         };
         conn.client
-            .send(&json!({ "type": "new_env", "from": from, "branch": branch }));
+            .send(&json!({ "type": "new_env", "from": from, "branch": new.branch }));
         link.adding.insert(server.to_string());
-        link.new_env = Some((server.to_string(), branch, auto_name));
+        link.new_env.insert(server.to_string(), new);
         self.sync_servers_view(cx);
+    }
+
+    /// A new environment did not come: said in the dialog that asked, or by
+    /// the island when the sidebar did.
+    fn servers_new_env_failed(&mut self, new: &NewEnv, why: String, cx: &mut Context<Self>) {
+        if new.dialog
+            && let Some(dialog) = self.create_env_dialog()
+        {
+            dialog.update(cx, |d, cx| d.failed(why, cx));
+            return;
+        }
+        self.notify(
+            crate::island::AlertKind::Warning,
+            "Could not make the environment",
+            &why,
+            None,
+            cx,
+        );
+    }
+
+    /// The New environment dialog, when it is open.
+    fn create_env_dialog(&self) -> Option<Entity<crate::dialogs::CreateEnvDialog>> {
+        match &self.modal {
+            Some((Modal::CreateEnv(d), _)) => Some(d.clone()),
+            _ => None,
+        }
+    }
+
+    /// The name of the repository the server's folder `place` is a checkout
+    /// of, as the server calls it: new worktrees there go in a folder of it.
+    pub(super) fn server_repo_folder(&self, server: &str, place: &str) -> Option<SharedString> {
+        let conn = self.servers.as_ref()?.conns.get(server)?;
+        let row = conn.places.iter().find(|p| p.path == place)?;
+        let repo = if row.repo.is_empty() {
+            &row.path
+        } else {
+            &row.repo
+        };
+        Path::new(repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned().into())
     }
 
     /// The branch of a server's environment, renamed there. The app shows the
@@ -1295,7 +1353,8 @@ impl Shell {
                 let back = reach == Reach::Connected;
                 // The answer would have come on the connection that dropped,
                 // but the server may still finish: the form says to look first.
-                if !back && link.adding.remove(id) {
+                let lost_env = if back { None } else { link.new_env.remove(id) };
+                if !back && link.adding.remove(id) && lost_env.is_none() {
                     link.error = Some(
                         "The connection dropped before the server said whether the folder was added. Check its folders before you try again.".into(),
                     );
@@ -1324,6 +1383,10 @@ impl Shell {
                     let why = wire::error("the server went away before the session started");
                     self.phone_send(client, why);
                 }
+                if let Some(new) = lost_env {
+                    let why = "The connection dropped before the server said whether it made the environment. Check its environments before you try again.";
+                    self.servers_new_env_failed(&new, why.into(), cx);
+                }
             }
             Event::Message(msg) => {
                 if msg["type"] == "inbox" {
@@ -1340,17 +1403,10 @@ impl Shell {
                     // What was being added is not coming: the form can ask again.
                     if link.adding.remove(id) {
                         let message = text(&msg, "message");
-                        // A new environment was asked from the sidebar: said there.
-                        if link.new_env.take_if(|(s, _, _)| s == id).is_some() {
-                            self.notify(
-                                crate::island::AlertKind::Warning,
-                                "Could not make the environment",
-                                &message,
-                                None,
-                                cx,
-                            );
-                        } else {
-                            link.error = Some(message);
+                        // A new environment: said to whoever asked for it.
+                        match link.new_env.remove(id) {
+                            Some(new) => self.servers_new_env_failed(&new, message, cx),
+                            None => link.error = Some(message),
                         }
                     }
                 } else if msg["type"] == "error"
@@ -1423,23 +1479,15 @@ impl Shell {
             // A new environment asked from the sidebar: said there, not in
             // the Servers tab. A server that does not know `new_env` yet
             // turns the message itself down.
-            _ if link.new_env.as_ref().is_some_and(|(s, _, _)| s == id)
-                && link.adding.remove(id) =>
-            {
-                link.new_env = None;
-                let why = if message.contains("unknown variant") {
-                    "This server runs an older Arakun. Update it to make environments there."
-                        .to_string()
-                } else {
-                    message
-                };
-                self.notify(
-                    crate::island::AlertKind::Warning,
-                    "Could not make the environment",
-                    &why,
-                    None,
-                    cx,
-                );
+            // Its own failures come as `place_failed`; any other error is
+            // about something else and is left to the session or the tab.
+            _ if link.new_env.contains_key(id) && older_server_refused(&message, &["new_env"]) => {
+                link.adding.remove(id);
+                if let Some(new) = link.new_env.remove(id) {
+                    let why =
+                        "This server runs an older Arakun. Update it to make environments there.";
+                    self.servers_new_env_failed(&new, why.into(), cx);
+                }
                 true
             }
             _ => false,

@@ -823,6 +823,13 @@ impl Shell {
             ));
             return false;
         }
+        // One start is tracked at a time: a second `started` could not be told
+        // apart from the first, and its session would not open.
+        if link.starting.is_some() {
+            link.error =
+                Some("A session is still starting. Send this again once it opens.".to_string());
+            return false;
+        }
         conn.client.send(&json!({
             "type": "start", "env": remote.place, "agent": agent.key(), "text": text, "settings": [],
         }));
@@ -1015,6 +1022,11 @@ impl Shell {
                     LinkStatus::Refused(why) => Reach::Refused(why),
                 };
                 let back = reach == Reach::Connected;
+                // A start on a link that dropped may never be answered: it
+                // must not keep every later start waiting.
+                if !back && link.starting.as_deref() == Some(id) {
+                    link.starting = None;
+                }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for

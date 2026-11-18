@@ -26,6 +26,8 @@
 pub mod call;
 #[cfg(target_os = "linux")]
 pub mod desktop;
+#[cfg(windows)]
+pub mod external;
 #[cfg(any(unix, windows))]
 pub mod link;
 #[cfg(all(target_os = "linux", feature = "coderlabs"))]
@@ -39,6 +41,10 @@ mod windows;
 
 /// `arakun island …`: one request, straight to the island.
 pub fn cli(args: &[String]) -> i32 {
+    #[cfg(windows)]
+    if let Some(code) = external::cli(args) {
+        return code;
+    }
     let Some(msg) = proto::from_args(args) else {
         eprintln!("usage: {}", crate::control::ISLAND_USAGE);
         return 2;
@@ -237,7 +243,23 @@ mod host {
     /// A second click on the shape a button just shrank is not one on the resting island.
     const AFTER_BUTTON: Duration = Duration::from_secs(1);
 
+    /// How often finished and silent outside sessions are looked for.
+    #[cfg(windows)]
+    const EXPIRE_EVERY: Duration = Duration::from_secs(30);
+
     static EXIT: AtomicI32 = AtomicI32::new(0);
+
+    /// A card of an agent outside Arakun: the app leaving doesn't take it along.
+    #[cfg(windows)]
+    fn outside(key: &str) -> bool {
+        key.starts_with(super::external::PREFIX)
+    }
+
+    /// Only Windows has agents outside Arakun on the island.
+    #[cfg(not(windows))]
+    fn outside(_: &str) -> bool {
+        false
+    }
 
     enum Msg {
         Hello {
@@ -481,6 +503,9 @@ mod host {
         app: Option<AppLink>,
         watch: Watch,
         headless: watch::Seen,
+        /// Agents outside Arakun, told by their hooks.
+        #[cfg(windows)]
+        external: super::external::Sessions,
         launched: Option<Instant>,
         /// When a card's button or a row was last pressed.
         button_at: Option<Instant>,
@@ -543,6 +568,22 @@ mod host {
                     cx.background_executor().timer(WATCH_EVERY).await;
                 }
             });
+            // Outside agents may go quiet for good: their rows still have to leave.
+            #[cfg(windows)]
+            let expiry = cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(EXPIRE_EVERY).await;
+                    let now = crate::model::unix_now();
+                    let alive = this.update(cx, |host, cx| {
+                        if host.external.expire(now) {
+                            host.push(cx);
+                        }
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            });
             let events = cx.subscribe(&island, |host, _, ev, cx| host.on_island(ev, cx));
             #[cfg(feature = "coderlabs")]
             let (heard, mut calls) = mpsc::unbounded::<(u64, call::Out)>();
@@ -562,6 +603,8 @@ mod host {
                 app: None,
                 watch: Watch::default(),
                 headless: watch::Seen::default(),
+                #[cfg(windows)]
+                external: super::external::Sessions::default(),
                 launched: None,
                 button_at: None,
                 #[cfg(feature = "coderlabs")]
@@ -584,6 +627,8 @@ mod host {
                     headless,
                     #[cfg(feature = "coderlabs")]
                     voice,
+                    #[cfg(windows)]
+                    expiry,
                 ],
             }
         }
@@ -628,6 +673,7 @@ mod host {
                                     || a.key.is_empty()
                                     || a.kind == AlertKind::Confirm
                                     || headless.contains(&a.key)
+                                    || outside(&a.key)
                             },
                             cx,
                         );
@@ -662,6 +708,11 @@ mod host {
                 .detach();
                 return Reply::ok("");
             }
+            #[cfg(windows)]
+            let msg = match msg {
+                ToIsland::Session { update } => return self.session(update, cx),
+                msg => msg,
+            };
             #[cfg(feature = "coderlabs")]
             match &msg {
                 ToIsland::Voice { on } => return self.voice(*on, cx),
@@ -710,6 +761,8 @@ mod host {
                 ToIsland::Quit => Reply::ok(""),
                 ToIsland::State => Reply::ok(format!("{:?}", island.phase()).to_lowercase()),
                 ToIsland::Fps => Reply::ok(island.fps_report()),
+                #[cfg(windows)]
+                ToIsland::Session { .. } => Reply::ok(""),
                 #[cfg(feature = "coderlabs")]
                 ToIsland::Voice { .. } | ToIsland::Meeting { .. } | ToIsland::Wake { .. } => {
                     Reply::ok("")
@@ -758,8 +811,22 @@ mod host {
             }
         }
 
+        /// An agent outside Arakun changed: its row, and a card when its turn
+        /// ended or it waits for the user.
+        #[cfg(windows)]
+        fn session(&mut self, update: super::external::Update, cx: &mut Context<Self>) -> Reply {
+            let card = self.external.update(update, crate::model::unix_now());
+            self.push(cx);
+            if let Some(card) = card {
+                self.island.update(cx, |island, cx| island.alert(card, cx));
+            }
+            Reply::ok("")
+        }
+
         fn push(&mut self, cx: &mut Context<Self>) {
             let feed = watch::merge(self.app.as_ref().map(|a| &a.feed), &self.headless);
+            #[cfg(windows)]
+            let feed = super::external::merge(feed, &mut self.external);
             self.island
                 .update(cx, |island, cx| island.set_feed(feed, cx));
         }
@@ -769,6 +836,10 @@ mod host {
                 self.button_at = Some(Instant::now());
             }
             match ev {
+                // An agent outside Arakun: the app has nothing to show for it.
+                #[cfg(windows)]
+                IslandEvent::Open(key) | IslandEvent::OpenRow(key)
+                    if key.starts_with(super::external::PREFIX) => {}
                 IslandEvent::Open(key) => self.show_in_app(FromIsland::Ver { key: key.clone() }),
                 IslandEvent::OpenRow(key) => self.show_in_app(FromIsland::Row { key: key.clone() }),
                 IslandEvent::Later(key) => {

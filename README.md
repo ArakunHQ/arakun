@@ -237,7 +237,10 @@ after a week).
   session, a card when one finishes, fails or needs an answer. It runs as its own process
   (`arakun island-host`). On Linux it needs a compositor with the wlr-layer-shell
   protocol. On Windows it sits at the top center of the main screen; see
-  [docs/windows.md](docs/windows.md). On a MacBook it grows out of the notch, or out of
+  [docs/windows.md](docs/windows.md). There it also shows agents that run outside
+  Arakun, such as Claude Code in another terminal: their hooks call
+  `arakun island hook`, and any other agent can use `arakun island session <id> <state>`.
+  The setup is in docs/windows.md. On a MacBook it grows out of the notch, or out of
   the screen's own Dynamic Island on the models that have one, and sits on the built-in
   screen. On a Mac without
   either it hangs from the top of the main screen. Turning it off in Settings ends that

@@ -1920,6 +1920,7 @@ impl Shell {
                     this.save(cx);
                     cx.refresh_windows();
                 }
+                #[cfg(target_os = "linux")]
                 SettingsEvent::Background(on) => {
                     crate::background::set_enabled(*on);
                     this.save(cx);

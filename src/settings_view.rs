@@ -39,6 +39,8 @@ pub enum SettingsEvent {
     DiffPalette(DiffPalette),
     Glass(bool),
     Island(bool),
+    /// Only Linux has the switch.
+    #[cfg(target_os = "linux")]
     Background(bool),
     /// Quit and start again, which installs the downloaded update.
     RestartToUpdate,

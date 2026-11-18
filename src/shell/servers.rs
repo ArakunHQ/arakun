@@ -101,6 +101,14 @@ pub(super) struct ServersLink {
     _listen: Task<()>,
 }
 
+/// Ends the start `server` was asked for, which it will not answer now. A
+/// start on another server stays, so its `started` still opens its tab.
+fn end_start(starting: &mut Option<String>, server: &str) {
+    if starting.as_deref() == Some(server) {
+        *starting = None;
+    }
+}
+
 /// The folders a server's sessions ran in that it no longer offers. Their
 /// sessions stay in its list, so they stay openable here. An older server
 /// names a session's folder only (`env`): those sessions share one place per
@@ -492,6 +500,8 @@ impl Shell {
                 if link.following.as_ref().is_some_and(|f| f.server == *id) {
                     link.following = None;
                 }
+                // Its link stops without a word: its start is not answered.
+                end_start(&mut link.starting, id);
                 self.sync_remote_projects(window, cx);
             }
             ServersEvent::Open { server, session } => {
@@ -842,10 +852,8 @@ impl Shell {
     fn servers_undelivered(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) {
         let env_path = match msg["type"].as_str() {
             Some("start") => {
-                if let Some(link) = &mut self.servers
-                    && link.starting.as_deref() == Some(server)
-                {
-                    link.starting = None;
+                if let Some(link) = &mut self.servers {
+                    end_start(&mut link.starting, server);
                 }
                 Remote::env_path(server, &text(msg, "env"))
             }
@@ -1024,8 +1032,8 @@ impl Shell {
                 let back = reach == Reach::Connected;
                 // A start on a link that dropped may never be answered: it
                 // must not keep every later start waiting.
-                if !back && link.starting.as_deref() == Some(id) {
-                    link.starting = None;
+                if !back {
+                    end_start(&mut link.starting, id);
                 }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
@@ -1205,10 +1213,10 @@ impl Shell {
             "error" => {
                 let message = text(msg, "message");
                 // An error about a session names it; one that does not may
-                // be the answer to a start.
+                // be the answer to a start, if it is this server's.
                 let about = msg["id"].as_str();
                 if about.is_none() {
-                    link.starting = None;
+                    end_start(&mut link.starting, id);
                 }
                 // Said in that session's tab when it is open, else in the Servers tab.
                 let thread = about.and_then(|session| {
@@ -1497,6 +1505,17 @@ mod tests {
         assert_eq!(&*env.draft, "half a prompt");
         // A folder no server lists any more is not kept for anywhere.
         assert!(moving.is_empty());
+    }
+
+    #[test]
+    fn a_start_ends_only_with_its_own_server() {
+        let mut starting = Some("a".to_string());
+        // Server b forgotten, dropped or erring: a's start still waits.
+        end_start(&mut starting, "b");
+        assert_eq!(starting.as_deref(), Some("a"));
+        // Server a forgotten: a start on b is not held up by it.
+        end_start(&mut starting, "a");
+        assert_eq!(starting, None);
     }
 
     #[test]

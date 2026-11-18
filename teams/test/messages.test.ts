@@ -430,6 +430,59 @@ describe("presence", () => {
     for (const s of [a, a2]) s.ws.close();
   });
 
+  it("never lists a socket that opened during an older list's check and then lost the flag", async () => {
+    const t = await team();
+    const m = await join(t);
+    const hash = async (id: number) =>
+      (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(id).first<{ token_hash: string }>())!.token_hash;
+    const owner = await hash(t.owner.user.id);
+    const mine = await hash(m.user.id);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    await a.inbox.here.until([t.owner.user.id]);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    // Holds the list that a second owner socket starts (old), and the one the
+    // member's socket starts (new) until the member lost the flag.
+    await runInDurableObject<Channel, void>(stub, (instance) => {
+      const ch = instance as any;
+      const allowed = ch.allowed.bind(ch);
+      const oldGate = new Promise<void>((r) => (ch.releaseOld = r));
+      const newGate = new Promise<void>((r) => (ch.releaseNew = r));
+      ch.heldOld = ch.heldNew = false;
+      // The second owner socket's admission checks the owner first, then its list.
+      let ownerOnly = 0;
+      ch.allowed = async (teamId: string, list: string[]) => {
+        if (!ch.heldOld && list.length === 1 && list[0] === owner && ++ownerOnly === 2) {
+          const got = await allowed(teamId, list);
+          ch.heldOld = true;
+          await oldGate;
+          return got;
+        }
+        if (!ch.heldNew && list.length > 1 && list.includes(mine)) {
+          ch.heldNew = true;
+          await newGate;
+        }
+        return allowed(teamId, list);
+      };
+    });
+    const until = async (key: string) => {
+      while (!(await runInDurableObject<Channel, boolean>(stub, (ch) => (ch as any)[key]))) await new Promise((r) => setTimeout(r, 1));
+    };
+    const a2 = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    await until("heldOld");
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    await until("heldNew");
+    await expectJson(call("DELETE", `/admin/users/${m.user.id}/flags/teams`, ADMIN), 200);
+    await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).releaseNew());
+    await a.inbox.here.until([t.owner.user.id]);
+    await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).releaseOld());
+    // A send is a barrier: its ack comes after any presence sent before it.
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "barrier"));
+    await stored(a);
+    await a.inbox.here.until([t.owner.user.id], 0);
+    expect(b.inbox.here.count).toBe(0);
+    for (const s of [a, a2]) s.ws.close();
+  });
+
   it("drops a removed member", async () => {
     const t = await team();
     const m = await join(t);

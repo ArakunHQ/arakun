@@ -89,6 +89,9 @@ export class Channel extends DurableObject<Env> {
   /// with the open sockets: one admitted while that check runs was itself
   /// checked earlier, and a logout in between must not let it hear the send.
   private admitting = new Map<string, number>();
+  /// How many presence lists were started, so one that a newer one overtook
+  /// sends nothing: the newer one has the current sockets.
+  private presenceRuns = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -313,30 +316,30 @@ export class Channel extends DurableObject<Env> {
 
   /// Sends the GitHub IDs with a socket open on this channel, sorted, once
   /// each, to every open socket that passes the same check as a send's
-  /// recipients. `gone` is a socket that is closing and may still be listed.
-  /// The server already knows who is connected; this only tells the members,
-  /// and nothing of what they write.
+  /// recipients. Only those are listed. `gone` is a socket that is closing and
+  /// may still be listed. The server already knows who is connected; this
+  /// only tells the members, and nothing of what they write.
   private async presence(gone?: WebSocket): Promise<void> {
+    const run = ++this.presenceRuns;
     const open = () => this.ctx.getWebSockets().filter((ws) => ws !== gone && ws.readyState === WebSocket.OPEN);
     const first = open()[0]?.deserializeAttachment() as Who | null | undefined;
     if (!first) return;
-    const checked = new Set(open().map(sessionOf));
     let allowed: Set<string>;
     try {
-      allowed = await this.allowed(first.teamId, [...checked]);
+      allowed = await this.allowed(first.teamId, [...new Set(open().map(sessionOf))]);
     } catch (e) {
       console.error("presence check failed:", e);
       return;
     }
-    // Read again after the check, so the list that goes out is the current
-    // one. A socket that failed the check is neither told nor listed; the
-    // next send closes it. One admitted during the check passed its own just
-    // now, and its own presence() tells it.
-    const current = open().filter((ws) => !checked.has(sessionOf(ws)) || allowed.has(sessionOf(ws)));
+    // A socket that opened or closed during the check started a newer list,
+    // which goes out instead of this one, so the last list is never older.
+    if (run !== this.presenceRuns) return;
+    // A socket that failed the check is neither told nor listed; the next
+    // send closes it.
+    const current = open().filter((ws) => allowed.has(sessionOf(ws)));
     const here = [...new Set(current.map((ws) => (ws.deserializeAttachment() as Who | null)?.githubId ?? 0))].filter((id) => id > 0).sort((a, b) => a - b);
     const out = JSON.stringify({ type: "presence", here });
     for (const ws of current) {
-      if (!allowed.has(sessionOf(ws))) continue;
       try {
         ws.send(out);
       } catch {

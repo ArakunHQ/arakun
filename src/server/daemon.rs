@@ -1703,17 +1703,32 @@ impl Daemon {
                     &home,
                 );
                 let dest = parent.join(&source.name);
-                // A second clone there would find the first one half done.
-                if !self.cloning.insert(dest.clone()) {
-                    self.transport.send(
-                        client,
-                        place_failed(&format!("{} is being cloned already.", dest.display())),
-                    );
-                    return;
-                }
                 // A clone takes as long as the network: the server answers
                 // everyone else meanwhile.
                 cx.spawn(async move |this, cx| {
+                    // Reserved by its real path, which is the one a folder
+                    // added meanwhile is known by, whatever path it was given.
+                    let dest = cx
+                        .background_executor()
+                        .spawn(async move { real_dest(&dest) })
+                        .await;
+                    // A second clone there would find the first one half done.
+                    let reserved = this.update(cx, |this, _| {
+                        let new = this.cloning.insert(dest.clone());
+                        if !new {
+                            this.transport.send(
+                                client,
+                                place_failed(&format!(
+                                    "{} is being cloned already.",
+                                    dest.display()
+                                )),
+                            );
+                        }
+                        new
+                    });
+                    if !matches!(reserved, Ok(true)) {
+                        return;
+                    }
                     let into = dest.clone();
                     let done = cx
                         .background_executor()
@@ -2507,12 +2522,29 @@ impl PlaceMeta {
     }
 }
 
-/// Whether `path` (canonical) is where a clone under way goes, by whatever
-/// path the clone was given.
+/// Whether `path` (canonical) is where a clone under way goes. Clones are
+/// reserved by [`real_dest`], so this is the same path however it was given.
 fn being_cloned(path: &Path, cloning: &[PathBuf]) -> bool {
-    cloning
-        .iter()
-        .any(|c| c == path || std::fs::canonicalize(c).is_ok_and(|c| c == path))
+    cloning.iter().any(|c| c == path)
+}
+
+/// `dest` with its links resolved, before the folder exists: its nearest
+/// folder that does exist is resolved and the rest kept as given.
+fn real_dest(dest: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = dest;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |p, part| p.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name.to_owned());
+                at = up;
+            }
+            _ => return dest.to_path_buf(),
+        }
+    }
 }
 
 fn device_path(typed: &str, home: &Path) -> Result<PathBuf, String> {
@@ -2559,7 +2591,7 @@ const CLONE_LIMIT: Duration = Duration::from_secs(20 * 60);
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
 /// that repository. A failed clone leaves nothing behind.
 fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     if dest.exists() {
         return match checkout_origin(dest) {
             Some(found) if found.same_repo(source) => Ok(()),
@@ -2574,7 +2606,7 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
     // Made here, and only if it is not there yet: what a failed clone removes
     // is then this request's own folder.
     std::fs::create_dir(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-    let mut git = Command::new("git");
+    let mut git = git_command();
     git.args(CLONE_CONFIG)
         .args(["clone", "--quiet", "--", &source.url])
         .arg(dest)
@@ -2651,11 +2683,24 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
     ))
 }
 
+/// Git as the server runs it. Tests leave out this machine's settings: a
+/// user's commit signing or URL rewrites would change what they check.
+fn git_command() -> std::process::Command {
+    let mut git = std::process::Command::new("git");
+    if cfg!(test) {
+        git.env("GIT_CONFIG_NOSYSTEM", "1").env(
+            "GIT_CONFIG_GLOBAL",
+            std::env::temp_dir().join("arakun-test-no-gitconfig"),
+        );
+    }
+    git
+}
+
 /// The repository whose checkout `dir` is, by its `origin`. A folder inside
 /// some other checkout is not one.
 fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
     let git = |args: &[&str]| {
-        std::process::Command::new("git")
+        git_command()
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -2756,10 +2801,15 @@ mod tests {
         std::fs::create_dir_all(real.join("app")).unwrap();
         let link = dir.join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
+        // The clone is reserved before its folder is there, through the link.
+        let reserved = super::real_dest(&link.join("new/app"));
+        assert_eq!(reserved, real.join("new/app"));
+        // The folder appears, and is added by another path while the clone runs.
+        std::fs::create_dir_all(real.join("new/app")).unwrap();
+        let added = std::fs::canonicalize(link.join("new/app")).unwrap();
+        assert!(super::being_cloned(&added, std::slice::from_ref(&reserved)));
         let app = std::fs::canonicalize(real.join("app")).unwrap();
-        assert!(super::being_cloned(&app, &[link.join("app")]));
-        assert!(super::being_cloned(&app, std::slice::from_ref(&app)));
-        assert!(!super::being_cloned(&app, &[link.join("other")]));
+        assert!(!super::being_cloned(&app, &[reserved]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2793,9 +2843,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Runs git in `dir` with a name of its own, so the user's settings are not needed.
+    /// Runs git in `dir` with a name of its own and none of the user's settings.
     fn git_in(dir: &Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
+        let ok = git_command()
             .arg("-C")
             .arg(dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])

@@ -157,8 +157,11 @@ const GONE: &str = "gone:";
 /// Whether `message` is a server refusing one of `kinds` because it is older
 /// than them: it cannot read the message (`bad message: unknown variant ...`).
 fn older_server_refused(message: &str, kinds: &[&str]) -> bool {
-    message.starts_with("bad message: unknown variant")
-        && kinds.iter().any(|k| message.contains(&format!("`{k}`")))
+    // The variant refused comes first; the ones expected after it may name
+    // a kind here without being about it.
+    kinds
+        .iter()
+        .any(|k| message.starts_with(&format!("bad message: unknown variant `{k}`")))
 }
 
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
@@ -1643,6 +1646,8 @@ mod tests {
         assert!(older_server_refused(old, &["add_place", "clone"]));
         assert!(!older_server_refused(old, &["clone"]));
         assert!(!older_server_refused("no such session", &["add_place"]));
+        let other = "bad message: unknown variant `rename`, expected one of `add_place`, `clone`";
+        assert!(!older_server_refused(other, &["add_place", "clone"]));
     }
 
     #[test]

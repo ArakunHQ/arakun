@@ -90,9 +90,13 @@ jobs:
     # the commit its event names, so a late event for an older head that
     # cancels a run does the cancelled run's work. The events list no pull
     # request when the branch is on a fork; the head commit is the key then.
+    # A run by hand has a group of its own: it is often for a pull request
+    # CodeRabbit never reviewed, and a run started by a review event would
+    # cancel it, then stop because CodeRabbit's check run is missing. The
+    # steps accept a dismissal or review request the other run already made.
     concurrency:
       group: >-
-        reviewers-${{ inputs.pr ||
+        reviewers-${{ inputs.pr && format('manual-{0}', inputs.pr) ||
         github.event.check_run.pull_requests[0].number ||
         github.event.workflow_run.pull_requests[0].number ||
         github.event.check_run.head_sha || github.event.workflow_run.head_sha }}

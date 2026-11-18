@@ -53,9 +53,9 @@ jobs:
     # every run reads the reviews again after it writes (see update), so
     # overlapping runs end on the latest verdict.
     runs-on: depot-ubuntu-24.04
-    # Room for every head's retries; each call stops after a minute, and a
-    # head that fails doesn't stop the next. The default six hours is far
-    # too long for a hung run.
+    # Each head gets its own deadline (see HEAD_BUDGET), so a slow head
+    # leaves time for the next. The default six hours is far too long for a
+    # hung run.
     timeout-minutes: 30
     permissions:
       pull-requests: read
@@ -78,6 +78,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Seconds each head may use, checked before every call and wait.
+          # A call already running can go a minute or two past it, so two
+          # heads stay inside the job's 30 minutes.
+          HEAD_BUDGET=600
+          deadline=0
+          past_deadline() { [ "$SECONDS" -ge "$deadline" ]; }
+
           # Retries a call that failed on the network or on GitHub's side
           # (a timeout, HTTP 5xx or a rate limit), or took over a minute; any
           # other error fails at once. The output is held until the call succeeds, so a retried
@@ -97,7 +104,7 @@ jobs:
               fi
               cat "$err" >&2
               [ "$rc" != 124 ] || echo "gh took more than 60 seconds." >&2
-              if [ "$attempt" = 4 ] || { [ "$rc" != 124 ] &&
+              if [ "$attempt" = 4 ] || past_deadline || { [ "$rc" != 124 ] &&
                 ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit|API rate limit exceeded' "$err"; }; then
                 rm -f "$err"
                 return 1
@@ -162,10 +169,13 @@ jobs:
           # until the verdict holds. Runs overlap (see the job's comment), and
           # one may read the reviews, then write after another run wrote a
           # newer verdict. Whichever run writes last reads again after its
-          # write, so it puts back the verdict of the latest reviews.
+          # write, so it puts back the verdict of the latest reviews. Fails
+          # when the verdict doesn't hold, because its last write was never
+          # read back; the caller then writes pending (fail_closed).
           update() {
             local current written="" state description _
             for _ in 1 2 3 4; do
+              past_deadline && return 1
               current=$(verdict "$1") || return 1
               if [ -z "$current" ]; then
                 echo "No open pull request has $1 as its head."
@@ -183,7 +193,19 @@ jobs:
               echo "$1: $state, $description"
               written=$current
             done
-            echo "::warning::The reviews of $1 kept changing; the next review event sets its status again."
+            echo "::warning::The reviews of $1 kept changing."
+            return 1
+          }
+
+          # Used when a head's status couldn't be confirmed. The last write
+          # may be a stale success, and pending can only hold a merge back,
+          # never let one through. Running the workflow again sets the real
+          # verdict.
+          fail_closed() {
+            timeout 60 gh api -X POST "repos/$GH_REPO/statuses/$1" --silent -f state=pending \
+              -f context="Human approval" -f target_url="$RUN_URL" \
+              -f description="Couldn't check the reviews. Run the Human approval workflow again." ||
+              echo "::error::Couldn't set $1 to pending either."
           }
 
           if [ "$EVENT" = workflow_dispatch ]; then
@@ -191,17 +213,22 @@ jobs:
               echo "::error::Not a pull request number: $PR"
               exit 1
             fi
+            deadline=$((SECONDS + HEAD_BUDGET))
             SHAS=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
           fi
-          # A head that fails doesn't stop the others; the job fails at the end.
+          # A head that fails doesn't stop the others; the job fails at the
+          # end. SHAS lists the new head before the old one, and awk keeps
+          # that order, so the status that matters is set first.
           failed=""
-          for sha in $(tr ' ' '\n' <<<"$SHAS" | grep -xE '[0-9a-f]{40}' | grep -vx 0000000000000000000000000000000000000000 | sort -u); do
+          for sha in $(tr ' ' '\n' <<<"$SHAS" | grep -xE '[0-9a-f]{40}' | grep -vx 0000000000000000000000000000000000000000 | awk '!seen[$0]++'); do
+            deadline=$((SECONDS + HEAD_BUDGET))
             for attempt in 1 2 3; do
               if update "$sha"; then
                 break
               fi
-              if [ "$attempt" = 3 ]; then
+              if [ "$attempt" = 3 ] || past_deadline; then
                 echo "::error::Couldn't set the Human approval status of $sha."
+                fail_closed "$sha"
                 failed+=" $sha"
                 break
               fi

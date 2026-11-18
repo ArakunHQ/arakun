@@ -21,8 +21,8 @@ permissions: {}
 
 jobs:
   trigger:
-    name: Trigger the Human approval workflow
+    name: Trigger the review workflows
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - run: echo "Human approval updates the Human approval status."
+      - run: echo "Human approval and Reviewers handle the review."

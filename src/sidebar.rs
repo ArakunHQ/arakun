@@ -658,7 +658,8 @@ impl Preset {
                         only_open: true,
                     }],
                 ),
-                account(vec![Piece::Usage]),
+                // The User row is where Teams signs in with GitHub.
+                account(vec![Piece::Usage, Piece::User]),
                 Section::new(
                     "Views",
                     Mode::Fixed,

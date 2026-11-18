@@ -150,6 +150,7 @@ impl RelayClient {
         let tickets = access.lock().unwrap().ticket_hashes();
         let link = Link {
             url: endpoint(base, &label),
+            page: page_url(base, &label),
             identity,
             access,
             tickets,
@@ -311,6 +312,8 @@ fn origin(base: &str, label: &str) -> (bool, String) {
 
 struct Link {
     url: String,
+    /// The page phones open, whose `_relay` says whether the label is blocked.
+    page: String,
     identity: Identity,
     access: Shared,
     tickets: Vec<String>,
@@ -490,10 +493,11 @@ impl Link {
                 } else {
                     body
                 };
-                // The relay answers a blocked label with a 403 that says so. Any
-                // other 403 may come from a firewall in front of it, which can
-                // let the next attempt through.
-                if res.status().as_u16() == 403 && text == "blocked" {
+                // A 403 may come from a firewall in front of the relay, which
+                // can let the next attempt through. Only the relay's own word
+                // makes it a block: the body here is whatever arrived with the
+                // head, raw, so `_relay` is asked instead.
+                if res.status().as_u16() == 403 && self.blocked_at_door() {
                     refused("blocked")
                 } else {
                     Ended::Retry(text)
@@ -514,6 +518,24 @@ impl Link {
             let _ = s.get_ref().set_read_timeout(Some(READ_TICK));
         }
         Ok(ws)
+    }
+
+    /// Whether the relay itself says this label is blocked. Anything else,
+    /// including no answer, is not a block.
+    fn blocked_at_door(&self) -> bool {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(CONNECT_TIMEOUT))
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let Ok(mut res) = agent.get(format!("{}_relay", self.page)).call() else {
+            return false;
+        };
+        let Ok(body) = res.body_mut().with_config().limit(4096).read_to_string() else {
+            return false;
+        };
+        res.status().as_u16() == 403
+            && serde_json::from_str::<Value>(&body).is_ok_and(|v| v["blocked"] == true)
     }
 
     /// Answers the challenge with the signature of `nonce ‖ label`, then tells
@@ -1708,19 +1730,28 @@ mod tests {
         assert_eq!(next_status(&mut rx), Status::Connected);
     }
 
-    /// Answers the next dial with a plain HTTP response instead of a WebSocket.
-    fn answer_http(relay: &FakeRelay, status: &str, body: &str) {
+    /// Answers the next request with a plain HTTP response, the head and the
+    /// body apart, as a slow network may deliver them. Gives back the path asked.
+    fn answer_http(relay: &FakeRelay, status: &str, body: &str) -> String {
         use std::io::{Read as _, Write as _};
         let (mut stream, _) = relay.listener.accept().unwrap();
+        let mut request = Vec::new();
         let mut buf = [0u8; 4096];
-        let _ = stream.read(&mut buf);
-        // One write: the client keeps only the body that came with the head,
-        // and `write!` would send them in pieces.
-        let response = format!(
-            "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "the request ended early");
+            request.extend_from_slice(&buf[..n]);
+        }
+        let head = format!(
+            "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
             body.len()
         );
-        stream.write_all(response.as_bytes()).unwrap();
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        stream.write_all(body.as_bytes()).unwrap();
+        let request = String::from_utf8_lossy(&request).to_string();
+        request.split(' ').nth(1).unwrap_or_default().to_string()
     }
 
     #[test]
@@ -1729,12 +1760,14 @@ mod tests {
         let public = me.public_raw().to_vec();
         let relay = FakeRelay::start(&me.label());
         let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
-        answer_http(&relay, "403 Forbidden", "Sorry, you have been blocked");
+        assert_eq!(answer_http(&relay, "403 Forbidden", ""), "/pc");
+        // The relay itself does not know of a block.
+        assert_eq!(answer_http(&relay, "200 OK", r#"{"label":"x"}"#), "/_relay");
         assert_eq!(next_status(&mut rx), Status::Connecting);
         assert_eq!(
             next_status(&mut rx),
             Status::Reconnecting {
-                why: "Sorry, you have been blocked".into(),
+                why: "The relay answered 403 Forbidden".into(),
                 retry_in: RETRY_MIN,
             }
         );
@@ -1748,7 +1781,11 @@ mod tests {
         let me = Identity::generate();
         let relay = FakeRelay::start(&me.label());
         let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
-        answer_http(&relay, "403 Forbidden", "blocked");
+        assert_eq!(answer_http(&relay, "403 Forbidden", "blocked"), "/pc");
+        assert_eq!(
+            answer_http(&relay, "403 Forbidden", r#"{"label":"x","blocked":true}"#),
+            "/_relay"
+        );
         assert_eq!(next_status(&mut rx), Status::Connecting);
         assert_eq!(
             next_status(&mut rx),

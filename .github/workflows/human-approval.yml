@@ -52,7 +52,10 @@ jobs:
     # it was given, such as the old head after two quick pushes. Every run
     # reads the reviews just before it writes, so overlapping runs agree.
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 10
+    # Room for every head's retries; the default six hours is far too long
+    # for a hung call. Two heads after a push can each spend minutes in
+    # backoff, and a head cut off here gets no status.
+    timeout-minutes: 30
     permissions:
       pull-requests: read
       statuses: write
@@ -90,7 +93,7 @@ jobs:
               fi
               cat "$err" >&2
               if [ "$attempt" = 4 ] ||
-                ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit' "$err"; then
+                ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit|API rate limit exceeded' "$err"; then
                 rm -f "$err"
                 return 1
               fi
@@ -108,8 +111,10 @@ jobs:
             # The workflow_run event lists no pull request when the branch is
             # on a fork, so find them by their head commit.
             local prs
+            # update runs as a condition, where `set -e` does nothing, so
+            # every call that can fail returns at once.
             prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
-              --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"')
+              --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"') || return 1
             if [ -z "$prs" ]; then
               echo "No open pull request has $HEAD as its head."
               return
@@ -126,7 +131,8 @@ jobs:
               # approval from the same person.
               approvers=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq \
                 '.[] | select(.commit_id == env.HEAD and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | "\(.user.login) \(.state)"' |
-                awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }')
+                awk '{ last[$1] = $2 } END { for (user in last) if (last[user] == "APPROVED") print user }') ||
+                return 1
               approver=""
               for user in $approvers; do
                 if in_team "$user"; then
@@ -147,8 +153,12 @@ jobs:
               description="Waiting for a maintainer to approve: the author is outside the team."
             fi
             description=${description:-"Not needed: the author is on the team."}
-            gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
-              -f context="Human approval" -f description="$description" -f target_url="$RUN_URL"
+            # Not through the retrying gh: during its wait another run may
+            # post a newer verdict, which a retry would overwrite. The caller
+            # retries all of update instead, which reads the reviews again.
+            command gh api -X POST "repos/$GH_REPO/statuses/$HEAD" --silent -f state="$state" \
+              -f context="Human approval" -f description="$description" -f target_url="$RUN_URL" ||
+              return 1
             echo "$HEAD: $state, $description"
           }
 
@@ -160,5 +170,15 @@ jobs:
             SHAS=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
           fi
           for sha in $(tr ' ' '\n' <<<"$SHAS" | grep -xE '[0-9a-f]{40}' | grep -vx 0000000000000000000000000000000000000000 | sort -u); do
-            update "$sha"
+            for attempt in 1 2 3; do
+              if update "$sha"; then
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "::error::Couldn't set the Human approval status of $sha."
+                exit 1
+              fi
+              echo "Trying $sha again in $((attempt * 15)) seconds."
+              sleep $((attempt * 15))
+            done
           done

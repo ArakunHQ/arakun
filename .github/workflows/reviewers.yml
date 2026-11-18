@@ -86,8 +86,10 @@ jobs:
     # but CodeRabbit's) must not cancel one that is working. Keyed by the pull
     # request for every event, so a check_run run and a workflow_run run
     # don't both request the same reviewer at once (GitHub answers one of
-    # them with HTTP 422). The events list no pull request when the branch is
-    # on a fork; the head commit is the key then.
+    # them with HTTP 422). A run handles the pull request's current head, not
+    # the commit its event names, so a late event for an older head that
+    # cancels a run does the cancelled run's work. The events list no pull
+    # request when the branch is on a fork; the head commit is the key then.
     concurrency:
       group: >-
         reviewers-${{ inputs.pr ||
@@ -115,7 +117,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           SHA: ${{ github.event.check_run.head_sha || github.event.workflow_run.head_sha }}
-          PR: ${{ inputs.pr }}
+          PR: >-
+            ${{ inputs.pr || github.event.check_run.pull_requests[0].number ||
+            github.event.workflow_run.pull_requests[0].number }}
           CODERABBIT: coderabbitai[bot]
           # GraphQL names the author of CodeRabbit's threads without "[bot]".
           CODERABBIT_AUTHOR: coderabbitai
@@ -155,7 +159,7 @@ jobs:
               fi
               cat "$err" >&2
               if [ "$attempt" = 4 ] ||
-                ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit' "$err"; then
+                ! grep -qiE 'HTTP (5[0-9]{2}|429)|timeout|timed out|connection reset|unexpected EOF|TLS handshake|secondary rate limit|API rate limit exceeded' "$err"; then
                 rm -f "$err"
                 return 1
               fi
@@ -213,8 +217,13 @@ jobs:
               [ -z "$listed" ] || mapfile -t ids <<<"$listed"
             fi
             for id in "${ids[@]}"; do
-              gh api -X PUT "repos/$GH_REPO/pulls/$pr/reviews/$id/dismissals" --silent \
-                -f event=DISMISS -f message="$message"
+              # A retry of a dismissal that went through gets HTTP 422.
+              if ! gh api -X PUT "repos/$GH_REPO/pulls/$pr/reviews/$id/dismissals" --silent \
+                -f event=DISMISS -f message="$message" &&
+                [ "$(gh api "repos/$GH_REPO/pulls/$pr/reviews/$id" --jq .state)" != DISMISSED ]; then
+                echo "::error::Couldn't dismiss CodeRabbit's approval $id on #$pr."
+                exit 1
+              fi
               echo "Dismissed CodeRabbit's approval $id: $message"
             done
           }
@@ -371,10 +380,12 @@ jobs:
                 echo "Requested: ${add[*]}"
               else
                 # Another run may have asked them a moment before (HTTP 422).
-                # That is fine as long as everyone is asked now.
+                # That is fine as long as everyone is asked, or has reviewed,
+                # now.
                 requested=$(gh api "repos/$GH_REPO/pulls/$pr/requested_reviewers" --jq '.users[].login')
+                reviewed=$(gh api "repos/$GH_REPO/pulls/$pr/reviews" --paginate --jq '.[].user.login')
                 for user in "${add[@]}"; do
-                  if ! grep -qxF "$user" <<<"$requested"; then
+                  if ! grep -qxF "$user" <<<"$requested"$'\n'"$reviewed"; then
                     echo "::error::Couldn't request $user's review on #$pr."
                     exit 1
                   fi
@@ -385,17 +396,20 @@ jobs:
             echo "::endgroup::"
           }
 
-          if [ "$EVENT" != workflow_dispatch ]; then
-            # The event lists no pull request when the branch is on a fork,
-            # so find them by their head commit.
-            prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
-              --jq '.[] | select(.head.sha == env.SHA) | .number')
-          else
+          PR=${PR// /}
+          if [ -n "$PR" ] || [ "$EVENT" = workflow_dispatch ]; then
             if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
               echo "::error::Not a pull request number: $PR"
               exit 1
             fi
-            prs=$PR
+          fi
+          prs=$PR
+          if [ "$EVENT" != workflow_dispatch ]; then
+            # The event lists only one pull request, and none when the branch
+            # is on a fork, so find them by their head commit too.
+            found=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
+              --jq '.[] | select(.head.sha == env.SHA) | .number')
+            prs=$(printf '%s\n' "$prs" "$found" | sed '/^$/d' | sort -un)
           fi
           for pr in $prs; do
             handle "$pr"

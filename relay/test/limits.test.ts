@@ -290,21 +290,36 @@ describe("a phone that switched networks", () => {
     await plans({ phones: 2 });
     const { me, pc } = await connectedComputer();
     await issueTickets(pc, me.label, "t", "u");
-    const old = await openPhone(me.label, "d=dev-1&t=t");
+    const old = await openPhone(me.label, "d=dev-1&t=t&s=aaaaaaaa");
     expect(await old.inbox.control()).toEqual({ type: "open", channel: 1 });
     await pc.inbox.control();
-    const other = await openPhone(me.label, "d=dev-2&t=u");
+    const other = await openPhone(me.label, "d=dev-2&t=u&s=bbbbbbbb");
     expect(await other.inbox.control()).toEqual({ type: "open", channel: 2 });
     await pc.inbox.control();
 
-    const again = await openPhone(me.label, "d=dev-1&t=t");
+    const again = await openPhone(me.label, "d=dev-1&t=t&s=aaaaaaaa");
     expect(await old.inbox.control()).toEqual({ type: "bye", reason: "replaced" });
     expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "replaced" });
     expect(await again.inbox.control()).toEqual({ type: "open", channel: 3 });
     expect(other.inbox.closed).toBeNull();
 
     // Another device still finds the limit.
-    const third = await openPhone(me.label, "d=dev-3&t=u");
+    const third = await openPhone(me.label, "d=dev-3&t=u&s=cccccccc");
     expect(await third.inbox.control()).toEqual({ type: "limit", which: "phones" });
+  });
+
+  it("never replaces another live tab of the same phone, or a page that sends no name", async () => {
+    await plans({ phones: 1 });
+    const { me, pc } = await connectedComputer();
+    await issueTickets(pc, me.label, "t");
+    const tab = await openPhone(me.label, "d=dev-1&t=t&s=aaaaaaaa");
+    expect(await tab.inbox.control()).toEqual({ type: "open", channel: 1 });
+    await pc.inbox.control();
+
+    const otherTab = await openPhone(me.label, "d=dev-1&t=t&s=bbbbbbbb");
+    expect(await otherTab.inbox.control()).toEqual({ type: "limit", which: "phones" });
+    const olderPage = await openPhone(me.label, "d=dev-1&t=t");
+    expect(await olderPage.inbox.control()).toEqual({ type: "limit", which: "phones" });
+    expect(tab.inbox.closed).toBeNull();
   });
 });

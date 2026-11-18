@@ -40,7 +40,10 @@ import { planFor, type Plan } from "./limits";
 /// What a socket is, kept on it across hibernation.
 type Tag =
   | { role: "pc"; nonce: string; claimed: boolean; label: string; until: number }
-  | { role: "phone"; channel: number; device: string | null; ticketHash: string | null };
+  | { role: "phone"; channel: number; device: string | null; ticketHash: string | null; page: string | null };
+
+/// Who a phone is, once admitted.
+type Admitted = { device: string | null; ticketHash: string | null; page: string | null };
 
 /// What the computer opened for the next phone to pair with.
 interface Pairing {
@@ -83,6 +86,8 @@ export class Relay extends DurableObject<Env> {
   private plan: { value: Plan; at: number } | null = null;
   private burst = { second: 0, n: 0 };
   private today: Today | null = null;
+  /// Claims that started writing storage, so a purge can tell one came in while it waited.
+  private claims = 0;
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -144,6 +149,7 @@ export class Relay extends DurableObject<Env> {
     const pubB64 = msg["pub"] as string;
     if (known && known !== pubB64) return this.bye(ws, "key_mismatch", CLOSE_FORBIDDEN);
     const now = Date.now();
+    this.claims++;
     if (!known) await this.ctx.storage.put({ pub: pubB64, claimed_at: now });
     await this.ctx.storage.put({ label, last_seen: now });
     for (const other of this.ctx.getWebSockets("pc")) {
@@ -229,7 +235,7 @@ export class Relay extends DurableObject<Env> {
     const full = typeof admitted === "string" ? null : await this.full();
     if (typeof admitted === "string" || full) {
       this.ctx.acceptWebSocket(server, ["phone"]);
-      server.serializeAttachment({ role: "phone", channel: 0, device: null, ticketHash: null } satisfies Tag);
+      server.serializeAttachment({ role: "phone", channel: 0, device: null, ticketHash: null, page: null } satisfies Tag);
       if (full) this.limited(server, full);
       else this.bye(server, admitted as string, CLOSE_UNAUTHORIZED);
       return new Response(null, { status: 101, webSocket: client });
@@ -246,13 +252,14 @@ export class Relay extends DurableObject<Env> {
   }
 
   /// A phone that moves between networks reconnects before the relay sees its
-  /// old socket die. When that would leave it out, its oldest socket with the
-  /// same device and ticket makes room.
-  private replaceStale(admitted: { device: string | null; ticketHash: string | null }): void {
-    if (!admitted.device || !admitted.ticketHash) return;
+  /// old socket die. When that would leave it out, the oldest socket of the
+  /// same page (device, ticket and the page's own name) makes room. Another
+  /// tab is another page, so live tabs never replace each other.
+  private replaceStale(admitted: Admitted): void {
+    if (!admitted.device || !admitted.ticketHash || !admitted.page) return;
     const same = this.phones()
       .map((ws) => ({ ws, tag: ws.deserializeAttachment() as Tag & { role: "phone" } }))
-      .filter(({ tag }) => tag.device === admitted.device && tag.ticketHash === admitted.ticketHash)
+      .filter(({ tag }) => tag.device === admitted.device && tag.ticketHash === admitted.ticketHash && tag.page === admitted.page)
       .sort((a, b) => a.tag.channel - b.tag.channel);
     if (same[0]) this.bye(same[0].ws, "replaced", CLOSE_REPLACED);
   }
@@ -266,21 +273,23 @@ export class Relay extends DurableObject<Env> {
   }
 
   /// Who the phone is, or why it is not coming in.
-  private async admit(query: URLSearchParams): Promise<{ device: string | null; ticketHash: string | null } | string> {
+  private async admit(query: URLSearchParams): Promise<Admitted | string> {
     const ticket = query.get("t");
     const device = query.get("d");
     const code = query.get("p");
+    // Older pages send none; they are never replaced.
+    const page = /^[0-9a-f]{8,64}$/.test(query.get("s") ?? "") ? query.get("s") : null;
     if (ticket && device) {
       const h = hex(await sha256(utf8(ticket)));
       const tickets = (await this.ctx.storage.get<string[]>("tickets")) ?? [];
-      return tickets.includes(h) ? { device, ticketHash: h } : "bad_ticket";
+      return tickets.includes(h) ? { device, ticketHash: h, page } : "bad_ticket";
     }
     if (code) {
       const open = await this.ctx.storage.get<Pairing>("pair");
       if (!open || open.until < Date.now()) return "no_pairing";
       if (hex(await sha256(utf8(code))) !== open.hash) return "bad_code";
       await this.ctx.storage.delete("pair"); // one use
-      return { device: null, ticketHash: null };
+      return { device: null, ticketHash: null, page: null };
     }
     return "no_credentials";
   }
@@ -356,9 +365,13 @@ export class Relay extends DurableObject<Env> {
   /// still waiting are sent away; the computer rebuilds the state on its next
   /// claim.
   private async purge(): Promise<void> {
-    for (const phone of this.phones()) this.bye(phone, "gone", CLOSE_GONE);
+    // The KV call lets other events in: a claim that starts writing meanwhile
+    // keeps what it wrote.
+    const claims = this.claims;
     const label = await this.ctx.storage.get<string>("label");
     if (label) await this.env.CONFIG.delete(`labels/${label}`).catch(() => undefined);
+    if (this.claims !== claims || this.computer()) return;
+    for (const phone of this.phones()) this.bye(phone, "gone", CLOSE_GONE);
     await this.ctx.storage.deleteAll();
     this.today = null;
   }
@@ -419,8 +432,9 @@ export class Relay extends DurableObject<Env> {
   /// A computer socket closed. When it was the computer, the phones hear it
   /// is offline; either way the alarm moves to what is next.
   private async pcGone(tag: Tag & { role: "pc" }, reason: string): Promise<void> {
-    // Replaced means another socket of the computer is already there.
-    if (tag.claimed && reason !== "replaced") {
+    // Replaced means another socket of the computer is already there; a late
+    // error on a replaced socket says so by the replacement still being open.
+    if (tag.claimed && reason !== "replaced" && !this.computer()) {
       const now = Date.now();
       await this.ctx.storage.put("last_seen", now);
       for (const phone of this.phones()) this.tell(phone, { type: "pc_offline", since: now });

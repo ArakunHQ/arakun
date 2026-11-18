@@ -10,6 +10,10 @@
 
 const RELAY = (() => {
   const CREDS_KEY = "arakun.relay";
+  /// This page's own name to the relay. It stays the same across reconnects,
+  /// so a socket left behind by a network switch can be replaced, and differs
+  /// between tabs, even duplicated ones, so live tabs never replace each other.
+  const PAGE = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
   const { HELLO, DATA, CONTROL, utf8, text } = E2E;
 
   /// What the computer gave this phone when it paired, kept on the phone: in
@@ -104,7 +108,7 @@ const RELAY = (() => {
   /// how it goes. The link sends messages, asks `req`s and closes.
   function open(label, with_, handlers) {
     const query = with_.creds
-      ? `d=${encodeURIComponent(with_.creds.id)}&t=${encodeURIComponent(with_.creds.ticket)}`
+      ? `d=${encodeURIComponent(with_.creds.id)}&t=${encodeURIComponent(with_.creds.ticket)}&s=${PAGE}`
       : `p=${encodeURIComponent(with_.pairing.code)}`;
     // Plain `ws` only ever reaches a relay run by hand (`wrangler dev`).
     const proto = location.protocol === "https:" ? "wss" : "ws";

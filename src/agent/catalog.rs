@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Value, json};
 
 use super::launch;
-use super::rpc::{FACTORY_API_VERSION, FACTORY_PROTOCOL_VERSION, unix_now};
+use super::rpc::{FACTORY_API_VERSION, FACTORY_PROTOCOL_VERSION, lossy_lines, unix_now};
 use super::thread::{ConfigOption, ModelInfo, NativeSettings, parse_config};
 use super::{AgentKind, Setting};
 
@@ -186,8 +186,7 @@ fn fetch_models() -> Result<Value> {
     let wrote = writeln!(stdin, "{request}").and_then(|_| stdin.flush());
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        for line in lossy_lines(stdout) {
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -327,8 +326,7 @@ fn fetch_options(kind: AgentKind) -> Result<(String, Value)> {
     let stdout = child.stdout.take().context("adapter stdout")?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        for line in lossy_lines(stdout) {
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };

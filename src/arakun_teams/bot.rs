@@ -195,6 +195,25 @@ pub fn select_range(messages: &[Msg], ask_id: &str) -> Result<Range, RangeError>
     Ok(Range { lines })
 }
 
+/// The ID a message being typed stands under while its range is worked out.
+const DRAFT_ID: &str = "\u{0}draft";
+
+/// The range a message still being typed would read, replying to
+/// `reply_to` when given: what the composer shows before it is sent.
+pub fn draft_range(messages: &[Msg], reply_to: Option<&str>) -> Result<Range, RangeError> {
+    let mut all = messages.to_vec();
+    all.push(Msg {
+        id: DRAFT_ID.into(),
+        seq: None,
+        at: 0,
+        github_id: 0,
+        login: String::new(),
+        body: Body::text("", reply_to.map(String::from)),
+        delivery: Delivery::Sending,
+    });
+    select_range(&all, DRAFT_ID)
+}
+
 // ---- the answer ------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,7 +494,7 @@ pub fn summary_prompt(job: &Job, span: std::ops::Range<usize>, of: usize, part: 
     let lines = &job.range.lines[span.clone()];
     format!(
         "You are helping @bot review a long team chat in Arakun. This is part {part} of {of}: messages [{a}] to [{b}] of [{n}].\n\n\
-         Sum them up for a later review. Keep every idea, proposal, objection, fact, number and open question, and who said it, with the numbers of the messages that make each point, as [n]. Plain text, at most 400 words. Don't judge the ideas yet, and don't use any tool.\n\n\
+         Sum them up for a later review. Keep every idea, proposal, objection, fact, number and open question, and who said it, with the numbers of the messages that make each point, as [n]. Plain text, at most 400 words, in the language the messages use. Don't judge the ideas yet, and don't use any tool.\n\n\
          {DATA_RULES}\n\n{block}\n",
         a = span.start + 1,
         b = span.end,
@@ -826,6 +845,11 @@ pub struct Run {
     /// How many messages the range holds; 0 when it could not be read.
     pub read: usize,
     pub state: RunState,
+    /// When it started, in Unix seconds like a message's `at`.
+    pub started: u64,
+    /// How many parts a long range is summed up in, once known; 0 while it
+    /// is read at once.
+    pub parts: usize,
     stop: Arc<AtomicBool>,
 }
 
@@ -850,10 +874,6 @@ impl Run {
             }
             RunState::Failed(why) => format!("@bot stopped: {why}"),
         }
-    }
-
-    pub fn failed(&self) -> bool {
-        matches!(self.state, RunState::Failed(_))
     }
 }
 
@@ -904,6 +924,10 @@ impl Hub {
             ask_id: ask_id.into(),
             read: 0,
             state: RunState::Running(Step::Reading),
+            started: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            parts: 0,
             stop: Arc::new(AtomicBool::new(false)),
         };
         let key = channel_key(team_id, channel_id);
@@ -960,6 +984,9 @@ impl Hub {
             while let Some(step) = rx.next().await {
                 let _ = this.update(cx, |hub, cx| {
                     if let Some(r) = hub.bot_run(&ask_id, &stop) {
+                        if let Step::Summarizing { of, .. } = step {
+                            r.parts = of;
+                        }
                         r.state = RunState::Running(step);
                         cx.notify();
                     }
@@ -1159,6 +1186,19 @@ mod tests {
             .map(|l| l.id)
             .collect();
         assert!(!ids.contains(&"m6".to_string()));
+    }
+
+    #[test]
+    fn a_draft_reads_what_its_message_would() {
+        let c = chat();
+        // Replying to m2: m2 through m5, and the draft at the end.
+        let r = draft_range(&c, Some("m2")).unwrap();
+        let ids: Vec<&str> = r.lines.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(&ids[..4], ["m2", "m3", "m4", "m5"]);
+        assert_eq!(r.len(), 5);
+        // No reply: only the draft.
+        assert_eq!(draft_range(&c, None).unwrap().len(), 1);
+        assert_eq!(draft_range(&c, Some("gone")), Err(RangeError::NotLoaded));
     }
 
     #[test]
@@ -1498,6 +1538,8 @@ mod tests {
             ask_id: "m5".into(),
             read: 23,
             state: RunState::Running(Step::Reading),
+            started: 0,
+            parts: 0,
             stop: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(r.label(), "@bot is reading 23 messages…");
@@ -1507,7 +1549,6 @@ mod tests {
         r.state = RunState::Running(Step::Reading);
         assert_eq!(r.label(), "@bot is reading your message…");
         r.state = RunState::Failed("limit".into());
-        assert!(r.failed());
         assert_eq!(r.label(), "@bot stopped: limit");
     }
 

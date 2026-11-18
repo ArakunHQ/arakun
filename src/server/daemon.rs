@@ -125,6 +125,9 @@ pub struct Daemon {
     /// How many worktrees were deleted so far: a folder looked at before one
     /// went may be that one.
     deletions: u64,
+    /// Sessions whose missing adapter the server installed: one try each, so
+    /// an install that does not help is not run again and again.
+    installed_for: HashSet<String>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
@@ -724,6 +727,7 @@ impl Daemon {
             hidden: HashSet::new(),
             deleting: HashSet::new(),
             deletions: 0,
+            installed_for: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
             inbox_dirty: false,
@@ -961,6 +965,21 @@ impl Daemon {
                 }
             }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
+                // Nobody sits at a server to press Install: a missing Claude
+                // or Codex adapter is installed with npm at once, and once.
+                let needed = thread.read(cx).needs_install().cloned();
+                if let Some(needed) = needed
+                    && self.installed_for.insert(id.to_string())
+                {
+                    eprintln!(
+                        "{}: {id} needs {}; installing it into {}",
+                        super::name(),
+                        needed.package,
+                        needed.dir.display()
+                    );
+                    let thread = thread.clone();
+                    cx.defer(move |cx| thread.update(cx, |t, cx| t.install_adapter(cx)));
+                }
                 let status = status_of(thread.read(cx));
                 if let Some(s) = self.store.session_mut(id)
                     && s.status != status

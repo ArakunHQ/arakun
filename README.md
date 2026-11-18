@@ -836,6 +836,11 @@ arakun-server service install   # keep it running; see Keep it running
 - **Agents.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
+  Claude Code and Codex also need their ACP adapter. The server installs a missing one
+  with npm the first time a session needs it, into `~/.local/share/arakun/agents`, so
+  Node must be on the server's `PATH`. The service keeps the `PATH` it was installed
+  with: if Node comes from mise or nvm, run `arakun-server service install` from a shell
+  where `node` works.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
   so it works behind a firewall, and everything between the device and the server is
   end to end encrypted; `--relay <url>` names a relay of your own. `--reach tailscale`

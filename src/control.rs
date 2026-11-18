@@ -380,7 +380,7 @@ pub fn run_cli() -> bool {
             let _ = OWNER.set(file);
         }
         Claim::Unlocked => {}
-        Claim::HandedOff(reply) => {
+        Claim::HandedOff(reply) if reply.ok || req.cmd == "focus" => {
             // An older Arakun doesn't know `focus`; it is running all the same.
             if reply.ok && !reply.message.is_empty() {
                 println!("{}", reply.message);
@@ -388,6 +388,11 @@ pub fn run_cli() -> bool {
                 println!("arakun is already running");
             }
             std::process::exit(0);
+        }
+        // The project could not be added there (say, the folder is gone).
+        Claim::HandedOff(reply) => {
+            eprintln!("arakun: {}", reply.message);
+            std::process::exit(1);
         }
         Claim::Busy => {
             eprintln!(
@@ -440,7 +445,12 @@ fn claim(lock: &Path, socket: &Path, req: &Request, wait: Duration) -> Claim {
                 return Claim::Unlocked;
             }
         }
-        if let Ok(reply) = send_to(socket, req) {
+        // A window that takes the connection but hangs must not hold this
+        // launch past its deadline.
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(200));
+        if let Ok(reply) = send_within(socket, req, left) {
             return Claim::HandedOff(reply);
         }
         if Instant::now() >= deadline {
@@ -1170,8 +1180,14 @@ pub fn send(req: &Request) -> std::io::Result<Reply> {
 }
 
 pub fn send_to(socket: &Path, req: &Request) -> std::io::Result<Reply> {
+    send_within(socket, req, reply_wait(req))
+}
+
+/// `send_to`, giving up on the reply after `wait` (more than zero).
+fn send_within(socket: &Path, req: &Request, wait: Duration) -> std::io::Result<Reply> {
     let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(reply_wait(req)))?;
+    stream.set_read_timeout(Some(wait))?;
+    stream.set_write_timeout(Some(wait))?;
     writeln!(stream, "{}", serde_json::to_string(req).unwrap_or_default())?;
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
@@ -1633,6 +1649,26 @@ mod tests {
             Claim::HandedOff(reply) => assert_eq!(reply.message, "add /p"),
             other => panic!("{other:?}"),
         }
+        drop(first);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_running_one_that_hangs_does_not_hold_the_launch() {
+        let dir = claim_dir("hung");
+        let (lock, sock) = (dir.join("state.lock"), dir.join("state.sock"));
+        let first = claim(&lock, &sock, &focus(), Duration::ZERO);
+        assert!(matches!(first, Claim::Owner(_)), "{first:?}");
+        // Takes every connection and never answers.
+        let listener = UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            let held: Vec<_> = listener.incoming().collect();
+            drop(held);
+        });
+        let started = Instant::now();
+        let second = claim(&lock, &sock, &focus(), Duration::from_millis(500));
+        assert!(matches!(second, Claim::Busy), "{second:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
         drop(first);
         let _ = std::fs::remove_dir_all(dir);
     }

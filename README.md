@@ -659,7 +659,7 @@ system prompt about it (`ARAKUN_AGENT_HINT=off` removes it).
 One Arakun runs per state. `arakun` started again brings the running window up and
 exits (`arakun <dir>` adds the project there), since two windows on one state would
 save over each other and run the same automations twice. The running one holds
-`state.lock` next to `state.json`; an Arakun with its own `ARAKUN_STATE`, such as
+`state.json.lock` next to `state.json`; an Arakun with its own `ARAKUN_STATE`, such as
 `arakun dev`, has its own lock and runs beside it.
 
 ```sh

@@ -27,6 +27,11 @@ pre-commit:
       glob: "*"
       run: (test -d node_modules || npm ci) && npx tsc --noEmit
 
+    - name: teams-types
+      root: teams/
+      glob: "*"
+      run: (test -d node_modules || npm ci) && npx tsc --noEmit
+
     # The phone's encryption against the vectors the Rust side writes, so a
     # change on either side runs it. No `root:`, which would drop src/phone.
     - name: phone
@@ -43,6 +48,11 @@ pre-push:
 
     - name: relay-tests
       root: relay/
+      glob: "*"
+      run: (test -d node_modules || npm ci) && npx vitest run
+
+    - name: teams-tests
+      root: teams/
       glob: "*"
       run: (test -d node_modules || npm ci) && npx vitest run
 

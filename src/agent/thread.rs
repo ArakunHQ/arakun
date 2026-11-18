@@ -90,10 +90,15 @@ impl FailedAt {
 }
 
 /// The code in a process's exit status as Rust prints it: `exit status: 1` on
-/// Unix, `exit code: 1` on Windows, and `signal: 9 (SIGKILL)` as -9.
+/// Unix, `exit code: 1` on Windows, and `signal: 9 (SIGKILL)` as -9. Windows
+/// prints a crash's NTSTATUS in hex (`exit code: 0xc0000005`).
 fn exit_code(status: &str) -> Option<i64> {
     let (head, rest) = status.split_once(':')?;
-    let n: i64 = rest.split_whitespace().next()?.parse().ok()?;
+    let word = rest.split_whitespace().next()?;
+    let n = match word.strip_prefix("0x") {
+        Some(hex) => i64::from_str_radix(hex, 16).ok()?,
+        None => word.parse().ok()?,
+    };
     match head.trim() {
         "exit status" | "exit code" => Some(n),
         "signal" => Some(-n),
@@ -606,6 +611,8 @@ pub struct Thread {
     failure: Option<String>,
     /// Where the last failure happened, for crash reports.
     failed_at: Option<FailedAt>,
+    /// Whether crash reports have yet to hear of [`Self::failed_at`].
+    failure_unreported: bool,
     /// The running turn seems to be going in circles.
     stuck: Option<Stuck>,
     /// Patterns the user chose to keep going past this turn.
@@ -1071,6 +1078,7 @@ impl Thread {
             shell_pending: None,
             failure: None,
             failed_at: None,
+            failure_unreported: false,
             auto_allow: false,
             handoff: None,
             handoff_sent: false,
@@ -1554,6 +1562,7 @@ impl Thread {
     fn fail(&mut self, at: FailedAt, message: String, cx: &mut Context<Self>) {
         self.status_detail = None;
         self.failed_at = Some(at);
+        self.failure_unreported = true;
         self.set_status(ThreadStatus::Error(message), cx);
     }
 
@@ -1681,7 +1690,10 @@ impl Thread {
             let init = match init {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = this.update(cx, |t, cx| t.fail(FailedAt::Initialize(e.code), format!("initialize failed: {e}"), cx));
+                    let _ = this.update(cx, |t, cx| {
+                        let msg = format!("initialize failed: {e}");
+                        t.fail(FailedAt::Initialize(e.code), msg, cx)
+                    });
                     return;
                 }
             };
@@ -1756,7 +1768,8 @@ impl Thread {
                         Some(id) => session = Some((id, v)),
                         None => {
                             let _ = this.update(cx, |t, cx| {
-                                t.fail(FailedAt::Session(None), "session/new returned no sessionId".into(), cx)
+                                let msg = "session/new returned no sessionId".into();
+                                t.fail(FailedAt::Session(None), msg, cx)
                             });
                             return;
                         }
@@ -1843,6 +1856,17 @@ impl Thread {
     pub fn failed_at(&self) -> Option<FailedAt> {
         self.failed_at
             .filter(|_| matches!(self.status, ThreadStatus::Error(_)))
+    }
+
+    /// The failure to send to crash reports, once each. A disconnect waits: the
+    /// process's exit follows it within moments and brings the exit code.
+    pub fn take_failure_report(&mut self) -> Option<FailedAt> {
+        let at = self.failed_at()?;
+        if !self.failure_unreported || at == FailedAt::Disconnected {
+            return None;
+        }
+        self.failure_unreported = false;
+        Some(at)
     }
 
     pub fn needs_login(&self) -> bool {
@@ -3804,6 +3828,7 @@ mod tests {
         use super::exit_code;
         assert_eq!(exit_code("exit status: 127"), Some(127));
         assert_eq!(exit_code("exit code: 1"), Some(1));
+        assert_eq!(exit_code("exit code: 0xc0000005"), Some(0xc000_0005));
         assert_eq!(exit_code("signal: 9 (SIGKILL)"), Some(-9));
         assert_eq!(exit_code("stopped"), None);
         assert_eq!(exit_code("No such file or directory (os error 2)"), None);

@@ -12,7 +12,7 @@ use gpui::{AppContext as _, Context, Entity, SharedString, Window};
 use super::Shell;
 use crate::agent::catalog;
 use crate::agent::{
-    AgentKind, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
+    AgentKind, FailedAt, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
     ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
@@ -20,7 +20,7 @@ use crate::state;
 
 /// Sends an agent's error to crash reports with where it failed. The folder
 /// check tells a deleted project apart from a broken agent.
-fn report_agent_error(t: &Thread, msg: &str) {
+fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
     use serde_json::Value;
     let mut props = vec![
         ("agent", Value::from(t.kind().id())),
@@ -29,11 +29,9 @@ fn report_agent_error(t: &Thread, msg: &str) {
     if let Some(version) = t.agent_title().and_then(agent_version) {
         props.push(("agent_version", version.into()));
     }
-    if let Some(at) = t.failed_at() {
-        props.push(("stage", at.stage().into()));
-        if let Some(code) = at.code() {
-            props.push(("code", code.into()));
-        }
+    props.push(("stage", at.stage().into()));
+    if let Some(code) = at.code() {
+        props.push(("code", code.into()));
     }
     crate::telemetry::error("AgentError", msg, &props);
 }
@@ -359,15 +357,15 @@ impl Shell {
             }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
                 let status = status_of(thread.read(cx));
+                if status == Status::Error
+                    && let Some(at) = thread.update(cx, |t, _| t.take_failure_report())
+                    && let ThreadStatus::Error(msg) = thread.read(cx).status()
+                {
+                    report_agent_error(thread.read(cx), at, &msg);
+                }
                 if let Some(s) = self.session_mut(env_path, id)
                     && s.status != status
                 {
-                    // Once per failure: the status only changes back after a new turn.
-                    if status == Status::Error
-                        && let ThreadStatus::Error(msg) = thread.read(cx).status()
-                    {
-                        report_agent_error(thread.read(cx), &msg);
-                    }
                     s.status = status;
                     s.updated = model::unix_now();
                     cx.notify();

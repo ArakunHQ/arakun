@@ -53,7 +53,7 @@ fn hide(window: &mut Window) {
                 pid,
             }]
         }),
-        Desktop::Sway => swaymsg(pid, "move scratchpad"),
+        Desktop::Sway => queue(move || swaymsg(pid, "move scratchpad")),
         Desktop::Other => window.minimize_window(),
     }
 }
@@ -77,7 +77,15 @@ pub fn show(window: &mut Window) {
                 steps.push(Dispatch::Focus { pid });
                 steps
             }),
-            Desktop::Sway => swaymsg(pid, "scratchpad show, floating disable"),
+            // `scratchpad show` toggles: it would hide a window the user
+            // already brought back with their own binding.
+            Desktop::Sway => queue(move || {
+                if in_scratchpad(pid) == Some(false) {
+                    swaymsg(pid, "focus");
+                } else {
+                    swaymsg(pid, "scratchpad show, floating disable");
+                }
+            }),
             Desktop::Other => {}
         }
     }
@@ -169,11 +177,33 @@ fn accepted(out: &std::process::Output) -> bool {
     out.status.success() && (text.starts_with("ok") || text.starts_with("warning"))
 }
 
+type Job = Box<dyn FnOnce() + Send>;
+
+/// A thread that runs what it is sent, one job after the other.
+fn worker() -> std::sync::mpsc::Sender<Job> {
+    let (tx, rx) = std::sync::mpsc::channel::<Job>();
+    std::thread::spawn(move || {
+        for job in rx {
+            job();
+        }
+    });
+    tx
+}
+
+/// Runs `job` off the UI thread, after the jobs queued before it. A hide and
+/// a show right after it each wait on the compositor's tool; on threads of
+/// their own the show could finish first, and the hide would then put the
+/// window away again.
+fn queue(job: impl FnOnce() + Send + 'static) {
+    static WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<Job>> = std::sync::OnceLock::new();
+    let _ = WORKER.get_or_init(worker).send(Box::new(job));
+}
+
 /// Runs the dispatches in order, off the UI thread: each in the Lua syntax
 /// first, then the older one if hyprctl turns that down. `steps` runs there
 /// too, so it may ask hyprctl what to dispatch.
 fn hyprland(steps: impl FnOnce() -> Vec<Dispatch> + Send + 'static) {
-    std::thread::spawn(move || {
+    queue(move || {
         for step in steps() {
             let run = |args: &[&str]| {
                 std::process::Command::new("hyprctl")
@@ -203,20 +233,55 @@ fn hyprland(steps: impl FnOnce() -> Vec<Dispatch> + Send + 'static) {
     });
 }
 
-fn swaymsg(pid: u32, command: &'static str) {
-    std::thread::spawn(move || {
-        match std::process::Command::new("swaymsg")
-            .args([format!("[pid={pid}]"), command.into()])
-            .output()
-        {
-            Ok(out) if out.status.success() => {}
-            Ok(out) => eprintln!(
-                "arakun: swaymsg {command}: {}",
-                String::from_utf8_lossy(&out.stdout).trim()
-            ),
-            Err(e) => eprintln!("arakun: swaymsg: {e}"),
+/// Runs a Sway command on arakun's own window and waits for it; call it from
+/// a queued job.
+fn swaymsg(pid: u32, command: &str) {
+    match std::process::Command::new("swaymsg")
+        .args([format!("[pid={pid}]"), command.into()])
+        .output()
+    {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "arakun: swaymsg {command}: {}",
+            String::from_utf8_lossy(&out.stdout).trim()
+        ),
+        Err(e) => eprintln!("arakun: swaymsg: {e}"),
+    }
+}
+
+/// Whether Sway holds the window of `pid` in its scratchpad, hidden. `None`
+/// when Sway doesn't say.
+fn in_scratchpad(pid: u32) -> Option<bool> {
+    let out = std::process::Command::new("swaymsg")
+        .args(["-t", "get_tree"])
+        .output()
+        .ok()?;
+    let tree = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
+    scratchpad_holds(&tree, pid)
+}
+
+/// Sway keeps hidden scratchpad windows in the workspace `__i3_scratch`.
+fn scratchpad_holds(tree: &serde_json::Value, pid: u32) -> Option<bool> {
+    fn children(node: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {
+        ["nodes", "floating_nodes"]
+            .into_iter()
+            .filter_map(|k| node.get(k)?.as_array())
+            .flatten()
+    }
+    fn find<'a>(
+        node: &'a serde_json::Value,
+        is: &dyn Fn(&serde_json::Value) -> bool,
+    ) -> Option<&'a serde_json::Value> {
+        if is(node) {
+            return Some(node);
         }
-    });
+        children(node).find_map(|c| find(c, is))
+    }
+    let scratch = find(tree, &|n| {
+        n.get("name").and_then(|v| v.as_str()) == Some("__i3_scratch")
+    })?;
+    let ours = |n: &serde_json::Value| n.get("pid").and_then(|v| v.as_u64()) == Some(pid.into());
+    Some(find(scratch, &ours).is_some())
 }
 
 /// The id of the workspace the user is on, from `hyprctl activeworkspace -j`.
@@ -245,6 +310,39 @@ mod tests {
         assert_eq!(workspace_id(json), Some(3));
         assert_eq!(workspace_id(b"not json"), None);
         assert_eq!(workspace_id(br#"{"name": "x"}"#), None);
+    }
+
+    #[test]
+    fn a_slow_hide_still_runs_before_the_show_after_it() {
+        let jobs = worker();
+        let (done, order) = std::sync::mpsc::channel();
+        let (hide, show) = (done.clone(), done);
+        let slow: Job = Box::new(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            hide.send("hide").unwrap();
+        });
+        jobs.send(slow).unwrap();
+        jobs.send(Box::new(move || show.send("show").unwrap()))
+            .unwrap();
+        assert_eq!(order.recv().unwrap(), "hide");
+        assert_eq!(order.recv().unwrap(), "show");
+    }
+
+    #[test]
+    fn scratchpad_holds_only_a_window_sway_hid() {
+        let tree = serde_json::json!({"name": "root", "nodes": [
+            {"name": "__i3", "nodes": [{"name": "__i3_scratch", "nodes": [],
+                "floating_nodes": [{"name": "a", "pid": 7, "nodes": []}]}]},
+            {"name": "DP-1", "nodes": [{"name": "1", "floating_nodes": [],
+                "nodes": [{"name": "b", "pid": 9}]}]},
+        ]});
+        assert_eq!(scratchpad_holds(&tree, 7), Some(true));
+        // Shown again by the user's own binding: on a workspace.
+        assert_eq!(scratchpad_holds(&tree, 9), Some(false));
+        assert_eq!(
+            scratchpad_holds(&serde_json::json!({"name": "root"}), 7),
+            None
+        );
     }
 
     #[test]

@@ -218,7 +218,7 @@ impl Section {
         // The Updates card and the link setting are in General in every build, so
         // their words are added here rather than to each build's keyword list.
         let general = if self == Section::General {
-            "update updates automatic automatically auto version release upgrade \
+            "update updates automatic automatically auto version release upgrade nightly channel beta testers \
              links open system default external"
         } else {
             ""
@@ -371,6 +371,8 @@ pub struct SettingsDialog {
     palette_note: Option<(SharedString, bool)>,
     /// Delete was clicked once on the palette in use.
     confirm_delete: bool,
+    /// The nightly switch was clicked and its warning is showing.
+    confirm_nightly: bool,
     /// The name of the user's palette in use.
     name_input: Entity<TextInput>,
     /// Whether the field to paste a shared palette is open.
@@ -537,6 +539,7 @@ impl SettingsDialog {
             share_input,
             palette_note: None,
             confirm_delete: false,
+            confirm_nightly: false,
             name_input,
             show_import: false,
             palette_save: None,
@@ -1250,7 +1253,7 @@ impl SettingsDialog {
     /// the last check found.
     fn update_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use crate::update::{self, Status};
-        let version = format!("Arakun {}", env!("CARGO_PKG_VERSION"));
+        let version = format!("Arakun {}", env!("ARAKUN_VERSION"));
         if !update::release_build() {
             return vec![
                 row(
@@ -1276,6 +1279,7 @@ impl SettingsDialog {
             cx.notify();
         }))
         .into_any_element();
+        let nightly = self.nightly_row(cx);
         let status = update::status();
         let busy = matches!(status, Status::Checking | Status::Downloading(_));
         let action = match &status {
@@ -1303,7 +1307,98 @@ impl SettingsDialog {
             ),
         };
         let current = row(version, status.text(), action.into_any_element()).into_any_element();
-        vec![auto, current]
+        vec![auto, nightly, current]
+    }
+
+    /// The nightly channel: a switch that shows what nightlies risk, and asks
+    /// again, before it takes them.
+    fn nightly_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::update::{self, Channel};
+        let on = update::channel() == Channel::Nightly;
+        let hint = if on {
+            "Gets a build of main every night. Turn it off to go back to releases: this build stays until a release newer than it comes out."
+        } else {
+            "Builds of main from every night, before they are released. For maintainers and testers."
+        };
+        let set = |to: Channel, cx: &mut Context<Self>| {
+            if let Err(e) = update::set_channel(to) {
+                eprintln!("arakun: the update channel will not last past a restart: {e}");
+            }
+            cx.notify();
+        };
+        let switch_row = row("Nightly builds", hint, switch(on).into_any_element())
+            .id("set-nightly")
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if on {
+                    set(Channel::Stable, cx);
+                } else {
+                    this.confirm_nightly = !this.confirm_nightly;
+                    cx.notify();
+                }
+            }));
+        if on || !self.confirm_nightly {
+            return switch_row.into_any_element();
+        }
+        let warning = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .mx(crate::ui::sp(14.))
+            .mb(crate::ui::sp(12.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
+            .border_1()
+            .border_color(theme::warn())
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::warn())
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Nightly builds can break."),
+            )
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_muted())
+                    .child(
+                        "They are made from main every night and nobody tests them by hand. \
+                         One can crash, lose a session or change how your data is stored, and \
+                         a release may not read what a nightly wrote. Use them to try what is \
+                         next and report what breaks, not for work you can't redo.",
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(crate::ui::sp(8.))
+                    .child(
+                        ui::button(
+                            "set-nightly-yes",
+                            "Get nightly builds",
+                            ButtonKind::Danger,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.confirm_nightly = false;
+                            set(Channel::Nightly, cx);
+                        })),
+                    )
+                    .child(
+                        ui::button("set-nightly-no", "Cancel", ButtonKind::Ghost, true).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.confirm_nightly = false;
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .child(switch_row)
+            .child(warning)
+            .into_any_element()
     }
 
     /// Puts `id` in use across the app and remembers it.
@@ -2651,7 +2746,7 @@ impl Render for SettingsDialog {
 
         // The version, or how many sections the search leaves.
         let foot: SharedString = if q.is_empty() {
-            format!("Arakun {}", env!("CARGO_PKG_VERSION")).into()
+            format!("Arakun {}", env!("ARAKUN_VERSION")).into()
         } else {
             match shown.len() {
                 0 => "No matches".into(),

@@ -13,6 +13,13 @@
 //! General; `ARAKUN_UPDATES=0` turns the checks off for one run, and
 //! `arakun update` checks and installs from a terminal.
 //!
+//! Two channels: stable takes GitHub's latest release, nightly takes whichever
+//! is newest of the releases and the nightly builds `release.yml` publishes
+//! from main as pre-releases (`0.5.1-nightly.202611180300`). A nightly is
+//! signed with its own key (`assets/nightly-key.pub`), which is only accepted
+//! for a nightly version, so it can never sign a stable release. Leaving the
+//! nightly channel keeps the nightly until a release newer than it comes out.
+//!
 //! The paths it installs to are the ones `tools/install-release.sh` and
 //! `tools/install-release.ps1` use, but any place the app runs from and can
 //! write to works: the update goes where the running binary is.
@@ -38,6 +45,70 @@ const RELEASE_KEYS: [&str; 2] = [
     include_str!("../assets/release-key.pub"),
     include_str!("../assets/release-key-backup.pub"),
 ];
+/// The key of the nightly builds, which `release.yml` keeps in the
+/// `nightly-signing` environment. Accepted for nightly versions only.
+const NIGHTLY_KEY: &str = include_str!("../assets/nightly-key.pub");
+
+/// The keys that may sign `SHA256SUMS` of the build `version`.
+fn keys_for(version: Version) -> Vec<&'static str> {
+    let mut keys = RELEASE_KEYS.to_vec();
+    if version.is_nightly() {
+        keys.push(NIGHTLY_KEY);
+    }
+    keys
+}
+
+/// Which builds the updater installs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Stable,
+    Nightly,
+}
+
+impl Channel {
+    fn parse(s: &str) -> Option<Channel> {
+        match s.trim() {
+            "stable" => Some(Channel::Stable),
+            "nightly" => Some(Channel::Nightly),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Channel::Stable => "stable",
+            Channel::Nightly => "nightly",
+        }
+    }
+}
+
+/// The channel the user picked, or else the one this build came from, so a
+/// nightly installed by hand keeps getting nightlies.
+pub fn channel() -> Channel {
+    std::fs::read_to_string(channel_file())
+        .ok()
+        .and_then(|s| Channel::parse(&s))
+        .unwrap_or(if Version::current().is_nightly() {
+            Channel::Nightly
+        } else {
+            Channel::Stable
+        })
+}
+
+pub fn set_channel(channel: Channel) -> std::io::Result<()> {
+    let path = channel_file();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, format!("{}\n", channel.name()))?;
+    // What the last check found was for the other channel.
+    set_status(Status::Idle);
+    Ok(())
+}
+
+fn channel_file() -> PathBuf {
+    crate::platform::app_dir().join("update-channel")
+}
 
 /// Whether the release workflow built this binary.
 pub fn release_build() -> bool {
@@ -61,7 +132,10 @@ impl Status {
         match self {
             Status::Idle => "Not checked since Arakun started.".into(),
             Status::Checking => "Looking for a new release…".into(),
-            Status::UpToDate => "This is the latest release.".into(),
+            Status::UpToDate => match channel() {
+                Channel::Stable => "This is the latest release.".into(),
+                Channel::Nightly => "This is the latest nightly build.".into(),
+            },
             Status::Downloading(tag) => format!("Downloading Arakun {tag}…"),
             Status::Ready(tag) => {
                 format!("Arakun {tag} is downloaded. It is installed when Arakun quits.")
@@ -125,22 +199,45 @@ fn off_marker() -> PathBuf {
     crate::platform::app_dir().join("no-auto-update")
 }
 
-/// `vX.Y.Z` as numbers. Pre-releases (`v1.0.0-rc.1`) are left out: GitHub's
-/// latest release never is one, and a tag pinned by hand is the user's call.
+/// `vX.Y.Z` as numbers, or a nightly `X.Y.Z-nightly.N`, which comes before
+/// `X.Y.Z` and after every older nightly of it. Other pre-releases
+/// (`v1.0.0-rc.1`) are left out: GitHub's latest release never is one, and a
+/// tag pinned by hand is the user's call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Version(u64, u64, u64);
+struct Version(u64, u64, u64, Pre);
+
+/// Declared in this order so a nightly sorts before its release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Pre {
+    Nightly(u64),
+    Release,
+}
 
 impl Version {
     fn parse(tag: &str) -> Option<Version> {
         let v = tag.strip_prefix('v').unwrap_or(tag);
-        let mut parts = v.split('.');
+        let (core, pre) = match v.split_once('-') {
+            Some((core, pre)) => {
+                let n = pre.strip_prefix("nightly.")?;
+                if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                (core, Pre::Nightly(n.parse().ok()?))
+            }
+            None => (v, Pre::Release),
+        };
+        let mut parts = core.split('.');
         let mut next = || parts.next()?.parse().ok();
-        let version = Version(next()?, next()?, next()?);
+        let version = Version(next()?, next()?, next()?, pre);
         parts.next().is_none().then_some(version)
     }
 
     fn current() -> Version {
-        Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or(Version(0, 0, 0))
+        Version::parse(env!("ARAKUN_VERSION")).unwrap_or(Version(0, 0, 0, Pre::Release))
+    }
+
+    fn is_nightly(self) -> bool {
+        matches!(self.3, Pre::Nightly(_))
     }
 }
 
@@ -337,7 +434,7 @@ fn agent() -> &'static ureq::Agent {
             // update lock, and Check now, forever.
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(Duration::from_secs(600)))
-            .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
             .build()
             .into()
     })
@@ -353,6 +450,52 @@ pub fn latest_tag() -> Result<String, String> {
         .map_err(|e| format!("could not reach GitHub: {e}"))?;
     tag_from_url(&res.get_uri().to_string())
         .ok_or_else(|| format!("no release found at https://github.com/{REPO}/releases"))
+}
+
+/// The newest build on `channel`, as a tag and its version. `None` when the
+/// newest one GitHub has is not newer than this build or is not a version.
+fn newest(channel: Channel) -> Result<Option<(String, Version)>, String> {
+    let found = match channel {
+        Channel::Stable => {
+            let tag = latest_tag()?;
+            Version::parse(&tag)
+                .filter(|v| !v.is_nightly())
+                .map(|v| (tag, v))
+        }
+        Channel::Nightly => newest_listed(&list_releases()?),
+    };
+    Ok(found.filter(|(_, v)| *v > Version::current()))
+}
+
+/// The newest releases and pre-releases, as GitHub's API lists them. The
+/// nightly channel only: the API allows 60 calls an hour from one address,
+/// which checks every few hours stay far below.
+fn list_releases() -> Result<String, String> {
+    agent()
+        .get(format!(
+            "https://api.github.com/repos/{REPO}/releases?per_page=30"
+        ))
+        .header("Accept", "application/vnd.github+json")
+        .call()
+        .and_then(|r| r.into_body().read_to_string())
+        .map_err(|e| format!("could not list the releases on GitHub: {e}"))
+}
+
+/// The highest version among the published releases in `json`, a list from
+/// GitHub's releases API.
+fn newest_listed(json: &str) -> Option<(String, Version)> {
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+        #[serde(default)]
+        draft: bool,
+    }
+    let releases: Vec<Release> = serde_json::from_str(json).ok()?;
+    releases
+        .into_iter()
+        .filter(|r| !r.draft)
+        .filter_map(|r| Version::parse(&r.tag_name).map(|v| (r.tag_name, v)))
+        .max_by_key(|(_, v)| *v)
 }
 
 fn tag_from_url(url: &str) -> Option<String> {
@@ -418,19 +561,15 @@ fn check_locked() -> Result<Outcome, String> {
         return Err("this build is not a release, so it does not update itself".into());
     }
     set_status(Status::Checking);
-    let tag = latest_tag()?;
-    let Some(latest) = Version::parse(&tag) else {
+    let Some((tag, version)) = newest(channel())? else {
         return Ok(Outcome::UpToDate);
     };
-    if latest <= Version::current() {
-        return Ok(Outcome::UpToDate);
-    }
     let mut saved = load();
     let install = Install::here()?;
     let ready = saved.staged.as_deref() == Some(tag.as_str()) && install.staged_intact(&saved);
     if !ready {
         set_status(Status::Downloading(tag.clone()));
-        stage(&tag, &install)?;
+        stage(&tag, version, &install)?;
         // Forget the old update before its file goes, so a quit from here on
         // finds nothing to install rather than something half-replaced.
         saved.staged = None;
@@ -449,7 +588,7 @@ fn check_locked() -> Result<Outcome, String> {
 }
 
 /// Downloads `tag`, checks it, and puts it at `install.incoming`.
-fn stage(tag: &str, install: &Install) -> Result<(), String> {
+fn stage(tag: &str, version: Version, install: &Install) -> Result<(), String> {
     let (platform, ext) = platform()?;
     let name = format!("arakun-{tag}-{platform}");
     let file = format!("{name}.{ext}");
@@ -466,7 +605,7 @@ fn stage(tag: &str, install: &Install) -> Result<(), String> {
     // Before any checksum in it is trusted. Every release after v0.3.0 is
     // signed, and the updater only installs newer ones than itself.
     let sig = fetch("SHA256SUMS.minisig")?;
-    signed(&RELEASE_KEYS, sums.as_bytes(), &sig).map_err(|e| format!("{tag}: {e}"))?;
+    signed(&keys_for(version), sums.as_bytes(), &sig).map_err(|e| format!("{tag}: {e}"))?;
     let want = listed(&sums, &file).ok_or_else(|| format!("{tag} has no {platform} build"))?;
 
     let work = crate::platform::app_dir().join("update-download");
@@ -834,14 +973,58 @@ pub fn clean_up() {
 }
 
 const USAGE: &str = "\
-arakun update           download the latest release and install it
-arakun update --check   only say whether there is a newer release";
+arakun update                     download the latest release and install it
+arakun update --check             only say whether there is a newer release
+arakun update --channel           say which channel this install follows
+arakun update --channel nightly   follow the nightly builds of main (they can break)
+arakun update --channel stable    follow the releases again";
+
+const NIGHTLY_WARNING: &str = "\
+Nightly builds are made from main every night, untested by hand. They can
+crash, lose a session or change how your data is stored, and going back to a
+release may not read what a nightly wrote. Use them to try what is next and
+report what breaks, not for work you can't redo.";
+
+fn latest_what() -> &'static str {
+    match channel() {
+        Channel::Stable => "release",
+        Channel::Nightly => "build on the nightly channel",
+    }
+}
 
 /// `arakun update`.
 pub fn cli(args: &[String]) -> i32 {
     let check_only = match args {
         [] => false,
         [a] if a == "--check" => true,
+        [a] if a == "--channel" => {
+            println!("{}", channel().name());
+            return 0;
+        }
+        [a, name] if a == "--channel" => {
+            let Some(to) = Channel::parse(name) else {
+                eprintln!("arakun: the channels are stable and nightly, not {name:?}");
+                return 2;
+            };
+            if let Err(e) = set_channel(to) {
+                eprintln!("arakun: could not save the channel: {e}");
+                return 1;
+            }
+            match to {
+                Channel::Nightly => {
+                    eprintln!("warning: {NIGHTLY_WARNING}");
+                    println!(
+                        "arakun: following the nightly builds; arakun update installs the newest"
+                    );
+                }
+                Channel::Stable if Version::current().is_nightly() => println!(
+                    "arakun: following the releases; this nightly stays until a newer release is out, \
+                     or install the latest release again to go back now"
+                ),
+                Channel::Stable => println!("arakun: following the releases"),
+            }
+            return 0;
+        }
         [a] if a == "-h" || a == "--help" => {
             println!("{USAGE}");
             return 0;
@@ -858,17 +1041,17 @@ pub fn cli(args: &[String]) -> i32 {
         );
         return 1;
     }
-    let current = env!("CARGO_PKG_VERSION");
+    let current = env!("ARAKUN_VERSION");
     if check_only {
-        return match latest_tag() {
-            Ok(tag) if Version::parse(&tag).is_some_and(|v| v > Version::current()) => {
+        return match newest(channel()) {
+            Ok(Some((tag, _))) => {
                 println!(
                     "Arakun {tag} is out; this is {current}. Run arakun update to install it."
                 );
                 0
             }
-            Ok(_) => {
-                println!("Arakun {current} is the latest release.");
+            Ok(None) => {
+                println!("Arakun {current} is the latest {}.", latest_what());
                 0
             }
             Err(e) => {
@@ -881,10 +1064,16 @@ pub fn cli(args: &[String]) -> i32 {
         eprintln!("arakun: another Arakun is updating already; try again in a moment");
         return 1;
     };
-    println!("arakun: looking for a new release");
+    println!(
+        "arakun: looking for a new {}",
+        match channel() {
+            Channel::Stable => "release",
+            Channel::Nightly => "nightly build",
+        }
+    );
     match check_locked() {
         Ok(Outcome::UpToDate) => {
-            println!("arakun: {current} is the latest release");
+            println!("arakun: {current} is the latest {}", latest_what());
             0
         }
         Ok(Outcome::Staged(tag, _)) if crate::control::app_running() => {
@@ -923,13 +1112,75 @@ mod tests {
 
     #[test]
     fn versions_compare_as_numbers() {
-        assert_eq!(Version::parse("v0.2.1"), Some(Version(0, 2, 1)));
-        assert_eq!(Version::parse("1.10.0"), Some(Version(1, 10, 0)));
+        use Pre::Release;
+        assert_eq!(Version::parse("v0.2.1"), Some(Version(0, 2, 1, Release)));
+        assert_eq!(Version::parse("1.10.0"), Some(Version(1, 10, 0, Release)));
         assert!(Version::parse("v0.10.0") > Version::parse("v0.9.9"));
         assert_eq!(Version::parse("v1.0.0-rc.1"), None);
+        assert_eq!(Version::parse("v1.0.0-nightly."), None);
+        assert_eq!(Version::parse("v1.0.0-nightly.1a"), None);
         assert_eq!(Version::parse("v1.0"), None);
         assert_eq!(Version::parse("v1.0.0.1"), None);
         assert_eq!(Version::parse("latest"), None);
+    }
+
+    #[test]
+    fn a_nightly_comes_between_its_release_and_the_one_before() {
+        let v = |s| Version::parse(s).unwrap();
+        let nightly = v("0.5.1-nightly.202611180300");
+        assert_eq!(nightly, Version(0, 5, 1, Pre::Nightly(202611180300)));
+        assert!(nightly.is_nightly());
+        assert!(!v("0.5.1").is_nightly());
+        assert!(v("0.5.0") < nightly);
+        assert!(nightly < v("0.5.1"));
+        assert!(nightly < v("0.5.1-nightly.202611190300"));
+        assert!(v("0.6.0") > v("0.5.1-nightly.202612010300"));
+    }
+
+    #[test]
+    fn the_nightly_key_signs_nightlies_only() {
+        minisign_verify::PublicKey::decode(NIGHTLY_KEY).expect("assets/nightly-key.pub");
+        assert!(!RELEASE_KEYS.contains(&NIGHTLY_KEY));
+        let v = |s| Version::parse(s).unwrap();
+        assert!(!keys_for(v("1.0.0")).contains(&NIGHTLY_KEY));
+        assert!(keys_for(v("1.0.1-nightly.1")).contains(&NIGHTLY_KEY));
+        assert!(keys_for(v("1.0.1-nightly.1")).contains(&RELEASE_KEYS[0]));
+    }
+
+    #[test]
+    fn the_nightly_channel_takes_the_newest_build() {
+        let list = r#"[
+            {"tag_name": "0.6.1-nightly.202612020300", "draft": true, "prerelease": true},
+            {"tag_name": "0.6.0", "draft": false, "prerelease": false},
+            {"tag_name": "0.5.1-nightly.202612010300", "draft": false, "prerelease": true},
+            {"tag_name": "v0.5.0", "draft": false, "prerelease": false},
+            {"tag_name": "something-else", "draft": false, "prerelease": true}
+        ]"#;
+        assert_eq!(
+            newest_listed(list).map(|(t, _)| t).as_deref(),
+            Some("0.6.0")
+        );
+        let list = r#"[
+            {"tag_name": "0.6.1-nightly.202612020300"},
+            {"tag_name": "0.6.0"}
+        ]"#;
+        assert_eq!(
+            newest_listed(list).map(|(t, _)| t).as_deref(),
+            Some("0.6.1-nightly.202612020300")
+        );
+        assert_eq!(newest_listed("[]"), None);
+        assert_eq!(
+            newest_listed("{\"message\": \"API rate limit exceeded\"}"),
+            None
+        );
+    }
+
+    #[test]
+    fn channels_read_back() {
+        for c in [Channel::Stable, Channel::Nightly] {
+            assert_eq!(Channel::parse(&format!("{}\n", c.name())), Some(c));
+        }
+        assert_eq!(Channel::parse("beta"), None);
     }
 
     #[test]

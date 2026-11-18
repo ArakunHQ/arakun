@@ -392,7 +392,7 @@ pub fn run(opts: Options) -> i32 {
     };
     println!(
         "arakun server {} on {}",
-        env!("CARGO_PKG_VERSION"),
+        env!("ARAKUN_VERSION"),
         phone::host_name()
     );
     println!("  data    {}", dir.display());
@@ -1860,7 +1860,7 @@ impl Daemon {
             .count();
         format!(
             "arakun server {} on {}\nreach     {}\ndevices   {devices} paired, {} connected\nfolders   {}\nsessions  {} ({} working, {} waiting on you, {} agents busy)",
-            env!("CARGO_PKG_VERSION"),
+            env!("ARAKUN_VERSION"),
             phone::host_name(),
             reach_line(self.reach, &self.transport, &self.address),
             self.transport.connected_devices().len(),

@@ -133,7 +133,7 @@ pub fn download(dir: &Path, login: &str) -> Result<PathBuf, String> {
     let url = sized(&address(login), SIZE);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
-        .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
         .build()
         .into();
     let mut answer = agent.get(&url).call().map_err(|e| e.to_string())?;

@@ -137,7 +137,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
-| Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
+| Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
 | A downloaded update, until Arakun quits | `.arakun.exe.update` next to `arakun.exe` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential

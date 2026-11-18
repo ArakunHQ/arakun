@@ -301,7 +301,9 @@ Usage:
                              agent turns running go on by themselves after it
   arakun update [--check]      download the latest release and install it (a
                              running Arakun installs it when it quits);
-                             --check only says whether there is one
+                             --check only says whether there is one;
+                             --channel nightly|stable picks nightly builds
+                             of main (they can break) or releases
   arakun mem …                 memory agents keep across sessions: save, search,
                              get, context, list, forget (arakun mem help)
   arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--head <sha>] [--agent <name>]
@@ -369,7 +371,7 @@ fn cli(args: Vec<String>) -> Cli {
     // Needs no display or running window, so the release workflow can run the
     // packaged binary with it.
     if first == "--version" || first == "-V" {
-        println!("arakun {}", env!("CARGO_PKG_VERSION"));
+        println!("arakun {}", env!("ARAKUN_VERSION"));
         return Cli::Exit(0);
     }
     if first == "mem" {

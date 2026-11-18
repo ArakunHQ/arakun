@@ -1615,7 +1615,7 @@ impl Thread {
                                 "jetbrains": {"air": {"version": 1, "capabilities": ["sessionFailure", "sessionIndex"]}}
                             }
                         },
-                        "clientInfo": {"name": "arakun", "title": "arakun", "version": env!("CARGO_PKG_VERSION")}
+                        "clientInfo": {"name": "arakun", "title": "arakun", "version": env!("ARAKUN_VERSION")}
                     }),
                 )
                 .await;

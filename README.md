@@ -421,10 +421,34 @@ is running, it is installed when Arakun quits: on Linux and macOS `arakun restar
 that now; on Windows, quit Arakun and open it again. `arakun update --check` only says
 whether there is a newer release.
 
+#### Nightly builds
+
+Every night, if main changed, the release workflow builds it on every platform and
+publishes it as a pre-release named after the next version, such as
+`0.5.1-nightly.202611180300`. They are for maintainers and testers who want what is next
+and will report what breaks. **Nightlies can break:** nobody tests them by hand, one can
+crash, lose a session or change how your data is stored, and a release may not read what
+a nightly wrote. Don't use them for work you can't redo.
+
+To get them, turn on **Nightly builds** in Settings › General › Updates (it shows this
+warning and asks again), or run `arakun update --channel nightly`. The updater then takes
+whichever is newest of the nightlies and the releases, so a release that comes out still
+reaches you. `arakun update --channel stable` (or turning the switch off) goes back to
+releases: the nightly stays until a release newer than it comes out, or install the latest
+release again to go back now. `arakun update --channel` says which channel you follow.
+
+Nightly `SHA256SUMS` are signed with their own key,
+[assets/nightly-key.pub](assets/nightly-key.pub), which the updater accepts for nightly
+versions only: it can't sign a release. The install scripts and `releases/latest` never
+see nightlies. The newest 14 are kept on the
+[releases page](https://github.com/arakunhq/arakun/releases).
+
 The updater keeps its files in Arakun's data folder (`~/.local/share/arakun` on Linux
 and macOS, `%LOCALAPPDATA%\arakun` on Windows): `update.json` (the version waiting to be
 installed, its checksum, and the last one you were told about), `update.lock` (held while
-one updater runs), `no-auto-update` (there while **Update automatically** is off) and
+one updater runs), `no-auto-update` (there while **Update automatically** is off),
+`update-channel` (`stable` or `nightly`, once you pick one; without it a nightly build
+follows nightlies and a release follows releases) and
 `update-download/` (the download, removed when it is done). The new version waits next to
 the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
 on Windows), unpacked first as `.arakun.incoming`.

@@ -225,7 +225,8 @@ A message on the wire:
 - The plaintext inside `ct` is JSON:
 
 ```json
-{ "kind": "text" | "bot" | "decision" | "decision_accept",
+{ "kind": "text" | "bot" | "decision" | "decision_accept" | "decision_reverse"
+          | "edit",
   "text": "...", "reply_to": "<message id>" | null,
   "mentions": ["bot"],
   "bot": { "range": ["<first id>", "<last id>"], "via": <github_id>,
@@ -241,6 +242,20 @@ A message on the wire:
   - `decision_accept` with `decision.of`: a member accepted the decision a bot
     message proposed. `reply_to` is that bot message. The decision log is these,
     read back from the channels, one acceptance per member (the oldest).
+  - `decision_reverse` with `decision.of`: a member reversed the decision a bot
+    message proposed. `reply_to` is that bot message and `text` the reason, which
+    may be empty: `{ "kind": "decision_reverse", "text": "...", "reply_to":
+    "<bot message id>", "decision": { "of": "<bot message id>" } }`. Any member
+    may send one. A decision with a reversal stays reversed for good, and clients
+    show the oldest reversal. To decide again, someone runs `@bot` again, which
+    makes a new decision.
+  - `edit`: a new text for an earlier message: `{ "kind": "edit", "text": "<new
+    text>", "reply_to": "<id of the edited message>", "mentions": [...] }`.
+    Clients apply it only when its sender's `github_id` is the edited message's
+    sender's `github_id`, and the edited message is a `text` (not a `bot`, a
+    `decision*` or another `edit`). They show the newest edit by `seq`, with an
+    "edited" mark. Mentions in an edit never start `@bot`. The old text stays in
+    the channel's history: every member already has it.
   - A plain `@bot` without `reply_to` reads only the asking message.
   - `bot` may also carry, for clients to render:
     - `read`: how many messages the range held;
@@ -291,10 +306,12 @@ every `send`, so a removal or rotation applies to the next message.
 
 GitHub IDs and logins of users; team names; who is in which team and with which
 role; device public keys and names; when each message was sent, its size, sender
-device and channel; invites. It never sees team keys, channel names, message text,
-who replied to what, bot answers or decisions.
+device and channel; invites, who withdrew or declined them, requests to join and
+when each was last reminded; when each envelope was stored. It never sees team
+keys, channel names, message text, who replied to what, edits, bot answers,
+decisions or their reversals: these are messages like any other to it.
 
 ## Not in v1
 
-Attachments, editing and deleting messages, direct messages, recovery keys, and
-the agent bus. They fit in the same shapes: new `kind`s and sealed blobs in R2.
+Attachments, deleting messages, direct messages, recovery keys, and the agent
+bus. They fit in the same shapes: new `kind`s and sealed blobs in R2.

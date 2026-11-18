@@ -319,8 +319,9 @@ its maximum. A message stored while a socket was opening may not reach that sock
 so a client reads the history once its socket is open.
 
 The server checks on `send`: the sender device belongs to the session's user, the
-user is a member, `epoch` is the newest one with envelopes (see Rotation), sizes
-(`ct` at most 64 KiB), and that `id` is new in the channel. It cannot check `sig` against content it
+user is a member, `epoch` is the newest one with envelopes (see Rotation) and not
+older than the channel's last stored message, sizes (`ct` at most 64 KiB), and that
+`id` is new in the channel. So a channel's epochs never go back as `seq` grows. It cannot check `sig` against content it
 cannot read, but it does check `sig` is a valid signature by that device, so a
 client cannot post as another device. Membership and epoch are read again on
 every `send`, so a removal or rotation applies to the next message.

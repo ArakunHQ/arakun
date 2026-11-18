@@ -227,10 +227,16 @@ export class Channel extends DurableObject<Env> {
     }
 
     // From here to the send nothing awaits, so no other frame runs in between:
-    // the check for a duplicate and the insert are one step.
+    // the checks below and the insert are one step.
     if (this.sql.exec("SELECT 1 FROM messages WHERE id = ?", msg.id).toArray().length > 0) {
       return this.refuse(ws, msg.id, "a message with this id exists");
     }
+    // The epoch read above may be old by now: a rotation can end, and a send
+    // with the new key be stored, while this one awaited its checks. Never
+    // store an older epoch after a newer one. Each insert keeps that true, so
+    // the last message holds the newest epoch.
+    const last = this.sql.exec<{ epoch: number }>("SELECT json_extract(message, '$.epoch') AS epoch FROM messages ORDER BY seq DESC LIMIT 1").toArray()[0];
+    if (last && msg.epoch < last.epoch) return this.refuse(ws, msg.id, epochRefused(msg.epoch, last.epoch, last.epoch));
     const at = now();
     let seq: number;
     try {

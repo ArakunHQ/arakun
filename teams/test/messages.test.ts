@@ -278,6 +278,47 @@ describe("rotation", () => {
     a.ws.close();
   });
 
+  it("refuses an old-epoch send that a new-epoch send overtook while it was checked", async () => {
+    const t = await team();
+    const m = await join(t);
+    const gone = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const owner = (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(t.owner.user.id).first<{ token_hash: string }>())!.token_hash;
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    // Holds the owner's epoch-1 send after it read the team as pending.
+    await runInDurableObject<Channel, void>(stub, (instance) => {
+      const ch = instance as any;
+      const allowed = ch.allowed.bind(ch);
+      const gate = new Promise<void>((r) => (ch.release = r));
+      ch.held = false;
+      ch.allowed = async (teamId: string, sessions: string[]) => {
+        const got: Set<string> = await allowed(teamId, sessions);
+        if (!ch.held && sessions[0] === owner) {
+          ch.held = true;
+          await gate;
+        }
+        return got;
+      };
+    });
+    const old = await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "sent before the rotation");
+    a.send(old);
+    while (!(await runInDurableObject<Channel, boolean>(stub, (ch) => (ch as any).held))) await new Promise((r) => setTimeout(r, 1));
+    // The rotation ends and the member sends with the new key meanwhile.
+    const key2 = newKey();
+    const envelopes = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
+    await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: t.owner.device, body: { envelopes } }), 200);
+    b.send(await message(t.teamId, t.channelId, m.device, 2, key2, "new key"));
+    expect((await stored(b)).message).toMatchObject({ epoch: 2 });
+    await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).release());
+    expect((await stored(a)).message).toMatchObject({ epoch: 2 });
+    expect(await refused(a)).toEqual({ type: "error", id: old.id, error: "stale epoch: fetch the new team key" });
+    expect(await storedCount(t)).toBe(1);
+    a.ws.close();
+    b.ws.close();
+  });
+
   it("closes the removed member's sockets and bumps the epoch; leaving does the same", async () => {
     const t = await team();
     const m = await join(t);

@@ -212,6 +212,39 @@ describe("rotation", () => {
   });
 });
 
+describe("presence", () => {
+  it("tells everyone on the channel who has it open, as people come and go", async () => {
+    const t = await team();
+    const m = await join(t);
+    const ids = [t.owner.user.id, m.user.id].sort((x, y) => x - y);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    await a.inbox.here.until([t.owner.user.id]);
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    await a.inbox.here.until(ids);
+    await b.inbox.here.until(ids);
+    // A second socket of the same person is still one entry.
+    const a2 = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    await a2.inbox.here.until(ids);
+
+    b.ws.close();
+    await a.inbox.here.until([t.owner.user.id]);
+    a2.ws.close();
+    a.ws.close();
+  });
+
+  it("drops a removed member", async () => {
+    const t = await team();
+    const m = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    await a.inbox.here.until([t.owner.user.id, m.user.id].sort((x, y) => x - y));
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${m.user.id}`), 200);
+    await b.inbox.closedWith();
+    await a.inbox.here.until([t.owner.user.id]);
+    a.ws.close();
+  });
+});
+
 describe("history", () => {
   it("pages with after and limit, oldest first", async () => {
     const t = await team();

@@ -131,15 +131,50 @@ export function newKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(32));
 }
 
+/// Every presence list the socket got, in order.
+export class Presence {
+  private got: number[][] = [];
+  private waiting: (() => void)[] = [];
+
+  push(v: unknown): void {
+    this.got.push(v as number[]);
+    for (const w of this.waiting.splice(0)) w();
+  }
+
+  /// Waits until the latest list equals `want`.
+  async until(want: number[], ms = 2000): Promise<void> {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const last = this.got.at(-1);
+      if (last && JSON.stringify(last) === JSON.stringify(want)) return;
+      const left = deadline - Date.now();
+      if (left <= 0) throw new Error(`presence is ${JSON.stringify(last)}, wanted ${JSON.stringify(want)}`);
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, left);
+        this.waiting.push(() => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+    }
+  }
+}
+
 /// What a socket said, in order, with a way to wait for the next thing. The
 /// same pattern as relay/test/helpers.ts, for JSON text frames.
 export class Inbox {
   private queue: unknown[] = [];
   private waiting: ((v: unknown) => void)[] = [];
   closed: { code: number; reason: string } | null = null;
+  /// Presence frames go here instead, so tests about messages never see them.
+  readonly here = new Presence();
 
   constructor(ws: WebSocket) {
-    ws.addEventListener("message", (ev) => this.push(JSON.parse(ev.data as string)));
+    ws.addEventListener("message", (ev) => {
+      const v = JSON.parse(ev.data as string) as { type?: string; here?: number[] };
+      if (v.type === "presence") this.here.push(v.here);
+      else this.push(v);
+    });
     ws.addEventListener("close", (ev) => {
       this.closed = { code: ev.code, reason: ev.reason };
       this.push({ closed: this.closed });

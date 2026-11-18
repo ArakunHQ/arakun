@@ -109,6 +109,8 @@ export class Channel extends DurableObject<Env> {
     // The tag lets a removal find one user's sockets.
     this.ctx.acceptWebSocket(server, [`u:${who.githubId}`]);
     server.serializeAttachment(who);
+    // Everyone, the new socket included, hears who is on the channel now.
+    this.presence();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -125,6 +127,7 @@ export class Channel extends DurableObject<Env> {
     this.kicks.set(githubId, (this.kicks.get(githubId) ?? 0) + 1);
     const sockets = this.ctx.getWebSockets(`u:${githubId}`);
     for (const ws of sockets) this.close(ws, CLOSE_FORBIDDEN, "removed from the team");
+    if (sockets.length > 0) this.presence();
     return sockets.length;
   }
 
@@ -221,11 +224,31 @@ export class Channel extends DurableObject<Env> {
   }
 
   // The compatibility date is after 2026-04-07, so the runtime answers a
-  // client's close by itself; there is nothing to clean up here.
-  override async webSocketClose(): Promise<void> {}
+  // client's close by itself. The others hear who is left.
+  override async webSocketClose(ws: WebSocket): Promise<void> {
+    this.presence(ws);
+  }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
     this.close(ws, 1011, "error");
+    this.presence(ws);
+  }
+
+  /// Sends every open socket the GitHub IDs with a socket open on this
+  /// channel, sorted, once each. `gone` is a socket that is closing and may
+  /// still be listed. The server already knows who is connected; this only
+  /// tells the members, and nothing of what they write.
+  private presence(gone?: WebSocket): void {
+    const open = this.ctx.getWebSockets().filter((ws) => ws !== gone && ws.readyState === WebSocket.OPEN);
+    const here = [...new Set(open.map((ws) => (ws.deserializeAttachment() as Who | null)?.githubId ?? 0))].filter((id) => id > 0).sort((a, b) => a - b);
+    const out = JSON.stringify({ type: "presence", here });
+    for (const ws of open) {
+      try {
+        ws.send(out);
+      } catch {
+        // closing
+      }
+    }
   }
 
   private refuse(ws: WebSocket, id: string | null, message: string): void {

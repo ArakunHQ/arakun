@@ -11,7 +11,7 @@
 
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc as std_mpsc};
+use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
@@ -89,8 +89,13 @@ enum Out {
 
 /// The connection. Dropping it hangs up.
 pub struct Client {
+    id: String,
     out: std_mpsc::Sender<Out>,
     stop: Arc<AtomicBool>,
+    /// Set by the connection's thread when it gives up for good. Held while
+    /// a message is queued, so none slips in after its last look at the queue.
+    closed: Arc<Mutex<bool>>,
+    events: Events,
 }
 
 impl Client {
@@ -114,13 +119,15 @@ impl Client {
     fn start(id: String, who: Who, name: String, events: Events, timing: Timing) -> Client {
         let (out, queued) = std_mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(Mutex::new(false));
         let link = Link {
-            id,
+            id: id.clone(),
             who,
             name,
             queued,
-            events,
+            events: events.clone(),
             stop: stop.clone(),
+            closed: closed.clone(),
             status: None,
             parts: wire::Parts::default(),
             timing,
@@ -128,14 +135,26 @@ impl Client {
         let _ = std::thread::Builder::new()
             .name("arakun-server-link".into())
             .spawn(move || link.run());
-        Client { out, stop }
+        Client {
+            id,
+            out,
+            stop,
+            closed,
+            events,
+        }
     }
 
     /// A message to the server (the phone's `ClientMsg`, as JSON). Dropped
     /// while there is no connection, and told back as [`Event::Undelivered`]:
-    /// the server says where things stand again when there is one.
+    /// the server says where things stand again when there is one. After the
+    /// connection gave up for good, it is told back at once.
     pub fn send(&self, msg: &Value) {
-        let _ = self.out.send(Out::Say(msg.to_string()));
+        let closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
+        if *closed || self.out.send(Out::Say(msg.to_string())).is_err() {
+            let _ = self
+                .events
+                .unbounded_send((self.id.clone(), Event::Undelivered(msg.clone())));
+        }
     }
 
     /// Has the server forget this app, when it can be told right now, and
@@ -179,6 +198,7 @@ struct Link {
     queued: std_mpsc::Receiver<Out>,
     events: Events,
     stop: Arc<AtomicBool>,
+    closed: Arc<Mutex<bool>>,
     /// The last status told, so the same one is not told twice.
     status: Option<Status>,
     parts: wire::Parts,
@@ -206,12 +226,14 @@ impl Link {
                 Ended::Stopped => return,
                 Ended::Refused(why) => {
                     self.set_status(Status::Refused(why));
+                    self.close();
                     return;
                 }
                 // A link works once and for two minutes: a pairing that did
                 // not get through is not tried again behind the user's back.
                 Ended::Retry(why) if matches!(self.who, Who::Invite(_)) => {
                     self.set_status(Status::Refused(why));
+                    self.close();
                     return;
                 }
                 Ended::Retry(why) => {
@@ -251,6 +273,13 @@ impl Link {
                 self.undelivered(&text);
             }
         }
+    }
+
+    /// No more connections: what is queued, and what is sent from now on, is told back.
+    fn close(&self) {
+        let mut closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
+        *closed = true;
+        self.forget_queued();
     }
 
     /// `text` did not go out: the shell hears what it was.
@@ -1049,6 +1078,39 @@ mod tests {
                 _ => panic!("only statuses come before it"),
             }
         }
+    }
+
+    #[test]
+    fn what_a_refusing_server_never_got_is_told_back() {
+        let access = Access::new(Vec::new(), String::new());
+        let (server, _incoming) = Server::start(Ipv4Addr::LOCALHOST, 0, access).unwrap();
+        // No pairing was begun, so the link is refused and not tried again.
+        let invite = Invite {
+            origin: format!("http://127.0.0.1:{}", server.port()),
+            code: "not-a-code".into(),
+            secret: None,
+        };
+        let (tx, mut rx) = mpsc::unbounded();
+        let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
+        // Queued while pairing: the thread gives up with it still there.
+        let queued = json!({ "type": "start", "env": "/srv/app", "text": "hi" });
+        client.send(&queued);
+        let (mut refused, mut told) = (false, false);
+        while !(refused && told) {
+            match next(&mut rx) {
+                Event::Status(Status::Refused(_)) => refused = true,
+                Event::Status(_) => {}
+                Event::Undelivered(msg) => {
+                    assert_eq!(msg, queued);
+                    told = true;
+                }
+                _ => panic!("nothing else comes"),
+            }
+        }
+        // Sent after the thread is gone: nothing reads it, so it comes back at once.
+        let late = json!({ "type": "send", "session": "s1", "text": "late" });
+        client.send(&late);
+        assert!(matches!(next(&mut rx), Event::Undelivered(msg) if msg == late));
     }
 
     #[test]

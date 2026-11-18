@@ -110,3 +110,17 @@ describe("frames from the computer", () => {
     expect(await a.inbox.control()).toEqual({ type: "bye", reason: "revoked" });
   });
 });
+
+describe("a close the other side starts", () => {
+  it("is answered with the same code, so the phone sees a clean close", async () => {
+    const { a } = await room();
+    a.ws.close(4000, "leaving");
+    expect(await a.inbox.closedWith()).toEqual({ code: 4000, reason: "leaving" });
+  });
+
+  it("is answered on the computer's socket too", async () => {
+    const { pc } = await room();
+    pc.ws.close(1000, "going away");
+    expect((await pc.inbox.closedWith()).code).toBe(1000);
+  });
+});

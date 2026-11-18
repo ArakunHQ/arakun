@@ -601,17 +601,18 @@ function insertEnvelope(extra: string): string {
       WHERE d.device_id = json_extract(envelopes.body, '$.from') AND m.role IN ('owner', 'admin'))`;
 }
 
-/// An envelope of a new key, written only after the same batch made its epoch
-/// the keyed one, and only if no other device's key for that epoch is there.
-/// So a key never lands for an epoch a removal skipped, and a second rotation
-/// cannot replace the key that won.
-function storeNewKey(db: D1Database, e: Envelope, t: number): D1PreparedStatement {
-  return db
-    .prepare(
-      insertEnvelope(`AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?3
-        AND NOT EXISTS (SELECT 1 FROM envelopes WHERE team_id = ?1 AND epoch = ?3 AND json_extract(body, '$.from') <> ?6)`),
-    )
-    .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, e.from);
+/// Whether the new key of epoch ?6 made by device ?7 is the one in use: the
+/// epoch is the keyed one and no other device's key for it is there.
+const KEY_WON = `AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?6
+  AND NOT EXISTS (SELECT 1 FROM envelopes WHERE team_id = ?1 AND epoch = ?6 AND json_extract(body, '$.from') <> ?7)`;
+
+/// An envelope of an upload that makes a new key, written only after the same
+/// batch made the new epoch the keyed one, and only if this device's key won.
+/// So a key never lands for an epoch a removal skipped, a second rotation
+/// cannot replace the key that won, and an upload answered 409 writes nothing,
+/// its envelopes of older epochs included.
+function storeWithNewKey(db: D1Database, e: Envelope, epoch: number, t: number): D1PreparedStatement {
+  return db.prepare(insertEnvelope(KEY_WON)).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, epoch, e.from);
 }
 
 /// The epochs from `lo` to `hi` that have a key: the ones with envelopes. A
@@ -671,7 +672,7 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
             .bind(team.epoch, teamId, JSON.stringify([...covered])),
         ]
       : []),
-    ...envelopes.map((e) => (keying && e.epoch === team.epoch ? storeNewKey(db, e, t) : storeEnvelope(db, e, t))),
+    ...envelopes.map((e) => (keying ? storeWithNewKey(db, e, team.epoch, t) : storeEnvelope(db, e, t))),
     db.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(teamId),
   ]);
   const after = done[done.length - 1]!.results[0] as { epoch: number; keyed_epoch: number };

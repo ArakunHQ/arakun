@@ -592,6 +592,49 @@ describe("envelopes", () => {
     expect(mine.find((e) => e.epoch === 2)).toEqual({ ...first[2], made_at: expect.any(Number) });
   });
 
+  it("of an older epoch are not written when the new key in the same upload lost", async () => {
+    const t = await team();
+    const second = await makeDevice();
+    await expectJson(register(t.owner.user, second, t.owner.device, "desktop"), 201);
+    const m = await join(t);
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const path = `/teams/${t.teamId}/envelopes`;
+    const devices = [t.owner.device, second, m.device];
+    const first = await Promise.all(devices.map((d) => envelope(t.teamId, 2, newKey(), d, t.owner.device)));
+    // The second device's new key, and the epoch-1 key it never had, sealed by itself.
+    const key2 = newKey();
+    const mixed = [...(await Promise.all(devices.map((d) => envelope(t.teamId, 2, key2, d, second)))), await envelope(t.teamId, 1, t.keys.get(1)!, second, second)];
+    // The first device's key wins after the second one read the team, before its batch.
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === mixed.length + 2) {
+        raced = true;
+        await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: first } }), 200);
+      }
+      return batch(statements);
+    });
+    const res = await expectJson(api(t.owner.user, "PUT", path, { device: second, body: { envelopes: mixed } }), 409);
+    expect(res.error).toMatch(/another device made the key/);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    const theirs = await expectJson<{ epoch: number; from: string }[]>(api(t.owner.user, "GET", path, { device: second }), 200);
+    expect(theirs.map((e) => [e.epoch, e.from])).toEqual([[2, t.owner.device.id]]);
+
+    // The same kind of upload, when its key wins, writes the older epoch too.
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${m.user.id}`), 200);
+    const key3 = newKey();
+    const next = [await envelope(t.teamId, 3, key3, t.owner.device, second), await envelope(t.teamId, 3, key3, second, second), mixed.at(-1)!];
+    expect(await expectJson(api(t.owner.user, "PUT", path, { device: second, body: { envelopes: next } }), 200)).toEqual({ stored: 3, epoch: 3, rotation_pending: false });
+    const now = await expectJson<{ epoch: number; from: string }[]>(api(t.owner.user, "GET", path, { device: second }), 200);
+    expect(now.map((e) => [e.epoch, e.from])).toEqual([
+      [1, second.id],
+      [2, t.owner.device.id],
+      [3, second.id],
+    ]);
+  });
+
   it("are asked only for epochs with a key when two removals skipped one", async () => {
     const t = await team();
     const a = await join(t);

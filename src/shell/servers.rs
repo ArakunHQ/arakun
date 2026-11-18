@@ -10,7 +10,9 @@
 //! fed with the entries the server sends whole (`transcript`), and what the
 //! user does in it goes back as the phone's messages ([`RemoteAction`]).
 //!
-//! The app connects at start when any server is paired.
+//! The app connects at start when any server is paired. Until a server
+//! answers, its environments are the ones it listed last
+//! (`servers::load_inboxes`), so a restart or a server that is away loses none.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -111,6 +113,8 @@ pub(super) struct ServersLink {
     events: Events,
     /// The servers' sessions followed, each for whoever looks at it.
     following: Vec<Following>,
+    /// What each server listed last, as kept on disk (`servers::kept_inbox`).
+    inboxes: HashMap<String, Value>,
     /// What each local project's repository is known by (`repo_key`), read once.
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
@@ -644,12 +648,14 @@ impl Shell {
         cx.notify();
     }
 
-    /// At start: the paired servers are connected, so their projects show.
-    /// Not one reached over plain http: its token would cross whatever
-    /// network this is now in the clear. It waits for the Servers tab.
+    /// At start: the paired servers are connected, and their projects show
+    /// what they listed last until they answer. Not one reached over plain
+    /// http: its token would cross whatever network this is now in the clear.
+    /// It waits for the Servers tab.
     pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if servers::load().iter().any(|s| !in_the_clear(s)) {
             self.servers_connect_with(true, window, cx);
+            self.sync_remote_projects(window, cx);
             self.sync_servers_view(cx);
         }
     }
@@ -661,13 +667,22 @@ impl Shell {
     /// With `startup`, only the servers whose link is encrypted.
     fn servers_connect_with(&mut self, startup: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(link) = &mut self.servers {
+            let mut late = Vec::new();
             if !startup {
                 for s in &link.saved {
                     if !link.conns.contains_key(&s.id) {
                         let client = Client::connect(s.clone(), link.events.clone());
                         link.conns.insert(s.id.clone(), Conn::new(client));
+                        late.extend(link.inboxes.get(&s.id).map(|i| (s.id.clone(), i.clone())));
                     }
                 }
+            }
+            // Left out at start: what it listed last shows until it answers.
+            for (id, inbox) in &late {
+                self.servers_inbox(id, inbox);
+            }
+            if !late.is_empty() {
+                self.sync_remote_projects(window, cx);
             }
             return;
         }
@@ -685,6 +700,9 @@ impl Shell {
             }
         });
         let saved = servers::load();
+        let mut inboxes = servers::load_inboxes();
+        // A server forgotten while it was kept is not shown again.
+        inboxes.retain(|id, _| saved.iter().any(|s| s.id == *id));
         let conns = saved
             .iter()
             .filter(|s| !startup || !in_the_clear(s))
@@ -700,6 +718,7 @@ impl Shell {
             conns,
             events,
             following: Vec::new(),
+            inboxes: inboxes.clone(),
             origins: HashMap::new(),
             starts: Starts::default(),
             starting_id: None,
@@ -714,6 +733,9 @@ impl Shell {
             error: None,
             _listen: listen,
         });
+        for (id, inbox) in &inboxes {
+            self.servers_inbox(id, inbox);
+        }
     }
 
     /// The name a server goes by.
@@ -806,6 +828,9 @@ impl Shell {
                 }
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
+                if link.inboxes.remove(id).is_some() {
+                    servers::save_inboxes(&link.inboxes);
+                }
                 link.following.retain(|f| f.server != *id);
                 // What it was asked is not coming: the others' requests stay.
                 link.adding.remove(id);
@@ -1970,6 +1995,13 @@ impl Shell {
             }
             Event::Message(msg) => {
                 if msg["type"] == "inbox" {
+                    // Kept for the next start, when what it holds changed.
+                    let kept = servers::kept_inbox(&msg);
+                    if link.saved.iter().any(|s| s.id == id) && link.inboxes.get(id) != Some(&kept)
+                    {
+                        link.inboxes.insert(id.to_string(), kept);
+                        servers::save_inboxes(&link.inboxes);
+                    }
                     self.servers_inbox(id, &msg);
                     self.sync_remote_projects(window, cx);
                 } else if msg["type"] == "place_added" {

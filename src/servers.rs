@@ -7,12 +7,16 @@
 //!
 //! What pairing gave is kept in `servers.json` next to the state, readable by
 //! this user only: with the token in it, anyone could start agents on the server.
+//! What each server last listed is kept in `servers-inbox.json`, so its
+//! environments are back at start before the server answers, or when it can't.
 
 pub mod client;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 /// A server this app is paired with.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -146,6 +150,45 @@ pub fn save(servers: &[Saved]) {
     }
 }
 
+fn inbox_file() -> PathBuf {
+    file().with_file_name("servers-inbox.json")
+}
+
+/// What is kept of a server's inbox: its folders and sessions. No session is
+/// shown at work or waiting from it: that was true when it was heard, and the
+/// server says what is true now once it answers.
+pub fn kept_inbox(inbox: &Value) -> Value {
+    let mut sessions = inbox["sessions"].as_array().cloned().unwrap_or_default();
+    for s in &mut sessions {
+        if let Some(s) = s.as_object_mut() {
+            s.insert("status".into(), json!("idle"));
+            s.remove("asks");
+        }
+    }
+    json!({
+        "places": inbox["places"].as_array().cloned().unwrap_or_default(),
+        "sessions": sessions,
+    })
+}
+
+/// The inbox each server sent last, by its id.
+pub fn load_inboxes() -> HashMap<String, Value> {
+    std::fs::read(inbox_file())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_inboxes(inboxes: &HashMap<String, Value>) {
+    // Folder paths and session titles: this user's only, as the servers are.
+    let saved = serde_json::to_vec(inboxes)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| crate::durable::write_private(&inbox_file(), &bytes));
+    if let Err(e) = saved {
+        eprintln!("arakun: could not save {}: {e}", inbox_file().display());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +258,30 @@ mod tests {
         assert!(json.contains(r#""via":"relay""#) && json.contains(r#""via":"direct""#));
         assert_eq!(serde_json::from_str::<Vec<Saved>>(&json).unwrap(), servers);
         assert_ne!(new_id(), new_id());
+    }
+
+    #[test]
+    fn a_kept_inbox_holds_the_folders_and_sessions_but_not_their_state() {
+        let inbox = json!({
+            "type": "inbox",
+            "host": "box",
+            "places": [{ "path": "/srv/app", "branch": "main" }],
+            "sessions": [
+                { "id": "a", "title": "Fix it", "status": "working" },
+                { "id": "b", "title": "Ask", "status": "needs_input", "asks": { "kind": "permission" } },
+            ],
+        });
+        let kept = kept_inbox(&inbox);
+        assert_eq!(kept["places"], inbox["places"]);
+        assert_eq!(kept["sessions"][0]["title"], "Fix it");
+        // What it was doing then is not what it is doing now.
+        assert_eq!(kept["sessions"][0]["status"], "idle");
+        assert_eq!(kept["sessions"][1]["status"], "idle");
+        assert!(kept["sessions"][1].get("asks").is_none());
+        assert!(kept.get("host").is_none());
+        // Only a change in what it holds is written again.
+        let mut later = inbox.clone();
+        later["sessions"][0]["status"] = json!("idle");
+        assert_eq!(kept_inbox(&later), kept);
     }
 }

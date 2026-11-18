@@ -45,13 +45,19 @@ fn set_version() {
 fn embed_icon() {
     println!("cargo::rerun-if-changed=src/arakun.rc");
     println!("cargo::rerun-if-changed=src/arakun.ico");
-    embed_resource::compile_for(
+    let result = embed_resource::compile_for(
         "src/arakun.rc",
         ["arakun"],
         embed_resource::ParamsIncludeDirs(["src"]),
-    )
-    .manifest_optional()
-    .unwrap();
+    );
+    // A build for Windows from Linux or macOS without windres or llvm-rc still works, but
+    // the exe and its window get the blank icon, so say so instead of skipping it quietly.
+    // (On a Windows host a missing rc.exe is Failed, and the unwrap below stops the build.)
+    if matches!(result, embed_resource::CompilationResult::NotAttempted(_)) {
+        let why = result.to_string().replace('\n', " ");
+        println!("cargo::warning=arakun.exe gets no icon ({why})");
+    }
+    result.manifest_optional().unwrap();
 }
 
 /// Copies the CEF runtime next to arakun.exe, where src/browser/loader.rs looks for it.

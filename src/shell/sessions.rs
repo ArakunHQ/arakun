@@ -367,6 +367,7 @@ impl Shell {
                 self.save(cx);
                 cx.notify();
             }
+            ThreadEvent::FailureReportDue => report_failure(thread, false, cx),
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
                 let status = status_of(thread.read(cx));
                 if status == Status::Error {

@@ -515,6 +515,7 @@ fn main() {
                         }
                     }
                     ThreadEvent::Changed
+                    | ThreadEvent::FailureReportDue
                     | ThreadEvent::Forked(_)
                     | ThreadEvent::Rewound { .. }
                     | ThreadEvent::RewindChanged { .. }

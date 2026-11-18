@@ -498,6 +498,7 @@ fn main() {
                     println!("[rewound] {} prompt={prompt:?}", serde_json::to_string(meta).unwrap_or_default());
                 }
                 ThreadEvent::RewindChanged { .. }
+                | ThreadEvent::FailureReportDue
                 | ThreadEvent::LoginRequested
                 | ThreadEvent::SubagentsChanged { .. }
                 | ThreadEvent::ShellChanges

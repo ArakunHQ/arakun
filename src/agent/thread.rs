@@ -46,6 +46,9 @@ pub enum ThreadStatus {
     Error(String),
 }
 
+/// How long a disconnect's report waits for the process's exit.
+const EXIT_WAIT: Duration = Duration::from_secs(2);
+
 /// Where a session failed, for crash reports. Only fixed labels and numbers,
 /// never the message: that can hold a project's name or a credential.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -459,6 +462,8 @@ pub enum ThreadEvent {
     /// Metadata changed: modes, models, config, queue, usage, commands.
     Changed,
     StatusChanged,
+    /// A held failure stopped waiting (see [`Thread::take_failure_report`]).
+    FailureReportDue,
     TitleChanged,
     NeedsPermission,
     /// A prompt turn ended; `stop_reason` is ACP's (end_turn, cancelled, ...) or "error".
@@ -613,6 +618,8 @@ pub struct Thread {
     failed_at: Option<FailedAt>,
     /// Whether crash reports have yet to hear of [`Self::failed_at`].
     failure_unreported: bool,
+    /// A disconnect stopped waiting for the process's exit.
+    exit_wait_over: bool,
     /// The running turn seems to be going in circles.
     stuck: Option<Stuck>,
     /// Patterns the user chose to keep going past this turn.
@@ -656,6 +663,7 @@ pub struct Thread {
     _pump: Option<Task<()>>,
     _setup: Option<Task<()>>,
     _prompt: Option<Task<()>>,
+    _exit_wait: Option<Task<()>>,
 }
 
 impl EventEmitter<ThreadEvent> for Thread {}
@@ -1079,6 +1087,7 @@ impl Thread {
             failure: None,
             failed_at: None,
             failure_unreported: false,
+            exit_wait_over: false,
             auto_allow: false,
             handoff: None,
             handoff_sent: false,
@@ -1091,6 +1100,7 @@ impl Thread {
             auto_turn: false,
             origins: false,
             _connect: None,
+            _exit_wait: None,
             _pump: None,
             _setup: None,
             _prompt: None,
@@ -1561,14 +1571,38 @@ impl Thread {
 
     fn fail(&mut self, at: FailedAt, message: String, cx: &mut Context<Self>) {
         self.status_detail = None;
-        self.failed_at = Some(at);
-        self.failure_unreported = true;
+        self.record_failure(at);
+        self._exit_wait = (at == FailedAt::Disconnected).then(|| {
+            // An agent can close its input and keep running, so its exit may
+            // never come.
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(EXIT_WAIT).await;
+                let _ = this.update(cx, |t, cx| {
+                    t.exit_wait_over = true;
+                    cx.emit(ThreadEvent::FailureReportDue);
+                });
+            })
+        });
         self.set_status(ThreadStatus::Error(message), cx);
+    }
+
+    /// Notes `at` for crash reports. The exit after a disconnect that was
+    /// already sent is the same failure, so it is not sent again.
+    fn record_failure(&mut self, at: FailedAt) {
+        let sent = matches!(at, FailedAt::Exited(_))
+            && self.failed_at == Some(FailedAt::Disconnected)
+            && !self.failure_unreported;
+        self.failed_at = Some(at);
+        self.failure_unreported = !sent;
+        self.exit_wait_over = false;
     }
 
     // ---- connection ------------------------------------------------------
 
     fn connect(&mut self, cx: &mut Context<Self>) {
+        // A new process: an earlier one's failure is not this one's.
+        (self.failed_at, self.failure_unreported) = (None, false);
+        self._exit_wait = None;
         self.conn = None;
         self._pump = None;
         self._setup = None;
@@ -1858,12 +1892,14 @@ impl Thread {
             .filter(|_| matches!(self.status, ThreadStatus::Error(_)))
     }
 
-    /// The failure to send to crash reports, once each. A disconnect waits: the
-    /// process's exit follows it within moments and brings the exit code. When
-    /// `closing`, nothing will follow, so a waiting disconnect goes out as it is.
+    /// The failure to send to crash reports, once each. A disconnect waits up
+    /// to [`EXIT_WAIT`]: the process's exit usually follows it within moments
+    /// and brings the exit code. When `closing`, nothing will follow, so a
+    /// waiting disconnect goes out as it is.
     pub fn take_failure_report(&mut self, closing: bool) -> Option<FailedAt> {
         let at = self.failed_at()?;
-        if !self.failure_unreported || (at == FailedAt::Disconnected && !closing) {
+        let wait = at == FailedAt::Disconnected && !closing && !self.exit_wait_over;
+        if !self.failure_unreported || wait {
             return None;
         }
         self.failure_unreported = false;
@@ -3829,13 +3865,13 @@ mod tests {
         let failed = |at| {
             let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
             t.status = ThreadStatus::Error("x".into());
-            (t.failed_at, t.failure_unreported) = (Some(at), true);
+            t.record_failure(at);
             t
         };
         let mut t = failed(FailedAt::Disconnected);
         assert_eq!(t.take_failure_report(false), None);
         // The exit replaces the disconnect and is sent, once.
-        t.failed_at = Some(FailedAt::Exited(Some(1)));
+        t.record_failure(FailedAt::Exited(Some(1)));
         assert_eq!(
             t.take_failure_report(false),
             Some(FailedAt::Exited(Some(1)))
@@ -3848,6 +3884,17 @@ mod tests {
         assert_eq!(t.take_failure_report(true), None);
 
         let mut t = failed(FailedAt::Turn(-32603));
+        assert_eq!(t.take_failure_report(false), Some(FailedAt::Turn(-32603)));
+
+        // A disconnect whose exit never came goes out after the wait; the
+        // exit that comes later is not sent again.
+        let mut t = failed(FailedAt::Disconnected);
+        t.exit_wait_over = true;
+        assert_eq!(t.take_failure_report(false), Some(FailedAt::Disconnected));
+        t.record_failure(FailedAt::Exited(Some(0)));
+        assert_eq!(t.take_failure_report(false), None);
+        // A failure after that one is new, and is sent.
+        t.record_failure(FailedAt::Turn(-32603));
         assert_eq!(t.take_failure_report(false), Some(FailedAt::Turn(-32603)));
 
         // A thread that is no longer in error has nothing to send.

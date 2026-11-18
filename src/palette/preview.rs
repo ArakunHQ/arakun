@@ -1,8 +1,6 @@
 //! The pane at the right: a hero for each kind of row (a pull request's
 //! checks, a session's state, a file's code, a person's numbers).
 
-use std::time::Duration;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, ElementId, IntoElement, ParentElement as _,
@@ -90,8 +88,14 @@ impl Palette {
                     .children(body)
                     .with_animation(
                         ElementId::NamedInteger("palette-preview".into(), id),
-                        Animation::new(Duration::from_millis(120)),
-                        |d, t| d.opacity(0.35 + 0.65 * t),
+                        Animation::new(crate::ui::motion::FAST),
+                        // A short drift up with the fade, so moving through the
+                        // list reads as turning pages rather than a flicker.
+                        |d, t| {
+                            let (opacity, offset) =
+                                crate::ui::motion::enter_at(t, crate::ui::motion::From::Below, 4.);
+                            d.opacity(0.35 + 0.65 * opacity).mt(gpui::px(offset))
+                        },
                     ),
             )
             .into_any_element()

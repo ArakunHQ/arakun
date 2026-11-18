@@ -349,8 +349,14 @@ pub fn shortcut(keys: &[&str]) -> gpui::Div {
 // ---------------------------------------------------------------------------
 // Controls.
 
-/// On/off, in the accent when on.
-pub fn switch(on: bool) -> gpui::Div {
+/// On/off, in the accent when on. The knob springs across when it changes;
+/// one shown for the first time starts where it belongs. The spring is kept
+/// under the nearest element with an id, so give each switch its own row.
+pub fn switch(on: bool) -> AnyElement {
+    use gpui::AnimationExt as _;
+    const TRAVEL: f32 = 30. - 2. * 2. - 14.;
+    let (off_track, on_track) = (theme::fill_selected(), theme::active());
+    let (off_knob, on_knob) = (theme::content(), theme::background());
     div()
         .flex()
         .flex_none()
@@ -359,17 +365,23 @@ pub fn switch(on: bool) -> gpui::Div {
         .h(px(18.))
         .p(crate::ui::sp(2.))
         .rounded_full()
-        .bg(if on {
-            theme::active()
-        } else {
-            theme::fill_selected()
-        })
-        .when(on, |d| d.justify_end())
-        .child(div().size(px(14.)).rounded_full().bg(if on {
-            theme::background()
-        } else {
-            theme::content()
-        }))
+        .with_spring(
+            "switch",
+            gpui::SpringAnimation::new(super::motion::SNAP)
+                .to(on)
+                .with_epsilon(super::motion::SNAP_EPSILON),
+            move |d, phase| {
+                let color = phase.clamp(0.0..=1.0);
+                d.bg(color.interpolate(off_track, on_track)).child(
+                    div()
+                        .size(px(14.))
+                        .rounded_full()
+                        .ml(px(TRAVEL * phase.0))
+                        .bg(color.interpolate(off_knob, on_knob)),
+                )
+            },
+        )
+        .into_any_element()
 }
 
 /// A radio dot: a ring with a center when picked.
@@ -1526,7 +1538,7 @@ pub fn lead_spinner(id: impl Into<ElementId>) -> AnyElement {
                 .text_color(theme::working())
                 .with_animation(
                     id,
-                    gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat(),
+                    gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat_synced(),
                     |svg, t| {
                         svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
                     },

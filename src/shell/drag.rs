@@ -9,7 +9,7 @@ use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, Context, FontWeight,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Point, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div,
-    ease_out_quint, point, px,
+    point, px,
 };
 
 use super::{Shell, agent_icon};
@@ -21,7 +21,7 @@ use crate::ui::icon;
 
 /// Roughly one session card and the gap under it.
 const ROW_PITCH: f32 = 80.;
-const SLIDE: Duration = Duration::from_millis(280);
+const SLIDE: Duration = crate::ui::motion::SLOW;
 /// How much of another session's conversation "Add to context" sends.
 const CONTEXT_BUDGET: usize = 16 * 1024;
 
@@ -93,7 +93,7 @@ impl Render for DraggedSession {
             )
             .with_animation(
                 "session-lift",
-                Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
+                Animation::new(crate::ui::motion::FAST).with_easing(crate::ui::motion::ease_out),
                 |el, t| el.opacity(0.55 + 0.45 * t),
             )
     }
@@ -295,7 +295,8 @@ impl Shell {
         card.relative()
             .with_animation(
                 SharedString::from(format!("slide-{}-{id}", s.generation)),
-                Animation::new(SLIDE).with_easing(ease_out_quint()),
+                // Rows settle with a little give, like cards put down.
+                Animation::new(SLIDE).with_easing(crate::ui::motion::ease_out_back),
                 move |el, t| {
                     let el = el.top(px(dy * (1. - t)));
                     if landing {
@@ -430,7 +431,7 @@ impl Shell {
                     .position(point(menu.at.x, menu.at.y - px(8.)))
                     .anchor(Anchor::BottomLeft)
                     .snap_to_window_with_margin(px(8.))
-                    .child(
+                    .child(crate::ui::motion::enter(
                         div()
                             .id("session-drop-menu")
                             .occlude()
@@ -492,7 +493,11 @@ impl Shell {
                                     },
                                 )),
                             ),
-                    ),
+                        "session-drop-menu-in",
+                        crate::ui::motion::From::Below,
+                        4.,
+                        crate::ui::motion::FAST,
+                    )),
             )
             .with_priority(2)
             .into_any_element(),

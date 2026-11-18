@@ -1988,18 +1988,20 @@ impl Daemon {
         }
         // Whether git calls it a worktree is asked to the side, after this.
         // A folder inside it added on its own goes with it, sessions and all.
-        let busy = self.store.sessions.iter().any(|s| {
-            s.place.starts_with(place)
-                && self.live.get(&s.id).is_some_and(|l| {
-                    let t = l.thread.read(cx);
-                    matches!(status_of(t), Status::Working | Status::NeedsInput)
-                        || t.in_background()
-                })
-        });
-        if busy {
-            return Err("a session there is still working; stop it first".into());
+        let live = self
+            .store
+            .sessions
+            .iter()
+            .filter(|s| s.place.starts_with(place))
+            .filter_map(|s| self.live.get(&s.id))
+            .map(|l| {
+                let t = l.thread.read(cx);
+                (status_of(t), t.in_background())
+            });
+        match busy_reason(live) {
+            Some(why) => Err(why.into()),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// The place is gone from disk: it leaves the list, with its sessions,
@@ -2908,6 +2910,20 @@ fn inside_any(place: &Path, folders: &HashSet<PathBuf>) -> bool {
     folders.iter().any(|f| place.starts_with(f))
 }
 
+/// Why sessions with these live statuses (and whether each still works in
+/// the background) keep their place from being deleted, if they do. Work
+/// under way says so first; a question says what the user can do about it.
+fn busy_reason(live: impl IntoIterator<Item = (Status, bool)>) -> Option<&'static str> {
+    let mut asking = false;
+    for (status, background) in live {
+        if status == Status::Working || background {
+            return Some("a session there is still working; stop it first");
+        }
+        asking |= status == Status::NeedsInput;
+    }
+    asking.then_some("a session there is waiting for an answer; answer it or settle it first")
+}
+
 /// Why no work may start in `place` while `deleting` are being deleted.
 fn admission(place: &Path, deleting: &HashSet<PathBuf>) -> Result<(), String> {
     if inside_any(place, deleting) {
@@ -3418,6 +3434,21 @@ mod tests {
         assert!(inside_any(Path::new("/w/fix/docs"), &deleting));
         assert!(!inside_any(Path::new("/w/fix2"), &deleting));
         assert!(!inside_any(Path::new("/w"), &deleting));
+    }
+
+    #[test]
+    fn a_question_blocks_a_delete_with_its_own_reason() {
+        assert_eq!(
+            busy_reason([(Status::Idle, false), (Status::Error, false)]),
+            None
+        );
+        let asking = busy_reason([(Status::Idle, false), (Status::NeedsInput, false)]);
+        assert!(asking.is_some_and(|w| w.contains("waiting for an answer")));
+        // Work under way wins, wherever it is in the list.
+        let working = busy_reason([(Status::NeedsInput, false), (Status::Working, false)]);
+        assert!(working.is_some_and(|w| w.contains("still working")));
+        let background = busy_reason([(Status::Idle, true)]);
+        assert!(background.is_some_and(|w| w.contains("still working")));
     }
 
     #[test]

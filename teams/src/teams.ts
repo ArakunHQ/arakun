@@ -71,8 +71,11 @@ const ROUTES: [string, RegExp, Handler][] = [
   ["GET", /^\/teams$/, listTeams],
   ["GET", /^\/teams\/([^/]+)$/, getTeam],
   ["POST", /^\/teams\/([^/]+)\/invites$/, invite],
+  ["GET", /^\/teams\/([^/]+)\/invites$/, teamInvites],
+  ["DELETE", /^\/teams\/([^/]+)\/invites\/([^/]+)$/, withdraw],
   ["GET", /^\/invites$/, listInvites],
   ["POST", /^\/invites\/([^/]+)\/accept$/, accept],
+  ["POST", /^\/invites\/([^/]+)\/decline$/, decline],
   ["GET", /^\/teams\/([^/]+)\/pending$/, listPending],
   ["POST", /^\/teams\/([^/]+)\/pending\/([^/]+)\/approve$/, approve],
   ["POST", /^\/teams\/([^/]+)\/pending\/([^/]+)\/reject$/, reject],
@@ -303,15 +306,54 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   return Response.json({ invite_id: inviteId, expires_at: expiresAt }, { status: 201 });
 }
 
-async function listInvites(c: Ctx): Promise<Response> {
+async function teamInvites(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
   const { results } = await c.env.DB.prepare(
-    `SELECT i.invite_id, i.team_id, t.name AS team_name, u.login AS invited_by_login, i.created_at, i.expires_at
+    `SELECT i.invite_id, i.login, u.login AS invited_by_login, i.created_at, i.expires_at
+     FROM invites i LEFT JOIN users u ON u.github_id = i.invited_by
+     WHERE i.team_id = ? AND i.expires_at > ? ORDER BY i.created_at DESC, i.invite_id DESC`,
+  )
+    .bind(teamId, now())
+    .all();
+  return Response.json(results);
+}
+
+async function withdraw(c: Ctx, teamId: string, inviteId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  // Scoped to the team, so an admin of one team cannot withdraw another's.
+  const result = ULID.test(inviteId)
+    ? await c.env.DB.prepare("DELETE FROM invites WHERE invite_id = ? AND team_id = ? AND expires_at > ?").bind(inviteId, teamId, now()).run()
+    : null;
+  if (!result?.meta.changes) return error(404, "no such invite");
+  return new Response(null, { status: 204 });
+}
+
+async function listInvites(c: Ctx): Promise<Response> {
+  // member_count leaves out pending ones: they live in their own table.
+  const { results } = await c.env.DB.prepare(
+    `SELECT i.invite_id, i.team_id, t.name AS team_name, u.login AS invited_by_login, i.created_at, i.expires_at,
+       (SELECT COUNT(*) FROM members m WHERE m.team_id = i.team_id) AS member_count
      FROM invites i JOIN teams t ON t.team_id = i.team_id LEFT JOIN users u ON u.github_id = i.invited_by
      WHERE i.login = ? AND i.expires_at > ? ORDER BY i.created_at, i.invite_id`,
   )
     .bind(c.me.login.toLowerCase(), now())
     .all();
   return Response.json(results);
+}
+
+async function decline(c: Ctx, inviteId: string): Promise<Response> {
+  // Someone else's invite is answered like one that does not exist, as in accept.
+  const result = ULID.test(inviteId)
+    ? await c.env.DB.prepare("DELETE FROM invites WHERE invite_id = ? AND login = ? AND expires_at > ?")
+        .bind(inviteId, c.me.login.toLowerCase(), now())
+        .run()
+    : null;
+  if (!result?.meta.changes) return error(404, "no such invite");
+  return new Response(null, { status: 204 });
 }
 
 async function accept(c: Ctx, inviteId: string): Promise<Response> {

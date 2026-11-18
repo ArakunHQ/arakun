@@ -106,6 +106,9 @@ describe("the gate", () => {
       ["POST", "/teams"],
       ["GET", `/teams/${t.teamId}`],
       ["GET", "/invites"],
+      ["GET", `/teams/${t.teamId}/invites`],
+      ["DELETE", `/teams/${t.teamId}/invites/${ulid()}`],
+      ["POST", `/invites/${ulid()}/decline`],
       ["GET", `/teams/${t.teamId}/envelopes`],
       ["GET", `/teams/${t.teamId}/channels/${t.channelId}/messages`],
       ["GET", `/teams/${t.teamId}/channels/${t.channelId}/ws`],
@@ -134,6 +137,8 @@ describe("the gate", () => {
       ["GET", `${base}/envelopes`],
       ["PUT", `${base}/envelopes`],
       ["POST", `${base}/invites`],
+      ["GET", `${base}/invites`],
+      ["DELETE", `${base}/invites/${ulid()}`],
       ["GET", `${base}/pending`],
       ["POST", `${base}/channels`],
       ["DELETE", `${base}/members/${m.user.id}`],
@@ -150,6 +155,8 @@ describe("the gate", () => {
     for (const [method, path] of [
       ["PUT", `${base}/envelopes`],
       ["POST", `${base}/invites`],
+      ["GET", `${base}/invites`],
+      ["DELETE", `${base}/invites/${ulid()}`],
       ["GET", `${base}/pending`],
       ["POST", `${base}/channels`],
       ["POST", `${base}/pending/${outsider.id}/approve`],
@@ -205,7 +212,15 @@ describe("teams", () => {
     const { invite_id } = await expectJson(api(owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "rikvisser-DEV" } }), 201);
     const invites = await expectJson(api(newcomer, "GET", "/invites"), 200);
     expect(invites).toEqual([
-      { invite_id, team_id: t.teamId, team_name: "Arakun", invited_by_login: owner.user.login, created_at: expect.any(Number), expires_at: expect.any(Number) },
+      {
+        invite_id,
+        team_id: t.teamId,
+        team_name: "Arakun",
+        invited_by_login: owner.user.login,
+        created_at: expect.any(Number),
+        expires_at: expect.any(Number),
+        member_count: 1,
+      },
     ]);
     // Not visible to anyone else, nor theirs to accept.
     const other = await user(2002, "other");
@@ -279,6 +294,58 @@ describe("teams", () => {
     expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
     await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`), 404);
     await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/approve`, { device: t.owner.device, body: { envelopes: [] } }), 404);
+  });
+
+  it("lists a team's open invites to its admins, newest first, and lets them withdraw one", async () => {
+    const t = await team();
+    const path = `/teams/${t.teamId}/invites`;
+    const first = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "First-One" } }), 201);
+    const second = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "second" } }), 201);
+    const old = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "old" } }), 201);
+    await env.DB.prepare("UPDATE invites SET created_at = created_at - 10 WHERE invite_id = ?").bind(first.invite_id).run();
+    await env.DB.prepare("UPDATE invites SET expires_at = ? WHERE invite_id = ?").bind(nowSeconds() - 1, old.invite_id).run();
+    const list = await expectJson(api(t.owner.user, "GET", path), 200);
+    expect(list).toEqual([
+      { invite_id: second.invite_id, login: "second", invited_by_login: t.owner.user.login, created_at: expect.any(Number), expires_at: second.expires_at },
+      { invite_id: first.invite_id, login: "first-one", invited_by_login: t.owner.user.login, created_at: expect.any(Number), expires_at: first.expires_at },
+    ]);
+
+    // Another team's admin cannot touch it, nor can an expired one be withdrawn.
+    const other = await team();
+    await expectJson(api(other.owner.user, "DELETE", `/teams/${other.teamId}/invites/${first.invite_id}`), 404);
+    await expectJson(api(t.owner.user, "DELETE", `${path}/${old.invite_id}`), 404);
+    await expectJson(api(t.owner.user, "DELETE", `${path}/nope`), 404);
+
+    expect((await api(t.owner.user, "DELETE", `${path}/${first.invite_id}`)).status).toBe(204);
+    await expectJson(api(t.owner.user, "DELETE", `${path}/${first.invite_id}`), 404);
+    expect((await expectJson<{ invite_id: string }[]>(api(t.owner.user, "GET", path), 200)).map((i) => i.invite_id)).toEqual([second.invite_id]);
+    // The invitee no longer sees it and cannot accept it.
+    const u = await user(2001, "first-one");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    expect(await expectJson(api(u, "GET", "/invites"), 200)).toEqual([]);
+    await expectJson(api(u, "POST", `/invites/${first.invite_id}/accept`, { device: d }), 404);
+  });
+
+  it("lets the invitee decline an invite, and no one else", async () => {
+    const t = await team();
+    await join(t);
+    const u = await user(2001, "Decliner");
+    const other = await user(2002, "other");
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "decliner" } }), 201);
+    // The team has two members; the invitee is not counted.
+    expect((await expectJson<{ member_count: number }[]>(api(u, "GET", "/invites"), 200)).map((i) => i.member_count)).toEqual([2]);
+    await expectJson(api(other, "POST", `/invites/${invite_id}/decline`), 404);
+    await expectJson(api(t.owner.user, "POST", `/invites/${invite_id}/decline`), 404);
+    expect((await api(u, "POST", `/invites/${invite_id}/decline`)).status).toBe(204);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/decline`), 404);
+    expect(await expectJson(api(u, "GET", "/invites"), 200)).toEqual([]);
+    expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/invites`), 200)).toEqual([]);
+    expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
+    // An expired invite cannot be declined either.
+    const again = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "decliner" } }), 201);
+    await env.DB.prepare("UPDATE invites SET expires_at = ?").bind(nowSeconds() - 1).run();
+    await expectJson(api(u, "POST", `/invites/${again.invite_id}/decline`), 404);
   });
 
   it("lets invites expire after 7 days", async () => {

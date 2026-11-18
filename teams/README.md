@@ -250,8 +250,11 @@ devices: `400` without it, `403` if it is someone else's.
 | `GET /teams` | anyone | `200 [{team_id, name, role, epoch, rotation_pending}]` |
 | `GET /teams/<team_id>` | member | `200 {team_id, name, epoch, rotation_pending, members, channels}` |
 | `POST /teams/<team_id>/invites` `{github_login}` | admin | `201 {invite_id, expires_at}`, 7 days. `409` if a member or pending already. |
-| `GET /invites` | anyone | `200 [{invite_id, team_id, team_name, invited_by_login, created_at, expires_at}]` |
+| `GET /teams/<team_id>/invites` | admin | `200 [{invite_id, login, invited_by_login, created_at, expires_at}]`, open ones, newest first. |
+| `DELETE /teams/<team_id>/invites/<invite_id>` | admin | `204`. `404` if the team has no such open invite. |
+| `GET /invites` | anyone | `200 [{invite_id, team_id, team_name, invited_by_login, created_at, expires_at, member_count}]` |
 | `POST /invites/<invite_id>/accept` | the invitee, device | `200 {team_id, status: "pending"}`. `404` if expired or someone else's. |
+| `POST /invites/<invite_id>/decline` | the invitee | `204`, and the invite is gone. `404` if expired or someone else's. |
 | `GET /teams/<team_id>/pending` | admin | `200 [{github_id, login, requested_at, devices}]` |
 | `POST /teams/<team_id>/pending/<github_id>/approve` `{envelopes}` | admin, device | `200 {github_id, role: "member"}`. `400` unless there is one envelope per device of theirs and epoch with a key; `409` before the team's first key, at 25 members, or if the team's key or their devices changed meanwhile. |
 | `POST /teams/<team_id>/pending/<github_id>/reject` | admin | `204` |

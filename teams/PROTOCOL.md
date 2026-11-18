@@ -92,11 +92,19 @@ without it, `403` if it is not one of the caller's devices.
    against the login of the invitee's session. Invites expire after 7 days.
    Inviting the same login again replaces the invite; `409` if they are a member
    or pending already.
+   Admins see the team's open invites in `GET /teams/<team_id>/invites` →
+   `[{ invite_id, login, invited_by_login, created_at, expires_at }]`, newest
+   first, without expired ones (`login` is lower case). An admin withdraws one
+   with `DELETE /teams/<team_id>/invites/<invite_id>` → `204`; `404` if the team
+   has no such open invite.
 2. The invitee sees it in `GET /invites` → `[{ invite_id, team_id, team_name,
-   invited_by_login, created_at, expires_at }]` and accepts with
+   invited_by_login, created_at, expires_at, member_count }]` (`member_count`
+   leaves out pending members) and accepts with
    `POST /invites/<invite_id>/accept` (from a registered device) → `200 { team_id,
    status: "pending" }`: the user becomes a **pending** member. A pending member
-   is not a member: every team endpoint answers them `404`.
+   is not a member: every team endpoint answers them `404`. Or they decline it:
+   `POST /invites/<invite_id>/decline` → `204`, and the invite is gone; `404` if
+   it is expired or someone else's.
 3. Admins see pending members in `GET /teams/<team_id>/pending` → `[{ github_id,
    login, requested_at, devices: [...] }]`.
 4. An admin's device approves: `POST /teams/<team_id>/pending/<github_id>/approve`

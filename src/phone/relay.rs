@@ -15,8 +15,10 @@
 //! same messages it would send on a socket of its own (`ClientMsg`), plus
 //! `{req: {id, method, path, body}}` for what it would otherwise ask over HTTP
 //! (`route`), answered with `{res: {id, status, type, body, more}}` in pieces
-//! small enough for the relay. A channel that said who it is counts as a
-//! client to the shell, numbered as the relay numbered the channel.
+//! small enough for the relay. Any other message too big for one frame goes
+//! as `{part: {body, more}}` pieces, which the phone joins back (`say`). A
+//! channel that said who it is counts as a client to the shell, numbered as
+//! the relay numbered the channel.
 
 use std::collections::HashMap;
 use std::net::{TcpStream, ToSocketAddrs as _};
@@ -38,9 +40,9 @@ pub const HELLO: u8 = 0x01;
 pub const DATA: u8 = 0x02;
 pub const CONTROL: u8 = 0x03;
 
-/// How much of a response body goes in one `res` piece: with base64 and the
-/// envelope it stays under the relay's frame limit (256 KiB).
-const RES_CHUNK: usize = 160 * 1024;
+/// How much of a message or a response body goes in one frame: with base64
+/// and the envelope a piece stays under the relay's frame limit (256 KiB).
+const CHUNK: usize = 160 * 1024;
 /// The most a `req` body may carry, like `MAX_BODY` over TCP.
 const MAX_REQ_BODY: usize = 4096;
 
@@ -603,15 +605,13 @@ impl Link {
             ),
             Command::PairClose => send_control(ws, 0, &json!({ "type": "pair_close" })),
             Command::Send { channel, text } => match self.peers.get_mut(&channel) {
-                Some(Peer::Ready { session, .. }) => {
-                    send_frame(ws, DATA, channel, &session.seal(text.as_bytes()))
-                }
+                Some(Peer::Ready { session, .. }) => say(ws, channel, session, &text),
                 _ => Ok(()),
             },
             Command::Broadcast(text) => {
                 for (channel, peer) in &mut self.peers {
                     if let Peer::Ready { session, .. } = peer {
-                        send_frame(ws, DATA, *channel, &session.seal(text.as_bytes()))?;
+                        say(ws, *channel, session, &text)?;
                     }
                 }
                 Ok(())
@@ -709,12 +709,7 @@ impl Link {
                         match paired {
                             Some((device, token, ticket)) => {
                                 let told = json!({ "paired": { "id": device.id, "name": device.name, "token": token, "ticket": ticket, "host": host } });
-                                send_frame(
-                                    ws,
-                                    DATA,
-                                    channel,
-                                    &session.seal(told.to_string().as_bytes()),
-                                )?;
+                                say(ws, channel, &mut session, &told.to_string())?;
                                 // The relay admits the phone by ticket from its next socket on.
                                 self.tickets = self.access.lock().unwrap().ticket_hashes();
                                 send_control(
@@ -742,12 +737,7 @@ impl Link {
                         match device {
                             Some(device) => {
                                 let told = json!({ "ok": { "id": device.id, "name": device.name, "host": host } });
-                                send_frame(
-                                    ws,
-                                    DATA,
-                                    channel,
-                                    &session.seal(told.to_string().as_bytes()),
-                                )?;
+                                say(ws, channel, &mut session, &told.to_string())?;
                                 self.ready(channel, &device.id);
                                 Ok(Peer::Ready {
                                     session,
@@ -774,11 +764,11 @@ impl Link {
                     let msg = serde_json::from_slice::<Value>(&plain);
                     let mut outcome = Ok(());
                     match msg {
-                        Err(_) => send_frame(
+                        Err(_) => say(
                             ws,
-                            DATA,
                             channel,
-                            &session.seal(wire::error("bad message: not json").as_bytes()),
+                            &mut session,
+                            &wire::error("bad message: not json"),
                         )?,
                         Ok(msg) if msg.get("req").is_some() => {
                             let req = &msg["req"];
@@ -794,11 +784,11 @@ impl Link {
                                     msg,
                                 ));
                             }
-                            Err(e) => send_frame(
+                            Err(e) => say(
                                 ws,
-                                DATA,
                                 channel,
-                                &session.seal(wire::error(&format!("bad message: {e}")).as_bytes()),
+                                &mut session,
+                                &wire::error(&format!("bad message: {e}")),
                             )?,
                         },
                     }
@@ -926,7 +916,7 @@ fn respond(
     let pieces: Vec<&[u8]> = if reply.body.is_empty() {
         vec![&[]]
     } else {
-        reply.body.chunks(RES_CHUNK).collect()
+        reply.body.chunks(CHUNK).collect()
     };
     let last = pieces.len() - 1;
     for (i, piece) in pieces.into_iter().enumerate() {
@@ -935,11 +925,27 @@ fn respond(
             res["status"] = json!(reply.status);
             res["type"] = json!(reply.content_type);
         }
+        say(ws, channel, session, &json!({ "res": res }).to_string())?;
+    }
+    Ok(())
+}
+
+/// A message to a phone, sealed. One the relay would not let through in a
+/// single frame goes as `{part}` pieces of its bytes, each saying whether more
+/// follow; the phone joins them and reads the message as if it came whole.
+/// The pieces of one message go out together, so they need no name.
+fn say(ws: &mut Socket, channel: u32, session: &mut Session, text: &str) -> Result<(), Ended> {
+    if text.len() <= CHUNK {
+        return send_frame(ws, DATA, channel, &session.seal(text.as_bytes()));
+    }
+    let last = text.len().div_ceil(CHUNK) - 1;
+    for (i, piece) in text.as_bytes().chunks(CHUNK).enumerate() {
+        let part = json!({ "part": { "body": B64.encode(piece), "more": i < last } });
         send_frame(
             ws,
             DATA,
             channel,
-            &session.seal(json!({ "res": res }).to_string().as_bytes()),
+            &session.seal(part.to_string().as_bytes()),
         )?;
     }
     Ok(())
@@ -1106,6 +1112,9 @@ mod tests {
         );
         assert_eq!(parse_url("https://x"), None);
     }
+
+    /// The most the relay takes in one frame's payload (`relay/src/limits.ts`).
+    const RELAY_FRAME: usize = 256 * 1024;
 
     /// A relay of our own on the loopback: accepts one computer at a time.
     struct FakeRelay {
@@ -1377,8 +1386,9 @@ mod tests {
                 .unwrap();
         }
 
-        /// The next sealed message from the computer on this channel.
-        fn hear(&mut self, ws: &mut WebSocket<TcpStream>) -> Value {
+        /// The next sealed message from the computer on this channel, as it
+        /// came: one frame, which must be one the relay lets through.
+        fn hear_frame(&mut self, ws: &mut WebSocket<TcpStream>) -> Value {
             let (kind, ch, payload) = next_frame(ws);
             assert_eq!(
                 (kind, ch),
@@ -1386,7 +1396,31 @@ mod tests {
                 "{}",
                 String::from_utf8_lossy(&payload)
             );
+            assert!(payload.len() <= RELAY_FRAME, "{} bytes", payload.len());
             serde_json::from_slice(&self.session.open(&payload).unwrap()).unwrap()
+        }
+
+        /// The next message from the computer on this channel, its `part`
+        /// pieces joined as the page joins them.
+        fn hear(&mut self, ws: &mut WebSocket<TcpStream>) -> Value {
+            let first = self.hear_frame(ws);
+            if first.get("part").is_none() {
+                return first;
+            }
+            let mut whole = Vec::new();
+            let mut msg = first;
+            loop {
+                let part = &msg["part"];
+                whole.extend(B64.decode(part["body"].as_str().unwrap()).unwrap());
+                if part["more"] != true {
+                    return serde_json::from_slice(&whole).unwrap();
+                }
+                msg = self.hear_frame(ws);
+                assert!(
+                    msg.get("part").is_some(),
+                    "pieces of one message stay together"
+                );
+            }
         }
 
         /// A `req` and its whole answer: status and body, pieces joined.
@@ -1528,6 +1562,46 @@ mod tests {
         assert!(matches!(gone[2], Incoming::Disconnected(6)));
         assert_eq!(client.client_count(), 0);
         assert!(access.lock().unwrap().devices.is_empty());
+    }
+
+    #[test]
+    fn a_message_too_big_for_a_frame_goes_in_pieces() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let access = access_with_tickets(&[]);
+        let (client, mut rx) = RelayClient::start(&relay.base(), me, access.clone());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        let (_, secret) = access.lock().unwrap().begin_pairing_relay();
+        let mut phone = FakePhone::greet(&mut ws, &label, 5, None);
+        phone.say(&mut ws, json!({"pair": {"secret": secret, "name": "x"}}));
+        assert!(phone.hear(&mut ws).get("paired").is_some());
+        let _tickets = control(&mut ws);
+        assert!(matches!(next_incoming(&mut rx), Incoming::Paired));
+        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(5, _)));
+
+        // 1 MB, with letters of more than one byte so a piece may end inside one.
+        let text = "é".repeat(512 * 1024);
+        let big = json!({"type": "entries", "text": text}).to_string();
+        client.send(5, big.clone());
+        let first = phone.hear_frame(&mut ws);
+        assert_eq!(first["part"]["more"], true, "sent in pieces");
+        let mut whole = B64.decode(first["part"]["body"].as_str().unwrap()).unwrap();
+        loop {
+            let msg = phone.hear_frame(&mut ws);
+            whole.extend(B64.decode(msg["part"]["body"].as_str().unwrap()).unwrap());
+            if msg["part"]["more"] != true {
+                break;
+            }
+        }
+        assert_eq!(String::from_utf8(whole).unwrap(), big);
+
+        // To everyone too, and a small message after it still comes whole.
+        client.broadcast(&big);
+        assert_eq!(phone.hear(&mut ws)["text"], text);
+        client.send(5, r#"{"type":"usage"}"#.into());
+        assert_eq!(phone.hear_frame(&mut ws)["type"], "usage");
     }
 
     #[test]

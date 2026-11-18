@@ -25,6 +25,7 @@ use crate::agent::{
     AgentKind, Entry, RemoteAction, SessionMeta, Thread, ThreadStatus, Transcript, Usage,
 };
 use crate::model::{self, Environment, Project, Remote, Session, Status, TabKind, unix_now};
+use crate::phone::{ClientId, wire};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
@@ -86,8 +87,8 @@ pub(super) struct ServersLink {
     following: Option<Following>,
     /// What each local project's repository is known by (`repo_key`), read once.
     origins: HashMap<PathBuf, Option<String>>,
-    /// The server a new session was started on, until it says the session's id.
-    starting: Option<String>,
+    /// Sessions asked of servers, until each says its session's id.
+    starts: Starts,
     /// That session, by server and id: its tab opens once the inbox has it.
     starting_id: Option<(String, String)>,
     /// Environments of folders a server no longer offers, kept for the
@@ -100,22 +101,12 @@ pub(super) struct ServersLink {
     /// A new environment asked of a server, by server and branch, and
     /// whether its first prompt names it, as one made here is.
     new_env: Option<(String, String, bool)>,
-    /// A phone that started a session on a server, told its id once it has one.
-    phone_start: Option<crate::phone::ClientId>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
     pairing_timeout: Option<Task<()>>,
     error: Option<String>,
     _listen: Task<()>,
-}
-
-/// Ends the start `server` was asked for, which it will not answer now. A
-/// start on another server stays, so its `started` still opens its tab.
-fn end_start(starting: &mut Option<String>, server: &str) {
-    if starting.as_deref() == Some(server) {
-        *starting = None;
-    }
 }
 
 /// The folders a server's sessions ran in that it no longer offers. Their
@@ -181,6 +172,72 @@ fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
 fn in_the_clear(s: &Saved) -> bool {
     s.way == servers::Way::Direct && s.origin.starts_with("http://")
+}
+
+/// Who asked a server for a session, and so hears its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Asker {
+    /// This app: the session's tab opens here.
+    Desktop,
+    /// A phone, through this app: the session opens there.
+    Phone(ClientId),
+    /// A phone that has left since. Its answer goes nowhere: not here, and
+    /// not to a phone that comes later with the same id.
+    Gone,
+}
+
+/// The starts sent to servers and not answered yet, oldest first. A server
+/// answers its starts in the order they came, with `started` or an error
+/// about the start, so its next answer is for its oldest one.
+/// Each carries a number of this app's own, which goes out with it as `ref`
+/// (the server reads past it), so a start that never went out is known.
+#[derive(Default)]
+struct Starts(Vec<(String, Asker, u64)>, u64);
+
+impl Starts {
+    /// Notes a start for `server`; what it goes out with as `ref`.
+    fn sent(&mut self, server: &str, by: Asker) -> u64 {
+        self.1 += 1;
+        self.0.push((server.to_string(), by, self.1));
+        self.1
+    }
+
+    /// Who the answer `server` just gave is for.
+    fn answered(&mut self, server: &str) -> Option<Asker> {
+        let at = self.0.iter().position(|(s, _, _)| s == server)?;
+        Some(self.0.remove(at).1)
+    }
+
+    /// The start `reference` never went out: who asked for it. No answer comes for it.
+    fn undelivered(&mut self, reference: u64) -> Option<Asker> {
+        let at = self.0.iter().position(|(_, _, r)| *r == reference)?;
+        Some(self.0.remove(at).1)
+    }
+
+    /// The connection to `server` dropped, and the answers with it: the
+    /// phones that were waiting for one.
+    fn dropped(&mut self, server: &str) -> Vec<ClientId> {
+        let mut phones = Vec::new();
+        self.0.retain(|(s, by, _)| {
+            if s != server {
+                return true;
+            }
+            if let Asker::Phone(client) = by {
+                phones.push(*client);
+            }
+            false
+        });
+        phones
+    }
+
+    /// Phone `client` left, or every phone with `None`.
+    fn phone_left(&mut self, client: Option<ClientId>) {
+        for (_, by, _) in &mut self.0 {
+            if matches!(by, Asker::Phone(c) if client.is_none_or(|left| left == *c)) {
+                *by = Asker::Gone;
+            }
+        }
+    }
 }
 
 fn status_from(word: &str) -> Status {
@@ -426,13 +483,12 @@ impl Shell {
             events,
             following: None,
             origins: HashMap::new(),
-            starting: None,
+            starts: Starts::default(),
             starting_id: None,
             retired: HashSet::new(),
             adding: HashSet::new(),
             added: None,
             new_env: None,
-            phone_start: None,
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -538,8 +594,6 @@ impl Shell {
                 if link.added.as_ref().is_some_and(|(s, _)| s == id) {
                     link.added = None;
                 }
-                // Its link stops without a word: its start is not answered.
-                end_start(&mut link.starting, id);
                 self.sync_remote_projects(window, cx);
             }
             ServersEvent::AddPlace { server, path } => {
@@ -854,13 +908,16 @@ impl Shell {
         }
     }
 
-    /// The first prompt in a server's environment starts a session there.
+    /// The first prompt in a server's environment starts a session there,
+    /// with the `settings` picked for it, for `by`.
     /// False when the server cannot be reached; the prompt stays in the composer.
     pub(super) fn servers_start(
         &mut self,
         env_path: &Path,
         agent: model::Agent,
         text: &str,
+        settings: &[(String, String)],
+        by: Asker,
     ) -> bool {
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
             return false;
@@ -886,17 +943,11 @@ impl Shell {
             ));
             return false;
         }
-        // One start is tracked at a time: a second `started` could not be told
-        // apart from the first, and its session would not open.
-        if link.starting.is_some() {
-            link.error =
-                Some("A session is still starting. Send this again once it opens.".to_string());
-            return false;
-        }
+        let reference = link.starts.sent(&remote.server, by);
         conn.client.send(&json!({
-            "type": "start", "env": remote.place, "agent": agent.key(), "text": text, "settings": [],
+            "type": "start", "env": remote.place, "agent": agent.key(), "text": text,
+            "settings": settings, "ref": reference,
         }));
-        link.starting = Some(remote.server);
         true
     }
 
@@ -905,10 +956,20 @@ impl Shell {
     fn servers_undelivered(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) {
         let env_path = match msg["type"].as_str() {
             Some("start") => {
-                if let Some(link) = &mut self.servers {
-                    end_start(&mut link.starting, server);
+                let asker = self
+                    .servers
+                    .as_mut()
+                    .and_then(|link| msg["ref"].as_u64().and_then(|r| link.starts.undelivered(r)));
+                match asker {
+                    // A phone's prompt: the phone hears it did not go.
+                    Some(Asker::Phone(client)) => {
+                        let why = wire::error("the server went away before the session started");
+                        self.phone_send(client, why);
+                        return;
+                    }
+                    Some(Asker::Gone) => return,
+                    Some(Asker::Desktop) | None => Remote::env_path(server, &text(msg, "env")),
                 }
-                Remote::env_path(server, &text(msg, "env"))
             }
             Some("send") => {
                 let session = text(msg, "session");
@@ -1055,10 +1116,11 @@ impl Shell {
         }
     }
 
-    /// A phone started a session on a server: it hears the id when the server says it.
-    pub(super) fn servers_phone_waits(&mut self, client: crate::phone::ClientId) {
+    /// Phone `client` left, or every phone with `None`: the sessions it
+    /// started on servers are not told to it, nor to a phone after it.
+    pub(super) fn servers_phone_left(&mut self, client: Option<ClientId>) {
         if let Some(link) = &mut self.servers {
-            link.phone_start = Some(client);
+            link.starts.phone_left(client);
         }
     }
 
@@ -1110,9 +1172,9 @@ impl Shell {
                 Some(format!("{machine} is not connected right now."))
             }
             // One at a time per server: its answer says only which folder.
-            _ if link.adding.is_some() => {
-                Some("Another folder is being made on a server; try again once it is there.".into())
-            }
+            _ if link.adding.contains(server) => Some(format!(
+                "A folder is being made on {machine}; try again once it is there."
+            )),
             _ => None,
         };
         if let Some(why) = problem {
@@ -1130,25 +1192,30 @@ impl Shell {
         };
         conn.client
             .send(&json!({ "type": "new_env", "from": from, "branch": branch }));
-        link.adding = Some(server.to_string());
+        link.adding.insert(server.to_string());
         link.new_env = Some((server.to_string(), branch, auto_name));
         self.sync_servers_view(cx);
     }
 
-    /// The branch of a server's environment, renamed there.
-    pub(super) fn servers_rename_branch(&mut self, env_path: &Path, from: &str, to: &str) {
+    /// The branch of a server's environment, renamed there. The app shows the
+    /// new name once the server says it is so (`branch_renamed`). False when
+    /// the server cannot be reached.
+    pub(super) fn servers_rename_branch(&mut self, env_path: &Path, from: &str, to: &str) -> bool {
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
-            return;
+            return false;
         };
-        if let Some(conn) = self
+        let Some(conn) = self
             .servers
             .as_ref()
             .and_then(|l| l.conns.get(&remote.server))
-        {
-            conn.client.send(&json!({
-                "type": "rename_branch", "place": remote.place, "from": from, "to": to,
-            }));
-        }
+            .filter(|c| c.reach == Reach::Connected)
+        else {
+            return false;
+        };
+        conn.client.send(&json!({
+            "type": "rename_branch", "place": remote.place, "from": from, "to": to,
+        }));
+        true
     }
 
     /// A session this app started on a server is in its inbox now: its tab opens.
@@ -1226,11 +1293,6 @@ impl Shell {
                     LinkStatus::Refused(why) => Reach::Refused(why),
                 };
                 let back = reach == Reach::Connected;
-                // A start on a link that dropped may never be answered: it
-                // must not keep every later start waiting.
-                if !back {
-                    end_start(&mut link.starting, id);
-                }
                 // The answer would have come on the connection that dropped,
                 // but the server may still finish: the form says to look first.
                 if !back && link.adding.remove(id) {
@@ -1238,6 +1300,11 @@ impl Shell {
                         "The connection dropped before the server said whether the folder was added. Check its folders before you try again.".into(),
                     );
                 }
+                let waiting = if back {
+                    Vec::new()
+                } else {
+                    link.starts.dropped(id)
+                };
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for
@@ -1252,6 +1319,10 @@ impl Shell {
                             &json!({ "type": "transcript", "session": f.session, "from": 0 }),
                         );
                     }
+                }
+                for client in waiting {
+                    let why = wire::error("the server went away before the session started");
+                    self.phone_send(client, why);
                 }
             }
             Event::Message(msg) => {
@@ -1268,7 +1339,19 @@ impl Shell {
                 } else if msg["type"] == "place_failed" {
                     // What was being added is not coming: the form can ask again.
                     if link.adding.remove(id) {
-                        link.error = Some(text(&msg, "message"));
+                        let message = text(&msg, "message");
+                        // A new environment was asked from the sidebar: said there.
+                        if link.new_env.take_if(|(s, _, _)| s == id).is_some() {
+                            self.notify(
+                                crate::island::AlertKind::Warning,
+                                "Could not make the environment",
+                                &message,
+                                None,
+                                cx,
+                            );
+                        } else {
+                            link.error = Some(message);
+                        }
                     }
                 } else if msg["type"] == "error"
                     && link.adding.contains(id)
@@ -1282,29 +1365,85 @@ impl Shell {
                             .into(),
                     );
                 } else if msg["type"] == "started" {
-                    if link.starting.as_deref() == Some(id) {
-                        link.starting = None;
-                        let session = text(&msg, "id");
+                    let session = text(&msg, "id");
+                    match link.starts.answered(id) {
+                        Some(Asker::Desktop) => link.starting_id = Some((id.to_string(), session)),
                         // Started from a phone: it opens there, not here.
-                        match link.phone_start.take() {
-                            Some(client) => {
-                                let started = json!({ "type": "started", "id": session });
-                                self.phone_send(client, started.to_string());
-                                self.phone_inbox_changed(cx);
-                                self.sync_servers_view(cx);
-                                return;
-                            }
-                            None => link.starting_id = Some((id.to_string(), session)),
+                        Some(Asker::Phone(client)) => {
+                            let started = json!({ "type": "started", "id": session });
+                            self.phone_send(client, started.to_string());
+                            self.phone_inbox_changed(cx);
                         }
+                        Some(Asker::Gone) | None => {}
                     }
                     // The server sends its inbox before this: the session is here.
                     self.servers_open_started(window, cx);
+                } else if msg["type"] == "branch_renamed" {
+                    let env_path = Remote::env_path(id, &text(&msg, "place"));
+                    let (from, to) = (text(&msg, "from"), text(&msg, "to"));
+                    self.branch_renamed(&env_path, &from, to, cx);
+                } else if msg["type"] == "error" && self.servers_answer_failed(id, &msg, cx) {
+                    // Said to whoever asked.
                 } else {
                     self.servers_message(id, &msg, cx);
                 }
             }
         }
         self.sync_servers_view(cx);
+    }
+
+    /// An error that answers a start, a rename or a new environment, told to
+    /// whoever asked for it. False for the rest, which the session on screen
+    /// or the Servers tab shows; a start this app asked for among them.
+    fn servers_answer_failed(&mut self, id: &str, msg: &Value, cx: &mut Context<Self>) -> bool {
+        let Some(link) = &mut self.servers else {
+            return false;
+        };
+        let message = text(msg, "message");
+        match msg["about"].as_str() {
+            Some("start") => match link.starts.answered(id) {
+                Some(Asker::Phone(client)) => {
+                    self.phone_send(client, wire::error(&message));
+                    true
+                }
+                Some(Asker::Gone) => true,
+                Some(Asker::Desktop) | None => false,
+            },
+            Some("rename_branch") => {
+                let why = format!("{message}. `arakun rename <name>` in its terminal renames it.");
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not name the branch",
+                    &why,
+                    None,
+                    cx,
+                );
+                true
+            }
+            // A new environment asked from the sidebar: said there, not in
+            // the Servers tab. A server that does not know `new_env` yet
+            // turns the message itself down.
+            _ if link.new_env.as_ref().is_some_and(|(s, _, _)| s == id)
+                && link.adding.remove(id) =>
+            {
+                link.new_env = None;
+                let why = if message.contains("unknown variant") {
+                    "This server runs an older Arakun. Update it to make environments there."
+                        .to_string()
+                } else {
+                    message
+                };
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not make the environment",
+                    &why,
+                    None,
+                    cx,
+                );
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The server's list of folders and sessions.
@@ -1449,12 +1588,8 @@ impl Shell {
             }
             "error" => {
                 let message = text(msg, "message");
-                // An error about a session names it; one that does not may
-                // be the answer to a start, if it is this server's.
+                // An error about a session names it.
                 let about = msg["id"].as_str();
-                if about.is_none() {
-                    end_start(&mut link.starting, id);
-                }
                 // Said in that session's tab when it is open, else in the Servers tab.
                 let thread = about.and_then(|session| {
                     let env = self
@@ -1590,6 +1725,60 @@ mod tests {
             count,
             entries: new.iter().map(|t| said(t)).collect(),
         }
+    }
+
+    #[test]
+    fn each_start_hears_its_own_answer() {
+        let mut starts = Starts::default();
+        starts.sent("a", Asker::Phone(7));
+        starts.sent("b", Asker::Desktop);
+        starts.sent("a", Asker::Desktop);
+        starts.sent("a", Asker::Phone(8));
+        // A server answers its starts in order, `started` or an error alike.
+        assert_eq!(starts.answered("a"), Some(Asker::Phone(7)));
+        assert_eq!(starts.answered("a"), Some(Asker::Desktop));
+        assert_eq!(starts.answered("b"), Some(Asker::Desktop));
+        assert_eq!(starts.answered("a"), Some(Asker::Phone(8)));
+        // An answer nobody waits for opens nothing.
+        assert_eq!(starts.answered("a"), None);
+    }
+
+    #[test]
+    fn a_phone_that_left_is_not_told_its_start() {
+        let mut starts = Starts::default();
+        starts.sent("a", Asker::Phone(7));
+        starts.sent("a", Asker::Phone(8));
+        starts.sent("a", Asker::Desktop);
+        starts.phone_left(Some(7));
+        assert_eq!(starts.answered("a"), Some(Asker::Gone));
+        // A new phone link: none of the old phones is told, nor a new one with its id.
+        starts.phone_left(None);
+        assert_eq!(starts.answered("a"), Some(Asker::Gone));
+        assert_eq!(starts.answered("a"), Some(Asker::Desktop));
+    }
+
+    #[test]
+    fn a_dropped_server_lets_its_phones_know() {
+        let mut starts = Starts::default();
+        starts.sent("a", Asker::Phone(7));
+        starts.sent("b", Asker::Phone(8));
+        starts.sent("a", Asker::Desktop);
+        assert_eq!(starts.dropped("a"), vec![7]);
+        assert_eq!(starts.answered("a"), None);
+        assert_eq!(starts.answered("b"), Some(Asker::Phone(8)));
+    }
+
+    #[test]
+    fn a_start_that_never_went_out_waits_for_no_answer() {
+        let mut starts = Starts::default();
+        let first = starts.sent("a", Asker::Phone(7));
+        let second = starts.sent("a", Asker::Desktop);
+        assert_ne!(first, second);
+        assert_eq!(starts.undelivered(second), Some(Asker::Desktop));
+        assert_eq!(starts.undelivered(second), None);
+        // The answer that comes is the one that went.
+        assert_eq!(starts.answered("a"), Some(Asker::Phone(7)));
+        assert_eq!(starts.answered("a"), None);
     }
 
     #[test]
@@ -1742,17 +1931,6 @@ mod tests {
         assert_eq!(&*env.draft, "half a prompt");
         // A folder no server lists any more is not kept for anywhere.
         assert!(moving.is_empty());
-    }
-
-    #[test]
-    fn a_start_ends_only_with_its_own_server() {
-        let mut starting = Some("a".to_string());
-        // Server b forgotten, dropped or erring: a's start still waits.
-        end_start(&mut starting, "b");
-        assert_eq!(starting.as_deref(), Some("a"));
-        // Server a forgotten: a start on b is not held up by it.
-        end_start(&mut starting, "a");
-        assert_eq!(starting, None);
     }
 
     #[test]

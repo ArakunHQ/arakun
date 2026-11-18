@@ -1103,7 +1103,7 @@ impl Daemon {
     fn scope(&self, cwd: &Path) -> wire::Scope {
         wire::Scope {
             cwd: cwd.to_path_buf(),
-            key: self.access.lock().unwrap().image_key.clone(),
+            key: Some(self.access.lock().unwrap().image_key.clone()),
         }
     }
 
@@ -1482,8 +1482,9 @@ impl Daemon {
             } => {
                 let path = PathBuf::from(env);
                 let Some(place) = self.store.place_mut(&path) else {
+                    // Said to be about the start: the app waits for its answer.
                     self.transport
-                        .send(client, wire::error("that project is gone"));
+                        .send(client, error_about("start", "that project is gone"));
                     return;
                 };
                 let agent = agent
@@ -1735,7 +1736,7 @@ impl Daemon {
                         .await;
                     let _ = this.update(cx, |this, cx| {
                         this.cloning.end(&dest);
-                        this.place_added(client, done, cx);
+                        this.place_added(client, done, AgentKind::Claude, cx);
                     });
                 })
                 .detach();
@@ -1744,23 +1745,20 @@ impl Daemon {
                 let from = PathBuf::from(from);
                 let Some(agent) = self.store.place(&from).map(|p| p.agent) else {
                     self.transport
-                        .send(client, wire::error("that project is gone"));
+                        .send(client, place_failed("that project is gone"));
                     return;
                 };
                 cx.spawn(async move |this, cx| {
                     let made = cx
                         .background_executor()
-                        .spawn(async move { add_worktree(&from, &branch) })
+                        .spawn(async move {
+                            let path = add_worktree(&from, &branch)?;
+                            let meta = PlaceMeta::read(&path);
+                            Ok((path, meta))
+                        })
                         .await;
-                    let _ = this.update(cx, |this, cx| {
-                        // The new folder starts with the agent of the one it came from.
-                        if let Ok(path) = &made
-                            && this.add_place(path, agent.id()).is_ok()
-                        {
-                            this.save_store();
-                        }
-                        this.place_added(client, made, cx)
-                    });
+                    // The new folder starts with the agent of the one it came from.
+                    let _ = this.update(cx, |this, cx| this.place_added(client, made, agent, cx));
                 })
                 .detach();
             }
@@ -1769,22 +1767,33 @@ impl Daemon {
                 if self.store.place(&place).is_none() {
                     self.transport.send(
                         client,
-                        wire::error("that folder is not one of this server's"),
+                        error_about("rename_branch", "that folder is not one of this server's"),
                     );
                     return;
                 }
                 cx.spawn(async move |this, cx| {
                     let done = cx
                         .background_executor()
-                        .spawn(async move { rename_branch(&place, &from, &to) })
+                        .spawn({
+                            let (place, from, to) = (place.clone(), from.clone(), to.clone());
+                            async move { rename_branch(&place, &from, &to) }
+                        })
                         .await;
                     let _ = this.update(cx, |this, cx| match done {
-                        // The inbox carries the new name.
-                        Ok(()) => {
+                        // The app shows the new name, and tells the agent, once it is so.
+                        Ok(true) => {
                             this.inbox_dirty = true;
                             this.sync_inbox(cx);
+                            let renamed = json!({
+                                "type": "branch_renamed", "place": place, "from": from, "to": to,
+                            });
+                            this.transport.send(client, renamed.to_string());
                         }
-                        Err(e) => this.transport.send(client, wire::error(&e)),
+                        // Renamed by hand meanwhile: that name stays, and nothing changed.
+                        Ok(false) => {}
+                        Err(e) => this
+                            .transport
+                            .send(client, error_about("rename_branch", &e)),
                     });
                 })
                 .detach();
@@ -1819,7 +1828,7 @@ impl Daemon {
                 if found.is_ok() && this.cloning.started_since(mark) {
                     return this.add_device_place(client, typed, cx);
                 }
-                this.place_added(client, found, cx);
+                this.place_added(client, found, AgentKind::Claude, cx);
             });
         })
         .detach();
@@ -1831,10 +1840,11 @@ impl Daemon {
         &mut self,
         client: ClientId,
         found: Result<(PathBuf, PlaceMeta), String>,
+        agent: AgentKind,
         cx: &mut Context<Self>,
     ) {
         match found.and_then(|(p, meta)| {
-            self.offer_place(&p)?;
+            self.offer_place(&p, agent)?;
             self.meta.insert(p.clone(), meta);
             Ok(p)
         }) {
@@ -1860,12 +1870,12 @@ impl Daemon {
     /// Makes `path` (canonical) a place for a device. It is one only once
     /// saved: a place lost at the next start would surprise the device later.
     /// The folder was looked at to the side; nothing here touches it again.
-    fn offer_place(&mut self, path: &Path) -> Result<(), String> {
+    fn offer_place(&mut self, path: &Path, agent: AgentKind) -> Result<(), String> {
         // A clone that started while the folder was looked at.
         if self.cloning.has(path) {
             return Err(format!("{} is being cloned.", path.display()));
         }
-        offer(&mut self.store, path)
+        offer(&mut self.store, path, agent)
     }
 
     /// Sends `text` to the session `id` as its next prompt.
@@ -2553,9 +2563,10 @@ fn place_failed(message: &str) -> String {
 
 /// Makes `path` a place in `store`, saved. A place that is there already is
 /// saved too: an earlier save may have failed, and it would be gone at the
-/// next start. On a failed save, a place this added goes again.
-fn offer(store: &mut store::Store, path: &Path) -> Result<(), String> {
-    let added = store.add_place(path, AgentKind::Claude);
+/// next start. On a failed save, a place this added goes again. A new place
+/// starts with `agent`.
+fn offer(store: &mut store::Store, path: &Path, agent: AgentKind) -> Result<(), String> {
+    let added = store.add_place(path, agent);
     if let Err(e) = store.save() {
         if added {
             store.remove_place(path);
@@ -2766,42 +2777,94 @@ fn run_git(cmd: &mut std::process::Command) -> Result<(), String> {
     ))
 }
 
+/// An error that says which request it answers, for a client that waits on
+/// that one and must not take another's error for it.
+fn error_about(about: &str, message: &str) -> String {
+    json!({ "type": "error", "message": message, "about": about }).to_string()
+}
+
 /// A worktree of the repository `from` is a checkout of, on a new `branch`,
 /// where the app makes its own: `~/arakun-workspaces/<project>/<branch>`.
 fn add_worktree(from: &Path, branch: &str) -> Result<PathBuf, String> {
+    worktree_in(
+        &crate::platform::home().join("arakun-workspaces"),
+        from,
+        branch,
+    )
+}
+
+/// `add_worktree`, under `base`.
+fn worktree_in(base: &Path, from: &Path, branch: &str) -> Result<PathBuf, String> {
     if !plain_branch(branch) {
         return Err(format!("{branch:?} is not a branch name this server takes"));
     }
-    let (root, _) = store::repo(from).ok_or("that folder is not in a git repository")?;
-    let project = root
+    let project = main_checkout(from)?
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or("that repository has no name")?;
-    let dest = crate::platform::home()
-        .join("arakun-workspaces")
-        .join(project)
-        .join(branch);
+    let dest = base.join(project).join(branch);
     if dest.exists() {
         return Err(format!("{} already exists", dest.display()));
     }
-    run_git(
-        git(&root)
+    // Git runs in `from` itself: a checkout whose git folder lives elsewhere
+    // has no checkout at that folder's parent.
+    let made = run_git(
+        git(from)
             .args(["worktree", "add", "--quiet", "-b", branch])
             .arg(&dest),
-    )?;
-    dest.canonicalize().map_err(|e| e.to_string())
+    );
+    match made {
+        Ok(()) => dest.canonicalize().map_err(|e| e.to_string()),
+        // A hook that failed after the checkout: the worktree is there, and
+        // asking again would only say so.
+        Err(e) if dest.exists() => Err(format!(
+            "{e}. The worktree is at {} anyway: `arakun-server add` it, or remove it.",
+            dest.display()
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+/// The repository's main checkout, which names the project. Read from git,
+/// since the folder of git's files need not be in it.
+fn main_checkout(from: &Path) -> Result<PathBuf, String> {
+    let out = git(from)
+        .args(["rev-parse", "--path-format=absolute"])
+        .args(["--git-dir", "--git-common-dir", "--show-toplevel"])
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let mut lines = said.lines().filter(|_| out.status.success());
+    let (Some(own), Some(common), Some(top)) = (lines.next(), lines.next(), lines.next()) else {
+        return Err("that folder is not in a git repository".into());
+    };
+    if own == common {
+        return Ok(PathBuf::from(top));
+    }
+    // A worktree: git lists the main checkout first.
+    let out = git(from)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .ok_or_else(|| "that folder is not in a git repository".into())
 }
 
 /// Renames the branch at `place` from `from` to `to`, as long as `from` is
 /// still the one checked out there: one renamed by hand meanwhile stays.
-fn rename_branch(place: &Path, from: &str, to: &str) -> Result<(), String> {
+/// Whether it renamed it.
+fn rename_branch(place: &Path, from: &str, to: &str) -> Result<bool, String> {
     if !plain_branch(to) {
         return Err(format!("{to:?} is not a branch name this server takes"));
     }
     if store::branch(place).as_deref() != Some(from) {
-        return Ok(());
+        return Ok(false);
     }
-    run_git(git(place).args(["branch", "-m", "--", from, to]))
+    run_git(git(place).args(["branch", "-m", "--", from, to])).map(|()| true)
 }
 
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
@@ -3005,14 +3068,14 @@ mod tests {
         std::fs::create_dir(&app).unwrap();
         // A folder where the state file goes: every save fails.
         std::fs::create_dir(dir.join("state.json")).unwrap();
-        assert!(offer(&mut store, &app).is_err());
+        assert!(offer(&mut store, &app, AgentKind::Claude).is_err());
         assert!(store.place(&app).is_none(), "what it added goes again");
         // Added before, by a local `add` whose save failed: still not saved.
         store.add_place(&app, AgentKind::Claude);
-        assert!(offer(&mut store, &app).is_err());
+        assert!(offer(&mut store, &app, AgentKind::Claude).is_err());
         assert!(store.place(&app).is_some(), "what it did not add stays");
         std::fs::remove_dir(dir.join("state.json")).unwrap();
-        assert_eq!(offer(&mut store, &app), Ok(()));
+        assert_eq!(offer(&mut store, &app, AgentKind::Claude), Ok(()));
         let saved = std::fs::read_to_string(dir.join("state.json")).unwrap();
         assert!(saved.contains(app.to_str().unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3099,6 +3162,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    /// A repository at `dir` with one commit; `init` says how git makes it.
+    fn repo_at(dir: &Path, init: &[&str]) {
+        run_git(git(dir).args(["init", "--quiet"]).args(init)).unwrap();
+        run_git(git(dir).args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "first",
+        ]))
+        .unwrap();
+    }
+
+    #[test]
+    fn a_new_environment_is_a_worktree_named_after_its_project() {
+        let tmp = scratch("plain");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let base = tmp.join("workspaces");
+        let made = worktree_in(&base, &app, "rv/first").unwrap();
+        assert_eq!(made, base.join("app/rv/first"));
+        assert_eq!(store::branch(&made).as_deref(), Some("rv/first"));
+        // From a worktree too: the project is still the main checkout's.
+        let again = worktree_in(&base, &made, "second").unwrap();
+        assert_eq!(again, base.join("app/second"));
+        assert!(worktree_in(&base, &app, "second").is_err(), "already there");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_checkout_with_its_git_folder_elsewhere_makes_environments_too() {
+        let tmp = scratch("separate");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        std::fs::create_dir(tmp.join("git-files")).unwrap();
+        let elsewhere = tmp.join("git-files").join("app.git");
+        repo_at(&app, &["--separate-git-dir", &elsewhere.to_string_lossy()]);
+        let base = tmp.join("workspaces");
+        let made = worktree_in(&base, &app, "fix").unwrap();
+        assert_eq!(made, base.join("app/fix"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_branch_renamed_by_hand_meanwhile_stays() {
+        let tmp = scratch("rename");
+        repo_at(&tmp, &["-b", "random-name"]);
+        assert_eq!(rename_branch(&tmp, "random-name", "fix-login"), Ok(true));
+        assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
+        // The app's rename comes after the user's: it changes nothing.
+        assert_eq!(rename_branch(&tmp, "random-name", "other"), Ok(false));
+        assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
+        assert!(rename_branch(&tmp, "fix-login", "-x").is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

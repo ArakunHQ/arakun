@@ -27,9 +27,10 @@ use crate::model::Status;
 
 /// What entries are read against: the session's directory, which the `@path`
 /// mentions in prompts are relative to, and the key that signs image links.
+/// No key for a session whose files are not on this machine: none are linked.
 pub struct Scope {
     pub cwd: PathBuf,
-    pub key: String,
+    pub key: Option<String>,
 }
 
 /// Entries a `session` message carries; older ones come on request.
@@ -112,7 +113,8 @@ fn image_file(path: &str, scope: &Scope) -> Option<String> {
     };
     attach::mime_type(&file)?;
     let len = std::fs::metadata(&file).ok().filter(|m| m.is_file())?.len();
-    (len <= attach::MAX_IMAGE_BYTES).then(|| super::image_link(&scope.key, &file))
+    let key = scope.key.as_deref()?;
+    (len <= attach::MAX_IMAGE_BYTES).then(|| super::image_link(key, &file))
 }
 
 pub fn permission(p: &PermissionRequest) -> Value {
@@ -153,11 +155,22 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
             // As the desktop shows it: the typed words, with the pasted blocks
             // and the mentioned images set apart.
             let (typed, pastes) = attach::split_pastes(text);
-            let (typed, images) = attach::split_images(&typed, &scope.cwd);
+            // Without a key the mentions stay in the words, as typed.
+            let (typed, images) = match &scope.key {
+                Some(key) => {
+                    let (typed, images) = attach::split_images(&typed, &scope.cwd);
+                    let images: Vec<_> = images
+                        .iter()
+                        .map(|p| json!({ "name": file_name(p), "url": super::image_link(key, p) }))
+                        .collect();
+                    (typed, images)
+                }
+                None => (typed, Vec::new()),
+            };
             json!({
                 "type": "user", "text": typed, "at": at, "elapsed_ms": elapsed_ms, "tokens": tokens,
                 "pastes": pastes.iter().map(|p| json!({ "lines": p.lines().count(), "text": head(p, CLIP) })).collect::<Vec<_>>(),
-                "images": images.iter().map(|p| json!({ "name": file_name(p), "url": super::image_link(&scope.key, p) })).collect::<Vec<_>>(),
+                "images": images,
                 // What the turn's shell commands changed, for the turn's header.
                 "edits": shell_changes.iter().map(|c| json!({ "path": c.path, "added": c.added, "removed": c.removed })).collect::<Vec<_>>(),
             })
@@ -902,7 +915,7 @@ mod tests {
     fn scope(cwd: &std::path::Path) -> Scope {
         Scope {
             cwd: cwd.to_path_buf(),
-            key: "k".into(),
+            key: Some("k".into()),
         }
     }
 
@@ -950,6 +963,33 @@ mod tests {
             text.ends_with("![remote](https://x.dev/a.png) last"),
             "{text}"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_servers_session_links_no_file_of_this_machine() {
+        let dir = std::env::temp_dir().join(format!("arakun-wire-remote-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shot.png"), b"png").unwrap();
+        let unsigned = Scope {
+            cwd: dir.clone(),
+            key: None,
+        };
+        let said = Entry::Agent {
+            text: "see ![the shot](shot.png)".into(),
+        };
+        assert_eq!(entry(&said, &unsigned)["text"], "see ![the shot](shot.png)");
+        let asked = Entry::User {
+            text: "look at @shot.png".into(),
+            at: 1,
+            elapsed_ms: None,
+            message_id: None,
+            tokens: None,
+            shell_changes: Vec::new(),
+        };
+        let v = entry(&asked, &unsigned);
+        assert_eq!(v["text"], "look at @shot.png");
+        assert_eq!(v["images"], json!([]));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

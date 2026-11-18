@@ -80,12 +80,15 @@ impl Shell {
     }
 
     /// What a session's entries are read against when they go to a phone.
-    fn phone_scope(&self, cwd: &Path) -> wire::Scope {
+    fn phone_scope(&self, env_path: &Path, cwd: &Path) -> wire::Scope {
+        // A server's session names files on the server: one of the same name
+        // here is not its to show.
+        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
         let key = self
             .phone
             .as_ref()
-            .map(|l| l.access.lock().unwrap().image_key.clone())
-            .unwrap_or_default();
+            .filter(|_| !remote)
+            .map(|l| l.access.lock().unwrap().image_key.clone());
         wire::Scope {
             cwd: cwd.to_path_buf(),
             key,
@@ -254,6 +257,8 @@ impl Shell {
         let Some(link) = self.phone.take() else {
             return;
         };
+        // A phone of the next link may come with the same id.
+        self.servers_phone_left(None);
         if link.reach == Reach::Tailscale {
             cx.background_executor()
                 .spawn(async {
@@ -475,6 +480,7 @@ impl Shell {
             }
             Incoming::Disconnected(id) => {
                 self.phone_stop_watching(id, cx);
+                self.servers_phone_left(Some(id));
                 if let Some(link) = &mut self.phone {
                     link.hidden.remove(&id);
                 }
@@ -602,13 +608,17 @@ impl Shell {
                 if text.is_empty() {
                     return;
                 }
-                // On a server: it starts there, and says its id when it has one.
+                // On a server: it starts there, with the model and effort
+                // picked (the server takes no other setting from a device),
+                // and says its id when it has one.
                 if found.remote.is_some() {
-                    if !self.servers_start(&path, agent, &text) {
+                    let by = super::servers::Asker::Phone(client);
+                    if !self.servers_start(&path, agent, &text, &settings, by) {
                         self.phone_send(client, wire::error("that server is not connected"));
-                    } else {
-                        self.servers_phone_waits(client);
+                        return;
                     }
+                    // The branch is named after the first prompt, as from the desktop.
+                    self.name_after_first_prompt(&path, &text, agent.kind(), cx);
                     return;
                 }
                 for (key, value) in &settings {
@@ -962,13 +972,13 @@ impl Shell {
             Some(thread) => {
                 let t = thread.read(cx);
                 let status = super::sessions::status_of(t);
-                wire::session_live(&head, t, status, &self.phone_scope(t.cwd()))
+                wire::session_live(&head, t, status, &self.phone_scope(env_path, t.cwd()))
             }
             None => {
                 let (all, cwd) = Thread::read_transcript(&state::transcript_path(id))
                     .map(|t| (t.entries, t.meta.cwd))
                     .unwrap_or_default();
-                wire::session_saved(&head, &all, &self.phone_scope(&cwd))
+                wire::session_saved(&head, &all, &self.phone_scope(env_path, &cwd))
             }
         }
     }
@@ -985,7 +995,7 @@ impl Shell {
         self.with_session_entries(env_path, id, cx, |all, cwd| {
             let to = to.min(all.len());
             let from = from.min(to);
-            let scope = self.phone_scope(cwd);
+            let scope = self.phone_scope(env_path, cwd);
             (
                 all[from..to]
                     .iter()
@@ -1102,7 +1112,12 @@ impl Shell {
                 continue;
             };
             let t = thread.read(cx);
-            let msg = wire::entries_message(&id, t.entries(), from, &self.phone_scope(t.cwd()));
+            let msg = wire::entries_message(
+                &id,
+                t.entries(),
+                from,
+                &self.phone_scope(&env_path, t.cwd()),
+            );
             self.phone_send_watchers(&id, msg);
         }
         for id in states {

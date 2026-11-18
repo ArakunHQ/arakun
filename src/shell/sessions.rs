@@ -534,31 +534,49 @@ impl Shell {
             let agent = self.env().agent;
             // The branch is named after the first prompt, there as here.
             self.name_after_first_prompt(&path, &text, agent.kind(), cx);
-            let text = match self.rename_notes.remove(&path) {
-                Some(note) => format!("{text}{}", crate::agent::chart::hint(&note)),
-                None => text,
+            // `/stage` runs git here, on files that are on the server.
+            if let Some(id) = self.active_session_id()
+                && text.trim() == "/stage"
+            {
+                self.ensure_live(&path, &id, window, cx);
+                if let Some(thread) = self.active_thread(cx) {
+                    thread.update(cx, |t, cx| {
+                        t.post_notice(
+                            "/stage works on this machine's files; on the server, stage in its terminal.",
+                            true,
+                            cx,
+                        )
+                    });
+                }
+                cx.notify();
+                return;
+            }
+            // The rename note goes to the agent only; it stays for the next
+            // prompt when this one does not go.
+            let note = self.rename_notes.remove(&path);
+            let prompt = match &note {
+                Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
+                None => text.clone(),
             };
-            match self.active_session_id() {
+            let sent = match self.active_session_id() {
                 Some(id) => {
                     self.ensure_live(&path, &id, window, cx);
-                    if let Some(thread) = self.active_thread(cx) {
-                        thread.update(cx, |t, cx| {
-                            // `/stage` runs git here, on files that are on the server.
-                            if text.trim() == "/stage" {
-                                t.post_notice(
-                                    "/stage works on this machine's files; on the server, stage in its terminal.",
-                                    true,
-                                    cx,
-                                );
-                            } else {
-                                t.send(text, cx)
-                            }
-                        });
+                    let thread = self.active_thread(cx);
+                    if let Some(thread) = &thread {
+                        thread.update(cx, |t, cx| t.send(prompt, cx));
                     }
+                    thread.is_some()
                 }
                 None => {
-                    if !self.servers_start(&path, agent, &text) {
-                        // Not sent: back into the composer, with why.
+                    let sent = self.servers_start(
+                        &path,
+                        agent,
+                        &prompt,
+                        &[],
+                        super::servers::Asker::Desktop,
+                    );
+                    if !sent {
+                        // Not sent: back into the composer, as the user wrote it, with why.
                         self.env_mut().draft.set(&text);
                         self.composer_changed(cx);
                         let why = self
@@ -572,7 +590,11 @@ impl Shell {
                             cx,
                         );
                     }
+                    sent
                 }
+            };
+            if !sent && let Some(note) = note {
+                self.rename_notes.insert(path, note);
             }
             cx.notify();
             return;

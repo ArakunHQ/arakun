@@ -757,8 +757,8 @@ The link is good for two minutes and pairs one device. There are two ways to use
   go to the server. "New environment" makes a worktree on a server too: Alt+click the
   + and pick the machine, or right-click a server's environment. A plain + makes it on
   the open environment's machine. It goes in
-  `~/arakun-workspaces/<project>/<branch>` there, and its branch is named after the
-  first prompt as it is here. A phone paired with this app sees and works in the
+  `~/arakun-workspaces/<project>/<branch>` there. Unless naming is off in Settings ›
+  Branches, Arakun names its branch after the first prompt, as here. A phone paired with this app sees and works in the
   servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
   yet. To add a folder on a server, press the folder button on it in the Servers tab,

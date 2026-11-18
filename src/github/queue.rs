@@ -386,6 +386,19 @@ impl Details {
             Details::Issue(i) => &i.updated_at,
         }
     }
+
+    /// How many comments sit on the diff and how many of them are in a
+    /// resolved thread: it moves when a thread is answered, resolved or
+    /// opened again, which the item's date doesn't always do.
+    pub fn threads_mark(&self) -> (usize, usize) {
+        match self {
+            Details::Pull(p) => (
+                p.inline.len(),
+                p.inline.iter().filter(|c| c.resolved == Some(true)).count(),
+            ),
+            Details::Issue(_) => (0, 0),
+        }
+    }
 }
 
 /// The groups of the queue, in the order they show.

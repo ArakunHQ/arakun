@@ -315,6 +315,8 @@ pub struct InlineComment {
     pub in_reply_to_id: Option<u64>,
     pub diff_hunk: String,
     pub html_url: String,
+    /// `LEFT` when it is on a line the change removed, else `RIGHT`.
+    pub side: String,
     /// The node id of the review it was sent with (`Review::id`). None when
     /// GitHub didn't say (see `fetch_pull`).
     #[serde(skip)]
@@ -325,6 +327,9 @@ pub struct InlineComment {
     /// Whether the code under its thread changed since.
     #[serde(skip)]
     pub outdated: Option<bool>,
+    /// The node id of its thread. None when GitHub didn't say.
+    #[serde(skip)]
+    pub thread: Option<String>,
 }
 
 impl InlineComment {
@@ -442,7 +447,7 @@ const ISSUE_FIELDS: &str =
 
 /// Resolution and review of each inline comment: REST doesn't give them.
 const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){\
-pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated \
+pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated \
 comments(first:100){nodes{databaseId pullRequestReview{id}}}}}}}}";
 
 /// Drops every `null`, so a field GitHub left empty reads as its default
@@ -490,6 +495,8 @@ struct ThreadState {
     resolved: bool,
     outdated: bool,
     review: Option<String>,
+    /// The thread's node id: what resolving it needs.
+    thread: Option<String>,
 }
 
 /// Comment id → the state of its thread, from the answer to `THREADS_QUERY`.
@@ -500,6 +507,7 @@ fn thread_states(answer: &Value) -> HashMap<u64, ThreadState> {
         .and_then(Value::as_array);
     for thread in threads.into_iter().flatten() {
         let flag = |key: &str| thread.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let node = thread.get("id").and_then(Value::as_str);
         let comments = thread.pointer("/comments/nodes").and_then(Value::as_array);
         for comment in comments.into_iter().flatten() {
             let Some(id) = comment.get("databaseId").and_then(Value::as_u64) else {
@@ -515,6 +523,7 @@ fn thread_states(answer: &Value) -> HashMap<u64, ThreadState> {
                     resolved: flag("isResolved"),
                     outdated: flag("isOutdated"),
                     review,
+                    thread: node.map(str::to_string),
                 },
             );
         }
@@ -689,6 +698,7 @@ pub fn fetch_pull(item: &ItemRef) -> Result<Pull, Problem> {
                 comment.resolved = Some(state.resolved);
                 comment.outdated = Some(state.outdated);
                 comment.review = state.review.clone();
+                comment.thread = state.thread.clone();
             }
         }
     }
@@ -1596,12 +1606,16 @@ pub struct Thread {
     pub diff_hunk: String,
     pub resolved: Option<bool>,
     pub outdated: Option<bool>,
+    /// The line of today's diff it is on, and whether that is the removed
+    /// side; None once the code under it changed.
+    pub place: Option<(u32, bool)>,
+    /// The thread's node id: what resolving it needs.
+    pub node: Option<String>,
     pub comments: Vec<InlineComment>,
 }
 
 impl Thread {
     /// The id to answer the thread with (`reply`).
-    #[allow(dead_code)] // Not offered in the view yet.
     pub fn id(&self) -> u64 {
         self.comments.first().map_or(0, |c| c.id)
     }
@@ -1625,6 +1639,8 @@ pub fn threads(inline: &[InlineComment]) -> Vec<Thread> {
                     diff_hunk: comment.diff_hunk.clone(),
                     resolved: comment.resolved,
                     outdated: comment.outdated,
+                    place: comment.line.map(|l| (l, comment.side == "LEFT")),
+                    node: comment.thread.clone(),
                     comments: Vec::new(),
                 });
                 threads.len() - 1
@@ -2234,7 +2250,6 @@ fn review_at_cmd(item: &ItemRef, verdict: Verdict, body: &str, sha: &str) -> Res
     Ok(Cmd { args, stdin })
 }
 
-#[allow(dead_code)] // Not offered in the view yet.
 fn reply_cmd(item: &ItemRef, comment_id: u64, body: &str) -> Result<Cmd, Problem> {
     pulls_only(item)?;
     let stdin = with_body(body)?;
@@ -2255,6 +2270,92 @@ fn reply_cmd(item: &ItemRef, comment_id: u64, body: &str) -> Result<Cmd, Problem
             ".html_url",
         ]),
         stdin,
+    })
+}
+
+const UNRESOLVE_THREAD: &str =
+    "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{id}}}";
+
+/// Marks the thread `node` (`Thread::node`) resolved, or open again.
+fn thread_cmd(node: &str, resolve: bool) -> Result<Cmd, Problem> {
+    // A node id is base64 and `_`: nothing else goes into the call.
+    let ok = !node.is_empty()
+        && node
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/'));
+    if !ok {
+        return Err(invalid(
+            "GitHub didn't say which thread this is; reload the pull request.",
+        ));
+    }
+    let query = if resolve {
+        RESOLVE_THREAD
+    } else {
+        UNRESOLVE_THREAD
+    };
+    Ok(Cmd {
+        args: strings(&[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-f",
+            &format!("id={node}"),
+        ]),
+        stdin: None,
+    })
+}
+
+/// A comment on one line of the diff, not sent yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineComment {
+    pub path: String,
+    pub line: u32,
+    /// On a line the change removed (GitHub's `LEFT` side).
+    pub left: bool,
+    pub body: String,
+}
+
+/// One review of commit `sha` that carries `comments`, each on its line.
+/// The body is JSON on stdin: the comments are a list, which `-f` can't say.
+fn line_review_cmd(item: &ItemRef, sha: &str, comments: &[LineComment]) -> Result<Cmd, Problem> {
+    pulls_only(item)?;
+    if !valid_repo(&item.repo) {
+        return Err(invalid("Not a repository name."));
+    }
+    if !is_sha(sha) {
+        return Err(invalid(
+            "Arakun doesn't know which commit these lines are of; reload the diff.",
+        ));
+    }
+    if comments.is_empty() || comments.iter().any(|c| c.body.trim().is_empty()) {
+        return Err(invalid("Write something first."));
+    }
+    let list: Vec<Value> = comments
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "path": c.path,
+                "line": c.line,
+                "side": if c.left { "LEFT" } else { "RIGHT" },
+                "body": c.body,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({"event": "COMMENT", "commit_id": sha, "comments": list});
+    let path = format!("repos/{}/pulls/{}/reviews", item.repo, item.number);
+    Ok(Cmd {
+        args: strings(&[
+            "api",
+            "-X",
+            "POST",
+            &path,
+            "--input",
+            "-",
+            "--jq",
+            ".html_url",
+        ]),
+        stdin: Some(body.to_string()),
     })
 }
 
@@ -2409,9 +2510,18 @@ pub fn review_at(item: &ItemRef, verdict: Verdict, body: &str, sha: &str) -> Res
 }
 
 /// Answers a thread on the diff (`Thread::id`); returns the answer's address.
-#[allow(dead_code)] // Not offered in the view yet.
 pub fn reply(item: &ItemRef, comment_id: u64, body: &str) -> Result<String, Problem> {
     act(reply_cmd(item, comment_id, body))
+}
+
+/// Resolves a thread on the diff, or opens it again.
+pub fn set_thread_resolved(node: &str, resolve: bool) -> Result<(), Problem> {
+    act(thread_cmd(node, resolve)).map(|_| ())
+}
+
+/// Sends the comments written on lines of commit `sha` as one review.
+pub fn review_lines(item: &ItemRef, sha: &str, comments: &[LineComment]) -> Result<(), Problem> {
+    act(line_review_cmd(item, sha, comments)).map(|_| ())
 }
 
 /// Merges only if the head is still `head`, the commit the user saw.
@@ -3439,7 +3549,7 @@ mod tests {
     fn thread_states_come_from_the_graphql_answer() {
         let answer: Value = serde_json::from_str(
             r#"{"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-              {"isResolved": true, "isOutdated": false, "comments": {"nodes": [
+              {"id": "PRRT_1", "isResolved": true, "isOutdated": false, "comments": {"nodes": [
                 {"databaseId": 101, "pullRequestReview": {"id": "PRR_1"}}, {"databaseId": 102, "pullRequestReview": null}]}},
               {"isResolved": false, "isOutdated": true, "comments": {"nodes": [{"databaseId": 103, "pullRequestReview": {"id": "PRR_3"}}, {}]}}
             ]}}}}}"#,
@@ -3463,6 +3573,9 @@ mod tests {
             (states[&103].resolved, states[&103].outdated),
             (false, true)
         );
+        // Every comment of a thread names it; a thread without an id names none.
+        assert_eq!(states[&102].thread.as_deref(), Some("PRRT_1"));
+        assert_eq!(states[&103].thread, None);
         assert!(thread_states(&serde_json::json!({"errors": [{"message": "nope"}]})).is_empty());
     }
 
@@ -4187,6 +4300,27 @@ mod tests {
             .collect();
         assert_eq!(ids, [vec![1, 2, 3, 4], vec![5], vec![6]]);
         assert_eq!(threads(&inline)[0].path, "f1");
+
+        // Where a thread sits in today's diff, and which thread it is.
+        let placed = InlineComment {
+            id: 7,
+            line: Some(12),
+            side: "LEFT".into(),
+            thread: Some("PRRT_7".into()),
+            ..Default::default()
+        };
+        let outdated = InlineComment {
+            id: 8,
+            original_line: Some(3),
+            ..Default::default()
+        };
+        let t = threads(&[placed, outdated]);
+        assert_eq!(
+            (t[0].place, t[0].node.as_deref()),
+            (Some((12, true)), Some("PRRT_7"))
+        );
+        // Once the code under it changed it has no line to show under.
+        assert_eq!((t[1].place, t[1].line), (None, Some(3)));
     }
 
     /// What `gh pr diff` prints for a pull request that touches a bit of
@@ -4596,6 +4730,50 @@ mod tests {
     }
 
     #[test]
+    fn threads_resolve_and_lines_take_one_review() {
+        let pr = item(ItemKind::Pull);
+        let cmd = thread_cmd("PRRT_kwDOabc-_1", true).unwrap();
+        assert_eq!(cmd.args[..3], ["api", "graphql", "-f"]);
+        assert!(cmd.args[3].contains("resolveReviewThread"), "{cmd:?}");
+        assert_eq!(cmd.args[5], "id=PRRT_kwDOabc-_1");
+        let open = thread_cmd("PRRT_1", false).unwrap();
+        assert!(open.args[3].contains("unresolveReviewThread"), "{open:?}");
+        // No id (GitHub didn't say), or one that isn't an id: nothing is sent.
+        assert!(thread_cmd("", true).is_err());
+        assert!(thread_cmd("PRRT_1 -f query=x", true).is_err());
+
+        let line = |path: &str, line, left, body: &str| LineComment {
+            path: path.into(),
+            line,
+            left,
+            body: body.into(),
+        };
+        let body = "Why `$(rm -rf ~)`?\n\"quoted\"";
+        let comments = [
+            line("src/a.rs", 12, false, body),
+            line("src/b.rs", 3, true, "gone"),
+        ];
+        let cmd = line_review_cmd(&pr, SHA, &comments).unwrap();
+        assert_eq!(
+            cmd.args.join(" "),
+            "api -X POST repos/ArakunHQ/arakun/pulls/41/reviews --input - --jq .html_url"
+        );
+        // The words travel as JSON on stdin, whatever they look like.
+        let sent: Value = serde_json::from_str(cmd.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"event": "COMMENT", "commit_id": SHA, "comments": [
+                {"path": "src/a.rs", "line": 12, "side": "RIGHT", "body": body},
+                {"path": "src/b.rs", "line": 3, "side": "LEFT", "body": "gone"},
+            ]})
+        );
+        assert!(line_review_cmd(&pr, SHA, &[]).is_err());
+        assert!(line_review_cmd(&pr, "abc", &comments).is_err());
+        assert!(line_review_cmd(&pr, SHA, &[line("a", 1, false, " ")]).is_err());
+        assert!(line_review_cmd(&item(ItemKind::Issue), SHA, &comments).is_err());
+    }
+
+    #[test]
     fn a_read_only_arakun_never_starts_gh() {
         let pr = item(ItemKind::Pull);
         let never = |_: &Cmd| -> Result<Vec<u8>, Problem> { panic!("gh was started") };
@@ -4608,6 +4786,17 @@ mod tests {
             Ok(state_cmd(&pr, "close")),
             Ok(state_cmd(&pr, "reopen")),
             rerun_cmd(&pr, 7),
+            thread_cmd("PRRT_1", true),
+            line_review_cmd(
+                &pr,
+                SHA,
+                &[LineComment {
+                    path: "a.rs".into(),
+                    line: 1,
+                    left: false,
+                    body: "hi".into(),
+                }],
+            ),
             // Even one that would be refused anyway says it is read-only.
             comment_cmd(&pr, ""),
         ];

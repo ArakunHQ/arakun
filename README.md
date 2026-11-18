@@ -213,6 +213,12 @@ terminal-only. The status line and keybindings from your settings don't apply in
   (`gh run rerun --failed`) once their run has finished. "Fix with agent" starts a
   session with the failed checks and the logs you opened; the agent fixes it in the
   checkout and doesn't push.
+- **Review comments.** Under each thread on the diff, "Reply" answers it and "Resolve"
+  (or "Reopen") marks it. In the Files tab, the open threads show under their lines,
+  and a click on a line writes a comment on it. Those comments are kept as pending
+  (only until you quit) and "Submit review" posts them together as one review;
+  "Discard" drops them. After new commits, submit or discard the pending ones before
+  you comment on the new diff.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits

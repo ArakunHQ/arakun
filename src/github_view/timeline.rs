@@ -138,7 +138,7 @@ fn event(lead: AnyElement, last: bool, part: Part, body: impl IntoElement) -> gp
 
 /// "rik approved · 2h ago": who in semibold, what they did, and when. The
 /// pieces in `extra` go between the action and the time.
-fn header(who: &str, what: &str, at: u64, extra: Vec<AnyElement>) -> gpui::Div {
+pub(super) fn header(who: &str, what: &str, at: u64, extra: Vec<AnyElement>) -> gpui::Div {
     div()
         .flex()
         .flex_wrap()
@@ -234,6 +234,9 @@ pub(super) fn code_block(path: &str, line: Option<u32>, lines: Vec<AnyElement>) 
         )
 }
 
+/// The width of the column a diff's line numbers sit in.
+pub(super) const LINE_NO_W: f32 = 42.;
+
 /// One line of a diff: its number, a colored edge and tint when it changed.
 /// A long line wraps rather than being cut: its end may be the change.
 pub(super) fn code_line(kind: LineKind, number: Option<u32>, text: &str) -> AnyElement {
@@ -264,7 +267,7 @@ pub(super) fn code_line(kind: LineKind, number: Option<u32>, text: &str) -> AnyE
         })
         .child(
             div()
-                .w(px(42.))
+                .w(px(LINE_NO_W))
                 .flex_none()
                 .pr(crate::ui::sp(12.))
                 .text_right()
@@ -300,8 +303,9 @@ fn hunk_lines(hunk: &str) -> Vec<AnyElement> {
 /// The timeline of one version of an item, worked out once: the list asks
 /// for its rows one at a time as they come on screen.
 pub(super) struct Timeline {
-    /// The item, its version, who looks, and whether a draft shows last.
-    key: (String, String, String, bool),
+    /// The item, its version, who looks, whether a draft shows last, and
+    /// where its threads stand.
+    key: (String, String, String, bool, (usize, usize)),
     author: String,
     opened_at: u64,
     body: String,
@@ -385,38 +389,10 @@ pub(super) fn verdict_word(v: Verdict) -> &'static str {
 }
 
 impl GitHubView {
-    fn render_thread(&self, key: &str, t: &Thread, cx: &App) -> AnyElement {
-        let mut comments = div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(12.))
+    fn render_thread(&self, key: &str, t: &Thread, cx: &Context<Self>) -> AnyElement {
+        let comments = self
+            .render_thread_comments(key, t, cx)
             .pt(crate::ui::sp(12.));
-        for (i, c) in t.comments.iter().enumerate() {
-            comments = comments.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(crate::ui::sp(2.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(8.))
-                            .child(self.face(&c.user.login, 20., cx))
-                            .child(header(
-                                &c.user.login,
-                                "",
-                                crate::ci::parse_time(&c.created_at).unwrap_or(0),
-                                Vec::new(),
-                            )),
-                    )
-                    .child(div().pl(crate::ui::sp(28.)).child(self.markdown(
-                        gpui::SharedString::from(format!("{key}-c{i}")),
-                        &c.body,
-                        body_style(),
-                    ))),
-            );
-        }
         let state = match (t.resolved, t.outdated) {
             (Some(true), _) => Some("Resolved"),
             (_, Some(true)) => Some("Outdated"),
@@ -435,6 +411,11 @@ impl GitHubView {
                 )
             })
             .child(comments)
+            .child(
+                div()
+                    .pt(crate::ui::sp(10.))
+                    .child(self.render_thread_foot(key, t, cx)),
+            )
             .into_any_element()
     }
 
@@ -593,6 +574,8 @@ impl GitHubView {
             details.updated_at().to_string(),
             me.clone(),
             self.draft.is_some(),
+            // Resolving a thread doesn't always move the item's date.
+            details.threads_mark(),
         );
         if self.timeline.as_ref().is_some_and(|t| t.key == key) {
             return;

@@ -65,31 +65,39 @@ impl Shell {
             let Ok(go) = this.update(cx, |this, cx| this.cleanup_found(removable, cx)) else {
                 return;
             };
-            let removed: Vec<PathBuf> = cx
-                .background_spawn(async move {
-                    go.into_iter()
-                        .filter_map(|(repo, path)| {
-                            // Asked again right before it goes: a commit or
-                            // an edit may have come since the first check.
-                            // Git refuses the removal itself when a file
-                            // changed after this one.
-                            if !cleanup::removable(&path) {
-                                return None;
-                            }
-                            match crate::git::remove_clean_worktree(&repo, &path) {
-                                Ok(()) => Some(path),
-                                Err(e) => {
-                                    eprintln!(
-                                        "arakun: could not remove the old environment {}: {e}",
-                                        path.display()
-                                    );
-                                    None
-                                }
-                            }
-                        })
-                        .collect()
-                })
-                .await;
+            // One at a time, so each is asked about right before it goes.
+            let mut removed: Vec<PathBuf> = Vec::new();
+            for (repo, path) in go {
+                // A commit or an edit may have come since the first check.
+                let dir = path.clone();
+                if !cx
+                    .background_spawn(async move { cleanup::removable(&dir) })
+                    .await
+                {
+                    continue;
+                }
+                // That took a while too: it may be on screen by now, have an
+                // agent at work or an automation set to it, or the setting
+                // was turned off. Git itself refuses when a file changed.
+                let found = (repo.clone(), path.clone());
+                if !this
+                    .update(cx, |this, _| this.still_old(&found))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let dir = path.clone();
+                let gone = cx
+                    .background_spawn(async move { crate::git::remove_clean_worktree(&repo, &dir) })
+                    .await;
+                match gone {
+                    Ok(()) => removed.push(path),
+                    Err(e) => eprintln!(
+                        "arakun: could not remove the old environment {}: {e}",
+                        path.display()
+                    ),
+                }
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 this.cleanup.busy = false;
                 if removed.is_empty() {
@@ -160,6 +168,13 @@ impl Shell {
                     .any(|s| matches!(s.status, Status::Working | Status::NeedsInput)),
             used: e.last_used(),
         }
+    }
+
+    /// Whether the app itself still lets `found` (repository, worktree) go.
+    fn still_old(&self, found: &(PathBuf, PathBuf)) -> bool {
+        cleanup::choice()
+            .days()
+            .is_some_and(|days| self.old_envs(days).contains(found))
     }
 
     /// What git and GitHub found removable: suggests the setting when it is

@@ -769,6 +769,10 @@ impl SettingsDialog {
 
     /// Moves an open dialog to Branches; its pending edits stay.
     pub fn show_branches(&mut self, cx: &mut Context<Self>) {
+        // A search that leaves Branches out would show its own empty page.
+        if !Section::Branches.matches(&self.query(cx)) {
+            self.input.update(cx, |input, cx| input.set_text("", cx));
+        }
         self.select(Section::Branches, cx);
     }
 

@@ -1969,13 +1969,41 @@ impl Daemon {
             // Its agent waits on an answer nobody will give, or failed: it
             // stops now, as the app's does, and a device sees it idle.
             if stop {
-                self.retire(&id, cx);
+                self.retire_settled(&id, cx);
             } else {
                 self.retire_if_unwatched(&id, cx);
             }
         }
         self.save_store();
         self.inbox_dirty = true;
+    }
+
+    /// Stops the agent of a session just settled, once its shell changes are
+    /// in: let go before, the transcript would never get them. Devices that
+    /// watch it see it idle, with nothing asked, before its thread goes.
+    fn retire_settled(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(live) = self.live.get(id) else {
+            return;
+        };
+        let t = live.thread.read(cx);
+        // A prompt sent while the changes were worked out: that turn stays.
+        if status_of(t) == Status::Working || t.in_background() {
+            return;
+        }
+        if let Some(pending) = t.shell_pending().filter(|p| p.peek().is_none()) {
+            let id = id.to_string();
+            cx.spawn(async move |this, cx| {
+                pending.await;
+                let _ = this.update(cx, |this, cx| this.retire_settled(&id, cx));
+            })
+            .detach();
+            return;
+        }
+        if self.watched(id) {
+            let state = wire::state_message(id, t, Status::Idle);
+            self.send_watchers(id, settled_state(&state));
+        }
+        self.retire(id, cx);
     }
 
     /// Why the worktree at `place` cannot be deleted, if it cannot.
@@ -3176,6 +3204,17 @@ fn git_dirs(place: &Path) -> Option<(PathBuf, PathBuf)> {
     ))
 }
 
+/// `state`, as [`wire::state_message`] put it, for a session settled from
+/// its failure or question: idle, with nothing asked and no turn under way.
+fn settled_state(state: &str) -> String {
+    let mut msg: serde_json::Value = serde_json::from_str(state).unwrap_or_default();
+    msg["status"] = json!(wire::status(Status::Idle));
+    msg["permission"] = serde_json::Value::Null;
+    msg["question"] = serde_json::Value::Null;
+    msg["elapsed_ms"] = serde_json::Value::Null;
+    msg.to_string()
+}
+
 /// What a deletion that took the folder warns of: a branch that stayed, a
 /// list that could not be saved (the place comes back at the next start).
 fn deleted_warning(branch_kept: Option<String>, unsaved: Option<std::io::Error>) -> Option<String> {
@@ -3480,6 +3519,23 @@ mod tests {
         )
         .unwrap();
         assert!(both.starts_with("The branch stayed: in use") && both.contains("disk full"));
+    }
+
+    #[test]
+    fn a_settled_session_shows_idle_with_nothing_asked() {
+        let asking = json!({
+            "type": "state", "id": "s1", "status": "needs_input", "permission": null,
+            "question": { "text": "Which one?" }, "elapsed_ms": 1200, "title": "Fix",
+        });
+        let settled: serde_json::Value =
+            serde_json::from_str(&settled_state(&asking.to_string())).unwrap();
+        assert_eq!(settled["status"], wire::status(Status::Idle));
+        assert!(settled["question"].is_null() && settled["elapsed_ms"].is_null());
+        // What it says of the session itself stays.
+        assert_eq!(
+            (settled["id"].as_str(), settled["title"].as_str()),
+            (Some("s1"), Some("Fix"))
+        );
     }
 
     #[test]

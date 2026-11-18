@@ -9,7 +9,7 @@
 //! arrives on an unbounded channel that a GPUI task drains.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -23,6 +23,26 @@ use serde_json::{Value, json};
 use super::AgentKind;
 use super::launch::{self, LaunchSpec};
 use crate::platform::ProcessTree;
+
+/// The lines of a child's pipe, with bytes that aren't UTF-8 replaced. Ends at
+/// EOF or a read error. `BufRead::lines` stops at the first such line instead, and
+/// the pipe then closes under the child: its next write fails with EPIPE, which
+/// panics a Rust agent's `eprintln!` and is an unhandled error in Node.
+pub(crate) fn lossy_lines(pipe: impl Read) -> impl Iterator<Item = String> {
+    let mut pipe = BufReader::new(pipe);
+    let mut buf = Vec::new();
+    std::iter::from_fn(move || {
+        buf.clear();
+        match pipe.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                let line = buf.strip_suffix(b"\n").unwrap_or(&buf);
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                Some(String::from_utf8_lossy(line).into_owned())
+            }
+        }
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct RpcError {
@@ -205,8 +225,7 @@ impl Connection {
             std::thread::Builder::new()
                 .name(format!("acp-{}-e", kind.id()))
                 .spawn(move || {
-                    for line in BufReader::new(stderr).lines() {
-                        let Ok(line) = line else { break };
+                    for line in lossy_lines(stderr) {
                         if let Some(log) = log.as_mut() {
                             let _ = writeln!(log, "{line}");
                         }
@@ -228,8 +247,7 @@ impl Connection {
             std::thread::Builder::new()
                 .name(format!("acp-{}-r", kind.id()))
                 .spawn(move || {
-                    for line in BufReader::new(stdout).lines() {
-                        let Ok(line) = line else { break };
+                    for line in lossy_lines(stdout) {
                         let line = line.trim();
                         if line.is_empty() {
                             continue;
@@ -448,4 +466,17 @@ pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lossy_lines_read_past_bytes_that_arent_utf8() {
+        // A tool that logs Latin-1 ("caf\xe9"), then more lines.
+        let pipe: &[u8] = b"one\r\ncaf\xe9\n\xff\xfe\nlast";
+        let lines: Vec<String> = lossy_lines(pipe).collect();
+        assert_eq!(lines, ["one", "caf\u{fffd}", "\u{fffd}\u{fffd}", "last"]);
+    }
 }

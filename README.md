@@ -232,12 +232,14 @@ after a week).
 
 ### Stay in the loop
 
-- **Dynamic Island** (Linux on Wayland, and macOS). A small overlay at the top of the
-  screen that shows what the agents of every project are doing: a dot per busy session, a
-  card when one finishes, fails or needs an answer. It runs as its own process
+- **Dynamic Island** (Linux on Wayland, macOS and Windows). A small overlay at the top of
+  the screen that shows what the agents of every project are doing: a dot per busy
+  session, a card when one finishes, fails or needs an answer. It runs as its own process
   (`arakun island-host`). On Linux it needs a compositor with the wlr-layer-shell
-  protocol. On a MacBook it grows out of the notch, or out of the screen's own Dynamic
-  Island on the models that have one, and sits on the built-in screen. On a Mac without
+  protocol. On Windows it sits at the top center of the main screen; see
+  [docs/windows.md](docs/windows.md). On a MacBook it grows out of the notch, or out of
+  the screen's own Dynamic Island on the models that have one, and sits on the built-in
+  screen. On a Mac without
   either it hangs from the top of the main screen. Turning it off in Settings ends that
   process. If it reads the cutout wrong, set
   `ARAKUN_ISLAND_EDGE` to `flat`, `notch:<width>x<height>` or
@@ -371,7 +373,7 @@ made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
 |---|---|---|
 | Linux (x86_64) | Supported | Main platform. Wayland and X11. The Dynamic Island needs Wayland with wlr-layer-shell. |
 | Linux (arm64) | Beta | The same build as x86_64, for ARM machines such as Snapdragon laptops, Ampere and Graviton servers. Less tested. |
-| Windows 10/11 (x86_64) | Beta | No Dynamic Island yet. Browser tabs are barely tested. See [docs/windows.md](docs/windows.md). |
+| Windows 10/11 (x86_64) | Beta | Browser tabs are barely tested. See [docs/windows.md](docs/windows.md). |
 | macOS | Experimental | Release builds for Apple silicon. Little tested, browser tabs least of all. The Dynamic Island's shape around a notch and around the MacBook Pro's own Dynamic Island is not tested on those screens yet. |
 
 ## Install

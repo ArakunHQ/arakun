@@ -2594,6 +2594,16 @@ const CLONE_LIMIT: Duration = Duration::from_secs(20 * 60);
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
 /// that repository. A failed clone leaves nothing behind.
 fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), String> {
+    clone_with(git_command(), source, dest)
+}
+
+/// [`clone_into`], with `git` as the command to start from: tests give it
+/// an environment of their own.
+fn clone_with(
+    mut git: std::process::Command,
+    source: &clone_source::CloneSource,
+    dest: &Path,
+) -> Result<(), String> {
     use std::process::Stdio;
     if dest.exists() {
         return match checkout_origin(dest) {
@@ -2609,7 +2619,8 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
     // Made here, and only if it is not there yet: what a failed clone removes
     // is then this request's own folder.
     std::fs::create_dir(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-    let mut git = git_command();
+    // Asked before the clone's own settings go on: those do not name one.
+    let own_ssh = has_ssh_command(&git);
     git.args(CLONE_CONFIG)
         .args(["clone", "--quiet", "--", &source.url])
         .arg(dest)
@@ -2619,8 +2630,9 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     // ssh asks for a passphrase or a new host key on the terminal, which
-    // `serve` may have. A command the user set keeps its say.
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+    // `serve` may have. A command the server set keeps its say: it may pick
+    // the key that signs in. The time limit still holds for it.
+    if !own_ssh {
         git.env(
             "GIT_SSH_COMMAND",
             "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15",
@@ -2688,6 +2700,35 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
             .rfind(|l| !l.trim().is_empty())
             .unwrap_or("no reason given")
     ))
+}
+
+/// Whether `git` has an ssh command of its own, from its environment or the
+/// server's git config, the way git looks for one.
+fn has_ssh_command(git: &std::process::Command) -> bool {
+    let set = |key: &str| {
+        let given = git.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v);
+        match given {
+            Some(v) => v.is_some_and(|v| !v.is_empty()),
+            None => std::env::var_os(key).is_some_and(|v| !v.is_empty()),
+        }
+    };
+    if set("GIT_SSH_COMMAND") || set("GIT_SSH") {
+        return true;
+    }
+    let mut config = std::process::Command::new(git.get_program());
+    for (key, value) in git.get_envs() {
+        match value {
+            Some(v) => config.env(key, v),
+            None => config.env_remove(key),
+        };
+    }
+    // Outside any repository: a clone reads no repository's config either.
+    config
+        .current_dir(std::env::temp_dir())
+        .args(["config", "--get", "core.sshCommand"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
 }
 
 /// Git as the server runs it. Tests leave out this machine's settings: a
@@ -2878,13 +2919,7 @@ mod tests {
     #[test]
     fn a_clone_reuses_its_own_checkout_and_leaves_others_alone() {
         let root = scratch("clone");
-        let origin = root.join("origin");
-        std::fs::create_dir(&origin).unwrap();
-        git_in(&origin, &["init", "--quiet"]);
-        git_in(
-            &origin,
-            &["commit", "--quiet", "--allow-empty", "-m", "one"],
-        );
+        let origin = origin_repo(&root);
         let source = |url: &str| clone_source::CloneSource {
             url: url.to_string(),
             on_github: false,
@@ -2919,6 +2954,83 @@ mod tests {
         assert!(!gone.exists());
         assert!(dest.join(".git").exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A repository with one commit, at `dir/origin`.
+    fn origin_repo(dir: &Path) -> PathBuf {
+        let origin = dir.join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        git_in(&origin, &["init", "--quiet"]);
+        git_in(
+            &origin,
+            &["commit", "--quiet", "--allow-empty", "-m", "one"],
+        );
+        origin
+    }
+
+    /// An `ssh` at `path` that writes down how it was run, next to itself,
+    /// and runs what git asks for at the other end here instead.
+    #[cfg(unix)]
+    fn fake_ssh(path: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let script = "#!/bin/sh\n\
+            printf '%s\\n' \"$@\" > \"$0.args\"\n\
+            for last; do :; done\n\
+            eval \"git ${last#git-}\"\n";
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // The fake ssh is a shell script.
+    #[cfg(unix)]
+    #[test]
+    fn an_ssh_clone_never_waits_on_a_prompt_and_keeps_the_servers_own_ssh() {
+        let dir = scratch("ssh");
+        let origin = origin_repo(&dir);
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        fake_ssh(&bin.join("ssh"));
+        let source = clone_source::CloneSource {
+            url: format!("ssh://example.invalid{}", origin.display()),
+            on_github: false,
+            label: "o/r".into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        let git = || {
+            let mut git = git_command();
+            git.env("PATH", &path)
+                .env_remove("GIT_SSH_COMMAND")
+                .env_remove("GIT_SSH");
+            git
+        };
+
+        // No ssh command set: ssh may not ask for a passphrase or a host key.
+        clone_with(git(), &source, &dir.join("plain")).unwrap();
+        assert!(dir.join("plain/.git").exists());
+        let args = std::fs::read_to_string(bin.join("ssh.args")).unwrap();
+        assert!(args.lines().any(|l| l == "BatchMode=yes"), "{args}");
+
+        // The server's git picks its own ssh, say for the key it signs in
+        // with: that one is run as it is.
+        std::fs::remove_file(bin.join("ssh.args")).unwrap();
+        let own = dir.join("own-ssh");
+        fake_ssh(&own);
+        let mut configured = git();
+        configured
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "core.sshCommand")
+            .env("GIT_CONFIG_VALUE_0", &own);
+        clone_with(configured, &source, &dir.join("own")).unwrap();
+        assert!(dir.join("own/.git").exists());
+        let args = std::fs::read_to_string(dir.join("own-ssh.args")).unwrap();
+        assert!(!args.contains("BatchMode"), "{args}");
+        assert!(!bin.join("ssh.args").exists(), "the plain ssh did not run");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

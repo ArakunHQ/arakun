@@ -12,8 +12,8 @@ use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 use super::Shell;
 use crate::agent::catalog;
 use crate::agent::{
-    AgentKind, FailedAt, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
-    ThreadView, ThreadViewEvent,
+    AgentKind, FailedAt, NativeSettings, Restored, Setting, SettingOption, Thread, ThreadEvent,
+    ThreadStatus, ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
 use crate::state;
@@ -75,6 +75,14 @@ pub fn status_of(t: &Thread) -> Status {
 /// it reads from the linked transcript.
 const HANDOFF_BUDGET: usize = 16 * 1024;
 
+/// The saved transcript at `path`, ready to show; `None` when the session has none yet.
+fn read_restored(path: &Path) -> anyhow::Result<Option<Restored>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    Thread::read_restored(path).map(Some)
+}
+
 fn new_session_id() -> SharedString {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let millis = std::time::SystemTime::now()
@@ -133,6 +141,7 @@ impl Shell {
     }
 
     /// Makes sure the sessions on screen (active tab and other pane) have their agent running.
+    /// Their transcripts are read off the main thread; the tab says "Connecting…" until then.
     pub(super) fn ensure_active_live(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
@@ -149,7 +158,7 @@ impl Shell {
             })
             .collect();
         for (path, id) in &ids {
-            self.ensure_live(path, id, window, cx);
+            self.ensure_live_soon(path, id, window, cx);
         }
         // A server sends every change of one session: the one in front.
         if self.env().remote.is_some()
@@ -160,6 +169,34 @@ impl Shell {
         }
     }
 
+    /// Whether session `id` still needs its agent started here. A session another
+    /// process runs is shown from there instead.
+    fn needs_live(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
+        let Some(session) = self.session_mut(env_path, id) else {
+            return false;
+        };
+        if session.live.is_some() {
+            return false;
+        }
+        if remote {
+            self.view_remote(env_path, id, window, cx);
+            return false;
+        }
+        if crate::headless::shown(id) {
+            self.view_headless(env_path, id, window, cx);
+            return false;
+        }
+        true
+    }
+
+    /// Starts session `id`'s agent now, for callers that use its thread right away.
     pub(super) fn ensure_live(
         &mut self,
         env_path: &Path,
@@ -167,33 +204,71 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
+        if !self.needs_live(env_path, id, window, cx) {
+            return;
+        }
+        let restored = read_restored(&state::transcript_path(id));
+        self.go_live(env_path, id, restored, window, cx);
+    }
+
+    /// Like [`Self::ensure_live`], but the transcript is read off the main thread:
+    /// a long one takes a while to parse, and older diffs take git calls to rebuild.
+    pub(super) fn ensure_live_soon(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.restoring.contains(id) || !self.needs_live(env_path, id, window, cx) {
+            return;
+        }
+        let sid = SharedString::from(id.to_string());
+        self.restoring.insert(sid.clone());
+        let (env, transcript) = (env_path.to_path_buf(), state::transcript_path(id));
+        cx.spawn_in(window, async move |this, cx| {
+            let restored = cx
+                .background_spawn(crate::guard::task(
+                    async move { read_restored(&transcript) },
+                ))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.restoring.remove(&sid);
+                // An `ensure_live` may have started it meanwhile, or another process taken it.
+                if this.needs_live(&env, &sid, window, cx) {
+                    this.go_live(&env, &sid, restored, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Shows session `id` with its saved transcript (`None`: it has none yet)
+    /// and starts its agent.
+    fn go_live(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        restored: anyhow::Result<Option<Restored>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.session_mut(env_path, id) else {
             return;
         };
-        if session.live.is_some() {
-            return;
-        }
-        if remote {
-            return self.view_remote(env_path, id, window, cx);
-        }
-        if crate::headless::shown(id) {
-            return self.view_headless(env_path, id, window, cx);
-        }
         let (kind, meta, title) = (
             session.agent.kind(),
             session.meta.clone(),
             session.title.clone(),
         );
-        let transcript = state::transcript_path(id);
-        let thread = transcript
-            .exists()
-            .then(|| Thread::restore(&transcript, cx))
-            .and_then(|r| {
-                r.map_err(|e| eprintln!("arakun: transcript {id}: {e:#}"))
-                    .ok()
-            })
-            .unwrap_or_else(|| Thread::start(kind, env_path.to_path_buf(), meta, cx));
+        let thread = match restored {
+            Ok(Some(r)) => Thread::restored(r, cx),
+            Ok(None) => Thread::start(kind, env_path.to_path_buf(), meta, cx),
+            Err(e) => {
+                eprintln!("arakun: transcript {id}: {e:#}");
+                Thread::start(kind, env_path.to_path_buf(), meta, cx)
+            }
+        };
         // A rename made while the agent was not running reaches it now.
         if !title.is_empty() && thread.read(cx).title() != title {
             thread.update(cx, |t, cx| t.rename(&title, cx));
@@ -1968,7 +2043,7 @@ impl Shell {
                 .find(|e| e.session_index(&id).is_some())
                 .map(|e| e.path.clone());
             if let Some(env_path) = env_path {
-                self.ensure_live(&env_path, &id, window, cx);
+                self.ensure_live_soon(&env_path, &id, window, cx);
             }
         }
     }

@@ -544,6 +544,9 @@ pub struct Transcript {
     pub subagents: Vec<SubagentRecord>,
 }
 
+/// A saved transcript made ready to show by [`Thread::read_restored`].
+pub struct Restored(Transcript);
+
 /// What a session interrupted by `arakun restart` is told when it comes back.
 const RESTARTED: &str =
     "Arakun restarted while you were working (a new build). Continue where you left off.";
@@ -908,12 +911,19 @@ impl Thread {
     /// Reopens a saved transcript: its history shows at once, and the agent's
     /// session is resumed underneath without replaying it again.
     pub fn restore(path: &Path, cx: &mut App) -> Result<Entity<Thread>> {
-        let t = Self::read_transcript(path)?;
-        let mut entries = t.entries;
-        fill_replaced_history(&mut entries, &t.meta.cwd);
+        Ok(Self::restored(Self::read_restored(path)?, cx))
+    }
+
+    /// The slow half of [`Thread::restore`]: reads and parses the transcript,
+    /// and rebuilds older diffs with git. It needs no `App`, so it can run off
+    /// the main thread; [`Thread::restored`] then shows it.
+    pub fn read_restored(path: &Path) -> Result<Restored> {
+        let mut t = Self::read_transcript(path)?;
+        let entries = &mut t.entries;
+        fill_replaced_history(entries, &t.meta.cwd);
         if t.interrupted {
             // Tools cut off with the turn never finish now.
-            for e in &mut entries {
+            for e in entries.iter_mut() {
                 if let Entry::Tool(tool) = e
                     && matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress)
                 {
@@ -931,9 +941,14 @@ impl Thread {
                 });
             }
         }
-        Ok(cx.new(|cx| {
+        Ok(Restored(t))
+    }
+
+    /// Shows a transcript [`Thread::read_restored`] read, and resumes its agent.
+    pub fn restored(Restored(t): Restored, cx: &mut App) -> Entity<Thread> {
+        cx.new(|cx| {
             let mut this = Thread::new(t.meta.agent, t.meta.cwd.clone(), Some(t.meta));
-            this.set_entries(entries);
+            this.set_entries(t.entries);
             this.load_subagents(t.subagents, true, cx);
             this.restore_usage(t.usage);
             this.fork_point = t.fork_point;
@@ -947,7 +962,7 @@ impl Thread {
             }
             this.connect(cx);
             this
-        }))
+        })
     }
 
     /// `kind` taking over a conversation another agent had in `cwd`: `earlier`
@@ -3268,10 +3283,27 @@ impl Thread {
                 cx.emit(ThreadEvent::NeedsPermission);
                 cx.notify();
             }
-            "fs/read_text_file" => match self.read_file(&params) {
-                Ok(content) => conn.respond(id, json!({"content": content})),
-                Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
-            },
+            // Off the main thread: a big file, or one on a slow disk, would freeze the window.
+            "fs/read_text_file" => {
+                let cwd = self.cwd.clone();
+                let conn = Rc::downgrade(&conn);
+                cx.spawn(async move |_, cx| {
+                    let read = cx
+                        .background_spawn(crate::guard::task(
+                            async move { read_file(&cwd, &params) },
+                        ))
+                        .await;
+                    // The agent may have gone in the meantime.
+                    let Some(conn) = conn.upgrade() else {
+                        return;
+                    };
+                    match read {
+                        Ok(content) => conn.respond(id, json!({"content": content})),
+                        Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
+                    }
+                })
+                .detach();
+            }
             "fs/write_text_file" => match self.write_file(&params) {
                 Ok(()) => conn.respond(id, json!({})),
                 Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
@@ -3289,54 +3321,8 @@ impl Thread {
             .map(|c| (c.id.clone(), c.thread.clone()))
     }
 
-    /// Resolves an agent-supplied path, refusing anything outside the session cwd
-    /// (including through symlinks).
-    fn confine(&self, raw: &str) -> Result<PathBuf> {
-        let path = Path::new(raw);
-        let path = lexical_normalize(&if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.cwd.join(path)
-        });
-        let root = crate::platform::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
-        let mut existing = path.as_path();
-        while !existing.exists() {
-            existing = existing.parent().ok_or_else(|| anyhow!("bad path {raw}"))?;
-        }
-        let mut real = crate::platform::canonicalize(existing)?;
-        // `join("")` would append a trailing slash and break reads of existing files.
-        let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
-        if !rest.as_os_str().is_empty() {
-            real = real.join(rest);
-        }
-        if !real.starts_with(&root) {
-            return Err(anyhow!(
-                "{raw} is outside the session folder {}",
-                root.display()
-            ));
-        }
-        Ok(real)
-    }
-
-    fn read_file(&self, params: &Value) -> Result<String> {
-        let path = self.confine(params["path"].as_str().unwrap_or(""))?;
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let line = params["line"].as_u64().map(|l| l.max(1) as usize);
-        let limit = params["limit"].as_u64().map(|l| l as usize);
-        if line.is_none() && limit.is_none() {
-            return Ok(text);
-        }
-        let start = line.unwrap_or(1) - 1;
-        let lines = text.split_inclusive('\n').skip(start);
-        Ok(match limit {
-            Some(n) => lines.take(n).collect(),
-            None => lines.collect(),
-        })
-    }
-
     fn write_file(&self, params: &Value) -> Result<()> {
-        let path = self.confine(params["path"].as_str().unwrap_or(""))?;
+        let path = confine(&self.cwd, params["path"].as_str().unwrap_or(""))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -3733,6 +3719,116 @@ impl Thread {
             self.replaced.retain(|(tool, _), _| *tool != id);
         }
     }
+}
+
+/// Resolves an agent-supplied path, refusing anything outside the session folder
+/// `cwd` (including through symlinks).
+fn confine(cwd: &Path, raw: &str) -> Result<PathBuf> {
+    let path = Path::new(raw);
+    let path = lexical_normalize(&if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    });
+    let root = crate::platform::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let mut existing = path.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(|| anyhow!("bad path {raw}"))?;
+    }
+    let mut real = crate::platform::canonicalize(existing)?;
+    // `join("")` would append a trailing slash and break reads of existing files.
+    let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
+    if !rest.as_os_str().is_empty() {
+        real = real.join(rest);
+    }
+    if !real.starts_with(&root) {
+        return Err(anyhow!(
+            "{raw} is outside the session folder {}",
+            root.display()
+        ));
+    }
+    Ok(real)
+}
+
+/// Most of a file the agent gets in one answer. A bigger file would freeze the
+/// window while the reply is built, and the agent can read it in parts.
+const READ_MAX: usize = 8 << 20;
+
+/// Answers the agent's `fs/read_text_file`: the whole file, or `limit` lines
+/// from `line` (1-based). Runs off the main thread.
+fn read_file(cwd: &Path, params: &Value) -> Result<String> {
+    let path = confine(cwd, params["path"].as_str().unwrap_or(""))?;
+    let line = params["line"].as_u64().map(|l| l.max(1) as usize);
+    let limit = params["limit"].as_u64().map(|l| l as usize);
+    read_text(&path, line, limit)
+}
+
+fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<String> {
+    use std::io::BufRead as _;
+    let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    // Reading a FIFO or a device could wait or go on for good.
+    if !meta.is_file() {
+        return Err(anyhow!("{} is not a regular file", path.display()));
+    }
+    let mb = |n: u64| n.div_ceil(1 << 20);
+    let too_big = || match (line, limit) {
+        (None, None) => anyhow!(
+            "{} is {} MB, more than the {} MB arakun reads at once. Read it in parts with `line` and `limit`.",
+            path.display(),
+            mb(meta.len()),
+            mb(READ_MAX as u64)
+        ),
+        _ => anyhow!(
+            "The lines asked for from {} are more than the {} MB arakun reads at once. Ask for fewer with `limit`.",
+            path.display(),
+            mb(READ_MAX as u64)
+        ),
+    };
+    if line.is_none() && limit.is_none() && meta.len() > READ_MAX as u64 {
+        return Err(too_big());
+    }
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut r = std::io::BufReader::new(file);
+    let read = |e| anyhow::Error::new(e).context(format!("reading {}", path.display()));
+    // Lines before `line` are skipped without keeping them.
+    let mut skipped = 0;
+    while skipped + 1 < line.unwrap_or(1) {
+        let buf = r.fill_buf().map_err(read)?;
+        if buf.is_empty() {
+            break;
+        }
+        let n = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                skipped += 1;
+                i + 1
+            }
+            None => buf.len(),
+        };
+        r.consume(n);
+    }
+    let mut out = Vec::new();
+    let mut taken = 0;
+    while limit.is_none_or(|n| taken < n) {
+        let buf = r.fill_buf().map_err(read)?;
+        if buf.is_empty() {
+            break;
+        }
+        let n = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                taken += 1;
+                i + 1
+            }
+            None => buf.len(),
+        };
+        // The file grew past the check above, or the lines asked for are too many.
+        if out.len() + n > READ_MAX {
+            return Err(too_big());
+        }
+        out.extend_from_slice(&buf[..n]);
+        r.consume(n);
+    }
+    String::from_utf8(out)
+        .map_err(|e| read(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
 }
 
 fn recount(t: &mut ToolCall) {
@@ -4235,6 +4331,100 @@ mod tests {
             .collect();
         assert_eq!(counts, vec![(1, 1), (1, 1), (1, 1), (2, 0)]);
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arakun-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn agent_reads_take_the_lines_asked_for() {
+        let dir = scratch("agent-read");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "one\ntwo\nthree").unwrap();
+        let read = |line, limit| read_text(&file, line, limit).unwrap();
+        assert_eq!(read(None, None), "one\ntwo\nthree");
+        assert_eq!(read(Some(2), None), "two\nthree");
+        assert_eq!(read(Some(2), Some(1)), "two\n");
+        assert_eq!(read(None, Some(2)), "one\ntwo\n");
+        assert_eq!(read(Some(3), Some(5)), "three");
+        assert_eq!(read(Some(9), None), "");
+        assert_eq!(read(None, Some(0)), "");
+        let params = json!({"path": "a.txt", "line": 0, "limit": 1});
+        assert_eq!(read_file(&dir, &params).unwrap(), "one\n");
+        let outside = json!({"path": "../elsewhere.txt"});
+        assert!(read_file(&dir, &outside).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_reads_refuse_big_files_whole_but_not_in_parts() {
+        let dir = scratch("agent-read-big");
+        let file = dir.join("big.log");
+        std::fs::write(&file, "first\nsecond\n").unwrap();
+        // Sparse, so the test writes almost nothing.
+        let f = std::fs::OpenOptions::new().write(true).open(&file).unwrap();
+        f.set_len(2 * READ_MAX as u64).unwrap();
+        let whole = read_text(&file, None, None).unwrap_err().to_string();
+        assert!(whole.contains("`line` and `limit`"), "{whole}");
+        assert_eq!(read_text(&file, Some(2), Some(1)).unwrap(), "second\n");
+        // The rest is one long line, too long to send even when asked for by lines.
+        let part = read_text(&file, Some(3), Some(1)).unwrap_err().to_string();
+        assert!(part.contains("`limit`"), "{part}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_reads_refuse_what_is_not_a_file() {
+        let dir = scratch("agent-read-fifo");
+        let fifo = dir.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(made);
+        // Opening the FIFO would wait for a writer forever.
+        let err = read_text(&fifo, None, None).unwrap_err().to_string();
+        assert!(err.contains("not a regular file"), "{err}");
+        assert!(read_text(&dir, None, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_transcript_cut_off_mid_turn_reopens_with_its_tools_failed() {
+        let dir = scratch("restore");
+        let path = dir.join("s.json");
+        let saved = |resume: bool| {
+            let mut tool = match write("1", &dir.join("a.txt"), Some("a"), "b") {
+                Entry::Tool(t) => t,
+                _ => unreachable!(),
+            };
+            tool.status = ToolStatus::InProgress;
+            let t = json!({
+                "version": 1,
+                "meta": {"agent": "claude", "title": "", "cwd": dir, "created": 1, "updated": 1},
+                "entries": [Entry::Tool(tool)],
+                "interrupted": true,
+                "resume": resume,
+            });
+            std::fs::write(&path, t.to_string()).unwrap();
+            Thread::read_restored(&path).unwrap().0
+        };
+        let t = saved(false);
+        assert!(matches!(&t.entries[0], Entry::Tool(t) if t.status == ToolStatus::Failed));
+        assert!(
+            matches!(&t.entries[1], Entry::Notice { text, .. } if text.starts_with("Arakun closed"))
+        );
+        // `arakun restart` picks the turn up by itself, so there is nothing to say.
+        let t = saved(true);
+        assert_eq!(t.entries.len(), 1);
+        assert!(Thread::read_restored(&dir.join("missing.json")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn q(items: &[&str]) -> Vec<String> {

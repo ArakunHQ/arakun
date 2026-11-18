@@ -412,7 +412,10 @@ fn settled_toggle(n: usize, open: bool) -> gpui::Stateful<gpui::Div> {
         .text_size(px(ui::TEXT_XS))
         .text_color(theme::text_subtle())
         .hover(|s| s.bg(theme::hover()))
-        .child(icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.))
+        .child(
+            icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.)
+                .text_color(theme::text_subtle()),
+        )
         .child(label)
 }
 

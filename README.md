@@ -490,7 +490,7 @@ Debian 12+, Fedora 36+); on older systems, build from source. You also need a Vu
 driver and the usual desktop libraries (libxkbcommon, Wayland or X11, fontconfig,
 freetype). Without a graphics driver it can use, as in a VM or remote desktop without a
 GPU, `arakun` prints `could not open its window` with what to install, and exits with
-code 1. Mesa's software Vulkan driver works without a GPU, only slower:
+code 1; started from a launcher, it shows the same as a desktop notification. Mesa's software Vulkan driver works without a GPU, only slower:
 `mesa-vulkan-drivers` on Debian, Ubuntu and Fedora, `vulkan-swrast` on Arch. On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile in
 [Browser tabs on Ubuntu](#browser-tabs-on-ubuntu).
 

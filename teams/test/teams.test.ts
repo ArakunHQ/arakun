@@ -109,6 +109,8 @@ describe("the gate", () => {
       ["GET", `/teams/${t.teamId}/invites`],
       ["DELETE", `/teams/${t.teamId}/invites/${ulid()}`],
       ["POST", `/invites/${ulid()}/decline`],
+      ["GET", "/pending"],
+      ["POST", `/teams/${t.teamId}/remind`],
       ["GET", `/teams/${t.teamId}/envelopes`],
       ["GET", `/teams/${t.teamId}/channels/${t.channelId}/messages`],
       ["GET", `/teams/${t.teamId}/channels/${t.channelId}/ws`],
@@ -346,6 +348,94 @@ describe("teams", () => {
     const again = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "decliner" } }), 201);
     await env.DB.prepare("UPDATE invites SET expires_at = ?").bind(nowSeconds() - 1).run();
     await expectJson(api(u, "POST", `/invites/${again.invite_id}/decline`), 404);
+  });
+
+  it("lists a pending user's own requests until they are approved or rejected", async () => {
+    const t = await team();
+    const u = await user(2001, "asker");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    expect(await expectJson(api(u, "GET", "/pending"), 200)).toEqual([]);
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "asker" } }), 201);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
+    expect(await expectJson(api(u, "GET", "/pending"), 200)).toEqual([
+      { team_id: t.teamId, team_name: "Arakun", requested_at: expect.any(Number), invited_by_login: t.owner.user.login, invited_by_id: t.owner.user.id, reminded_at: null },
+    ]);
+    // Only their own.
+    expect(await expectJson(api(t.owner.user, "GET", "/pending"), 200)).toEqual([]);
+    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`)).status).toBe(204);
+    expect(await expectJson(api(u, "GET", "/pending"), 200)).toEqual([]);
+  });
+
+  it("lets a pending user remind the admins once an hour, and nobody else", async () => {
+    const t = await team();
+    const m = await join(t);
+    const u = await user(2001, "asker");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    const outsider = await user(2002, "outsider");
+    const path = `/teams/${t.teamId}/remind`;
+    // Before accepting, they are not pending.
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "asker" } }), 201);
+    await expectJson(api(u, "POST", path), 404);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
+
+    expect((await api(u, "POST", path)).status).toBe(204);
+    const row = await env.DB.prepare("SELECT reminded_at FROM pending WHERE github_id = 2001").first<{ reminded_at: number }>();
+    expect(row!.reminded_at).toBeGreaterThan(nowSeconds() - 60);
+    const pending = await expectJson<{ reminded_at: number | null }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200);
+    expect(pending.map((p) => p.reminded_at)).toEqual([row!.reminded_at]);
+    expect((await expectJson<{ reminded_at: number | null }[]>(api(u, "GET", "/pending"), 200))[0]!.reminded_at).toBe(row!.reminded_at);
+
+    const res = await api(u, "POST", path);
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: string; retry_at: number };
+    expect(body.retry_at).toBe(row!.reminded_at + 3600);
+    expect(body.error).toMatch(/try again in \d+ min/);
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(3500);
+
+    // An hour later it may remind again.
+    await env.DB.prepare("UPDATE pending SET reminded_at = reminded_at - 3600").run();
+    expect((await api(u, "POST", path)).status).toBe(204);
+
+    // Members, owners, strangers, other teams and bad IDs all get 404.
+    await expectJson(api(m.user, "POST", path), 404);
+    await expectJson(api(t.owner.user, "POST", path), 404);
+    await expectJson(api(outsider, "POST", path), 404);
+    const other = await team();
+    await expectJson(api(u, "POST", `/teams/${other.teamId}/remind`), 404);
+    await expectJson(api(u, "POST", "/teams/nope/remind"), 404);
+  });
+
+  it("answers a pending user 404 on every team endpoint but remind", async () => {
+    const t = await team();
+    const u = await user(2001, "asker");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "asker" } }), 201);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
+    const base = `/teams/${t.teamId}`;
+    for (const [method, path] of [
+      ["GET", base],
+      ["GET", `${base}/envelopes`],
+      ["PUT", `${base}/envelopes`],
+      ["POST", `${base}/invites`],
+      ["GET", `${base}/invites`],
+      ["DELETE", `${base}/invites/${ulid()}`],
+      ["GET", `${base}/pending`],
+      ["POST", `${base}/pending/2001/approve`],
+      ["POST", `${base}/pending/2001/reject`],
+      ["POST", `${base}/channels`],
+      ["DELETE", `${base}/members/2001`],
+      ["DELETE", `${base}/members/${t.owner.user.id}`],
+      ["GET", `${base}/channels/${t.channelId}/messages`],
+      ["GET", `${base}/channels/${t.channelId}/ws`],
+    ] as const) {
+      const res = await api(u, method, path, { device: d, body: method === "GET" || method === "DELETE" ? undefined : {} });
+      expect(res.status, `${method} ${path}`).toBe(404);
+    }
+    await expectJson(api(u, "GET", "/users/" + t.owner.user.id + "/devices"), 404);
+    expect((await api(u, "POST", `${base}/remind`)).status).toBe(204);
   });
 
   it("lets invites expire after 7 days", async () => {

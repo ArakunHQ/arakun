@@ -33,7 +33,8 @@ Names (devices, teams) are 1 to 100 characters.
 Every endpoint below needs a valid session and the user's `teams` flag; otherwise
 `401` (no session) or `403 {"error":"teams is not enabled for this account"}`.
 Team endpoints also need membership (`404` if not a member, so a team's existence
-does not leak), and admin endpoints need `owner` or `admin` (`403`).
+does not leak), and admin endpoints need `owner` or `admin` (`403`). The one
+exception is `POST /teams/<team_id>/remind`, which only a pending user may call.
 
 ## Devices
 
@@ -105,8 +106,17 @@ without it, `403` if it is not one of the caller's devices.
    is not a member: every team endpoint answers them `404`. Or they decline it:
    `POST /invites/<invite_id>/decline` → `204`, and the invite is gone; `404` if
    it is expired or someone else's.
+   A pending user sees their own requests in `GET /pending` → `[{ team_id,
+   team_name, requested_at, invited_by_login, invited_by_id, reminded_at }]`,
+   oldest first, so a client finds them again after a restart. They may remind
+   the team's admins: `POST /teams/<team_id>/remind` → `204`, which sets
+   `reminded_at`. At most once an hour per request: sooner answers
+   `429 { "error": "...", "retry_at": <unix seconds> }` with a `Retry-After`
+   header. Anyone who is not pending in that team, members included, gets `404`.
+   The server sends nothing anywhere; admins see the time in the pending list.
 3. Admins see pending members in `GET /teams/<team_id>/pending` → `[{ github_id,
-   login, requested_at, devices: [...] }]`.
+   login, requested_at, reminded_at, devices: [...] }]` (`reminded_at` is null
+   until the first reminder).
 4. An admin's device approves: `POST /teams/<team_id>/pending/<github_id>/approve`
    with the envelopes for every device of the new member and every epoch they may
    read (all of them, by default):

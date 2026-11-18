@@ -1,7 +1,8 @@
 // Devices, teams, invites, envelopes, members and channels: the endpoints of
 // PROTOCOL.md. Every one needs a session and the user's `teams` flag. Team
 // endpoints answer 404 to non-members, so a team's existence does not leak,
-// and 403 to members who are not an owner or admin where one is needed.
+// and 403 to members who are not an owner or admin where one is needed. The
+// one exception is remind, which only pending users may call.
 //
 // The server never holds a team key. What it checks is who may store what:
 // device endorsements, the signatures on envelopes and messages, and that
@@ -31,6 +32,8 @@ const MAX_MEMBERS = 25;
 const MAX_CHANNELS = 500;
 const MAX_NAME = 100;
 const INVITE_DAYS = 7;
+/// A pending user may remind a team's admins once per this many seconds.
+const REMIND_EVERY = 60 * 60;
 /// Per request: a rotation of MAX_MEMBERS with 20 devices each, or one new
 /// device's keys for 25 epochs. D1 runs them as one batch.
 const MAX_ENVELOPES = 500;
@@ -76,6 +79,8 @@ const ROUTES: [string, RegExp, Handler][] = [
   ["GET", /^\/invites$/, listInvites],
   ["POST", /^\/invites\/([^/]+)\/accept$/, accept],
   ["POST", /^\/invites\/([^/]+)\/decline$/, decline],
+  ["GET", /^\/pending$/, myRequests],
+  ["POST", /^\/teams\/([^/]+)\/remind$/, remind],
   ["GET", /^\/teams\/([^/]+)\/pending$/, listPending],
   ["POST", /^\/teams\/([^/]+)\/pending\/([^/]+)\/approve$/, approve],
   ["POST", /^\/teams\/([^/]+)\/pending\/([^/]+)\/reject$/, reject],
@@ -391,7 +396,7 @@ async function listPending(c: Ctx, teamId: string): Promise<Response> {
   const [people, devices] = await db.batch([
     db
       .prepare(
-        `SELECT p.github_id, u.login, p.requested_at FROM pending p JOIN users u ON u.github_id = p.github_id
+        `SELECT p.github_id, u.login, p.requested_at, p.reminded_at FROM pending p JOIN users u ON u.github_id = p.github_id
          WHERE p.team_id = ? ORDER BY p.requested_at, p.github_id`,
       )
       .bind(teamId),
@@ -408,10 +413,57 @@ async function listPending(c: Ctx, teamId: string): Promise<Response> {
     byUser.set(github_id, [...(byUser.get(github_id) ?? []), device]);
   }
   return Response.json(
-    (people!.results as { github_id: number; login: string; requested_at: number }[]).map((p) => ({
+    (people!.results as { github_id: number; login: string; requested_at: number; reminded_at: number | null }[]).map((p) => ({
       ...p,
       devices: byUser.get(p.github_id) ?? [],
     })),
+  );
+}
+
+/// The caller's own requests to join, so a client finds them again after a
+/// restart.
+async function myRequests(c: Ctx): Promise<Response> {
+  const { results } = await c.env.DB.prepare(
+    `SELECT p.team_id, t.name AS team_name, p.requested_at, u.login AS invited_by_login, p.invited_by AS invited_by_id, p.reminded_at
+     FROM pending p JOIN teams t ON t.team_id = p.team_id LEFT JOIN users u ON u.github_id = p.invited_by
+     WHERE p.github_id = ? ORDER BY p.requested_at, p.team_id`,
+  )
+    .bind(c.me.githubId)
+    .all();
+  return Response.json(results);
+}
+
+/// The one team endpoint a pending user may call. It does not go through
+/// teamOf, which only knows members: the pending row is the check, and a
+/// member (who has no business reminding anyone) gets the same 404 as a
+/// stranger.
+async function remind(c: Ctx, teamId: string): Promise<Response> {
+  if (!ULID.test(teamId)) return notFound();
+  const db = c.env.DB;
+  const t = now();
+  // The hour is checked in the update, so two reminders at once set it once.
+  const result = await db
+    .prepare(
+      `UPDATE pending SET reminded_at = ?3 WHERE team_id = ?1 AND github_id = ?2
+         AND (reminded_at IS NULL OR reminded_at <= ?3 - ${REMIND_EVERY})
+         AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
+    )
+    .bind(teamId, c.me.githubId, t)
+    .run();
+  if (result.meta.changes === 1) return new Response(null, { status: 204 });
+  const row = await db
+    .prepare(
+      `SELECT reminded_at FROM pending WHERE team_id = ?1 AND github_id = ?2
+         AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
+    )
+    .bind(teamId, c.me.githubId)
+    .first<{ reminded_at: number | null }>();
+  if (!row) return notFound();
+  const retryAt = (row.reminded_at ?? t) + REMIND_EVERY;
+  const minutes = Math.max(1, Math.ceil((retryAt - t) / 60));
+  return Response.json(
+    { error: `you reminded this team in the last hour: try again in ${minutes} min`, retry_at: retryAt },
+    { status: 429, headers: { "Retry-After": String(Math.max(0, retryAt - t)) } },
   );
 }
 

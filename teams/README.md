@@ -238,7 +238,7 @@ Anything else answers `404`. There is no CORS: only the desktop app calls this.
 
 Every request below needs the session and the `teams` flag: `401` without a session,
 `403` without the flag. Team requests answer `404` to anyone who is not a member
-(pending members included), and "admin" ones `403` to members who are not an owner or
+(pending members included, except on `remind`), and "admin" ones `403` to members who are not an owner or
 admin. "Device" means the request carries `X-Arakun-Device` with one of the caller's
 devices: `400` without it, `403` if it is someone else's.
 
@@ -255,7 +255,9 @@ devices: `400` without it, `403` if it is someone else's.
 | `GET /invites` | anyone | `200 [{invite_id, team_id, team_name, invited_by_login, created_at, expires_at, member_count}]` |
 | `POST /invites/<invite_id>/accept` | the invitee, device | `200 {team_id, status: "pending"}`. `404` if expired or someone else's. |
 | `POST /invites/<invite_id>/decline` | the invitee | `204`, and the invite is gone. `404` if expired or someone else's. |
-| `GET /teams/<team_id>/pending` | admin | `200 [{github_id, login, requested_at, devices}]` |
+| `GET /pending` | anyone | `200 [{team_id, team_name, requested_at, invited_by_login, invited_by_id, reminded_at}]`, the caller's own requests. |
+| `POST /teams/<team_id>/remind` | pending in that team | `204`, sets `reminded_at`. `429 {error, retry_at}` within an hour of the last one; `404` for anyone not pending there, members included. |
+| `GET /teams/<team_id>/pending` | admin | `200 [{github_id, login, requested_at, reminded_at, devices}]` |
 | `POST /teams/<team_id>/pending/<github_id>/approve` `{envelopes}` | admin, device | `200 {github_id, role: "member"}`. `400` unless there is one envelope per device of theirs and epoch with a key; `409` before the team's first key, at 25 members, or if the team's key or their devices changed meanwhile. |
 | `POST /teams/<team_id>/pending/<github_id>/reject` | admin | `204` |
 | `PUT /teams/<team_id>/envelopes` `{envelopes}` | admin, device | `200 {stored, epoch, rotation_pending}`; `stored` counts what was written. At most 500. `409` when a new key lost to a removal, another device's key or a new member or device. |

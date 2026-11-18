@@ -67,6 +67,10 @@ backtrace = "0.3"
 # Web Push to the phones (src/phone/push.rs): VAPID signing, ECDH and
 # aes128gcm with the ring rustls already pulls in
 ring = "0.17"
+# Teams (src/arakun_teams/crypto.rs): ECDH with the device's long-lived key,
+# which ring only does with keys it makes and drops at once; everything else
+# stays with ring.
+p256 = { version = "0.14", default-features = false, features = ["ecdh"] }
 # the signature of a release's SHA256SUMS (src/update.rs); no dependencies of its own
 minisign-verify = "0.3"
 

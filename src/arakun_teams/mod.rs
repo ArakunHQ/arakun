@@ -6,6 +6,8 @@
 //! and keeps only the session the server answers with, in the system keyring.
 
 pub mod api;
+#[allow(dead_code)] // the Teams tab uses it from the next commit on
+pub mod crypto;
 pub mod view;
 
 use std::time::{Duration, Instant};

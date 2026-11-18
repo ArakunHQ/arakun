@@ -141,7 +141,12 @@ impl Shell {
         self.show_view_tab("Sidebar", TabKind::SidebarBuilder, |k| {
             matches!(k, TabKind::SidebarBuilder)
         });
-        if self.sidebar.mark_known() {
+        let hidden: &[View] = if self.teams.read(cx).enabled() {
+            &[]
+        } else {
+            &[View::Teams]
+        };
+        if self.sidebar.mark_known(hidden) {
             self.sidebar.save();
         }
         let _ = window;

@@ -542,7 +542,7 @@ impl Shell {
         self.palette_github(cx, &mut items);
         self.palette_runs(cx, &mut items);
         self.palette_places(cx, &mut items);
-        self.palette_views(&mut items);
+        self.palette_views(&mut items, cx);
         self.palette_commands(&mut items, cx);
         self.palette_settings(&mut items);
         // CoderSpace tasks waiting on the person, as the old switcher listed them.
@@ -1084,9 +1084,13 @@ impl Shell {
         }
     }
 
-    fn palette_views(&self, items: &mut Vec<Item>) {
+    fn palette_views(&self, items: &mut Vec<Item>, cx: &App) {
         let has = self.has_projects();
         for &v in View::ALL {
+            // Only accounts the Teams server lets in may find it.
+            if v == View::Teams && !self.teams.read(cx).enabled() {
+                continue;
+            }
             let target = match v {
                 View::Inbox => continue,
                 View::Runs => Target::Runs,

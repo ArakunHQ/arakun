@@ -274,6 +274,18 @@ after a week).
   install starts with none on; an update keeps the ones your sidebar already had. The
   choice is kept in `extensions.json` next to the state.
 - **Automations.** Scheduled shell commands or agent prompts per project.
+- **Teams.** A pilot, only for the accounts it is turned on for; the agents and the
+  rest of Arakun never need it. Settings › Account › Sign in with GitHub shows a code
+  and opens GitHub's device page: enter the code there and approve. Arakun asks GitHub
+  for no scopes and hands the token once to the Teams server, which keeps only your
+  GitHub user name and ID. Arakun drops the GitHub token and keeps the session the
+  server answers with in the system keyring. An account the server has turned Teams on
+  for gets a Teams tab in the sidebar; any other account sees "Signed in as @you" in
+  Settings and nothing else. Sign out ends the session on the server and removes it
+  from the keyring. `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as
+  one run with `wrangler dev` (see [teams/README.md](teams/README.md)); the default is
+  `https://teams.arakun.dev`, and plain `http://` works only for `localhost`,
+  `127.0.0.1` and `[::1]`.
 
 ### Make it yours
 

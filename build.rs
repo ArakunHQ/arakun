@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     set_version();
+    embed_icon();
     let browser = std::env::var_os("CARGO_FEATURE_BROWSER").is_some();
     if browser && std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
         copy_cef_runtime();
@@ -36,6 +37,21 @@ fn set_version() {
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap());
     println!("cargo::rustc-env=ARAKUN_VERSION={}", version.trim());
+}
+
+/// Puts the app icon in arakun.exe. gpui loads icon 1 from the executable for the
+/// window and the taskbar; without it Windows shows a blank program icon. Other
+/// targets get nothing (embed_resource says it is not building for Windows).
+fn embed_icon() {
+    println!("cargo::rerun-if-changed=src/arakun.rc");
+    println!("cargo::rerun-if-changed=src/arakun.ico");
+    embed_resource::compile_for(
+        "src/arakun.rc",
+        ["arakun"],
+        embed_resource::ParamsIncludeDirs(["src"]),
+    )
+    .manifest_optional()
+    .unwrap();
 }
 
 /// Copies the CEF runtime next to arakun.exe, where src/browser/loader.rs looks for it.

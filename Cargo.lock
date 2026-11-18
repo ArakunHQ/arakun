@@ -293,6 +293,7 @@ dependencies = [
  "cef",
  "cef-dll-sys",
  "dunce",
+ "embed-resource",
  "futures",
  "getrandom 0.4.3",
  "gpui",

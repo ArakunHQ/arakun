@@ -767,6 +767,11 @@ impl SettingsDialog {
             .collect()
     }
 
+    /// Moves an open dialog to Branches; its pending edits stay.
+    pub fn show_branches(&mut self, cx: &mut Context<Self>) {
+        self.select(Section::Branches, cx);
+    }
+
     fn select(&mut self, s: Section, cx: &mut Context<Self>) {
         self.section = s;
         let ix = Section::ALL.iter().position(|x| *x == s).unwrap_or(0);

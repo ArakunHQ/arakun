@@ -286,8 +286,13 @@ impl Shell {
             Some(Open::Cloudflare) => self.open_cloudflare_tab(window, cx),
             Some(Open::Usage) => self.open_usage_tab(window, cx),
             Some(Open::BranchSettings) => {
-                crate::settings_view::start_on_branches();
-                self.open_settings(window, cx);
+                // An open dialog stays, with what was typed in it.
+                if let Some((super::Modal::Settings(dialog), _)) = &self.modal {
+                    dialog.update(cx, |d, cx| d.show_branches(cx));
+                } else {
+                    crate::settings_view::start_on_branches();
+                    self.open_settings(window, cx);
+                }
             }
             #[cfg(feature = "team")]
             Some(Open::Url(url)) => cx.open_url(&url),

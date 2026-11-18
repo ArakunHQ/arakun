@@ -246,6 +246,14 @@ pub fn add_worktree(
     Ok(())
 }
 
+/// Removes the worktree at `path` only while it has nothing uncommitted: git
+/// refuses otherwise. For a removal nobody confirmed.
+pub fn remove_clean_worktree(repo: &Path, path: &Path) -> Result<()> {
+    run(git(repo).args(["worktree", "remove"]).arg(path))?;
+    let _ = run(git(repo).args(["worktree", "prune"]));
+    Ok(())
+}
+
 pub fn remove_worktree(repo: &Path, path: &Path, delete_branch: Option<&str>) -> Result<()> {
     run(git(repo).args(["worktree", "remove", "--force"]).arg(path))?;
     let _ = run(git(repo).args(["worktree", "prune"]));

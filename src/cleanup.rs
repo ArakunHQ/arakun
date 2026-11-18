@@ -154,6 +154,9 @@ pub struct Seen {
     pub visible: bool,
     /// An agent is working or waiting for an answer.
     pub busy: bool,
+    /// An automation that is on runs here. Without the environment it would
+    /// run in the main checkout instead.
+    pub scheduled: bool,
     /// Unix seconds it was last opened or one of its sessions last moved.
     pub used: u64,
 }
@@ -163,6 +166,7 @@ pub fn candidate(s: Seen, days: u8, now: u64) -> bool {
     !s.is_checkout
         && !s.visible
         && !s.busy
+        && !s.scheduled
         && days > 0
         && now.saturating_sub(s.used) >= u64::from(days) * 86_400
 }
@@ -232,6 +236,7 @@ mod tests {
             is_checkout: false,
             visible: false,
             busy: false,
+            scheduled: false,
             used,
         }
     }
@@ -285,6 +290,10 @@ mod tests {
                 ..old
             },
             Seen { busy: true, ..old },
+            Seen {
+                scheduled: true,
+                ..old
+            },
         ] {
             assert!(!candidate(s, 7, now));
         }

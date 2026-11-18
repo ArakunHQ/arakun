@@ -69,7 +69,14 @@ impl Shell {
                 .background_spawn(async move {
                     go.into_iter()
                         .filter_map(|(repo, path)| {
-                            match crate::git::remove_worktree(&repo, &path, None) {
+                            // Asked again right before it goes: a commit or
+                            // an edit may have come since the first check.
+                            // Git refuses the removal itself when a file
+                            // changed after this one.
+                            if !cleanup::removable(&path) {
+                                return None;
+                            }
+                            match crate::git::remove_clean_worktree(&repo, &path) {
                                 Ok(()) => Some(path),
                                 Err(e) => {
                                     eprintln!(
@@ -125,7 +132,8 @@ impl Shell {
                     .iter()
                     .enumerate()
                     .filter(move |(ei, e)| {
-                        let seen = self.seen(e, pi == self.active_project && *ei == p.active_env);
+                        let seen =
+                            self.seen(p, e, pi == self.active_project && *ei == p.active_env);
                         cleanup::candidate(seen, days, now)
                     })
                     .map(|(_, e)| (p.path.clone(), e.path.clone()))
@@ -133,8 +141,17 @@ impl Shell {
             .collect()
     }
 
-    fn seen(&self, e: &crate::model::Environment, visible: bool) -> Seen {
+    fn seen(
+        &self,
+        p: &crate::model::Project,
+        e: &crate::model::Environment,
+        visible: bool,
+    ) -> Seen {
         Seen {
+            scheduled: p
+                .automations
+                .iter()
+                .any(|a| a.enabled && a.env.as_deref() == Some(e.path.as_path())),
             is_checkout: e.is_checkout,
             visible,
             busy: e.git_busy.is_some()

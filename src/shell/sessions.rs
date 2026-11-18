@@ -509,7 +509,17 @@ impl Shell {
                 .detach();
             }
             report_failure(&live.thread, true, cx);
-            live.thread.update(cx, |t, _| t.shutdown());
+            // A note no prompt took yet goes back to the environment, or
+            // reopening the session would lose it.
+            let note = live.thread.update(cx, |t, _| {
+                t.shutdown();
+                t.take_notes().pop()
+            });
+            if let Some(note) = note {
+                self.rename_notes
+                    .entry(env_path.to_path_buf())
+                    .or_insert(note);
+            }
             if let Some(server) = remote {
                 self.servers_unfollow(&server, id);
             }

@@ -1951,7 +1951,16 @@ impl Thread {
     /// Has the next prompt the user sends tell the agent `note`, without the
     /// chat showing it.
     pub fn add_note(&mut self, note: String) {
-        self.notes.push(note);
+        // A note handed back by `take_notes` can reach the same thread twice.
+        if !self.notes.contains(&note) {
+            self.notes.push(note);
+        }
+    }
+
+    /// The notes no prompt has taken yet. The transcript doesn't keep them, so
+    /// whoever stops this thread has to.
+    pub fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
     }
 
     /// `text` with the notes waiting for the next prompt, each in a hint the
@@ -4019,6 +4028,18 @@ mod tests {
         assert_eq!(shown, "fix it");
         // Used up: the prompt after it goes out as typed.
         assert_eq!(t.with_notes("and test it".into()), "and test it");
+    }
+
+    #[test]
+    fn a_stopped_thread_hands_back_only_the_notes_no_prompt_took() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        t.add_note("(renamed from a to b)".into());
+        // Handed back and given again, it is still one note.
+        t.add_note("(renamed from a to b)".into());
+        assert_eq!(t.take_notes(), ["(renamed from a to b)"]);
+        t.add_note("(renamed from b to c)".into());
+        t.with_notes("fix it".into());
+        assert!(t.take_notes().is_empty());
     }
 
     #[test]

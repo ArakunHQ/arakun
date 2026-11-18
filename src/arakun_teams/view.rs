@@ -1683,7 +1683,15 @@ impl TeamsView {
             .iter()
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
-        let people: Vec<String> = t.detail.members.iter().map(|m| m.login.clone()).collect();
+        let here = hub
+            .channels
+            .get(&hub::channel_key(team_id, channel_id))
+            .map(|c| c.here.as_slice())
+            .unwrap_or_default();
+        let people: Vec<(String, bool)> = hub::here_now(&t.detail.members, here)
+            .into_iter()
+            .map(|(m, on)| (m.login.clone(), on))
+            .collect();
         let making = hub.busy.contains(&format!("channel:{team_id}"));
         let tid = team_id.to_string();
         let mut list =
@@ -1768,8 +1776,8 @@ impl TeamsView {
         }
         list = list
             .child(div().h(px(ui::sp(8.).as_f32())))
-            .child(Self::column_title("People"));
-        for login in people {
+            .child(Self::column_title("Here now"));
+        for (login, on) in people {
             list = list.child(
                 div()
                     .flex()
@@ -1778,9 +1786,18 @@ impl TeamsView {
                     .h(px(ui::BUTTON_H))
                     .px(ui::sp(8.))
                     .ty(Type::Body)
-                    .text_color(theme::text_muted())
+                    .text_color(if on {
+                        theme::text_muted()
+                    } else {
+                        theme::text_subtle()
+                    })
                     .child(faces.avatar(&login, 20.))
-                    .child(div().flex_1().min_w_0().truncate().child(login)),
+                    .child(div().flex_1().min_w_0().truncate().child(login))
+                    .child(div().flex_none().size(px(6.)).rounded_full().bg(if on {
+                        theme::success().into()
+                    } else {
+                        theme::text_faint()
+                    })),
             );
         }
         div()

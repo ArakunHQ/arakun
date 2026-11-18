@@ -17,8 +17,8 @@ use gpui::{AppContext as _, Context, Entity, Task};
 
 use super::Teams;
 use super::api::{
-    ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, PendingRow, Role, Stored, TeamDetail,
-    TeamRow,
+    ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Role, Stored,
+    TeamDetail, TeamRow,
 };
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
 use super::socket::{self, Dial, Link};
@@ -145,6 +145,9 @@ pub struct ChannelState {
     outbox: BTreeMap<String, String>,
     link: Option<Link>,
     seen_ids: HashSet<String>,
+    /// Who has this channel open now, by GitHub ID, as the server last said.
+    /// Empty while the socket is down: nobody is known to be here then.
+    pub here: Vec<u64>,
 }
 
 /// "@rik added a new device".
@@ -1146,6 +1149,7 @@ impl Hub {
             outbox: BTreeMap::new(),
             link: None,
             seen_ids: HashSet::new(),
+            here: Vec::new(),
         });
         state.link = Some(link);
         cx.notify();
@@ -1160,6 +1164,11 @@ impl Hub {
                 let connected = status == socket::Status::Connected;
                 let refused = matches!(status, socket::Status::Refused(_));
                 c.status = status;
+                // A new socket hears who is here right away; until then
+                // the last list may be stale.
+                if !connected {
+                    c.here.clear();
+                }
                 if refused {
                     c.link = None;
                     c.loading = false;
@@ -1174,6 +1183,12 @@ impl Hub {
                 Some("message") => {
                     if let Ok(stored) = serde_json::from_value::<Stored>(v) {
                         self.ingest(&key, vec![stored], false, cx);
+                    }
+                }
+                Some("presence") => {
+                    if let Some(here) = presence(&v) {
+                        let c = self.channels.get_mut(&key).expect("looked up above");
+                        c.here = here;
                     }
                 }
                 Some("error") => {
@@ -1414,6 +1429,29 @@ impl Hub {
     }
 }
 
+/// The GitHub IDs of a `presence` frame, each once.
+fn presence(v: &serde_json::Value) -> Option<Vec<u64>> {
+    let mut here: Vec<u64> = v["here"]
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_u64)
+        .collect();
+    here.sort_unstable();
+    here.dedup();
+    Some(here)
+}
+
+/// A team's members for the "Here now" list: who has the channel open
+/// first, each group in the team's order, with whether they are here.
+pub fn here_now<'a>(members: &'a [MemberRow], here: &[u64]) -> Vec<(&'a MemberRow, bool)> {
+    let mut out: Vec<(&MemberRow, bool)> = members
+        .iter()
+        .map(|m| (m, here.contains(&m.github_id)))
+        .collect();
+    out.sort_by_key(|(_, on)| !on);
+    out
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1643,6 +1681,25 @@ mod tests {
         forged.sig_pub = c.sig_pub().into();
         assert_eq!(trusted_devices(&[row(&a, 1, None), forged]).len(), 1);
         assert!(trusted_devices(&[]).is_empty());
+    }
+
+    #[test]
+    fn reads_presence_and_puts_who_is_here_first() {
+        let v = serde_json::json!({ "type": "presence", "here": [9, 3, 9, "x"] });
+        assert_eq!(presence(&v), Some(vec![3, 9]));
+        assert_eq!(presence(&serde_json::json!({ "type": "presence" })), None);
+        let m = |id: u64, login: &str| MemberRow {
+            github_id: id,
+            login: login.into(),
+            role: Role::Member,
+            joined_at: 0,
+        };
+        let members = vec![m(1, "karlo"), m(2, "rik"), m(3, "dani")];
+        let got: Vec<(&str, bool)> = here_now(&members, &[3, 1])
+            .into_iter()
+            .map(|(m, on)| (m.login.as_str(), on))
+            .collect();
+        assert_eq!(got, vec![("karlo", true), ("dani", true), ("rik", false)]);
     }
 
     #[test]

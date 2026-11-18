@@ -1779,7 +1779,9 @@ impl Daemon {
                         })
                         .await;
                     // The new folder starts with the agent of the one it came from.
-                    let _ = this.update(cx, |this, cx| this.place_added(client, made, agent, cx));
+                    let _ = this.update(cx, |this, cx| {
+                        this.place_added_with(client, made, agent, true, cx)
+                    });
                 })
                 .detach();
             }
@@ -1864,8 +1866,30 @@ impl Daemon {
         agent: AgentKind,
         cx: &mut Context<Self>,
     ) {
+        self.place_added_with(client, found, agent, false, cx);
+    }
+
+    /// With `made`, the folder is a worktree made for this request: one that
+    /// cannot be saved stays on disk, and the error says where.
+    fn place_added_with(
+        &mut self,
+        client: ClientId,
+        found: Result<(PathBuf, PlaceMeta), String>,
+        agent: AgentKind,
+        made: bool,
+        cx: &mut Context<Self>,
+    ) {
         match found.and_then(|(p, meta)| {
-            self.offer_place(&p, agent)?;
+            self.offer_place(&p, agent).map_err(|e| {
+                if made {
+                    format!(
+                        "{e}. The worktree is at {0}: once the server can save again, `arakun-server add {0}` lists it.",
+                        p.display()
+                    )
+                } else {
+                    e
+                }
+            })?;
             self.meta.insert(p.clone(), meta);
             Ok(p)
         }) {
@@ -2874,6 +2898,22 @@ fn rename_branch(place: &Path, from: &str, to: &str) -> Result<bool, String> {
     if store::branch(place).as_deref() != Some(from) {
         return Ok(false);
     }
+    // Pushed: the remote keeps the old name, as the app's own rename knows.
+    // A push without --set-upstream leaves only the remote-tracking ref.
+    let upstream = git(place)
+        .args(["config", "--get", &format!("branch.{from}.merge")])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let tracked = git(place)
+        .args(["for-each-ref", "--format=%(refname)"])
+        .arg(format!("refs/remotes/*/{from}"))
+        .output()
+        .is_ok_and(|o| !o.stdout.trim_ascii().is_empty());
+    if upstream || tracked {
+        return Err(format!(
+            "{from} was already pushed; rename it on the remote too, or keep the name"
+        ));
+    }
     run_git(git(place).args(["branch", "-m", "--", from, to])).map(|()| true)
 }
 
@@ -3039,6 +3079,11 @@ fn has_ssh_command(git: &std::process::Command) -> bool {
 /// user's commit signing or URL rewrites would change what they check.
 fn git_command() -> std::process::Command {
     let mut git = std::process::Command::new("git");
+    // The folder it is run in picks the repository, not one inherited from
+    // whatever started the server (a git hook sets these).
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+        git.env_remove(var);
+    }
     if cfg!(test) {
         git.env("GIT_CONFIG_NOSYSTEM", "1").env(
             "GIT_CONFIG_GLOBAL",
@@ -3285,6 +3330,12 @@ mod tests {
         assert_eq!(rename_branch(&tmp, "random-name", "other"), Ok(false));
         assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
         assert!(rename_branch(&tmp, "fix-login", "-x").is_err());
+        // Pushed: the name stays.
+        run_git(git(&tmp).args(["config", "branch.fix-login.merge", "refs/heads/fix-login"]))
+            .unwrap();
+        let err = rename_branch(&tmp, "fix-login", "other").unwrap_err();
+        assert!(err.contains("already pushed"), "{err}");
+        assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

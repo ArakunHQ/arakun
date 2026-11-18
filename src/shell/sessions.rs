@@ -618,7 +618,13 @@ impl Shell {
                 }
             };
             if sent {
-                // The branch is named after the first prompt that went, there as here.
+                // The branch is named after the first prompt that went, there
+                // as here, by the agent of the session it went to.
+                let session_agent = self.active_session_id().and_then(|id| {
+                    let env = self.find_env(&path)?;
+                    Some(env.sessions[env.session_index(&id)?].agent)
+                });
+                let agent = session_agent.unwrap_or(agent);
                 self.name_after_first_prompt(&path, &text, agent.kind(), cx);
             } else {
                 // Not sent: back into the composer, as the user wrote it.

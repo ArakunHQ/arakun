@@ -1155,13 +1155,8 @@ impl Shell {
                     .servers
                     .as_mut()
                     .and_then(|link| reference.and_then(|r| link.starts.undelivered(r)));
-                if let Some(first) = self.take_first_prompt(reference) {
-                    if first.desktop {
-                        let why = "The connection dropped first.";
-                        self.servers_put_back(&first.env, first.text, first.note, why, cx);
-                    }
-                    return;
-                }
+                let first = self.take_first_prompt(reference);
+                let why = "The connection dropped first.";
                 match asker {
                     // A phone's prompt: the phone hears it did not go.
                     Some(Asker::Phone(client)) => {
@@ -1170,7 +1165,21 @@ impl Shell {
                         return;
                     }
                     Some(Asker::Gone) => return,
-                    Some(Asker::Desktop) | None => Remote::env_path(server, &text(msg, "env")),
+                    // The drop was told first, and phones heard it then: only
+                    // a prompt typed here comes back.
+                    None => {
+                        if let Some(first) = first.filter(|f| f.desktop) {
+                            self.servers_put_back(&first.env, first.text, first.note, why, cx);
+                        }
+                        return;
+                    }
+                    Some(Asker::Desktop) => match first {
+                        Some(first) => {
+                            self.servers_put_back(&first.env, first.text, first.note, why, cx);
+                            return;
+                        }
+                        None => Remote::env_path(server, &text(msg, "env")),
+                    },
                 }
             }
             Some("send") => {
@@ -1557,9 +1566,13 @@ impl Shell {
                 } else {
                     link.starts.dropped(id)
                 };
-                // Whether those starts got there is not known: nothing is put back.
-                let starts = &link.starts;
-                link.first_prompts.retain(|r, _| starts.waiting(*r));
+                // Whether those starts got there is not known. One that never
+                // went out is told back after this, by itself: its first
+                // prompt is kept for that until the server is back.
+                if back {
+                    let starts = &link.starts;
+                    link.first_prompts.retain(|r, _| starts.waiting(*r));
+                }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for

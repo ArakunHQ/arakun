@@ -932,6 +932,40 @@ mod tests {
     use super::super::{Owner, Repository, Subject};
     use super::*;
 
+    #[test]
+    fn the_threads_mark_moves_with_what_can_be_done_on_a_thread() {
+        let comment = |id: u64, resolved: Option<bool>, thread: Option<&str>| pr::InlineComment {
+            id,
+            resolved,
+            thread: thread.map(str::to_string),
+            ..Default::default()
+        };
+        let mark = |inline: Vec<pr::InlineComment>| {
+            Details::Pull(Box::new(pr::Pull {
+                inline,
+                ..Default::default()
+            }))
+            .threads_mark()
+        };
+        let read = |a, b| vec![comment(1, a, Some("T1")), comment(2, b, Some("T2"))];
+        assert_eq!(
+            mark(read(Some(false), Some(true))),
+            mark(read(Some(false), Some(true)))
+        );
+        // The thread ids arrive after a read that failed: same counts.
+        let before = vec![comment(1, None, None), comment(2, None, None)];
+        assert_ne!(mark(before), mark(read(Some(false), Some(false))));
+        // One thread resolves while the other opens again: same counts too.
+        assert_ne!(
+            mark(read(Some(true), Some(false))),
+            mark(read(Some(false), Some(true)))
+        );
+        // An answer is one more comment.
+        let mut answered = read(Some(false), Some(false));
+        answered.push(comment(3, Some(false), Some("T1")));
+        assert_ne!(mark(answered), mark(read(Some(false), Some(false))));
+    }
+
     const ME: &str = "KarloAldrete";
     const DAY: u64 = 1_763_078_400; // 2025-11-14T00:00:00Z
 

@@ -581,6 +581,15 @@ fn fetch_thread_states(item: &ItemRef) -> Result<HashMap<u64, ThreadState>, Prob
             break;
         }
     }
+    if after.is_some() {
+        // The threads past the limit show without Resolve; say why.
+        eprintln!(
+            "arakun: {}#{} has more than {} review threads; the rest were not read",
+            item.repo,
+            item.number,
+            THREADS_PAGES * 100
+        );
+    }
     Ok(states)
 }
 

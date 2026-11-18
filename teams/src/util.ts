@@ -106,7 +106,11 @@ export function ulid(): string {
   return time + Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => CROCKFORD[b & 31]).join("");
 }
 
-/// A positive integer that fits in a JavaScript number without rounding.
+/// The spelling of a GitHub ID: a positive integer of at most 16 digits. Only
+/// a format check: Number() rounds one above Number.MAX_SAFE_INTEGER. The
+/// rounded value matches no user, since sign-in and the admin door take only
+/// safe integers, so a lookup by it finds nothing; a caller that stores the
+/// ID checks Number.isSafeInteger, as the admin door does.
 export const GITHUB_ID = /^[1-9][0-9]{0,15}$/;
 
 /// The request's JSON body, or null if it is missing, too big or not JSON.

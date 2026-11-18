@@ -241,7 +241,8 @@ A message on the wire:
     `cites` maps the `[n]` in `text` to message IDs.
   - `decision_accept` with `decision.of`: a member accepted the decision a bot
     message proposed. `reply_to` is that bot message. The decision log is these,
-    read back from the channels, one acceptance per member (the oldest).
+    read back from the channels: for each decision (`decision.of`), one
+    acceptance per member, the oldest. A member may accept many decisions.
   - `decision_reverse` with `decision.of`: a member reversed the decision a bot
     message proposed. `reply_to` is that bot message and `text` the reason, which
     may be empty: `{ "kind": "decision_reverse", "text": "...", "reply_to":

@@ -353,9 +353,9 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let b = branch.clone();
             let result = cx
-                .background_spawn(crate::guard::task(
-                    async move { git::pr_create_web(&dir, &b) },
-                ))
+                .background_spawn(crate::guard::task(async move {
+                    git::pr_create_web(&dir, &b, "", "")
+                }))
                 .await;
             if let Err(e) = result {
                 let _ = this.update(cx, |this, cx| {

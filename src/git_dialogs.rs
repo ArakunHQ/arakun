@@ -307,11 +307,20 @@ impl PullRequestDialog {
             input
         });
         let follow = |this: &mut Self,
-                      _: &Entity<TextInput>,
+                      input: &Entity<TextInput>,
                       ev: &InputEvent,
-                      _: &mut Window,
+                      window: &mut Window,
                       cx: &mut Context<Self>| match ev {
             InputEvent::Submit => this.submit(false, cx),
+            // Tab: from the title to "Merge into" and back.
+            InputEvent::Complete => {
+                let other = if *input == this.title {
+                    &this.base
+                } else {
+                    &this.title
+                };
+                window.focus(&other.focus_handle(cx), cx);
+            }
             InputEvent::Cancel => {
                 if this.busy.is_none() {
                     cx.emit(PullRequestEvent::Dismissed);
@@ -319,6 +328,9 @@ impl PullRequestDialog {
             }
             InputEvent::Changed => {
                 this.error = None;
+                if *input == this.base {
+                    this.refresh_plan(cx);
+                }
                 cx.notify();
             }
             _ => {}
@@ -343,6 +355,36 @@ impl PullRequestDialog {
         }
     }
 
+    /// Reads the commits and the description again for the base typed in
+    /// "Merge into": in a stack the default base's would list the commits of
+    /// the pull requests below too. A title the user changed stays.
+    fn refresh_plan(&mut self, cx: &mut Context<Self>) {
+        let base = self.base.read(cx).text().trim().to_string();
+        if base.is_empty() || base == self.plan.base {
+            return;
+        }
+        let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
+        cx.spawn(async move |this, cx| {
+            let onto = base.clone();
+            let plan = cx
+                .background_spawn(async move { git::pr_plan_onto(&dir, &remote, &branch, &onto) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // Typed on since, or no such branch: the plan shown stays.
+                let (Some(plan), true) = (plan, this.base.read(cx).text().trim() == base) else {
+                    return;
+                };
+                if this.title.read(cx).text() == this.plan.title {
+                    let title = plan.title.clone();
+                    this.title.update(cx, |input, cx| input.set_text(title, cx));
+                }
+                this.plan = plan;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Opens the pull request here, or (`web`) GitHub's form for it, where
     /// the description can be written at length.
     fn submit(&mut self, web: bool, cx: &mut Context<Self>) {
@@ -359,6 +401,9 @@ impl PullRequestDialog {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
+                    // Read again: a commit made while the dialog was open
+                    // would stay behind, and gh pushes nothing with --head.
+                    let needs_push = git::needs_push(&dir).unwrap_or(needs_push);
                     if needs_push {
                         // A read-only Arakun sends nothing, the branch included.
                         if crate::github::read_only() {
@@ -366,10 +411,12 @@ impl PullRequestDialog {
                         }
                         git::push(&dir, &remote, &branch)?;
                     }
+                    // After the push: on a fork the head names its owner.
+                    let head = git::pr_head(&dir, &remote, &branch);
                     if web {
-                        git::pr_create_web(&dir, &branch).map(|()| None)
+                        git::pr_create_web(&dir, &head, &base, &title).map(|()| None)
                     } else {
-                        git::pr_create(&dir, &branch, &base, &title, &body, draft).map(Some)
+                        git::pr_create(&dir, &head, &base, &title, &body, draft).map(Some)
                     }
                 })
                 .await;

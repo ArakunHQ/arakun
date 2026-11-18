@@ -925,9 +925,11 @@ pub fn pr_view(dir: &Path) -> Option<PullRequest> {
 /// title and body from the commits. `--fill` is left out: it makes gh read them
 /// from the local clone first, which fails when `origin/<base>` is stale or the
 /// branch has no commits of its own yet.
-pub fn pr_create_web(dir: &Path, branch: &str) -> Result<()> {
+/// A `title` or `base` picked in the dialog goes along; empty leaves it to
+/// GitHub.
+pub fn pr_create_web(dir: &Path, branch: &str, base: &str, title: &str) -> Result<()> {
     let out = gh(dir)
-        .args(["pr", "create", "--web", "--head", branch])
+        .args(pr_web_args(branch, base.trim(), title.trim())?)
         .output()
         .context("could not run gh")?;
     if !out.status.success() {
@@ -942,6 +944,67 @@ pub fn pr_create_web(dir: &Path, branch: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The arguments of `gh pr create --web`.
+fn pr_web_args(branch: &str, base: &str, title: &str) -> Result<Vec<String>> {
+    // A name that starts with `-` would read as a flag.
+    if branch.starts_with('-') || base.starts_with('-') {
+        bail!("Name the branch to merge into.");
+    }
+    let mut args = vec!["pr", "create", "--web", "--head", branch];
+    if !base.is_empty() {
+        args.extend(["--base", base]);
+    }
+    if !title.is_empty() {
+        args.extend(["--title", title]);
+    }
+    Ok(args.into_iter().map(str::to_string).collect())
+}
+
+/// The owner in a GitHub remote's address: `git@host:owner/repo.git`,
+/// `https://host/owner/repo` or `ssh://git@host/owner/repo.git`.
+fn remote_owner(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/');
+    let path = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.1,
+        None => url.split_once(':')?.1,
+    };
+    let mut parts = path.rsplitn(2, '/');
+    let (_repo, owner) = (parts.next()?, parts.next()?);
+    (!owner.is_empty() && !owner.contains('/')).then(|| owner.to_string())
+}
+
+/// What `--head` names for `branch`, pushed to `remote`: `owner:branch` when
+/// that remote is a fork of the repository `gh` opens the pull request in.
+/// An explicit `--head` turns off gh's own look for the fork, and a bare
+/// name is then looked up in the base repository. Slow: asks `gh`.
+pub fn pr_head(dir: &Path, remote: &str, branch: &str) -> String {
+    let pushed_to = stdout(git(dir).args(["remote", "get-url", remote]))
+        .ok()
+        .and_then(|url| remote_owner(&url));
+    let base_owner = gh(dir)
+        .args(["repo", "view", "--json", "owner", "--jq", ".owner.login"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|owner| !owner.is_empty());
+    qualified_head(pushed_to.as_deref(), base_owner.as_deref(), branch)
+}
+
+fn qualified_head(pushed_to: Option<&str>, base_owner: Option<&str>, branch: &str) -> String {
+    match (pushed_to, base_owner) {
+        (Some(fork), Some(base)) if !fork.eq_ignore_ascii_case(base) => format!("{fork}:{branch}"),
+        _ => branch.to_string(),
+    }
+}
+
+/// Whether creating a pull request has to push first: read again right
+/// before it, since a commit may have come while the dialog was open.
+pub fn needs_push(dir: &Path) -> Option<bool> {
+    let s = sync(dir).ok()?;
+    Some(!s.published || s.ahead > 0)
 }
 
 /// A commit a new pull request would bring: its subject and the rest of
@@ -1050,6 +1113,18 @@ pub fn pr_fill(commits: &[PrCommit], template: Option<&str>, branch: &str) -> (S
 /// Reads what a new pull request for `branch` starts with.
 pub fn pr_plan(dir: &Path, remote: &str, branch: &str) -> PrPlan {
     let base = default_base(dir, remote);
+    plan_onto(dir, remote, branch, base)
+}
+
+/// [`pr_plan`] for another `base` than the default one, as in a stack. None
+/// when the remote has no such branch (a name still being typed).
+pub fn pr_plan_onto(dir: &Path, remote: &str, branch: &str, base: &str) -> Option<PrPlan> {
+    let tip = format!("{remote}/{base}^{{commit}}");
+    read(dir, &["rev-parse", "--verify", "--quiet", &tip]).ok()?;
+    Some(plan_onto(dir, remote, branch, base.to_string()))
+}
+
+fn plan_onto(dir: &Path, remote: &str, branch: &str, base: String) -> PrPlan {
     let commits = pr_commits(dir, remote, &base);
     let template = pr_template(dir);
     let (title, body) = pr_fill(&commits, template.as_deref(), branch);
@@ -1150,6 +1225,55 @@ pub(crate) const NICE_OF_SHELL: &str =
 #[cfg(test)]
 mod tests {
     use std::process::Command;
+
+    #[test]
+    fn a_branch_on_a_fork_is_named_with_its_owner() {
+        use super::{qualified_head, remote_owner};
+        for url in [
+            "git@github.com:me/arakun.git",
+            "https://github.com/me/arakun",
+            "https://github.com/me/arakun.git/",
+            "ssh://git@github.com/me/arakun.git",
+        ] {
+            assert_eq!(remote_owner(url).as_deref(), Some("me"), "{url}");
+        }
+        assert_eq!(remote_owner("/srv/git/arakun.git"), None);
+        // Pushed to a fork of the repository the pull request opens in.
+        assert_eq!(
+            qualified_head(Some("me"), Some("ArakunHQ"), "pr/x"),
+            "me:pr/x"
+        );
+        // The same repository, or one of them unknown: the bare name.
+        assert_eq!(
+            qualified_head(Some("arakunhq"), Some("ArakunHQ"), "pr/x"),
+            "pr/x"
+        );
+        assert_eq!(qualified_head(None, Some("ArakunHQ"), "pr/x"), "pr/x");
+        assert_eq!(qualified_head(Some("me"), None, "pr/x"), "pr/x");
+    }
+
+    #[test]
+    fn the_browser_form_gets_the_title_and_base_picked() {
+        use super::pr_web_args;
+        let args = pr_web_args("pr/b", "pr/a", "fix: a thing").unwrap();
+        assert_eq!(
+            args,
+            [
+                "pr",
+                "create",
+                "--web",
+                "--head",
+                "pr/b",
+                "--base",
+                "pr/a",
+                "--title",
+                "fix: a thing"
+            ]
+        );
+        // Nothing picked: GitHub fills them in.
+        assert_eq!(pr_web_args("pr/b", "", "").unwrap().len(), 5);
+        assert!(pr_web_args("pr/b", "--repo", "t").is_err());
+    }
 
     #[test]
     fn a_pull_request_starts_from_its_commits() {

@@ -517,6 +517,11 @@ impl Shell {
                 if link.following.as_ref().is_some_and(|f| f.server == *id) {
                     link.following = None;
                 }
+                // What it was asked is not coming: the others' requests stay.
+                link.adding.remove(id);
+                if link.added.as_ref().is_some_and(|(s, _)| s == id) {
+                    link.added = None;
+                }
                 // Its link stops without a word: its start is not answered.
                 end_start(&mut link.starting, id);
                 self.sync_remote_projects(window, cx);

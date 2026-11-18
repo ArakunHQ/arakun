@@ -3113,7 +3113,8 @@ impl Render for TeamsView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme::sheet())
+            // No background: the window's card paints the sheet and rounds its
+            // corners. A fill here would cover them, since its clip is square.
             .font_family(theme::FONT_SANS)
             .text_color(theme::content())
             .child(body)

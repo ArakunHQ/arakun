@@ -864,6 +864,8 @@ pub struct Run {
     /// How many parts a long range is summed up in, once known; 0 while it
     /// is read at once.
     pub parts: usize,
+    /// How many of those parts were summed up.
+    pub done: usize,
     stop: Arc<AtomicBool>,
 }
 
@@ -889,6 +891,73 @@ impl Run {
             RunState::Failed(why) => format!("@bot stopped: {why}"),
         }
     }
+}
+
+/// A Claude Code usage limit, read from why a run stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limit {
+    /// The weekly limit, else the 5-hour one.
+    pub weekly: bool,
+    /// When it resets, in Unix seconds, when the CLI said.
+    pub resets_at: Option<u64>,
+}
+
+/// Whether `why` is Claude Code hitting a usage limit, and when it resets.
+/// The CLI says "Claude AI usage limit reached|<unix time>" or "…limit
+/// reached ∙ resets 3pm"; a bare clock time is the next one in local time,
+/// `now_minute` being the local minute of the day `now` falls in.
+pub fn usage_limit(why: &str, now: u64, now_minute: u32) -> Option<Limit> {
+    let lower = why.to_ascii_lowercase();
+    let limit = lower.contains("usage limit")
+        || lower.contains("hit your limit")
+        || lower.contains("limit reached")
+        || lower.contains("-hour limit");
+    if !limit {
+        return None;
+    }
+    let weekly = lower.contains("week");
+    let stamp = lower
+        .split_once("limit reached|")
+        .and_then(|(_, rest)| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().ok()
+        })
+        .filter(|at| *at > 1_000_000_000);
+    let clock = lower
+        .split_once("resets ")
+        .and_then(|(_, rest)| clock_minute(rest.split_whitespace().next().unwrap_or_default()));
+    let resets_at = stamp.or_else(|| {
+        let target = clock?;
+        let ahead = (i64::from(target) - i64::from(now_minute)).rem_euclid(24 * 60);
+        Some(now - now % 60 + ahead as u64 * 60)
+    });
+    Some(Limit { weekly, resets_at })
+}
+
+/// "3pm", "10:30am", "15:00" as minutes after midnight.
+fn clock_minute(word: &str) -> Option<u32> {
+    let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+    let (num, pm) = if let Some(n) = word.strip_suffix("pm") {
+        (n, Some(true))
+    } else if let Some(n) = word.strip_suffix("am") {
+        (n, Some(false))
+    } else {
+        (word, None)
+    };
+    let (h, m) = match num.split_once(':') {
+        Some((h, m)) => (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?),
+        None => (num.parse::<u32>().ok()?, 0),
+    };
+    if m > 59 {
+        return None;
+    }
+    let h = match pm {
+        Some(pm) if (1..=12).contains(&h) => h % 12 + if pm { 12 } else { 0 },
+        Some(_) => return None,
+        None if h < 24 && num.contains(':') => h,
+        None => return None,
+    };
+    Some(h * 60 + m)
 }
 
 /// The bot's local state in the hub.
@@ -942,6 +1011,7 @@ impl Hub {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
             parts: 0,
+            done: 0,
             stop: Arc::new(AtomicBool::new(false)),
         };
         let key = channel_key(team_id, channel_id);
@@ -998,8 +1068,12 @@ impl Hub {
             while let Some(step) = rx.next().await {
                 let _ = this.update(cx, |hub, cx| {
                     if let Some(r) = hub.bot_run(&ask_id, &stop) {
-                        if let Step::Summarizing { of, .. } = step {
-                            r.parts = of;
+                        match step {
+                            Step::Summarizing { part, of } => {
+                                r.parts = of;
+                                r.done = part.saturating_sub(1);
+                            }
+                            Step::Reading => r.done = r.parts,
                         }
                         r.state = RunState::Running(step);
                         cx.notify();
@@ -1182,6 +1256,36 @@ mod tests {
             ),
             msg("m6", None, "karlo", "still sending", None),
         ]
+    }
+
+    #[test]
+    fn reads_usage_limits_and_when_they_reset() {
+        let now = 1_800_000_000;
+        assert_eq!(
+            usage_limit(
+                "Claude Code stopped: Claude AI usage limit reached|1800002400",
+                now,
+                0
+            ),
+            Some(Limit {
+                weekly: false,
+                resets_at: Some(1_800_002_400)
+            })
+        );
+        // 2pm now, resets at 3pm: an hour from the minute.
+        let at = usage_limit("5-hour limit reached ∙ resets 3pm", now, 14 * 60).unwrap();
+        assert_eq!(at.resets_at, Some(now - now % 60 + 3600));
+        // 11pm now, resets 1:30am: tomorrow.
+        let at = usage_limit("You've hit your limit · resets 1:30am (UTC)", now, 23 * 60).unwrap();
+        assert_eq!(at.resets_at, Some(now - now % 60 + 150 * 60));
+        let weekly = usage_limit("Weekly limit reached", now, 0).unwrap();
+        assert!(weekly.weekly);
+        assert_eq!(weekly.resets_at, None);
+        assert_eq!(usage_limit("Claude Code stopped: overloaded", now, 0), None);
+        assert_eq!(clock_minute("12am"), Some(0));
+        assert_eq!(clock_minute("12pm"), Some(12 * 60));
+        assert_eq!(clock_minute("15:05"), Some(15 * 60 + 5));
+        assert_eq!(clock_minute("tomorrow"), None);
     }
 
     #[test]
@@ -1579,6 +1683,7 @@ mod tests {
             state: RunState::Running(Step::Reading),
             started: 0,
             parts: 0,
+            done: 0,
             stop: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(r.label(), "@bot is reading 23 messages…");

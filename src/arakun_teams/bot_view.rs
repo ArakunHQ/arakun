@@ -90,6 +90,46 @@ fn sentence(s: &str) -> String {
     out
 }
 
+/// A failed run's title and sentence: how far it got when it ran in
+/// parts, and a usage limit in plain words when it hit one.
+fn failed_text(run: &Run, why: &str) -> (String, String) {
+    let now = super::now();
+    let minute = crate::platform::local_time(now).map_or(0, |t| t.hour * 60 + t.minute);
+    let device = super::super::hub::device_name();
+    failed_text_at((run.done, run.parts), why, &device, now, minute as u32)
+}
+
+fn failed_text_at(
+    (done, parts): (usize, usize),
+    why: &str,
+    device: &str,
+    now: u64,
+    minute: u32,
+) -> (String, String) {
+    let title = if parts > 0 && done < parts {
+        format!("@bot stopped after {done} of {parts} parts")
+    } else {
+        "@bot stopped".to_string()
+    };
+    let body = match bot::usage_limit(why, now, minute) {
+        Some(limit) => {
+            let which = if limit.weekly { "weekly" } else { "5 h" };
+            let device = crate::redact::value(device);
+            match limit.resets_at {
+                Some(at) => format!(
+                    "Claude Code on {device} hit its {which} limit. It resets {}. Nothing was decided.",
+                    super::until_from(at, now)
+                ),
+                None => {
+                    format!("Claude Code on {device} hit its {which} limit. Nothing was decided.")
+                }
+            }
+        }
+        None => format!("{} Nothing was decided.", sentence(why)),
+    };
+    (title, body)
+}
+
 /// "read 23 messages", "read 214 messages, in 4 parts".
 fn read_note(read: Option<usize>, parts: Option<usize>) -> Option<String> {
     let n = read.filter(|n| *n > 0)?;
@@ -944,55 +984,57 @@ impl TeamsView {
             .border_1()
             .border_color(theme::border_subtle())
             .bg(theme::fill_raised());
-        let card =
-            match &run.state {
-                RunState::Running(step) => {
-                    let done = match step {
-                        Step::Summarizing { part, .. } => part.saturating_sub(1),
-                        Step::Reading => run.parts,
-                    };
-                    let progress =
-                        (run.parts > 0).then(|| {
+        let card = match &run.state {
+            RunState::Running(step) => {
+                let done = match step {
+                    Step::Summarizing { part, .. } => part.saturating_sub(1),
+                    Step::Reading => run.parts,
+                };
+                let progress = (run.parts > 0).then(|| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .ty(Type::Caption)
+                        .font_family(theme::FONT_MONO)
+                        .text_color(theme::text_faint())
+                        .child(
                             div()
                                 .flex()
-                                .items_center()
-                                .gap(ui::sp(8.))
-                                .ty(Type::Caption)
-                                .font_family(theme::FONT_MONO)
-                                .text_color(theme::text_faint())
-                                .child(div().flex().gap(ui::sp(2.)).children((0..run.parts).map(
-                                    |i| {
-                                        div().w(px(3.)).h(px(10.)).rounded(ui::rad(1.)).bg(
-                                            if i < done {
-                                                theme::text_muted()
-                                            } else {
-                                                theme::fill_selected()
-                                            },
-                                        )
-                                    },
-                                )))
-                                .child(format!("{done} of {} parts", run.parts))
-                        });
-                    card.child(ui::spinner(("teams-bot-spin", row), 14., theme::accent()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .ty(Type::Body)
-                                .text_color(theme::text())
-                                .child(run.label()),
-                        )
-                        .children(progress)
-                        .child(
-                            ui::button(("teams-bot-stop", row), "Stop", ButtonKind::Ghost, true)
-                                .tooltip(ui::tip("Stop @bot. Nothing is posted"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
+                                .gap(ui::sp(2.))
+                                .children((0..run.parts).map(|i| {
+                                    div().w(px(3.)).h(px(10.)).rounded(ui::rad(1.)).bg(
+                                        if i < done {
+                                            theme::text_muted()
+                                        } else {
+                                            theme::fill_selected()
+                                        },
+                                    )
                                 })),
                         )
-                }
-                RunState::Failed(why) => card
-                    .child(icon("cancel-circle", 14.).text_color(theme::error()))
+                        .child(format!("{done} of {} parts", run.parts))
+                });
+                card.child(ui::spinner(("teams-bot-spin", row), 14., theme::accent()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .ty(Type::Body)
+                            .text_color(theme::text())
+                            .child(run.label()),
+                    )
+                    .children(progress)
+                    .child(
+                        ui::button(("teams-bot-stop", row), "Stop", ButtonKind::Ghost, true)
+                            .tooltip(ui::tip("Stop @bot. Nothing is posted"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
+                            })),
+                    )
+            }
+            RunState::Failed(why) => {
+                let (title, body) = failed_text(run, why);
+                card.child(icon("cancel-circle", 14.).text_color(theme::error()))
                     .child(
                         div()
                             .flex()
@@ -1001,16 +1043,12 @@ impl TeamsView {
                             .flex_1()
                             .min_w_0()
                             .child(
-                                ui::text(Type::Body, theme::text(), "@bot stopped")
+                                ui::text(Type::Body, theme::text(), title)
                                     .font_weight(FontWeight::MEDIUM),
                             )
                             .child(
-                                ui::text(
-                                    Type::Label,
-                                    theme::text_subtle(),
-                                    format!("{} Nothing was decided.", sentence(why)),
-                                )
-                                .font_weight(FontWeight::NORMAL),
+                                ui::text(Type::Label, theme::text_subtle(), body)
+                                    .font_weight(FontWeight::NORMAL),
                             ),
                     )
                     .child(
@@ -1030,8 +1068,9 @@ impl TeamsView {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
                             })),
-                    ),
-            };
+                    )
+            }
+        };
         let read = read_note(Some(run.read), (run.parts > 1).then_some(run.parts));
         div()
             .flex()
@@ -1106,6 +1145,23 @@ mod tests {
                 id: "a".into()
             })
         );
+    }
+
+    #[test]
+    fn a_failed_run_says_how_far_it_got_and_when_the_limit_resets() {
+        let now = 1_800_000_000;
+        let why = "Claude Code stopped: Claude AI usage limit reached|1800002400";
+        let (title, body) = failed_text_at((9, 23), why, "karlo-desktop", now, 0);
+        assert_eq!(title, "@bot stopped after 9 of 23 parts");
+        assert_eq!(
+            body,
+            "Claude Code on karlo-desktop hit its 5 h limit. It resets in 40 minutes. Nothing was decided."
+        );
+        let (title, body) = failed_text_at((3, 3), "the answer is too long to post", "x", now, 0);
+        assert_eq!(title, "@bot stopped");
+        assert_eq!(body, "The answer is too long to post. Nothing was decided.");
+        let (title, _) = failed_text_at((0, 0), why, "x", now, 0);
+        assert_eq!(title, "@bot stopped");
     }
 
     #[test]

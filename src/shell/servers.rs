@@ -93,8 +93,8 @@ pub(super) struct ServersLink {
     /// Environments of folders a server no longer offers, kept for the
     /// sessions that ran there: nothing new starts in them.
     retired: HashSet<PathBuf>,
-    /// The server asked to clone or add a folder, until it answers.
-    adding: Option<String>,
+    /// Servers asked to clone or add a folder, until they answer.
+    adding: HashSet<String>,
     /// A folder a server just added, by server and path: it opens once listed.
     added: Option<(String, String)>,
     /// The id a pairing under way will carry once it works.
@@ -405,7 +405,7 @@ impl Shell {
             starting: None,
             starting_id: None,
             retired: HashSet::new(),
-            adding: None,
+            adding: HashSet::new(),
             added: None,
             pairing: None,
             pairing_timeout: None,
@@ -515,13 +515,13 @@ impl Shell {
                 if let Some(conn) = link.conns.get(server) {
                     conn.client
                         .send(&json!({ "type": "add_place", "path": path }));
-                    link.adding = Some(server.clone());
+                    link.adding.insert(server.clone());
                 }
             }
             ServersEvent::Clone { server, url } => {
                 if let Some(conn) = link.conns.get(server) {
                     conn.client.send(&json!({ "type": "clone", "url": url }));
-                    link.adding = Some(server.clone());
+                    link.adding.insert(server.clone());
                 }
             }
             ServersEvent::Open { server, session } => {
@@ -1086,9 +1086,12 @@ impl Shell {
                 if !back {
                     end_start(&mut link.starting, id);
                 }
-                // The answer would have come on the connection that dropped.
-                if !back && link.adding.as_deref() == Some(id) {
-                    link.adding = None;
+                // The answer would have come on the connection that dropped,
+                // but the server may still finish: the form says to look first.
+                if !back && link.adding.remove(id) {
+                    link.error = Some(
+                        "The connection dropped before the server said whether the folder was added. Check its folders before you try again.".into(),
+                    );
                 }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
@@ -1111,13 +1114,17 @@ impl Shell {
                     self.servers_inbox(id, &msg);
                     self.sync_remote_projects(window, cx);
                 } else if msg["type"] == "place_added" {
-                    if link.adding.as_deref() == Some(id) {
-                        link.adding = None;
+                    if link.adding.remove(id) {
                         link.added = Some((id.to_string(), text(&msg, "path")));
                         self.servers_view.update(cx, |v, cx| v.place_added(id, cx));
                     }
                     // The server sends its inbox before this: the folder is here.
                     self.servers_open_added(window, cx);
+                } else if msg["type"] == "place_failed" {
+                    // What was being added is not coming: the form can ask again.
+                    if link.adding.remove(id) {
+                        link.error = Some(text(&msg, "message"));
+                    }
                 } else if msg["type"] == "started" {
                     if link.starting.as_deref() == Some(id) {
                         link.starting = None;
@@ -1280,12 +1287,6 @@ impl Shell {
                 let about = msg["id"].as_str();
                 if about.is_none() {
                     end_start(&mut link.starting, id);
-                    // What was being added is not coming: the form can ask again.
-                    if link.adding.as_deref() == Some(id) {
-                        link.adding = None;
-                        link.error = Some(message);
-                        return;
-                    }
                 }
                 // Said in that session's tab when it is open, else in the Servers tab.
                 let thread = about.and_then(|session| {

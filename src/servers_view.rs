@@ -3,6 +3,8 @@
 //! forgets a server. A server's folders and sessions live in the projects,
 //! as the app's own (`shell::servers`): a session picked here opens there.
 
+use std::collections::HashSet;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
@@ -96,8 +98,8 @@ pub struct ServersState {
     pub servers: Vec<ServerRow>,
     /// A pairing is under way.
     pub pairing: bool,
-    /// The server a folder is being added to or cloned on, until it is done.
-    pub adding: Option<String>,
+    /// Servers a folder is being added to or cloned on, until they are done.
+    pub adding: HashSet<String>,
     /// What went wrong last, until something else happens.
     pub error: Option<String>,
 }
@@ -123,6 +125,8 @@ pub struct ServersView {
     /// What to clone on a server, and a folder already there.
     clone_url: Entity<TextInput>,
     folder: Entity<TextInput>,
+    /// The server what is in those two was typed for.
+    draft_for: Option<String>,
     /// "Forget" was pressed once on this server; the next press counts.
     confirm_forget: Option<String>,
     focus: FocusHandle,
@@ -166,6 +170,7 @@ impl ServersView {
             link,
             clone_url,
             folder,
+            draft_for: None,
             confirm_forget: None,
             focus: cx.focus_handle(),
             _inputs: inputs,
@@ -199,6 +204,12 @@ impl ServersView {
 
     /// The form to clone a repository on `server`, or add one of its folders.
     pub fn add_place(&mut self, server: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // What was typed for another server is not meant for this one.
+        if self.draft_for.as_deref() != Some(server) {
+            self.clone_url.update(cx, |i, cx| i.set_text("", cx));
+            self.folder.update(cx, |i, cx| i.set_text("", cx));
+            self.draft_for = Some(server.to_string());
+        }
         self.pane = Pane::AddPlace(server.to_string());
         window.focus(&self.clone_url.focus_handle(cx), cx);
         cx.notify();
@@ -225,7 +236,7 @@ impl ServersView {
             return None;
         };
         let server = self.server(id)?;
-        (server.reach == Reach::Connected && self.state.adding.is_none()).then(|| id.clone())
+        (server.reach == Reach::Connected && !self.state.adding.contains(id)).then(|| id.clone())
     }
 
     fn clone_repo(&mut self, cx: &mut Context<Self>) {
@@ -422,8 +433,8 @@ impl ServersView {
 
     fn render_add_place(&self, server: &ServerRow, cx: &mut Context<Self>) -> AnyElement {
         let connected = server.reach == Reach::Connected;
-        let busy = self.state.adding.as_deref() == Some(server.id.as_str());
-        let ready = connected && self.state.adding.is_none();
+        let busy = self.state.adding.contains(&server.id);
+        let ready = connected && !busy;
         let row = |field: Entity<TextInput>, icon_name: &'static str| {
             ui::field()
                 .flex_1()

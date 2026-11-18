@@ -126,6 +126,8 @@ pub struct Daemon {
     flush: Option<Task<()>>,
     last_inbox: String,
     last_usage: String,
+    /// Folders a device's clone is going into, until it is done.
+    cloning: HashSet<PathBuf>,
     uploads: phone::Uploads,
     /// The last thing each session notified about, so one turn says it once.
     notified: HashMap<String, Notice>,
@@ -709,6 +711,7 @@ impl Daemon {
             flush: None,
             last_inbox: String::new(),
             last_usage: String::new(),
+            cloning: HashSet::new(),
             uploads: phone::Uploads::default(),
             notified: HashMap::new(),
             writer: parts.writer,
@@ -1597,33 +1600,66 @@ impl Daemon {
                 }
             }
             ClientMsg::AddPlace { path } => {
-                let added = device_path(&path);
-                self.place_added(client, added, cx);
+                let home = crate::platform::home();
+                // A folder on a mount that does not answer would hold up
+                // every device: it is looked at to the side.
+                cx.spawn(async move |this, cx| {
+                    let found = cx
+                        .background_executor()
+                        .spawn(async move { device_path(&path, &home) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| this.place_added(client, found, cx));
+                })
+                .detach();
             }
             ClientMsg::Clone { url } => {
                 let Some(source) = clone_source::parse_clone_source(&url) else {
                     self.transport.send(
                         client,
-                        wire::error(
+                        place_failed(
                             "That is not a repository to clone: give its URL or owner/repo.",
                         ),
                     );
                     return;
                 };
+                // Git would send this machine's logins for the host in the clear.
+                if source.url.starts_with("http://") {
+                    self.transport.send(
+                        client,
+                        place_failed(
+                            "Give an https:// or ssh address: plain http is not encrypted.",
+                        ),
+                    );
+                    return;
+                }
                 let home = crate::platform::home();
                 let parent = clone_source::clone_parent(
                     self.store.places.iter().map(|p| p.path.as_path()),
                     &home,
                 );
                 let dest = parent.join(&source.name);
+                // A second clone there would find the first one half done.
+                if !self.cloning.insert(dest.clone()) {
+                    self.transport.send(
+                        client,
+                        place_failed(&format!("{} is being cloned already.", dest.display())),
+                    );
+                    return;
+                }
                 // A clone takes as long as the network: the server answers
                 // everyone else meanwhile.
                 cx.spawn(async move |this, cx| {
-                    let done = cx
-                        .background_executor()
-                        .spawn(async move { clone_into(&source, &dest).map(|()| dest) })
-                        .await;
-                    let _ = this.update(cx, |this, cx| this.place_added(client, done, cx));
+                    let into = dest.clone();
+                    let done =
+                        cx.background_executor()
+                            .spawn(async move {
+                                clone_into(&source, &into).and_then(|()| real_dir(&into))
+                            })
+                            .await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.cloning.remove(&dest);
+                        this.place_added(client, done, cx);
+                    });
                 })
                 .detach();
             }
@@ -1639,16 +1675,39 @@ impl Daemon {
         path: Result<PathBuf, String>,
         cx: &mut Context<Self>,
     ) {
-        match path.and_then(|p| self.add_place(&p, "").map(|_| p)) {
+        match path.and_then(|p| self.offer_place(&p).map(|()| p)) {
             Ok(path) => {
-                self.sync_inbox(cx);
+                let inbox = self.inbox(cx);
+                if self.last_inbox != inbox {
+                    self.transport.broadcast(&inbox);
+                    self.last_inbox = inbox;
+                } else {
+                    // The others have this one, but the device may not: it
+                    // got its own on connecting, which can be older.
+                    self.transport.send(client, inbox);
+                }
                 self.transport.send(
                     client,
                     json!({ "type": "place_added", "path": path }).to_string(),
                 );
             }
-            Err(e) => self.transport.send(client, wire::error(&e)),
+            Err(e) => self.transport.send(client, place_failed(&e)),
         }
+    }
+
+    /// Makes `path` (canonical) a place for a device. It is one only once
+    /// saved: a place lost at the next start would surprise the device later.
+    fn offer_place(&mut self, path: &Path) -> Result<(), String> {
+        if !path.is_dir() {
+            return Err(format!("not a directory: {}", path.display()));
+        }
+        if self.store.add_place(path, AgentKind::Claude)
+            && let Err(e) = self.store.save()
+        {
+            self.store.remove_place(path);
+            return Err(format!("could not save the server's state: {e}"));
+        }
+        Ok(())
     }
 
     /// Sends `text` to the session `id` as its next prompt.
@@ -2325,35 +2384,48 @@ fn draft_choices(
     }
 }
 
+/// A failed folder request: its own reply, so the app does not take it for
+/// an error about a session it is starting.
+fn place_failed(message: &str) -> String {
+    json!({ "type": "place_failed", "message": message }).to_string()
+}
+
 /// A folder a device named: its whole path, or one from `~/`, which stands
-/// for the home folder here. It must exist; links are followed, as the CLI does.
-fn device_path(typed: &str) -> Result<PathBuf, String> {
+/// for `home`. It must exist; links are followed, as the CLI does.
+fn device_path(typed: &str, home: &Path) -> Result<PathBuf, String> {
     let typed = typed.trim();
     let path = match typed.strip_prefix('~') {
-        Some("") => crate::platform::home(),
-        Some(rest) if rest.starts_with('/') => crate::platform::home().join(&rest[1..]),
+        Some("") => home.to_path_buf(),
+        Some(rest) if rest.starts_with('/') => home.join(&rest[1..]),
         _ => PathBuf::from(typed),
     };
     if !path.is_absolute() {
         return Err("Give the folder's whole path, or one from ~/.".into());
     }
-    path.canonicalize()
-        .map_err(|e| format!("{}: {e}", path.display()))
+    real_dir(&path)
 }
+
+/// `path` with its links followed. Devices get places as JSON text, which a
+/// name that is not UTF-8 cannot be.
+fn real_dir(path: &Path) -> Result<PathBuf, String> {
+    let real = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if real.to_str().is_none() {
+        return Err(format!("{}: the name is not UTF-8", path.display()));
+    }
+    Ok(real)
+}
+
+/// How long a clone may take before it is given up.
+const CLONE_LIMIT: Duration = Duration::from_secs(20 * 60);
 
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
 /// that repository. A failed clone leaves nothing behind.
 fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), String> {
+    use std::process::{Command, Stdio};
     if dest.exists() {
-        let origin = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dest)
-            .args(["remote", "get-url", "origin"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        return match origin.as_deref().and_then(clone_source::parse_clone_source) {
+        return match checkout_origin(dest) {
             Some(found) if found.same_repo(source) => Ok(()),
             Some(found) => Err(format!("{} already holds {}", dest.display(), found.label)),
             None => Err(format!("{} already exists", dest.display())),
@@ -2363,20 +2435,75 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
-    let out = std::process::Command::new("git")
-        .args(["clone", "--quiet", "--", &source.url])
-        .arg(dest)
-        // Nobody is at this machine to type a password: fail instead of waiting.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
-    if out.status.success() {
+    // Made here, and only if it is not there yet: what a failed clone removes
+    // is then this request's own folder.
+    std::fs::create_dir(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    let mut git = Command::new("git");
+    git.args([
+        // A host that stops sending gives up after a minute, not at the limit.
+        "-c",
+        "http.lowSpeedLimit=1",
+        "-c",
+        "http.lowSpeedTime=60",
+        "clone",
+        "--quiet",
+        "--",
+        &source.url,
+    ])
+    .arg(dest)
+    // Nobody is at this machine to type a password: fail instead of waiting.
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
+    // ssh asks for a passphrase or a new host key on the terminal, which
+    // `serve` may have. A command the user set keeps its say.
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        git.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15",
+        );
+    }
+    let failed = |why: String| {
+        let _ = std::fs::remove_dir_all(dest);
+        Err(why)
+    };
+    let mut child = match git.spawn() {
+        Ok(child) => child,
+        Err(e) => return failed(format!("could not run git: {e}")),
+    };
+    // Read as it comes, so a full pipe does not stop git.
+    let mut stderr = child.stderr.take();
+    let said = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(err) = stderr.as_mut() {
+            let _ = std::io::Read::read_to_string(err, &mut text);
+        }
+        text
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < CLONE_LIMIT => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return failed(format!(
+                    "git clone took longer than {} minutes",
+                    CLONE_LIMIT.as_secs() / 60
+                ));
+            }
+            Err(e) => return failed(format!("git clone: {e}")),
+        }
+    };
+    if status.success() {
         return Ok(());
     }
-    let _ = std::fs::remove_dir_all(dest);
-    let why = String::from_utf8_lossy(&out.stderr);
-    Err(format!(
+    let why = said.join().unwrap_or_default();
+    failed(format!(
         "git clone failed: {}",
         why.lines()
             .rfind(|l| !l.trim().is_empty())
@@ -2384,21 +2511,117 @@ fn clone_into(source: &clone_source::CloneSource, dest: &Path) -> Result<(), Str
     ))
 }
 
+/// The repository whose checkout `dir` is, by its `origin`. A folder inside
+/// some other checkout is not one.
+fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let top = git(&["rev-parse", "--show-toplevel"])?;
+    if Path::new(&top).canonicalize().ok()? != dir.canonicalize().ok()? {
+        return None;
+    }
+    clone_source::parse_clone_source(&git(&["remote", "get-url", "origin"])?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A folder of its own under the system's temporary one.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arakun-daemon-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
     #[test]
     fn a_device_names_a_folder_by_its_whole_path_or_from_home() {
-        let home = crate::platform::home().canonicalize().unwrap();
-        assert_eq!(device_path("~").unwrap(), home);
-        assert_eq!(device_path(" ~/ ").unwrap(), home);
-        let dir = std::env::temp_dir().canonicalize().unwrap();
-        assert_eq!(device_path(&dir.display().to_string()).unwrap(), dir);
+        let home = scratch("home");
+        std::fs::create_dir(home.join("app")).unwrap();
+        assert_eq!(device_path("~", &home).unwrap(), home);
+        assert_eq!(device_path(" ~/ ", &home).unwrap(), home);
+        assert_eq!(device_path("~/app", &home).unwrap(), home.join("app"));
+        let whole = home.join("app").display().to_string();
+        assert_eq!(device_path(&whole, &home).unwrap(), home.join("app"));
         // Relative to what? The server has no folder the device stands in.
-        assert!(device_path("code/app").unwrap_err().contains("whole path"));
-        assert!(device_path("~nobody/app").is_err());
-        assert!(device_path("/no/such/folder/here").is_err());
+        assert!(
+            device_path("code/app", &home)
+                .unwrap_err()
+                .contains("whole path")
+        );
+        assert!(device_path("~nobody/app", &home).is_err());
+        assert!(device_path("~/missing", &home).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Runs git in `dir` with a name of its own, so the user's settings are not needed.
+    fn git_in(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn a_clone_reuses_its_own_checkout_and_leaves_others_alone() {
+        let root = scratch("clone");
+        let origin = root.join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        git_in(&origin, &["init", "--quiet"]);
+        git_in(
+            &origin,
+            &["commit", "--quiet", "--allow-empty", "-m", "one"],
+        );
+        let source = |url: &str| clone_source::CloneSource {
+            url: url.to_string(),
+            on_github: false,
+            label: url.to_string().into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        let url = origin.display().to_string();
+        let dest = root.join("code").join("r");
+        clone_into(&source(&url), &dest).unwrap();
+        assert!(dest.join(".git").exists());
+        // Asked again, the checkout is taken as it is. Its origin must read as
+        // a repository address, which a local path does not.
+        let remote = "https://example.com/o/r.git";
+        git_in(&dest, &["remote", "set-url", "origin", remote]);
+        let again = clone_source::parse_clone_source(remote).unwrap();
+        clone_into(&again, &dest).unwrap();
+        let other = clone_source::parse_clone_source("https://example.com/o/s.git").unwrap();
+        let err = clone_into(&other, &dest).unwrap_err();
+        assert!(err.contains("already holds"), "{err}");
+
+        // A plain folder inside that checkout is not a checkout of it.
+        let inner = dest.join("docs");
+        std::fs::create_dir(&inner).unwrap();
+        let err = clone_into(&again, &inner).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+
+        // A clone that fails removes only the folder it made.
+        let missing = root.join("nothing-here").display().to_string();
+        let gone = root.join("code").join("gone");
+        assert!(clone_into(&source(&missing), &gone).is_err());
+        assert!(!gone.exists());
+        assert!(dest.join(".git").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

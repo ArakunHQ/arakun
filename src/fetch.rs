@@ -265,11 +265,12 @@ fn set_token(args: &[String]) -> Result<(), String> {
 
 /// `arakun fetch …` (`crawl` true for `arakun crawl …`); the exit code.
 pub fn cli(args: &[String], crawling: bool) -> i32 {
-    let done = if crawling {
+    let help = args.iter().any(|a| a == "-h" || a == "--help");
+    let done = if crawling && !help {
         crawl(args)
     } else if args.first().is_some_and(|a| a == "--set-token") {
         set_token(&args[1..])
-    } else if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+    } else if args.is_empty() || help {
         println!("{USAGE}");
         return if args.is_empty() { 2 } else { 0 };
     } else {
@@ -311,5 +312,11 @@ mod tests {
         assert_eq!(a.include, ["https://x.dev/docs/**"]);
         assert!(crawl_args(&s(&["--limit"])).is_none());
         assert!(crawl_args(&s(&[])).is_none());
+    }
+
+    #[test]
+    fn crawl_takes_help_too() {
+        assert_eq!(cli(&s(&["--help"]), true), 0);
+        assert_eq!(cli(&s(&["--limit", "3", "-h"]), true), 0);
     }
 }

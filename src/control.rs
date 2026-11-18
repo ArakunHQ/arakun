@@ -342,6 +342,8 @@ const HELP_CODERLABS: &str = "\
 const HELP_END: &str = "
 Commands act on the environment the current directory belongs to.
 -s, --side shows the tab in the pane beside the active one.
+-h, --help after a command prints its usage. A prompt, message or command line
+that starts with a dash needs -- before it (arakun notify -- -1 test failed).
 ";
 
 enum Cli {
@@ -419,6 +421,28 @@ fn cli(args: Vec<String>) -> Cli {
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let (side, rest) = side_flag(first, &args[1..]);
+    // Help comes before anything runs: `arakun notify --help` sent a
+    // notification that said `--help`, and `arakun agent run --help` started
+    // a paid run with it as the prompt.
+    if usage_of(first).is_some() && rest.first().is_some_and(|a| is_help(a)) {
+        return stopped(first, Stop::Help);
+    }
+    if first == "agent" && rest.get(1).is_some_and(|a| is_help(a)) {
+        return match rest[0].as_str() {
+            "run" => Cli::Exit(report(Stop::Help, crate::headless::RUN_USAGE)),
+            _ => stopped(first, Stop::Help),
+        };
+    }
+    // These take no flags of their own: a dash there is a typo, unless `--`
+    // comes first to let a message or a name start with one.
+    let rest = if NO_FLAGS.contains(&first.as_str()) {
+        match payload(&rest) {
+            Ok(rest) => rest.to_vec(),
+            Err(stop) => return stopped(first, stop),
+        }
+    } else {
+        rest
+    };
     let request = |cmd: &str, args: Vec<String>| Request {
         cmd: cmd.into(),
         args,
@@ -467,10 +491,10 @@ fn cli(args: Vec<String>) -> Cli {
         },
         "browse" => match rest.as_slice() {
             [target] => request("browse", vec![browse_target(&cwd, target)]),
-            _ => return usage("arakun browse [-s] <url>"),
+            _ => return stopped(first, Stop::Usage),
         },
         "palette" if rest.is_empty() => request("palette", Vec::new()),
-        "palette" => return usage("arakun palette"),
+        "palette" => return stopped(first, Stop::Usage),
         "open" => match rest.as_slice() {
             [file] => match resolve_file(&cwd, file) {
                 Ok((path, line)) => request(
@@ -482,42 +506,34 @@ fn cli(args: Vec<String>) -> Cli {
                 ),
                 Err(e) => return fail(&e),
             },
-            _ => return usage("arakun open [-s] <file[:line]>"),
+            _ => return stopped(first, Stop::Usage),
         },
         "run" => match run_args(&rest) {
-            Some(args) => request("run", args),
-            None => {
-                return usage(
-                    "arakun run [--ready <text>] [--port <n>] [--timeout <secs>] <command…>",
-                );
-            }
+            Ok(args) => request("run", args),
+            Err(stop) => return stopped(first, stop),
         },
         "logs" => match logs_args(&rest) {
-            Some((args, None)) => request("logs", args),
-            Some((mut args, Some(wait))) => {
+            Ok((args, None)) => request("logs", args),
+            Ok((mut args, Some(wait))) => {
                 args.push("one".into());
                 return logs_until(&request("logs", args), &wait);
             }
-            None => {
-                return usage(
-                    "arakun logs [-n lines] [terminal] [--until <text> [--timeout <secs>]]",
-                );
-            }
+            Err(stop) => return stopped(first, stop),
         },
         "check" if rest.is_empty() => return check_here(&request("check", Vec::new())),
         "check" => match rest.as_slice() {
             [flag, command @ ..] if flag == "--set" && !command.is_empty() => {
                 request("check", vec![command.join(" ")])
             }
-            _ => return usage("arakun check [--set <command…>]"),
+            _ => return stopped(first, Stop::Usage),
         },
         "page" => match page_args(&rest) {
-            Some(args) => request("page", args),
-            None => return usage("arakun page [-t N] [command…]  (see arakun help)"),
+            Ok(args) => request("page", args),
+            Err(stop) => return stopped(first, stop),
         },
         "agent" if let Some(code) = crate::headless::cli(&rest, &cwd) => return Cli::Exit(code),
         "agent" => match agent_args(&rest) {
-            Some(AgentCmd::Send(mut args)) => {
+            Ok(AgentCmd::Send(mut args)) => {
                 if args[0] == "new" && !args[2].is_empty() {
                     match resolve_dir(&cwd, &args[2]) {
                         Ok(dir) => args[2] = dir.display().to_string(),
@@ -526,10 +542,10 @@ fn cli(args: Vec<String>) -> Cli {
                 }
                 request("agent", args)
             }
-            Some(AgentCmd::Wait { id, timeout }) => {
+            Ok(AgentCmd::Wait { id, timeout }) => {
                 return agent_wait(&request("agent", vec!["status".into(), id]), timeout);
             }
-            None => return usage(AGENT_USAGE),
+            Err(stop) => return stopped(first, stop),
         },
         #[cfg(feature = "coderlabs")]
         "voz" => return Cli::Exit(crate::island_host::voz(&rest)),
@@ -537,24 +553,24 @@ fn cli(args: Vec<String>) -> Cli {
         "reunion" | "reunión" => return Cli::Exit(crate::island_host::reunion(&rest)),
         "island" => match island_args(&rest) {
             Some(args) => return Cli::Exit(crate::island_host::cli(&args)),
-            None => return usage(ISLAND_USAGE),
+            None => return stopped(first, Stop::Usage),
         },
         "rename" => match rest.as_slice() {
             [name] if !name.starts_with('-') => request("rename", vec![name.clone()]),
-            _ => return usage("arakun rename <branch>"),
+            _ => return stopped(first, Stop::Usage),
         },
         "notify" if !rest.is_empty() => request("notify", vec![rest.join(" ")]),
-        "notify" => return usage("arakun notify <message…>"),
+        "notify" => return stopped(first, Stop::Usage),
         "ls" => request("ls", Vec::new()),
         "restart" if rest.is_empty() => request("restart", Vec::new()),
-        "restart" => return usage("arakun restart"),
+        "restart" => return stopped(first, Stop::Usage),
         "add" => match rest.as_slice() {
             [] => request("add", vec![cwd.display().to_string()]),
             [dir] => match resolve_dir(&cwd, dir) {
                 Ok(dir) => request("add", vec![dir.display().to_string()]),
                 Err(e) => return fail(&e),
             },
-            _ => return usage("arakun add [dir]"),
+            _ => return stopped(first, Stop::Usage),
         },
         // `arakun .` like an editor.
         dir if args.len() == 1 && Path::new(dir).is_dir() => match resolve_dir(&cwd, dir) {
@@ -659,7 +675,7 @@ pub const MAX_RUN_WAIT: u64 = 600;
 /// `[--ready text] [--port n] [--timeout secs] command…`, sent as `[command]`,
 /// or `[command, text, port, secs]` when there is something to wait for.
 /// Only flags before the command count, so `vite --port 3000` keeps its own.
-fn run_args(rest: &[String]) -> Option<Vec<String>> {
+fn run_args(rest: &[String]) -> Result<Vec<String>, Stop> {
     let (mut ready, mut port, mut timeout) = (String::new(), String::new(), String::new());
     let mut i = 0;
     while let Some(flag) = rest.get(i) {
@@ -667,28 +683,38 @@ fn run_args(rest: &[String]) -> Option<Vec<String>> {
             "--ready" => &mut ready,
             "--port" => &mut port,
             "--timeout" => &mut timeout,
-            _ => break,
+            _ => {
+                i += flags_end(flag)?;
+                break;
+            }
         };
-        *slot = rest.get(i + 1).filter(|v| !v.is_empty())?.clone();
+        *slot = rest
+            .get(i + 1)
+            .filter(|v| !v.is_empty())
+            .ok_or(Stop::Usage)?
+            .clone();
         i += 2;
     }
     let command = rest[i..].join(" ");
     if command.trim().is_empty() {
-        return None;
+        return Err(Stop::Usage);
     }
-    if !port.is_empty() {
-        port.parse::<u16>().ok().filter(|p| *p > 0)?;
+    if !port.is_empty() && port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
+        return Err(Stop::Usage);
     }
-    if !timeout.is_empty() {
-        timeout
+    if !timeout.is_empty()
+        && timeout
             .parse::<u64>()
             .ok()
-            .filter(|s| (1..=MAX_RUN_WAIT).contains(s))?;
+            .filter(|s| (1..=MAX_RUN_WAIT).contains(s))
+            .is_none()
+    {
+        return Err(Stop::Usage);
     }
     match (ready.is_empty() && port.is_empty(), timeout.is_empty()) {
-        (true, true) => Some(vec![command]),
-        (true, false) => None,
-        (false, _) => Some(vec![command, ready, port, timeout]),
+        (true, true) => Ok(vec![command]),
+        (true, false) => Err(Stop::Usage),
+        (false, _) => Ok(vec![command, ready, port, timeout]),
     }
 }
 
@@ -717,25 +743,34 @@ struct LogsWait {
 
 /// `[-n lines] [terminal] [--until text [--timeout secs]]` in any order, sent
 /// as `[lines, terminal]`; the wait stays with the client, which polls.
-fn logs_args(rest: &[String]) -> Option<(Vec<String>, Option<LogsWait>)> {
+fn logs_args(rest: &[String]) -> Result<(Vec<String>, Option<LogsWait>), Stop> {
     let mut lines = LOG_LINES;
     let mut which: Option<&String> = None;
     let (mut until, mut timeout) = (None, None);
     let mut it = rest.iter();
+    let bad = || Stop::Usage;
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "-n" | "--lines" => lines = it.next()?.parse().ok().filter(|n| *n > 0)?,
-            "--until" => until = Some(it.next().filter(|t| !t.is_empty())?.clone()),
+            "-n" | "--lines" => {
+                lines = it
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .filter(|n| *n > 0)
+                    .ok_or_else(bad)?
+            }
+            "--until" => until = Some(it.next().filter(|t| !t.is_empty()).ok_or_else(bad)?.clone()),
             "--timeout" => {
                 timeout = Some(
-                    it.next()?
-                        .parse::<u64>()
-                        .ok()
-                        .filter(|s| (1..=MAX_RUN_WAIT).contains(s))?,
+                    it.next()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .filter(|s| (1..=MAX_RUN_WAIT).contains(s))
+                        .ok_or_else(bad)?,
                 )
             }
+            // No payload: help or a flag it doesn't know counts anywhere.
+            _ if flags_end(arg)? > 0 => return Err(bad()),
             _ if which.is_none() => which = Some(arg),
-            _ => return None,
+            _ => return Err(bad()),
         }
     }
     let wait = match (until, timeout) {
@@ -743,10 +778,10 @@ fn logs_args(rest: &[String]) -> Option<(Vec<String>, Option<LogsWait>)> {
             text,
             timeout: Duration::from_secs(secs.unwrap_or(RUN_WAIT)),
         }),
-        (None, Some(_)) => return None,
+        (None, Some(_)) => return Err(bad()),
         (None, None) => None,
     };
-    Some((
+    Ok((
         vec![lines.to_string(), which.cloned().unwrap_or_default()],
         wait,
     ))
@@ -890,8 +925,9 @@ enum AgentCmd {
 /// `arakun agent …`. `new [--model m] [--effort e] [--dir d] [--title t] [--ask] prompt…`
 /// is sent as `[new, model, dir, title, "ask" or "", prompt, effort]`, its flags only
 /// before the prompt; `log [-n N] id` as `[log, id, N]`; the others as typed.
-fn agent_args(rest: &[String]) -> Option<AgentCmd> {
-    let (sub, rest) = rest.split_first()?;
+fn agent_args(rest: &[String]) -> Result<AgentCmd, Stop> {
+    let bad = || Stop::Usage;
+    let (sub, rest) = rest.split_first().ok_or_else(bad)?;
     let args = match (sub.as_str(), rest) {
         ("new", _) => {
             let (mut model, mut dir, mut title, mut ask) =
@@ -910,14 +946,21 @@ fn agent_args(rest: &[String]) -> Option<AgentCmd> {
                         i += 1;
                         continue;
                     }
-                    _ => break,
+                    _ => {
+                        i += flags_end(flag)?;
+                        break;
+                    }
                 };
-                *slot = rest.get(i + 1).filter(|v| !v.is_empty())?.clone();
+                *slot = rest
+                    .get(i + 1)
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(bad)?
+                    .clone();
                 i += 2;
             }
             let prompt = rest[i..].join(" ");
             if prompt.trim().is_empty() {
-                return None;
+                return Err(bad());
             }
             let ask = if ask {
                 "ask".to_string()
@@ -932,18 +975,27 @@ fn agent_args(rest: &[String]) -> Option<AgentCmd> {
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "-n" | "--lines" if sub == "log" => {
-                        lines = it.next()?.parse().ok().filter(|n| *n > 0)?
+                        lines = it
+                            .next()
+                            .and_then(|n| n.parse().ok())
+                            .filter(|n| *n > 0)
+                            .ok_or_else(bad)?
                     }
                     "--timeout" if sub == "wait" => {
-                        secs = it.next()?.parse().ok().filter(|s| *s > 0)?
+                        secs = it
+                            .next()
+                            .and_then(|s| s.parse().ok())
+                            .filter(|s| *s > 0)
+                            .ok_or_else(bad)?
                     }
+                    _ if is_help(arg) => return Err(Stop::Help),
                     _ if id.is_none() && !arg.starts_with('-') => id = Some(arg.clone()),
-                    _ => return None,
+                    _ => return Err(bad()),
                 }
             }
-            let id = id?;
+            let id = id.ok_or_else(bad)?;
             if sub == "wait" {
-                return Some(AgentCmd::Wait {
+                return Ok(AgentCmd::Wait {
                     id,
                     timeout: Duration::from_secs(secs),
                 });
@@ -957,9 +1009,9 @@ fn agent_args(rest: &[String]) -> Option<AgentCmd> {
             vec!["send".into(), id.clone(), text.join(" ")]
         }
         ("stop", [id]) => vec!["stop".into(), id.clone()],
-        _ => return None,
+        _ => return Err(bad()),
     };
-    Some(AgentCmd::Send(args))
+    Ok(AgentCmd::Send(args))
 }
 
 /// `arakun agent wait`: polls the session until it stops working, then prints
@@ -1002,17 +1054,22 @@ arakun page press <key>            press Enter, Tab, Escape, Backspace, an arrow
 arakun page eval <js>              run JavaScript in the page and print the result";
 
 /// `[-t N] [command args…]`, sent as `[N or "", command, args…]`; the app checks the rest.
-fn page_args(rest: &[String]) -> Option<Vec<String>> {
+fn page_args(rest: &[String]) -> Result<Vec<String>, Stop> {
     let is_flag = |a: &String| a == "-t" || a == "--tab";
     let (tab, rest) = match rest {
         [flag, n, rest @ ..] if is_flag(flag) => (
-            n.parse::<usize>().ok().filter(|n| *n > 0)?.to_string(),
+            n.parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or(Stop::Usage)?
+                .to_string(),
             rest,
         ),
-        [flag] if is_flag(flag) => return None,
+        [flag] if is_flag(flag) => return Err(Stop::Usage),
         _ => (String::new(), rest),
     };
-    Some(std::iter::once(tab).chain(rest.iter().cloned()).collect())
+    let rest = payload(rest)?;
+    Ok(std::iter::once(tab).chain(rest.iter().cloned()).collect())
 }
 
 /// `arakun check`: asks arakun for the project's check and runs it in this
@@ -1065,6 +1122,100 @@ fn usage(line: &str) -> Cli {
 fn fail(message: &str) -> Cli {
     eprintln!("arakun: {message}");
     Cli::Exit(1)
+}
+
+/// The usage of each command `cli` parses itself, for `--help` and mistakes.
+fn usage_of(cmd: &str) -> Option<&'static str> {
+    Some(match cmd {
+        "browse" => "arakun browse [-s] <url>",
+        "palette" => "arakun palette",
+        "open" => "arakun open [-s] <file[:line]>",
+        "run" => "arakun run [--ready <text>] [--port <n>] [--timeout <secs>] [--] <command…>",
+        "logs" => "arakun logs [-n lines] [terminal] [--until <text> [--timeout <secs>]]",
+        "check" => "arakun check [--set <command…>]",
+        "page" => "arakun page [-t N] [command…]  (see arakun page --help)",
+        "agent" => AGENT_USAGE,
+        "island" => ISLAND_USAGE,
+        "rename" => "arakun rename <branch>",
+        "notify" => "arakun notify [--] <message…>",
+        "ls" => "arakun ls",
+        "restart" => "arakun restart",
+        "add" => "arakun add [dir]",
+        _ => return None,
+    })
+}
+
+/// Commands whose arguments are only a payload, without flags of their own.
+const NO_FLAGS: &[&str] = &[
+    "browse", "palette", "open", "island", "rename", "notify", "ls", "restart", "add",
+];
+
+/// Why a command's arguments stop it before it runs.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Stop {
+    /// `-h` or `--help` before the payload: print the usage and exit 0.
+    Help,
+    /// A flag the command doesn't take, before the payload.
+    Flag(String),
+    /// Anything else wrong with them.
+    Usage,
+}
+
+pub(crate) fn is_help(arg: &str) -> bool {
+    matches!(arg, "-h" | "--help")
+}
+
+/// Ends a command's leading flags at `arg`, which is none of the flags it
+/// takes: `Ok(1)` skips the `--` that lets a payload start with a dash, and
+/// `Ok(0)` means `arg` starts the payload. Help or a mistyped flag must not
+/// become the payload: a prompt, a command line or a message.
+pub(crate) fn flags_end(arg: &str) -> Result<usize, Stop> {
+    match arg {
+        "--" => Ok(1),
+        _ if is_help(arg) => Err(Stop::Help),
+        // `-` alone (stdin) and a quoted "- fix this" are payload.
+        _ if arg.len() > 1 && arg.starts_with('-') && !arg.contains(char::is_whitespace) => {
+            Err(Stop::Flag(arg.into()))
+        }
+        _ => Ok(0),
+    }
+}
+
+/// `args` without a leading `--`, for a command that takes no flags.
+fn payload(args: &[String]) -> Result<&[String], Stop> {
+    match args.first() {
+        Some(first) => Ok(&args[flags_end(first)?..]),
+        None => Ok(args),
+    }
+}
+
+/// Prints what stopped a command and returns its exit code: 0 for help,
+/// which goes to stdout, and 2 for a mistake.
+pub(crate) fn report(stop: Stop, usage: &str) -> i32 {
+    match stop {
+        Stop::Help => {
+            println!("usage: {usage}");
+            0
+        }
+        Stop::Flag(flag) => {
+            eprintln!("arakun: unknown flag {flag} (-- before it passes it on)\nusage: {usage}");
+            2
+        }
+        Stop::Usage => {
+            eprintln!("usage: {usage}");
+            2
+        }
+    }
+}
+
+/// `report` for a command `cli` parses itself.
+fn stopped(cmd: &str, stop: Stop) -> Cli {
+    // `arakun page` has a line for each of its commands.
+    if cmd == "page" && stop == Stop::Help {
+        println!("{PAGE_USAGE}");
+        return Cli::Exit(0);
+    }
+    Cli::Exit(report(stop, usage_of(cmd).unwrap_or("arakun help")))
 }
 
 /// A first word that is not a command, a flag or a directory.
@@ -1180,7 +1331,8 @@ mod tests {
 
     #[test]
     fn logs_takes_a_line_count_and_a_terminal() {
-        let args = |a: &[&str]| logs_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let args =
+            |a: &[&str]| logs_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).ok();
         let plain = |a: &[&str]| args(a).and_then(|(sent, wait)| (wait.is_none()).then_some(sent));
         assert_eq!(plain(&[]), Some(vec![LOG_LINES.to_string(), String::new()]));
         assert_eq!(
@@ -1257,6 +1409,82 @@ mod tests {
     }
 
     #[test]
+    fn help_on_a_command_prints_its_usage_and_runs_nothing() {
+        let cli = |args: &[&str]| cli(args.iter().map(|a| a.to_string()).collect());
+        // Each returns before the socket: none of them may reach the app.
+        for args in [
+            &["run", "--help"][..],
+            &["run", "--port", "3000", "-h", "npm", "start"],
+            &["notify", "--help"],
+            &["browse", "--help"],
+            &["browse", "-s", "--help"],
+            &["open", "-h"],
+            &["palette", "--help"],
+            &["logs", "--help"],
+            &["logs", "2", "--help"],
+            &["check", "--help"],
+            &["page", "--help"],
+            &["page", "-t", "2", "--help"],
+            &["island", "--help"],
+            &["rename", "--help"],
+            &["ls", "--help"],
+            &["restart", "--help"],
+            &["add", "--help"],
+            &["agent", "--help"],
+            &["agent", "new", "--help"],
+            &["agent", "new", "--model", "m", "--help", "fix"],
+            &["agent", "run", "--help"],
+            &["agent", "run", "--wait", "--help", "fix"],
+            &["agent", "log", "--help"],
+            &["agent", "log", "-n", "5", "--help"],
+            &["agent", "send", "--help"],
+            &["agent", "stop", "-h"],
+        ] {
+            assert!(matches!(cli(args), Cli::Exit(0)), "{args:?}");
+        }
+        for args in [
+            &["run", "--verbose", "npm"][..],
+            &["notify", "--loud", "hi"],
+            &["browse", "--new", "x"],
+            &["logs", "--follow"],
+            &["page", "--json"],
+            &["agent", "new", "--modle", "m", "fix"],
+            &["agent", "run", "--modle", "m", "fix"],
+        ] {
+            assert!(matches!(cli(args), Cli::Exit(2)), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn help_after_the_payload_is_part_of_it() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(run_args(&v(&["echo", "--help"])), Ok(v(&["echo --help"])));
+        assert_eq!(run_args(&v(&["--", "--help"])), Ok(v(&["--help"])));
+        assert_eq!(run_args(&v(&["--port", "3000", "-h"])), Err(Stop::Help));
+        assert_eq!(
+            run_args(&v(&["--wait", "x"])),
+            Err(Stop::Flag("--wait".into()))
+        );
+        assert_eq!(
+            payload(&v(&["--", "-1", "failed"])),
+            Ok(&v(&["-1", "failed"])[..])
+        );
+        assert_eq!(payload(&v(&["- quoted", "x"])).map(<[_]>::len), Ok(2));
+        assert_eq!(payload(&v(&["-"])).map(<[_]>::len), Ok(1));
+        assert_eq!(payload(&v(&["-x"])), Err(Stop::Flag("-x".into())));
+        let new = agent_args(&v(&["new", "fix", "--help"])).unwrap();
+        assert!(matches!(new, AgentCmd::Send(a) if a[5] == "fix --help"));
+        let new = agent_args(&v(&["new", "--", "--help"])).unwrap();
+        assert!(matches!(new, AgentCmd::Send(a) if a[5] == "--help"));
+        assert_eq!(agent_args(&v(&["log", "-n", "2", "-h"])), Err(Stop::Help));
+        assert_eq!(
+            page_args(&v(&["eval", "--help"])),
+            Ok(v(&["", "eval", "--help"]))
+        );
+        assert_eq!(page_args(&v(&["-t", "1", "-h"])), Err(Stop::Help));
+    }
+
+    #[test]
     fn version_exits_without_the_app() {
         assert!(matches!(cli(vec!["--version".into()]), Cli::Exit(0)));
         assert!(matches!(cli(vec!["-V".into()]), Cli::Exit(0)));
@@ -1283,7 +1511,7 @@ mod tests {
 
     #[test]
     fn run_takes_wait_flags_before_the_command() {
-        let args = |a: &[&str]| run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let args = |a: &[&str]| run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).ok();
         let v = |a: &[&str]| Some(a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(args(&["npm", "run", "dev"]), v(&["npm run dev"]));
         assert_eq!(
@@ -1324,7 +1552,8 @@ mod tests {
 
     #[test]
     fn agent_takes_its_subcommands() {
-        let args = |a: &[&str]| agent_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let args =
+            |a: &[&str]| agent_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).ok();
         let sent = |a: &[&str]| Some(AgentCmd::Send(a.iter().map(|s| s.to_string()).collect()));
         assert_eq!(
             args(&["new", "fix", "the", "build"]),
@@ -1477,7 +1706,8 @@ mod tests {
 
     #[test]
     fn page_takes_a_tab_then_a_command() {
-        let args = |a: &[&str]| page_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let args =
+            |a: &[&str]| page_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).ok();
         assert_eq!(args(&[]), Some(vec![String::new()]));
         assert_eq!(
             args(&["-t", "2", "shot"]),

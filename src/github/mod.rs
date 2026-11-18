@@ -718,6 +718,10 @@ pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve
 /// running Arakun.
 pub fn cli(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
+        Some("draft") if args[1..].iter().any(|a| crate::control::is_help(a)) => {
+            println!("{USAGE}");
+            0
+        }
         Some("draft") => match save_draft_cli(&args[1..]) {
             Ok(msg) => {
                 println!("{msg}");

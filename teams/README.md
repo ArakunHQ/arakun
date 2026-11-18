@@ -49,7 +49,7 @@ npm test          # vitest run
 For `wrangler dev`, create the tables in the local database first:
 
 ```sh
-npx wrangler d1 migrations apply arakun-teams --local
+npx wrangler d1 migrations apply arakun-teams-dev --local
 npx wrangler dev
 ```
 
@@ -65,11 +65,12 @@ GITHUB_CLIENT_SECRET=<the app secret>
 
 Nothing deploys this automatically yet. The commands below use `--env production`,
 which deploys the Worker `arakun-teams`. Without it, wrangler deploys the top-level
-Worker `arakun-teams-dev`, a separate Worker, so a test deploy cannot replace the
-production one's bindings.
+Worker `arakun-teams-dev`, a separate Worker with its own database, rate-limit
+namespace and secrets. A test deploy cannot replace production's bindings, and its
+admin secret cannot grant flags or make sessions in production.
 
 1. Create the database once, and put the `database_id` it prints in `wrangler.toml`
-   (under `[[env.production.d1_databases]]`, and the top-level one if you use it):
+   under `[[env.production.d1_databases]]`:
 
    ```sh
    npx wrangler d1 create arakun-teams
@@ -109,9 +110,20 @@ production one's bindings.
    npx wrangler deploy --env production
    ```
 
+To host the test Worker too, give it its own database and put that `database_id` in
+the top-level `[[d1_databases]]`. Never put production's id there. Then follow the
+same steps with `arakun-teams-dev` and without `--env production`, and give it a
+different `ADMIN_SECRET`:
+
+```sh
+npx wrangler d1 create arakun-teams-dev
+npx wrangler d1 migrations apply arakun-teams-dev --remote
+```
+
 The rate limit on `POST /auth/github` (about 10 a minute per client IP) is set in
-`wrangler.toml` under `[[ratelimits]]`. Its `namespace_id` must be unique among the
-account's rate limits. Cloudflare counts it in each location on its own, and its
+`wrangler.toml` under `[[ratelimits]]`. Rate limits with the same `namespace_id` in
+one account share their counters, so production and the test Worker have different
+ids, and each id must be unique among the account's rate limits. Cloudflare counts it in each location on its own, and its
 counters catch up with a delay, so it is approximate: a client can get a few more.
 
 ## Granting flags

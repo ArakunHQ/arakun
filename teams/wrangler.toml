@@ -6,11 +6,13 @@ name = "arakun-teams-dev"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 
-# Users, sessions and flags. `wrangler d1 create arakun-teams` gives the id to
-# put here; `wrangler d1 migrations apply` reads the tables from migrations/.
+# Users, sessions and flags. This Worker has a database of its own, so a test
+# deploy and its admin secret never reach production's users, sessions or
+# flags. `wrangler d1 create arakun-teams-dev` gives the id to put here;
+# `wrangler d1 migrations apply` reads the tables from migrations/.
 [[d1_databases]]
 binding = "DB"
-database_name = "arakun-teams"
+database_name = "arakun-teams-dev"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
@@ -21,10 +23,12 @@ migrations_dir = "migrations"
 GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
 
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
-# The id must be unique among the account's rate limits; relay/ has none.
+# Rate limits with the same namespace_id in one account share their counters,
+# so every id here is used once: this Worker has 1003, production 1001.
+# relay/ has none.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
-namespace_id = "1001"
+namespace_id = "1003"
 
   [ratelimits.simple]
   limit = 10

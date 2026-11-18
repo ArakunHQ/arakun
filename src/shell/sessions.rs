@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use gpui::{AppContext as _, Context, Entity, SharedString, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 
 use super::Shell;
 use crate::agent::catalog;
@@ -34,6 +34,18 @@ fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
         props.push(("code", code.into()));
     }
     crate::telemetry::error("AgentError", msg, &props);
+}
+
+/// Sends `thread`'s failure if crash reports have not had it yet. `closing`
+/// sends a disconnect that still waits for its exit, which a thread about to
+/// shut down will never hear.
+pub(super) fn report_failure(thread: &Entity<Thread>, closing: bool, cx: &mut App) {
+    let Some(at) = thread.update(cx, |t, _| t.take_failure_report(closing)) else {
+        return;
+    };
+    if let ThreadStatus::Error(msg) = thread.read(cx).status() {
+        report_agent_error(thread.read(cx), at, &msg);
+    }
 }
 
 /// The version at the end of an agent's title ("Factory Droid 0.240.1"), and
@@ -357,11 +369,8 @@ impl Shell {
             }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
                 let status = status_of(thread.read(cx));
-                if status == Status::Error
-                    && let Some(at) = thread.update(cx, |t, _| t.take_failure_report())
-                    && let ThreadStatus::Error(msg) = thread.read(cx).status()
-                {
-                    report_agent_error(thread.read(cx), at, &msg);
+                if status == Status::Error {
+                    report_failure(thread, false, cx);
                 }
                 if let Some(s) = self.session_mut(env_path, id)
                     && s.status != status
@@ -479,6 +488,7 @@ impl Shell {
                 let _ = write_transcript(&path, &transcript);
             })
             .detach();
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
     }
@@ -789,6 +799,7 @@ impl Shell {
             if let Err(e) = write_transcript(&state::transcript_path(&old_id), &t.transcript(cx)) {
                 eprintln!("arakun: could not save {old_id}: {e}");
             }
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
         forget_alerts(&old_id);
@@ -1538,6 +1549,7 @@ impl Shell {
         let env = self.env_mut();
         let removed = env.session_index(id).map(|i| env.sessions.remove(i));
         if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
+            report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
         let mut paths = vec![state::transcript_path(id)];

@@ -1859,10 +1859,11 @@ impl Thread {
     }
 
     /// The failure to send to crash reports, once each. A disconnect waits: the
-    /// process's exit follows it within moments and brings the exit code.
-    pub fn take_failure_report(&mut self) -> Option<FailedAt> {
+    /// process's exit follows it within moments and brings the exit code. When
+    /// `closing`, nothing will follow, so a waiting disconnect goes out as it is.
+    pub fn take_failure_report(&mut self, closing: bool) -> Option<FailedAt> {
         let at = self.failed_at()?;
-        if !self.failure_unreported || at == FailedAt::Disconnected {
+        if !self.failure_unreported || (at == FailedAt::Disconnected && !closing) {
             return None;
         }
         self.failure_unreported = false;
@@ -3823,6 +3824,38 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_disconnect_waits_for_the_exit_unless_closing() {
+        let failed = |at| {
+            let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+            t.status = ThreadStatus::Error("x".into());
+            (t.failed_at, t.failure_unreported) = (Some(at), true);
+            t
+        };
+        let mut t = failed(FailedAt::Disconnected);
+        assert_eq!(t.take_failure_report(false), None);
+        // The exit replaces the disconnect and is sent, once.
+        t.failed_at = Some(FailedAt::Exited(Some(1)));
+        assert_eq!(
+            t.take_failure_report(false),
+            Some(FailedAt::Exited(Some(1)))
+        );
+        assert_eq!(t.take_failure_report(false), None);
+        assert_eq!(t.take_failure_report(true), None);
+
+        let mut t = failed(FailedAt::Disconnected);
+        assert_eq!(t.take_failure_report(true), Some(FailedAt::Disconnected));
+        assert_eq!(t.take_failure_report(true), None);
+
+        let mut t = failed(FailedAt::Turn(-32603));
+        assert_eq!(t.take_failure_report(false), Some(FailedAt::Turn(-32603)));
+
+        // A thread that is no longer in error has nothing to send.
+        let mut t = failed(FailedAt::Spawn);
+        t.status = ThreadStatus::Idle;
+        assert_eq!(t.take_failure_report(true), None);
+    }
+
     #[test]
     fn exit_codes_come_from_the_status() {
         use super::exit_code;

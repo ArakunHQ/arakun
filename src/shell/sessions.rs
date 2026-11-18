@@ -781,7 +781,15 @@ impl Shell {
         };
         s.updated = model::unix_now();
         s.status = Status::Working;
-        thread.update(cx, |t, cx| t.send(text, cx));
+        // This session may have started on the branch's old name, as in
+        // `send_prompt`.
+        let note = self.rename_notes.remove(env_path);
+        thread.update(cx, |t, cx| {
+            if let Some(note) = note {
+                t.add_note(note);
+            }
+            t.send(text, cx)
+        });
         self.save(cx);
         cx.notify();
         true

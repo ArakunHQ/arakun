@@ -372,7 +372,7 @@ impl Link {
             while let Ok(out) = self.queued.try_recv() {
                 match out {
                     Out::Say(text) => {
-                        if let Err(e) = ws.send(Message::text(text.as_str())) {
+                        if let Err(e) = write_alone(ws, Message::text(text.as_str())) {
                             self.torn = true;
                             self.undelivered(&text);
                             return Ended::Retry(format!("Could not write to the server: {e}"));
@@ -644,8 +644,20 @@ fn send_frame(ws: &mut Socket, kind: u8, payload: &[u8]) -> Result<(), Ended> {
     let mut frame = Vec::with_capacity(1 + payload.len());
     frame.push(kind);
     frame.extend_from_slice(payload);
-    ws.send(Message::Binary(frame.into()))
+    write_alone(ws, Message::Binary(frame.into()))
         .map_err(|e| Ended::Retry(format!("Could not write to the relay: {e}")))
+}
+
+/// Writes `msg` with nothing else behind it. A read can queue a pong; it
+/// goes out first, on its own. Otherwise `msg` could go out whole and the
+/// pong after it fail, and a message the server got would be told back
+/// as undelivered. So an error here means `msg` did not fully go out.
+fn write_alone<S: std::io::Read + std::io::Write>(
+    ws: &mut WebSocket<S>,
+    msg: Message,
+) -> tungstenite::Result<()> {
+    ws.flush()?;
+    ws.send(msg)
 }
 
 /// What the relay or the server said as it hung up, in the app's terms.
@@ -1125,6 +1137,62 @@ mod tests {
         let late = json!({ "type": "send", "session": "s1", "text": "late" });
         client.send(&late);
         assert!(matches!(next(&mut rx), Event::Undelivered(msg) if msg == late));
+    }
+
+    /// Takes the first `room` bytes written to it, then fails. Reads give
+    /// `incoming`, then would block.
+    struct Cramped {
+        incoming: std::io::Cursor<Vec<u8>>,
+        written: Vec<u8>,
+        room: usize,
+    }
+
+    impl std::io::Read for Cramped {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.incoming.read(buf)? {
+                0 => Err(std::io::ErrorKind::WouldBlock.into()),
+                n => Ok(n),
+            }
+        }
+    }
+
+    impl std::io::Write for Cramped {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.room - self.written.len());
+            if n == 0 {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.written.extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_message_told_back_as_undelivered_did_not_go_out() {
+        const PONG: usize = 6; // Header and mask, no payload.
+        let text = r#"{"type":"answer","session":"s1"}"#;
+        let frame = 6 + text.len();
+        // A failed write may stop anywhere, also after the message and
+        // before the pong that a ping queued.
+        for room in 0..=PONG + frame {
+            let stream = Cramped {
+                incoming: std::io::Cursor::new(vec![0x89, 0x00]),
+                written: Vec::new(),
+                room,
+            };
+            let mut ws =
+                WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None);
+            assert!(matches!(ws.read(), Ok(Message::Ping(_))));
+            let sent = write_alone(&mut ws, Message::text(text));
+            let out = &ws.get_ref().written;
+            let start = if out.first() == Some(&0x8a) { PONG } else { 0 };
+            let whole = out.len() >= start + frame;
+            assert_eq!(sent.is_ok(), whole, "room {room}");
+        }
     }
 
     #[test]

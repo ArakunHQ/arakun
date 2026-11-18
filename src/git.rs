@@ -1153,7 +1153,7 @@ pub fn default_base(dir: &Path, remote: &str) -> String {
 }
 
 /// The commits on HEAD that `remote/base` doesn't have, oldest first.
-fn pr_commits(dir: &Path, remote: &str, base: &str) -> Vec<PrCommit> {
+pub fn pr_commits(dir: &Path, remote: &str, base: &str) -> Vec<PrCommit> {
     let range = format!("{remote}/{base}..HEAD");
     let Ok(out) = read(
         dir,
@@ -1191,7 +1191,7 @@ const PR_TEMPLATES: [&str; 6] = [
 /// in. GitHub reads it from the default branch, so a template changed there
 /// after this branch started is the one used. HEAD's only when the clone
 /// hasn't fetched the default branch.
-fn pr_template(dir: &Path, remote: &str) -> Option<String> {
+pub fn pr_template(dir: &Path, remote: &str) -> Option<String> {
     let default = format!("{remote}/{}", default_base(dir, remote));
     let fetched = read(
         dir,
@@ -1208,6 +1208,27 @@ fn pr_template(dir: &Path, remote: &str) -> Option<String> {
         .iter()
         .find_map(|path| show_file(dir, rev, path))
         .filter(|text| !text.trim().is_empty())
+}
+
+/// What HEAD changes since it left `remote/base`, for a model to read: the
+/// list of files with their counts, and the diff cut at `cap` characters (at
+/// the end of a line), with whether it was cut. Empty when git can't tell.
+pub fn pr_diff(dir: &Path, remote: &str, base: &str, cap: usize) -> (String, String, bool) {
+    let range = format!("{remote}/{base}...HEAD");
+    let stat = read(dir, &["diff", "--stat=200", "--no-color", &range, "--"]).unwrap_or_default();
+    let diff = read(dir, &["diff", "--no-color", &range, "--"]).unwrap_or_default();
+    let (diff, cut) = cut_at_line(diff, cap);
+    (stat, diff, cut)
+}
+
+/// `text` cut to at most `cap` characters, at the end of a line when it has one.
+fn cut_at_line(text: String, cap: usize) -> (String, bool) {
+    let Some((end, _)) = text.char_indices().nth(cap) else {
+        return (text, false);
+    };
+    let head = &text[..end];
+    let end = head.rfind('\n').map_or(end, |i| i + 1);
+    (text[..end].to_string(), true)
 }
 
 /// The title and body a pull request of `commits` starts with, as GitHub
@@ -1421,6 +1442,18 @@ test: cover the resize\u{1f}\u{1e}\n";
             ]
         );
         assert!(parse_pr_commits("").is_empty());
+
+        // A long diff ends at a line, and says it was cut; characters, not bytes.
+        use super::cut_at_line;
+        assert_eq!(
+            cut_at_line("a\nbb\nccc\n".into(), 20),
+            ("a\nbb\nccc\n".into(), false)
+        );
+        assert_eq!(
+            cut_at_line("a\nbb\nccc\n".into(), 6),
+            ("a\nbb\n".into(), true)
+        );
+        assert_eq!(cut_at_line("ééééé".into(), 2), ("éé".into(), true));
 
         // One commit is the whole pull request; several are listed.
         assert_eq!(

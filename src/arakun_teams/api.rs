@@ -231,6 +231,40 @@ pub fn logout(base: &str, session: &str) -> Result<(), ApiError> {
     }
 }
 
+/// A GitHub account, as `GET https://api.github.com/users/<login>` shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct GithubUser {
+    pub login: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Looks a login up on GitHub, without a token: `None` when there is no such
+/// account. A rate limit (403 or 429) is an error, so the caller can say less.
+pub fn github_user(login: &str) -> Result<Option<GithubUser>, ApiError> {
+    let ok = !login.is_empty()
+        && login.len() <= 39
+        && login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if !ok {
+        return Ok(None);
+    }
+    let (status, body) = answer(
+        agent()
+            .get(format!("https://api.github.com/users/{login}"))
+            .header("Accept", "application/vnd.github+json")
+            .call(),
+    )?;
+    match status {
+        404 => Ok(None),
+        200 => serde_json::from_str(&body)
+            .map(Some)
+            .map_err(|_| ApiError::Unreadable),
+        s => Err(ApiError::Status(s, github_error(&body))),
+    }
+}
+
 // ---- teams (teams/PROTOCOL.md) ------------------------------------------------
 
 /// A device as `GET /users/<id>/devices` and the pending list show it.
@@ -316,6 +350,21 @@ pub struct InviteRow {
     pub invited_by_login: Option<String>,
     pub created_at: u64,
     pub expires_at: u64,
+    /// How many members the team has; older servers leave it out.
+    #[serde(default)]
+    pub member_count: Option<u64>,
+}
+
+/// An open invite of a team, as its admins see it (`GET /teams/<id>/invites`).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct TeamInvite {
+    pub invite_id: String,
+    /// Lower case.
+    pub login: String,
+    #[serde(default)]
+    pub invited_by_login: Option<String>,
+    pub created_at: u64,
+    pub expires_at: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -324,6 +373,41 @@ pub struct PendingRow {
     pub login: String,
     pub requested_at: u64,
     pub devices: Vec<DeviceRow>,
+    /// When they last reminded the admins.
+    #[serde(default)]
+    pub reminded_at: Option<u64>,
+}
+
+/// A team this user asked to join, waiting for an admin (`GET /pending`).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct WaitingRow {
+    pub team_id: String,
+    pub team_name: String,
+    pub requested_at: u64,
+    #[serde(default)]
+    pub invited_by_login: Option<String>,
+    #[serde(default)]
+    pub invited_by_id: Option<u64>,
+    #[serde(default)]
+    pub reminded_at: Option<u64>,
+}
+
+/// One of this device's envelopes, with when its epoch's key was made.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct DatedEnvelope {
+    #[serde(flatten)]
+    pub envelope: Envelope,
+    /// Not signed; older servers leave it out.
+    #[serde(default)]
+    pub made_at: Option<u64>,
+}
+
+/// What `POST /teams/<id>/remind` answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Remind {
+    Sent,
+    /// Too soon: the next one may go at this time.
+    TooSoon(u64),
 }
 
 /// A stored message, from history or the channel's socket.
@@ -441,6 +525,33 @@ impl Call<'_> {
         self.get("/invites")
     }
 
+    pub fn decline(&self, invite_id: &str) -> Result<(), ApiError> {
+        let path = format!("/invites/{invite_id}/decline");
+        let (status, body) = self.send("POST", &path, Some(serde_json::json!({})), SMALL_LIMIT)?;
+        nothing(status, &body)
+    }
+
+    pub fn team_invites(&self, team_id: &str) -> Result<Vec<TeamInvite>, ApiError> {
+        self.get(&format!("/teams/{team_id}/invites"))
+    }
+
+    pub fn withdraw(&self, team_id: &str, invite_id: &str) -> Result<(), ApiError> {
+        let path = format!("/teams/{team_id}/invites/{invite_id}");
+        let (status, body) = self.send("DELETE", &path, None, SMALL_LIMIT)?;
+        nothing(status, &body)
+    }
+
+    /// The teams this user asked to join, oldest first.
+    pub fn waiting(&self) -> Result<Vec<WaitingRow>, ApiError> {
+        self.get("/pending")
+    }
+
+    pub fn remind(&self, team_id: &str) -> Result<Remind, ApiError> {
+        let path = format!("/teams/{team_id}/remind");
+        let (status, body) = self.send("POST", &path, Some(serde_json::json!({})), SMALL_LIMIT)?;
+        remind_answer(status, &body)
+    }
+
     pub fn accept(&self, invite_id: &str) -> Result<(), ApiError> {
         let path = format!("/invites/{invite_id}/accept");
         self.post::<serde_json::Value>("POST", &path, serde_json::json!({}))
@@ -481,7 +592,8 @@ impl Call<'_> {
             .map(|p| p.rotation_pending)
     }
 
-    pub fn envelopes(&self, team_id: &str) -> Result<Vec<Envelope>, ApiError> {
+    /// This device's envelopes, oldest epoch first.
+    pub fn dated_envelopes(&self, team_id: &str) -> Result<Vec<DatedEnvelope>, ApiError> {
         self.get(&format!("/teams/{team_id}/envelopes"))
     }
 
@@ -529,6 +641,18 @@ pub fn socket_url(base: &str, team_id: &str, channel_id: &str) -> String {
         base.to_string()
     };
     format!("{ws}/teams/{team_id}/channels/{channel_id}/ws")
+}
+
+fn remind_answer(status: u16, body: &str) -> Result<Remind, ApiError> {
+    if status == 429 {
+        let at = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v["retry_at"].as_u64());
+        if let Some(at) = at {
+            return Ok(Remind::TooSoon(at));
+        }
+    }
+    nothing(status, body).map(|()| Remind::Sent)
 }
 
 /// An answer that carries nothing but its status.
@@ -751,6 +875,48 @@ mod tests {
         assert_eq!(s.session, "abc");
         assert_eq!(s.me.login, "b");
         assert!(s.me.has(TEAMS_FLAG));
+    }
+
+    #[test]
+    fn reads_the_new_invite_and_waiting_fields() {
+        let old: InviteRow = serde_json::from_str(
+            r#"{"invite_id":"I","team_id":"T","team_name":"Arakun","invited_by_login":"karlo","created_at":1,"expires_at":2}"#,
+        )
+        .unwrap();
+        assert_eq!(old.member_count, None);
+        let new: InviteRow = serde_json::from_str(
+            r#"{"invite_id":"I","team_id":"T","team_name":"Arakun","invited_by_login":null,"created_at":1,"expires_at":2,"member_count":3}"#,
+        )
+        .unwrap();
+        assert_eq!(new.member_count, Some(3));
+        let w: Vec<WaitingRow> = serde_json::from_str(
+            r#"[{"team_id":"T","team_name":"Arakun","requested_at":5,"invited_by_login":"karlo","invited_by_id":7,"reminded_at":null}]"#,
+        )
+        .unwrap();
+        assert_eq!(w[0].invited_by_id, Some(7));
+        assert_eq!(w[0].reminded_at, None);
+        let d: DatedEnvelope = serde_json::from_str(
+            r#"{"v":1,"team_id":"T","epoch":3,"device_id":"d","from":"f","eph_pub":"e","nonce":"n","ct":"c","sig":"s","made_at":99}"#,
+        )
+        .unwrap();
+        assert_eq!((d.envelope.epoch, d.made_at), (3, Some(99)));
+    }
+
+    #[test]
+    fn a_reminder_too_soon_says_when() {
+        assert_eq!(remind_answer(204, ""), Ok(Remind::Sent));
+        assert_eq!(
+            remind_answer(429, r#"{"error":"too soon","retry_at":1800000000}"#),
+            Ok(Remind::TooSoon(1_800_000_000))
+        );
+        assert!(matches!(
+            remind_answer(429, "{}"),
+            Err(ApiError::Status(429, _))
+        ));
+        assert!(matches!(
+            remind_answer(404, "{}"),
+            Err(ApiError::Status(404, _))
+        ));
     }
 
     #[test]

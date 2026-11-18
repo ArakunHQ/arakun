@@ -170,8 +170,35 @@ pub struct TeamsView {
     /// Decisions shows only the ones this user accepted or proposed.
     decisions_mine: bool,
     decision_query: Entity<TextInput>,
+    /// The login typed to invite, as GitHub knows it.
+    lookup: Option<(String, Lookup)>,
+    _lookup: Option<Task<()>>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
+}
+
+/// What GitHub said about a login typed to invite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Lookup {
+    Looking,
+    /// The account, with its name when it has one.
+    Found(Option<String>),
+    Missing,
+    /// GitHub could not say (a rate limit, no network).
+    Unknown,
+}
+
+/// What the waiting page shows about one request to join.
+struct Waiting {
+    /// The team to remind, when the server knows the request.
+    remind: Option<String>,
+    name: String,
+    subtitle: &'static str,
+    approvers: Vec<String>,
+    asked_at: Option<u64>,
+    reminded_at: Option<u64>,
+    remind_after: Option<u64>,
+    reminding: bool,
 }
 
 impl EventEmitter<TeamsViewEvent> for TeamsView {}
@@ -203,7 +230,7 @@ impl TeamsView {
             }),
             on(cx, &invite, |this, ev, cx| match ev {
                 InputEvent::Submit => this.send_invite(cx),
-                _ => cx.notify(),
+                _ => this.look_up(cx),
             }),
             on(cx, &channel_name, |this, ev, cx| match ev {
                 InputEvent::Submit => this.create_channel(cx),
@@ -252,6 +279,8 @@ impl TeamsView {
             decision: None,
             decisions_mine: false,
             decision_query,
+            lookup: None,
+            _lookup: None,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -316,7 +345,14 @@ impl TeamsView {
                 .filter_map(|i| i.invited_by_login.clone()),
         );
         people.extend(hub.inviters.values().cloned());
-        people.extend(hub.sent.iter().map(|(_, l, _)| l.clone()));
+        people.extend(
+            hub.waiting
+                .iter()
+                .filter_map(|w| w.invited_by_login.clone()),
+        );
+        for t in hub.team.values() {
+            people.extend(t.invites.iter().flatten().map(|i| i.login.clone()));
+        }
         if let Some(team) = created {
             self.creating_from = None;
             self.pane = Pane::Team(team);
@@ -461,7 +497,56 @@ impl TeamsView {
             return;
         }
         self.invite.update(cx, |i, cx| i.set_text("", cx));
+        self.lookup = None;
+        self._lookup = None;
         self.hub.update(cx, |h, cx| h.invite(&team, login, cx));
+    }
+
+    /// Looks the typed login up on GitHub once typing pauses.
+    fn look_up(&mut self, cx: &mut Context<Self>) {
+        let login = self
+            .invite
+            .read(cx)
+            .text()
+            .trim()
+            .trim_start_matches('@')
+            .to_string();
+        if self.lookup.as_ref().is_some_and(|(l, _)| *l == login) {
+            return;
+        }
+        if login.is_empty() {
+            self.lookup = None;
+            self._lookup = None;
+            cx.notify();
+            return;
+        }
+        self.lookup = Some((login.clone(), Lookup::Looking));
+        self._lookup = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            let asked = login.clone();
+            let found = cx
+                .background_spawn(async move { super::api::github_user(&asked) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.lookup.as_ref().is_none_or(|(l, _)| *l != login) {
+                    return;
+                }
+                let state = match found {
+                    Ok(Some(user)) => {
+                        let shown = user.login.clone();
+                        this.teams.update(cx, |t, cx| t.want_pictures([shown], cx));
+                        Lookup::Found(user.name.filter(|n| !n.trim().is_empty()))
+                    }
+                    Ok(None) => Lookup::Missing,
+                    Err(_) => Lookup::Unknown,
+                };
+                this.lookup = Some((login, state));
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     fn create_channel(&mut self, cx: &mut Context<Self>) {
@@ -1004,12 +1089,13 @@ impl TeamsView {
     /// The invites this user got, as the invitee sees them.
     fn render_invites(&self, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
-        let invites: Vec<(InviteRow, bool)> = hub
+        let invites: Vec<(InviteRow, bool, bool)> = hub
             .invites
             .iter()
             .map(|i| {
                 let busy = hub.busy.contains(&format!("accept:{}", i.invite_id));
-                (i.clone(), busy)
+                let declining = hub.busy.contains(&format!("decline:{}", i.invite_id));
+                (i.clone(), busy, declining)
             })
             .collect();
         let me = hub
@@ -1027,13 +1113,24 @@ impl TeamsView {
         if invites.is_empty() {
             page = page.child(Self::footnote("No invites are waiting."));
         }
-        for (ix, (inv, busy)) in invites.into_iter().enumerate() {
+        for (ix, (inv, busy, declining)) in invites.into_iter().enumerate() {
             let by = inv.invited_by_login.clone();
             let title = match &by {
                 Some(by) => format!("{by} invited you to {}", inv.team_name),
                 None => format!("You are invited to {}", inv.team_name),
             };
             let accept = inv.clone();
+            let decline = inv.clone();
+            let mut about = Vec::new();
+            if let Some(n) = inv.member_count {
+                about.push(format!("A team of {n}"));
+            }
+            about.push(format!("invited as {me}"));
+            about.push(ago(inv.created_at));
+            let mut about = about.join(" · ");
+            if let Some(first) = about.get(..1) {
+                about = first.to_uppercase() + &about[1..];
+            }
             page = page.child(
                 Self::card().child(
                     div()
@@ -1064,10 +1161,7 @@ impl TeamsView {
                                             ui::text(
                                                 Type::Label,
                                                 theme::text_subtle(),
-                                                format!(
-                                                    "Invited as {me} · {}",
-                                                    ago(inv.created_at)
-                                                ),
+                                                about,
                                             )
                                             .font_weight(FontWeight::NORMAL),
                                         ),
@@ -1078,17 +1172,36 @@ impl TeamsView {
                             "After you accept, an admin approves this device. Then it can read the team.",
                         ))
                         .child(
-                            div().flex().justify_end().gap(ui::sp(8.)).child(
-                                ui::button(
-                                    ("teams-accept", ix),
-                                    if busy { "Joining…" } else { "Accept" },
-                                    ButtonKind::Primary,
-                                    !busy,
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(ui::sp(8.))
+                                .child(
+                                    ui::button(
+                                        ("teams-decline", ix),
+                                        if declining { "Declining…" } else { "Decline" },
+                                        ButtonKind::Ghost,
+                                        !busy && !declining,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.hub.update(cx, |h, cx| h.decline(&decline, cx));
+                                        },
+                                    )),
                                 )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hub.update(cx, |h, cx| h.accept(&accept, cx));
-                                })),
-                            ),
+                                .child(
+                                    ui::button(
+                                        ("teams-accept", ix),
+                                        if busy { "Joining…" } else { "Accept" },
+                                        ButtonKind::Primary,
+                                        !busy && !declining,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.hub.update(cx, |h, cx| h.accept(&accept, cx));
+                                        },
+                                    )),
+                                ),
                         ),
                 ),
             );
@@ -1098,14 +1211,39 @@ impl TeamsView {
 
     /// "Waiting for an admin to approve this device": after accepting an
     /// invite, or a device of a member that holds no team key yet.
-    fn render_waiting(
-        &self,
-        team: &str,
-        subtitle: &'static str,
-        admins: Vec<String>,
-        faces: &Faces,
-    ) -> AnyElement {
+    fn render_waiting(&self, w: Waiting, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let device = crate::redact::value(&hub::device_name());
+        let admins = w.approvers;
+        let asked = match w.asked_at {
+            Some(at) => format!("{device} · asked {}", ago(at)),
+            None => format!("{device} · asked to join"),
+        };
+        let wait_until = w.remind_after.filter(|at| *at > now());
+        let remind = w.remind.map(|team| {
+            let who = admins
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "the admins".into());
+            let label = if w.reminding {
+                "Reminding…".to_string()
+            } else {
+                format!("Remind {who}")
+            };
+            ui::button(
+                "teams-remind",
+                label,
+                ButtonKind::Outline,
+                !w.reminding && wait_until.is_none(),
+            )
+            .on_click(
+                cx.listener(move |this, _, _, cx| this.hub.update(cx, |h, cx| h.remind(&team, cx))),
+            )
+        });
+        let remind_note = match (wait_until, w.reminded_at) {
+            (Some(at), _) => Some(format!("You can remind them again {}.", until(at))),
+            (None, Some(at)) => Some(format!("Reminded {}.", ago(at))),
+            _ => None,
+        };
         let who: AnyElement = if admins.is_empty() {
             "An admin of the team".into_any_element()
         } else {
@@ -1131,8 +1269,8 @@ impl TeamsView {
             "teams-waiting-page",
             Self::page()
                 .child(ui::page_title(
-                    team.to_string(),
-                    Some(subtitle.into_any_element()),
+                    w.name.clone(),
+                    Some(w.subtitle.into_any_element()),
                 ))
                 .child(
                     Self::card().child(
@@ -1163,12 +1301,8 @@ impl TeamsView {
                                                 "Waiting for an admin to approve this device",
                                             ))
                                             .child(
-                                                ui::text(
-                                                    Type::Label,
-                                                    theme::text_subtle(),
-                                                    format!("{device} · asked to join"),
-                                                )
-                                                .font_weight(FontWeight::NORMAL),
+                                                ui::text(Type::Label, theme::text_subtle(), asked)
+                                                    .font_weight(FontWeight::NORMAL),
                                             ),
                                     ),
                             )
@@ -1184,10 +1318,22 @@ impl TeamsView {
                                     .child(Self::fact("Until then", "You can't read or write here"))
                                     .child(div().border_t_1().border_color(theme::border_subtle())),
                             )
-                            .child(Self::note(
-                                "square-lock02",
-                                "An admin's device holds the key. The server does not.",
-                            )),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(ui::sp(12.))
+                                    .child(
+                                        Self::note(
+                                            "square-lock02",
+                                            "An admin's device holds the key. The server does not.",
+                                        )
+                                        .flex_1()
+                                        .min_w_0(),
+                                    )
+                                    .children(remind),
+                            )
+                            .children(remind_note.map(Self::footnote)),
                     ),
                 ),
         )
@@ -1386,13 +1532,18 @@ impl TeamsView {
                     .collect()
             })
             .unwrap_or_default();
-        let sent: Vec<(String, u64)> = hub
-            .sent
-            .iter()
+        let sent: Vec<(String, String, u64, bool)> = t
+            .and_then(|t| t.invites.clone())
+            .unwrap_or_default()
+            .into_iter()
             .rev()
-            .filter(|(t, l, _)| t == team_id && !members.contains(&l.to_ascii_lowercase()))
-            .map(|(_, l, at)| (l.clone(), *at))
+            .filter(|i| !members.contains(&i.login.to_ascii_lowercase()))
+            .map(|i| {
+                let busy = hub.busy.contains(&format!("withdraw:{}", i.invite_id));
+                (i.invite_id, i.login, i.created_at, busy)
+            })
             .collect();
+        let tid = team_id.to_string();
         let typed = self
             .invite
             .read(cx)
@@ -1422,31 +1573,33 @@ impl TeamsView {
                     .on_click(cx.listener(|this, _, _, cx| this.send_invite(cx))),
                 ),
         );
+        let found = match self.lookup.as_ref().filter(|(l, _)| *l == typed) {
+            Some((_, Lookup::Found(Some(name)))) => format!("{name} · found on GitHub"),
+            Some((_, Lookup::Found(None))) => "Found on GitHub".to_string(),
+            Some((_, Lookup::Missing)) => "Not found on GitHub".to_string(),
+            Some((_, Lookup::Looking)) => "Looking on GitHub…".to_string(),
+            _ => "A GitHub login".to_string(),
+        };
         if !typed.is_empty() {
             card = card.child(
                 div().px(ui::sp(CARD_INSET)).pb(ui::sp(CARD_INSET)).child(
-                    Self::person_row(
-                        faces.avatar(&typed, AVATAR),
-                        typed.clone(),
-                        "A GitHub login",
-                        true,
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(ui::sp(6.))
-                            .h(px(22.))
-                            .px(ui::sp(8.))
-                            .rounded(ui::rad(ui::RADIUS_SM))
-                            .border_1()
-                            .border_color(theme::border())
-                            .ty(Type::Caption)
-                            .text_color(theme::text_muted())
-                            .child(div().size(px(5.)).rounded_full().bg(theme::text_muted()))
-                            .child("Enter to invite"),
-                    ),
+                    Self::person_row(faces.avatar(&typed, AVATAR), typed.clone(), found, true)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(ui::sp(6.))
+                                .h(px(22.))
+                                .px(ui::sp(8.))
+                                .rounded(ui::rad(ui::RADIUS_SM))
+                                .border_1()
+                                .border_color(theme::border())
+                                .ty(Type::Caption)
+                                .text_color(theme::text_muted())
+                                .child(div().size(px(5.)).rounded_full().bg(theme::text_muted()))
+                                .child("Enter to invite"),
+                        ),
                 ),
             );
         }
@@ -1461,18 +1614,26 @@ impl TeamsView {
             .child(card);
         if !sent.is_empty() {
             let mut rows = Self::rows();
-            for (login, at) in sent {
+            for (i, (invite_id, login, at, busy)) in sent.into_iter().enumerate() {
                 let note = if pending.contains(&login.to_ascii_lowercase()) {
                     format!("Invited {} · accepted, waiting for approval", ago(at))
                 } else {
                     format!("Invited {} · has not answered", ago(at))
                 };
-                rows = rows.child(Self::person_row(
-                    faces.avatar(&login, AVATAR),
-                    login,
-                    note,
-                    false,
-                ));
+                let t = tid.clone();
+                rows = rows.child(
+                    Self::person_row(faces.avatar(&login, AVATAR), login, note, false).child(
+                        ui::button(
+                            ("teams-withdraw", i),
+                            if busy { "Withdrawing…" } else { "Withdraw" },
+                            ButtonKind::Ghost,
+                            !busy,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hub.update(cx, |h, cx| h.withdraw(&t, &invite_id, cx))
+                        })),
+                    ),
+                );
             }
             page = page.child(
                 div()
@@ -1516,11 +1677,19 @@ impl TeamsView {
                     Self::person_row(
                         faces.avatar(&p.login, AVATAR),
                         p.login.clone(),
-                        format!(
-                            "Accepted {} · {}",
-                            ago(p.requested_at),
-                            plural(p.devices.len(), "device", "devices")
-                        ),
+                        match p.reminded_at {
+                            Some(at) => format!(
+                                "Accepted {} · {} · reminded you {}",
+                                ago(p.requested_at),
+                                plural(p.devices.len(), "device", "devices"),
+                                ago(at)
+                            ),
+                            None => format!(
+                                "Accepted {} · {}",
+                                ago(p.requested_at),
+                                plural(p.devices.len(), "device", "devices")
+                            ),
+                        },
                         false,
                     )
                     .child(
@@ -2323,6 +2492,7 @@ impl TeamsView {
         let keyless = t.keyless;
         let joined = hub.joined.contains(team_id);
         let team_name = t.detail.name.clone();
+        let approved_by = t.approved_by.clone();
         // Each notice goes where its device was added among the messages.
         let added: HashMap<String, u64> = t
             .devices
@@ -2482,7 +2652,8 @@ impl TeamsView {
                     .text_color(theme::text_subtle())
                     .child(icon("tick02", 12.).text_color(theme::success()))
                     .child(format!(
-                        "An admin approved {}. You can read {team_name} from here on, and its history.",
+                        "{} approved {}. You can read {team_name} from here on, and its history.",
+                        approved_by.as_deref().unwrap_or("An admin"),
                         crate::redact::text(&hub::device_name())
                     ))
                     .into_any_element(),
@@ -2670,7 +2841,10 @@ impl TeamsView {
         let Some(t) = hub.team.get(team_id) else {
             return div().into_any_element();
         };
-        let epoch = t.detail.epoch;
+        let epoch = match t.epoch_made.get(&t.detail.epoch) {
+            Some(at) => format!("Epoch {} · made {}", t.detail.epoch, made_on(*at)),
+            None => format!("Epoch {}", t.detail.epoch),
+        };
         let people = t.detail.members.len();
         let devices: usize = t.devices.values().map(Vec::len).sum();
         div()
@@ -2699,7 +2873,7 @@ impl TeamsView {
                 div()
                     .flex()
                     .flex_col()
-                    .child(Self::fact("Team key", format!("Epoch {epoch}")))
+                    .child(Self::fact("Team key", epoch))
                     .child(Self::fact(
                         "Held by",
                         format!(
@@ -3102,18 +3276,53 @@ impl TeamsView {
             .filter(|t| keyless(t))
             .map(|t| (t.to_string(), name_of(t), admins_of(t)));
         let inviters = hub.inviters.clone();
+        let waiting_of = |t: &str, name: String, subtitle: &'static str, admins: Vec<String>| {
+            let row = hub.waiting_for(t);
+            // The one who invited can approve; name them first.
+            let mut approvers = admins;
+            if let Some(by) = row
+                .and_then(|w| w.invited_by_login.clone())
+                .or_else(|| inviters.get(t).cloned())
+            {
+                approvers.retain(|a| !a.eq_ignore_ascii_case(&by));
+                approvers.insert(0, by);
+            }
+            Waiting {
+                remind: row.map(|w| w.team_id.clone()),
+                name,
+                subtitle,
+                approvers,
+                asked_at: row.map(|w| w.requested_at),
+                reminded_at: row.and_then(|w| w.reminded_at),
+                remind_after: hub.remind_after.get(t).copied(),
+                reminding: hub.busy.contains(&format!("remind:{t}")),
+            }
+        };
+        let waiting_page = if let Some((t, name, admins)) = waiting_on.clone() {
+            Some(waiting_of(
+                &t,
+                name,
+                "This device is new to the team. One step is left, and it is not yours.",
+                admins,
+            ))
+        } else if no_teams && !has_invites && self.pane == Pane::None && !asked.is_empty() {
+            let (t, name) = asked[0].clone();
+            Some(waiting_of(
+                &t,
+                name,
+                "You accepted the invite. One step is left, and it is not yours.",
+                Vec::new(),
+            ))
+        } else {
+            None
+        };
 
         let (header_team, header_channel, body): (Option<String>, Option<String>, AnyElement) =
             match self.pane.clone() {
                 _ if waiting_on.is_some() => {
-                    let (t, name, admins) = waiting_on.expect("checked");
-                    let subtitle =
-                        "This device is new to the team. One step is left, and it is not yours.";
-                    (
-                        Some(t),
-                        None,
-                        self.render_waiting(&name, subtitle, admins, faces),
-                    )
+                    let (t, _, _) = waiting_on.expect("checked");
+                    let w = waiting_page.expect("made with waiting_on");
+                    (Some(t), None, self.render_waiting(w, faces, cx))
                 }
                 Pane::Channel(t, c) => {
                     let name = self
@@ -3148,11 +3357,8 @@ impl TeamsView {
                     (None, None, self.render_invites(faces, cx))
                 }
                 Pane::None if no_teams && !asked.is_empty() => {
-                    let (t, name) = asked[0].clone();
-                    let who: Vec<String> = inviters.get(&t).cloned().into_iter().collect();
-                    let subtitle =
-                        "You accepted the invite. One step is left, and it is not yours.";
-                    (None, None, self.render_waiting(&name, subtitle, who, faces))
+                    let w = waiting_page.expect("made for this case");
+                    (None, None, self.render_waiting(w, faces, cx))
                 }
                 Pane::None if no_teams => (None, None, self.render_new_team(cx)),
                 Pane::None => (
@@ -3449,6 +3655,33 @@ fn ago_from(at: u64, now: u64) -> String {
     }
 }
 
+/// How long until a time, in words: "in a moment", "in 4 minutes".
+fn until(at: u64) -> String {
+    until_from(at, now())
+}
+
+fn until_from(at: u64, now: u64) -> String {
+    let secs = at.saturating_sub(now);
+    match secs {
+        0..60 => "in a moment".into(),
+        60..120 => "in a minute".into(),
+        120..3600 => format!("in {} minutes", secs.div_ceil(60)),
+        3600..7200 => "in an hour".into(),
+        7200..86_400 => format!("in {} hours", secs / 3600),
+        86_400..172_800 => "tomorrow".into(),
+        _ => format!("in {} days", secs / 86_400),
+    }
+}
+
+/// The day a key was made: "today", "yesterday" or "Nov 12".
+fn made_on(at: u64) -> String {
+    let day = day_label(at);
+    match day.as_str() {
+        "Today" | "Yesterday" => day.to_lowercase(),
+        _ => day,
+    }
+}
+
 /// The divider over a day's messages: today, yesterday, or the date.
 fn day_label(at: u64) -> String {
     const MONTHS: [&str; 12] = [
@@ -3508,6 +3741,15 @@ fn when(at: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn until_reads_as_words() {
+        assert_eq!(until_from(100, 100), "in a moment");
+        assert_eq!(until_from(190, 100), "in a minute");
+        assert_eq!(until_from(100 + 250, 100), "in 5 minutes");
+        assert_eq!(until_from(100 + 3 * 3600, 100), "in 3 hours");
+        assert_eq!(until_from(50, 100), "in a moment");
+    }
 
     #[test]
     fn snippets_are_one_short_line() {

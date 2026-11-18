@@ -17,8 +17,8 @@ use gpui::{AppContext as _, Context, Entity, Task};
 
 use super::Teams;
 use super::api::{
-    ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Role, Stored,
-    TeamDetail, TeamRow,
+    ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Remind, Role,
+    Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
 };
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
 use super::socket::{self, Dial, Link};
@@ -77,6 +77,13 @@ pub struct TeamState {
     pub untrusted: Vec<String>,
     pub channels: Vec<ChannelInfo>,
     pub pending: Vec<PendingRow>,
+    /// The team's open invites, for its admins; `None` when the server
+    /// could not list them.
+    pub invites: Option<Vec<TeamInvite>>,
+    /// When each epoch's key was made, as far as the server says.
+    pub epoch_made: HashMap<u64, u64>,
+    /// Who sent this device its first key of the team: who let it in.
+    pub approved_by: Option<String>,
     /// This device holds no key of the team yet: an admin's device has to
     /// seal one to it.
     pub keyless: bool,
@@ -211,9 +218,11 @@ pub struct Hub {
     pub info: Option<String>,
     /// Actions under way, by a key such as `approve:<team>:<id>`.
     pub busy: HashSet<String>,
-    /// Invites sent from here in this run, by team: the login and when. The
-    /// server has no list of a team's open invites to read back.
-    pub sent: Vec<(String, String, u64)>,
+    /// Teams this user asked to join, as the server lists them.
+    pub waiting: Vec<WaitingRow>,
+    /// A reminder to a team's admins may go again from this time, after the
+    /// server said it was too soon.
+    pub remind_after: HashMap<String, u64>,
     /// Who invited this user to a team, from invites accepted in this run.
     pub inviters: HashMap<String, String>,
     /// Teams an admin let this user into during this run: their chat says so.
@@ -279,7 +288,8 @@ impl Hub {
             _poll: None,
             _tick: None,
             info: None,
-            sent: Vec::new(),
+            waiting: Vec::new(),
+            remind_after: HashMap::new(),
             inviters: HashMap::new(),
             joined: HashSet::new(),
         };
@@ -339,7 +349,8 @@ impl Hub {
         self.error = None;
         self.info = None;
         self.busy.clear();
-        self.sent.clear();
+        self.waiting.clear();
+        self.remind_after.clear();
         self.inviters.clear();
         self.joined.clear();
         self.bot.clear();
@@ -585,11 +596,35 @@ impl Hub {
         }
         self.run(
             cx,
-            |net| Ok((net.call().teams()?, net.call().invites()?)),
+            |net| {
+                let teams = net.call().teams()?;
+                let invites = net.call().invites()?;
+                // An older server has no list of requests; the teams file
+                // still remembers this device's.
+                let waiting = net.call().waiting().ok();
+                Ok((teams, invites, waiting))
+            },
             |hub, result, cx| match result {
-                Ok((teams, invites)) => {
+                Ok((teams, invites, waiting)) => {
                     hub.load = Load::Ready;
                     let ids: HashSet<&str> = teams.iter().map(|t| t.team_id.as_str()).collect();
+                    if let Some(waiting) = waiting {
+                        // A request the server no longer has, of a team this
+                        // user is not in, was turned down.
+                        let open: HashSet<&str> =
+                            waiting.iter().map(|w| w.team_id.as_str()).collect();
+                        let dropped: Vec<String> = hub
+                            .kept
+                            .asked()
+                            .keys()
+                            .filter(|t| !open.contains(t.as_str()) && !ids.contains(t.as_str()))
+                            .cloned()
+                            .collect();
+                        for t in dropped {
+                            hub.kept.forget_ask(&t);
+                        }
+                        hub.waiting = waiting;
+                    }
                     let asked: Vec<String> = hub
                         .kept
                         .asked()
@@ -628,13 +663,58 @@ impl Hub {
         );
     }
 
-    /// Teams this user asked to join and is waiting on, with their names.
+    /// Teams this user asked to join and is waiting on, with their names:
+    /// the server's list, oldest first, then any only this device remembers.
     pub fn asked(&self) -> Vec<(String, String)> {
-        self.kept
-            .asked()
+        let mut out: Vec<(String, String)> = self
+            .waiting
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+            .map(|w| (w.team_id.clone(), w.team_name.clone()))
+            .collect();
+        for (k, v) in self.kept.asked() {
+            if !out.iter().any(|(t, _)| t == k) {
+                out.push((k.clone(), v.clone()));
+            }
+        }
+        out
+    }
+
+    /// The server's word on a request to join, when it has one.
+    pub fn waiting_for(&self, team_id: &str) -> Option<&WaitingRow> {
+        self.waiting.iter().find(|w| w.team_id == team_id)
+    }
+
+    /// Reminds a team's admins of this user's request. Too soon, and the
+    /// button waits for the time the server gives.
+    pub fn remind(&mut self, team_id: &str, cx: &mut Context<Self>) {
+        let busy = format!("remind:{team_id}");
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        self.error = None;
+        self.info = None;
+        let team_id = team_id.to_string();
+        self.run(
+            cx,
+            {
+                let team_id = team_id.clone();
+                move |net| net.call().remind(&team_id)
+            },
+            move |hub, result, _| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(Remind::Sent) => {
+                        if let Some(w) = hub.waiting.iter_mut().find(|w| w.team_id == team_id) {
+                            w.reminded_at = Some(now());
+                        }
+                    }
+                    Ok(Remind::TooSoon(at)) => {
+                        hub.remind_after.insert(team_id, at);
+                    }
+                    Err(e) => hub.error = Some(format!("Could not send the reminder: {e}")),
+                }
+            },
+        );
     }
 
     /// One team: its members and their devices, its channels, this device's
@@ -741,6 +821,9 @@ impl Hub {
                 untrusted: read.untrusted,
                 channels,
                 pending: read.pending,
+                invites: read.invites,
+                epoch_made: read.epoch_made,
+                approved_by: read.approved_by,
                 keyless,
                 problem,
                 devices_read: Instant::now(),
@@ -944,19 +1027,69 @@ impl Hub {
                 let team_id = team_id.clone();
                 move |net| net.call().invite(&team_id, &login).map(|()| login)
             },
-            move |hub, result, _| {
+            move |hub, result, cx| {
                 hub.busy.remove(&busy);
                 match result {
-                    Ok(login) => {
-                        hub.sent
-                            .retain(|(t, l, _)| !(*t == team_id && l.eq_ignore_ascii_case(&login)));
-                        hub.sent.push((team_id, login, now()));
-                    }
+                    // The invited list comes back from the server.
+                    Ok(_) => hub.load_team(&team_id, cx),
                     Err(ApiError::Status(409, _)) => {
                         hub.error =
                             Some("They are a member already, or waiting for approval.".into())
                     }
                     Err(e) => hub.error = Some(format!("Could not invite: {e}")),
+                }
+            },
+        );
+    }
+
+    /// Takes back an invite nobody answered yet.
+    pub fn withdraw(&mut self, team_id: &str, invite_id: &str, cx: &mut Context<Self>) {
+        let busy = format!("withdraw:{invite_id}");
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        self.error = None;
+        self.info = None;
+        let (team_id, invite_id) = (team_id.to_string(), invite_id.to_string());
+        self.run(
+            cx,
+            {
+                let team_id = team_id.clone();
+                move |net| net.call().withdraw(&team_id, &invite_id)
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(()) => hub.load_team(&team_id, cx),
+                    Err(e) => hub.error = Some(format!("Could not withdraw the invite: {e}")),
+                }
+            },
+        );
+    }
+
+    /// Turns an invite down: it goes away for good.
+    pub fn decline(&mut self, invite: &InviteRow, cx: &mut Context<Self>) {
+        let busy = format!("decline:{}", invite.invite_id);
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        self.error = None;
+        self.info = None;
+        let id = invite.invite_id.clone();
+        self.run(
+            cx,
+            {
+                let id = id.clone();
+                move |net| net.call().decline(&id)
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(()) => {
+                        hub.invites.retain(|i| i.invite_id != id);
+                        hub.refresh(cx);
+                    }
+                    Err(e) => hub.error = Some(format!("Could not decline: {e}")),
                 }
             },
         );
@@ -1740,6 +1873,9 @@ struct TeamRead {
     keys: Vec<(u64, TeamKey)>,
     bad_envelopes: usize,
     pending: Vec<PendingRow>,
+    invites: Option<Vec<TeamInvite>>,
+    epoch_made: HashMap<u64, u64>,
+    approved_by: Option<String>,
 }
 
 fn read_team(
@@ -1771,7 +1907,25 @@ fn read_team(
         .collect();
     let mut keys = Vec::new();
     let mut bad = 0;
-    for e in call.envelopes(team_id)? {
+    let dated = call.dated_envelopes(team_id)?;
+    let mut epoch_made = HashMap::new();
+    for d in &dated {
+        if let Some(at) = d.made_at {
+            epoch_made.insert(d.envelope.epoch, at);
+        }
+    }
+    // Who sealed this device's oldest key: the admin who let it in.
+    let approved_by = dated
+        .iter()
+        .min_by_key(|d| d.envelope.epoch)
+        .and_then(|d| {
+            devices
+                .iter()
+                .find(|(_, ds)| ds.iter().any(|x| x.device_id == d.envelope.from))
+        })
+        .and_then(|(gid, _)| detail.members.iter().find(|m| m.github_id == *gid))
+        .map(|m| m.login.clone());
+    for e in dated.into_iter().map(|d| d.envelope) {
         if held.contains(&e.epoch) {
             continue;
         }
@@ -1785,10 +1939,11 @@ fn read_team(
             Err(_) => bad += 1,
         }
     }
-    let pending = if admin {
-        call.pending(team_id)?
+    let (pending, invites) = if admin {
+        // An older server has no list of open invites.
+        (call.pending(team_id)?, call.team_invites(team_id).ok())
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
     Ok(TeamRead {
         detail,
@@ -1797,6 +1952,9 @@ fn read_team(
         keys,
         bad_envelopes: bad,
         pending,
+        invites,
+        epoch_made,
+        approved_by,
     })
 }
 

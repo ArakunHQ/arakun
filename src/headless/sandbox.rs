@@ -993,6 +993,23 @@ pub fn current() -> Option<Arc<Jail>> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_outlives_its_timeout_is_stopped() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let start = Instant::now();
+        let out = run_with_timeout(cmd, None, Duration::from_millis(200));
+        assert!(out.unwrap_err().contains("timed out"));
+        // Killed and reaped, not waited out.
+        assert!(start.elapsed() < Duration::from_secs(10));
+        // One that ends in time gives its output.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf hi"]);
+        let out = run_with_timeout(cmd, None, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.stdout, b"hi");
+    }
+
     fn sb(caps: &[Cap]) -> Sandbox {
         Sandbox {
             bwrap: "/usr/bin/bwrap".into(),

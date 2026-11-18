@@ -235,7 +235,8 @@ already read, and once the rotation ends, never what comes after.
 
 `ct` = AES-256-GCM(team key of `epoch`, `nonce`, plaintext), associated data =
 UTF-8 `arakun-teams/v1/<what>|<team_id>|<channel_id>|<id>` where `<what>` is
-`channel` or `message`.
+`channel` or `message`, and `<id>` is the message's `id` for a message and the
+channel's `channel_id` again for a channel name (so it appears twice).
 
 A message on the wire:
 

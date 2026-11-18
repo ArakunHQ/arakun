@@ -247,7 +247,7 @@ devices: `400` without it, `403` if it is someone else's.
 | Request | Who | Answer |
 | --- | --- | --- |
 | `POST /devices` `{sig_pub, enc_pub, name, endorsement}` | anyone | `201 {device_id}`, `200` if registered already. `400` for a bad key, name or endorsement; `409` if another account has the key, or past 20 devices. |
-| `GET /users/<github_id>/devices` | the user, or someone in a team with them | `200 [{device_id, sig_pub, enc_pub, name, created_at, endorsed_by}]` |
+| `GET /users/<github_id>/devices` | the user, or someone in a team with them | `200 [{device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig}]` |
 | `POST /teams` `{name}` | anyone | `201 {team_id, epoch: 1}`; the caller is the owner. |
 | `GET /teams` | anyone | `200 [{team_id, name, role, epoch, rotation_pending}]` |
 | `GET /teams/<team_id>` | member | `200 {team_id, name, epoch, rotation_pending, members, channels}` |

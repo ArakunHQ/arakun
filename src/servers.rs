@@ -156,13 +156,16 @@ fn inbox_file() -> PathBuf {
 
 /// What is kept of a server's inbox: its folders and sessions. No session is
 /// shown at work or waiting from it: that was true when it was heard, and the
-/// server says what is true now once it answers.
+/// server says what is true now once it answers. The lines a session changed move during each turn and
+/// are not shown from here, so they are not kept.
 pub fn kept_inbox(inbox: &Value) -> Value {
     let mut sessions = inbox["sessions"].as_array().cloned().unwrap_or_default();
     for s in &mut sessions {
         if let Some(s) = s.as_object_mut() {
             s.insert("status".into(), json!("idle"));
             s.remove("asks");
+            s.remove("added");
+            s.remove("removed");
         }
     }
     json!({
@@ -172,15 +175,17 @@ pub fn kept_inbox(inbox: &Value) -> Value {
 }
 
 /// Whether two kept inboxes hold the same folders and sessions. A session's
-/// `updated` moves with each change of its status, which is not kept: it is
-/// left out, or every status change would write the file again.
+/// `updated` moves with each change of its status, and the server lists the
+/// sessions by it. Both are left out, or every status change would write the
+/// file again.
 pub fn same_kept(a: &Value, b: &Value) -> bool {
     let without_times = |v: &Value| {
         let mut v = v.clone();
-        for s in v["sessions"].as_array_mut().into_iter().flatten() {
-            if let Some(s) = s.as_object_mut() {
+        if let Some(sessions) = v["sessions"].as_array_mut() {
+            for s in sessions.iter_mut().filter_map(Value::as_object_mut) {
                 s.remove("updated");
             }
+            sessions.sort_by(|x, y| x["id"].as_str().cmp(&y["id"].as_str()));
         }
         v
     };
@@ -285,8 +290,8 @@ mod tests {
             "host": "box",
             "places": [{ "path": "/srv/app", "branch": "main" }],
             "sessions": [
-                { "id": "a", "title": "Fix it", "status": "working" },
-                { "id": "b", "title": "Ask", "status": "needs_input", "asks": { "kind": "permission" } },
+                { "id": "a", "title": "Fix it", "status": "working", "updated": 2, "added": 3, "removed": 1 },
+                { "id": "b", "title": "Ask", "status": "needs_input", "updated": 1, "asks": { "kind": "permission" } },
             ],
         });
         let kept = kept_inbox(&inbox);
@@ -296,6 +301,7 @@ mod tests {
         assert_eq!(kept["sessions"][0]["status"], "idle");
         assert_eq!(kept["sessions"][1]["status"], "idle");
         assert!(kept["sessions"][1].get("asks").is_none());
+        assert!(kept["sessions"][0].get("added").is_none());
         assert!(kept.get("host").is_none());
         // Only a change in what it holds is written again. A status change
         // moves the session's time too.
@@ -303,7 +309,32 @@ mod tests {
         later["sessions"][0]["status"] = json!("idle");
         later["sessions"][0]["updated"] = json!(1_800_000_000);
         assert!(same_kept(&kept_inbox(&later), &kept));
+        later["sessions"][0]["added"] = json!(9);
+        assert!(same_kept(&kept_inbox(&later), &kept));
         later["sessions"][0]["title"] = json!("Fix it now");
         assert!(!same_kept(&kept_inbox(&later), &kept));
+    }
+
+    #[test]
+    fn a_status_change_that_reorders_the_sessions_is_not_a_change() {
+        let inbox = json!({
+            "places": [],
+            "sessions": [
+                { "id": "a", "title": "One", "status": "idle", "updated": 2 },
+                { "id": "b", "title": "Two", "status": "idle", "updated": 1 },
+            ],
+        });
+        // The second one starts work: the server lists it first now.
+        let later = json!({
+            "places": [],
+            "sessions": [
+                { "id": "b", "title": "Two", "status": "working", "updated": 3 },
+                { "id": "a", "title": "One", "status": "idle", "updated": 2 },
+            ],
+        });
+        assert!(same_kept(&kept_inbox(&later), &kept_inbox(&inbox)));
+        let mut renamed = later.clone();
+        renamed["sessions"][0]["title"] = json!("Two, renamed");
+        assert!(!same_kept(&kept_inbox(&renamed), &kept_inbox(&inbox)));
     }
 }

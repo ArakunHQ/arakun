@@ -645,6 +645,34 @@ describe("envelopes", () => {
     ]);
   });
 
+  it("of a new key are not written by a second upload of the same device that lost", async () => {
+    const t = await team();
+    const m = await join(t);
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const path = `/teams/${t.teamId}/envelopes`;
+    const devices = [t.owner.device, m.device];
+    const keyA = newKey();
+    const keyB = newKey();
+    const a = await Promise.all(devices.map((d) => envelope(t.teamId, 2, keyA, d, t.owner.device)));
+    const b = await Promise.all(devices.map((d) => envelope(t.teamId, 2, keyB, d, t.owner.device)));
+    // Upload A wins after upload B read the team as pending, before B's batch.
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === b.length + 2) {
+        raced = true;
+        await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: a } }), 200);
+      }
+      return batch(statements);
+    });
+    await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: b } }), 409);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    const theirs = await expectJson<{ epoch: number; sig: string }[]>(api(m.user, "GET", path, { device: m.device }), 200);
+    expect(theirs.find((e) => e.epoch === 2)?.sig).toBe(a[1]!.sig);
+  });
+
   it("are asked only for epochs with a key when two removals skipped one", async () => {
     const t = await team();
     const a = await join(t);

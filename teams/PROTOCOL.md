@@ -164,12 +164,13 @@ An envelope carries one epoch's team key to one device:
   current one. The first upload for the current epoch must cover every device of
   every member at once, and it ends the rotation. The server checks that coverage
   again as it stores them, and answers `409` if a removal started a newer epoch,
-  another device made this epoch's key first (fetch it), or a member or device was
-  added in between (fetch the devices and retry). An upload replaces an envelope
-  for the same (device, epoch) only if the same device sent the old one, or its
-  sender is no longer an admin's device. `stored` counts what was written: a device
-  that made a new key and sees fewer than it sent must fetch the key in use. At most
-  25 members per team, so a rotation fits in one request.
+  another upload made this epoch's key first, even one from the same device (fetch
+  it), or a member or device was added in between (fetch the devices and retry).
+  An upload replaces an envelope for the same (device, epoch) only if the same
+  device sent the old one, or its sender is no longer an admin's device. `stored`
+  counts what was written: a device that made a new key and sees fewer than it sent
+  must fetch the key in use. At most 25 members per team, so a rotation fits in one
+  request.
 - `GET /teams/<team_id>/envelopes` (with `X-Arakun-Device`) returns the caller
   device's envelopes for every epoch, oldest first. Each is the envelope as it was
   sent, plus `made_at`: when that epoch's key first reached the team (the oldest

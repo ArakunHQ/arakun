@@ -604,18 +604,22 @@ function insertEnvelope(extra: string): string {
       WHERE d.device_id = json_extract(envelopes.body, '$.from') AND m.role IN ('owner', 'admin'))`;
 }
 
-/// Whether the new key of epoch ?6 made by device ?7 is the one in use: the
-/// epoch is the keyed one and no other device's key for it is there.
+/// Whether this upload's new key of epoch ?6 is the one in use: the epoch is
+/// the keyed one, and every envelope of it is one of this upload's (their
+/// signatures, ?7, a JSON list). Before this batch made the epoch the keyed
+/// one, it had no envelopes, so only the upload whose update won passes: not
+/// another device's, nor a second upload of the same device that lost.
 const KEY_WON = `AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?6
-  AND NOT EXISTS (SELECT 1 FROM envelopes WHERE team_id = ?1 AND epoch = ?6 AND json_extract(body, '$.from') <> ?7)`;
+  AND NOT EXISTS (SELECT 1 FROM envelopes WHERE team_id = ?1 AND epoch = ?6
+    AND json_extract(body, '$.sig') NOT IN (SELECT value FROM json_each(?7)))`;
 
 /// An envelope of an upload that makes a new key, written only after the same
-/// batch made the new epoch the keyed one, and only if this device's key won.
+/// batch made the new epoch the keyed one, and only if this upload's key won.
 /// So a key never lands for an epoch a removal skipped, a second rotation
 /// cannot replace the key that won, and an upload answered 409 writes nothing,
 /// its envelopes of older epochs included.
-function storeWithNewKey(db: D1Database, e: Envelope, epoch: number, t: number): D1PreparedStatement {
-  return db.prepare(insertEnvelope(KEY_WON)).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, epoch, e.from);
+function storeWithNewKey(db: D1Database, e: Envelope, epoch: number, sigs: string, t: number): D1PreparedStatement {
+  return db.prepare(insertEnvelope(KEY_WON)).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, epoch, sigs);
 }
 
 /// The epochs from `lo` to `hi` that have a key: the ones with envelopes. A
@@ -659,6 +663,7 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   }
 
   const t = now();
+  const sigs = JSON.stringify(envelopes.filter((e) => e.epoch === team.epoch).map((e) => e.sig));
   const done = await db.batch([
     // First, so the new key's envelopes below can see whether it won. Only if
     // no removal bumped the epoch since we read it, no other device keyed it
@@ -675,7 +680,7 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
             .bind(team.epoch, teamId, JSON.stringify([...covered])),
         ]
       : []),
-    ...envelopes.map((e) => (keying ? storeWithNewKey(db, e, team.epoch, t) : storeEnvelope(db, e, t))),
+    ...envelopes.map((e) => (keying ? storeWithNewKey(db, e, team.epoch, sigs, t) : storeEnvelope(db, e, t))),
     db.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(teamId),
   ]);
   const after = done[done.length - 1]!.results[0] as { epoch: number; keyed_epoch: number };

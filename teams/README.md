@@ -148,13 +148,15 @@ has an empty login until they do.
 
 With the admin endpoint, in a shell where `ADMIN_SECRET` holds the value you saved
 in step 3 (paste it; the variable is not set anywhere else). Run this in Bash or zsh:
-`read -s` hides what you paste, and `sh` (dash) has no `-s`.
+`read -s` hides what you paste, and `sh` (dash) has no `-s`. The header goes to curl
+on its input (`-H @-`), from the shell's own `printf`, so the secret never shows in
+the list of running processes:
 
 ```sh
 read -rs ADMIN_SECRET
 for id in <id> <id> <id>; do
-  curl -fsS -X PUT -H "Authorization: Bearer $ADMIN_SECRET" \
-    "https://<teams host>/admin/users/$id/flags/teams"
+  printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
+    curl -fsS -X PUT -H @- "https://<teams host>/admin/users/$id/flags/teams"
 done
 ```
 
@@ -172,8 +174,8 @@ To sign a user out everywhere, as when a session token may have leaked (they can
 sign in again; take their flags away to keep them out):
 
 ```sh
-curl -fsS -X DELETE -H "Authorization: Bearer $ADMIN_SECRET" \
-  "https://<teams host>/admin/users/<id>/sessions"
+printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
+  curl -fsS -X DELETE -H @- "https://<teams host>/admin/users/<id>/sessions"
 ```
 
 To see who has which flag:

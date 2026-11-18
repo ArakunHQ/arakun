@@ -3167,7 +3167,8 @@ fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>,
             .args(["worktree", "remove", "--force"])
             .arg(place),
     )?;
-    let _ = run_git(git(&root).args(["worktree", "prune"]));
+    // No `worktree prune`: it would also take the git files of another
+    // worktree whose folder is away for now, on a mount that is not there.
     Ok(branch.and_then(|b| run_git(git(&root).args(["branch", "-D", "--", b])).err()))
 }
 
@@ -3860,6 +3861,27 @@ mod tests {
         assert!(has("refs/heads/keep") && !has("refs/heads/drop"));
         // Gone already: nothing to remove.
         assert!(remove_worktree(&keep, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_deletion_leaves_another_worktree_that_is_away_for_now() {
+        let dir = scratch("rm-away");
+        let main = dir.join("app");
+        std::fs::create_dir_all(&main).unwrap();
+        repo_at(&main, &[]);
+        for b in ["gone", "away"] {
+            git_in(
+                &main,
+                &["worktree", "add", "-q", "-b", b, &format!("../{b}")],
+            );
+        }
+        // Its folder is on a mount that is not there right now.
+        std::fs::rename(dir.join("away"), dir.join("away-later")).unwrap();
+        assert_eq!(remove_worktree(&dir.join("gone"), None), Ok(None));
+        let admin = main.join(".git").join("worktrees");
+        assert!(!admin.join("gone").exists());
+        assert!(admin.join("away").join("HEAD").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

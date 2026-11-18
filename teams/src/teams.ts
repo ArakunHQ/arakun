@@ -591,7 +591,8 @@ async function signedEnvelopes(c: Ctx, teamId: string, from: Device): Promise<En
 /// that lands first is not undone. It replaces one only from the same sending
 /// device, or one whose sender is no longer a device of an admin (which
 /// recipients would refuse). So a device that made a key too late cannot
-/// overwrite the key that is in use.
+/// overwrite the key that is in use. A replaced envelope keeps its first
+/// time, so a rewrap does not move the epoch's `made_at`.
 function storeEnvelope(db: D1Database, e: Envelope, t: number): D1PreparedStatement {
   return db.prepare(insertEnvelope("")).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t);
 }
@@ -600,7 +601,7 @@ function insertEnvelope(extra: string): string {
   return `INSERT INTO envelopes (team_id, device_id, epoch, body, created_at)
     SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (
       SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?1 WHERE d.device_id = ?2) ${extra}
-    ON CONFLICT DO UPDATE SET body = excluded.body, created_at = excluded.created_at
+    ON CONFLICT DO UPDATE SET body = excluded.body
     WHERE json_extract(envelopes.body, '$.from') = json_extract(excluded.body, '$.from') OR NOT EXISTS (
       SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = envelopes.team_id
       WHERE d.device_id = json_extract(envelopes.body, '$.from') AND m.role IN ('owner', 'admin'))`;

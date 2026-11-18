@@ -579,6 +579,16 @@ describe("envelopes", () => {
     // Every other field is the envelope as sent, so its signature still checks out.
     const { made_at: _, ...signed } = theirs[1]!;
     expect(signed).toEqual(second[1]);
+
+    // A rewrap of the same key for a device does not move it.
+    const again = await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device);
+    await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [again] } }), 200);
+    const mine = await expectJson<Record<string, unknown>[]>(api(t.owner.user, "GET", path, { device: t.owner.device }), 200);
+    expect(mine.map((e) => [e["epoch"], e["made_at"]])).toEqual([
+      [1, 1000],
+      [2, 2000],
+    ]);
+    expect(mine[1]!["sig"]).toBe(again["sig"]);
   });
 
   it("refuse an eph_pub that is not on the curve, even signed", async () => {

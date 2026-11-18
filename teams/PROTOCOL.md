@@ -315,7 +315,7 @@ every `send`, so a removal or rotation applies to the next message.
 GitHub IDs and logins of users; team names; who is in which team and with which
 role; device public keys and names; when each message was sent, its size, sender
 device and channel; invites, who withdrew or declined them, requests to join and
-when each was last reminded; when each envelope was stored. It never sees team
+when each was last reminded; when each envelope was first stored. It never sees team
 keys, channel names, message text, who replied to what, edits, bot answers,
 decisions or their reversals: these are messages like any other to it.
 

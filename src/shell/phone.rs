@@ -548,6 +548,10 @@ impl Shell {
                     self.ensure_live(&env_path, &sid, window, cx);
                     let who = super::servers::Watcher::Phone(client);
                     self.servers_follow(&env_path, &sid, who, cx);
+                } else {
+                    // A server's session it looked at before is let go, as
+                    // when it opens another of a server's.
+                    self.servers_look_away(super::servers::Watcher::Phone(client));
                 }
                 let reply = self.phone_session_json(&env_path, &sid, &pid, cx);
                 self.phone_send(client, reply);

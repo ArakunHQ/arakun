@@ -26,8 +26,9 @@ pub fn hosts(agent: AgentKind) -> &'static [&'static str] {
         AgentKind::Droid => &["api.factory.ai"],
         AgentKind::OpenCode => &["opencode.ai"],
         AgentKind::WorkersAi => &["api.cloudflare.com"],
-        // Arakun reads only how Codex is signed in, never its tokens.
-        AgentKind::Codex => &[],
+        // Arakun reads only how Codex is signed in, never its tokens, and only
+        // whether Devin is.
+        AgentKind::Codex | AgentKind::Devin => &[],
     }
 }
 
@@ -59,6 +60,9 @@ pub fn notice(agent: AgentKind) -> &'static str {
         }
         AgentKind::Codex => {
             "Arakun has no account of its own and never asks you to approve access. Sign in runs the codex CLI's own login. Arakun only checks which kind of sign-in Codex has and never reads the tokens."
+        }
+        AgentKind::Devin => {
+            "Arakun has no account of its own and never asks you to approve access. Sign in runs the devin CLI's own login. Arakun only checks that Devin has a sign-in and never reads the tokens."
         }
         AgentKind::Droid => {
             "Arakun has no account of its own and never asks you to approve access. It reads the login droid already has and never changes it; droid renews it itself. A Factory API key you connect here, or FACTORY_API_KEY, is used instead; a connected key is kept in the system keyring. Either one goes only to api.factory.ai."
@@ -125,6 +129,7 @@ mod tests {
             }
         }
         assert!(notice(AgentKind::Codex).contains("never reads the tokens"));
+        assert!(notice(AgentKind::Devin).contains("never reads the tokens"));
         // Droid can run on a key Arakun keeps, not only on droid's login.
         assert!(notice(AgentKind::Droid).contains("keyring"));
         for word in ["keyring", "FACTORY_API_KEY", "api.factory.ai"] {

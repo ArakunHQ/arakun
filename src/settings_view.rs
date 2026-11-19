@@ -30,6 +30,8 @@ pub enum SettingsEvent {
     OpenCodeSignOut,
     CodexSignIn,
     CodexSignOut,
+    DevinSignIn,
+    DevinSignOut,
     OpenUsage,
     OpenGallery,
     RailUsage(crate::agent::AgentKind, bool),
@@ -81,6 +83,7 @@ enum Section {
     Codex,
     Droid,
     OpenCode,
+    Devin,
 }
 
 impl Section {
@@ -98,6 +101,7 @@ impl Section {
         Section::Codex,
         Section::Droid,
         Section::OpenCode,
+        Section::Devin,
     ];
 
     fn group(self) -> Group {
@@ -115,6 +119,7 @@ impl Section {
             Section::Codex => Some(AgentKind::Codex),
             Section::Droid => Some(AgentKind::Droid),
             Section::OpenCode => Some(AgentKind::OpenCode),
+            Section::Devin => Some(AgentKind::Devin),
             _ => None,
         }
     }
@@ -133,6 +138,7 @@ impl Section {
             Section::Codex => "Codex",
             Section::Droid => "Droid",
             Section::OpenCode => "OpenCode",
+            Section::Devin => "Devin",
         }
     }
 
@@ -147,7 +153,11 @@ impl Section {
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "check-list",
             Section::Shortcuts => "keyboard",
-            Section::Claude | Section::Codex | Section::Droid | Section::OpenCode => "bot",
+            Section::Claude
+            | Section::Codex
+            | Section::Droid
+            | Section::OpenCode
+            | Section::Devin => "bot",
         }
     }
 
@@ -169,6 +179,7 @@ impl Section {
             Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
             Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
+            Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
         }
     }
 
@@ -207,6 +218,7 @@ impl Section {
                 "factory account plan usage api key credits skills mcp servers extensions plugins"
             }
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
+            Section::Devin => "devin cognition windsurf api key sign in logout",
         }
     }
 
@@ -349,6 +361,10 @@ pub struct SettingsDialog {
     codex: Option<&'static str>,
     /// The variable with Codex's API key, when the environment has one.
     codex_env: Option<&'static str>,
+    /// Whether `devin auth login` has signed in.
+    devin: bool,
+    /// The variable with Devin's API key, when the environment has one.
+    devin_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -524,6 +540,8 @@ impl SettingsDialog {
             opencode: crate::agent::opencode_providers(),
             codex: crate::agent::codex_sign_in(),
             codex_env: crate::agent::codex_env_key(),
+            devin: crate::agent::devin_signed_in(),
+            devin_env: crate::agent::devin_env_key(),
             input,
             section,
             voice,
@@ -766,6 +784,16 @@ impl SettingsDialog {
         }
     }
 
+    /// Devin's own sign-in comes first; a key only in the environment is named
+    /// by its variable, never shown.
+    fn devin_status(&self) -> String {
+        match (self.devin, self.devin_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "Not signed in".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -774,6 +802,7 @@ impl SettingsDialog {
             Section::Codex => self.codex.is_some() || self.codex_env.is_some(),
             Section::Droid => self.droid,
             Section::OpenCode => !self.opencode.is_empty(),
+            Section::Devin => self.devin || self.devin_env.is_some(),
             _ => false,
         }
     }
@@ -1110,6 +1139,35 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                         no_sign_in_row(AgentKind::Codex),
+                    ],
+                )])
+            }
+            Section::Devin => {
+                let signed_in = self.devin;
+                stack(vec![titled(
+                    "Account",
+                    vec![
+                        row(
+                            self.devin_status(),
+                            if signed_in {
+                                "The same sign-in the devin CLI uses. Arakun only checks that it is there."
+                            } else if self.devin_env.is_some() {
+                                "Sessions use the API key in the environment. Sign in to use your Devin account instead."
+                            } else {
+                                "Runs devin auth login in a terminal; approve the sign-in in the browser. WINDSURF_API_KEY works too."
+                            },
+                            if signed_in {
+                                ui::button("set-devin-out", "Sign out", ButtonKind::Danger, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignOut)))
+                                    .into_any_element()
+                            } else {
+                                ui::button("set-devin-in", "Sign in", ButtonKind::Outline, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignIn)))
+                                    .into_any_element()
+                            },
+                        )
+                        .into_any_element(),
+                        no_sign_in_row(AgentKind::Devin),
                     ],
                 )])
             }

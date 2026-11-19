@@ -1,6 +1,6 @@
 //! Headless ACP check: runs one prompt against an agent and prints the event stream.
 //!
-//!   cargo run --release --example acp_probe -- <claude|droid|opencode|codex> <cwd> <prompt> [options]
+//!   cargo run --release --example acp_probe -- <claude|droid|opencode|codex|devin> <cwd> <prompt> [options]
 //!
 //! Options:
 //!   --allow | --deny        answer permission requests (default: allow)
@@ -104,7 +104,7 @@ fn parse_args() -> Args {
     let mut it = std::env::args().skip(1);
     let usage = || -> ! {
         eprintln!(
-            "usage: acp_probe <claude|droid|opencode|codex> <cwd> <prompt> [--allow|--deny] [--mode m] [--model m] [--cancel-after s] [--resume id] [--save p] [--restore p] [--list]"
+            "usage: acp_probe <claude|droid|opencode|codex|devin> <cwd> <prompt> [--allow|--deny] [--mode m] [--model m] [--cancel-after s] [--resume id] [--save p] [--restore p] [--list]"
         );
         std::process::exit(2)
     };

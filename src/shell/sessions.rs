@@ -885,6 +885,7 @@ impl Shell {
             (model::Agent::Claude, Some(env)) => env.claude_settings.clone(),
             (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
             (model::Agent::Codex, Some(env)) => codex_draft(env),
+            (model::Agent::Devin, Some(env)) => devin_draft(env),
             (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
@@ -902,7 +903,7 @@ impl Shell {
         claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         thread.update(cx, |t, cx| {
             // Queued until the session exists, then sent with `initialize_session`
-            // (Droid) or one by one before the first prompt (Claude, OpenCode, Codex).
+            // (Droid) or one by one before the first prompt (the ACP agents).
             if let Some(settings) = &settings {
                 for s in Setting::ALL {
                     let value = settings.get(s);
@@ -1089,7 +1090,7 @@ impl Shell {
 
     /// Loads Droid's defaults and model list off the main thread; the list is
     /// cached, so Droid is only asked when the cache is missing or old.
-    /// Claude's, OpenCode's and Codex's options are cached the same way; the agent
+    /// Claude's, OpenCode's, Codex's and Devin's options are cached the same way; the agent
     /// is only asked when none of its sessions has reported them yet.
     pub(super) fn warm_droid_catalog(&mut self, cx: &mut Context<Self>) {
         let droid = catalog::droid_native();
@@ -1106,6 +1107,9 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
             cx.background_spawn(crate::guard::task(async { catalog::refresh_codex() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_devin() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
@@ -1275,6 +1279,20 @@ impl Shell {
                 }
                 Some((current, choices))
             }
+            // Devin's mode and model; it has no reasoning levels.
+            model::Agent::Devin => {
+                let options = catalog::devin_options();
+                let draft = devin_draft(env);
+                let o = crate::agent::acp_option(&options, s)?;
+                let (mut current, choices) = crate::agent::acp_setting_options(o, s);
+                if let Some((_, v)) = draft
+                    .iter()
+                    .find(|(d, v)| *d == s && choices.iter().any(|c| c.id == *v))
+                {
+                    current = v.clone();
+                }
+                Some((current, choices))
+            }
             model::Agent::WorkersAi => {
                 let options = crate::agent::workers_ai::draft_options(&env.workers_ai_settings);
                 crate::agent::acp_option(&options, s)
@@ -1301,6 +1319,7 @@ impl Shell {
             model::Agent::Claude
             | model::Agent::OpenCode
             | model::Agent::Codex
+            | model::Agent::Devin
             | model::Agent::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
@@ -1360,6 +1379,7 @@ impl Shell {
             model::Agent::Claude => &mut env.claude_settings,
             model::Agent::OpenCode => &mut env.opencode_settings,
             model::Agent::Codex => &mut env.codex_settings,
+            model::Agent::Devin => &mut env.devin_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
@@ -1503,6 +1523,7 @@ impl Shell {
                     catalog::remember_opencode_pick(Vec::new());
                 }
                 model::Agent::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
@@ -1520,11 +1541,11 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                model::Agent::Claude | model::Agent::Codex => {
-                    let options = if agent == model::Agent::Claude {
-                        catalog::claude_options()
-                    } else {
-                        catalog::codex_options()
+                model::Agent::Claude | model::Agent::Codex | model::Agent::Devin => {
+                    let options = match agent {
+                        model::Agent::Claude => catalog::claude_options(),
+                        model::Agent::Codex => catalog::codex_options(),
+                        _ => catalog::devin_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -1899,6 +1920,7 @@ impl Shell {
                 AgentKind::Droid => model::Agent::Droid,
                 AgentKind::OpenCode => model::Agent::OpenCode,
                 AgentKind::Codex => model::Agent::Codex,
+                AgentKind::Devin => model::Agent::Devin,
                 AgentKind::WorkersAi => model::Agent::WorkersAi,
             };
             let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
@@ -2096,9 +2118,22 @@ fn write_transcript(path: &Path, t: &crate::agent::Transcript) -> std::io::Resul
 /// the reasoning levels on offer depend on it. A model Codex no longer offers is
 /// dropped, since setting it would only fail.
 pub(super) fn codex_draft(env: &model::Environment) -> Vec<(Setting, String)> {
-    let mut draft = env.codex_settings.clone();
-    let options = catalog::codex_options();
-    if let Some(o) = crate::agent::acp_option(&options, Setting::Model) {
+    offered_draft(&env.codex_settings, &catalog::codex_options())
+}
+
+/// The Devin settings an environment's next session starts with. Signed out,
+/// Devin offers no models, so a remembered one waits until it does.
+pub(super) fn devin_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.devin_settings, &catalog::devin_options())
+}
+
+/// `picked`, the model first, without a model the agent no longer offers.
+fn offered_draft(
+    picked: &[(Setting, String)],
+    options: &[crate::agent::ConfigOption],
+) -> Vec<(Setting, String)> {
+    let mut draft = picked.to_vec();
+    if let Some(o) = crate::agent::acp_option(options, Setting::Model) {
         draft.retain(|(s, v)| *s != Setting::Model || o.options.iter().any(|c| c.id == *v));
     }
     draft.sort_by_key(|(s, _)| *s != Setting::Model);

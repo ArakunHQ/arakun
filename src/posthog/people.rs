@@ -43,7 +43,9 @@ pub fn list_query(text: &str, page: Paging) -> Hogql {
          min(person.created_at), max(timestamp), count() FROM events",
     );
     search(&mut q, text);
-    q.push(" GROUP BY person_id ORDER BY max(timestamp) DESC");
+    // person_id breaks the tie between people last seen at the same moment,
+    // so a page boundary cannot drop or repeat one.
+    q.push(" GROUP BY person_id ORDER BY max(timestamp) DESC, person_id");
     q.push(&page.clause());
     q
 }
@@ -279,15 +281,18 @@ pub fn flags(timeline: &[Moment]) -> Vec<(String, String)> {
 }
 
 /// Everything the profile shows of one person.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     pub person: String,
     pub identity: Option<Identity>,
     pub cohorts: Option<Vec<String>>,
-    pub daily: Vec<u64>,
-    pub sessions: Vec<Recording>,
-    pub timeline: Vec<Moment>,
-    pub flags: Vec<(String, String)>,
+    /// Each analytics read stands alone: one that failed shows its error in
+    /// its own section, not the whole profile's.
+    pub daily: Result<Vec<u64>, ApiError>,
+    pub sessions: Result<Vec<Recording>, ApiError>,
+    pub timeline: Result<Vec<Moment>, ApiError>,
+    /// From the timeline's events; fails with it.
+    pub flags: Result<Vec<(String, String)>, ApiError>,
     /// Queries this read cost.
     pub spent: u32,
 }
@@ -303,29 +308,29 @@ pub fn load_profile(
     fresh: u64,
 ) -> Result<Profile, ApiError> {
     let id = p.id;
-    let (identity, daily, sessions, timeline) = std::thread::scope(|scope| {
-        let i = scope.spawn(|| {
-            super::call(
-                s,
-                "GET",
-                &format!(
-                    "/api/projects/{id}/persons/?distinct_id={}",
-                    super::encode(distinct_id)
-                ),
-                None,
-            )
-        });
+    // The identity comes first: a distinct_id can have moved to another
+    // person since the list was read, and the activity below must be theirs,
+    // not the id the list cached.
+    let who = super::call(
+        s,
+        "GET",
+        &format!(
+            "/api/projects/{id}/persons/?distinct_id={}",
+            super::encode(distinct_id)
+        ),
+        None,
+    )?;
+    let identity = parse_person(&who);
+    let person_id = identity
+        .as_ref()
+        .map(|i| i.uuid.as_str())
+        .unwrap_or(person_id);
+    let (daily, sessions, timeline) = std::thread::scope(|scope| {
         let d = scope.spawn(|| query::run(s, id, &daily_query(person_id), fresh));
         let se = scope.spawn(|| query::run(s, id, &sessions_query(person_id), fresh));
         let t = scope.spawn(|| query::run(s, id, &timeline_query(person_id), fresh));
-        (
-            super::joined(i),
-            super::joined(d),
-            super::joined(se),
-            super::joined(t),
-        )
+        (super::joined(d), super::joined(se), super::joined(t))
     });
-    let identity = parse_person(&identity?);
     let cohorts = identity.as_ref().and_then(|i| {
         super::call(
             s,
@@ -339,17 +344,23 @@ pub fn load_profile(
         .ok()
         .map(|v| parse_cohorts(&v))
     });
-    let (daily, sessions, timeline) = (daily?, sessions?, timeline?);
-    let moments = parse_timeline(&timeline.rows);
+    let spent = [&daily, &sessions, &timeline]
+        .into_iter()
+        .filter_map(|r| r.as_ref().ok().map(|a| a.spent))
+        .sum::<u32>();
+    let timeline = timeline.map(|a| parse_timeline(&a.rows));
+    let flags = timeline.as_ref().map(|m| flags(m)).map_err(|e| e.clone());
+    let daily = daily.map(|a| parse_daily(&a.rows));
+    let sessions = sessions.map(|a| parse_sessions(&a.rows));
     Ok(Profile {
         person: person_id.to_string(),
         identity,
         cohorts,
-        daily: parse_daily(&daily.rows),
-        sessions: parse_sessions(&sessions.rows),
-        flags: flags(&moments),
-        timeline: moments,
-        spent: daily.spent + sessions.spent + timeline.spent,
+        daily,
+        sessions,
+        flags,
+        timeline,
+        spent,
     })
 }
 
@@ -365,7 +376,7 @@ mod tests {
         ));
         assert!(
             q.text
-                .ends_with("ORDER BY max(timestamp) DESC LIMIT 51 OFFSET 0")
+                .ends_with("ORDER BY max(timestamp) DESC, person_id LIMIT 51 OFFSET 0")
         );
         assert!(!q.text.contains("OR 1=1"));
         assert_eq!(q.values["v0"], "%50\\%' OR 1=1%");

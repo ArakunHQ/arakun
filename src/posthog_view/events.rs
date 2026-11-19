@@ -192,6 +192,13 @@ impl EventsTab {
 
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.selected = None;
+        // The rows and page on screen belong to the filter that made them:
+        // leaving them under new controls would show old results as matches.
+        self.events.clear();
+        self.keys.clear();
+        self.volume.clear();
+        self.more = false;
+        self.filter.until = None;
         let generation = self.debounce.bump();
         self.loading = true;
         cx.notify();
@@ -211,8 +218,10 @@ impl EventsTab {
         let generation = self.debounce.bump();
         self.loaded = true;
         self.loading = true;
-        self.page = Paging::first(PAGE);
         cx.notify();
+        // The read keeps this edge on every page, so arrivals in between
+        // cannot shift what a later page returns.
+        self.filter.until = Some(crate::model::unix_now());
         let filter = self.filter.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
             let f = filter.clone();
@@ -221,7 +230,7 @@ impl EventsTab {
                     let (s, id) = (&t.session, t.project.id);
                     let (list, volume) = std::thread::scope(|scope| {
                         let l = scope.spawn(|| {
-                            query::run(s, id, &ev::list_query(&f, Paging::first(PAGE)), fresh)
+                            query::run(s, id, &ev::list_query(&f, Paging::first(PAGE), None), fresh)
                         });
                         let v = scope.spawn(|| query::run(s, id, &ev::volume_query(&f), fresh));
                         (posthog::joined(l), posthog::joined(v))
@@ -236,6 +245,9 @@ impl EventsTab {
                 this.loading = false;
                 match got {
                     Ok((list, volume)) => {
+                        // The page resets with the rows, not at the request: a
+                        // failed refresh keeps its rows and the page they fill.
+                        this.page = Paging::first(PAGE);
                         let (rows, more) = this.page.split(ev::parse_rows(&list.rows));
                         this.keys = ev::key_columns(&rows, KEY_COLUMNS);
                         this.events = rows;
@@ -254,14 +266,25 @@ impl EventsTab {
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.target.clone() else { return };
-        if self.loading_more || !self.more {
+        // `loading` covers the debounce and the first-page read: a page read
+        // here would bump the same generation and append new-filter rows to
+        // the old table.
+        if self.loading || self.loading_more || !self.more {
             return;
         }
         self.loading_more = true;
         cx.notify();
         let page = self.page.next();
         let generation = self.debounce.bump();
-        let q = ev::list_query(&self.filter, page);
+        let after = self
+            .events
+            .last()
+            .map(|e| (e.stamp.clone(), e.uuid.clone()));
+        let q = ev::list_query(
+            &self.filter,
+            page,
+            after.as_ref().map(|(t, u)| (t.as_str(), u.as_str())),
+        );
         self._more = Some(cx.spawn(async move |this, cx| {
             let got = cx
                 .background_spawn(crate::guard::task(async move {
@@ -885,7 +908,7 @@ impl EventsTab {
                 theme::text_faint(),
                 query::budget_line(self.spent, left),
             ))
-            .when(self.more, |d| {
+            .when(self.more && !self.loading, |d| {
                 d.child(
                     ui::button(
                         "ph-ev-more",

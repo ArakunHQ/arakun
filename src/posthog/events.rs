@@ -77,6 +77,10 @@ pub struct Filter {
     /// An email or a distinct_id; empty for everyone.
     pub person: String,
     pub range: Range,
+    /// The read's right edge: the first page reads "until now", and the pages
+    /// after it keep that edge so new events arriving between them cannot
+    /// shift what a later page returns. `None` is "now".
+    pub until: Option<u64>,
 }
 
 /// A property's value as text, the way HogQL prints `properties.x`: strings
@@ -86,8 +90,12 @@ const PROP: &str = "replaceRegexpAll(JSONExtractRaw(properties, {key}), '^\"|\"$
 impl Filter {
     /// `WHERE …` with every value from the user bound, never written in.
     fn conditions(&self, q: &mut Hogql) {
+        let hi = self
+            .until
+            .map(|u| format!("fromUnixTimestamp({u})"))
+            .unwrap_or_else(|| "now()".into());
         q.push(&format!(
-            " WHERE timestamp > now() - INTERVAL {} SECOND",
+            " WHERE timestamp > {hi} - INTERVAL {} SECOND AND timestamp <= {hi}",
             self.range.seconds()
         ));
         if let Some(e) = &self.event {
@@ -109,14 +117,28 @@ impl Filter {
     }
 }
 
-/// The events of `f`, newest first.
-pub fn list_query(f: &Filter, page: Paging) -> Hogql {
+/// The events of `f`, newest first. `after` is the last row of the page
+/// before — its raw timestamp and uuid — so a page continues exactly where
+/// the one before ended: a new event or a shared timestamp cannot repeat or
+/// skip a row the way a live OFFSET can.
+pub fn list_query(f: &Filter, page: Paging, after: Option<(&str, &str)>) -> Hogql {
     let mut q = Hogql::new(
         "SELECT uuid, event, timestamp, distinct_id, person_id, person.properties.email, properties, person.properties FROM events",
     );
     f.conditions(&mut q);
-    q.push(" ORDER BY timestamp DESC");
-    q.push(&page.clause());
+    if let Some((ts, uuid)) = after {
+        let t = q.bind(ts);
+        let u = q.bind(uuid);
+        q.push(&format!(
+            " AND (timestamp < {t} OR (timestamp = {t} AND uuid < {u}))"
+        ));
+    }
+    q.push(" ORDER BY timestamp DESC, uuid DESC");
+    if after.is_some() {
+        q.push(&format!(" LIMIT {}", page.size + 1));
+    } else {
+        q.push(&page.clause());
+    }
     q
 }
 
@@ -146,6 +168,8 @@ pub fn parse_volume(rows: &[Value], range: Range) -> Vec<u64> {
 pub struct Event {
     pub uuid: String,
     pub event: String,
+    /// The timestamp as returned, for the next page's cursor.
+    pub stamp: String,
     pub time: u64,
     pub distinct_id: String,
     pub person_id: String,
@@ -183,6 +207,7 @@ pub fn parse_rows(rows: &[Value]) -> Vec<Event> {
             Some(Event {
                 uuid: r[0].as_str().unwrap_or_default().to_string(),
                 event: r[1].as_str()?.to_string(),
+                stamp: r[2].as_str().unwrap_or_default().to_string(),
                 time: r[2].as_str().and_then(parse_iso).unwrap_or(0),
                 distinct_id: r[3].as_str().unwrap_or_default().to_string(),
                 person_id: r[4].as_str().unwrap_or_default().to_string(),
@@ -349,29 +374,42 @@ mod tests {
             }],
             person: " rik@tallerlabs.mx ".into(),
             range: Range::Day,
+            until: None,
         }
     }
 
     #[test]
     fn filters_are_bound_not_written() {
-        let q = list_query(&filter(), Paging::first(50));
+        let q = list_query(&filter(), Paging::first(50), None);
         assert_eq!(
             q.text,
             "SELECT uuid, event, timestamp, distinct_id, person_id, person.properties.email, properties, person.properties FROM events \
-             WHERE timestamp > now() - INTERVAL 86400 SECOND AND event = {v0} \
+             WHERE timestamp > now() - INTERVAL 86400 SECOND AND timestamp <= now() AND event = {v0} \
              AND replaceRegexpAll(JSONExtractRaw(properties, {v1}), '^\"|\"$', '') = {v2} \
              AND (distinct_id = {v3} OR person.properties.email = {v3}) \
-             ORDER BY timestamp DESC LIMIT 51 OFFSET 0"
+             ORDER BY timestamp DESC, uuid DESC LIMIT 51 OFFSET 0"
         );
         assert!(!q.text.contains("OR 1=1") && !q.text.contains("macOS"));
         assert_eq!(q.values["v0"], "agent turn finished");
         assert_eq!(q.values["v1"], "os') OR 1=1 --");
         assert_eq!(q.values["v2"], "macOS' OR '1'='1");
         assert_eq!(q.values["v3"], "rik@tallerlabs.mx");
-        // The next page only moves the offset.
-        let next = list_query(&filter(), Paging::first(50).next());
-        assert!(next.text.ends_with("LIMIT 51 OFFSET 50"));
-        assert_eq!(next.values, q.values);
+        // The next page continues from the last row, not a live offset.
+        let mut f = filter();
+        f.until = Some(1_700_000_000);
+        let next = list_query(
+            &f,
+            Paging::first(50),
+            Some(("2026-01-01 12:00:00.123", "u-9")),
+        );
+        assert!(
+            next.text
+                .contains("AND (timestamp < {v4} OR (timestamp = {v4} AND uuid < {v5}))")
+        );
+        assert!(next.text.contains("fromUnixTimestamp(1700000000)"));
+        assert!(next.text.ends_with("LIMIT 51"));
+        assert_eq!(next.values["v4"], "2026-01-01 12:00:00.123");
+        assert_eq!(next.values["v5"], "u-9");
     }
 
     #[test]
@@ -384,7 +422,7 @@ mod tests {
         assert_eq!(
             q.text,
             "SELECT intDiv(dateDiff('second', timestamp, now()), 300) AS ago, count() FROM events \
-             WHERE timestamp > now() - INTERVAL 3600 SECOND GROUP BY ago ORDER BY ago"
+             WHERE timestamp > now() - INTERVAL 3600 SECOND AND timestamp <= now() GROUP BY ago ORDER BY ago"
         );
         assert!(q.values.is_empty());
         for r in Range::ALL {

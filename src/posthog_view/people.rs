@@ -99,7 +99,9 @@ impl PeopleTab {
         self.profile = None;
         self.profile_error = None;
         self.debounce.bump();
-        self.search.update(cx, |i, cx| i.set_text("", cx));
+        // Not set_text: its Changed event would schedule a read for a tab
+        // that is not open; show() starts the first one when People opens.
+        self.search.update(cx, |i, cx| i.clear(cx));
         cx.notify();
     }
 
@@ -126,6 +128,9 @@ impl PeopleTab {
     }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
+        // The page on screen belongs to the search that made it: a Load more
+        // under the new text would page a different result set.
+        self.more = false;
         let generation = self.debounce.bump();
         self.loading = true;
         cx.notify();
@@ -145,7 +150,6 @@ impl PeopleTab {
         let generation = self.debounce.bump();
         self.loaded = true;
         self.loading = true;
-        self.page = Paging::first(PAGE);
         cx.notify();
         let text = self.search.read(cx).text().trim().to_string();
         self._load = Some(cx.spawn(async move |this, cx| {
@@ -170,6 +174,9 @@ impl PeopleTab {
                 this.loading = false;
                 match got {
                     Ok((list, total)) => {
+                        // As in the events tab: the page resets with the rows,
+                        // so a failed refresh keeps what it had.
+                        this.page = Paging::first(PAGE);
                         let (people, more) = this.page.split(pp::parse_list(&list.rows));
                         this.people = people;
                         this.more = more;
@@ -193,7 +200,10 @@ impl PeopleTab {
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.target.clone() else { return };
-        if self.loading_more || !self.more {
+        // `loading` covers the debounce and the first-page read: a page read
+        // here would use the new search with the old page's offset, and bump
+        // the generation the first page needs to apply.
+        if self.loading || self.loading_more || !self.more {
             return;
         }
         self.loading_more = true;
@@ -450,7 +460,7 @@ impl PeopleTab {
                         theme::text_faint(),
                         query::budget_line(self.spent, left),
                     ))
-                    .when(self.more, |d| {
+                    .when(self.more && !self.loading, |d| {
                         d.child(
                             ui::button(
                                 "ph-pp-more",
@@ -485,7 +495,12 @@ impl PeopleTab {
         let name = email.clone().unwrap_or_else(|| distinct_id.clone());
         let last_seen = person
             .map(|x| x.last_seen)
-            .or(p.timeline.first().map(|m| m.time))
+            .or(p
+                .timeline
+                .as_ref()
+                .ok()
+                .and_then(|m| m.first())
+                .map(|m| m.time))
             .unwrap_or(0);
         let mut facts: Vec<String> = Vec::new();
         if let Some(i) = identity {
@@ -562,13 +577,17 @@ impl PeopleTab {
         if let Some(e) = &email {
             idrows.push(("email".to_string(), crate::redact::value(e)));
         }
-        idrows.push(("distinct_id".into(), distinct_id.clone()));
+        // An email is a valid distinct_id: it is masked like the email row.
+        idrows.push((
+            "distinct_id".into(),
+            crate::redact::text(&distinct_id).into_owned(),
+        ));
         if let Some(i) = identity {
-            let merged: Vec<&str> = i
+            let merged: Vec<String> = i
                 .distinct_ids
                 .iter()
                 .filter(|d| **d != distinct_id)
-                .map(String::as_str)
+                .map(|d| crate::redact::text(d).into_owned())
                 .collect();
             if !merged.is_empty() {
                 idrows.push(("merged".into(), merged.join(" · ")));
@@ -646,61 +665,71 @@ impl PeopleTab {
         }
         left = left
             .child(label("FLAGS THEY GET").pt(ui::sp(14.)))
-            .child(if p.flags.is_empty() {
-                quiet("Their recent events carry no flags.").into_any_element()
-            } else {
-                kv_card(p.flags.clone()).into_any_element()
+            .child(match &p.flags {
+                Ok(f) if !f.is_empty() => kv_card(f.clone()).into_any_element(),
+                Ok(_) => quiet("Their recent events carry no flags.").into_any_element(),
+                Err(e) => quiet(e.message()).into_any_element(),
             });
 
         // Right column: what they did.
         let peak_ticks: Vec<SharedString> =
             vec![day(now.saturating_sub(13 * 86_400)).into(), "Today".into()];
         let mut sessions = card().p(ui::sp(6.));
-        if p.sessions.is_empty() {
-            sessions = sessions.child(quiet("No sessions in 14 days.").px(ui::sp(12.)));
-        }
-        for (i, s) in p.sessions.iter().enumerate() {
-            let live = now.saturating_sub(s.end) < 5 * 60;
-            let title = if live {
-                format!("Now · {} so far", duration(s.end.saturating_sub(s.start)))
-            } else {
-                format!(
-                    "{} {} · {}",
-                    day_or_today(s.start, now),
-                    posthog::clock(s.start),
-                    duration(s.end.saturating_sub(s.start))
-                )
-            };
-            let detail = [s.detail.clone(), format!("{} events", s.events)]
-                .into_iter()
-                .filter(|x| !x.is_empty())
-                .collect::<Vec<_>>()
-                .join(" · ");
-            let path = ev::replay_path(&s.id);
-            sessions = sessions.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(12.))
-                    .px(ui::sp(10.))
-                    .py(ui::sp(8.))
-                    .child(ui::icon_tile("video01", 14., theme::text_muted()))
-                    .child(
+        match &p.sessions {
+            Err(e) => {
+                sessions = sessions.child(quiet(e.message()).px(ui::sp(12.)));
+            }
+            Ok(list) => {
+                if list.is_empty() {
+                    sessions = sessions.child(quiet("No sessions in 14 days.").px(ui::sp(12.)));
+                }
+                for (i, s) in list.iter().enumerate() {
+                    let live = now.saturating_sub(s.end) < 5 * 60;
+                    let title = if live {
+                        format!("Now · {} so far", duration(s.end.saturating_sub(s.start)))
+                    } else {
+                        format!(
+                            "{} {} · {}",
+                            day_or_today(s.start, now),
+                            posthog::clock(s.start),
+                            duration(s.end.saturating_sub(s.start))
+                        )
+                    };
+                    let detail = [s.detail.clone(), format!("{} events", s.events)]
+                        .into_iter()
+                        .filter(|x| !x.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    let path = ev::replay_path(&s.id);
+                    sessions = sessions.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
                             .flex()
-                            .flex_col()
-                            .child(ui::text(Type::Body, theme::text(), title).truncate())
+                            .items_center()
+                            .gap(ui::sp(12.))
+                            .px(ui::sp(10.))
+                            .py(ui::sp(8.))
+                            .child(ui::icon_tile("video01", 14., theme::text_muted()))
                             .child(
-                                ui::text(Type::Caption, theme::text_subtle(), detail).truncate(),
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(ui::text(Type::Body, theme::text(), title).truncate())
+                                    .child(
+                                        ui::text(Type::Caption, theme::text_subtle(), detail)
+                                            .truncate(),
+                                    ),
+                            )
+                            .child(
+                                ui::button(("ph-pp-watch", i), "Watch", ButtonKind::Outline, true)
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.open(&path, cx)),
+                                    ),
                             ),
-                    )
-                    .child(
-                        ui::button(("ph-pp-watch", i), "Watch", ButtonKind::Outline, true)
-                            .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx))),
-                    ),
-            );
+                    );
+                }
+            }
         }
         let mut seg = ui::segmented();
         for (i, (k, l)) in [
@@ -720,14 +749,19 @@ impl PeopleTab {
                 )),
             );
         }
-        let moments: Vec<&pp::Moment> = p
-            .timeline
-            .iter()
-            .filter(|m| self.timeline.is_none_or(|k| m.kind == k))
-            .take(30)
-            .collect();
         let mut timeline = card();
-        if moments.is_empty() {
+        let moments: Vec<&pp::Moment> = match &p.timeline {
+            Err(e) => {
+                timeline = timeline.child(quiet(e.message()).px(ui::sp(16.)));
+                Vec::new()
+            }
+            Ok(t) => t
+                .iter()
+                .filter(|m| self.timeline.is_none_or(|k| m.kind == k))
+                .take(30)
+                .collect(),
+        };
+        if p.timeline.is_ok() && moments.is_empty() {
             timeline = timeline.child(quiet("Nothing in 14 days.").px(ui::sp(16.)));
         }
         for (i, m) in moments.into_iter().enumerate() {
@@ -775,11 +809,10 @@ impl PeopleTab {
             .flex_1()
             .min_w(px(320.))
             .child(label(format!("EVENTS · {} DAYS", pp::DAYS)))
-            .child(
-                div()
-                    .pt(ui::sp(16.))
-                    .child(bars::bars(&p.daily, 56., peak_ticks)),
-            )
+            .child(div().pt(ui::sp(16.)).child(match &p.daily {
+                Ok(daily) => bars::bars(daily, 56., peak_ticks),
+                Err(e) => div().pt(ui::sp(16.)).child(quiet(e.message())),
+            }))
             .child(label("SESSIONS").pt(ui::sp(14.)))
             .child(sessions)
             .child(

@@ -1648,6 +1648,7 @@ mod tests {
                 ),
             ],
             known: View::ALL.to_vec(),
+            ..small()
         };
         assert!(alone.place_after_search(View::Teams));
         assert_eq!(names(&alone), ["A[Settings]", "B[Search,Team,Runs]"]);

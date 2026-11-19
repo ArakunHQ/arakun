@@ -69,7 +69,7 @@ impl Shell {
         });
         cx.spawn(async move |this, cx| {
             let rows = cx
-                .background_spawn(async { onboarding::find_agents() })
+                .background_spawn(crate::guard::task(async { onboarding::find_agents() }))
                 .await;
             let _ = this.update(cx, |this, cx| this.onboarding_found_agents(rows, cx));
         })
@@ -110,7 +110,11 @@ impl Shell {
         o.github = None;
         cx.spawn(async move |this, cx| {
             let found = cx
-                .background_spawn(async { onboarding::find_github() })
+                .background_spawn(crate::guard::task_or(
+                    async { onboarding::find_github() },
+                    // The step then offers to install it, which also checks again.
+                    |_| onboarding::GitHub::NoGh,
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(o) = this.onboarding.as_mut() {
@@ -176,9 +180,9 @@ impl Shell {
         saved.light = light;
         crate::palettes::apply(&saved);
         let version = crate::palettes::next_version();
-        cx.background_spawn(async move {
+        cx.background_spawn(crate::guard::task(async move {
             crate::palettes::store_version(&saved, version);
-        })
+        }))
         .detach();
         cx.refresh_windows();
         cx.notify();
@@ -231,8 +235,12 @@ impl Shell {
             crate::telemetry::events::ONBOARDING_FINISHED,
             &[("outcome", outcome), ("step", o.step().label())],
         );
-        cx.background_spawn(async { onboarding::set_done() })
+        cx.background_spawn(crate::guard::task(async { onboarding::set_done() }))
             .detach();
+        for view in onboarding::views_set_up(o.fresh, o.github, o.pair_phone) {
+            self.extensions_view
+                .update(cx, |v, cx| v.set_view(view, true, cx));
+        }
         if self.has_projects() {
             window.focus(&self.composer_focus, cx);
             if o.pair_phone {
@@ -603,6 +611,22 @@ impl Shell {
             ui::segment(id, None, label, on == light)
                 .on_click(cx.listener(move |this, _, _, cx| this.onboarding_set_light(on, cx)))
         };
+        let current = crate::cleanup::days().unwrap_or(0);
+        let mut cleanup = ui::segmented();
+        for (i, d) in crate::cleanup::CHOICES.into_iter().enumerate() {
+            cleanup = cleanup.child(
+                ui::segment(
+                    ("onboarding-cleanup", i),
+                    None,
+                    crate::cleanup::label(d),
+                    d == current,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    crate::cleanup::set_days(d);
+                    cx.notify();
+                })),
+            );
+        }
         const KEYS: [(&[&str], &str); 5] = [
             (&["Ctrl", "K"], "Find anything: sessions, files, commands"),
             (&["Ctrl", "T"], "New agent session"),
@@ -648,6 +672,22 @@ impl Shell {
                                 .child(mode("onboarding-dark", "Dark", false))
                                 .child(mode("onboarding-light", "Light", true)),
                         ),
+                ),
+            )
+            .child(
+                ui::surface_card().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(ui::sp(10.))
+                        .py(ui::sp(12.))
+                        .pl(ui::sp(16.))
+                        .pr(ui::sp(12.))
+                        .child(titled(
+                            "Remove old environments",
+                            "Once a pull request is merged or closed and its environment sat unused this long. Nothing uncommitted or unpushed goes, and the branch stays.",
+                        ))
+                        .child(cleanup),
                 ),
             )
             .child(

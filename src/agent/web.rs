@@ -42,7 +42,7 @@ fn http() -> &'static ureq::Agent {
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
-            .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
             .build()
             .into()
     })

@@ -76,3 +76,54 @@ export async function bodyText(request: Request, maxBytes: number): Promise<stri
 export async function discard(res: Response): Promise<void> {
   await res.body?.cancel().catch(() => {});
 }
+
+/// Strict base64url without padding: anything that would not encode back to
+/// the same text is refused, so one value has one spelling.
+export function fromB64url(text: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return null;
+  const bin = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return b64url(bytes) === text ? bytes : null;
+}
+
+export function utf8(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// Upper-case Crockford base32. The first character is at most 7: 48 bits of time.
+export const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+
+/// A new ULID: 48 bits of milliseconds, then 80 random bits.
+export function ulid(): string {
+  let t = Date.now();
+  let time = "";
+  for (let i = 0; i < 10; i++) {
+    time = CROCKFORD[t % 32] + time;
+    t = Math.floor(t / 32);
+  }
+  // 256 is a multiple of 32, so the low five bits are uniform.
+  return time + Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => CROCKFORD[b & 31]).join("");
+}
+
+/// The spelling of a GitHub ID: a positive integer of at most 16 digits. Only
+/// a format check: Number() rounds one above Number.MAX_SAFE_INTEGER. The
+/// rounded value matches no user, since sign-in and the admin door take only
+/// safe integers, so a lookup by it finds nothing; a caller that stores the
+/// ID checks Number.isSafeInteger, as the admin door does.
+export const GITHUB_ID = /^[1-9][0-9]{0,15}$/;
+
+/// The request's JSON body, or null if it is missing, too big or not JSON.
+export async function jsonBody(request: Request, maxBytes: number): Promise<unknown> {
+  const text = await bodyText(request, maxBytes);
+  if (text === null) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+export function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}

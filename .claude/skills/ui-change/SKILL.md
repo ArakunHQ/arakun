@@ -39,10 +39,14 @@ list.
 
 ## See it
 
-On Linux, `arakun dev` runs a second, fresh Arakun from your build on a virtual
-display. It never touches the user's screen or their own Arakun. It needs `Xvfb`,
-and `tesseract` for `dev text` and clicking by text
-(`tools/setup-dev.sh --yes --display` installs both).
+`arakun dev` runs a second, fresh Arakun from your build. On Linux it runs on a
+virtual display and needs `Xvfb`. On macOS it opens a window of its own that
+never takes the focus, and `dev shot` captures that window alone. That needs
+Screen Recording permission for the app the command runs from; if `dev shot`
+says so, ask the user to grant it. Input goes into the test Arakun directly, so
+it never touches the user's pointer, keyboard or own Arakun. `dev text` and
+clicking by text need `tesseract` (`tools/setup-dev.sh --yes --display`
+installs what is missing).
 
 ```sh
 cargo build --no-default-features
@@ -59,8 +63,8 @@ if the change touches color.
 
 For product screenshots of the start screen in dark and light (the brand book,
 the README, the site), `tools/product-shots.sh` starts a fresh, isolated Arakun
-per mode and captures its window. It also runs on macOS, where `arakun dev`
-can't, and it never types or clicks, so nothing lands in another app.
+per mode and captures its window. It never types or clicks, so nothing lands
+in another app.
 
 For the "before" shot, build `main` in another worktree, or take it before your
 first edit, and save it as `before.png` the same way.
@@ -90,4 +94,4 @@ first edit, and save it as `before.png` the same way.
 - Changed a shortcut, a setting or a command? Update the README, and
   `docs/windows.md` if Windows differs.
 - Code for one platform goes behind `cfg(...)`. Say in the pull request which
-  platforms you saw it on: `arakun dev` is Linux only.
+  platforms you saw it on: `arakun dev` runs on Linux and macOS.

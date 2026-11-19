@@ -63,11 +63,8 @@ pub fn plugins(cwd: &Path) -> Result<Vec<PluginEntry>> {
     )?;
     let v: Value = serde_json::from_str(&out).context("reading claude plugin list")?;
     let list = parse_plugins(&v, &manifests());
-    if let Some(dir) = cache_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
-        if let Ok(json) = serde_json::to_vec(&list) {
-            let _ = std::fs::write(cache_file(), json);
-        }
+    if let Ok(json) = serde_json::to_vec(&list) {
+        let _ = crate::durable::write(&cache_file(), &json);
     }
     Ok(list)
 }
@@ -453,11 +450,8 @@ pub fn official_servers() -> Result<Vec<RegistryServer>> {
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
     found.dedup_by(|a, b| a.name == b.name);
-    if let Some(dir) = official_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
-        if let Ok(json) = serde_json::to_vec(&found) {
-            let _ = std::fs::write(official_file(), json);
-        }
+    if let Ok(json) = serde_json::to_vec(&found) {
+        let _ = crate::durable::write(&official_file(), &json);
     }
     Ok(found)
 }
@@ -783,12 +777,81 @@ pub fn install_server(
 }
 
 fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<String> {
-    super::claude_ext::run_cli(bin, cwd, args, timeout)
+    super::claude_ext::run_cli(bin, &workdir(cwd), args, timeout)
+}
+
+/// Everything here is for the user, not the project, so a folder that is gone
+/// (an environment deleted outside arakun) must not stop it: use home instead.
+fn workdir(cwd: &Path) -> PathBuf {
+    if cwd.is_dir() {
+        cwd.to_path_buf()
+    } else {
+        launch::home()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// On a server: the app asks for the marketplace there and installs from it
+// (`ClientMsg::Market`, `InstallPlugin` and `InstallServer`). Everything is
+// for the server's user, so it runs in that user's home.
+
+/// Blocking: the `market` message a server answers with. It holds the plugins
+/// its marketplaces offer, each saying whether it is installed, and the names
+/// of the MCP servers Claude has there. When the list cannot be read, it holds
+/// the last one read and says why.
+pub fn report() -> Value {
+    let home = launch::home();
+    let (plugins, error) = match plugins(&home) {
+        Ok(list) => (list, None),
+        Err(e) => (cached_plugins().unwrap_or_default(), Some(format!("{e:#}"))),
+    };
+    let servers: Vec<String> = super::claude_ext::load_quick(&home)
+        .servers
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    json!({ "type": "market", "plugins": plugins, "servers": servers, "error": error })
+}
+
+/// Blocking: installs a plugin on this machine, and says how it went (`market_done`).
+pub fn serve_plugin(id: &str) -> Value {
+    done(id, install_plugin(&launch::home(), id))
+}
+
+/// Blocking: adds an MCP server on this machine, and says how it went (`market_done`).
+pub fn serve_server(name: &str, install: &Install, values: &HashMap<String, String>) -> Value {
+    let result = install_server(&launch::home(), name, install, values).map(|_| ());
+    done(name, result)
+}
+
+fn done(name: &str, result: Result<()>) -> Value {
+    json!({
+        "type": "market_done",
+        "name": name,
+        "error": result.err().map(|e| format!("{e:#}")),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_says_how_an_install_went() {
+        let ok = done("a@b", Ok(()));
+        assert_eq!(ok["type"], "market_done");
+        assert_eq!(ok["name"], "a@b");
+        assert!(ok["error"].is_null());
+        let failed = done("a@b", Err(anyhow!("no such plugin")));
+        assert_eq!(failed["error"], "no such plugin");
+    }
+
+    #[test]
+    fn missing_folder_runs_from_home() {
+        let here = std::env::temp_dir();
+        assert_eq!(workdir(&here), here);
+        assert_eq!(workdir(&here.join("arakun-no-such-folder")), launch::home());
+    }
 
     fn sample() -> Value {
         json!({"servers": [

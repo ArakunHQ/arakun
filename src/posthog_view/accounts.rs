@@ -36,11 +36,11 @@ impl PostHogView {
         let region = self.region;
         self._connect = Some(cx.spawn(async move |this, cx| {
             let got = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let s = posthog::sign_in_with_key(&key, region).map_err(|e| e.message())?;
                     posthog::save_session(s.clone())?;
                     Ok::<Session, String>(s)
-                })
+                }))
                 .await;
             this.update(cx, |this, cx| {
                 this.connecting = false;

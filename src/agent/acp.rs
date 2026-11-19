@@ -320,8 +320,13 @@ impl Thread {
         cx.emit(ThreadEvent::RewindChanged { entry });
         cx.notify();
         cx.spawn(async move |this, cx| {
+            // If it breaks half way, no file is known to be back.
+            let all = restore.len() + delete.len();
             let failed = cx
-                .background_spawn(async move { put_back(&restore, &delete) })
+                .background_spawn(crate::guard::task_or(
+                    async move { put_back(&restore, &delete) },
+                    move |_| all,
+                ))
                 .await;
             let new_id = if point.is_empty() {
                 Ok(None)

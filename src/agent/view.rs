@@ -467,6 +467,7 @@ impl ThreadView {
                 self.sync_ask(window, cx);
             }
             ThreadEvent::NeedsPermission => {
+                self.remeasure_footer();
                 self.sync_ask(window, cx);
                 if self.thread.read(cx).pending_permission().is_some()
                     && !self.focus.is_focused(window)
@@ -475,7 +476,10 @@ impl ThreadView {
                     window.focus(&self.focus, cx);
                 }
             }
-            ThreadEvent::Changed => self.sync_ask(window, cx),
+            ThreadEvent::Changed => {
+                self.remeasure_footer();
+                self.sync_ask(window, cx)
+            }
             ThreadEvent::RewindChanged { entry } => self.remeasure_entry(*entry),
             _ => {}
         }
@@ -844,6 +848,13 @@ impl ThreadView {
         if let Some(last) = self.turns.len().checked_sub(1) {
             self.list.remeasure_items(last..last + 1);
         }
+        self.remeasure_footer();
+    }
+
+    /// The footer shows what the agent waits on when no turn does.
+    fn remeasure_footer(&mut self) {
+        let n = self.turns.len();
+        self.list.remeasure_items(n..n + 1);
     }
 
     /// Keeps the answer state in step with the questionnaire the thread is waiting on.
@@ -912,7 +923,10 @@ impl ThreadView {
         let Some(answers) = self.answers(&req, cx) else {
             return;
         };
-        self.ask = None;
+        // A server's question keeps its answers until the server takes them.
+        if !self.thread.read(cx).is_remote() {
+            self.ask = None;
+        }
         self.thread
             .update(cx, |t, cx| t.answer_question(answers, cx));
         self.remeasure_last();
@@ -1010,7 +1024,16 @@ impl ThreadView {
         let body = if ix < self.turns.len() {
             self.render_turn(ix, window, cx)
         } else {
-            self.render_footer(cx)
+            let footer = self.render_footer(cx);
+            match self.unshown_asks(window, cx) {
+                Some(asks) => div()
+                    .flex()
+                    .flex_col()
+                    .child(asks)
+                    .child(footer)
+                    .into_any_element(),
+                None => footer,
+            }
         };
         if std::mem::take(&mut self.fading) {
             window.request_animation_frame();
@@ -1029,6 +1052,35 @@ impl ThreadView {
                     .child(body),
             )
             .into_any_element()
+    }
+
+    /// What the agent waits on when no turn shows it. A server sends its
+    /// questions apart from the transcript, which may not load at all.
+    fn unshown_asks(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
+        let t = self.thread.read(cx);
+        if (0..self.turns.len()).any(|ix| self.is_live(ix, t)) {
+            return None;
+        }
+        let permission = t.pending_permission().filter(|p| {
+            !t.entries()
+                .iter()
+                .any(|e| matches!(e, Entry::Tool(tc) if tc.id == p.tool_call_id))
+        });
+        let question = t.pending_question();
+        if permission.is_none() && question.is_none() {
+            return None;
+        }
+        let cwd = t.cwd().to_path_buf();
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .px(crate::ui::sp(16.))
+                .children(permission.map(|p| self.permission_card(p, None, &cwd, window, cx)))
+                .children(question.map(|q| self.question_card(q, cx)))
+                .into_any_element(),
+        )
     }
 
     fn render_turn(&mut self, ix: usize, window: &Window, cx: &Context<Self>) -> AnyElement {

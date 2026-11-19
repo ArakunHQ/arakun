@@ -178,6 +178,25 @@ pub enum ClientMsg {
         from: String,
         to: String,
     },
+    /// The sessions at place `place` stop asking for attention: those not
+    /// working go idle, and their agents stop unless a device has them open.
+    /// Answered with the inbox.
+    SettleEnv {
+        place: String,
+    },
+    /// Removes the worktree at place `place`, its folder, and its sessions;
+    /// with `delete_branch`, its branch too. A repository's main folder is
+    /// never removed. Answered with `env_deleted`: whether the folder is gone
+    /// (`deleted`), and what went wrong (`error`).
+    DeleteEnv {
+        place: String,
+        #[serde(default)]
+        delete_branch: bool,
+        /// The branch the user agreed to delete. One checked out there
+        /// since is not deleted, and neither is the folder.
+        #[serde(default)]
+        branch: Option<String>,
+    },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
     /// Whether the page is on the phone's screen. A page in the background
@@ -1402,6 +1421,33 @@ pub fn host_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delete_keeps_the_branch_unless_asked() {
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        assert_eq!(
+            read(r#"{"type":"delete_env","place":"/w/fix"}"#),
+            ClientMsg::DeleteEnv {
+                place: "/w/fix".into(),
+                delete_branch: false,
+                branch: None,
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"delete_env","place":"/w/fix","delete_branch":true,"branch":"fix"}"#),
+            ClientMsg::DeleteEnv {
+                place: "/w/fix".into(),
+                delete_branch: true,
+                branch: Some("fix".into()),
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"settle_env","place":"/w/fix"}"#),
+            ClientMsg::SettleEnv {
+                place: "/w/fix".into()
+            }
+        );
+    }
 
     #[test]
     fn settings_that_cannot_be_read_are_an_error_not_the_defaults() {

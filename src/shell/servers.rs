@@ -17,13 +17,14 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{Context, Entity, SharedString, Task, Window};
+use gpui::{AppContext as _, Context, Entity, SharedString, Task, Window};
 use serde_json::{Value, json};
 
 use super::{Modal, Shell};
 use crate::agent::{
     AgentKind, Entry, RemoteAction, SessionMeta, Thread, ThreadStatus, Transcript, Usage,
 };
+use crate::dialogs::{DeleteEnvDialog, DialogEvent};
 use crate::model::{self, Environment, Project, Remote, Session, Status, TabKind, unix_now};
 use crate::phone::{ClientId, wire};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
@@ -129,6 +130,9 @@ pub(super) struct ServersLink {
     /// until the server answers: they name the branch once it started, and
     /// go back in the composer if it did not. Each with its server.
     first_prompts: HashMap<u64, (String, FirstPrompt)>,
+    /// The environments servers were asked to delete, by server and place,
+    /// until each answers, with the Delete environment dialog that waits on it.
+    deleting: Vec<(String, String, gpui::EntityId)>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -190,6 +194,11 @@ fn older_server_refused(message: &str, kinds: &[&str]) -> bool {
     kinds
         .iter()
         .any(|k| message.starts_with(&format!("bad message: unknown variant `{k}`")))
+}
+
+/// Whether `server` was asked to delete `place` and has not answered yet.
+fn deleting_already<T>(deleting: &[(String, String, T)], server: &str, place: &str) -> bool {
+    deleting.iter().any(|(s, p, _)| s == server && p == place)
 }
 
 /// A folder request (`add_place` or `clone`) to `server` that never left
@@ -699,6 +708,7 @@ impl Shell {
             added: None,
             new_env: HashMap::new(),
             first_prompts: HashMap::new(),
+            deleting: Vec::new(),
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -802,6 +812,7 @@ impl Shell {
                 if link.added.as_ref().is_some_and(|(s, _)| s == id) {
                     link.added = None;
                 }
+                link.deleting.retain(|(server, _, _)| server != id);
                 let new = link.new_env.remove(id);
                 // Its link stops without a word: the phones waiting on a start hear it here.
                 let waiting = link.starts.dropped(id);
@@ -1372,6 +1383,17 @@ impl Shell {
                 );
                 return;
             }
+            // The threads stay as they were; settling them again is safe.
+            Some("settle_env") => {
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not settle the threads",
+                    "The connection dropped first. Try again once the server is connected.",
+                    None,
+                    cx,
+                );
+                return;
+            }
             // An answer that did not go can be given again.
             Some("answer" | "skip_question") => {
                 let session = text(msg, "session");
@@ -1648,6 +1670,167 @@ impl Shell {
         true
     }
 
+    /// The sessions of a server's environment stop asking for attention, there.
+    pub(super) fn servers_settle_env(&mut self, env_path: &Path, cx: &mut Context<Self>) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        match self.connected(&remote.server) {
+            // The inbox brings the sessions back settled.
+            Some(client) => client.send(&json!({ "type": "settle_env", "place": remote.place })),
+            None => self.notify(
+                crate::island::AlertKind::Warning,
+                "Could not settle the threads",
+                &format!("{} is not connected right now.", remote.machine),
+                None,
+                cx,
+            ),
+        }
+    }
+
+    /// The connection to `server` when it is up.
+    fn connected(&self, server: &str) -> Option<&Client> {
+        let conn = self.servers.as_ref()?.conns.get(server)?;
+        (conn.reach == Reach::Connected).then_some(&conn.client)
+    }
+
+    /// The Delete environment dialog for a server's environment `ei` of
+    /// project `pi`. The server deletes the worktree; its answer closes the dialog.
+    pub(super) fn servers_delete_env(
+        &mut self,
+        pi: usize,
+        ei: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        let Some(env) = self.projects.get(pi).and_then(|p| p.environments.get(ei)) else {
+            return;
+        };
+        let Some(remote) = env.remote.clone().filter(|_| !env.is_checkout) else {
+            return;
+        };
+        let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
+        let place = PathBuf::from(&remote.place);
+        let machine = remote.machine.clone();
+        let confirmed = branch.clone();
+        let dialog = cx.new(|cx| DeleteEnvDialog::remote(place, branch, machine, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, dialog, ev: &DialogEvent, window, cx| match ev {
+                DialogEvent::DeleteOnServer { delete_branch } => {
+                    let asked = dialog.entity_id();
+                    let branch = delete_branch.then_some(confirmed.as_deref()).flatten();
+                    if let Err(why) = this.servers_ask_delete(&remote, branch, asked) {
+                        dialog.update(cx, |d, cx| d.failed(why, cx));
+                    }
+                }
+                // A deletion under way still ends as the server says, with
+                // the island telling why when it fails.
+                _ => this.close_modal(window, cx),
+            },
+        );
+        self.modal = Some((Modal::DeleteEnv(dialog), sub));
+        cx.notify();
+    }
+
+    fn servers_ask_delete(
+        &mut self,
+        remote: &Remote,
+        branch: Option<&str>,
+        dialog: gpui::EntityId,
+    ) -> Result<(), String> {
+        // Its reply names only the server and the place: with two asked, it
+        // could be taken for the other's.
+        if let Some(link) = &self.servers
+            && deleting_already(&link.deleting, &remote.server, &remote.place)
+        {
+            return Err("It is being deleted already. Wait for that to finish.".into());
+        }
+        let Some(client) = self.connected(&remote.server) else {
+            return Err(format!("{} is not connected right now.", remote.machine));
+        };
+        client.send(&json!({
+            "type": "delete_env", "place": remote.place,
+            "delete_branch": branch.is_some(), "branch": branch,
+        }));
+        if let Some(link) = &mut self.servers {
+            link.deleting
+                .push((remote.server.clone(), remote.place.clone(), dialog));
+        }
+        Ok(())
+    }
+
+    fn delete_dialog(&self) -> Option<Entity<DeleteEnvDialog>> {
+        match &self.modal {
+            Some((Modal::DeleteEnv(d), _)) => Some(d.clone()),
+            _ => None,
+        }
+    }
+
+    /// A deletion did not happen: said in the dialog that asked while it is
+    /// open, else by the island.
+    fn servers_delete_failed(
+        &mut self,
+        asked: gpui::EntityId,
+        why: String,
+        cx: &mut Context<Self>,
+    ) {
+        match self.delete_dialog().filter(|d| d.entity_id() == asked) {
+            Some(dialog) => dialog.update(cx, |d, cx| d.failed(why, cx)),
+            None => self.notify(
+                crate::island::AlertKind::Warning,
+                "Could not delete the environment",
+                &why,
+                None,
+                cx,
+            ),
+        }
+    }
+
+    /// The server answered a `delete_env`. The inbox came first, so a deleted
+    /// environment is already gone from the sidebar.
+    fn servers_env_deleted(
+        &mut self,
+        server: &str,
+        msg: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let place = text(msg, "place");
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        let Some(at) = link
+            .deleting
+            .iter()
+            .position(|(s, p, _)| s == server && *p == place)
+        else {
+            return;
+        };
+        let (_, _, asked) = link.deleting.remove(at);
+        let error = msg["error"].as_str().map(str::to_string);
+        if msg["deleted"] != true {
+            let why = error.unwrap_or_else(|| "The server did not delete it.".into());
+            self.servers_delete_failed(asked, why, cx);
+            return;
+        }
+        if self.delete_dialog().is_some_and(|d| d.entity_id() == asked) {
+            self.close_modal(window, cx);
+        }
+        if let Some(why) = error {
+            self.notify(
+                crate::island::AlertKind::Warning,
+                "The environment is deleted",
+                &why,
+                None,
+                cx,
+            );
+        }
+        self.ensure_terminal(window, cx);
+    }
+
     /// A session this app started on a server is in its inbox now: its tab opens.
     fn servers_open_started(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((server, id)) = self.servers.as_ref().and_then(|l| l.starting_id.clone()) else {
@@ -1742,6 +1925,16 @@ impl Shell {
                 if back {
                     settle_first_prompts(&mut link.first_prompts, &link.starts, id);
                 }
+                let mut lost_delete = Vec::new();
+                if !back {
+                    link.deleting.retain(|(server, _, asked)| {
+                        let lost = server == id;
+                        if lost {
+                            lost_delete.push(*asked);
+                        }
+                        !lost
+                    });
+                }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for
@@ -1769,6 +1962,11 @@ impl Shell {
                     let why = "The connection dropped before the server said whether it made the environment. Check its environments before you try again.";
                     self.servers_new_env_failed(&new, why.into(), cx);
                 }
+                // Its answer would have come on the connection that dropped.
+                for asked in lost_delete {
+                    let why = "The server dropped before it answered. If the environment is still there, try again.";
+                    self.servers_delete_failed(asked, why.into(), cx);
+                }
             }
             Event::Message(msg) => {
                 if msg["type"] == "inbox" {
@@ -1781,6 +1979,8 @@ impl Shell {
                     }
                     // The server sends its inbox before this: the folder is here.
                     self.servers_open_added(window, cx);
+                } else if msg["type"] == "env_deleted" {
+                    self.servers_env_deleted(id, &msg, window, cx);
                 } else if msg["type"] == "place_failed" {
                     // What was being added is not coming: the form can ask again.
                     if link.adding.remove(id) {
@@ -1897,6 +2097,36 @@ impl Shell {
             // turns the message itself down.
             // Its own failures come as `place_failed`; any other error is
             // about something else and is left to the session or the tab.
+            // A server from before environments could be deleted from here.
+            _ if link.deleting.iter().any(|(s, _, _)| s == id)
+                && older_server_refused(&message, &["delete_env"]) =>
+            {
+                // It refuses every one asked of it.
+                let asked: Vec<gpui::EntityId> = link
+                    .deleting
+                    .iter()
+                    .filter(|(s, _, _)| s == id)
+                    .map(|(_, _, d)| *d)
+                    .collect();
+                link.deleting.retain(|(s, _, _)| s != id);
+                for asked in asked {
+                    let why = "This server runs an older Arakun. Update it to delete environments from here.";
+                    self.servers_delete_failed(asked, why.into(), cx);
+                }
+                true
+            }
+            // Settle threads is asked from the sidebar: said there too. The
+            // refusal names `settle_env` itself, so it is about that.
+            _ if older_server_refused(&message, &["settle_env"]) => {
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "Could not settle the threads",
+                    "This server runs an older Arakun. Update it to settle threads from here.",
+                    None,
+                    cx,
+                );
+                true
+            }
             _ if link.new_env.contains_key(id) && older_server_refused(&message, &["new_env"]) => {
                 link.adding.remove(id);
                 if let Some(new) = link.new_env.remove(id) {
@@ -2168,6 +2398,24 @@ fn empty_transcript(agent: AgentKind, title: &str) -> Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_server_refusing_a_settle_is_told_apart() {
+        let refused =
+            "bad message: unknown variant `settle_env`, expected one of `open`, `delete_env`";
+        assert!(older_server_refused(refused, &["settle_env"]));
+        // Named only among the ones it expected: about something else.
+        let other = "bad message: unknown variant `rename_branch`, expected one of `settle_env`";
+        assert!(!older_server_refused(other, &["settle_env"]));
+    }
+
+    #[test]
+    fn a_place_is_asked_to_go_only_once_at_a_time() {
+        let deleting = vec![("box".to_string(), "/w/fix".to_string(), 1)];
+        assert!(deleting_already(&deleting, "box", "/w/fix"));
+        assert!(!deleting_already(&deleting, "box", "/w/fix2"));
+        assert!(!deleting_already(&deleting, "other", "/w/fix"));
+    }
 
     fn said(text: &str) -> Entry {
         Entry::Agent { text: text.into() }

@@ -1845,6 +1845,10 @@ impl Shell {
         if env.is_checkout {
             return;
         }
+        // Its folder is on a server, which deletes it.
+        if env.remote.is_some() {
+            return self.servers_delete_env(pi, ei, window, cx);
+        }
         let repo = project.path.clone();
         let path = env.path.clone();
         let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());

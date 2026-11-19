@@ -32,6 +32,11 @@ pub enum DialogEvent {
         auto_name: bool,
     },
     Deleted(PathBuf),
+    /// A server's environment is to be deleted there (`shell::servers`); the
+    /// dialog waits, busy, for the server's answer.
+    DeleteOnServer {
+        delete_branch: bool,
+    },
     /// A project command (setup script, check) was saved; None clears it.
     Command(Option<String>),
     Dismissed,
@@ -751,6 +756,8 @@ pub struct DeleteEnvDialog {
     delete_branch: bool,
     busy: bool,
     error: Option<SharedString>,
+    /// The server a remote environment is on; `path` is then its folder there.
+    machine: Option<SharedString>,
     focus: FocusHandle,
 }
 
@@ -791,8 +798,42 @@ impl DeleteEnvDialog {
             delete_branch: false,
             busy: false,
             error: None,
+            machine: None,
             focus,
         }
+    }
+
+    /// For the folder `place` on the server `machine`. What is uncommitted or
+    /// unpushed there is not known here, so the dialog does not count it.
+    pub fn remote(
+        place: PathBuf,
+        branch: Option<String>,
+        machine: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        Self {
+            repo: PathBuf::new(),
+            path: place,
+            branch,
+            dirty: 0,
+            unpushed: None,
+            local_only: None,
+            delete_branch: false,
+            busy: false,
+            error: None,
+            machine: Some(machine),
+            focus,
+        }
+    }
+
+    /// The server did not delete it: why, and the dialog can try again.
+    pub fn failed(&mut self, error: String, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.error = Some(error.into());
+        cx.notify();
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -802,6 +843,12 @@ impl DeleteEnvDialog {
         self.busy = true;
         self.error = None;
         cx.notify();
+        if self.machine.is_some() {
+            cx.emit(DialogEvent::DeleteOnServer {
+                delete_branch: self.delete_branch,
+            });
+            return;
+        }
         let repo = self.repo.clone();
         let path = self.path.clone();
         let branch = self.delete_branch.then(|| self.branch.clone()).flatten();
@@ -968,7 +1015,12 @@ impl Render for DeleteEnvDialog {
                     .text_size(px(ui::TEXT_MD))
                     .line_height(px(19.))
                     .child(div().text_color(theme::text_muted()).child(
-                        "This permanently deletes the worktree folder and everything inside it.",
+                        match &self.machine {
+                            Some(m) => format!(
+                                "This permanently deletes the worktree folder on {m}, everything inside it, and its sessions there."
+                            ),
+                            None => "This permanently deletes the worktree folder and everything inside it.".into(),
+                        },
                     ))
                     .child(
                         div()
@@ -994,7 +1046,11 @@ impl Render for DeleteEnvDialog {
                                             .flex_1()
                                             .min_w_0()
                                             .font_family(theme::FONT_MONO)
-                                            .child(pretty_path(&self.path)),
+                                            // `~` here is not the server's home.
+                                            .child(match &self.machine {
+                                                Some(m) => format!("{m}: {}", self.path.display()),
+                                                None => pretty_path(&self.path),
+                                            }),
                                     ),
                             )
                             .child(list),

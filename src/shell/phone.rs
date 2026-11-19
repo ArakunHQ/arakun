@@ -855,6 +855,10 @@ impl Shell {
                 client,
                 wire::error("add projects to this computer in Arakun itself"),
             ),
+            ClientMsg::SettleEnv { .. } | ClientMsg::DeleteEnv { .. } => self.phone_send(
+                client,
+                wire::error("settle or delete this computer's environments in Arakun itself"),
+            ),
             ClientMsg::Ping => {}
         }
     }

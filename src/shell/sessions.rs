@@ -208,6 +208,11 @@ impl Shell {
             return;
         }
         let restored = read_restored(&state::transcript_path(id));
+        // A read ensure_live_soon started is stale now: it ends after this
+        // one, and installing it would put the older transcript back.
+        if self.restoring.contains(id) {
+            self.restoring_stale.insert(id.into());
+        }
         self.go_live(env_path, id, restored, window, cx);
     }
 
@@ -234,6 +239,11 @@ impl Shell {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.restoring.remove(&sid);
+                // An `ensure_live` started it meanwhile; dropping the older
+                // read also covers that live thread having retired since.
+                if this.restoring_stale.remove(&sid) {
+                    return;
+                }
                 // An `ensure_live` may have started it meanwhile, or another process taken it.
                 if this.needs_live(&env, &sid, window, cx) {
                     this.go_live(&env, &sid, restored, window, cx);
@@ -1876,6 +1886,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.open_session(id.clone(), window, cx);
+        // open_session restores off the main thread, so a closed session has
+        // no live thread yet and the request would vanish. Restore it now.
+        let path = self.env().path.clone();
+        self.ensure_live(&path, &id, window, cx);
         let env = self.env();
         let Some(thread) = env
             .session_index(&id)

@@ -52,6 +52,7 @@ reviews:
           - ".coderabbit.yaml"
           - "lefthook.yml"
           - "src/headless*"
+          - "src/headless*/**"
           - "src/control.rs"
           - "src/account.rs"
           - "src/fetch.rs"

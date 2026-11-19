@@ -263,15 +263,45 @@ if [ $browser = 1 ]; then
     archive=cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_${plat}_minimal.tar.bz2
     sdk=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef-sdk/156.0.15-$plat
     link=$here/.cef-sdk
+    # fetch-cef.py unpacks with tarfile's extraction filters (Python 3.12, or 3.9.17+ and
+    # 3.10.12+ and 3.11.4+). The python3 macOS ships is 3.9.6, so look for a newer one.
+    py=
+    for p in python3 python3.14 python3.13 python3.12 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+      if command -v "$p" >/dev/null &&
+        "$p" -I -c 'import sys, tarfile; sys.exit(not hasattr(tarfile, "data_filter"))' 2>/dev/null; then
+        py=$p
+        break
+      fi
+    done
     if [ -d "$link" ] && [ ! -L "$link" ]; then
       # A folder the crate's own download left; replacing it is the user's call.
       ok ".cef-sdk is a folder, left as it is (remove it to use the shared SDK)"
     elif [ -f "$sdk/archive.json" ] && [ "$(readlink "$link" || true)" = "$sdk" ]; then
       ok "CEF SDK at .cef-sdk"
     elif [ $check = 1 ]; then
+      [ -f "$sdk/archive.json" ] || [ -n "$py" ] ||
+        lack "Python 3.12+ to fetch the CEF SDK (brew install python)"
       lack "CEF SDK at .cef-sdk (tools/setup-dev.sh --browser)"
+    elif [ ! -f "$sdk/archive.json" ] && [ -z "$py" ]; then
+      lack "Python 3.12+ to fetch the CEF SDK (brew install python), then run tools/setup-dev.sh --browser again"
     else
-      [ -f "$sdk/archive.json" ] || python3 -I "$here/tools/fetch-cef.py" "$archive" "$sha1" "$sdk"
+      # Worktrees share the SDK, and fetch-cef.py clears a fixed <sdk>.work folder when it
+      # starts, so two setups at once would delete each other's download. mkdir is the
+      # lock, as macOS has no flock.
+      lock=$sdk.lock
+      mkdir -p "$(dirname "$sdk")"
+      waited=0
+      until mkdir "$lock" 2>/dev/null; do
+        [ $waited = 1 ] || say "waiting for another setup-dev to fetch the CEF SDK (if none runs, remove $lock)"
+        waited=1
+        sleep 2
+      done
+      trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+      trap 'exit 130' INT TERM
+      # Another setup may have fetched it while this one waited.
+      [ -f "$sdk/archive.json" ] || "$py" -I "$here/tools/fetch-cef.py" "$archive" "$sha1" "$sdk"
+      rmdir "$lock"
+      trap - EXIT INT TERM
       ln -sfn "$sdk" "$link"
       ok "CEF SDK at .cef-sdk"
     fi

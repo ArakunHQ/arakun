@@ -699,7 +699,9 @@ The default `browser` feature needs CEF at build time and at run time.
   This puts the runtime in `~/.local/share/arakun/cef` (loaded on the first browser tab)
   and links the build-time SDK at `.cef-sdk`, which `.cargo/config.toml` points `CEF_PATH`
   at.
-- **macOS:** the build also needs CMake and Ninja (`brew install cmake ninja`). Run:
+- **macOS:** the build also needs CMake and Ninja (`brew install cmake ninja`), and the
+  download needs Python 3.12 or newer (`brew install python`; the `python3` macOS ships
+  is too old). Run:
 
   ```sh
   tools/setup-dev.sh --browser

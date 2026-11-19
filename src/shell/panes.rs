@@ -112,7 +112,15 @@ impl Shell {
     /// Puts keyboard focus where typing makes sense for the active tab, unless a
     /// dock terminal has it (switching tabs from a shell keeps typing in the shell).
     pub(super) fn focus_active_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let env = self.env();
+        // Render queues this for the next frame; the last project can be
+        // removed before it runs, and `env()` would then index nothing.
+        let Some(env) = self
+            .projects
+            .get(self.active_project)
+            .and_then(|p| p.environments.get(p.active_env))
+        else {
+            return;
+        };
         if env
             .terminals
             .iter()
@@ -717,6 +725,7 @@ impl Shell {
         let several = mine.iter().filter(|m| **m).count() > 1;
         let any_right = mine.iter().skip(index + 1).any(|m| *m);
         let can_reopen = !self.strip.closed_tabs.is_empty();
+        let can_close = self.can_close_tab(index);
         panel =
             panel
                 .child(
@@ -764,11 +773,22 @@ impl Shell {
                 })
                 .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
                 .child(
-                    ui::menu_item("tm-close", "cancel01", "Close tab", false, true).on_click(
-                        cx.listener(move |this, _, window, cx| {
+                    ui::menu_item("tm-new", "add01", "New session", false, true).on_click(
+                        cx.listener(|this, _, window, cx| {
                             this.menu = None;
-                            this.close_tab(index, window, cx)
+                            this.new_session(window, cx)
                         }),
+                    ),
+                )
+                .child(
+                    ui::menu_item("tm-close", "cancel01", "Close tab", false, can_close).when(
+                        can_close,
+                        |d| {
+                            d.on_click(cx.listener(move |this, _, window, cx| {
+                                this.menu = None;
+                                this.close_tab(index, window, cx)
+                            }))
+                        },
                     ),
                 )
                 .child(

@@ -125,7 +125,9 @@ curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" https://<host>/_admin/unbl
 of the day). `block` writes to KV and also drops everyone connected under that label.
 
 An object whose computer has not connected in 90 days empties itself (alarm). Nothing
-is lost: the computer sends its key and tickets again when it reconnects.
+is lost: the computer sends its key and tickets again when it reconnects. A socket at
+`/pc` stores nothing until it claims, and is closed if it has not claimed within 30
+seconds.
 
 ## Hosting one relay for everyone on your own domain
 

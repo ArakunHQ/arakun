@@ -1,3 +1,4 @@
+mod accept;
 mod account;
 mod account_view;
 mod agent;
@@ -16,6 +17,7 @@ mod canvas;
 mod canvas_view;
 mod caret;
 mod ci;
+mod cleanup;
 mod clone_source;
 mod cloudflare;
 mod cloudflare_view;
@@ -23,6 +25,7 @@ mod cloudflare_view;
 mod coderspace;
 mod control;
 mod crash;
+mod customize_view;
 #[cfg(test)]
 mod design_lint;
 mod dev;
@@ -65,8 +68,10 @@ mod picker;
 mod platform;
 mod posthog;
 mod posthog_view;
+mod pr_writer;
 mod prompts;
 mod redact;
+mod rotate;
 mod runs_view;
 mod schedule;
 mod server;
@@ -83,6 +88,7 @@ mod site;
 #[cfg(feature = "coderlabs")]
 mod site_view;
 mod state;
+mod stored;
 #[cfg(feature = "coderlabs")]
 mod tasks_view;
 #[cfg(feature = "team")]
@@ -182,11 +188,18 @@ fn main() {
                 bind("alt-up", shell::PrevEnvironment, "Shell && !Terminal"),
                 bind("ctrl-o", shell::AddProject, "Shell && !Terminal"),
                 bind("ctrl-shift-n", shell::NewEnvironment, "Shell"),
+                bind(
+                    "ctrl-alt-n",
+                    shell::NewEnvironmentWithOptions,
+                    "Shell && !Terminal",
+                ),
                 bind("ctrl-shift-b", shell::NewBrowserTab, "Shell"),
                 bind("ctrl-w", shell::CloseTab, "Shell && !Terminal"),
                 bind("ctrl-k", shell::QuickSwitch, "Shell && !Terminal"),
                 bind("ctrl-p", shell::QuickSwitch, "Shell && !Terminal"),
                 bind("ctrl-b", shell::ToggleSidebar, "Shell && !Terminal"),
+                bind("ctrl-alt-b", shell::TogglePanel, "Shell && !Terminal"),
+                bind("ctrl-alt-s", shell::ToggleSubagents, "Shell && !Terminal"),
                 bind(
                     "ctrl-f",
                     shell::FindInChat,

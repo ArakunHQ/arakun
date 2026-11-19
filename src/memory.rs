@@ -159,11 +159,56 @@ pub fn store_file(root: &Path, scope: Scope, project: &Path) -> PathBuf {
     }
 }
 
+/// A store that can't be read (one entry edited by hand without its `id`) is
+/// set aside, so `update` doesn't replace every memory with the new one.
 pub fn load(file: &Path) -> Store {
-    std::fs::read(file)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    if !file.exists() {
+        return Store::default();
+    }
+    // Only under the store's lock may a read set an unreadable file aside:
+    // it must not move the fresh store an `update` in another process
+    // (`arakun mem`) just wrote in its place. The memory view reads on the UI
+    // thread, so a busy lock is not waited for; the read just leaves the file
+    // alone, and the one holding the lock deals with it.
+    match try_lock_store(file) {
+        Ok(Some(_lock)) => load_locked(file),
+        Ok(None) => crate::stored::peek(file).unwrap_or_default(),
+        // Without the lock (say, no write access to it), only read.
+        Err(e) => {
+            eprintln!("arakun: reading {} without its lock: {e}", file.display());
+            crate::stored::peek(file).unwrap_or_default()
+        }
+    }
+}
+
+/// The store's lock when it is free; `None` while another holds it.
+fn try_lock_store(file: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let lock = open_lock(file)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(lock)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+fn open_lock(file: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(file.with_extension("lock"))
+}
+
+/// `load` for a caller that already holds the store's lock.
+fn load_locked(file: &Path) -> Store {
+    crate::stored::load(file).unwrap_or_default()
+}
+
+/// The store's lock file, locked; released when it closes.
+fn lock_store(file: &Path) -> std::io::Result<std::fs::File> {
+    let lock = open_lock(file)?;
+    lock.lock()?;
+    Ok(lock)
 }
 
 /// Runs `f` on the store in `file` under an exclusive lock and writes it back
@@ -176,21 +221,15 @@ pub fn update<T>(
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(file.with_extension("lock"))?;
-    // Released when `lock` closes.
-    lock.lock()?;
-    let mut store = load(file);
+    let _lock = lock_store(file)?;
+    let mut store = load_locked(file);
     if store.path.is_empty() {
         store.path = project.to_string();
     }
     let (changed, out) = f(&mut store);
     if changed {
         let bytes = serde_json::to_vec_pretty(&store).map_err(std::io::Error::other)?;
-        crate::durable::write(file, &bytes)?;
+        crate::stored::write(file, &bytes)?;
     }
     Ok(out)
 }
@@ -907,6 +946,9 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
     let rest = &args[1.min(args.len())..];
     match args.first().map(String::as_str) {
         None | Some("help" | "-h" | "--help") => Ok(USAGE.into()),
+        // Before a subcommand's arguments: `mem save --help` saved a memory
+        // titled `--help`.
+        Some(_) if rest.first().is_some_and(|a| crate::control::is_help(a)) => Ok(USAGE.into()),
         Some("save") => {
             let (mut title, mut words) = (None::<String>, Vec::new());
             let (mut kind, mut body, mut files, mut topic, mut scope) = (
@@ -1250,6 +1292,7 @@ mod tests {
         );
         assert!(run(&["save", "x", "--kind", "nope"]).is_err());
         assert!(run(&["save"]).unwrap_err().starts_with("usage"));
+        assert_eq!(run(&["save", "--help"]), Ok(USAGE.into()));
         let found = run(&["search", "ci", "polls"]).unwrap();
         assert!(
             found.starts_with("#1 [gotcha] Tests need ARAKUN_CI=off"),
@@ -1428,5 +1471,57 @@ mod tests {
         assert_eq!(parse_id("12"), Some((Scope::Project, 12)));
         assert_eq!(parse_id("#g3"), Some((Scope::Global, 3)));
         assert_eq!(parse_id("x"), None);
+    }
+
+    #[test]
+    fn a_hand_edited_store_is_kept_when_a_turn_saves() {
+        let dir = tmp("hand-edited");
+        let file = dir.join("p.json");
+        // The second memory lost its `kind`.
+        let edited = r#"{"path":"/p","next_id":3,"items":[
+            {"id":1,"title":"A","kind":"decision","created":1,"updated":1},
+            {"id":2,"title":"B","created":1,"updated":1}]}"#;
+        std::fs::write(&file, edited).unwrap();
+        update(&file, "/p", |s| {
+            let d = Draft {
+                title: "Session".into(),
+                kind: "session".into(),
+                body: String::new(),
+                topic: None,
+                files: vec![],
+            };
+            (true, save(s, d, 5))
+        })
+        .unwrap();
+        assert_eq!(load(&file).items.len(), 1);
+        assert_eq!(crate::stored::tests::kept(&file).as_deref(), Some(edited));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_read_while_the_store_is_locked_neither_waits_nor_moves_it() {
+        let dir = tmp("locked-read");
+        let file = dir.join("p.json");
+        std::fs::write(&file, "{torn").unwrap();
+        let held = lock_store(&file).unwrap();
+        assert!(load(&file).items.is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{torn");
+        // A read under a free lock sets it aside: see the hand-edited test.
+        // Not checked here, since a child another test forks can hold the
+        // lock's file a moment after `held` is dropped.
+        drop(held);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_read_that_cannot_lock_does_not_move_the_store() {
+        let dir = tmp("no-lock");
+        let file = dir.join("p.json");
+        std::fs::write(&file, "{torn").unwrap();
+        // A directory where the lock file goes: it can't be opened.
+        std::fs::create_dir(file.with_extension("lock")).unwrap();
+        assert!(load(&file).items.is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{torn");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

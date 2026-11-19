@@ -718,6 +718,10 @@ pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve
 /// running Arakun.
 pub fn cli(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
+        Some("draft") if args[1..].iter().any(|a| crate::control::is_help(a)) => {
+            println!("{USAGE}");
+            0
+        }
         Some("draft") => match save_draft_cli(&args[1..]) {
             Ok(msg) => {
                 println!("{msg}");
@@ -1353,9 +1357,15 @@ impl GitHub {
             .filter(|l| !l.is_empty())
             .find_map(|l| self.avatar(l))
             .map(std::path::Path::to_path_buf);
+        // `who` is the item's author; on the user's own item, "rik mentioned
+        // you" would name the user, so the line says it without a name.
+        let named = match self.me() {
+            Some(me) if who.eq_ignore_ascii_case(me) => "",
+            _ => who.as_str(),
+        };
         (
             n.subject.title.clone(),
-            notice_line(n, item.map(|i| i.number), &who),
+            notice_line(n, item.map(|i| i.number), named),
             image,
         )
     }

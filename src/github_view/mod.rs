@@ -16,6 +16,7 @@ mod item;
 mod pilot;
 mod queue;
 mod sheet;
+mod threads;
 mod timeline;
 
 use std::cell::{Cell, RefCell};
@@ -114,6 +115,13 @@ struct Diff {
     /// Which load this is: an older load that ends late is dropped.
     load: u64,
     state: DiffState,
+}
+
+/// The end of a failed check's log, read when its row opens.
+enum CheckLog {
+    Loading,
+    Failed(String),
+    Ready(Rc<Vec<crate::ci::LogLine>>),
 }
 
 /// Whether a diff read at `read_at` still shows the pull request whose
@@ -220,6 +228,10 @@ fn busy_note(what: &str) -> String {
         "merge" => "the merge",
         "reopen" => "the reopen",
         "close" => "the close",
+        "rerun" => "the re-run",
+        "reply" => "the reply",
+        "resolve" => "the thread's change",
+        "line-review" => "the review comments",
         other => other,
     };
     format!("Still sending {what}: this comment wasn't sent yet. Press Enter again once it's done.")
@@ -323,6 +335,21 @@ pub struct GitHubView {
     folded: HashSet<usize>,
     /// Files of the open diff shown in full past the first lines.
     unfolded_lines: HashSet<usize>,
+    /// The answer to a thread or the comment on a line being written in
+    /// `thread_input`.
+    writing: Option<threads::Writing>,
+    /// The commit whose diff the line comment being written was started on.
+    writing_head: String,
+    /// Counts the boxes opened: a request that ends tells its own box from
+    /// a later one on the same thread.
+    writing_box: u64,
+    thread_input: Entity<TextInput>,
+    /// Comments on lines of the diff not sent yet, by `queue::key_of`.
+    pending: HashMap<String, threads::Pending>,
+    /// Failed checks whose log shows under them, by Actions job.
+    checks_open: HashSet<u64>,
+    /// The logs read so far, by Actions job.
+    check_logs: HashMap<u64, CheckLog>,
     /// Repository → the merge methods it allows; None while it is asked.
     merge_methods: HashMap<String, Option<Vec<MergeMethod>>>,
     /// Markdown already parsed, by its text.
@@ -425,7 +452,13 @@ impl GitHubView {
         let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
         let pilot_input = cx.new(|cx| TextInput::new("Your answer for the agent", cx));
+        let thread_input = cx.new(|cx| TextInput::new("Reply to the thread", cx));
         let subs = vec![
+            cx.subscribe(&thread_input, |this, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Submit | InputEvent::SubmitAlt => this.submit_writing(cx),
+                InputEvent::Cancel => this.stop_writing(cx),
+                _ => {}
+            }),
             cx.subscribe(&pilot_input, |this, _, ev: &InputEvent, cx| match ev {
                 InputEvent::Submit => this.pilot_send_other(cx),
                 InputEvent::Cancel => {
@@ -521,6 +554,13 @@ impl GitHubView {
             diff_loads: 0,
             folded: HashSet::new(),
             unfolded_lines: HashSet::new(),
+            writing: None,
+            writing_head: String::new(),
+            writing_box: 0,
+            thread_input,
+            pending: HashMap::new(),
+            checks_open: HashSet::new(),
+            check_logs: HashMap::new(),
             merge_methods: HashMap::new(),
             md: RefCell::new(HashMap::new()),
             md_raw: RefCell::new(HashMap::new()),
@@ -609,6 +649,8 @@ impl GitHubView {
             && let Some(item) = self.item()
         {
             self.load_diff(item, cx);
+            // Threads may have come or gone under the lines.
+            self.files_list.remeasure();
         }
         self.reload_draft();
         cx.notify();
@@ -674,6 +716,8 @@ impl GitHubView {
             self.note = None;
             self.folded.clear();
             self.unfolded_lines.clear();
+            self.checks_open.clear();
+            self.writing = None;
             self.expanded.clear();
             self.body_scroll = ScrollHandle::new();
         } else {

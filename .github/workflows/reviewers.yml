@@ -47,10 +47,14 @@ name: Reviewers
 #   summary comment, but CodeRabbit edits that comment many times, and each
 #   edit cancelled the run before it.) Reviews this workflow dismisses don't
 #   start it again: GitHub starts no workflow for events of its own token.
+# - pull_request_target ready_for_review: a draft went ready. CodeRabbit
+#   reviews drafts, so its verdict often predates this event; without it the
+#   review would finish while the pull request was a draft, this workflow
+#   would skip it, and nobody would ever be asked. If CodeRabbit has not
+#   finished by now, its own check run starts this workflow when it does.
 # - workflow_dispatch: by hand, for a pull request CodeRabbit never reviewed.
 #   It doesn't wait for CodeRabbit.
-# Drafts get no reviewers. CodeRabbit reviews a pull request once it is marked
-# ready, and that review starts this workflow.
+# Drafts get no reviewers, but CodeRabbit does review them.
 #
 # These events run this file from the default branch with a write token, even
 # for pull requests from forks. That is safe only because no job checks out or
@@ -61,6 +65,8 @@ name: Reviewers
 on:
   check_run:
     types: [completed]
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [ready_for_review]
   # Safe as the comment above says; zizmor can't see that no job checks out.
   workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [Review submitted]
@@ -99,11 +105,14 @@ jobs:
         reviewers-${{ inputs.pr && format('manual-{0}', inputs.pr) ||
         github.event.check_run.pull_requests[0].number ||
         github.event.workflow_run.pull_requests[0].number ||
-        github.event.check_run.head_sha || github.event.workflow_run.head_sha }}
+        github.event.pull_request.number ||
+        github.event.check_run.head_sha || github.event.workflow_run.head_sha ||
+        github.event.pull_request.head.sha }}
       cancel-in-progress: true
     if: >-
       ${{ github.event_name == 'workflow_dispatch' ||
       github.event_name == 'workflow_run' ||
+      github.event_name == 'pull_request_target' ||
       (github.event_name == 'check_run' &&
       github.event.check_run.app.slug == 'coderabbitai' &&
       github.event.check_run.name == 'CodeRabbit') }}
@@ -120,10 +129,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
-          SHA: ${{ github.event.check_run.head_sha || github.event.workflow_run.head_sha }}
+          SHA: ${{ github.event.check_run.head_sha || github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
           PR: >-
             ${{ inputs.pr || github.event.check_run.pull_requests[0].number ||
-            github.event.workflow_run.pull_requests[0].number }}
+            github.event.workflow_run.pull_requests[0].number ||
+            github.event.pull_request.number }}
           CODERABBIT: coderabbitai[bot]
           # GraphQL names the author of CodeRabbit's threads without "[bot]".
           CODERABBIT_AUTHOR: coderabbitai

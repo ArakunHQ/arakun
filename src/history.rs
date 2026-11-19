@@ -1,7 +1,7 @@
 //! Prompts sent from the composer, oldest first, for ↑ and ↓ in an empty
 //! composer. Kept in `history.json` next to the state, across environments.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const KEEP: usize = 500;
 
@@ -19,11 +19,13 @@ fn file() -> PathBuf {
 
 impl History {
     pub fn load() -> Self {
-        let entries = std::fs::read(file())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        Self { entries }
+        Self::load_from(&file())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        Self {
+            entries: crate::stored::load(path).unwrap_or_default(),
+        }
     }
 
     /// Adds a sent prompt as the newest entry; an earlier copy of it moves up
@@ -64,8 +66,11 @@ impl History {
 }
 
 pub fn write(bytes: &[u8]) {
-    let path = file();
-    if let Err(e) = crate::durable::write(&path, bytes) {
+    write_to(&file(), bytes);
+}
+
+fn write_to(path: &Path, bytes: &[u8]) {
+    if let Err(e) = crate::stored::write(path, bytes) {
         eprintln!("arakun: could not save {}: {e}", path.display());
     }
 }
@@ -98,5 +103,22 @@ mod tests {
         }
         assert_eq!(h.entries.len(), KEEP);
         assert_eq!(h.get(0), Some("3"));
+    }
+
+    #[test]
+    fn an_unreadable_history_is_kept() {
+        let dir = crate::stored::tests::scratch("history");
+        let path = dir.join("history.json");
+        std::fs::write(&path, r#"["one", 2]"#).unwrap();
+        let mut h = History::load_from(&path);
+        assert_eq!(h.get(0), None);
+        h.push("three");
+        write_to(&path, &h.bytes());
+        assert_eq!(History::load_from(&path).get(0), Some("three"));
+        assert_eq!(
+            crate::stored::tests::kept(&path).as_deref(),
+            Some(r#"["one", 2]"#)
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

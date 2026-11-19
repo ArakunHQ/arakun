@@ -832,6 +832,7 @@ impl Preset {
             sections,
             known: View::ALL.to_vec(),
             offered_active: true,
+            switcher_offered: true,
         }
     }
 }
@@ -849,6 +850,10 @@ pub struct Sidebar {
     /// it on load; one where the user took it out keeps it out.
     #[serde(default)]
     pub offered_active: bool,
+    /// The Switcher was offered to this layout and answered. A layout saved
+    /// before the Switcher was the default lacks it, so the rail offers it once.
+    #[serde(default)]
+    pub switcher_offered: bool,
 }
 
 impl Default for Sidebar {
@@ -898,6 +903,41 @@ impl Sidebar {
         s.tidy();
         s.offer_active();
         Some(s)
+    }
+
+    /// Whether the rail offers the Switcher: to a layout arranged before it
+    /// was the default, not answered yet, and not one already.
+    pub fn offers_switcher(&self) -> bool {
+        !self.switcher_offered
+            && !self.sections.iter().flat_map(|s| &s.items).any(|i| {
+                matches!(
+                    i.piece,
+                    Piece::Projects {
+                        only_open: true,
+                        ..
+                    }
+                )
+            })
+    }
+
+    /// The Switcher, keeping this layout's style and pins: they are the
+    /// person's own, and the Switcher has nowhere else for pins.
+    pub fn as_switcher(&self) -> Sidebar {
+        let mut s = Preset::Switcher.layout();
+        s.style = self.style;
+        let pins: Vec<Item> = self
+            .sections
+            .iter()
+            .flat_map(|x| &x.items)
+            .filter(|i| matches!(i.piece, Piece::Pin { .. }))
+            .cloned()
+            .collect();
+        if !pins.is_empty() {
+            let mut pinned = Section::new("Pinned", Mode::Fixed, vec![]).titled();
+            pinned.items = pins;
+            s.sections.insert(1, pinned);
+        }
+        s
     }
 
     pub fn to_json(&self) -> String {
@@ -1243,6 +1283,7 @@ mod tests {
             ],
             known: View::ALL.to_vec(),
             offered_active: true,
+            switcher_offered: false,
         }
     }
 
@@ -1501,6 +1542,7 @@ mod tests {
             ],
             known: View::ALL.to_vec(),
             offered_active: true,
+            switcher_offered: false,
         };
         assert!(bare.place(View::Notes));
         assert_eq!(names(&bare), ["A[Search]", "B[Projects,Notes]"]);
@@ -1509,6 +1551,7 @@ mod tests {
             sections: vec![],
             known: vec![],
             offered_active: true,
+            switcher_offered: false,
         };
         assert!(!none.place(View::Notes));
     }
@@ -1558,5 +1601,45 @@ mod tests {
         assert_eq!(Extensions::load_from(&path, &Sidebar::default(), true), e);
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{}"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_a_layout_from_before_the_switcher_is_offered_it() {
+        // A file saved before the flag existed.
+        let old = Sidebar::parse(br#"{"sections":[{"items":[{"type":"projects"}]}]}"#).unwrap();
+        assert!(old.offers_switcher());
+        // A fresh install starts on the Switcher; a template was a choice.
+        assert!(!Sidebar::default().offers_switcher());
+        assert!(!Preset::Everything.layout().offers_switcher());
+        // Saved on the Switcher before the flag existed.
+        let mut on = Preset::Switcher.layout();
+        on.switcher_offered = false;
+        assert!(!on.offers_switcher());
+        let mut answered = small();
+        answered.switcher_offered = true;
+        assert!(!answered.offers_switcher());
+    }
+
+    #[test]
+    fn the_switcher_keeps_the_style_and_pins() {
+        let mut old = small();
+        old.style.side = Side::Right;
+        let pin = Piece::Pin {
+            pin: Pin::Url {
+                title: "Docs".into(),
+                url: "https://example.com".into(),
+            },
+        };
+        old.insert(Item::new(pin.clone()), (2, 0));
+        let s = old.as_switcher();
+        assert_eq!(s.style.side, Side::Right);
+        assert_eq!(s.sections[1].title, "Pinned");
+        assert!(s.has(&pin));
+        assert!(!s.offers_switcher());
+        // Without pins it is the template as it is.
+        assert_eq!(
+            small().as_switcher().sections,
+            Preset::Switcher.layout().sections
+        );
     }
 }

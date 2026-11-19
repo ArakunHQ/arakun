@@ -77,8 +77,8 @@ copy of it, rename it back, and start a version that can read it.
   project's list below holds the rest, so nothing shows twice. Move or remove it in
   the sidebar builder.
 - **One session, one worktree.** **New session** at the top of the sidebar's list, or
-  `Ctrl+T`, gives a session its own worktree on a random branch, and the first prompt
-  names the branch. An open worktree is used only while it has no session yet; `Alt`+click
+  `Ctrl+T`, opens a composer at once and gives the session its own worktree on a random
+  branch when you send the first prompt, which names the branch. An open worktree is used only while it has no session yet; `Alt`+click
   on New session asks for the branch. A prompt written in the main checkout, such as on
   a project's start screen, starts its session in a new worktree too (on a server, it
   starts where it was written). The sidebar lists each worktree by its session's title.
@@ -1050,7 +1050,7 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session (in a new worktree unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`

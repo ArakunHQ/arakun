@@ -792,7 +792,7 @@ impl Shell {
         if ev.modifiers().alt {
             self.open_create_env(pi, window, cx)
         } else {
-            self.quick_create_env(pi, window, cx)
+            self.draft_new_session(pi, window, cx)
         }
     }
 

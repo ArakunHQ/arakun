@@ -53,10 +53,10 @@ Every commit message and pull request title follows
 - Fill in `.github/pull_request_template.md`. Under "How did you test this?", list the
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
-  checks below, wait for CI to pass, then mark it ready with `gh pr ready`. CodeRabbit
-  reviews drafts too, so its review is often done before the checks; the reviewers
-  are asked once it finishes without approving or with a review thread still open,
-  so don't mark ready before then.
+  checks below, wait for CI to pass, then mark it ready with `gh pr ready`, never
+  before. CodeRabbit reviews drafts too, so its review is often done before the checks.
+  Once the pull request is ready and CodeRabbit has finished, the reviewers are asked
+  unless CodeRabbit approved and every review thread is resolved.
 - Answer every CodeRabbit comment: fix it and push, or reply with the reason you
   won't. Don't resolve its threads or post `@coderabbitai resolve` or `approve`
   yourself; the reviewer resolves what is left and approves. A workflow dismisses

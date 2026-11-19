@@ -64,14 +64,34 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 
 ### Workspace
 
+- **Active.** The top of the sidebar lists the sessions of every project that need
+  you (waiting for an answer, or failed), then the ones running. A click opens the
+  session in its project. It stays the same whichever project is open. The open
+  project's list below holds the rest, so nothing shows twice. Move or remove it in
+  the sidebar builder.
+- **One session, one worktree.** **New session** at the top of the sidebar's list, or
+  `Ctrl+T`, gives a session its own worktree on a random branch, and the first prompt
+  names the branch. An open worktree is used only while it has no session yet; `Alt`+click
+  on New session asks for the branch. A prompt written in the main checkout, such as on
+  a project's start screen, starts its session in a new worktree too (on a server, it
+  starts where it was written). The sidebar lists each worktree by its session's title.
+  The main checkout is listed only while it holds older sessions; open it from the
+  project's right-click menu (Open main checkout, one per machine). Before a
+  repository's first commit there is nothing to branch from, so sessions start in
+  the main checkout.
+- **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
+  to pick them, and `Shift`+click to pick a run of them. In the Active list, either
+  picks the session's worktree. A bar under them settles their
+  sessions, closes them (their tabs close and idle agents stop; the worktrees stay), or
+  deletes the worktrees after one question. Branches stay. The main checkout and
+  worktrees on a server are deleted one at a time. `Esc` clears the pick.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
-  others in its dropdown, and its environments as a flat list: a status dot, the name,
-  and one signal (Needs you, CI failed, or the diff). Under them, **Other projects**
-  lists the environments elsewhere that run or need you, and a click goes there; the
-  dropdown says the same per project. The **+** on Environments, or
-  `Ctrl+Shift+N`, makes an environment at once on a random branch from the current
-  commit; `Alt`+click on it, or File › New Environment with Options…, asks for the
+  others in its dropdown, and its sessions as a flat list: a status dot, the title,
+  and one signal (Needs you, CI failed, or the diff). If you take the Active list
+  out, **Other projects** under them lists the environments elsewhere that run or need
+  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new worktree at once on a random branch from the
+  current commit; File › New Environment with Options… asks for the
   branch and where to start from. Every environment has its own sessions, terminals
   and draft prompt. The window has one row of tabs for all of them: a session, file,
   diff or browser tab belongs to its environment, and going to the tab shows that
@@ -98,7 +118,9 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 - **Settled after merge.** Once an environment's pull request is merged (Arakun asks
   `gh` every few minutes), its open review threads are resolved on GitHub, its
   notifications are marked read, and the environment's sessions from before the merge
-  stop asking for you; agents that are idle and not open in a tab stop. The GitHub tab
+  stop asking for you and leave the Sessions list (a "settled sessions" row at its end
+  shows them, a search finds them, and a new prompt brings one back); agents that are
+  idle and not open in a tab stop. The GitHub tab
   also marks read the notifications of every merged pull request it reads. Each merge is
   settled once, within a week of it; threads that fail to resolve are tried again at the
   next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.
@@ -185,6 +207,18 @@ terminal-only. The status line and keybindings from your settings don't apply in
   or "Comment"), and says why when a comment doesn't go out. Approve, request changes
   and merge ask a second time, and an approval or a merge stops if new commits came
   after you looked.
+- **Failed checks.** When checks failed, the Checks tab says how many, and a failed
+  GitHub Actions job opens the end of its failing step's log under its row (the link at
+  the end of the row opens its page). "Re-run failed" starts the failed jobs again
+  (`gh run rerun --failed`) once their run has finished. "Fix with agent" starts a
+  session with the failed checks and the logs you opened; the agent fixes it in the
+  checkout and doesn't push.
+- **Review comments.** Under each thread on the diff, "Reply" answers it and "Resolve"
+  (or "Reopen") marks it. In the Files tab, the open threads show under their lines,
+  and a click on a line writes a comment on it. Those comments are kept as pending
+  (only until you quit) and "Submit review" posts them together as one review;
+  "Discard" drops them. After new commits, submit or discard the pending ones before
+  you comment on the new diff.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits
@@ -267,11 +301,12 @@ after a week).
   count as read when you close it. Arakun keeps the last 300 in
   `notices.json` next to its state. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
-  prompts and answer the agent. Phones reach the computer over the local network (the
-  default), over Tailscale, or through an end-to-end encrypted relay. On the local
-  network and over Tailscale the page comes from the computer itself, so it only opens
-  while the computer is on and awake; the relay works from anywhere and says when the
-  computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
+  prompts and answer the agent. While the agent works, a prompt you send waits for the
+  turn to end; with something written, Stop becomes "Stop and send". Phones reach the
+  computer over the local network (the default), over Tailscale, or through an
+  end-to-end encrypted relay. On the local network and over Tailscale the page comes
+  from the computer itself, so it only opens while the computer is on and awake; the
+  relay works from anywhere and says when the computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
   to the hosted one at `arakun.dev`; you can run your own from [`relay/`](relay)
   (a Cloudflare Worker) and point `relay_base` in `phone.json` at it.
   The page keeps shortcuts, phrases you send often, as a row of buttons over the box.
@@ -810,7 +845,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
   servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. To add a folder on a server, press the folder button on it in the Servers tab,
+  yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  the plugins its marketplaces offer, and Install adds a plugin or MCP server for
+  Claude Code there, for every project. An MCP server that wants a sign-in is signed
+  in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
   folders. Folders right in the home folder do not count; with none elsewhere, the
@@ -847,6 +886,11 @@ arakun-server service install   # keep it running; see Keep it running
 - **Agents.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
+  Claude Code and Codex also need their ACP adapter. The server installs a missing one
+  with npm the first time a session needs it, into `~/.local/share/arakun/agents`
+  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node must be on the server's `PATH`. The service keeps the `PATH` it was installed
+  with: if Node comes from mise or nvm, run `arakun-server service install` from a shell
+  where `node` works.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
   so it works behind a firewall, and everything between the device and the server is
   end to end encrypted; `--relay <url>` names a relay of your own. `--reach tailscale`
@@ -922,17 +966,18 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session, `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+T` new session (in a new worktree unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments
 - `Ctrl+W` close the tab, `Ctrl+Alt+T` reopen the last closed tab where it was;
   `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right. A middle click
   closes a tab, dragging it onto another moves it there, and its right-click menu also
-  closes the other tabs of its environment or those to its right. GNOME, Ubuntu and some KDE setups
-  keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen closed tab in the
-  File menu or a tab's right-click menu
-- `Ctrl+Shift+N` new environment, at once on a random branch
+  opens a new session or closes the other tabs of its environment or those to its
+  right. The tab on screen stays open when its environment has no other. GNOME, Ubuntu
+  and some KDE setups keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen
+  closed tab in the File menu or a tab's right-click menu
+- `Ctrl+Shift+N` new session in a new worktree, at once on a random branch
 - `Ctrl+F` search the conversation
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for

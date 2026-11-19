@@ -26,7 +26,7 @@ use crate::account::Account;
 use crate::agent::log::render_log;
 use crate::agent::{
     self, AgentKind, Entry, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, Transcript,
-    catalog, workers_ai,
+    catalog, marketplace, workers_ai,
 };
 use crate::clone_source;
 use crate::model::{Status, unix_now};
@@ -125,6 +125,9 @@ pub struct Daemon {
     /// How many worktrees were deleted so far: a folder looked at before one
     /// went may be that one.
     deletions: u64,
+    /// Sessions whose missing adapter the server installed: one try each, so
+    /// an install that does not help is not run again and again.
+    installed_for: HashSet<String>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
@@ -724,6 +727,7 @@ impl Daemon {
             hidden: HashSet::new(),
             deleting: HashSet::new(),
             deletions: 0,
+            installed_for: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
             inbox_dirty: false,
@@ -948,7 +952,18 @@ impl Daemon {
             live.dirty = true;
         }
         self.note_for_devices(id, ev, cx);
-        self.notify(id, thread, ev, cx);
+        // Nobody sits at a server to press Install: a missing Claude or Codex
+        // adapter is installed with npm at once, and once. Decided before the
+        // notice: the error that asks for the install is about to be fixed,
+        // so it is not pushed to the devices or kept as the session's status.
+        // An install that fails reports its own error the usual way.
+        let installing = matches!(
+            ev,
+            ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission
+        ) && self.install_missing_adapter(id, thread, cx);
+        if !installing {
+            self.notify(id, thread, ev, cx);
+        }
         match ev {
             ThreadEvent::TitleChanged => {
                 let title = thread.read(cx).title();
@@ -960,6 +975,7 @@ impl Daemon {
                     self.save_store();
                 }
             }
+            ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission if installing => {}
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
                 let status = status_of(thread.read(cx));
                 if let Some(s) = self.store.session_mut(id)
@@ -1498,9 +1514,10 @@ impl Daemon {
                 session,
                 text,
                 uploads,
+                now,
             } => {
                 let text = self.uploads.attach(text, &uploads);
-                if let Err(e) = self.send_to_session(&session, text, cx) {
+                if let Err(e) = self.send_to_session(&session, text, now, cx) {
                     self.transport.send(client, session_error(&session, &e));
                 }
             }
@@ -1721,6 +1738,23 @@ impl Daemon {
                 let usage = self.usage(cx);
                 self.transport.send(client, usage);
             }
+            ClientMsg::Market => {
+                self.answer_off_thread(client, marketplace::report, cx);
+            }
+            ClientMsg::InstallPlugin { id } => {
+                self.answer_off_thread(client, move || marketplace::serve_plugin(&id), cx);
+            }
+            ClientMsg::InstallServer {
+                name,
+                install,
+                values,
+            } => {
+                self.answer_off_thread(
+                    client,
+                    move || marketplace::serve_server(&name, &install, &values),
+                    cx,
+                );
+            }
             ClientMsg::Visible { visible } => {
                 if visible {
                     self.hidden.remove(&client);
@@ -1919,6 +1953,25 @@ impl Daemon {
             }
             ClientMsg::Ping => {}
         }
+    }
+
+    /// Runs `job` off the main thread (it waits on `claude`) and sends what it
+    /// gives to `client`, in `part`s when it is too big for one frame.
+    fn answer_off_thread(
+        &self,
+        client: ClientId,
+        job: impl FnOnce() -> serde_json::Value + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let reply = cx.background_executor().spawn(async move { job() }).await;
+            let _ = this.update(cx, |this, _| {
+                for frame in wire::parts(reply.to_string()) {
+                    this.transport.send(client, frame);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Adds a folder already on this machine that a device named, `typed`.
@@ -2160,10 +2213,13 @@ impl Daemon {
     }
 
     /// Sends `text` to the session `id` as its next prompt.
+    /// Sends a prompt to a session; `now` stops a running turn for it
+    /// instead of queueing it behind.
     fn send_to_session(
         &mut self,
         id: &str,
         text: String,
+        now: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         if let Some(s) = self.store.session(id) {
@@ -2180,7 +2236,11 @@ impl Daemon {
             if t.queue_paused() {
                 t.resume_queue(cx);
             }
-            t.send(text, cx);
+            if now {
+                t.interrupt_with(text, cx);
+            } else {
+                t.send(text, cx);
+            }
         });
         if let Some(s) = self.store.session_mut(id) {
             s.updated = unix_now();
@@ -2226,6 +2286,31 @@ impl Daemon {
     /// finishes a turn, wants an answer or fails, except to the ones looking
     /// at that very session. Subscriptions the push service says are gone are
     /// forgotten.
+    /// Starts the install of the adapter a session is missing, the first time
+    /// it asks. True when it started one.
+    fn install_missing_adapter(
+        &mut self,
+        id: &str,
+        thread: &Entity<Thread>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(needed) = thread.read(cx).needs_install().cloned() else {
+            return false;
+        };
+        if !self.installed_for.insert(id.to_string()) {
+            return false;
+        }
+        eprintln!(
+            "{}: {id} needs {}; installing it into {}",
+            super::name(),
+            needed.package,
+            needed.dir.display()
+        );
+        let thread = thread.clone();
+        cx.defer(move |cx| thread.update(cx, |t, cx| t.install_adapter(cx)));
+        true
+    }
+
     fn notify(
         &mut self,
         id: &str,
@@ -2381,7 +2466,7 @@ impl Daemon {
                     "log" => Reply::ok(self.log(&id, arg(1).parse().unwrap_or(super::LOG), cx)),
                     "state" => Reply::ok(self.state(&id, cx)),
                     "send" => self
-                        .send_to_session(&id, arg(1).to_string(), cx)
+                        .send_to_session(&id, arg(1).to_string(), false, cx)
                         .map(|()| format!("sent to {id}"))
                         .into(),
                     // One waiting on an answer counts: stopping it withdraws

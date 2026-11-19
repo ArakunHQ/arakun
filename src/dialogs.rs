@@ -803,6 +803,11 @@ impl DeleteEnvDialog {
         }
     }
 
+    /// The deletion is running; whoever opened it waits for its event.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
     /// For the folder `place` on the server `machine`. What is uncommitted or
     /// unpushed there is not known here, so the dialog does not count it.
     pub fn remote(

@@ -59,6 +59,15 @@ struct Row<'a> {
 }
 
 impl Shell {
+    /// Whether a session waits or runs, so the Active list has rows.
+    pub(super) fn any_active(&self) -> bool {
+        self.projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .any(|s| is_active(s.status))
+    }
+
     /// Nothing while no session waits or runs.
     pub(super) fn render_active_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let mut rows = Vec::new();

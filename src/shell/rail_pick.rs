@@ -143,8 +143,12 @@ impl Shell {
     }
 
     /// Whether the bar goes under the Active list: a picked worktree is not in
-    /// the open project's list, so it was picked there.
+    /// the open project's list, so it was picked there. Not while that list
+    /// draws no rows, or the bar would show nowhere.
     pub(super) fn pick_bar_under_active(&self) -> bool {
+        if !self.active_list_shown() || !self.any_active() {
+            return false;
+        }
         let pi = self.active_project;
         let listed: Vec<&Path> = self
             .listed_envs(pi)

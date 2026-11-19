@@ -2059,27 +2059,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        //PLACEHOLDER window: &mut Window, cx: &mut Context<Self>) {
         if paths.is_empty() {
             return;
         }
-        let mut touched = Vec::new();
-        for (pi, project) in self.projects.iter_mut().enumerate() {
-            let open = project
-                .environments
-                .get(project.active_env)
-                .map(|e| e.path.clone());
-            let before = project.environments.len();
-            project.environments.retain(|e| !paths.contains(&e.path));
-            if project.environments.len() == before {
-                continue;
-            }
-            // The open row stays open; when it went, the one at its place.
-            project.active_env = open
-                .and_then(|o| project.environments.iter().position(|e| e.path == o))
-                .unwrap_or(project.active_env)
-                .min(project.environments.len().saturating_sub(1));
-            touched.push(pi);
+        let before = self.projects.len();
+        let touched = drop_envs(&mut self.projects, &mut self.active_project, paths);
+        if self.projects.len() != before {
+            self.sync_ci_roots(cx);
+            self.sync_poll(window, cx);
         }
         self.rail_pick.retain(|p| !paths.contains(p));
         // Their tabs, and the pages of their browser tabs, go with them.
@@ -2517,6 +2504,15 @@ impl Shell {
         }
         self.select_env(pi, ei, window, cx);
         self.open_session(id, window, cx);
+    }
+
+    /// The open dialog runs work that must not lose its result.
+    fn modal_busy(&self, cx: &App) -> bool {
+        match &self.modal {
+            Some((Modal::GitConfirm(d), _)) => d.read(cx).busy(),
+            Some((Modal::DeleteEnv(d), _)) => d.read(cx).busy(),
+            _ => false,
+        }
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3440,7 +3436,13 @@ impl Render for Shell {
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
+                            cx.listener(|this, _, window, cx| {
+                                // A running deletion still has to report what
+                                // went, which its event does.
+                                if !this.modal_busy(cx) {
+                                    this.close_modal(window, cx)
+                                }
+                            }),
                         )
                         .child(
                             // Keyed by the dialog, so one opened over another
@@ -3706,6 +3708,52 @@ fn server_source(
     .or_else(|| envs.iter().position(usable))
 }
 
+/// Takes `paths` off every project's list and returns the projects that kept
+/// rows, by their new index. A project left with no rows goes: it was opened
+/// on a deleted worktree, and `env()` needs a row in every project.
+fn drop_envs(
+    projects: &mut Vec<Project>,
+    active_project: &mut usize,
+    paths: &[std::path::PathBuf],
+) -> Vec<usize> {
+    let mut touched = Vec::new();
+    let mut emptied = Vec::new();
+    for (pi, project) in projects.iter_mut().enumerate() {
+        let open = project
+            .environments
+            .get(project.active_env)
+            .map(|e| e.path.clone());
+        let before = project.environments.len();
+        project.environments.retain(|e| !paths.contains(&e.path));
+        if project.environments.len() == before {
+            continue;
+        }
+        if project.environments.is_empty() {
+            emptied.push(pi);
+            continue;
+        }
+        // The open row stays open; when it went, the one at its place.
+        project.active_env = open
+            .and_then(|o| project.environments.iter().position(|e| e.path == o))
+            .unwrap_or(project.active_env)
+            .min(project.environments.len() - 1);
+        touched.push(pi);
+    }
+    for &pi in emptied.iter().rev() {
+        projects.remove(pi);
+        if *active_project >= pi && *active_project > 0 {
+            *active_project -= 1;
+        }
+        for t in &mut touched {
+            if *t > pi {
+                *t -= 1;
+            }
+        }
+    }
+    *active_project = (*active_project).min(projects.len().saturating_sub(1));
+    touched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3822,5 +3870,34 @@ mod tests {
         assert_eq!(hunk_start("@@ -10,4 +12,6 @@ fn main() {"), Some(12));
         assert_eq!(hunk_start("@@ -1 +1 @@"), Some(1));
         assert_eq!(hunk_start("+@@ not a hunk"), None);
+    }
+
+    #[test]
+    fn deleting_a_worktree_drops_a_project_opened_on_it() {
+        use std::path::PathBuf;
+        let repo = PathBuf::from("/r/repo");
+        let tree = PathBuf::from("/r/tree");
+        let other = PathBuf::from("/r/other");
+        let mut parent = crate::state::new_project(&repo);
+        parent
+            .environments
+            .push(Environment::new(tree.clone(), None, false));
+        parent.active_env = 1;
+        // The worktree opened as its own project before its parent listed it.
+        let mut projects = vec![
+            crate::state::new_project(&tree),
+            parent,
+            crate::state::new_project(&other),
+        ];
+        let mut active = 2;
+        let touched = drop_envs(&mut projects, &mut active, &[tree]);
+        assert_eq!(projects.len(), 2);
+        assert!(projects.iter().all(|p| !p.environments.is_empty()));
+        assert_eq!(projects[0].path, repo);
+        assert_eq!(projects[0].active_env, 0);
+        assert_eq!(touched, vec![0]);
+        // The open project stays open at its new index.
+        assert_eq!(active, 1);
+        assert_eq!(projects[active].path, other);
     }
 }

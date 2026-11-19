@@ -926,6 +926,9 @@ impl Environment {
             Status::NeedsInput
         } else if any(Status::Working) {
             Status::Working
+        } else if any(Status::Error) {
+            // With one thread per worktree, a failed thread is the row's state.
+            Status::Error
         } else {
             Status::Idle
         }

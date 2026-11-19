@@ -1,0 +1,3 @@
+// The app icon: gpui loads icon 1 for its windows, and Explorer shows it for arakun.exe.
+// tools/brand-logo.py writes arakun.ico.
+1 ICON "arakun.ico"

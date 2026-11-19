@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs as _, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
@@ -47,6 +47,14 @@ pub const PAIR_FOR: Duration = Duration::from_secs(120);
 const PAIR_TRIES: u8 = 5;
 /// The most a request body may carry (a pairing request is a few dozen bytes).
 const MAX_BODY: usize = 4096;
+/// How long a request body may take to arrive, all of it.
+const BODY_DEADLINE: Duration = Duration::from_secs(5);
+/// A few phones each load the page and keep a socket; anyone on the network
+/// can open connections, so one address must not take every place.
+const CONNECTIONS: crate::accept::Limits = crate::accept::Limits {
+    total: 128,
+    per_peer: 32,
+};
 
 pub type ClientId = u64;
 
@@ -54,12 +62,20 @@ pub type ClientId = u64;
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    /// Watch a session: its last entries now, then every change.
+    /// Watch a session: its last entries now, then every change. It takes the
+    /// place of the one watched before, unless `keep` (a desktop following
+    /// several): then both are watched.
     Open {
         session: String,
+        #[serde(default)]
+        keep: bool,
     },
-    /// Back to the inbox: stop watching.
-    Close,
+    /// Stop watching `session`, or every session when it says none (back to
+    /// the inbox).
+    Close {
+        #[serde(default)]
+        session: Option<String>,
+    },
     /// Older entries of the watched session, `from..to`.
     Entries {
         session: String,
@@ -73,6 +89,11 @@ pub enum ClientMsg {
         /// saved files are attached as `@` mentions when the prompt goes out.
         #[serde(default)]
         uploads: Vec<String>,
+        /// Stops the running turn and sends this as soon as it stopped,
+        /// instead of queueing it behind the turn (`Ctrl+Enter` in the app).
+        /// A server without it queues the prompt, as before.
+        #[serde(default)]
+        now: bool,
     },
     /// A piece of a photo the phone is sending: `data` is base64, piece `part`
     /// of `of` under `upload`'s id. Kept apart because a relay frame is small;
@@ -145,6 +166,49 @@ pub enum ClientMsg {
         session: String,
         #[serde(default)]
         from: usize,
+    },
+    /// Makes a folder already on the server one sessions can start in. `~/`
+    /// stands for the home folder there. Answered with `place_added`.
+    AddPlace {
+        path: String,
+    },
+    /// Clones a repository on the server and makes its folder a place: a URL,
+    /// a `git clone` line or a GitHub `owner/repo`. Answered with `place_added`
+    /// once the clone is done.
+    Clone {
+        url: String,
+    },
+    /// A new worktree of the repository `from` is a checkout of, on a new
+    /// `branch`, made a place. Answered with `place_added`.
+    NewEnv {
+        from: String,
+        branch: String,
+    },
+    /// Renames the branch checked out at place `place` from `from` to `to`,
+    /// unless it was renamed meanwhile. Answered with the inbox.
+    RenameBranch {
+        place: String,
+        from: String,
+        to: String,
+    },
+    /// The sessions at place `place` stop asking for attention: those not
+    /// working go idle, and their agents stop unless a device has them open.
+    /// Answered with the inbox.
+    SettleEnv {
+        place: String,
+    },
+    /// Removes the worktree at place `place`, its folder, and its sessions;
+    /// with `delete_branch`, its branch too. A repository's main folder is
+    /// never removed. Answered with `env_deleted`: whether the folder is gone
+    /// (`deleted`), and what went wrong (`error`).
+    DeleteEnv {
+        place: String,
+        #[serde(default)]
+        delete_branch: bool,
+        /// The branch the user agreed to delete. One checked out there
+        /// since is not deleted, and neither is the folder.
+        #[serde(default)]
+        branch: Option<String>,
     },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
@@ -734,15 +798,19 @@ impl Server {
         std::thread::Builder::new()
             .name("arakun-phone".into())
             .spawn(move || {
-                let ids = AtomicU64::new(1);
-                for stream in listener.incoming().flatten() {
-                    if s.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let id = ids.fetch_add(1, Ordering::Relaxed);
-                    let (tx, c, s, access) = (tx.clone(), c.clone(), s.clone(), access.clone());
-                    std::thread::spawn(move || answer(stream, id, tx, c, s, &access));
-                }
+                let mut ids = 1..;
+                let stopped = s.clone();
+                crate::accept::serve(
+                    listener.incoming(),
+                    CONNECTIONS,
+                    "arakun-phone-conn",
+                    || stopped.load(Ordering::Relaxed),
+                    |stream| {
+                        let id = ids.next().unwrap_or_default();
+                        let (tx, c, s, access) = (tx.clone(), c.clone(), s.clone(), access.clone());
+                        move || answer(stream, id, tx, c, s, &access)
+                    },
+                );
             })?;
         Ok((
             Server {
@@ -870,7 +938,11 @@ fn answer(
     consume(&mut stream);
     // Read before answering: a body left unread resets the connection.
     let body = if req.method == "POST" {
-        read_body(&mut stream, req.content_length)
+        read_body(
+            &mut stream,
+            req.content_length,
+            Instant::now() + BODY_DEADLINE,
+        )
     } else {
         None
     };
@@ -1075,13 +1147,28 @@ struct PairRequest {
     name: String,
 }
 
-/// The body that follows the head, when it is small enough.
-fn read_body(stream: &mut TcpStream, len: usize) -> Option<Vec<u8>> {
+/// The body that follows the head, when it is small enough and comes in time.
+/// The deadline is for the whole body: a timeout per read would let a sender
+/// keep the thread for hours with a byte every few seconds.
+fn read_body(stream: &mut TcpStream, len: usize, deadline: Instant) -> Option<Vec<u8>> {
     if len > MAX_BODY {
         return None;
     }
     let mut body = vec![0u8; len];
-    stream.read_exact(&mut body).ok()?;
+    let mut got = 0;
+    while got < len {
+        let left = deadline.checked_duration_since(Instant::now())?;
+        // A zero timeout means none to the socket.
+        stream
+            .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+            .ok()?;
+        match stream.read(&mut body[got..]) {
+            Ok(0) => return None,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
     Some(body)
 }
 
@@ -1372,6 +1459,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_body_has_one_deadline_not_one_per_read() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        // A byte every 40 ms keeps each read short, but not the whole body.
+        let sender = std::thread::spawn(move || {
+            let mut out = TcpStream::connect(addr).unwrap();
+            for _ in 0..10 {
+                if out.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        });
+        let (mut slow, _) = listener.accept().unwrap();
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(150);
+        assert_eq!(read_body(&mut slow, 10, deadline), None);
+        assert!(start.elapsed() < Duration::from_millis(300));
+        sender.join().unwrap();
+
+        let mut out = TcpStream::connect(addr).unwrap();
+        out.write_all(b"{}").unwrap();
+        let (mut quick, _) = listener.accept().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_eq!(read_body(&mut quick, 2, deadline), Some(b"{}".to_vec()));
+    }
+
+    #[test]
+    fn a_delete_keeps_the_branch_unless_asked() {
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        assert_eq!(
+            read(r#"{"type":"delete_env","place":"/w/fix"}"#),
+            ClientMsg::DeleteEnv {
+                place: "/w/fix".into(),
+                delete_branch: false,
+                branch: None,
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"delete_env","place":"/w/fix","delete_branch":true,"branch":"fix"}"#),
+            ClientMsg::DeleteEnv {
+                place: "/w/fix".into(),
+                delete_branch: true,
+                branch: Some("fix".into()),
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"settle_env","place":"/w/fix"}"#),
+            ClientMsg::SettleEnv {
+                place: "/w/fix".into()
+            }
+        );
+    }
+
+    #[test]
     fn settings_that_cannot_be_read_are_an_error_not_the_defaults() {
         let dir = std::env::temp_dir().join(format!("arakun-phone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1472,7 +1614,8 @@ mod tests {
             ClientMsg::Send {
                 session: "s1".into(),
                 text: "hi".into(),
-                uploads: vec![]
+                uploads: vec![],
+                now: false,
             }
         );
         let with: ClientMsg = serde_json::from_str(
@@ -1484,7 +1627,20 @@ mod tests {
             ClientMsg::Send {
                 session: "s1".into(),
                 text: "mira".into(),
-                uploads: vec!["u1".into(), "u2".into()]
+                uploads: vec!["u1".into(), "u2".into()],
+                now: false,
+            }
+        );
+        let now: ClientMsg =
+            serde_json::from_str(r#"{"type":"send","session":"s1","text":"no","now":true}"#)
+                .unwrap();
+        assert_eq!(
+            now,
+            ClientMsg::Send {
+                session: "s1".into(),
+                text: "no".into(),
+                uploads: vec![],
+                now: true,
             }
         );
         let piece: ClientMsg = serde_json::from_str(
@@ -1807,7 +1963,7 @@ mod tests {
                     server.send(id, "hello".into());
                     got.push("connected");
                 }
-                Some(Incoming::Message(_, ClientMsg::Open { session })) => {
+                Some(Incoming::Message(_, ClientMsg::Open { session, .. })) => {
                     assert_eq!(session, "s1");
                     got.push("open");
                 }

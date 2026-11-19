@@ -1,12 +1,14 @@
 //! The project rail on the far left: search, views and projects with their environments.
 
 use super::*;
+use crate::servers_view::Reach;
 
 /// Height of an environment row under its project, and the space between rows.
 const ENV_ROW_H: f32 = 28.;
 const ENV_GAP: f32 = 2.;
 
-const NEW_ENV_TIP: &str = "New environment (Ctrl+Shift+N). Alt+click for options";
+const NEW_SESSION_TIP: &str = "A session in its own worktree. Alt+click to pick the branch";
+const NEW_ENV_TIP: &str = "New session in its own worktree (Ctrl+Shift+N). Alt+click for options";
 
 /// The one thing an environment row says at its end, the most urgent first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,7 +84,7 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
                 .flex_none()
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_faint())
-                .child("Creating"),
+                .child("Making worktree"),
         )
 }
 
@@ -152,6 +154,26 @@ pub(super) fn away_envs(statuses: &[Vec<Status>], open: usize) -> Vec<(usize, us
     // Stable: the sidebar order holds within each group.
     away.sort_by_key(|(_, _, s)| *s != Status::NeedsInput);
     away
+}
+
+/// What a worktree's row is called: its thread, the newest when it holds
+/// more than one (from before one thread per worktree), with how many more.
+/// `None` for the main checkout, a scratch place known by its branch, and for
+/// a worktree with no thread yet. `sessions` is `(title, last activity)`;
+/// the last value is the index of the one named, which a click opens.
+pub(super) fn thread_label(
+    is_checkout: bool,
+    sessions: &[(&str, u64)],
+) -> Option<(String, usize, usize)> {
+    if is_checkout {
+        return None;
+    }
+    let (i, (title, _)) = sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, (t, _))| !t.trim().is_empty())
+        .max_by_key(|(_, (_, updated))| *updated)?;
+    Some((title.to_string(), sessions.len() - 1, i))
 }
 
 /// A worktree is often named after its project (`beta-fix-login`); next to
@@ -486,8 +508,19 @@ impl Shell {
                 if only_open {
                     envs = envs.child(self.render_env_heading(pi, cx));
                 }
-                for (ei, env) in project.environments.iter().enumerate() {
-                    envs = envs.child(self.render_env_row(pi, ei, env, show_changes, cx));
+                let active_above = self.active_list_shown();
+                for ei in self.listed_envs(pi) {
+                    envs = envs.child(self.render_env_row(
+                        pi,
+                        ei,
+                        &project.environments[ei],
+                        show_changes,
+                        active_above,
+                        cx,
+                    ));
+                }
+                if !self.pick_bar_under_active() {
+                    envs = envs.children(self.render_pick_bar(cx));
                 }
                 for (i, name) in self
                     .pending_envs
@@ -522,7 +555,7 @@ impl Shell {
                                 theme::mix(0.7),
                                 "env-add-row",
                             ))
-                            .child("New environment")
+                            .child("New session")
                             .on_click(cx.listener(
                                 move |this, ev: &gpui::ClickEvent, window, cx| {
                                     this.new_env_click(pi, ev, window, cx)
@@ -531,7 +564,8 @@ impl Shell {
                     );
                 }
                 projects = projects.child(envs);
-                if only_open {
+                // The Active list already shows what runs elsewhere.
+                if only_open && !active_above {
                     projects = projects.children(self.render_elsewhere(cx));
                 }
             }
@@ -802,31 +836,93 @@ impl Shell {
         Some(list.into_any_element())
     }
 
-    /// "Environments", with the + that makes one, over the open project's list.
+    /// For an environment on a server: which machine, dimmed while it cannot
+    /// be reached.
+    fn render_machine(&self, env: &Environment, id: usize) -> Option<AnyElement> {
+        let remote = env.remote.as_ref()?;
+        let reach = self.server_reach(&remote.server);
+        let note = match &reach {
+            Some(Reach::Connected) => None,
+            Some(Reach::Away(why) | Reach::Refused(why)) => Some(why.clone()),
+            Some(Reach::Connecting) | None => Some("Connecting…".to_string()),
+        };
+        let machine = crate::redact::text(&remote.machine).into_owned();
+        Some(
+            div()
+                .id(("env-machine", id))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(4.))
+                .max_w(px(96.))
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_faint())
+                .when(note.is_some(), |d| d.opacity(0.6))
+                .tooltip(ui::tip_text(match note {
+                    Some(why) => format!("On {machine}: {why}"),
+                    None => format!("On {machine}"),
+                }))
+                .child(icon("computer", 12.).text_color(theme::text_faint()))
+                .child(div().min_w_0().truncate().child(machine))
+                .into_any_element(),
+        )
+    }
+
+    /// "Sessions", with the + that makes one in a new worktree, over the open project's list.
     fn render_env_heading(&self, pi: usize, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
-            .items_center()
-            .h(px(28.))
-            .mt(crate::ui::sp(6.))
-            .pl(crate::ui::sp(8.))
-            .text_size(px(ui::TEXT_SM))
-            .text_color(theme::text_subtle())
-            .child(div().flex_1().min_w_0().truncate().child("Environments"))
+            .flex_col()
+            .gap(crate::ui::sp(ENV_GAP))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(28.))
+                    .mt(crate::ui::sp(6.))
+                    .pl(crate::ui::sp(8.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child(div().flex_1().min_w_0().truncate().child("Sessions")),
+            )
             .child(
                 div()
                     .id(("env-add", pi))
+                    .group("env-add")
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .size(px(24.))
-                    .rounded(crate::ui::rad(6.))
+                    .gap(crate::ui::sp(8.))
+                    .h(px(ENV_ROW_H))
+                    .px(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::fill_selected()))
-                    .tooltip(ui::tip(NEW_ENV_TIP))
-                    .child(icon("add01", 14.).text_color(theme::text_muted()))
+                    .border_1()
+                    .border_color(theme::border())
+                    .text_size(px(ui::TEXT_MD))
+                    .text_color(theme::text_muted())
+                    .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                    .tooltip(ui::tip(NEW_SESSION_TIP))
+                    .child(hover_icon(
+                        "add01",
+                        14.,
+                        theme::text_muted(),
+                        theme::content(),
+                        "env-add",
+                    ))
+                    .child(div().flex_1().min_w_0().truncate().child("New session"))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(crate::platform::shortcut_label("Ctrl+T")),
+                    )
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
-                        this.new_env_click(pi, ev, window, cx)
+                        if ev.modifiers().alt {
+                            this.open_create_env(pi, window, cx)
+                        } else {
+                            this.new_session(window, cx)
+                        }
                     })),
             )
     }
@@ -839,16 +935,36 @@ impl Shell {
         ei: usize,
         env: &Environment,
         show_changes: bool,
+        active_above: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.projects.get(pi).is_some_and(|p| p.active_env == ei);
+        let picked = self.is_picked(&env.path);
         let status = env.aggregate_status();
         let ci = self.env_ci(pi, ei, cx);
         let ci_failed = ci.as_ref().is_some_and(|(s, _)| *s == ci::State::Failed);
         // The diff of the open row; the others show theirs on hover.
         let changes = show_changes.then(|| env.diff_totals());
         let signal = env_signal(status, ci_failed, changes);
-        let lead: AnyElement = if env.is_checkout && status == Status::Idle {
+        // The sessions in the Active list are named there; this row names the rest.
+        let named: Vec<&model::Session> = env
+            .sessions
+            .iter()
+            .filter(|s| !active_above || !super::active::is_active(s.status))
+            .collect();
+        let titles: Vec<(&str, u64)> = named
+            .iter()
+            .map(|s| (s.title.as_ref(), s.updated))
+            .collect();
+        let label = thread_label(env.is_checkout, &titles);
+        // A click opens the session the row is named after: going to the
+        // worktree would show the tab it showed last, maybe another session's.
+        let opens = label.as_ref().map(|(_, _, i)| named[*i].id.clone());
+        let lead: AnyElement = if picked {
+            icon("tick02", 14.)
+                .text_color(theme::content())
+                .into_any_element()
+        } else if env.is_checkout && status == Status::Idle {
             icon("folder01", 14.)
                 .text_color(if active {
                     theme::text_muted()
@@ -927,14 +1043,45 @@ impl Shell {
             } else {
                 theme::text_muted()
             })
-            .when(active, |d| d.bg(theme::selection()))
-            .when(!active, |d| {
+            // Picked rows are set apart from the open one, which may not be picked.
+            .when(active && !picked, |d| d.bg(theme::selection()))
+            .when(picked, |d| {
+                d.bg(theme::selection_strong()).text_color(theme::content())
+            })
+            .when(!active && !picked, |d| {
                 d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
             })
             .child(lead)
-            .child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
+            .when_some(label.clone(), |d, (title, more, _)| {
+                d.tooltip(ui::tip_text(format!("{} · {}", title, env.branch)))
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .when(more > 0, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_faint())
+                                .child(format!("+{more}")),
+                        )
+                    })
+            })
+            .when(label.is_none(), |d| {
+                // A worktree made for a new session, still on its random branch:
+                // the first prompt names both.
+                let fresh = env.placeholder.is_some() && env.sessions.is_empty();
+                d.when(fresh, |d| {
+                    d.tooltip(ui::tip_text(env.branch.clone()))
+                        .child(div().flex_1().min_w_0().truncate().child("New session"))
+                })
+                .when(!fresh, |d| {
+                    d.child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
+                })
+            })
+            .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
-            .on_click(cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)))
+            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                this.click_env(pi, ei, opens.clone(), ev.modifiers(), window, cx)
+            }))
     }
 }
 
@@ -956,6 +1103,26 @@ mod tests {
             vec![(2, 1, NeedsInput), (1, 1, Working), (2, 0, Working)]
         );
         assert!(away_envs(&[vec![Working]], 0).is_empty());
+    }
+
+    #[test]
+    fn a_worktree_is_called_by_its_thread() {
+        assert_eq!(
+            thread_label(false, &[("Fix login", 5)]),
+            Some(("Fix login".into(), 0, 0))
+        );
+        // From before one thread per worktree: the newest, and how many more.
+        assert_eq!(
+            thread_label(false, &[("Old", 1), ("New", 9), ("Mid", 4)]),
+            Some(("New".into(), 2, 1))
+        );
+        assert_eq!(
+            thread_label(false, &[("", 9), ("Named", 2)]),
+            Some(("Named".into(), 1, 1))
+        );
+        // No thread yet, or the main checkout: known by the branch.
+        assert_eq!(thread_label(false, &[]), None);
+        assert_eq!(thread_label(true, &[("Fix login", 5)]), None);
     }
 
     #[test]

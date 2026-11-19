@@ -86,14 +86,8 @@ pub fn cached(cwd: &Path) -> Option<Extensions> {
 
 fn save(cwd: &Path, x: &Extensions) {
     let file = cache_file(cwd);
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(json) = serde_json::to_vec(x) {
-        let tmp = file.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, file);
-        }
+        let _ = crate::durable::write(&file, &json);
     }
 }
 

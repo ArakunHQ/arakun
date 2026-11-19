@@ -490,6 +490,24 @@ pub enum ThreadEvent {
     SubagentsChanged {
         spawned: Option<String>,
     },
+    /// What the user did in a session that runs on a server (see
+    /// [`Thread::set_remote`]): it is for the server to carry out.
+    Remote(RemoteAction),
+}
+
+/// Something the user did in a server's session, which goes to the server.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RemoteAction {
+    /// `now` stops the running turn for the prompt instead of queueing it.
+    Send {
+        text: String,
+        now: bool,
+    },
+    Cancel,
+    /// The option picked for the permission asked.
+    Permission(String),
+    Answer(Vec<String>),
+    SkipQuestion,
 }
 
 /// What the user made of the offer to set up a check (see [`Thread::offer_check`]).
@@ -548,6 +566,9 @@ struct Caps {
 pub struct Thread {
     kind: AgentKind,
     backend: Backend,
+    /// The session runs on a server: this thread shows it, and what the user
+    /// does goes out as [`ThreadEvent::Remote`].
+    remote: bool,
     native: native::State,
     cwd: PathBuf,
     meta: SessionMeta,
@@ -1023,6 +1044,7 @@ impl Thread {
         Thread {
             kind,
             backend,
+            remote: false,
             native: native::State::default(),
             session_id: meta.session_id.clone(),
             title_locked: !meta.title.is_empty(),
@@ -1789,10 +1811,15 @@ impl Thread {
                 if fresh && t.kind == AgentKind::OpenCode {
                     super::catalog::remember_opencode_options(&v["configOptions"]);
                 }
-                if fresh && t.kind == AgentKind::Codex {
+                if fresh && matches!(t.kind, AgentKind::Codex | AgentKind::Devin) {
                     let raw = v["configOptions"].clone();
+                    let kind = t.kind;
                     cx.background_spawn(crate::guard::task(async move {
-                        super::catalog::remember_codex_options(&raw)
+                        if kind == AgentKind::Codex {
+                            super::catalog::remember_codex_options(&raw)
+                        } else {
+                            super::catalog::remember_devin_options(&raw)
+                        }
                     }))
                     .detach();
                 }
@@ -1940,10 +1967,89 @@ impl Thread {
         text
     }
 
+    /// Makes this viewer the face of a session on a server.
+    pub fn set_remote(&mut self) {
+        self.remote = true;
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.remote
+    }
+
+    /// What the user did did not reach the server: the questionnaire can be
+    /// answered again.
+    pub fn remote_undelivered(&mut self) {
+        self.native.remote_answered = None;
+    }
+
+    /// Says in the session that `what` is not done for a server's session:
+    /// the agent and its history are on that machine.
+    fn remote_cannot(&mut self, what: &str, cx: &mut Context<Self>) {
+        self.post_notice(
+            format!("{what} is not available for a session on a server yet."),
+            true,
+            cx,
+        );
+    }
+
+    /// What a server's session waits on, as the server words it
+    /// (`phone::wire::permission` and `question`): shown with the same cards
+    /// as a session here, and answered through [`ThreadEvent::Remote`].
+    pub fn set_remote_asks(
+        &mut self,
+        permission: &Value,
+        question: &Value,
+        cx: &mut Context<Self>,
+    ) {
+        let text = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+        let permission = permission["options"]
+            .as_array()
+            .map(|options| PermissionRequest {
+                rpc_id: Value::Null,
+                tool_call_id: text(permission, "tool_call_id"),
+                title: text(permission, "title"),
+                options: options
+                    .iter()
+                    .map(|o| PermissionOption {
+                        id: text(o, "id"),
+                        name: text(o, "name"),
+                        kind: text(o, "kind"),
+                    })
+                    .collect(),
+                plan: None,
+                session: None,
+            });
+        let question = native::remote_question(question);
+        let asked = permission.is_some() && self.permissions.is_empty();
+        self.permissions = permission.into_iter().collect();
+        self.native.questions = question.into_iter().collect();
+        // Another questionnaire, or none: the one answered is done with.
+        let front = self
+            .native
+            .questions
+            .front()
+            .map(native::AskUserRequest::remote_key);
+        if self.native.remote_answered != front {
+            self.native.remote_answered = None;
+        }
+        if asked {
+            cx.emit(ThreadEvent::NeedsPermission);
+        }
+        cx.emit(ThreadEvent::Changed);
+        cx.notify();
+    }
+
     /// Sends a prompt, or queues it while the agent is busy or still starting.
     pub fn send(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
+            return;
+        }
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Send {
+                text: prompt,
+                now: false,
+            }));
             return;
         }
         if !self.title_locked && self.meta.title.is_empty() {
@@ -2559,6 +2665,10 @@ impl Thread {
     /// the background with it. Queued prompts wait until resumed, those sent
     /// now too: they stay in the queue.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Cancel));
+            return;
+        }
         self.urgent = 0;
         if !self.queue.is_empty() {
             self.queue_paused = true;
@@ -2615,6 +2725,14 @@ impl Thread {
     pub fn interrupt_with(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
+            return;
+        }
+        // The server holds the queue and the turn: it stops one for the other.
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Send {
+                text: prompt,
+                now: true,
+            }));
             return;
         }
         if !self.is_busy() {
@@ -2731,6 +2849,13 @@ impl Thread {
         let Some(req) = self.permissions.pop_front() else {
             return;
         };
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Permission(
+                option_id.into(),
+            )));
+            cx.notify();
+            return;
+        }
         let reply = match self.backend {
             Backend::Acp => json!({"outcome": {"outcome": "selected", "optionId": option_id}}),
             Backend::Native => json!({"selectedOption": option_id}),

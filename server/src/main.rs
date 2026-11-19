@@ -6,6 +6,8 @@
 //!   cargo build --release --locked -p arakun-server
 //!   arakun-server help
 
+#[path = "../../src/accept.rs"]
+mod accept;
 #[allow(dead_code)]
 #[path = "../../src/account.rs"]
 mod account;
@@ -67,6 +69,12 @@ mod phone_page {
 }
 #[path = "../../src/caret.rs"]
 mod caret;
+
+// What the picker reads from a source (`shorthand`) goes unused here.
+#[allow(dead_code)]
+#[path = "../../src/clone_source.rs"]
+mod clone_source;
+
 #[allow(dead_code)]
 #[path = "../../src/highlight.rs"]
 mod highlight;

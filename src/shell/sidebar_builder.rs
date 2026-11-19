@@ -399,11 +399,9 @@ impl Shell {
     fn tab_pin(&self) -> Option<Pin> {
         let env = self.env();
         // The builder itself is on screen; the tab before it is the one meant.
-        let tab = env
-            .tabs
-            .iter()
-            .rev()
-            .find(|t| matches!(t.kind, TabKind::Browser { .. } | TabKind::File { .. }))?;
+        let tab = self.strip.tabs.iter().rev().find(|t| {
+            t.is_in(&env.path) && matches!(t.kind, TabKind::Browser { .. } | TabKind::File { .. })
+        })?;
         match &tab.kind {
             TabKind::Browser { url } if !url.is_empty() => Some(Pin::Url {
                 title: url_title(url),
@@ -653,6 +651,13 @@ impl Shell {
                 Some(Piece::projects()),
                 "folder01",
                 "Projects".into(),
+                None,
+            ))
+            .child(piece_row(
+                "sb-p-active".into(),
+                Some(Piece::active()),
+                "clock01",
+                "Active".into(),
                 None,
             ));
         // Extensions that are off are added in the Marketplace, not here.
@@ -1182,6 +1187,36 @@ impl Shell {
                         ),
                 )
                 .into_any_element(),
+            Piece::Active => {
+                let row = |text: &'static str, color: Hsla| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .h(px(24.))
+                        .px(crate::ui::sp(8.))
+                        .text_size(px(ui::TEXT_SM))
+                        .child(div().size(px(6.)).rounded_full().bg(color))
+                        .child(text)
+                };
+                let head = |text: &'static str| {
+                    div()
+                        .px(crate::ui::sp(8.))
+                        .pt(crate::ui::sp(4.))
+                        .text_size(px(ui::TEXT_XS))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::text_faint())
+                        .child(text)
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(head("NEEDS YOU"))
+                    .child(row("Waiting on you", theme::needs_you()))
+                    .child(head("RUNNING"))
+                    .child(row("Working", theme::working()))
+                    .into_any_element()
+            }
             Piece::Projects {
                 envs, only_open, ..
             } => {

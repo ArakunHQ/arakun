@@ -249,7 +249,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.activate_window();
+        crate::background::show(window);
         match Open::parse(&key) {
             Some(Open::Session(id)) => {
                 let found = self.projects.iter().enumerate().find_map(|(pi, p)| {

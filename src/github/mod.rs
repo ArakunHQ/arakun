@@ -1208,11 +1208,6 @@ impl GitHub {
         self.search_problem.as_ref()
     }
 
-    /// How many things wait on the user: the rail badge.
-    pub fn on_you(&self) -> usize {
-        self.queue.on_you
-    }
-
     /// Reads the open pull requests of `repos` (`owner/name`) that weren't
     /// asked for in the last minute, in the background.
     pub fn refresh_repo_pulls(&mut self, repos: Vec<String>, cx: &mut Context<Self>) {
@@ -1358,9 +1353,15 @@ impl GitHub {
             .filter(|l| !l.is_empty())
             .find_map(|l| self.avatar(l))
             .map(std::path::Path::to_path_buf);
+        // `who` is the item's author; on the user's own item, "rik mentioned
+        // you" would name the user, so the line says it without a name.
+        let named = match self.me() {
+            Some(me) if who.eq_ignore_ascii_case(me) => "",
+            _ => who.as_str(),
+        };
         (
             n.subject.title.clone(),
-            notice_line(n, item.map(|i| i.number), &who),
+            notice_line(n, item.map(|i| i.number), named),
             image,
         )
     }
@@ -2182,6 +2183,125 @@ mod tests {
                 assert!(n.web_url().starts_with("https://"), "{n:?}");
             }
             println!("all={all}: {} notifications", list.len());
+        }
+    }
+
+    /// Builds this machine's real queue through gh, as the tab does, and
+    /// prints what the badge counts: first before any details are read, then
+    /// with every entry's details. Only reads; nothing is marked read.
+    #[test]
+    #[ignore]
+    fn counts_the_real_queue() {
+        let now = crate::model::unix_now();
+        let today = queue::day_key(queue::day_start(now, 0));
+        let since = queue::day_key(queue::day_start(now, MENTIONS_DAYS));
+        let focus = load().focus;
+        let me = pr::me().unwrap_or_else(|p| panic!("{}", p.text()));
+        let (unread, _) = list(false).unwrap_or_else(|p| panic!("{}", p.text()));
+        let (found, failed, problem) = queue::search_all(&today, &since);
+        println!("focus {focus:?}, failed searches {failed:?} {problem:?}");
+        println!("unread notifications: {}", unread.len());
+        for why in queue::Why::ALL {
+            let n = found.iter().filter(|(w, _)| *w == why).count();
+            println!("search {why:?}: {n}");
+        }
+        let mut entries = queue::gather(&unread, &found);
+        println!("gathered: {}", entries.len());
+        entries.retain(|e| in_focus(&e.repo(), &focus));
+        println!("in focus: {}", entries.len());
+        let show = |label: &str, q: &queue::Queue| {
+            println!(
+                "{label}: on_you {} on_others {} ready {} done {} rows {}",
+                q.on_you,
+                q.on_others,
+                q.ready,
+                q.done,
+                q.rows.len()
+            );
+            for (e, p) in q.rows.iter().filter(|(_, p)| p.lane == queue::Lane::OnYou) {
+                let reason = e.notification.as_ref().map(|n| n.reason.as_str());
+                println!(
+                    "  {} why={:?} reason={reason:?} state={:?} group={:?} sub={:?}",
+                    e.key(),
+                    e.why,
+                    e.state,
+                    p.group,
+                    p.sub
+                );
+            }
+        };
+        let day = queue::day_start(now, 0);
+        show(
+            "no details",
+            &queue::build(&entries, &HashMap::new(), &me, day),
+        );
+        let mut details = HashMap::new();
+        for e in &entries {
+            let Some(item) = e.item.clone() else { continue };
+            let read = match item.kind {
+                pr::ItemKind::Pull => {
+                    pr::fetch_pull(&item).map(|p| queue::Details::Pull(Box::new(p)))
+                }
+                pr::ItemKind::Issue => {
+                    pr::fetch_issue(&item).map(|i| queue::Details::Issue(Box::new(i)))
+                }
+            };
+            match read {
+                Ok(d) => {
+                    details.insert(queue::key_of(&item), d);
+                }
+                Err(p) => println!("  could not read {}: {}", e.key(), p.text()),
+            }
+        }
+        let q = queue::build(&entries, &details, &me, day);
+        show("with details", &q);
+
+        // pilot's cards and board, read with the read token only.
+        let Some(cfg) = pilot::load_config() else {
+            println!("no pilot");
+            return;
+        };
+        let items = pilot::fetch(&cfg).unwrap_or_else(|e| panic!("{e}"));
+        let book: pilot::Book = std::fs::read(crate::state::data_dir().join("pilot.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let shown: Vec<&pilot::Item> = items.iter().filter(|i| !book.handled(&i.id)).collect();
+        let mut kinds: HashMap<String, usize> = HashMap::new();
+        for c in &shown {
+            *kinds.entry(format!("{:?}", c.kind)).or_default() += 1;
+        }
+        println!("pilot cards on show: {} {kinds:?}", shown.len());
+        match board::fetch(Some(&cfg)) {
+            Ok(b) => {
+                let cards: Vec<&pilot::Item> =
+                    board::visible_cards(&b, shown.iter().copied(), &focus).collect();
+                let questions = cards
+                    .iter()
+                    .filter(|c| board::card_place(&b, c) == board::CardPlace::Question)
+                    .count();
+                println!(
+                    "board: te_necesita {}, queue on you outside it {}, cards {} ({questions} questions)",
+                    b.verdict.te_necesita,
+                    board::needs_you(&b, &q) - b.verdict.te_necesita as usize,
+                    cards.len()
+                );
+                // What the badge said before it counted only the cards that ask.
+                let before = board::needs_you(&b, &q) + cards.len() - questions;
+                let now = board::waiting(&b, &q, cards.iter().copied());
+                println!("badge: before {before}, now {now}");
+            }
+            Err(e) => {
+                println!("no board: {e:?}");
+                let cards: Vec<&pilot::Item> = shown
+                    .iter()
+                    .copied()
+                    .filter(|c| c.in_focus(&focus))
+                    .collect();
+                let before = q.on_you + cards.len();
+                let now = board::waiting_without_board(&q, cards.into_iter());
+                println!("badge: before {before}, now {now}");
+            }
         }
     }
 

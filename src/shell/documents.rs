@@ -22,6 +22,10 @@ impl Shell {
         dirs: Vec<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) {
+        // A server's folder has no files here to list.
+        if crate::model::Remote::is_path(&env_path) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_spawn(crate::guard::task(async move {
@@ -94,8 +98,9 @@ impl Shell {
             }
             _ => return None,
         };
-        let env = self.find_env_mut(env_path)?;
-        let existing = env.tabs.iter().position(|t| match &t.kind {
+        self.find_env(env_path)?;
+        let strip = &mut self.strip;
+        let existing = strip.find_in(env_path, |t| match &t.kind {
             TabKind::File { path } => key == format!("f:{}", path.display()),
             TabKind::Diff { path, .. } => key == format!("d:{path}"),
             _ => false,
@@ -103,18 +108,18 @@ impl Shell {
         let index = match existing {
             Some(i) => i,
             None => {
-                let mut tab = Tab::new(title, kind.clone());
+                let mut tab = Tab::of(env_path, title, kind.clone());
                 tab.doc = Some(Document::Loading);
-                env.tabs.push(tab);
-                env.tabs.len() - 1
+                strip.add(tab)
             }
         };
-        let id = env.tabs[index].id;
-        if activate {
-            env.active_tab = index;
-            if visible {
-                self.note_active_tab(cx);
-            }
+        let id = strip.tabs[index].id;
+        if activate && visible {
+            strip.active_tab = index;
+            self.note_active_tab(cx);
+        } else if activate {
+            // Its environment is not on screen: it shows this tab the next time.
+            strip.front.insert(env_path.to_path_buf(), id);
         }
         self.reload_doc(env_path.to_path_buf(), kind, cx);
         cx.notify();
@@ -131,8 +136,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let Some(tab) = self
-            .find_env_mut(env_path)
-            .and_then(|e| e.tabs.iter_mut().find(|t| t.id == id))
+            .strip
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id && t.is_in(env_path))
         else {
             return;
         };
@@ -154,9 +161,7 @@ impl Shell {
         if let TabKind::File { path } = &kind
             && explorer::file_kind(path) == explorer::FileKind::Image
         {
-            if let Some(env) = self.find_env_mut(&env_path)
-                && let Some(tab) = env.tabs.iter_mut().find(|t| same_doc(&t.kind, &kind))
-            {
+            if let Some(tab) = self.doc_tab_mut(&env_path, &kind) {
                 tab.doc = Some(Document::Image(path.clone()));
                 cx.notify();
             }
@@ -176,9 +181,7 @@ impl Shell {
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(env) = this.find_env_mut(&env_path)
-                        && let Some(tab) = env.tabs.iter_mut().find(|t| same_doc(&t.kind, &kind))
-                    {
+                    if let Some(tab) = this.doc_tab_mut(&env_path, &kind) {
                         if let Document::Sheet(book) = &doc {
                             tab.sheet = tab.sheet.min(book.sheets.len() - 1);
                         }
@@ -246,9 +249,7 @@ impl Shell {
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if let Some(env) = this.find_env_mut(&env_path)
-                    && let Some(tab) = env.tabs.iter_mut().find(|t| same_doc(&t.kind, &kind))
-                {
+                if let Some(tab) = this.doc_tab_mut(&env_path, &kind) {
                     tab.doc = Some(doc);
                     if tab.markdown.is_some() {
                         tab.markdown = parse_markdown(tab);
@@ -270,33 +271,23 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let is_diff = |t: &Tab| matches!(&t.kind, TabKind::Diff { path, .. } if path == file);
-        if self.has_projects() && self.env().path == env_path {
-            if self.env().changes.iter().any(|c| c.path == file) {
-                return;
-            }
-            if let Some(i) = self.env().tabs.iter().position(&is_diff) {
-                self.discard_tab(i, window, cx);
-            }
-            return;
-        }
-        let Some(env) = self.find_env_mut(env_path) else {
+        let Some(env) = self.find_env(env_path) else {
             return;
         };
         if env.changes.iter().any(|c| c.path == file) {
             return;
         }
-        if let Some(i) = env.tabs.iter().position(is_diff) {
-            env.tabs.remove(i);
-            if env.tabs.is_empty() {
-                env.tabs.push(Tab::new("New session", TabKind::NewSession));
-            }
-            if env.active_tab >= env.tabs.len() || env.active_tab > i {
-                env.active_tab = env.active_tab.saturating_sub(1);
-            }
-            self.unfloat_github(cx);
-            self.save(cx);
-            cx.notify();
+        if let Some(i) = self.strip.find_in(env_path, is_diff) {
+            self.discard_tab(i, window, cx);
         }
+    }
+
+    /// The open file or diff tab of an environment that shows `kind`.
+    fn doc_tab_mut(&mut self, env_path: &std::path::Path, kind: &TabKind) -> Option<&mut Tab> {
+        self.strip
+            .tabs
+            .iter_mut()
+            .find(|t| t.is_in(env_path) && same_doc(&t.kind, kind))
     }
 }
 
@@ -511,10 +502,9 @@ impl Shell {
         }
     }
 
-    /// Switches a markdown file tab of the current environment between its raw
-    /// lines and the rendered MD Viewer.
+    /// Switches a markdown file tab between its raw lines and the rendered MD Viewer.
     pub(super) fn toggle_md_viewer(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(tab) = self.env_mut().tabs.iter_mut().find(|t| t.id == id) else {
+        let Some(tab) = self.strip.tabs.iter_mut().find(|t| t.id == id) else {
             return;
         };
         tab.markdown = match tab.markdown {
@@ -524,9 +514,9 @@ impl Shell {
         cx.notify();
     }
 
-    /// Shows sheet `index` of the spreadsheet tab `id` in the current environment.
+    /// Shows sheet `index` of the spreadsheet tab `id`.
     pub(super) fn select_sheet(&mut self, id: u64, index: usize, cx: &mut Context<Self>) {
-        if let Some(tab) = self.env_mut().tabs.iter_mut().find(|t| t.id == id) {
+        if let Some(tab) = self.strip.tabs.iter_mut().find(|t| t.id == id) {
             tab.sheet = index;
             tab.scroll = UniformListScrollHandle::new();
             cx.notify();
@@ -535,13 +525,11 @@ impl Shell {
 
     /// Re-reads the open file tabs of an environment (after an editor exits).
     pub(super) fn reload_file_tabs(&mut self, env_path: &std::path::Path, cx: &mut Context<Self>) {
-        let Some(env) = self.find_env_mut(env_path) else {
-            return;
-        };
-        let kinds: Vec<TabKind> = env
+        let kinds: Vec<TabKind> = self
+            .strip
             .tabs
             .iter()
-            .filter(|t| matches!(t.kind, TabKind::File { .. }))
+            .filter(|t| t.is_in(env_path) && matches!(t.kind, TabKind::File { .. }))
             .map(|t| t.kind.clone())
             .collect();
         for kind in kinds {

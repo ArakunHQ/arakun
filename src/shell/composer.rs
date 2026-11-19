@@ -659,6 +659,24 @@ impl Shell {
     /// the draft waiting in the queue.
     fn submit_with(&mut self, now: bool, window: &mut Window, cx: &mut Context<Self>) {
         let env_path = self.env().path.clone();
+        // A server that cannot be reached would lose the prompt: it stays here.
+        if let Some(remote) = self.env().remote.clone()
+            && self.server_reach(&remote.server) != Some(crate::servers_view::Reach::Connected)
+        {
+            if let Some(thread) = self.active_thread(cx) {
+                thread.update(cx, |t, cx| {
+                    t.post_notice(
+                        format!(
+                            "{} is not connected; the prompt stays in the composer.",
+                            remote.machine
+                        ),
+                        true,
+                        cx,
+                    )
+                });
+            }
+            return;
+        }
         let mut text = self.env().draft.trim().to_string();
         let typed = text.clone();
         let pastes = self.pastes.remove(&env_path).unwrap_or_default();
@@ -730,19 +748,19 @@ impl Shell {
     /// The tab the composer writes to: the active tab, or the session showing beside it
     /// while the other pane (a page, a file) has the focus.
     pub(super) fn composer_tab(&self) -> usize {
-        let env = self.env();
+        let strip = &self.strip;
         let session = |i: usize| {
             matches!(
-                env.tabs.get(i).map(|t| &t.kind),
+                strip.tabs.get(i).map(|t| &t.kind),
                 Some(TabKind::Session { .. })
             )
         };
-        let active = env.active_tab;
+        let active = strip.active_tab;
         let fresh = matches!(
-            env.tabs.get(active).map(|t| &t.kind),
+            strip.tabs.get(active).map(|t| &t.kind),
             Some(TabKind::NewSession)
         );
-        match env.split_other() {
+        match self.split_other() {
             Some(other) if !session(active) && !fresh && session(other) => other,
             _ => active,
         }
@@ -751,7 +769,8 @@ impl Shell {
     /// The chat the composer writes to; its raccoon sits on the composer.
     pub(super) fn composer_chat(&self) -> Option<Entity<crate::agent::ThreadView>> {
         let env = self.env();
-        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind)
+        let Some(TabKind::Session { id, .. }) =
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind)
         else {
             return None;
         };
@@ -779,7 +798,7 @@ impl Shell {
             [0., 1.]
         } else if chat.read(cx).focus_handle(cx).contains_focused(window, cx) {
             [0., -1.]
-        } else if let Some(split) = env.split.filter(|_| window.focused(cx).is_some()) {
+        } else if let Some(split) = self.strip.split.filter(|_| window.focused(cx).is_some()) {
             match (split.dir, split.focus_first) {
                 (crate::model::SplitDir::Right, true) => [-1., 0.],
                 (crate::model::SplitDir::Right, false) => [1., 0.],
@@ -812,7 +831,7 @@ impl Shell {
             return;
         }
         let tab = self.composer_tab();
-        if tab != self.env().active_tab {
+        if tab != self.strip.active_tab {
             self.select_tab(tab, window, cx);
         }
     }
@@ -825,11 +844,11 @@ impl Shell {
     ) -> impl IntoElement {
         let env = self.env();
         let tab = self.composer_tab();
-        let session_id = match env.tabs.get(tab).map(|t| &t.kind) {
+        let session_id = match self.strip.tabs.get(tab).map(|t| &t.kind) {
             Some(TabKind::Session { id, .. }) => Some(id.clone()),
             _ => None,
         };
-        let agent = match env.tabs.get(tab).map(|t| &t.kind) {
+        let agent = match self.strip.tabs.get(tab).map(|t| &t.kind) {
             Some(TabKind::Session { agent, .. }) => *agent,
             _ => env.agent,
         };

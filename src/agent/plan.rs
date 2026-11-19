@@ -119,6 +119,8 @@ impl Window {
             "Week".into()
         } else if self.label == "Monthly limit" {
             "Month".into()
+        } else if self.label == "Daily limit" {
+            "Day".into()
         } else {
             self.label
                 .strip_prefix("Weekly · ")
@@ -246,12 +248,8 @@ fn cached_seats() -> Option<Seats> {
 }
 
 fn store_seats(seats: &Seats) {
-    let path = seats_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(seats) {
-        let _ = std::fs::write(path, json);
+    if let Ok(json) = serde_json::to_vec_pretty(seats) {
+        let _ = crate::durable::write(&seats_path(), &json);
     }
 }
 

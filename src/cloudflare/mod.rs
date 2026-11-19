@@ -561,14 +561,8 @@ fn cache_dir() -> PathBuf {
 }
 
 fn write_json(file: &std::path::Path, v: &impl serde::Serialize) {
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(json) = serde_json::to_vec(v) {
-        let tmp = file.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, file);
-        }
+        let _ = crate::durable::write(file, &json);
     }
 }
 

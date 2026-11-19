@@ -379,12 +379,32 @@ impl Change {
     }
 }
 
-fn diff_base(dir: &Path) -> &'static str {
-    let has_head = git(dir)
+/// Whether HEAD points at a commit: not in a repository before its first one.
+/// An error when git could not tell, such as for a repository it refuses to
+/// read (not a repository, untrusted owner): that is no sign of a new one.
+pub fn has_commits(dir: &Path) -> Result<bool> {
+    let out = git(dir)
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
         .output()
-        .is_ok_and(|o| o.status.success());
-    if has_head { "HEAD" } else { EMPTY_TREE }
+        .context("could not run git")?;
+    // `--verify --quiet` exits 1, silently, only when HEAD names no commit.
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!(
+            "git could not read {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
+}
+
+fn diff_base(dir: &Path) -> &'static str {
+    if has_commits(dir).unwrap_or(false) {
+        "HEAD"
+    } else {
+        EMPTY_TREE
+    }
 }
 
 /// Uncommitted changes against HEAD (staged and unstaged together, as the Changes
@@ -1421,6 +1441,35 @@ test: cover the resize\u{1f}\u{1e}\n";
         ]);
         assert_eq!(super::push_owner(&dir, "origin").as_deref(), Some("me"));
         assert_eq!(super::push_owner(&dir, "nowhere"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_repository_has_commits_after_its_first() {
+        let dir = repo();
+        assert!(super::has_commits(&dir).unwrap());
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let ok = super::unpinned(&mut Command::new("git"))
+            .arg("-C")
+            .arg(&empty)
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert!(!super::has_commits(&empty).unwrap());
+        // Not a repository: git can't tell, which is no sign of a new one.
+        let plain = std::env::temp_dir().join(format!("arakun-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        // Skipped when the temp dir is itself inside a repository.
+        let out = super::git(&plain)
+            .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+            .status()
+            .unwrap();
+        if out.code() == Some(128) {
+            assert!(super::has_commits(&plain).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&plain);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

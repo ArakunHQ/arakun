@@ -137,7 +137,7 @@ impl Shell {
             } => {
                 let watching = window.is_window_active()
                     && matches!(
-                        self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
+                        self.strip.active().map(|t| &t.kind),
                         Some(TabKind::Branches)
                     );
                 if !watching {

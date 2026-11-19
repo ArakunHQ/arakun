@@ -23,7 +23,7 @@ summary.
 | Clippy (no warnings), "cargo fmt" step | `tools/rustfmt.sh --check`, then `cargo clippy --locked --all-targets --no-default-features -- -D warnings` |
 | Tests (Linux, no browser) | `cargo test --locked --no-default-features` (one test: add its name) |
 | Clippy (Linux, browser) | needs CEF; read the log, the error is usually in `src/browser/` or `arakun-helper` |
-| Clippy (macOS), Tests (macOS, no browser) | not reproducible on Linux; see below |
+| Clippy and tests (macOS, no browser) | not reproducible on Linux; see below |
 | Relay (types and tests) | `(cd relay && npm ci && npx tsc --noEmit && npx vitest run)` and `(cd phone && node --test "test/*.test.mjs")` |
 | Dependencies (cargo-deny) | `cargo deny check` |
 | Conventional Commits | `tools/conventional-commits.sh title "<title>"` |

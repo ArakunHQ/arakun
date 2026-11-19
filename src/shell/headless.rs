@@ -13,7 +13,7 @@ use gpui::{AppContext as _, Context, SharedString, Window};
 use super::Shell;
 use crate::agent::{self, AgentKind, Thread};
 use crate::headless::{self, Meta, Status};
-use crate::model::{self, Session, TabKind};
+use crate::model::{self, Session};
 use crate::state;
 
 thread_local! {
@@ -36,6 +36,7 @@ fn app_agent(kind: AgentKind) -> model::Agent {
         AgentKind::Droid => model::Agent::Droid,
         AgentKind::OpenCode => model::Agent::OpenCode,
         AgentKind::Codex => model::Agent::Codex,
+        AgentKind::Devin => model::Agent::Devin,
         AgentKind::WorkersAi => model::Agent::WorkersAi,
     }
 }
@@ -182,6 +183,11 @@ impl Shell {
             p.name = "Headless".into();
             p.environments[0].set_branch(Some("agents".into()));
             self.projects.push(p);
+            // The first project: the row gets the tab it must never be without.
+            if self.strip.tabs.is_empty() {
+                self.show_env_tab(true);
+                self.strip.seed_tab_history();
+            }
         }
         root
     }
@@ -262,20 +268,12 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let open = |t: &model::Tab| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id);
-        let active = self.has_projects() && self.env().path == env_path;
-        if active {
-            while let Some(i) = self.env().tabs.iter().position(open) {
-                self.discard_tab(i, window, cx);
-            }
+        while let Some(i) = self.strip.session_tab(id) {
+            self.discard_tab(i, window, cx);
         }
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        // Its tab goes when that environment is on screen again.
-        if env.tabs.iter().any(open) {
-            return;
-        }
         headless::set_shown(id, false);
         SEEN.with(|seen| seen.borrow_mut().remove(id));
         if let Some(i) = env.session_index(id) {

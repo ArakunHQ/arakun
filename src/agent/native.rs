@@ -225,7 +225,47 @@ pub struct AskUserRequest {
     pub session: Option<String>,
 }
 
+/// A questionnaire as a server words it (`phone::wire::question`), for a
+/// session that runs there.
+pub(super) fn remote_question(v: &Value) -> Option<AskUserRequest> {
+    let text = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+    let questions = v["questions"].as_array()?;
+    Some(AskUserRequest {
+        rpc_id: Value::Null,
+        tool_call_id: text(v, "tool_call_id"),
+        questions: questions
+            .iter()
+            .map(|q| Question {
+                index: q["index"].as_u64().unwrap_or(0),
+                topic: text(q, "topic"),
+                question: text(q, "question"),
+                options: q["options"]
+                    .as_array()
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                multi: q["multi"].as_bool().unwrap_or(false),
+            })
+            .collect(),
+        fields: Vec::new(),
+        session: None,
+    })
+}
+
 impl AskUserRequest {
+    /// What tells one of a server's questionnaires from another.
+    pub(super) fn remote_key(&self) -> String {
+        let mut key = self.tool_call_id.clone();
+        for q in &self.questions {
+            key.push('\n');
+            key.push_str(&q.question);
+        }
+        key
+    }
+
     /// An ACP `elicitation/create` form as questions: each select field (or plain
     /// text field) is one, and a `<field>_custom` text field rides along as its
     /// free-text answer. `None` for forms this card cannot show.
@@ -350,6 +390,10 @@ pub(super) struct State {
     /// Streaming text blocks: (message id, block index) -> entry.
     pub blocks: HashMap<(String, u64), usize>,
     pub questions: VecDeque<AskUserRequest>,
+    /// The server's questionnaire an answer or skip went out for, by
+    /// [`AskUserRequest::remote_key`]: the server cannot tell two of them
+    /// apart, so a second Submit could answer the next one.
+    pub remote_answered: Option<String>,
     /// Settings asked for before the session existed.
     pub want: Vec<(Setting, String)>,
     /// Droid's working state: idle, thinking, executing_tool, compacting_conversation, ...
@@ -917,6 +961,14 @@ impl Thread {
 
     /// Answers the pending AskUser questionnaire, one answer per question.
     pub fn answer_question(&mut self, answers: Vec<String>, cx: &mut Context<Self>) {
+        // A server's question stays until the server says it is answered: if
+        // this does not reach it, the card and the typed answers are still here.
+        if self.remote {
+            if self.remote_answer_once() {
+                cx.emit(ThreadEvent::Remote(super::RemoteAction::Answer(answers)));
+            }
+            return;
+        }
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
@@ -934,8 +986,34 @@ impl Thread {
         self.reply_question(req, reply, cx);
     }
 
+    /// Whether the server's questionnaire on show can be answered: once,
+    /// until the server says what it waits on now or the answer did not go.
+    fn remote_answer_once(&mut self) -> bool {
+        let Some(key) = self
+            .native
+            .questions
+            .front()
+            .map(AskUserRequest::remote_key)
+        else {
+            return false;
+        };
+        if self.native.remote_answered.as_ref() == Some(&key) {
+            return false;
+        }
+        self.native.remote_answered = Some(key);
+        true
+    }
+
     /// Dismisses the pending questionnaire without answering.
     pub fn skip_question(&mut self, cx: &mut Context<Self>) {
+        // A server's question stays until the server says it is answered: if
+        // this does not reach it, the card and the typed answers are still here.
+        if self.remote {
+            if self.remote_answer_once() {
+                cx.emit(ThreadEvent::Remote(super::RemoteAction::SkipQuestion));
+            }
+            return;
+        }
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
@@ -1066,6 +1144,9 @@ impl Thread {
 
     /// Summarizes the conversation so far to free context (`droid.compact_session`).
     pub fn compact(&mut self, instructions: Option<String>, cx: &mut Context<Self>) {
+        if self.remote {
+            return self.remote_cannot("Compacting", cx);
+        }
         if !self.native_live() && !self.acp_live() {
             if !self.native.deferred.contains(&Deferred::Compact) {
                 self.native.deferred.push(Deferred::Compact);
@@ -1128,6 +1209,9 @@ impl Thread {
 
     /// Copies the session into a new one (`droid.fork_session`); emits [`ThreadEvent::Forked`].
     pub fn fork(&mut self, cx: &mut Context<Self>) {
+        if self.remote {
+            return self.remote_cannot("Forking", cx);
+        }
         if !self.native_live() && !self.acp_live() {
             if !self.native.deferred.contains(&Deferred::Fork) {
                 self.native.deferred.push(Deferred::Fork);
@@ -1172,7 +1256,8 @@ impl Thread {
     /// Whether the prompt at `ix` can be rewound to: live and idle, native Droid
     /// or an agent that forks sessions at a message (Claude Code).
     pub fn can_rewind(&self, ix: usize) -> bool {
-        (self.native_live() || (self.acp_live() && self.caps.fork))
+        !self.remote
+            && (self.native_live() || (self.acp_live() && self.caps.fork))
             && !self.is_busy()
             && matches!(
                 self.entries.get(ix),

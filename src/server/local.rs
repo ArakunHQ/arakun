@@ -79,6 +79,12 @@ impl Drop for Listening {
     }
 }
 
+/// Commands from the user's own processes; each is one line and its reply.
+const CONNECTIONS: crate::accept::Limits = crate::accept::Limits {
+    total: 64,
+    per_peer: 64,
+};
+
 /// Listens on `path`; requests come out of the receiver, each with where its
 /// reply goes. Fails when another server already answers there.
 pub fn serve(path: &Path) -> Result<(Listening, mpsc::UnboundedReceiver<Incoming>), String> {
@@ -110,10 +116,16 @@ pub fn serve(path: &Path) -> Result<(Listening, mpsc::UnboundedReceiver<Incoming
     std::thread::Builder::new()
         .name("arakun-server-local".into())
         .spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let tx = tx.clone();
-                std::thread::spawn(move || answer(stream, tx));
-            }
+            crate::accept::serve(
+                listener.incoming(),
+                CONNECTIONS,
+                "arakun-server-local-conn",
+                || false,
+                |stream| {
+                    let tx = tx.clone();
+                    move || answer(stream, tx)
+                },
+            );
         })
         .map_err(|e| e.to_string())?;
     Ok((
@@ -217,7 +229,24 @@ mod tests {
         // Bound and dropped without the guard: the file stays, nobody answers.
         drop(UnixListener::bind(&path).unwrap());
         assert!(path.exists());
-        let (listening, _rx) = serve(&path).unwrap();
+        // On macOS a socket is made close-on-exec only after it exists, so a
+        // process another test starts in between keeps it open and answering
+        // until it exits. Probing with a connect is not enough: the holder can
+        // leave between the probe and `serve`'s own check, so retry `serve`
+        // itself within the same wait.
+        let start = std::time::Instant::now();
+        let listening = loop {
+            match serve(&path) {
+                Ok(l) => break l,
+                Err(e) => {
+                    assert!(
+                        start.elapsed() < Duration::from_secs(10),
+                        "something still answers on the stale socket: {e}"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        };
         drop(listening);
     }
 

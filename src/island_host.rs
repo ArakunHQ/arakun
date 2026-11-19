@@ -325,10 +325,18 @@ mod host {
         let accepted = std::thread::Builder::new()
             .name("arakun-island".into())
             .spawn(move || {
-                for (conn, stream) in (1..).zip(listener.incoming().flatten()) {
-                    let tx = tx.clone();
-                    std::thread::spawn(move || serve(conn, stream, tx));
-                }
+                let mut conns = 1..;
+                crate::accept::serve(
+                    listener.incoming(),
+                    CONNECTIONS,
+                    "arakun-island-conn",
+                    || false,
+                    |stream| {
+                        let conn = conns.next().unwrap_or_default();
+                        let tx = tx.clone();
+                        move || serve(conn, stream, tx)
+                    },
+                );
             });
         if let Err(e) = accepted {
             eprintln!("arakun: island socket: {e}");
@@ -416,6 +424,12 @@ mod host {
         })
         .detach();
     }
+
+    /// Every Arakun and every agent hook outside it connects; none needs long.
+    const CONNECTIONS: crate::accept::Limits = crate::accept::Limits {
+        total: 256,
+        per_peer: 256,
+    };
 
     fn bind(path: &Path) -> std::io::Result<UnixListener> {
         if let Some(dir) = path.parent() {

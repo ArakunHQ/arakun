@@ -719,6 +719,11 @@ impl ConfirmDialog {
         self
     }
 
+    /// The action is running; whoever opened it waits for its event.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
     fn submit(&mut self, cx: &mut Context<Self>) {
         if self.busy || self.blocked.is_some() {
             return;

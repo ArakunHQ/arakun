@@ -2391,7 +2391,8 @@ function keepDraft(id, text) {
   }
 }
 
-function submit() {
+// `now` stops a running turn for this prompt instead of queueing it behind.
+function submit(now = false) {
   const s = state.session;
   if (!s) return;
   const text = state.draft.trim();
@@ -2405,6 +2406,7 @@ function submit() {
     return;
   }
   const msg = { type: "send", session: s.id, text };
+  if (now) msg.now = true;
   if (shots.length) {
     msg.uploads = shots.map((sh, i) => {
       const id = `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`;
@@ -2483,6 +2485,7 @@ function renderPending() {
 }
 
 // Stopping takes two taps a few seconds apart: a thumb brushes the screen too easily.
+// With something written, Stop stops the turn and sends it.
 const STOP_WINDOW = 3000;
 let stopTimer;
 function stopTapped() {
@@ -2492,8 +2495,12 @@ function stopTapped() {
     state.stopArmed = 0;
     clearTimeout(stopTimer);
     if (!stillLinked()) return;
-    send({ type: "cancel", session: s.id });
-    toast("Stopping…");
+    if (hasDraft()) {
+      submit(true);
+    } else {
+      send({ type: "cancel", session: s.id });
+      toast("Stopping…");
+    }
   } else {
     state.stopArmed = Date.now();
     clearTimeout(stopTimer);
@@ -2503,6 +2510,10 @@ function stopTapped() {
     }, STOP_WINDOW);
   }
   renderStopRow();
+}
+
+function hasDraft() {
+  return state.draft.trim().length > 0 || state.shots.length > 0;
 }
 
 // mm:ss, hours when it comes to that.
@@ -2538,8 +2549,11 @@ function renderStopRow() {
   if (ms != null) bits.push(fmtClock(ms));
   if (s.usage && s.usage.summary) bits.push(s.usage.summary);
   const armed = state.stopArmed && Date.now() - state.stopArmed < STOP_WINDOW;
+  const [word, again, hint] = hasDraft()
+    ? ["Stop and send", "Send now?", "Tap again to stop and send"]
+    : ["Stop", "Stop?", "Tap again to stop"];
   row.innerHTML = `<span class="live" id="live">${esc(bits.join(" · ")) || "Working…"}</span>
-    <button class="btn danger small${armed ? " armed" : ""}" id="stop" aria-label="${armed ? "Tap again to stop" : "Stop"}">${ICONS.stop}<span>${armed ? "Stop?" : "Stop"}</span></button>`;
+    <button class="btn danger small${armed ? " armed" : ""}" id="stop" aria-label="${armed ? hint : word}">${ICONS.stop}<span>${armed ? again : word}</span></button>`;
 }
 
 function syncHeader() {

@@ -1196,7 +1196,9 @@ impl Shell {
             return;
         };
         let msg = match action {
-            RemoteAction::Send(text) => json!({ "type": "send", "text": text, "uploads": [] }),
+            RemoteAction::Send { text, now } => {
+                json!({ "type": "send", "text": text, "uploads": [], "now": now })
+            }
             RemoteAction::Cancel => json!({ "type": "cancel" }),
             RemoteAction::Permission(option) => json!({ "type": "permission", "option": option }),
             RemoteAction::Answer(answers) => json!({ "type": "answer", "answers": answers }),
@@ -1212,6 +1214,7 @@ impl Shell {
         server: &str,
         id: &str,
         text: &str,
+        now: bool,
         client: ClientId,
         cx: &mut Context<Self>,
     ) {
@@ -1228,7 +1231,8 @@ impl Shell {
             self.phone_send(client, wire::error(PHONE_PROMPT_LOST));
         }
         // `phone` is this app's own: the server reads past it.
-        let msg = json!({ "type": "send", "text": text, "uploads": [], "phone": client });
+        let msg =
+            json!({ "type": "send", "text": text, "uploads": [], "now": now, "phone": client });
         self.servers_send(server, id, msg, cx);
     }
 

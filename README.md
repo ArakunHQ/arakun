@@ -403,6 +403,22 @@ after a week).
   key is only sent to the proxy it was added for, over https or to this machine. It is
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
   in `cliproxy-plan.json` next to it.
+- **Claude seats.** With several Claude subscriptions, give each Claude Code session a
+  seat of its own so parallel sessions don't drain one. Save each subscription's
+  long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read
+  from stdin, checked with one small call (about 35 tokens of that seat) and kept in
+  `~/.local/share/arakun/seats/<name>`, readable only by you. From then on each new
+  Claude Code session starts on the seat with the most room in its 5-hour window that
+  is not near its 5-hour or weekly limit (your own sign-in and a
+  `CLAUDE_CODE_OAUTH_TOKEN` Arakun was started with count as seats too), and keeps
+  that seat for its whole life, also when it is resumed or restarted. The token goes
+  only into that session's environment; there is no proxy. If every seat is near its
+  limit, the session starts on the one with the most room and says so. The composer
+  shows the seat of the session, and the Usage tab every seat's windows and live
+  sessions; each token's windows are read at most every 15 minutes. Seats can't work
+  while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
+  because Claude Code applies that over each session's environment; the Usage tab says
+  so, and sessions start as before. Without a saved seat nothing changes.
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
   and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
@@ -907,6 +923,9 @@ arakun rename fix/tab-name         # rename this environment's branch (before it
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun notices --unseen           # notices you haven't read yet
+arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)
+arakun seat ls                    # the seats and their 5-hour and weekly usage
+arakun seat rm work               # forget a seat
 arakun ls                         # projects, environments and sessions
 arakun show                       # bring the window up (running `arakun` again does too)
 arakun quit                       # quit Arakun, also when its window is hidden

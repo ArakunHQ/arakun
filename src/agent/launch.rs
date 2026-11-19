@@ -24,6 +24,9 @@ pub struct LaunchSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub env: Vec<(String, OsString)>,
+    /// Variables of Arakun's own environment the agent must not get (a
+    /// Claude seat token, for a session on the sign-in).
+    pub unset: Vec<String>,
 }
 
 impl LaunchSpec {
@@ -333,6 +336,7 @@ fn from_override(var: &str) -> Option<Result<LaunchSpec>> {
                 program,
                 args,
                 env: Vec::new(),
+                unset: Vec::new(),
             }),
     )
 }
@@ -370,6 +374,7 @@ pub fn resolve_droid_native(cwd: Option<&Path>) -> Result<LaunchSpec> {
         .chain(droid_hint_args(cwd))
         .collect(),
         env: vec![("PATH".into(), child_path_env())],
+        unset: Vec::new(),
     })
 }
 
@@ -793,6 +798,7 @@ pub fn resolve(
                     .chain(droid_hint_args(cwd))
                     .collect(),
                 env: Vec::new(),
+                unset: Vec::new(),
             },
         },
         AgentKind::Claude => match from_override("ARAKUN_CLAUDE_ACP") {
@@ -835,6 +841,7 @@ pub fn resolve(
                     program: bin,
                     args: Vec::new(),
                     env,
+                    unset: Vec::new(),
                 }
             }
         },
@@ -845,6 +852,7 @@ pub fn resolve(
                     program: opencode_bin()?,
                     args: vec!["acp".into()],
                     env: Vec::new(),
+                    unset: Vec::new(),
                 },
             };
             spec.env.extend(opencode_hint_env(cwd));
@@ -874,6 +882,7 @@ pub fn resolve(
                         program: bin,
                         args: Vec::new(),
                         env: Vec::new(),
+                        unset: Vec::new(),
                     }
                 }
             };
@@ -904,6 +913,7 @@ pub fn resolve(
             program: PathBuf::from("arakun"),
             args: Vec::new(),
             env: Vec::new(),
+            unset: Vec::new(),
         },
     };
     spec.env.push(("PATH".into(), child_path_env()));

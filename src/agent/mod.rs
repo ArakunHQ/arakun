@@ -35,6 +35,7 @@ pub mod publishers;
 mod rpc;
 pub mod saved;
 mod search;
+pub mod seats;
 mod selection;
 mod shell_diff;
 mod thread;

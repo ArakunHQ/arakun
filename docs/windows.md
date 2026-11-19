@@ -140,6 +140,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | arakun-pilot's Worker address and token | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
+| Claude seats' tokens (`arakun seat add`), one file per seat | `%LOCALAPPDATA%\arakun\seats\<name>` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
 | Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |

@@ -570,6 +570,12 @@ the package, the folder and the npm command, so you can run it yourself instead.
 adapter is installed, Arakun updates it to the pinned version without asking.
 `ARAKUN_CLAUDE_ACP` and `ARAKUN_CODEX_ACP` start another adapter instead.
 
+What each agent prints to stderr goes to `<agent>.log` in that `agents` folder, and
+what each turn used goes to `usage.jsonl` in Arakun's data folder. Once a log passes its
+limit (8 MB for an agent log, 16 MB for `usage.jsonl`), it moves to `<agent>.old.log` or
+`usage.old.jsonl` and a new one starts. Arakun keeps only that one older copy: each move
+replaces the previous one.
+
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
 (phone over Tailscale), `cf` (Cloudflare tab).

@@ -465,6 +465,106 @@ pub fn transcript_path(id: &str) -> PathBuf {
     data_dir().join("sessions").join(format!("{id}.json"))
 }
 
+/// Where a session is written out as markdown for another agent to read: when
+/// it is linked into a draft, or when another agent continues it.
+pub fn linked_path(id: &str) -> PathBuf {
+    data_dir().join("linked").join(format!("{id}.md"))
+}
+
+/// The files a session leaves in the data dir.
+pub fn session_files(id: &str) -> [PathBuf; 2] {
+    [transcript_path(id), linked_path(id)]
+}
+
+/// How long the files of a session its state stopped listing are kept
+/// before the startup sweep deletes them. Removing the session deletes them
+/// at once; the sweep is for the few that missed it (a crash, an older Arakun).
+const ORPHAN_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Deletes the transcripts and linked notes of sessions this state listed
+/// before and lists no more, such as those of an environment a refresh
+/// dropped.
+///
+/// Only sessions this state was seen listing count. Another Arakun with its
+/// own state (`ARAKUN_STATE`), of any version, keeps its sessions in the same
+/// folder, and a file whose owner was never seen is never deleted. The ids
+/// seen are kept next to the state. Skipped when the state or that list
+/// can't be read, since every file would look unlisted.
+pub fn sweep_orphans() {
+    let Some(state) = std::fs::read(file())
+        .ok()
+        .and_then(|b| serde_json::from_slice::<State>(&b).ok())
+    else {
+        return;
+    };
+    let seen_path = file().with_extension("seen-sessions.json");
+    let seen: std::collections::HashSet<String> = match std::fs::read(&seen_path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(seen) => seen,
+            Err(_) => return,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(_) => return,
+    };
+    let dirs = [
+        (data_dir().join("sessions"), "json"),
+        (data_dir().join("linked"), "md"),
+    ];
+    let seen = sweep(
+        &dirs,
+        &seen,
+        &listed_ids(&state),
+        std::time::SystemTime::now(),
+    );
+    if let Ok(bytes) = serde_json::to_vec(&seen) {
+        let _ = crate::durable::write(&seen_path, &bytes);
+    }
+}
+
+fn listed_ids(state: &State) -> std::collections::HashSet<String> {
+    let sessions = state
+        .projects
+        .iter()
+        .flat_map(|p| &p.envs)
+        .flat_map(|e| &e.sessions);
+    sessions
+        .flat_map(|s| std::iter::once(s.id.clone()).chain(s.continues.iter().map(|c| c.id.clone())))
+        .collect()
+}
+
+/// Deletes the files in `dirs` (`<id>.<ext>`) of the sessions in `seen` that
+/// `listed` no longer holds, once all of them are older than `ORPHAN_AGE`.
+/// Returns the ids to remember: those listed, and those whose files are kept.
+fn sweep(
+    dirs: &[(PathBuf, &str)],
+    seen: &std::collections::HashSet<String>,
+    listed: &std::collections::HashSet<String>,
+    now: std::time::SystemTime,
+) -> std::collections::HashSet<String> {
+    let old = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age > ORPHAN_AGE))
+    };
+    let mut keep = listed.clone();
+    for id in seen.difference(listed) {
+        let files: Vec<PathBuf> = dirs
+            .iter()
+            .map(|(dir, ext)| dir.join(format!("{id}.{ext}")))
+            .filter(|p| p.exists())
+            .collect();
+        // A headless session's own folder keeps it, listed or not.
+        if files.iter().all(|p| old(p)) && !crate::headless::dir(id).exists() {
+            for path in files {
+                let _ = std::fs::remove_file(path);
+            }
+        } else {
+            keep.insert(id.clone());
+        }
+    }
+    keep
+}
+
 /// Sessions `arakun restart` cut off mid-turn, for the next arakun to reopen.
 pub fn resume_path() -> PathBuf {
     file().with_extension("resume.json")
@@ -1060,6 +1160,63 @@ mod tests {
                 .get("continues")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn only_sessions_once_listed_are_swept() {
+        let dir = std::env::temp_dir().join(format!("arakun-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (sessions, linked) = (dir.join("sessions"), dir.join("linked"));
+        for d in [&sessions, &linked] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let long_ago = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        let write = |path: PathBuf, old: bool| {
+            std::fs::write(&path, "{}").unwrap();
+            if old {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(long_ago)
+                    .unwrap();
+            }
+        };
+        write(sessions.join("listed.json"), true);
+        write(sessions.join("removed.json"), true);
+        write(linked.join("removed.md"), true);
+        write(sessions.join("recent.json"), false);
+        write(sessions.join("headless-run.json"), true);
+        // Another state's session, as old as can be, that this one never listed.
+        write(sessions.join("theirs.json"), true);
+        let headless = dir.join("headless");
+        std::fs::create_dir_all(headless.join("headless-run")).unwrap();
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = Some(headless));
+
+        let set = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect();
+        let seen = set(&["listed", "removed", "recent", "headless-run", "gone"]);
+        let listed = set(&["listed", "new"]);
+        let dirs = [(sessions.clone(), "json"), (linked.clone(), "md")];
+        let keep = sweep(&dirs, &seen, &listed, std::time::SystemTime::now());
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = None);
+
+        assert_eq!(keep, set(&["listed", "new", "recent", "headless-run"]));
+        let mut left: Vec<_> = [&sessions, &linked]
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap())
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "headless-run.json",
+                "listed.json",
+                "recent.json",
+                "theirs.json"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -66,6 +66,7 @@ mod posthog;
 mod posthog_view;
 mod prompts;
 mod redact;
+mod rotate;
 mod runs_view;
 mod schedule;
 mod server;

@@ -122,6 +122,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | That the first-launch setup was done | `%LOCALAPPDATA%\arakun\state.onboarding.json` |
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
+| Agent logs and the usage log, each with one older copy once full | `%LOCALAPPDATA%\arakun\agents\<agent>.log` and `<agent>.old.log`; `%LOCALAPPDATA%\arakun\usage.jsonl` and `usage.old.jsonl` |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
 | Settle threads after merge (Settings › Branches), and the merges settled | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |

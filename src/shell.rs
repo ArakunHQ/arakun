@@ -1009,6 +1009,8 @@ impl Shell {
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
         this.resume_after_restart(window, cx);
+        cx.background_spawn(crate::guard::task(async { state::sweep_orphans() }))
+            .detach();
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
         this.watch_headless(window, cx);
@@ -1490,7 +1492,13 @@ impl Shell {
         if pi >= self.projects.len() {
             return;
         }
-        self.projects.remove(pi);
+        let project = self.projects.remove(pi);
+        let sessions = project
+            .environments
+            .into_iter()
+            .flat_map(|e| e.sessions)
+            .collect();
+        self.forget_sessions(sessions, cx);
         if self.active_project >= pi && self.active_project > 0 {
             self.active_project -= 1;
         }
@@ -1998,6 +2006,14 @@ impl Shell {
         let path = env.path.clone();
         let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
         let dirty = env.changes.len();
+        // Taken now: a refresh that sees the worktree gone can drop the
+        // environment, sessions and all, before `Deleted` arrives.
+        let own_ids: Vec<String> = env.sessions.iter().map(|s| s.id.to_string()).collect();
+        let session_ids: Vec<String> = env
+            .sessions
+            .iter()
+            .flat_map(sessions::session_file_ids)
+            .collect();
         let dialog = cx.new(|cx| DeleteEnvDialog::new(repo, path, branch, dirty, window, cx));
         let sub = cx.subscribe_in(
             &dialog,
@@ -2006,11 +2022,21 @@ impl Shell {
                 DialogEvent::Deleted(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
-                    if let Some(project) = this.projects.get_mut(pi) {
-                        project.environments.retain(|e| e.path != path);
+                    let removed = this.projects.get_mut(pi).and_then(|project| {
+                        let i = project.environments.iter().position(|e| e.path == path)?;
+                        let env = project.environments.remove(i);
                         project.active_env = project
                             .active_env
                             .min(project.environments.len().saturating_sub(1));
+                        Some(env.sessions)
+                    });
+                    match removed {
+                        Some(sessions) => this.forget_sessions(sessions, cx),
+                        None => sessions::discard_session_files(
+                            own_ids.clone(),
+                            session_ids.clone(),
+                            cx,
+                        ),
                     }
                     // Its tabs, and the pages of its browser tabs, go with it.
                     this.settle_strip(cx);

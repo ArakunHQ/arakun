@@ -237,13 +237,38 @@ pub fn add_worktree(
     if exists {
         cmd.arg(path).arg(branch);
     } else {
-        cmd.arg("-b").arg(branch).arg(path);
+        // Started from origin/main, the branch would track main: `git push` and the
+        // ahead/behind count would then point at the wrong branch.
+        cmd.arg("--no-track").arg("-b").arg(branch).arg(path);
         if let Some(base) = base {
             cmd.arg(base);
         }
     }
     run(&mut cmd)?;
     Ok(())
+}
+
+/// Where a new environment starts by default: the checked-out branch as it is on
+/// origin, fetched first, so it begins from what was pushed and merged rather than a
+/// local branch that may be behind. None when there is no such remote branch; the
+/// caller then starts from the current commit.
+pub fn origin_base(repo: &Path) -> Option<String> {
+    let branch = current_branch(repo)?;
+    // Offline or no access: a remote branch fetched earlier is still a better start.
+    let _ = git(repo)
+        .args(["fetch", "--quiet", "origin", &branch])
+        .output();
+    let remote = format!("origin/{branch}");
+    git(repo)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote}"),
+        ])
+        .status()
+        .is_ok_and(|s| s.success())
+        .then_some(remote)
 }
 
 pub fn remove_worktree(repo: &Path, path: &Path, delete_branch: Option<&str>) -> Result<()> {
@@ -1062,6 +1087,66 @@ mod tests {
         assert_eq!(super::current_branch(&tree).as_deref(), Some("taken"));
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(tree);
+    }
+
+    #[test]
+    fn new_environments_start_from_origin() {
+        let dir = repo();
+        assert_eq!(super::origin_base(&dir), None);
+        let remote = dir.with_extension("remote");
+        let tree = dir.with_extension("tree");
+        let git = |args: &[&str]| {
+            super::unpinned(&mut Command::new("git"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        let d = dir.to_str().unwrap();
+        assert!(git(&["init", "-q", "--bare", remote.to_str().unwrap()]));
+        assert!(git(&[
+            "-C",
+            d,
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().unwrap()
+        ]));
+        assert!(git(&["-C", d, "push", "-q", "origin", "env/brave-otter"]));
+        // A local commit that is not on origin must not be in the new environment.
+        assert!(git(&[
+            "-C",
+            d,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "local",
+        ]));
+        let base = super::origin_base(&dir);
+        assert_eq!(base.as_deref(), Some("origin/env/brave-otter"));
+        super::add_worktree(&dir, &tree, "fresh", base.as_deref(), true).unwrap();
+        let rev = |dir: &std::path::Path, r: &str| {
+            super::stdout(super::git(dir).args(["rev-parse", r])).unwrap()
+        };
+        assert_eq!(rev(&tree, "HEAD"), rev(&dir, "origin/env/brave-otter"));
+        assert_ne!(rev(&tree, "HEAD"), rev(&dir, "HEAD"));
+        // Not tracking origin/env/brave-otter: a push must not go there.
+        assert!(
+            super::git(&tree)
+                .args(["rev-parse", "@{u}"])
+                .output()
+                .is_ok_and(|o| !o.status.success())
+        );
+        let _ = std::fs::remove_dir_all(&tree);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(remote);
     }
 
     #[test]

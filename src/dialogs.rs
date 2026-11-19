@@ -71,7 +71,8 @@ pub struct CreateEnvDialog {
     /// The local branches are read. Until then a random name could match one, which
     /// would be checked out and later renamed.
     branches_loaded: bool,
-    /// None = current HEAD.
+    /// None = the current branch on origin, fetched, or HEAD when origin has none.
+    /// Some("HEAD") = the local current commit.
     base: Option<String>,
     base_open: bool,
     busy: bool,
@@ -257,6 +258,7 @@ impl CreateEnvDialog {
             // The branch list can be stale or empty (a failed read): git decides.
             let result = cx
                 .background_spawn(crate::guard::task(async move {
+                    let base = base.or_else(|| git::origin_base(&repo));
                     git::add_worktree(&repo, &target, &name, base.as_deref(), auto_name)
                 }))
                 .await;
@@ -295,12 +297,23 @@ impl CreateEnvDialog {
     }
 
     fn base_label(&self) -> SharedString {
-        match &self.base {
-            Some(b) => b.clone().into(),
-            None => match &self.branches.current {
-                Some(c) => format!("Current commit ({c})").into(),
-                None => "Current commit".into(),
-            },
+        match self.base.as_deref() {
+            None => self.default_base_label(),
+            Some("HEAD") => self.base_label_for_head(),
+            Some(b) => b.to_string().into(),
+        }
+    }
+
+    /// The current branch on origin, when the branch list knows one.
+    fn origin_branch(&self) -> Option<String> {
+        let remote = format!("origin/{}", self.branches.current.as_ref()?);
+        self.branches.remote.contains(&remote).then_some(remote)
+    }
+
+    fn default_base_label(&self) -> SharedString {
+        match self.origin_branch() {
+            Some(r) => format!("Latest {r}").into(),
+            None => self.base_label_for_head(),
         }
     }
 }
@@ -401,7 +414,11 @@ impl Render for CreateEnvDialog {
             )
             .when(self.base_open, |d| {
                 let mut options: Vec<(Option<String>, SharedString)> =
-                    vec![(None, self.base_label_for_head())];
+                    vec![(None, self.default_base_label())];
+                // Without an origin branch the default already is the current commit.
+                if self.origin_branch().is_some() {
+                    options.push((Some("HEAD".into()), self.base_label_for_head()));
+                }
                 options.extend(
                     self.branches
                         .local

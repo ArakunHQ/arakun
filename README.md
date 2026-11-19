@@ -71,13 +71,14 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   lists the environments elsewhere that run or need you, and a click goes there; the
   dropdown says the same per project. The **+** on Environments, or
   `Ctrl+Shift+N`, makes an environment at once on a random branch from the current
-  commit; `Alt`+click on it, or File › New Environment with Options…, asks for the
-  branch and where to start from. Every environment has its own sessions, terminals
-  and draft prompt. The window has one row of tabs for all of them: a session, file,
-  diff or browser tab belongs to its environment, and going to the tab shows that
-  environment. Going to an environment shows the tab it showed last. With tabs of
-  several environments open, each run of tabs starts with its environment's name. The
-  Workspace panel shows Sessions, an Explorer and the uncommitted
+  branch as it is on `origin`, fetched first (or the local commit when origin has
+  none); `Alt`+click on it, or File › New Environment with Options…, asks for the
+  branch and where to start from, the local commit among them. Every environment has
+  its own sessions, terminals and draft prompt. The window has one row of tabs for all
+  of them: a session, file, diff or browser tab belongs to its environment, and going
+  to the tab shows that environment. Going to an environment shows the tab it showed
+  last. With tabs of several environments open, each run of tabs starts with its
+  environment's name. The Workspace panel shows Sessions, an Explorer and the uncommitted
   Changes; the Branches tab draws every live branch against the default one.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">

@@ -72,6 +72,15 @@ reviews:
           - "tools/install*"
           - "src/platform.rs"
           - "src/git.rs"
+          - "src/agent/launch.rs"
+          - "src/agent/rpc.rs"
+          - "src/state.rs"
+          - "src/memory.rs"
+          - "src/stored.rs"
+          - "src/durable.rs"
+          - "src/update.rs"
+          - "src/server/**"
+          - "src/server.rs"
   merge_risk_instructions: >-
     Minimal risk: changes only to docs or Markdown that people read (README.md,
     docs/, CONTRIBUTING.md), comments, tests, iso/*.rhai scenes or screenshots,
@@ -89,9 +98,11 @@ reviews:
     lefthook.yml; Cargo.toml, Cargo.lock, deny.toml, build.rs or
     rust-toolchain.toml; tools/setup-dev.* or tools/install* (they run on
     users' machines, often with sudo); src/platform.rs; git operations in
-    src/git.rs; how agents and shells are launched; and any format stored on
-    disk (state.json, memory, transcripts) or a CLI flag that other tools rely
-    on. A change for one platform that the other platforms build without
+    src/git.rs; how agents and shells are launched (src/agent/launch.rs and
+    src/agent/rpc.rs); release signature checks in src/update.rs; the daemon
+    in src/server.rs and src/server/; and any format stored on disk (including
+    src/state.rs, src/memory.rs, src/stored.rs and src/durable.rs) or a CLI
+    flag that other tools rely on. A change for one platform that the other platforms build without
     testing also raises the risk. Code behind the `browser` feature is only
     built on Linux in CI, so a change there that touches Windows or macOS
     paths raises it too.

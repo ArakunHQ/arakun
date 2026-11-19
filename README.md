@@ -210,6 +210,18 @@ terminal-only. The status line and keybindings from your settings don't apply in
   or "Comment"), and says why when a comment doesn't go out. Approve, request changes
   and merge ask a second time, and an approval or a merge stops if new commits came
   after you looked.
+- **Failed checks.** When checks failed, the Checks tab says how many, and a failed
+  GitHub Actions job opens the end of its failing step's log under its row (the link at
+  the end of the row opens its page). "Re-run failed" starts the failed jobs again
+  (`gh run rerun --failed`) once their run has finished. "Fix with agent" starts a
+  session with the failed checks and the logs you opened; the agent fixes it in the
+  checkout and doesn't push.
+- **Review comments.** Under each thread on the diff, "Reply" answers it and "Resolve"
+  (or "Reopen") marks it. In the Files tab, the open threads show under their lines,
+  and a click on a line writes a comment on it. Those comments are kept as pending
+  (only until you quit) and "Submit review" posts them together as one review;
+  "Discard" drops them. After new commits, submit or discard the pending ones before
+  you comment on the new diff.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits
@@ -836,7 +848,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
   servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. To add a folder on a server, press the folder button on it in the Servers tab,
+  yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  the plugins its marketplaces offer, and Install adds a plugin or MCP server for
+  Claude Code there, for every project. An MCP server that wants a sign-in is signed
+  in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
   folders. Folders right in the home folder do not count; with none elsewhere, the

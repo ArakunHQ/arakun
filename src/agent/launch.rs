@@ -1,6 +1,7 @@
 //! Finding (and, for Claude and Codex, installing) the entry point of each agent:
 //! ACP adapters for Claude and Codex, Factory's native `stream-jsonrpc` for Droid
-//! unless `ARAKUN_DROID_ACP=1`, and OpenCode's own ACP server (`opencode acp`).
+//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode and Devin have
+//! themselves (`opencode acp`, `devin acp`).
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -109,8 +110,9 @@ fn is_executable(path: &Path) -> bool {
 /// The interactive sign-in for `kind`, to run in a terminal: Claude Code's
 /// `/login` (the user's `claude`, else the binary bundled with the adapter's
 /// SDK; both share `~/.claude`), plain `droid`, which asks to sign in,
-/// `opencode auth login`, which asks for a provider and its key, or
-/// `codex login`, which signs in with ChatGPT in the browser.
+/// `opencode auth login`, which asks for a provider and its key,
+/// `codex login`, which signs in with ChatGPT in the browser, or
+/// `devin auth login`, which signs in to Devin in the browser.
 pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
@@ -133,11 +135,13 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
             let bin = codex_cli()?;
             Some(vec![bin.display().to_string(), "login".into()])
         }
+        AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "login")),
     }
 }
 
 /// The interactive sign-out for `kind`, to run in a terminal: Claude's `/logout`,
-/// `opencode auth logout`, which asks which provider, or `codex logout`. Droid's
+/// `opencode auth logout`, which asks which provider, `codex logout` or
+/// `devin auth logout`. Droid's
 /// CLI is signed out from Factory's side.
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
@@ -158,7 +162,12 @@ pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
             let bin = codex_cli()?;
             Some(vec![bin.display().to_string(), "logout".into()])
         }
+        AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "logout")),
     }
+}
+
+fn devin_auth_command(bin: &Path, action: &str) -> Vec<String> {
+    vec![bin.display().to_string(), "auth".into(), action.into()]
 }
 
 /// The user's `claude`, else the binary bundled with the adapter's SDK; both share `~/.claude`.
@@ -464,6 +473,44 @@ pub fn opencode_bin() -> Result<PathBuf> {
     })
 }
 
+/// The user's `devin`. Arakun does not install it: Cognition's installer also
+/// sets up its updates. `ARAKUN_DEVIN_BIN` picks another binary.
+pub fn devin_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_DEVIN_BIN").unwrap_or_else(|_| "devin".into());
+    which(&name).ok_or_else(|| {
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install the Devin CLI first (https://docs.devin.ai/work-with-devin/devin-cli)."
+        )
+    })
+}
+
+/// Whether `devin auth login` has signed in: its credentials file exists.
+/// Only checks that it is there, never reads it.
+pub fn devin_signed_in() -> bool {
+    devin_credentials(std::env::var_os("XDG_DATA_HOME"), &home()).is_file()
+}
+
+/// Where Devin keeps its sign-in: `$XDG_DATA_HOME/devin/credentials.toml`,
+/// else under `~/.local/share`. A relative `XDG_DATA_HOME` is ignored, as the
+/// XDG spec says.
+fn devin_credentials(xdg_data: Option<OsString>, home: &Path) -> PathBuf {
+    xdg_data
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".local").join("share"))
+        .join("devin")
+        .join("credentials.toml")
+}
+
+/// The variable with Devin's API key when the environment has one. Names it,
+/// never reads the key out.
+pub fn devin_env_key() -> Option<&'static str> {
+    const VAR: &str = "WINDSURF_API_KEY";
+    std::env::var_os(VAR)
+        .is_some_and(|v| !v.is_empty())
+        .then_some(VAR)
+}
+
 /// The providers OpenCode keeps credentials for (`opencode auth login`), by
 /// name only: the keys of its `auth.json`, never the secrets.
 pub fn opencode_providers() -> Vec<String> {
@@ -701,7 +748,9 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
             CODEX_ACP_PACKAGE,
             codex_dir(),
         ),
-        AgentKind::Droid | AgentKind::OpenCode | AgentKind::WorkersAi => return None,
+        AgentKind::Droid | AgentKind::OpenCode | AgentKind::Devin | AgentKind::WorkersAi => {
+            return None;
+        }
     };
     if names_program(std::env::var(var).ok().as_deref()) || is_executable(&bin) {
         return None;
@@ -712,8 +761,8 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
 /// Resolves how to start `kind` in ACP mode. Blocking: with `install`, a missing
 /// Claude or Codex adapter is installed with npm into [`agents_dir`]; without it,
 /// the error is an [`AdapterInstall`] that says what would be. `progress` gets a
-/// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`
-/// and `ARAKUN_CODEX_ACP` replace the command.
+/// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`,
+/// `ARAKUN_CODEX_ACP` and `ARAKUN_DEVIN_ACP` replace the command.
 pub fn resolve(
     kind: AgentKind,
     cwd: Option<&Path>,
@@ -837,6 +886,16 @@ pub fn resolve(
             }
             spec
         }
+        // Devin takes no system prompt over ACP or its command line, so it gets
+        // no arakun hint; it reads the project's AGENTS.md itself.
+        AgentKind::Devin => match from_override("ARAKUN_DEVIN_ACP") {
+            Some(spec) => spec?,
+            None => LaunchSpec {
+                program: devin_bin()?,
+                args: vec!["acp".into()],
+                env: Vec::new(),
+            },
+        },
         // Nothing to start: it runs in arakun (`Connection::in_process`).
         AgentKind::WorkersAi => LaunchSpec {
             program: PathBuf::from("arakun"),
@@ -1050,7 +1109,12 @@ mod tests {
 
     #[test]
     fn only_the_npm_adapters_are_installed() {
-        for kind in [AgentKind::Droid, AgentKind::OpenCode, AgentKind::WorkersAi] {
+        for kind in [
+            AgentKind::Droid,
+            AgentKind::OpenCode,
+            AgentKind::Devin,
+            AgentKind::WorkersAi,
+        ] {
             assert_eq!(adapter_install(kind), None);
         }
     }
@@ -1137,6 +1201,38 @@ mod tests {
                 "cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017",
                 "cloudflare-workers-ai/@cf/zai-org/glm-5.3",
             ]
+        );
+    }
+
+    // Windows has no absolute path without a drive letter.
+    #[cfg(not(windows))]
+    #[test]
+    fn devin_credentials_follow_xdg_data_home() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            devin_credentials(None, home),
+            Path::new("/home/u/.local/share/devin/credentials.toml")
+        );
+        assert_eq!(
+            devin_credentials(Some("/data".into()), home),
+            Path::new("/data/devin/credentials.toml")
+        );
+        assert_eq!(
+            devin_credentials(Some("relative".into()), home),
+            Path::new("/home/u/.local/share/devin/credentials.toml")
+        );
+    }
+
+    #[test]
+    fn devin_signs_in_and_out_with_its_auth_command() {
+        let bin = Path::new("/home/u/.local/bin/devin");
+        assert_eq!(
+            devin_auth_command(bin, "login"),
+            ["/home/u/.local/bin/devin", "auth", "login"]
+        );
+        assert_eq!(
+            devin_auth_command(bin, "logout"),
+            ["/home/u/.local/bin/devin", "auth", "logout"]
         );
     }
 }

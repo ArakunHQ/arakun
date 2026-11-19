@@ -160,7 +160,11 @@ impl Shell {
         match cmd {
             Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
             None => {
-                let body = format!("{} was not found. Install it first.", kind.label());
+                let body = match kind {
+                    // Arakun does not install Devin, so say where it comes from.
+                    crate::agent::AgentKind::Devin => "The devin CLI was not found. Install the Devin CLI first (https://docs.devin.ai/work-with-devin/devin-cli).".to_string(),
+                    _ => format!("{} was not found. Install it first.", kind.label()),
+                };
                 self.notify(crate::island::AlertKind::Failure, title, &body, None, cx);
             }
         }

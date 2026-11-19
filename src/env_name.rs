@@ -193,7 +193,7 @@ pub fn installed(agent: AgentKind) -> bool {
     match agent {
         AgentKind::Claude => crate::agent::claude_cli().is_some(),
         AgentKind::Droid => crate::agent::droid_bin().is_ok(),
-        AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => false,
+        AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin | AgentKind::WorkersAi => false,
     }
 }
 
@@ -307,7 +307,7 @@ fn args(agent: AgentKind, model: &str) -> Result<Vec<String>> {
             args.extend(model.into_iter().flatten());
             args
         }
-        AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => {
+        AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin | AgentKind::WorkersAi => {
             bail!("{} cannot name branches", agent.label())
         }
     };

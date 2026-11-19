@@ -171,8 +171,11 @@ impl Shell {
             }
             // A full Go plan doesn't stop OpenCode: other providers, or Go's
             // extra usage, may still take the prompt; the provider says so if not.
-            // Codex says so itself when its ChatGPT limits run out.
-            model::Agent::OpenCode | model::Agent::Codex | model::Agent::WorkersAi => None,
+            // Codex says so itself when its ChatGPT limits run out, and so does Devin.
+            model::Agent::OpenCode
+            | model::Agent::Codex
+            | model::Agent::Devin
+            | model::Agent::WorkersAi => None,
         }
     }
 }

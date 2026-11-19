@@ -105,12 +105,17 @@ EOF
 ## 5. Wait for CI, then mark it ready
 
 ```sh
-gh pr checks --watch     # or your host's way to wait on a pull request
+gh pr checks --watch --required --fail-fast   # or your host's way to wait on a pull request
 ```
 
+- Wait only for the required checks. Optional ones (macOS, CodeQL) can queue for
+  tens of minutes and do not block a merge.
+- If the diff touches macOS-only code (`cfg(target_os = "macos")`,
+  a path with `macos` in its name such as `tools/macos-*`, the macOS build config), also wait
+  for the macOS jobs: `gh pr checks --watch --fail-fast`.
 - Red: use the `triage-ci` skill, push the fix, wait again.
 - Green: `gh pr ready`. That requests reviewers and starts CodeRabbit, so never
-  before CI passes.
+  before the required checks pass.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.
 - CodeRabbit comments: fix each one and push, or reply with the reason you

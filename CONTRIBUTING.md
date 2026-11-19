@@ -271,8 +271,11 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   check them as you write them, turn on the [Git hooks](#git-hooks).
 - **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
   GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
-  while CI runs. Once the checks pass, mark it ready with `gh pr ready` or the button on
-  GitHub. That starts CodeRabbit's review. When it finishes, people are asked to review
+  while CI runs. Once the required checks pass, mark it ready with `gh pr ready` or the
+  button on GitHub. That starts CodeRabbit's review. Don't wait for the optional checks
+  (macOS, CodeQL), which can queue for a long time, unless the change touches macOS-only
+  code (`cfg(target_os = "macos")`, a path with `macos` in its name, the macOS build
+  config): then wait for the macOS jobs too. When CodeRabbit finishes, people are asked to review
   unless CodeRabbit approved and every review thread is resolved. A pull request from
   outside the team always needs a
   maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
@@ -286,8 +289,8 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   `@coderabbitai approve` don't work on your own pull request. Its review rules are in
   [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
   instructions there too.
-- **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
-  a review. If a check fails and you think it is not your change, say so in the pull
+- **Keep the branch up to date** with `main`, and make sure the required checks pass before you
+  ask for a review. If a check fails and you think it is not your change, say so in the pull
   request.
 - **Stack pull requests** when one step needs another that is not merged yet. See
   [Stacked pull requests](#stacked-pull-requests).

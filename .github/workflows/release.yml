@@ -323,7 +323,7 @@ jobs:
         id: main-ci
         # The job must not fail: the jobs that publish need ci, and a failed
         # job skips everything that needs it, even through ci. An error or a
-        # timeout here only means ci runs every job.
+        # timeout here only means ci runs as it would without the lookup.
         continue-on-error: true
         timeout-minutes: 95
         env:

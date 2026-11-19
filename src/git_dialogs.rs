@@ -392,20 +392,27 @@ impl Render for ConfirmDialog {
                 div()
                     .flex()
                     .flex_col()
+                    // Lets a long details list shrink and scroll on short
+                    // windows instead of pushing the buttons out of the panel.
+                    .min_h_0()
                     .gap(crate::ui::sp(16.))
                     .p(crate::ui::sp(16.))
                     .text_size(px(ui::TEXT_MD))
                     .line_height(px(19.))
                     .child(
                         div()
+                            .flex_none()
                             .text_color(theme::text_muted())
                             .child(self.body.clone()),
                     )
                     .when(!self.details.is_empty(), |d| {
                         d.child(
                             div()
+                                .id("git-confirm-details")
                                 .flex()
                                 .flex_col()
+                                .min_h_0()
+                                .overflow_y_scroll()
                                 .gap(crate::ui::sp(8.))
                                 .p(crate::ui::sp(12.))
                                 .rounded(crate::ui::rad(12.))
@@ -417,6 +424,7 @@ impl Render for ConfirmDialog {
                                 .children(self.details.iter().map(|(name, color, text)| {
                                     div()
                                         .flex()
+                                        .flex_none()
                                         .items_start()
                                         .gap(crate::ui::sp(10.))
                                         .child(
@@ -432,6 +440,7 @@ impl Render for ConfirmDialog {
                         d.child(
                             div()
                                 .flex()
+                                .flex_none()
                                 .items_start()
                                 .gap(crate::ui::sp(10.))
                                 .text_size(px(ui::TEXT_SM))
@@ -448,6 +457,7 @@ impl Render for ConfirmDialog {
                     .child(
                         div()
                             .flex()
+                            .flex_none()
                             .justify_end()
                             .gap(crate::ui::sp(8.))
                             .child(
